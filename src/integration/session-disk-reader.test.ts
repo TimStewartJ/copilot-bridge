@@ -287,6 +287,89 @@ describe("readMessagesFromDisk latest-page path", () => {
     );
   });
 
+  it("counts thinking entries in the bounded tail path so pagination offsets stay exact", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-tail-reasoning");
+    // Each old turn yields two entries from one event: its thinking, then its reply.
+    const oldTurns = Array.from({ length: 20 }, (_, index) => ([
+      {
+        id: `old-turn-start-${index}`,
+        type: "assistant.turn_start",
+        timestamp: `2026-04-30T09:${String(index).padStart(2, "0")}:00.000Z`,
+        data: { turnId: String(index) },
+      },
+      {
+        id: `old-message-${index}`,
+        type: "assistant.message",
+        timestamp: `2026-04-30T09:${String(index).padStart(2, "0")}:05.000Z`,
+        data: { content: `old-reply-${index}`, reasoningText: `old-thinking-${index}` },
+      },
+    ])).flat();
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: "2026-04-30T10:00:00.000Z",
+      data: { index, payload: "x".repeat(220) },
+    }));
+    writeSessionFiles(copilotHome, "reasoning-tail", {
+      events: [
+        ...oldTurns,
+        ...padding,
+        {
+          id: "recent-turn-start",
+          type: "assistant.turn_start",
+          timestamp: "2026-04-30T11:00:00.000Z",
+          data: { turnId: "20" },
+        },
+        {
+          id: "recent-tool-only-message",
+          type: "assistant.message",
+          timestamp: "2026-04-30T11:00:04.000Z",
+          data: { content: "", reasoningText: "I should look at the file.", toolRequests: [{ toolCallId: "tool-1" }] },
+        },
+        {
+          id: "recent-sub-agent-message",
+          type: "assistant.message",
+          agentId: "agent-1",
+          timestamp: "2026-04-30T11:00:05.000Z",
+          data: { content: "", parentToolCallId: "task-1", reasoningText: "not part of this transcript" },
+        },
+        {
+          id: "recent-tool-start",
+          type: "tool.execution_start",
+          timestamp: "2026-04-30T11:00:06.000Z",
+          data: { toolCallId: "tool-1", toolName: "view", arguments: { path: "a.ts" } },
+        },
+      ],
+    });
+
+    const { deps, spans, persistLastVisibleActivityAt } = createDeps(copilotHome);
+    const result = await readMessagesFromDisk(deps, "reasoning-tail", { limit: 2 });
+
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata).toMatchObject({
+      mode: "tail",
+      readFullFile: false,
+    });
+    // 20 old turns x (thinking + reply), then the recent thinking and its tool call.
+    expect(result.total).toBe(42);
+    expect(result.hasMore).toBe(true);
+    expect(result.messages).toMatchObject([
+      {
+        id: "entry-40",
+        type: "reasoning",
+        content: "I should look at the file.",
+        reasoning: { messageEventId: "recent-tool-only-message", startedAt: "2026-04-30T11:00:00.000Z" },
+      },
+      { id: "entry-41", type: "tool", toolCall: { toolCallId: "tool-1" } },
+    ]);
+    // Thinking is not activity: the tool start is what marks the session as having news.
+    expect(persistLastVisibleActivityAt).toHaveBeenCalledWith("reasoning-tail", "2026-04-30T11:00:06.000Z");
+
+    const older = await readMessagesFromDisk(deps, "reasoning-tail", { limit: 2, before: 40 });
+    expect(older.messages).toMatchObject([
+      { id: "entry-38", type: "reasoning", content: "old-thinking-19" },
+      { id: "entry-39", type: "message", content: "old-reply-19" },
+    ]);
+  });
+
   it("counts terminal completion tool fallback summaries in the bounded tail path", async () => {
     const copilotHome = makeTestDir("session-disk-reader-tail-completion-fallback");
     const oldMessages = Array.from({ length: 20 }, (_, index) => ({

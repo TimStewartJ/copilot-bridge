@@ -104,6 +104,7 @@ const LIVE_TURN_END_FOLLOWUP_EVENT_TYPES = new Set([
 const PERSISTED_TURN_END_CONFLICT_EVENT_TYPES = new Set([
   ...LIVE_TURN_END_FOLLOWUP_EVENT_TYPES,
   "assistant.message_delta",
+  "assistant.reasoning_delta",
   "assistant.streaming_delta",
   "assistant.intent",
   "tool.execution_progress",
@@ -1473,6 +1474,31 @@ export class SessionRunner {
             });
           }
           break;
+        case "assistant.reasoning_delta":
+          // Sub-agent thinking belongs to the sub-agent, not to the main transcript.
+          if (getSdkAgentId(event) || data?.parentToolCallId) break;
+          if (typeof data?.deltaContent === "string" && data.deltaContent) {
+            bus.emit({
+              type: "reasoning_delta",
+              content: data.deltaContent,
+              ...(typeof data?.reasoningId === "string" ? { reasoningId: data.reasoningId } : {}),
+              timestamp: event.timestamp,
+            });
+          }
+          break;
+        case "assistant.reasoning":
+          // The complete block, sent after its deltas. It repairs a block whose deltas were missed
+          // (a reconnect, or a model that does not stream its thinking).
+          if (getSdkAgentId(event) || data?.parentToolCallId) break;
+          if (typeof data?.content === "string" && data.content.trim()) {
+            bus.emit({
+              type: "reasoning",
+              content: data.content,
+              ...(typeof data?.reasoningId === "string" ? { reasoningId: data.reasoningId } : {}),
+              timestamp: event.timestamp,
+            });
+          }
+          break;
         case "assistant.intent":
           console.log(`[sdk] [${sid}] 🎯 Intent: ${data?.intent}`);
           bus.emit({
@@ -1509,6 +1535,21 @@ export class SessionRunner {
             console.log(`[sdk] [${sid}] ✅ Response (${data.content.length} chars)`);
             lastAssistantContent = data.content;
             lastAssistantSourceEventId = getSdkEventId(event);
+          }
+          // `reasoningText` is the only copy of the thinking that reaches events.jsonl, so this is
+          // the moment the live block gains the identity its disk entry will be committed under.
+          if (
+            !getSdkAgentId(event)
+            && !data?.parentToolCallId
+            && typeof data?.reasoningText === "string"
+            && data.reasoningText.trim()
+          ) {
+            bus.emit({
+              type: "reasoning_committed",
+              content: data.reasoningText,
+              timestamp: event.timestamp,
+              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+            });
           }
           if (data?.content || data?.toolRequests?.length) {
             bus.emit({
@@ -1748,20 +1789,26 @@ export class SessionRunner {
           if (subagentToolCallId) {
             activeSubAgentToolCallIds.delete(subagentToolCallId);
             const resolution = correlator.resolve(subagentToolCallId);
-            bus.emit({
-              type: "tool_update",
-              toolCallId: subagentToolCallId,
-              name: resolution.displayName ?? getTrackedToolDisplayName(subagentToolCallId),
-              args: toolArgsMap.get(subagentToolCallId),
-              isSubAgent: true,
-              result: resolution.response,
-              agentInstructions: buildSubagentInstructions(
-                toolArgsMap.get(subagentToolCallId),
-                resolution.instructions,
-              ),
-              completedAt: getEventTimestampIso(event),
-              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
-            });
+            // The runtime reports an agent's end more than once. By the repeat, its launching call
+            // has completed and the correlation is gone, so there is nothing left to add, and the
+            // only name still on hand is the raw tool's: sending it would relabel the finished
+            // agent row as "task".
+            if (resolution.isSubAgent) {
+              bus.emit({
+                type: "tool_update",
+                toolCallId: subagentToolCallId,
+                name: resolution.displayName ?? getTrackedToolDisplayName(subagentToolCallId),
+                args: toolArgsMap.get(subagentToolCallId),
+                isSubAgent: true,
+                result: resolution.response,
+                agentInstructions: buildSubagentInstructions(
+                  toolArgsMap.get(subagentToolCallId),
+                  resolution.instructions,
+                ),
+                completedAt: getEventTimestampIso(event),
+                ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+              });
+            }
             subAgentTurnIdMap.delete(subagentToolCallId);
             const agentId = getSdkAgentId(event);
             if (agentId) subAgentTurnIdMap.delete(agentId);

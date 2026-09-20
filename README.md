@@ -33,7 +33,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 ## What It Does
 
 - **Task workspace** - tasks, task groups, tags, notes, checklist items, linked sessions, linked work items, linked pull requests, and task dashboards.
-- **Persistent Copilot sessions** - quick chats and task-scoped chats with SSE streaming, tool call indicators, unread state, drafts, and archive support.
+- **Persistent Copilot sessions** - quick chats and task-scoped chats with SSE streaming, unread state, drafts, and archive support. The model's thinking streams live and is kept in history: it is read from the `reasoningText` the runtime persists on each assistant message, so it needs no extra model setting and survives reloads. Everything the agent did between two replies (its thinking and its tool calls, in order) folds into one line such as "Worked for 2m 14s · 14 steps" that opens into a timeline; while the run is live that line names the step in flight. Tool calls read as what they did ("Read client/App.tsx", a shell call's own description with its command beside it) and keep the raw tool name, arguments and result one click away.
 - **Knowledge base** - markdown pages, wikilinks, preview sheets, and database-style collections for structured notes.
 - **Schedules** - cron or one-shot prompts that create fresh task-linked sessions. A run is recorded only after the runtime accepts its prompt. Pre-delivery failures release the scheduled slot for retry instead of consuming it or reporting a successful trigger.
 - **Provider enrichment** - optional Azure DevOps, GitHub, and Linear integrations for richer work item and pull request cards.
@@ -465,6 +465,7 @@ src/
     │   ├── TaskRail.tsx           # Task list and grouping UI
     │   ├── TaskPanel.tsx          # Task details, notes, docs, schedules
     │   ├── ChatView.tsx           # Session history + streaming chat
+    │   ├── chat/                  # Activity timeline: thinking, tool calls, live status line
     │   ├── docs/                  # Knowledge base UI: reader, editor, collections, search
     │   └── SettingsView.tsx       # Models, providers, appearance, MCP
     └── hooks/queries/             # React Query data hooks

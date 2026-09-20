@@ -506,4 +506,157 @@ describe("SessionManager tool result rendering", () => {
     }));
     expect(events.filter((event) => event.type === "thinking")).toHaveLength(1);
   });
+
+  it("keeps a finished agent's name when the runtime reports its end a second time", async () => {
+    // The order a real sync sub-agent produced: its end, the launching call's completion, then the
+    // same end again, after the correlation for that call has been dropped.
+    const sdkEvents = [
+      { id: "turn-start-1", type: "assistant.turn_start", timestamp: "2026-09-20T16:29:06.670Z", data: { turnId: "1" } },
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-09-20T16:29:17.578Z",
+        data: { toolCallId: "task-1", toolName: "task", arguments: { description: "Find cache version constant", prompt: "Find it." } },
+      },
+      {
+        type: "subagent.started",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T16:29:17.598Z",
+        data: { toolCallId: "task-1", agentName: "explore", agentDisplayName: "find-cache-version" },
+      },
+      {
+        type: "assistant.message",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T16:29:21.600Z",
+        data: { parentToolCallId: "task-1", content: "It is 4." },
+      },
+      { type: "subagent.completed", agentId: "agent-1", timestamp: "2026-09-20T16:29:21.693Z", data: { toolCallId: "task-1" } },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-09-20T16:29:22.020Z",
+        data: { toolCallId: "task-1", success: true, result: { content: "Agent completed." } },
+      },
+      { type: "subagent.completed", agentId: "agent-1", timestamp: "2026-09-20T16:29:22.040Z", data: { toolCallId: "task-1" } },
+      { type: "assistant.message", timestamp: "2026-09-20T16:29:29.000Z", data: { content: "Done." } },
+      { type: "session.idle", timestamp: "2026-09-20T16:29:29.482Z", data: {} },
+    ];
+
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-agent-repeat-end");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-agent-repeat-end", createSession(sdkEvents));
+    await manager._doWork("session-agent-repeat-end", "find the constant", bus);
+
+    const names = events
+      .filter((event) => event.toolCallId === "task-1" && event.type !== "tool_start")
+      .map((event) => [event.type, event.name]);
+    // Every update after the agent identified itself carries its name; none falls back to "task".
+    expect(names.length).toBeGreaterThanOrEqual(3);
+    expect(names.every(([, name]) => name === "🤖 find-cache-version")).toBe(true);
+    // What a client that reconnects at the end is given.
+    expect(bus.getSnapshot().liveTools).toMatchObject([{
+      toolCallId: "task-1",
+      name: "🤖 find-cache-version",
+      isSubAgent: true,
+      success: true,
+      result: "It is 4.",
+    }]);
+  });
+
+  it("streams the main agent's thinking and commits it under its assistant message", async () => {
+    // The order the runtime really uses: deltas, then the persisted message carrying the same
+    // text as `reasoningText`, then the ephemeral complete block.
+    const sdkEvents = [
+      {
+        id: "turn-start-1",
+        type: "assistant.turn_start",
+        timestamp: "2026-09-20T08:00:00.000Z",
+        data: { turnId: "0" },
+      },
+      {
+        type: "assistant.reasoning_delta",
+        ephemeral: true,
+        timestamp: "2026-09-20T08:00:01.000Z",
+        data: { reasoningId: "reasoning-1", deltaContent: "Nine remain, " },
+      },
+      {
+        type: "assistant.reasoning_delta",
+        ephemeral: true,
+        timestamp: "2026-09-20T08:00:01.100Z",
+        data: { reasoningId: "reasoning-1", deltaContent: "then he doubles them." },
+      },
+      {
+        type: "assistant.reasoning_delta",
+        ephemeral: true,
+        agentId: "agent-1",
+        timestamp: "2026-09-20T08:00:01.200Z",
+        data: { reasoningId: "reasoning-sub", deltaContent: "sub-agent thinking" },
+      },
+      {
+        type: "assistant.message_delta",
+        ephemeral: true,
+        timestamp: "2026-09-20T08:00:02.000Z",
+        data: { deltaContent: "Eighteen." },
+      },
+      {
+        id: "assistant-message-1",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:03.000Z",
+        data: { content: "Eighteen.", reasoningText: "Nine remain, then he doubles them." },
+      },
+      {
+        type: "assistant.reasoning",
+        ephemeral: true,
+        timestamp: "2026-09-20T08:00:03.100Z",
+        data: { reasoningId: "reasoning-1", content: "Nine remain, then he doubles them." },
+      },
+      {
+        id: "sub-message-1",
+        type: "assistant.message",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T08:00:03.200Z",
+        data: { content: "", reasoningText: "sub-agent thinking" },
+      },
+      { type: "session.idle", timestamp: "2026-09-20T08:00:04.000Z", data: {} },
+    ];
+
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-thinking");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-thinking", createSession(sdkEvents));
+    await manager._doWork("session-thinking", "how many sheep", bus);
+
+    const reasoningEvents = events.filter((event) => String(event.type).startsWith("reasoning"));
+    // The complete block the runtime sends last repeats what was just committed, so it is folded
+    // and not rebroadcast.
+    expect(reasoningEvents.map((event) => [event.type, event.content])).toEqual([
+      ["reasoning_delta", "Nine remain, "],
+      ["reasoning_delta", "then he doubles them."],
+      ["reasoning_committed", "Nine remain, then he doubles them."],
+    ]);
+    expect(reasoningEvents[0]).toMatchObject({
+      reasoningId: "reasoning-1",
+      turnId: "0",
+      turnInstanceId: "turn-start-1",
+    });
+    expect(reasoningEvents[2]).toMatchObject({ sourceEventId: "assistant-message-1" });
+    // The thinking is committed before the reply it preceded, the order the transcript shows them.
+    const types = events.map((event) => event.type);
+    expect(types.indexOf("reasoning_committed")).toBeLessThan(types.indexOf("assistant_partial"));
+    // One block, owned by disk, survives to the end of the run.
+    expect(bus.getSnapshot().liveReasoning).toMatchObject([{
+      id: "reasoning-1",
+      content: "Nine remain, then he doubles them.",
+      sourceEventId: "assistant-message-1",
+    }]);
+  });
 });

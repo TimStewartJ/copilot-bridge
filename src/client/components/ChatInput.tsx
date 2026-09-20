@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Square, Paperclip, FileText, X, Loader2, Mic, SendHorizontal } from "lucide-react";
+import { ArrowUp, Square, Paperclip, FileText, X, Loader2, Mic } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import {
@@ -30,7 +30,7 @@ import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
-const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 py-3 sm:px-4 md:px-6 md:py-4 lg:px-8";
+const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 pb-3 pt-1 sm:px-4 md:px-6 md:pb-4 lg:px-8";
 
 interface SlashDraftState {
   query: string;
@@ -579,7 +579,7 @@ export default function ChatInput({
   const modeMenuEnabled = !showAbortControl;
 
   return (
-    <div className="shrink-0 border-t border-border/80 bg-bg-secondary/95">
+    <div className="shrink-0">
       <div className={COMPOSER_RAIL_CLASS}>
         {uploading > 0 && (
           <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
@@ -708,87 +708,85 @@ export default function ChatInput({
           </div>
         )}
 
-        <div className="flex items-center gap-2 md:gap-3">
-          <div
-            className="flex-1 flex items-center gap-1 rounded-xl border border-border bg-bg-primary shadow-sm transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent-border"
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
+        <div
+          className="flex items-end gap-0.5 rounded-2xl border border-border bg-bg-secondary shadow-lg shadow-black/10 transition-colors focus-within:border-text-faint"
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+        >
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="ml-1 flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:text-text-primary"
+            title="Attach file"
+            aria-label="Attach file"
+            type="button"
           >
+            <Paperclip size={18} />
+          </button>
+          {voiceUi.showButton && !hideVoiceInput && (
             <button
-              onClick={() => fileInputRef.current?.click()}
-              className="h-12 px-3 text-text-faint hover:text-text-secondary transition-colors flex flex-shrink-0 items-center justify-center"
-              title="Attach file"
-              aria-label="Attach file"
+              onClick={() => {
+                if (voice.phase === "recording") {
+                  pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
+                    text: inputRef.current,
+                    attachmentCount: attachmentsRef.current.length,
+                    sendBlocked: sendBlockedRef.current,
+                    uploadingCount: uploadingRef.current,
+                  });
+                  void voice.stopRecording();
+                } else {
+                  onClearVoiceJobError?.(composerKey);
+                  updateRecordingStartMode(resolveVoiceSubmitMode({
+                    text: inputRef.current,
+                    attachmentCount: attachmentsRef.current.length,
+                    sendBlocked: sendBlockedRef.current,
+                    uploadingCount: uploadingRef.current,
+                  }));
+                  pendingCaptureSubmitModeRef.current = null;
+                  void voice.startRecording();
+                }
+              }}
+              disabled={voiceUi.buttonDisabled}
+              className={`flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors ${
+                voice.phase === "recording"
+                  ? "text-error hover:text-error-hover"
+                  : "text-text-muted hover:text-text-primary disabled:text-text-faint/60"
+              }`}
+              title={voiceUi.buttonTitle}
+              aria-label={voiceUi.buttonTitle}
               type="button"
             >
-              <Paperclip size={18} />
+              {voiceUi.buttonState === "spinner" ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : voiceUi.buttonState === "stop" ? (
+                <Square size={16} fill="currentColor" />
+              ) : (
+                <Mic size={18} />
+              )}
             </button>
-            {voiceUi.showButton && !hideVoiceInput && (
-              <button
-                onClick={() => {
-                  if (voice.phase === "recording") {
-                    pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
-                      text: inputRef.current,
-                      attachmentCount: attachmentsRef.current.length,
-                      sendBlocked: sendBlockedRef.current,
-                      uploadingCount: uploadingRef.current,
-                    });
-                    void voice.stopRecording();
-                  } else {
-                    onClearVoiceJobError?.(composerKey);
-                    updateRecordingStartMode(resolveVoiceSubmitMode({
-                      text: inputRef.current,
-                      attachmentCount: attachmentsRef.current.length,
-                      sendBlocked: sendBlockedRef.current,
-                      uploadingCount: uploadingRef.current,
-                    }));
-                    pendingCaptureSubmitModeRef.current = null;
-                    void voice.startRecording();
-                  }
-                }}
-                disabled={voiceUi.buttonDisabled}
-                className={`h-12 px-3 transition-colors flex flex-shrink-0 items-center justify-center ${
-                  voice.phase === "recording"
-                    ? "text-error hover:text-error-hover"
-                    : "text-text-faint hover:text-text-secondary disabled:text-text-faint/60"
-                }`}
-                title={voiceUi.buttonTitle}
-                aria-label={voiceUi.buttonTitle}
-                type="button"
-              >
-                {voiceUi.buttonState === "spinner" ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : voiceUi.buttonState === "stop" ? (
-                  <Square size={16} fill="currentColor" />
-                ) : (
-                  <Mic size={18} />
-                )}
-              </button>
-            )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) void addFiles(Array.from(e.target.files));
-                e.target.value = "";
-              }}
-            />
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={handleInput}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              enterKeyHint="enter"
-              placeholder={placeholder}
-              rows={1}
-              className="flex-1 py-3 pr-3 bg-transparent text-text-primary text-base md:text-sm leading-6 resize-none focus:outline-none min-h-[48px] max-h-[200px] placeholder:text-text-faint"
-            />
-          </div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) void addFiles(Array.from(e.target.files));
+              e.target.value = "";
+            }}
+          />
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={handleInput}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            enterKeyHint="enter"
+            placeholder={placeholder}
+            rows={1}
+            className="min-h-[48px] max-h-[200px] flex-1 resize-none bg-transparent py-3 pl-1 pr-2 text-base leading-6 text-text-primary placeholder:text-text-faint focus:outline-none md:text-sm"
+          />
           <div
-            className={`self-center select-none touch-manipulation ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
+            className={`mb-2 mr-2 flex-shrink-0 select-none touch-manipulation ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
             style={{ WebkitTouchCallout: "none" } as React.CSSProperties}
             onClick={modeMenuBindings.onClick}
             onContextMenu={modeMenuEnabled ? modeMenuBindings.onContextMenu : undefined}
@@ -802,21 +800,19 @@ export default function ChatInput({
               aria-haspopup={modeMenuEnabled ? "menu" : undefined}
               aria-expanded={modeMenuEnabled ? Boolean(sendModeMenu) : undefined}
               tabIndex={!showAbortControl && !canSend ? -1 : undefined}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                showAbortControl
-                  ? "bg-error text-white hover:bg-error-hover"
-                  : canSend
-                    ? "bg-accent text-white hover:bg-accent-hover"
-                    : "cursor-not-allowed text-text-faint hover:bg-transparent hover:text-text-faint"
+              className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                showAbortControl || canSend
+                  ? "bg-text-primary text-bg-primary hover:opacity-85"
+                  : "cursor-not-allowed bg-bg-hover text-text-faint"
               }`}
               title={submitControlTitle}
               aria-label={submitControlTitle}
               type="button"
             >
               {showAbortControl ? (
-                <Square size={14} fill="currentColor" />
+                <Square size={11} fill="currentColor" />
               ) : (
-                <SendHorizontal size={18} />
+                <ArrowUp size={17} strokeWidth={2.25} />
               )}
             </button>
           </div>

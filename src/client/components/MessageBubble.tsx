@@ -22,15 +22,25 @@ interface MessageBubbleProps {
   onFinishSelectingText?: () => void;
 }
 
+/**
+ * Copy / more actions, shown while the message is hovered or focused. They float where they can
+ * never cover the content that follows: a reply in a long agentic run is usually followed at once
+ * by the next step, so anything hung below the message lands on top of it.
+ *
+ * A prompt's actions sit beside its bubble, in the space a right-aligned bubble always leaves
+ * empty. A reply's actions hang in the margin beside its first line when the chat column is wide
+ * enough to have one (`.chat-ui[data-action-gutter]`, see index.css); in a narrow column they fall
+ * back to the reply's top-right corner.
+ */
 function BubbleActions({ side, children }: { side: "left" | "right"; children?: ReactNode }) {
   if (!children) return null;
   return (
     <div
-      className={`pointer-events-none absolute -top-3 z-10 opacity-0 transition-opacity group-hover/message-bubble:opacity-100 group-focus-within/message-bubble:opacity-100 ${
-        side === "right" ? "right-1" : "left-1"
+      className={`pointer-events-none absolute z-10 opacity-0 transition-opacity duration-150 group-hover/message-bubble:opacity-100 group-focus-within/message-bubble:opacity-100 ${
+        side === "right" ? "right-full top-1 mr-1" : "chat-reply-actions -top-3 right-0"
       }`}
     >
-      <div className="pointer-events-auto inline-flex overflow-hidden rounded-full border border-border bg-bg-secondary/95 text-text-muted shadow-sm backdrop-blur">
+      <div className="pointer-events-auto inline-flex gap-0.5 rounded-lg border border-border bg-bg-elevated p-0.5 text-text-muted shadow-sm">
         {children}
       </div>
     </div>
@@ -168,8 +178,8 @@ export default memo(function MessageBubble({
             <TextSelectionControls side="right" onDone={onFinishSelectingText} />
           )}
           <BubbleActions side="right">{actionSlot}</BubbleActions>
-          <div className={`rounded-2xl rounded-br-sm border px-4 py-3 text-sm leading-relaxed text-text-primary shadow-sm whitespace-pre-wrap break-words ${
-            isFailed ? "border-error/40 bg-error/10" : "border-accent-border bg-accent-surface"
+          <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap break-words ${
+            isFailed ? "border border-error/40 bg-error/10" : "bg-bg-elevated"
           }`}>
             {hasAttachments && (
               <div className="flex gap-2 flex-wrap mb-2">
@@ -251,7 +261,7 @@ export default memo(function MessageBubble({
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
           <div
-            className={`max-w-none py-1 text-sm leading-relaxed text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
+            className={`chat-prose max-w-none py-0.5 text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>

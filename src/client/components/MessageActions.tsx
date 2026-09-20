@@ -31,7 +31,7 @@ interface MessageActionToolbarProps {
   onOpenMenu: (x: number, y: number, key: string, message: ChatMessage) => void;
 }
 
-const actionButtonClass = "inline-flex h-7 w-7 items-center justify-center transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50";
+const actionButtonClass = "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50";
 
 export function MessageActionToolbar({
   messageKey,
@@ -63,7 +63,7 @@ export function MessageActionToolbar({
           const rect = event.currentTarget.getBoundingClientRect();
           onOpenMenu(rect.left, rect.bottom + 4, messageKey, message);
         }}
-        className={`${actionButtonClass} border-l border-border/70`}
+        className={actionButtonClass}
         aria-label="Open message actions"
         title="Message actions"
       >

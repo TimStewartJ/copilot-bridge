@@ -1,4 +1,4 @@
-import type { ChatCompletionEntry, ChatEntry, ChatMessage, ChatSkillEntry, ChatToolEntry, ChatVisualEntry, ToolCall } from "../api";
+import type { ChatCompletionEntry, ChatEntry, ChatMessage, ChatReasoningEntry, ChatSkillEntry, ChatToolEntry, ChatVisualEntry, ToolCall } from "../api";
 import { getToolCallStatus, type ToolCallStatus } from "./tool-call-status";
 
 export interface ToolCallTreeNode {
@@ -35,7 +35,8 @@ export type ChatRenderSegment =
     }
   | { type: "visual-segment"; entry: ChatVisualEntry }
   | { type: "skill-segment"; entry: ChatSkillEntry }
-  | { type: "completion-segment"; entry: ChatCompletionEntry };
+  | { type: "completion-segment"; entry: ChatCompletionEntry }
+  | { type: "reasoning-segment"; entry: ChatReasoningEntry };
 
 export function buildToolCallForest(toolCalls: ToolCall[]): ToolCallForest {
   const mutableNodes = new Map<string, MutableToolCallNode>();
@@ -255,10 +256,30 @@ function segmentInteractionEntries(entries: ChatEntry[]): ChatRenderSegment[] {
     currentToolEntries = [];
   };
 
+  /**
+   * An agent's calls belong under its row wherever they appear. When agents run side by side, one
+   * finishing a turn clears the turn of the other's next calls, so those arrive with no turn of
+   * their own; grouped by position alone they became a second copy of the agent's row. Such a call
+   * joins the group that holds its agent instead.
+   */
+  const agentGroupByRootId = new Map<string, string>();
+  const toolCallById = new Map<string, ToolCall>();
+  for (const entry of entries) {
+    if (entry.type === "tool" && entry.toolCall) toolCallById.set(entry.toolCall.toolCallId, entry.toolCall);
+  }
+  const resolveGroupId = (entry: ChatToolEntry): string | undefined => {
+    const own = getTurnGroupId(entry);
+    if (own || !entry.toolCall.parentToolCallId) return own;
+    return agentGroupByRootId.get(getRootToolCallId(entry.toolCall, toolCallById));
+  };
+
   for (const entry of entries) {
     if (entry.type !== "tool" || !entry.toolCall) continue;
-    const turnGroupId = getTurnGroupId(entry);
+    const turnGroupId = resolveGroupId(entry);
     if (!turnGroupId) continue;
+    if (entry.toolCall.isSubAgent && !entry.toolCall.parentToolCallId) {
+      agentGroupByRootId.set(entry.toolCall.toolCallId, turnGroupId);
+    }
     const turnEntries = toolEntriesByTurnGroupId.get(turnGroupId);
     if (turnEntries) {
       turnEntries.push(entry);
@@ -275,7 +296,7 @@ function segmentInteractionEntries(entries: ChatEntry[]): ChatRenderSegment[] {
   // TODO: Replace inferred turn/contiguous grouping with SDK-level run ids once they are available.
   for (const entry of entries) {
     if (entry.type === "tool" && entry.toolCall) {
-      const turnGroupId = getTurnGroupId(entry);
+      const turnGroupId = resolveGroupId(entry);
       if (turnGroupId) {
         flushToolSegment();
         if (
@@ -313,6 +334,11 @@ function segmentInteractionEntries(entries: ChatEntry[]): ChatRenderSegment[] {
       continue;
     }
 
+    if (entry.type === "reasoning") {
+      if (entry.content.trim()) segments.push({ type: "reasoning-segment", entry });
+      continue;
+    }
+
     segments.push({ type: "message", entry: entry as ChatMessage });
   }
 
@@ -342,7 +368,9 @@ function mergeRootSubAgentTurnsWithDescendantTurns(
     const entries = toolEntriesByTurnGroupId.get(turnGroupId) ?? [];
     if (!isRootSubAgentOnlyTurn(entries)) continue;
 
-    const rootIds = new Set(entries.map((entry) => entry.toolCall.toolCallId));
+    const rootIds = new Set(entries.flatMap((entry) => (
+      entry.toolCall.isSubAgent && !entry.toolCall.parentToolCallId ? [entry.toolCall.toolCallId] : []
+    )));
     const descendantTurnGroupIds = turnGroupIds.slice(turnIndex + 1).filter((candidateGroupId) => {
       if (suppressedTurnGroupIds.has(candidateGroupId)) return false;
       const candidateEntries = toolEntriesByTurnGroupId.get(candidateGroupId) ?? [];
@@ -362,8 +390,17 @@ function mergeRootSubAgentTurnsWithDescendantTurns(
 }
 
 function isRootSubAgentOnlyTurn(entries: ChatToolEntry[]): boolean {
-  return entries.length > 0 && entries.every((entry) =>
-    entry.toolCall.isSubAgent && !entry.toolCall.parentToolCallId);
+  // Calls that joined their agent's group for lack of a turn of their own do not make the group
+  // any less of a launch turn; only the entries that are not inside one of its agents count.
+  const rootIds = new Set(entries.flatMap((entry) => (
+    entry.toolCall.isSubAgent && !entry.toolCall.parentToolCallId ? [entry.toolCall.toolCallId] : []
+  )));
+  if (rootIds.size === 0) return false;
+  const byId = new Map(entries.map((entry) => [entry.toolCall.toolCallId, entry.toolCall]));
+  return entries.every((entry) => (
+    rootIds.has(entry.toolCall.toolCallId)
+    || (Boolean(entry.toolCall.parentToolCallId) && rootIds.has(getRootToolCallId(entry.toolCall, byId)))
+  ));
 }
 
 function getRootToolCallId(toolCall: ToolCall, toolCallById: ReadonlyMap<string, ToolCall>): string {

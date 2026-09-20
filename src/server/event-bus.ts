@@ -18,6 +18,15 @@ import type {
 import type { SessionContextSummary } from "../shared/session-context.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import {
+  appendReasoningDelta,
+  closeOpenReasoning,
+  commitReasoning,
+  completeReasoningBlock,
+  keepCommittedReasoning,
+  type LiveReasoningBlock,
+} from "../shared/live-reasoning.js";
+import { keepEndingTurnItems } from "../shared/live-turn-retention.js";
+import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
@@ -160,6 +169,8 @@ export interface BusSnapshot {
   /** Assistant text streamed since the last persisted assistant message. */
   streamingContent: string;
   liveAssistantSegments: LiveAssistantSegment[];
+  /** Model thinking this turn; each block retires once its `sourceEventId` reaches disk history. */
+  liveReasoning: LiveReasoningBlock[];
   /** Prompts accepted by the bridge; each clears once its `sourceEventId` reaches disk history. */
   pendingUserMessages: ProjectedUserMessage[];
   /** In-flight and recently-completed tool calls, keyed by `toolCallId`. */
@@ -296,12 +307,17 @@ function isCommittedHistoryEvent(event: StreamEvent): boolean {
   if (event.type === "tool_start" || event.type === "tool_done" || event.type === "visual_published") {
     return true;
   }
-  if (event.type === "assistant_partial") return typeof event.sourceEventId === "string";
+  if (event.type === "assistant_partial" || event.type === "reasoning_committed") {
+    return typeof event.sourceEventId === "string";
+  }
   return isTerminalStreamEvent(event);
 }
 
 function isTurnScopedStreamEvent(event: StreamEvent): boolean {
   return event.type === "delta"
+    || event.type === "reasoning_delta"
+    || event.type === "reasoning"
+    || event.type === "reasoning_committed"
     || event.type === "intent"
     || event.type === "assistant_partial"
     || event.type === "tool_start"
@@ -317,6 +333,10 @@ function isTurnScopedStreamEvent(event: StreamEvent): boolean {
 
 function getToolCallId(event: StreamEvent): string {
   return typeof event.toolCallId === "string" ? event.toolCallId : "";
+}
+
+function optionalTimestamp(event: StreamEvent): string | undefined {
+  return typeof event.timestamp === "string" && event.timestamp ? event.timestamp : undefined;
 }
 
 function buildLiveTool(event: StreamEvent): LiveTool {
@@ -381,6 +401,7 @@ export class SessionEventBus {
   private streamingContent = "";
   private userMessages: ProjectedUserMessage[] = [];
   private liveAssistantSegments: LiveAssistantSegment[] = [];
+  private liveReasoning: LiveReasoningBlock[] = [];
   private liveTools: LiveTool[] = [];
   private liveVisuals: LiveVisual[] = [];
   private liveCompletion?: LiveCompletion;
@@ -682,6 +703,41 @@ export class SessionEventBus {
     switch (event.type) {
       case "delta":
         this.streamingContent += event.content ?? "";
+        // Visible text means the model has finished thinking for now.
+        this.liveReasoning = closeOpenReasoning(this.liveReasoning, optionalTimestamp(event));
+        break;
+      case "reasoning_delta":
+        this.liveReasoning = appendReasoningDelta(this.liveReasoning, {
+          content: event.content ?? "",
+          ...(typeof event.reasoningId === "string" ? { reasoningId: event.reasoningId } : {}),
+          ...(optionalTimestamp(event) ? { timestamp: optionalTimestamp(event) } : {}),
+          ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
+          ...(this.currentTurnInstanceId ? { turnInstanceId: this.currentTurnInstanceId } : {}),
+        });
+        break;
+      case "reasoning": {
+        const next = completeReasoningBlock(this.liveReasoning, {
+          content: event.content ?? "",
+          ...(typeof event.reasoningId === "string" ? { reasoningId: event.reasoningId } : {}),
+          ...(optionalTimestamp(event) ? { timestamp: optionalTimestamp(event) } : {}),
+          ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
+          ...(this.currentTurnInstanceId ? { turnInstanceId: this.currentTurnInstanceId } : {}),
+        });
+        // The runtime sends the complete block after the message that committed it, so it nearly
+        // always changes nothing. Subscribers fold it the same way; do not resend the whole text
+        // to them just to have it ignored.
+        if (next === this.liveReasoning) return;
+        this.liveReasoning = next;
+        break;
+      }
+      case "reasoning_committed":
+        this.liveReasoning = commitReasoning(this.liveReasoning, {
+          content: event.content ?? "",
+          ...(typeof event.sourceEventId === "string" ? { sourceEventId: event.sourceEventId } : {}),
+          ...(optionalTimestamp(event) ? { timestamp: optionalTimestamp(event) } : {}),
+          ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
+          ...(this.currentTurnInstanceId ? { turnInstanceId: this.currentTurnInstanceId } : {}),
+        });
         break;
       case "intent":
         this.intentText = event.intent ?? "";
@@ -690,6 +746,7 @@ export class SessionEventBus {
         {
           const tool = buildLiveTool(event);
           this.liveTools = upsertLiveTool(this.liveTools, tool);
+          this.liveReasoning = closeOpenReasoning(this.liveReasoning, optionalTimestamp(event));
           const pending = extractTerminalCompletionFromToolCall(event.name, event.args);
           if (pending) this.pendingTerminalCompletion = pending;
         }
@@ -850,6 +907,8 @@ export class SessionEventBus {
       this._complete = true;
       this.streamingContent = "";
       this.intentText = "";
+      // Thinking that never reached an assistant message has no disk copy and ends with the run.
+      this.liveReasoning = keepCommittedReasoning(this.liveReasoning);
       // Tools still open at the terminal never got a result; mark them finished rather than
       // dropping them, so they don't render as perpetually running before the next disk read.
       this.liveTools = this.liveTools.map((tool) => tool.completedAt
@@ -913,6 +972,7 @@ export class SessionEventBus {
       complete: this._complete,
       streamingContent: this.streamingContent,
       liveAssistantSegments: this.liveAssistantSegments.map((segment) => ({ ...segment })),
+      liveReasoning: this.liveReasoning.map((block) => ({ ...block })),
       pendingUserMessages: this.userMessages.map((message) => structuredClone(message)),
       liveTools: this.liveTools.map((tool) => ({ ...tool })),
       liveVisuals: this.liveVisuals.map((visual) => ({ ...visual })),
@@ -984,6 +1044,7 @@ export class SessionEventBus {
   private resetLiveTurnState(): void {
     this._complete = false;
     this.streamingContent = "";
+    this.liveReasoning = [];
     this.liveTools = [];
     this.liveVisuals = [];
     this.liveCompletion = undefined;
@@ -1005,12 +1066,28 @@ export class SessionEventBus {
   }
 
   private startTurn(): void {
-    // A new turn proves the previous turn's assistant messages reached disk, so disk-backed
-    // segments can be dropped. Bridge-native segments have no disk copy and must survive.
-    this.liveAssistantSegments = this.liveAssistantSegments.filter(
-      (segment) => segment.bridgeNative === true,
+    // Keep the ending turn's disk-backed items for one more turn (see live-turn-retention.ts):
+    // the client's read of them is usually still in flight. Bridge-native segments have no disk
+    // copy at all and always survive.
+    const endingTurnInstanceId = this.currentTurnInstanceId;
+    const segments = this.liveAssistantSegments.filter((segment) => (
+      segment.bridgeNative === true
+      || (endingTurnInstanceId !== undefined
+        && segment.turnInstanceId === endingTurnInstanceId
+        && segment.sourceEventId !== undefined)
+    ));
+    const tools = keepEndingTurnItems(this.liveTools, endingTurnInstanceId, (tool) => Boolean(tool.completedAt));
+    const visuals = keepEndingTurnItems(this.liveVisuals, endingTurnInstanceId);
+    const reasoning = keepEndingTurnItems(
+      this.liveReasoning,
+      endingTurnInstanceId,
+      (block) => Boolean(block.sourceEventId),
     );
     this.resetLiveTurnState();
+    this.liveAssistantSegments = segments;
+    this.liveTools = tools;
+    this.liveVisuals = visuals;
+    this.liveReasoning = reasoning;
   }
 
   private findPendingPromptIndex(expectedPrompt: string | undefined, reverse: boolean): number {

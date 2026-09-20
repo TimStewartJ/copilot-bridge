@@ -289,6 +289,28 @@ function findButtonContainingText(root: any, text: string): any {
   return button;
 }
 
+/**
+ * Work between two replies renders as one collapsed line. Open every block, then every row inside
+ * it, so a test can read what the timeline holds.
+ */
+async function expandActivity(root: any, act: Act): Promise<void> {
+  for (let pass = 0; pass < 3; pass += 1) {
+    const collapsed = findAllByTag(root, "BUTTON").filter((candidate) => {
+      if (candidate.getAttribute?.("aria-expanded") !== "false") return false;
+      let node = candidate.parentNode;
+      while (node) {
+        if (node.getAttribute?.("data-activity-block")) return true;
+        node = node.parentNode;
+      }
+      return false;
+    });
+    if (collapsed.length === 0) return;
+    await act(async () => {
+      for (const button of collapsed) clickButton(button);
+    });
+  }
+}
+
 function findInputByPlaceholder(root: any, placeholder: string): any {
   const input = findAllByTag(root, "INPUT").find((candidate) => (
     getReactProps(candidate)?.placeholder === placeholder
@@ -361,6 +383,7 @@ async function renderChatView(
   const sendMessageMock = vi.fn();
   const abortSessionMock = vi.fn();
   const reconnectMock = vi.fn();
+  const ensureConnectedMock = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -385,7 +408,7 @@ async function renderChatView(
   const initialSearchMessages = fetchMessagesFastResult instanceof Promise
     ? []
     : fetchMessagesFastResult.messages.flatMap((entry) => {
-        if (entry.type === "tool" || entry.type === "visual" || entry.type === "completion" || entry.type === "skill") return [];
+        if (entry.type === "tool" || entry.type === "visual" || entry.type === "completion" || entry.type === "skill" || entry.type === "reasoning") return [];
         const sourceEventId = entry.sourceEventId ?? entry.id;
         return sourceEventId ? [{
           sourceEventId,
@@ -453,6 +476,7 @@ async function renderChatView(
     sendMessage: sendMessageMock,
     abortSession: abortSessionMock,
     reconnect: reconnectMock,
+    ensureConnected: ensureConnectedMock,
     ...nextOptions.streamOverrides,
   });
   useSessionStreamMock.mockReturnValue(buildStreamState(options));
@@ -511,7 +535,7 @@ async function renderChatView(
     }
   }
 
-  return { dom, act: act as Act, cleanup, queryClient, render, reconnectMock, sendMessageMock };
+  return { dom, act: act as Act, cleanup, queryClient, render, reconnectMock, ensureConnectedMock, sendMessageMock };
 }
 
 afterEach(() => {
@@ -527,7 +551,7 @@ describe("ChatView exact-message history", () => {
     warmSessionMock.mockClear();
     useSessionStreamMock.mockClear();
     chatInputMock.mockClear();
-    const { act, dom, cleanup, reconnectMock } = await renderChatView({
+    const { act, dom, cleanup, reconnectMock, ensureConnectedMock } = await renderChatView({
       routeEntry: "/sessions/session-1?history=1&from=%2Fsearch",
       streamOverrides: { isStreaming: false, pendingOrigin: null },
       fetchMessagesFastResult: {
@@ -546,6 +570,7 @@ describe("ChatView exact-message history", () => {
       expect(useSessionUsageMetricsQueryMock.mock.calls.at(-1)?.[0]).toBeNull();
       expect(warmSessionMock).not.toHaveBeenCalled();
       expect(reconnectMock).not.toHaveBeenCalled();
+      expect(ensureConnectedMock).not.toHaveBeenCalled();
       expect(chatInputMock).not.toHaveBeenCalled();
       expect(dom.container.textContent).toContain("latest saved history for this conversation");
       expect(dom.container.textContent).not.toContain("Copy link");
@@ -559,7 +584,7 @@ describe("ChatView exact-message history", () => {
     useSessionStreamMock.mockClear();
     fetchSessionContextMock.mockClear();
     chatInputMock.mockClear();
-    const { act, dom, cleanup, reconnectMock } = await renderChatView({
+    const { act, dom, cleanup, reconnectMock, ensureConnectedMock } = await renderChatView({
       routeEntry: "/sessions/session-1?message=event-77&search=needle&from=%2Fsearch%3Fq%3Dneedle",
       streamOverrides: { isStreaming: false, pendingOrigin: null },
       fetchMessagesFastResult: {
@@ -587,6 +612,7 @@ describe("ChatView exact-message history", () => {
       expect(useSessionUsageMetricsQueryMock.mock.calls.at(-1)?.[0]).toBeNull();
       expect(warmSessionMock).not.toHaveBeenCalled();
       expect(reconnectMock).not.toHaveBeenCalled();
+      expect(ensureConnectedMock).not.toHaveBeenCalled();
       expect(fetchSessionContextMock).not.toHaveBeenCalled();
       expect(chatInputMock).not.toHaveBeenCalled();
       expect(dom.container.textContent).toContain("does not resume the chat");
@@ -747,7 +773,7 @@ describe("ChatView exact-message history", () => {
 
   it("keeps historical reading inert across busy and visibility refresh signals", async () => {
     let visibilityHandler: (() => void) | undefined;
-    const { act, cleanup, render, reconnectMock } = await renderChatView({
+    const { act, cleanup, render, reconnectMock, ensureConnectedMock } = await renderChatView({
       routeEntry: "/sessions/session-1?message=event-1",
       busySignal: 0,
       streamOverrides: { isStreaming: false, pendingOrigin: null },
@@ -784,6 +810,7 @@ describe("ChatView exact-message history", () => {
       expect(fetchMessagesFastMock).toHaveBeenCalledTimes(1);
       expect(warmSessionMock).not.toHaveBeenCalled();
       expect(reconnectMock).not.toHaveBeenCalled();
+      expect(ensureConnectedMock).not.toHaveBeenCalled();
     } finally {
       await cleanup();
     }
@@ -791,6 +818,51 @@ describe("ChatView exact-message history", () => {
 });
 
 describe("ChatView external session use", () => {
+  it("attaches to a busy session's stream without replacing a healthy one on history refreshes", async () => {
+    let visibilityHandler: (() => void) | undefined;
+    const { act, cleanup, render, reconnectMock, ensureConnectedMock } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{ id: "entry-1", sourceEventId: "event-1", role: "assistant", content: "working on it" }],
+        runState: "busy",
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { historyEpoch: 0 },
+      prepareDom: () => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+        document.addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+          if (type === "visibilitychange" && typeof listener === "function") {
+            visibilityHandler = listener as () => void;
+          }
+        });
+        document.removeEventListener = vi.fn();
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => ensureConnectedMock.mock.calls.length === 1);
+      expect(ensureConnectedMock).toHaveBeenCalledWith("session-1");
+
+      // The server announced committed history mid-run. Re-reading disk is right; tearing the
+      // stream down and rebuilding it for every tool call is what made the run flicker.
+      await render({ streamOverrides: { historyEpoch: 1 } });
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 2);
+      await waitUntilAct(act, () => ensureConnectedMock.mock.calls.length === 2);
+      expect(reconnectMock).not.toHaveBeenCalled();
+
+      // A tab that slept may hold a stream that died unnoticed, so waking replaces it.
+      await act(async () => {
+        visibilityHandler?.();
+        await waitTick();
+      });
+      await waitUntilAct(act, () => reconnectMock.mock.calls.length === 1);
+      expect(reconnectMock).toHaveBeenCalledWith("session-1");
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("shows a non-blocking notice when another Copilot client holds the session", async () => {
     const { dom, cleanup } = await renderChatView({
       externallyInUse: true,
@@ -1343,7 +1415,7 @@ describe("ChatView draft materialization", () => {
   it("loads the created session when delivery resolves before the route transition commits", async () => {
     const delivery = createDeferred<void>();
     const onCreateAndSend = vi.fn(() => delivery.promise);
-    const { dom, act, cleanup, reconnectMock, render } = await renderChatView({
+    const { dom, act, cleanup, reconnectMock, ensureConnectedMock, render } = await renderChatView({
       composerKey: "draft:quickchat",
       sessionId: null,
       onCreateAndSend,
@@ -1393,6 +1465,7 @@ describe("ChatView draft materialization", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("created response") ?? false);
       expect(fetchMessagesFastMock).toHaveBeenCalledWith("created-session", { limit: 50 });
       expect(reconnectMock).not.toHaveBeenCalledWith("created-session");
+      expect(ensureConnectedMock).not.toHaveBeenCalledWith("created-session");
     } finally {
       delivery.resolve();
       await cleanup();
@@ -1502,7 +1575,7 @@ describe("ChatView draft materialization", () => {
   it("loads an unrelated session normally while a draft send is pending", async () => {
     const delivery = createDeferred<void>();
     const onCreateAndSend = vi.fn(() => delivery.promise);
-    const { act, cleanup, reconnectMock, render } = await renderChatView({
+    const { act, cleanup, reconnectMock, ensureConnectedMock, render } = await renderChatView({
       composerKey: "draft:quickchat",
       sessionId: null,
       onCreateAndSend,
@@ -1525,6 +1598,8 @@ describe("ChatView draft materialization", () => {
       });
 
       expect(reconnectMock).not.toHaveBeenCalledWith("existing-session");
+
+      expect(ensureConnectedMock).not.toHaveBeenCalledWith("existing-session");
       expect(fetchMessagesFastMock).toHaveBeenCalledWith("existing-session", { limit: 50 });
     } finally {
       delivery.resolve();
@@ -2051,6 +2126,7 @@ describe("ChatView steering sends", () => {
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("canonical assistant") ?? false);
       expect(dom.container.textContent).not.toContain("duplicate live assistant");
+      await expandActivity(dom.container, act);
       expect(dom.container.textContent).toContain("canonical_tool");
       expect(dom.container.textContent).not.toContain("duplicate_live_tool");
     } finally {
@@ -2107,7 +2183,11 @@ describe("ChatView steering sends", () => {
     });
 
     try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Committed final response") ?? false);
+      await waitUntilAct(act, () => findAllByTag(dom.container, "BUTTON").some((button) => (
+        button.getAttribute?.("aria-expanded") === "false"
+      )));
+      await expandActivity(dom.container, act);
+      expect(dom.container.textContent).toContain("Committed final response");
       expect(dom.container.textContent).not.toContain("Agent started in background");
     } finally {
       await cleanup();
@@ -2319,14 +2399,15 @@ describe("ChatView steering sends", () => {
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("current reply") ?? false);
       expect(dom.container.textContent).toContain("previous reply");
-      expect(dom.container.textContent).toContain("old_tool");
+      // A finished block holding one tool call reads as that call.
+      expect(dom.container.textContent).toContain("Old tool");
       expect(dom.container.textContent).toContain("current question");
 
       // Disk history keeps its own ordering; the live overlay is appended after it, even when
       // provider turn ids repeat across runs.
       const renderedText = dom.container.textContent ?? "";
-      expect(renderedText.indexOf("old_tool")).toBeGreaterThan(renderedText.indexOf("previous reply"));
-      expect(renderedText.indexOf("current question")).toBeGreaterThan(renderedText.indexOf("old_tool"));
+      expect(renderedText.indexOf("Old tool")).toBeGreaterThan(renderedText.indexOf("previous reply"));
+      expect(renderedText.indexOf("current question")).toBeGreaterThan(renderedText.indexOf("Old tool"));
       expect(renderedText.indexOf("current reply")).toBeGreaterThan(renderedText.indexOf("current question"));
 
       const historicalMessage = findMessageWrapperByAnchorKey(dom.container, "historical-assistant");
@@ -2415,14 +2496,14 @@ describe("ChatView steering sends", () => {
     });
 
     try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("resumed_tool") ?? false);
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Resumed tool") ?? false);
       const renderedText = dom.container.textContent ?? "";
-      expect(renderedText.indexOf("first_tool")).toBeGreaterThan(renderedText.indexOf("First pass"));
-      expect(renderedText.indexOf("Middle pass")).toBeGreaterThan(renderedText.indexOf("first_tool"));
-      expect(renderedText.indexOf("middle_tool")).toBeGreaterThan(renderedText.indexOf("Middle pass"));
-      expect(renderedText.indexOf("Resumed pass")).toBeGreaterThan(renderedText.indexOf("middle_tool"));
-      expect(renderedText.indexOf("resumed_tool")).toBeGreaterThan(renderedText.indexOf("Resumed pass"));
-      expect(renderedText.indexOf("Finished")).toBeGreaterThan(renderedText.indexOf("resumed_tool"));
+      expect(renderedText.indexOf("First tool")).toBeGreaterThan(renderedText.indexOf("First pass"));
+      expect(renderedText.indexOf("Middle pass")).toBeGreaterThan(renderedText.indexOf("First tool"));
+      expect(renderedText.indexOf("Middle tool")).toBeGreaterThan(renderedText.indexOf("Middle pass"));
+      expect(renderedText.indexOf("Resumed pass")).toBeGreaterThan(renderedText.indexOf("Middle tool"));
+      expect(renderedText.indexOf("Resumed tool")).toBeGreaterThan(renderedText.indexOf("Resumed pass"));
+      expect(renderedText.indexOf("Finished")).toBeGreaterThan(renderedText.indexOf("Resumed tool"));
     } finally {
       await cleanup();
     }
@@ -2470,6 +2551,189 @@ describe("ChatView live streaming UX", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Planning the response") ?? false);
       expect(() => findMessageBubble(dom.container, true)).toThrow();
       expect(dom.container.textContent).not.toContain("The assistant is working before any text or tool activity is visible.");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("streams the model's thinking in place of the waiting status, collapsed until it is opened", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{ id: "user-1", role: "user", content: "How many sheep?", sourceEventId: "user-event-1" }],
+        runState: "busy",
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        streamStatus: "thinking",
+        activeTurnInstanceId: "turn-start-1",
+        liveReasoning: [{
+          id: "r-1",
+          content: "All but nine run away, so nine remain.",
+          startedAt: "2026-09-20T08:00:01.000Z",
+          turnInstanceId: "turn-start-1",
+        }],
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("so nine remain.") ?? false);
+      const block = findAllByTag(dom.container, "DIV").find((candidate) => (
+        candidate.getAttribute?.("data-activity-block") === "activity:turn-start-1:0"
+      ));
+      expect(block?.getAttribute("data-activity-state")).toBe("active");
+      expect(block?.textContent).toContain("Thinking");
+      // The block is the run's indicator now; a second one underneath would only repeat it.
+      expect(findAllByTag(dom.container, "DIV").some((candidate) => candidate.getAttribute?.("data-live-status"))).toBe(false);
+      expect(findButtonContainingText(dom.container, "Thinking").getAttribute("aria-expanded")).toBe("false");
+
+      await expandActivity(dom.container, act);
+      expect(findAllByTag(dom.container, "DIV").some((candidate) => (
+        candidate.getAttribute?.("data-thought-state") === "streaming"
+      ))).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("hands committed thinking off to disk history instead of showing it twice", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          {
+            id: "entry-0",
+            type: "reasoning",
+            turnInstanceId: "turn-start-1",
+            content: "DISK-THOUGHT nine remain, then doubled.",
+            timestamp: "2026-09-20T08:00:03.000Z",
+            reasoning: { messageEventId: "assistant-message-1", startedAt: "2026-09-20T08:00:00.000Z" },
+          },
+          {
+            id: "entry-1",
+            role: "assistant",
+            content: "Eighteen sheep.",
+            turnInstanceId: "turn-start-1",
+            sourceEventId: "assistant-message-1",
+            timestamp: "2026-09-20T08:00:03.000Z",
+          },
+        ],
+        runState: "idle",
+        total: 2,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        liveReasoning: [{
+          id: "r-1",
+          content: "LIVE-THOUGHT nine remain, then doubled.",
+          sourceEventId: "assistant-message-1",
+          completedAt: "2026-09-20T08:00:02.000Z",
+          committedAt: "2026-09-20T08:00:03.000Z",
+          turnInstanceId: "turn-start-1",
+        }],
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Eighteen sheep.") ?? false);
+      const blocks = findAllByTag(dom.container, "DIV").filter((candidate) => candidate.getAttribute?.("data-activity-block"));
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]?.getAttribute("data-activity-state")).toBe("done");
+      // Thinking sits above the reply it led to.
+      const text = dom.container.textContent ?? "";
+      expect(text.indexOf("Thought")).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf("Thought")).toBeLessThan(text.indexOf("Eighteen sheep."));
+
+      await expandActivity(dom.container, act);
+      expect(dom.container.textContent).toContain("DISK-THOUGHT");
+      expect(dom.container.textContent).not.toContain("LIVE-THOUGHT");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps the working state on the block the run is writing into rather than beneath it", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-0", role: "user", content: "Check the repo", sourceEventId: "user-event-1" },
+          {
+            id: "entry-1",
+            type: "tool",
+            turnInstanceId: "turn-start-1",
+            toolCall: {
+              toolCallId: "tool-1",
+              name: "view",
+              args: { path: "/repo/README.md" },
+              startedAt: "2026-09-20T08:00:01.000Z",
+              completedAt: "2026-09-20T08:00:02.000Z",
+              success: true,
+            },
+          },
+        ],
+        runState: "busy",
+        total: 2,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: {
+        streamStatus: "thinking",
+        hadVisibleOutput: true,
+        intentText: "Exploring the repository",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Exploring the repository") ?? false);
+      const block = findAllByTag(dom.container, "DIV").find((candidate) => candidate.getAttribute?.("data-activity-block"));
+      expect(block?.getAttribute("data-activity-state")).toBe("active");
+      expect(block?.textContent).toContain("Exploring the repository");
+      expect(findAllByTag(dom.container, "DIV").some((candidate) => candidate.getAttribute?.("data-live-status"))).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("hangs a reply's hover actions in the margin only while the chat column is wide enough", async () => {
+    let notifyResize: (() => void) | undefined;
+    const observed: unknown[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { notifyResize = callback; }
+      observe(element: unknown) { observed.push(element); }
+      disconnect() {}
+    });
+    const { dom, act, cleanup } = await renderChatView({
+      streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null },
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "a reply")],
+        runState: "idle",
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("a reply") ?? false);
+      const root = findAllByTag(dom.container, "DIV").find((candidate) => (
+        String(getReactProps(candidate)?.className ?? "").includes("chat-ui")
+      ));
+      if (!root) throw new Error("Chat root not found");
+      expect(observed).toContain(root);
+      // No measurable width (or a narrow column): the actions keep to the reply's own corner.
+      expect(root.getAttribute("data-action-gutter")).not.toBe("true");
+
+      Object.defineProperty(root, "clientWidth", { configurable: true, value: 1200 });
+      await act(async () => notifyResize?.());
+      expect(root.getAttribute("data-action-gutter")).toBe("true");
+
+      // The task rail opening, or a side panel, narrows the column without changing the viewport.
+      Object.defineProperty(root, "clientWidth", { configurable: true, value: 900 });
+      await act(async () => notifyResize?.());
+      expect(root.getAttribute("data-action-gutter")).not.toBe("true");
     } finally {
       await cleanup();
     }
@@ -3271,10 +3535,15 @@ describe("ChatView disk-authoritative synchronization", () => {
     });
 
     try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("shared_tool") ?? false);
-      // Substituted onto the disk entry, not appended beside it.
+      await waitUntilAct(act, () => findAllByTag(dom.container, "BUTTON").some((button) => (
+        button.getAttribute?.("aria-expanded") === "false"
+      )));
+      await expandActivity(dom.container, act);
+      // Substituted onto the disk entry, not appended beside it: one row, already carrying the result.
       const text = dom.container.textContent ?? "";
-      expect(text.indexOf("shared_tool")).toBe(text.lastIndexOf("shared_tool"));
+      expect(text).toContain("RESULT-VISIBLE-NOW");
+      expect(text.indexOf("Shared tool")).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf("Shared tool")).toBe(text.lastIndexOf("Shared tool"));
     } finally {
       await cleanup();
     }
