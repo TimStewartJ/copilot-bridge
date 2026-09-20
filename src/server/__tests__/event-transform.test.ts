@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getLastVisibleActivityAt,
   getUndoBoundaryEventId,
+  getVisibleReasoningText,
   isVisibleMessageEvent,
   transformEventsToMessages,
 } from "../event-transform.js";
@@ -1296,5 +1297,194 @@ describe("event-transform file attachment display names", () => {
         attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "Quarterly report" }],
       },
     ]);
+  });
+});
+
+describe("event-transform model thinking", () => {
+  const turnStart = {
+    id: "turn-start-1",
+    type: "assistant.turn_start",
+    timestamp: "2026-09-20T08:00:00.000Z",
+    data: { turnId: "0" },
+  };
+
+  it("emits the thinking persisted on an assistant message ahead of that message", () => {
+    const entries = transformEventsToMessages([
+      turnStart,
+      {
+        id: "assistant-message-1",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:06.000Z",
+        data: { content: "Eighteen sheep.", reasoningText: "Nine remain, then he doubles them." },
+      },
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        id: "entry-0",
+        type: "reasoning",
+        content: "Nine remain, then he doubles them.",
+        timestamp: "2026-09-20T08:00:06.000Z",
+        turnId: "0",
+        turnInstanceId: "turn-start-1",
+        reasoning: { messageEventId: "assistant-message-1", startedAt: "2026-09-20T08:00:00.000Z" },
+      },
+      { id: "entry-1", type: "message", role: "assistant", sourceEventId: "assistant-message-1" },
+    ]);
+    // Only the message entry owns the event id, so exact-message lookups stay unambiguous.
+    expect(entries[0]?.sourceEventId).toBeUndefined();
+  });
+
+  it("keeps the thinking of a turn that only called tools", () => {
+    const entries = transformEventsToMessages([
+      turnStart,
+      {
+        id: "assistant-message-1",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:03.000Z",
+        data: {
+          content: "",
+          reasoningText: "I should read the file first.",
+          toolRequests: [{ toolCallId: "tool-1", name: "view" }],
+        },
+      },
+      {
+        id: "tool-start-1",
+        type: "tool.execution_start",
+        timestamp: "2026-09-20T08:00:03.100Z",
+        data: { toolCallId: "tool-1", toolName: "view", arguments: { path: "a.ts" } },
+      },
+    ]);
+
+    expect(entries.map((entry) => entry.type)).toEqual(["reasoning", "tool"]);
+  });
+
+  it("leaves a sub-agent's thinking out of the main transcript", () => {
+    const entries = transformEventsToMessages([
+      turnStart,
+      {
+        id: "sub-message-1",
+        type: "assistant.message",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T08:00:03.000Z",
+        data: { content: "sub-agent reply", parentToolCallId: "task-1", reasoningText: "sub-agent thinking" },
+      },
+      {
+        id: "sub-message-2",
+        type: "assistant.message",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T08:00:04.000Z",
+        data: { content: "", reasoningText: "more sub-agent thinking" },
+      },
+    ]);
+
+    expect(entries).toEqual([]);
+  });
+
+  it("ignores blank thinking and never treats thinking alone as visible activity", () => {
+    const blank = {
+      id: "assistant-message-1",
+      type: "assistant.message",
+      timestamp: "2026-09-20T08:00:03.000Z",
+      data: { content: "", reasoningText: "   " },
+    };
+    const thinkingOnly = { ...blank, data: { content: "", reasoningText: "Quietly considering." } };
+
+    expect(getVisibleReasoningText(blank)).toBeUndefined();
+    expect(transformEventsToMessages([turnStart, blank])).toEqual([]);
+    expect(getVisibleReasoningText(thinkingOnly)).toBe("Quietly considering.");
+    expect(isVisibleMessageEvent(thinkingOnly)).toBe(false);
+    expect(getLastVisibleActivityAt([turnStart, thinkingOnly])).toBeUndefined();
+  });
+
+  it("omits the model-call start when the turn began above the window being read", () => {
+    const entries = transformEventsToMessages([
+      {
+        id: "assistant-message-1",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:06.000Z",
+        data: { content: "Reply", reasoningText: "Thinking" },
+      },
+    ], "session-1", { initialTurnIndex: 4, initialActiveTurnId: "3", initialActiveTurnInstanceId: "turn-start-4" });
+
+    expect(entries[0]).toMatchObject({ type: "reasoning", turnInstanceId: "turn-start-4" });
+    expect(entries[0]?.reasoning?.startedAt).toBeUndefined();
+  });
+});
+
+describe("event-transform tool calls that outlive someone else's turn", () => {
+  const start = (id: string, toolName: string, at: string, extra: Record<string, unknown> = {}, agentId?: string) => ({
+    type: "tool.execution_start",
+    timestamp: at,
+    ...(agentId ? { agentId } : {}),
+    data: { toolCallId: id, toolName, ...extra },
+  });
+  const complete = (id: string, at: string, agentId?: string) => ({
+    type: "tool.execution_complete",
+    timestamp: at,
+    ...(agentId ? { agentId } : {}),
+    data: { toolCallId: id, success: true, result: { content: "ok" } },
+  });
+  const toolStates = (events: unknown[]) => Object.fromEntries(
+    transformEventsToMessages(events as any[])
+      .filter((entry) => entry.type === "tool")
+      .map((entry) => [entry.toolCall!.toolCallId, { success: entry.toolCall!.success, completedAt: entry.toolCall!.completedAt }]),
+  );
+
+  // Two sub-agents launched side by side, read while both are still running: agent one has just
+  // finished a turn of its own. This is the log as it stood at that moment in a real run.
+  const midRun = [
+    { id: "main-turn", type: "assistant.turn_start", timestamp: "2026-09-20T16:29:06.670Z", data: { turnId: "1" } },
+    start("task-one", "task", "2026-09-20T16:29:17.578Z", { arguments: { description: "Count tests" } }),
+    start("task-two", "task", "2026-09-20T16:29:17.581Z", { arguments: { description: "Find constant" } }),
+    { type: "subagent.started", agentId: "agent-one", timestamp: "2026-09-20T16:29:17.600Z", data: { toolCallId: "task-one", agentName: "explore" } },
+    { type: "subagent.started", agentId: "agent-two", timestamp: "2026-09-20T16:29:17.598Z", data: { toolCallId: "task-two", agentName: "explore" } },
+    { type: "assistant.turn_start", agentId: "agent-one", timestamp: "2026-09-20T16:29:19.074Z", data: {} },
+    { type: "assistant.turn_start", agentId: "agent-two", timestamp: "2026-09-20T16:29:19.096Z", data: {} },
+    start("one-glob", "glob", "2026-09-20T16:29:20.753Z", { parentToolCallId: "task-one" }, "agent-one"),
+    complete("one-glob", "2026-09-20T16:29:20.789Z", "agent-one"),
+    start("two-rg", "rg", "2026-09-20T16:29:20.780Z", { parentToolCallId: "task-two" }, "agent-two"),
+    { type: "assistant.turn_end", agentId: "agent-one", timestamp: "2026-09-20T16:29:20.791Z", data: {} },
+  ];
+
+  it("does not report a launching call, or a neighbouring agent's call, as failed when a sub-agent ends a turn", () => {
+    expect(toolStates(midRun)).toEqual({
+      // Still running: nothing has completed them, and nothing that ended owned them.
+      "task-one": { success: undefined, completedAt: undefined },
+      "task-two": { success: undefined, completedAt: undefined },
+      "two-rg": { success: undefined, completedAt: undefined },
+      "one-glob": { success: true, completedAt: "2026-09-20T16:29:20.789Z" },
+    });
+  });
+
+  it("still closes an agent's own unfinished call when that agent's turn ends", () => {
+    const events = [
+      ...midRun,
+      { type: "assistant.turn_end", agentId: "agent-two", timestamp: "2026-09-20T16:29:22.042Z", data: {} },
+    ];
+
+    expect(toolStates(events)["two-rg"]).toEqual({ success: false, completedAt: "2026-09-20T16:29:22.042Z" });
+    expect(toolStates(events)["task-two"]).toEqual({ success: undefined, completedAt: undefined });
+  });
+
+  it("leaves a background agent's call open when the main agent's turn ends, and closes everything on a hard stop", () => {
+    const background = [
+      { id: "main-turn", type: "assistant.turn_start", timestamp: "2026-09-20T10:00:00.000Z", data: { turnId: "1" } },
+      start("task-bg", "task", "2026-09-20T10:00:01.000Z", { arguments: { description: "Long review", mode: "background" } }),
+      complete("task-bg", "2026-09-20T10:00:01.006Z"),
+      { type: "subagent.started", agentId: "agent-bg", timestamp: "2026-09-20T10:00:02.000Z", data: { toolCallId: "task-bg", agentName: "review" } },
+      start("bg-view", "view", "2026-09-20T10:00:03.000Z", { parentToolCallId: "task-bg" }, "agent-bg"),
+      start("main-view", "view", "2026-09-20T10:00:03.500Z"),
+      { type: "assistant.turn_end", timestamp: "2026-09-20T10:00:04.000Z", data: {} },
+    ];
+
+    expect(toolStates(background)).toMatchObject({
+      "bg-view": { success: undefined, completedAt: undefined },
+      // The main agent's own call had no completion when its turn ended, as before.
+      "main-view": { success: false, completedAt: "2026-09-20T10:00:04.000Z" },
+    });
+
+    const aborted = [...background, { type: "abort", timestamp: "2026-09-20T10:00:05.000Z", data: { reason: "user" } }];
+    expect(toolStates(aborted)["bg-view"]).toEqual({ success: false, completedAt: "2026-09-20T10:00:05.000Z" });
   });
 });

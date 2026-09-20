@@ -348,7 +348,8 @@ export function createHelmToolDefinitions(
         const resolution = await withSession(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
         const { session } = resolution;
-        const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 40 });
+        // Thinking entries roughly double the non-message entries of an agentic run.
+        const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 80 });
         const textMessages = messages.filter((entry: any) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()) as Array<{ role: string; content: string; timestamp?: string }>;
         const latestReply = [...textMessages].reverse().find((entry) => entry.role === "assistant");
         const latestPrompt = [...textMessages].reverse().find((entry) => entry.role === "user");

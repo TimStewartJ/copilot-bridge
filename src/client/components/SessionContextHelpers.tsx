@@ -87,7 +87,11 @@ function trimPreview(content: string): string {
 }
 
 function isTextEntry(entry: ChatEntry): entry is Extract<ChatEntry, { role: "user" | "assistant" }> {
-  return entry.type !== "tool" && entry.type !== "visual" && entry.type !== "completion" && entry.type !== "skill";
+  return entry.type !== "tool"
+    && entry.type !== "visual"
+    && entry.type !== "completion"
+    && entry.type !== "skill"
+    && entry.type !== "reasoning";
 }
 
 export function buildChatTurnPreviews(entries: ChatEntry[] | undefined): ChatTurnPreviews {

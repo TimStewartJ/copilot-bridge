@@ -1,43 +1,28 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import type { ToolCallTreeNode } from "../lib/tool-call-tree";
-import { computeToolCallTracks } from "../lib/tool-call-tracks";
-import type { ToolCallTrackOptions } from "../lib/tool-call-tracks";
-import ParallelTrackGroup, { type ParallelTrackRenderOptions } from "./ParallelTrackGroup";
 import SubAgentGroup from "./SubAgentGroup";
 import ToolCallBlock from "./ToolCallBlock";
 
-export interface ToolCallTreeProps extends ToolCallTrackOptions {
+export interface ToolCallTreeProps {
   node: ToolCallTreeNode;
   defaultExpanded?: boolean;
   contextOnly?: boolean;
 }
 
-export interface ToolCallNodeGroupProps extends ToolCallTrackOptions {
+export interface ToolCallNodeGroupProps {
   nodes: ToolCallTreeNode[];
   defaultExpanded?: boolean;
   contextOnly?: boolean;
   className?: string;
 }
 
-function classNames(...values: Array<string | false | undefined>): string {
-  return values.filter(Boolean).join(" ");
-}
-
 export const ToolCallTree = memo(function ToolCallTree({
   node,
   defaultExpanded = false,
   contextOnly = false,
-  nowMs,
-  activeToolCallIds,
 }: ToolCallTreeProps) {
   const renderChildNodes = (childNodes: ToolCallTreeNode[]) => (
-    <ToolCallNodeGroup
-      nodes={childNodes}
-      defaultExpanded={true}
-      contextOnly={contextOnly}
-      nowMs={nowMs}
-      activeToolCallIds={activeToolCallIds}
-    />
+    <ToolCallNodeGroup nodes={childNodes} defaultExpanded={true} contextOnly={contextOnly} />
   );
   const effectiveContextOnly = contextOnly || node.isContextOnly;
 
@@ -62,50 +47,28 @@ export const ToolCallTree = memo(function ToolCallTree({
       );
 });
 
+/**
+ * Sibling tool calls, one row each in the order they started. Calls that ran in parallel are
+ * simply adjacent rows: their spinners and durations already say they overlapped.
+ */
 export const ToolCallNodeGroup = memo(function ToolCallNodeGroup({
   nodes,
   defaultExpanded = false,
   contextOnly = false,
   className,
-  nowMs,
-  activeToolCallIds,
 }: ToolCallNodeGroupProps) {
-  const layout = useMemo(
-    () => computeToolCallTracks(nodes, { nowMs, activeToolCallIds }),
-    [activeToolCallIds, nodes, nowMs],
-  );
-  const renderNode = (
-    node: ToolCallTreeNode,
-    options: ParallelTrackRenderOptions = {},
-  ) => (
-    <ToolCallTree
-      key={node.toolCall.toolCallId}
-      node={node}
-      defaultExpanded={options.defaultExpanded ?? defaultExpanded}
-      contextOnly={options.contextOnly ?? contextOnly}
-      nowMs={nowMs}
-      activeToolCallIds={activeToolCallIds}
-    />
-  );
-
   if (nodes.length === 0) return null;
-
-  if (!layout.hasOverlap) {
-    return (
-      <div className={classNames("space-y-1", className)}>
-        {nodes.map((node) => renderNode(node))}
-      </div>
-    );
-  }
-
   return (
-    <ParallelTrackGroup
-      layout={layout}
-      renderNode={renderNode}
-      defaultExpanded={defaultExpanded}
-      contextOnly={contextOnly}
-      className={className}
-    />
+    <div className={className}>
+      {nodes.map((node) => (
+        <ToolCallTree
+          key={node.toolCall.toolCallId}
+          node={node}
+          defaultExpanded={defaultExpanded}
+          contextOnly={contextOnly}
+        />
+      ))}
+    </div>
   );
 });
 

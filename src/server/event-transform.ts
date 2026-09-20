@@ -43,7 +43,7 @@ export interface TransformedVisual {
 
 export interface TransformedEntry {
   id: string;
-  type: "message" | "tool" | "visual" | "completion" | "skill";
+  type: "message" | "tool" | "visual" | "completion" | "skill" | "reasoning";
   turnId?: string;
   turnInstanceId?: string;
   sourceEventId?: string;
@@ -74,6 +74,12 @@ export interface TransformedEntry {
   visual?: TransformedVisual;
   // Completion fields (when type === "completion")
   completion?: TerminalCompletion;
+  /**
+   * Reasoning fields (when type === "reasoning") — the model's thinking ahead of a reply or tool
+   * call, with the text in `content`. The entry deliberately has no `sourceEventId`: its thinking
+   * was persisted on an `assistant.message` whose id already identifies that message's own entry.
+   */
+  reasoning?: { messageEventId?: string; startedAt?: string };
 }
 
 function isTurnTerminalEvent(event: any): boolean {
@@ -225,6 +231,18 @@ export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * The main agent's thinking for one model call, as persisted on its `assistant.message`. It yields
+ * a transcript entry of its own, so the transform and the stats scanner must both count it, but it
+ * is not visible activity: thinking alone never marks a session unread.
+ */
+export function getVisibleReasoningText(event: any): string | undefined {
+  if (event?.type !== "assistant.message") return undefined;
+  if (event?.data?.parentToolCallId || getSdkAgentId(event)) return undefined;
+  const text = event?.data?.reasoningText;
+  return typeof text === "string" && text.trim() ? text : undefined;
 }
 
 function parsePublishedVisualResult(rawResult: unknown): Record<string, unknown> | undefined {
@@ -443,6 +461,7 @@ export function transformEventsToMessages(
   let subAgentTurnIndex = 0;
   let activeTurnId = options.initialActiveTurnId;
   let activeTurnInstanceId = options.initialActiveTurnInstanceId;
+  let activeTurnStartedAt: string | undefined;
   let activeUndoEventId: string | undefined;
   let pendingTerminalCompletion: TerminalCompletion | undefined;
   const activeSubAgentToolCallIds = new Set<string>();
@@ -451,7 +470,8 @@ export function transformEventsToMessages(
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, ToolCompletionRecord>();
   const toolProgress = new Map<string, string>();
-  const openToolCallIds = new Set<string>();
+  /** Calls with no completion yet, by the agent that made them (`undefined` is the main agent). */
+  const openToolCallOwners = new Map<string, string | undefined>();
   const correlator = new SubagentCorrelator();
   const toolNames = new Map<string, string>();
   const assistantForkBoundaries = getAssistantForkBoundaries(events);
@@ -461,7 +481,7 @@ export function transformEventsToMessages(
   for (const event of events) {
     const data = (event as any).data;
     if (event.type === "tool.execution_start" && data?.toolCallId) {
-      openToolCallIds.add(data.toolCallId);
+      openToolCallOwners.set(data.toolCallId, getSdkAgentId(event));
       toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
     } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
       // Raw completion data is retained so pass 2 can derive display text through the same shared
@@ -473,7 +493,7 @@ export function transformEventsToMessages(
         eventId: getSdkEventId(event),
       });
       correlator.completeTool(data.toolCallId);
-      openToolCallIds.delete(data.toolCallId);
+      openToolCallOwners.delete(data.toolCallId);
       const visual = getVisualArtifactFromToolCompletion(event, toolNames.get(data.toolCallId), sessionId);
       if (visual) visualResults.set(data.toolCallId, visual);
     } else if ((event.type === "tool.execution_progress" || event.type === "tool.execution_partial_result") && data?.toolCallId) {
@@ -507,14 +527,23 @@ export function transformEventsToMessages(
       }
     } else if (isTurnTerminalEvent(event)) {
       // Provisional: a real completion can still arrive after `assistant.turn_end` and must win.
-      for (const toolCallId of openToolCallIds) {
+      //
+      // An ending only speaks for the calls of whoever ended. A sub-agent finishes turns while the
+      // `task` call that launched it, and the calls of agents running beside it, are still open
+      // and healthy; closing those here reported them as failed until their real completion
+      // landed. A background agent likewise outlives the main agent's turn. Only a hard stop of
+      // the whole session leaves nothing behind to complete anything.
+      const endedBy = getSdkAgentId(event);
+      const stopsEverything = event.type === "abort" || event.type === "session.shutdown";
+      for (const [toolCallId, owner] of openToolCallOwners) {
+        if (!stopsEverything && owner !== endedBy) continue;
         toolCompletes.set(toolCallId, {
           success: false,
           fallbackText: correlator.resolve(toolCallId).response ?? toolProgress.get(toolCallId),
           timestamp: (event as any).timestamp,
         });
+        openToolCallOwners.delete(toolCallId);
       }
-      openToolCallIds.clear();
     }
   }
 
@@ -542,6 +571,9 @@ export function transformEventsToMessages(
       turnIndex += 1;
       activeTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
       activeTurnInstanceId = getAssistantTurnInstanceId(event, `turn-instance-${turnIndex}`);
+      activeTurnStartedAt = typeof (event as any).timestamp === "string"
+        ? (event as any).timestamp
+        : undefined;
     } else if (extractTerminalCompletion(event)) {
       const completion = extractTerminalCompletion(event)!;
       entries.push({
@@ -557,6 +589,7 @@ export function transformEventsToMessages(
       pendingTerminalCompletion = undefined;
       activeTurnId = undefined;
       activeTurnInstanceId = undefined;
+      activeTurnStartedAt = undefined;
     } else if (isTurnTerminalEvent(event)) {
       if (pendingTerminalCompletion) {
         entries.push({
@@ -573,6 +606,7 @@ export function transformEventsToMessages(
       }
       activeTurnId = undefined;
       activeTurnInstanceId = undefined;
+      activeTurnStartedAt = undefined;
     } else if (event.type === "user.message") {
       if (isAgentInjectedSystemMessage(event)) continue;
       if (isSdkAgentUserMessage(event)) continue;
@@ -612,6 +646,22 @@ export function transformEventsToMessages(
       });
     } else if (event.type === "assistant.message") {
       if (data?.parentToolCallId) continue; // sub-agent response text, not a top-level message
+      const reasoningText = getVisibleReasoningText(event);
+      if (reasoningText) {
+        const messageEventId = getSdkEventId(event);
+        entries.push({
+          id: `entry-${idx++}`,
+          type: "reasoning",
+          content: reasoningText,
+          timestamp: data.timestamp ?? (event as any).timestamp,
+          ...(activeTurnId ? { turnId: activeTurnId } : {}),
+          ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
+          reasoning: {
+            ...(messageEventId ? { messageEventId } : {}),
+            ...(activeTurnStartedAt ? { startedAt: activeTurnStartedAt } : {}),
+          },
+        });
+      }
       const content = data?.content ?? "";
       if (content.trim()) {
         const rawEventId = getRawEventId(event);

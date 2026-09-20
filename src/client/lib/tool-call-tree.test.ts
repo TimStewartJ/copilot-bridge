@@ -101,6 +101,30 @@ describe("tool call tree helpers", () => {
     ]);
   });
 
+  it("gives the model's thinking its own segment, ahead of the tools it led to", () => {
+    const entries: ChatEntry[] = [
+      { role: "user", content: "Read the config" },
+      {
+        id: "thought-1",
+        type: "reasoning",
+        turnId: "turn-1",
+        content: "I should open the file first.",
+        reasoning: { messageEventId: "assistant-message-1" },
+      },
+      { id: "tool-a", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-a") },
+      { id: "tool-b", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-b") },
+      { id: "thought-2", type: "reasoning", turnId: "turn-2", content: "   ", reasoning: {} },
+      { role: "assistant", content: "Here it is", turnId: "turn-2" },
+    ];
+
+    expect(segmentChatEntries(entries)).toMatchObject([
+      { type: "message", entry: { content: "Read the config" } },
+      { type: "reasoning-segment", entry: { id: "thought-1" } },
+      { type: "tool-segment", turnId: "turn-1", entries: [{ id: "tool-a" }, { id: "tool-b" }] },
+      { type: "message", entry: { content: "Here it is" } },
+    ]);
+  });
+
   it("keeps skill entries as their own render segment between messages and tools", () => {
     const entries: ChatEntry[] = [
       { role: "user", content: "Use the browser" },
@@ -363,6 +387,42 @@ describe("tool call tree helpers", () => {
         entries: [{ id: "agent-b" }, { id: "child-b" }],
       },
       { type: "message", entry: { content: "Second agent done" } },
+    ]);
+  });
+
+  it("keeps a parallel agent's calls under its one row when another agent's turn end left them without a turn", () => {
+    // The entries a real run produced: two agents side by side. Agent one finished a turn while
+    // agent two was mid-turn, so agent two's next two calls carry no turn of their own.
+    const child = (id: string, parent: string, turnInstanceId?: string): ChatEntry => ({
+      id,
+      type: "tool",
+      ...(turnInstanceId ? { turnInstanceId } : {}),
+      toolCall: createToolCall(id, { parentToolCallId: parent, completedAt: "2026-09-20T16:50:00.000Z", success: true }),
+    });
+    const entries: ChatEntry[] = [
+      { role: "user", content: "Launch two agents" },
+      { id: "agent-one", type: "tool", turnInstanceId: "turn-launch", toolCall: createToolCall("agent-one", { isSubAgent: true }) },
+      { id: "agent-two", type: "tool", turnInstanceId: "turn-launch", toolCall: createToolCall("agent-two", { isSubAgent: true }) },
+      child("one-a", "agent-one", "sub-turn-1"),
+      child("two-a", "agent-two", "sub-turn-1"),
+      child("two-b", "agent-two", "sub-turn-1"),
+      child("one-b", "agent-one", "sub-turn-2"),
+      child("two-c", "agent-two", "sub-turn-2"),
+      child("two-d", "agent-two"),
+      child("two-e", "agent-two"),
+      child("two-f", "agent-two", "sub-turn-3"),
+      { role: "assistant", content: "Both agents reported back." },
+    ];
+
+    const segments = segmentChatEntries(entries);
+    const toolSegments = segments.filter((segment) => segment.type === "tool-segment");
+    // One group holds everything, so each agent renders once with all of its calls.
+    expect(toolSegments).toHaveLength(1);
+    const forest = buildToolCallForest(entries.flatMap((entry) => entry.type === "tool" ? [entry.toolCall] : []));
+    const roots = buildRenderableSegmentRoots(toolSegments[0]!.entries, forest);
+    expect(roots.map((root) => [root.toolCall.toolCallId, root.isContextOnly, root.children.length])).toEqual([
+      ["agent-one", false, 2],
+      ["agent-two", false, 6],
     ]);
   });
 

@@ -42,7 +42,7 @@ export default memo(function ToolResultModal({ title, content, format = "plain",
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {format === "markdown" ? (
-            <div className={`max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}>
+            <div className={`chat-prose max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}>
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
             </div>
           ) : (
