@@ -2,16 +2,15 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import {
-  isDeployBatchRestartSignal,
-  readCurrentRestartSignalFile,
-} from "./restart-signal.js";
 
 export const RESTART_STATE_FILE_NAME = "restart-state.json";
 export const RESTART_SIGNAL_FILE_NAME = "restart.signal";
 export const RESTART_IN_PROGRESS_FILE_NAME = "restart-in-progress.json";
 
-export type RestartPhase = "idle" | "queued" | "waiting-for-sessions" | "restarting";
+/** `restarting` spans the launcher's cutover, from claiming the request until the replacement is up. */
+export type RestartPhase = "idle" | "restarting";
+// A launcher from before restart-when-idle writes these while it waits. The claimed request says the same.
+const LEGACY_WAITING_PHASES = ["queued", "waiting-for-sessions"];
 
 export type ReleaseFailureEvent =
   | "launcher-manual-intervention-required"
@@ -31,22 +30,11 @@ export interface ReleaseFailureState {
 }
 
 export interface RestartState {
-  requestId: string | null;
   phase: RestartPhase;
-  requestedAt: string | null;
-  waitingSessions: number;
-  launcherHeartbeatAt: string | null;
-  releaseFailure?: ReleaseFailureState | null;
+  releaseFailure: ReleaseFailureState | null;
 }
 
-const defaultRestartState = {
-  requestId: null,
-  phase: "idle",
-  requestedAt: null,
-  waitingSessions: 0,
-  launcherHeartbeatAt: null,
-  releaseFailure: null,
-} satisfies RestartState;
+const defaultRestartState = { phase: "idle", releaseFailure: null } satisfies RestartState;
 
 export const DEFAULT_RESTART_STATE: Readonly<RestartState> = Object.freeze(defaultRestartState);
 const TRANSIENT_RESTART_STATE_FS_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
@@ -57,21 +45,8 @@ export function createDefaultRestartState(): RestartState {
   return { ...DEFAULT_RESTART_STATE };
 }
 
-function isRestartPhase(value: unknown): value is RestartPhase {
-  return value === "idle"
-    || value === "queued"
-    || value === "waiting-for-sessions"
-    || value === "restarting";
-}
-
 function coerceOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function coerceWaitingSessions(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.trunc(value)
-    : 0;
 }
 
 function isReleaseFailureEvent(value: unknown): value is ReleaseFailureEvent {
@@ -111,11 +86,7 @@ function normalizeRestartState(value: unknown): RestartState {
     : {};
 
   return {
-    requestId: coerceOptionalString(record.requestId),
-    phase: isRestartPhase(record.phase) ? record.phase : DEFAULT_RESTART_STATE.phase,
-    requestedAt: coerceOptionalString(record.requestedAt),
-    waitingSessions: coerceWaitingSessions(record.waitingSessions),
-    launcherHeartbeatAt: coerceOptionalString(record.launcherHeartbeatAt),
+    phase: record.phase === "restarting" ? "restarting" : "idle",
     releaseFailure: normalizeReleaseFailureState(record.releaseFailure),
   };
 }
@@ -129,22 +100,10 @@ function parseRestartState(raw: string, filePath: string): RestartState {
     throw new Error(`Restart state file must contain an object: ${filePath}`);
   }
   const phase = (value as Record<string, unknown>).phase;
-  if (!isRestartPhase(phase)) {
+  if (phase !== "idle" && phase !== "restarting" && !(typeof phase === "string" && LEGACY_WAITING_PHASES.includes(phase))) {
     throw new Error(`Restart state file has an invalid phase: ${filePath}`);
   }
   return normalizeRestartState(value);
-}
-
-export function buildRestartStateWithReleaseFailure(
-  state: RestartState,
-  releaseFailure: ReleaseFailureState,
-): RestartState {
-  return {
-    ...state,
-    phase: "idle",
-    waitingSessions: 0,
-    releaseFailure: normalizeReleaseFailureState(releaseFailure),
-  };
 }
 
 function getTempRestartStatePath(filePath: string): string {
@@ -323,42 +282,18 @@ export function sweepStaleRestartStateTempFiles(
 }
 
 /**
- * Authoritative, cross-process check for whether a restart is already queued or
- * in flight, derived entirely from on-disk state in dataDir rather than any
- * process-local in-memory cache. The management-job-runner mutates its own
- * in-memory restart state via triggerRestartPending() during a deploy but is not
- * the process that gets restarted, so trusting its in-memory isRestartPending()
- * leaves it permanently "pending" and deadlocks future deploys. Reading disk
- * truth here keeps the deploy/update gate self-healing across cutovers.
+ * Whether a restart is requested or under way, read from disk so every process agrees: the server,
+ * the launcher and the management job runner each see only these files. An unreadable file counts
+ * as pending, which keeps the callers (hibernate, deploy reconciliation) on their waiting side.
  */
-export function isRestartAlreadyInFlight(dataDir: string): boolean {
+export function isRestartPending(dataDir: string): boolean {
   try {
     if (controlFileExistsSync(join(dataDir, RESTART_SIGNAL_FILE_NAME))) return true;
     if (controlFileExistsSync(join(dataDir, RESTART_IN_PROGRESS_FILE_NAME))) return true;
-    return readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME)).phase !== "idle";
+    return readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME)).phase === "restarting";
   } catch (error) {
-    console.error(
-      `[restart] Failed to read restart control state in ${dataDir}; treating the lifecycle as busy:`,
-      error,
-    );
+    console.error(`[restart] Failed to read restart control state in ${dataDir}; treating a restart as pending:`, error);
     return true;
-  }
-}
-
-export function isDeployBatchRestartUpdateWindowOpen(dataDir: string): boolean {
-  try {
-    const state = readRestartStateSync(join(dataDir, RESTART_STATE_FILE_NAME));
-    if (state.phase !== "queued" && state.phase !== "waiting-for-sessions") return false;
-    return isDeployBatchRestartSignal(readCurrentRestartSignalFile(
-      join(dataDir, RESTART_SIGNAL_FILE_NAME),
-      join(dataDir, RESTART_IN_PROGRESS_FILE_NAME),
-    ));
-  } catch (error) {
-    console.error(
-      `[restart] Failed to inspect the deploy-batch restart in ${dataDir}; keeping queued jobs held:`,
-      error,
-    );
-    return false;
   }
 }
 

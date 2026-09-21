@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { holdVoiceCapture, whenNoVoiceCapture, whileHoldingVoiceCapture } from "./voice-capture-guard";
+import { holdPageReload, holdVoiceCapture, schedulePageReloadWhenSafe, whenPageReloadSafe, whileHoldingVoiceCapture } from "./voice-capture-guard";
 
 interface FakeSentinel {
   released: boolean;
@@ -44,7 +44,57 @@ function settle(): Promise<void> {
 
 describe("voice capture guard", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("holds reloads for unsent work without taking a wake lock", () => {
+    const { sentinels } = stubBrowser();
+    const release = holdPageReload();
+    const reload = vi.fn();
+    const cancel = whenPageReloadSafe(reload);
+    try {
+      expect(reload).not.toHaveBeenCalled();
+      expect(sentinels).toHaveLength(0);
+      release();
+      release();
+      expect(reload).toHaveBeenCalledOnce();
+    } finally { cancel(); release(); }
+  });
+
+  it("rechecks safety when a capture starts inside the reload delay", async () => {
+    stubBrowser();
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const held = vi.fn();
+    const cancel = schedulePageReloadWhenSafe(reload, held);
+    let release = () => {};
+    try {
+      await vi.advanceTimersByTimeAsync(999);
+      release = holdVoiceCapture();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reload).not.toHaveBeenCalled();
+      expect(held).toHaveBeenCalledOnce();
+      release();
+      expect(reload).toHaveBeenCalledOnce();
+    } finally { cancel(); release(); }
+  });
+
+  it("cancels both scheduled and held page reloads", async () => {
+    stubBrowser();
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    schedulePageReloadWhenSafe(reload, vi.fn())();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reload).not.toHaveBeenCalled();
+    const release = holdPageReload();
+    const cancel = schedulePageReloadWhenSafe(reload, vi.fn());
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      cancel();
+      release();
+      expect(reload).not.toHaveBeenCalled();
+    } finally { cancel(); release(); }
   });
 
   it("asks before the tab closes only while a capture is at risk", async () => {
@@ -99,7 +149,7 @@ describe("voice capture guard", () => {
     const upload = whileHoldingVoiceCapture(() => new Promise<void>((_resolve, reject) => {
       failUpload = reject;
     }));
-    whenNoVoiceCapture(idle);
+    whenPageReloadSafe(idle);
     expect(idle).not.toHaveBeenCalled();
 
     failUpload(new Error("Network timeout"));
@@ -114,8 +164,8 @@ describe("voice capture guard", () => {
     const endSecond = holdVoiceCapture();
     const reload = vi.fn();
     const cancelled = vi.fn();
-    whenNoVoiceCapture(reload);
-    whenNoVoiceCapture(cancelled)();
+    whenPageReloadSafe(reload);
+    whenPageReloadSafe(cancelled)();
 
     endFirst();
     endFirst();
@@ -126,7 +176,7 @@ describe("voice capture guard", () => {
     expect(cancelled).not.toHaveBeenCalled();
 
     const immediate = vi.fn();
-    whenNoVoiceCapture(immediate);
+    whenPageReloadSafe(immediate);
     expect(immediate).toHaveBeenCalledOnce();
     await settle();
   });

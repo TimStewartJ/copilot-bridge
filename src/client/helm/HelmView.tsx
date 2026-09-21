@@ -72,8 +72,6 @@ export interface HelmViewProps {
   sessionReloadSignals: Record<string, number>;
   sessionBusySignals: Record<string, number>;
   sessionHistorySignals: Record<string, number>;
-  newWorkDisabled?: boolean;
-  newWorkDisabledHint?: string;
 }
 
 function conversationLabel(conversation: Pick<HelmConversation, "title">): string {
@@ -263,8 +261,6 @@ export default function HelmView({
   sessionReloadSignals,
   sessionBusySignals,
   sessionHistorySignals,
-  newWorkDisabled = false,
-  newWorkDisabledHint,
 }: HelmViewProps) {
   const queryClient = useQueryClient();
   const helmQuery = useHelmStateQuery();
@@ -486,12 +482,12 @@ export default function HelmView({
       resumable={showResumable ? state?.resumable ?? state?.recent.find((entry) => entry.turnCount > 0) ?? null : null}
       resuming={pendingId !== null || switching}
       handsFreeBusy={handsFree.phase === "connecting"}
-      disabled={newWorkDisabled || switching}
+      disabled={switching}
       onResume={handleResume}
       onSuggestion={(prompt) => void handleSuggestion(prompt)}
       onHandsFree={() => void startHandsFree()}
     />
-  ), [handleResume, handleSuggestion, handsFree.phase, newWorkDisabled, pendingId, showResumable, startHandsFree, state?.recent, state?.resumable, switching]);
+  ), [handleResume, handleSuggestion, handsFree.phase, pendingId, showResumable, startHandsFree, state?.recent, state?.resumable, switching]);
 
   const composerAccessory = setupOpen
     ? <HandsFreeSetupPanel controller={handsFree} onClose={() => setSetupOpen(false)} />
@@ -514,7 +510,7 @@ export default function HelmView({
         <button
           type="button"
           onClick={() => void (handsFreeHere ? endHandsFree() : startHandsFree())}
-          disabled={switching || newWorkDisabled || handsFree.phase === "connecting"}
+          disabled={switching || handsFree.phase === "connecting"}
           aria-pressed={handsFreeHere}
           className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors disabled:opacity-60 ${
             handsFreeHere
@@ -608,8 +604,8 @@ export default function HelmView({
         reloadToken={sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0}
         busySignal={sessionId ? sessionBusySignals[sessionId] ?? 0 : 0}
         historySignal={sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0}
-        newWorkDisabled={newWorkDisabled || switching || helmQuery.isLoading}
-        newWorkDisabledHint={newWorkDisabled ? newWorkDisabledHint : switching ? "Switching conversations…" : undefined}
+        newWorkDisabled={switching || helmQuery.isLoading}
+        newWorkDisabledHint={switching ? "Switching conversations…" : undefined}
         composerAccessory={composerAccessory}
         hideVoiceInput={handsFree.active}
         composerPlaceholder={handsFreeHere ? "Type to Helm. It will answer out loud…" : "Ask Helm…"}

@@ -64,7 +64,9 @@ function createShutdownSpies() {
     deferLoopShutdown: vi.fn(),
     usageReaderShutdown: vi.fn(async () => {}),
     searchShutdown: vi.fn(async () => {}),
+    sessionManagerStopAdmitting: vi.fn(),
     sessionManagerShutdown: vi.fn(async (_deadline?: Deadline) => {}),
+    voiceGatewayShutdown: vi.fn(async () => {}),
     voiceShutdown: vi.fn(async () => {}),
     pushUnsubscribe: vi.fn(async () => {}),
     focusDispose: vi.fn(async () => {}),
@@ -82,7 +84,8 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
     deferLoopRunner: { shutdown: spies.deferLoopShutdown },
     copilotUsageReader: { shutdown: spies.usageReaderShutdown },
     searchIndex: { shutdown: spies.searchShutdown },
-    sessionManager: { gracefulShutdown: spies.sessionManagerShutdown },
+    sessionManager: { stopAdmittingWork: spies.sessionManagerStopAdmitting, gracefulShutdown: spies.sessionManagerShutdown },
+    voiceGateway: { shutdown: spies.voiceGatewayShutdown },
     voiceJobManager: { shutdown: spies.voiceShutdown },
     stopPushEventNotifications: spies.pushUnsubscribe,
     focusNotifications: { dispose: spies.focusDispose },
@@ -92,6 +95,18 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
 }
 
 describe("shutdownAppContextServices", () => {
+  it("closes admission synchronously before awaiting service cleanup", async () => {
+    const spies = createShutdownSpies();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    spies.voiceGatewayShutdown.mockImplementation(() => pending);
+    const operation = shutdownAppContextServices(createFakeContext(spies));
+    try {
+      expect(spies.sessionManagerStopAdmitting).toHaveBeenCalledOnce();
+      expect(spies.setGlobalPause).toHaveBeenCalledWith(true);
+      expect(spies.sessionManagerShutdown).not.toHaveBeenCalled();
+    } finally { release(); await operation; }
+  });
   it("terminates all previews by captured identity before returning, preserving preview data", async () => {
     const backends = [createBackend(41001), createBackend(41002)];
     for (const backend of backends) {

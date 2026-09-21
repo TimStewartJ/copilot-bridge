@@ -56,7 +56,8 @@ export interface BridgeRuntimeStatus {
 
 export interface RestartBridgeResponse {
   ok: true;
-  waitingSessions: number;
+  /** What the restart waits for. Absent when the server was told to stop now. */
+  waitingOn?: { sessions: number; jobs: number; operations?: number };
   forced?: boolean;
   abortedRuns?: number;
   resumingRuns?: number;

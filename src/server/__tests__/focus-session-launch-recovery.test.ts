@@ -7,8 +7,7 @@ import {
   createFocusSessionLaunchService, type FocusLaunchServiceOptions, type FocusSessionLaunchService,
 } from "../focus-session-launch-service.js";
 import { FOCUS_LAUNCH_STARTUP_RECOVERY_LIMIT } from "../focus-session-launch-store.js";
-import * as restartController from "../restart-controller.js";
-import { createDefaultRestartState } from "../restart-state.js";
+
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createTaskStore } from "../task-store.js";
 import { decisionDetails } from "./focus-test-fixtures.js";
@@ -18,7 +17,7 @@ const CURRENT_OWNER = { pid: 100, startMarker: "current-launch-process" };
 const OLD_OWNER = { pid: 101, startMarker: "previous-launch-process" };
 
 beforeEach(() => {
-  vi.spyOn(restartController, "refreshRestartState").mockResolvedValue(createDefaultRestartState());
+
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -328,33 +327,6 @@ describe("bounded Focus launch startup recovery", () => {
     } finally { release.resolve(); await recovery; }
   });
 
-  it("owns restart-readiness work in drain even before a launch is in flight", async () => {
-    const f = setup();
-    const { receipt } = f.created();
-    const entered = gate();
-    const release = gate();
-    vi.mocked(restartController.refreshRestartState).mockImplementation(async () => {
-      entered.resolve();
-      await release.promise;
-      return createDefaultRestartState();
-    });
-    const recovery = f.service.reconcileStartup();
-    try {
-      await entered.promise;
-      f.service.stop();
-      let drained = false;
-      const draining = f.service.drain().then(() => { drained = true; });
-      await Promise.resolve();
-      expect(drained).toBe(false);
-      expect(f.getOwner).not.toHaveBeenCalled();
-      release.resolve();
-      await draining;
-      expect(await recovery).toMatchObject({ selected: 1, recovered: 0, stopped: 1 });
-      expect(f.store.requireReceipt(receipt.id)).toEqual(receipt);
-      expect(f.send).not.toHaveBeenCalled();
-    } finally { release.resolve(); await recovery; }
-  });
-
   it("does not start a scan after the service has stopped", async () => {
     const f = setup();
     const { receipt } = f.created();
@@ -382,19 +354,6 @@ describe("bounded Focus launch startup recovery", () => {
     expect(f.createTask).not.toHaveBeenCalled();
   });
 
-  it.each([0, 1])("defers the remaining batch when restart cutover begins after %s deliveries", async (delivered) => {
-    const f = setup();
-    f.created();
-    f.created();
-    const before = f.store.getStartupRecoveryBatch().receipts;
-    const refresh = vi.mocked(restartController.refreshRestartState)
-      .mockResolvedValue({ ...createDefaultRestartState(), phase: "restarting" });
-    if (delivered) refresh.mockResolvedValueOnce(createDefaultRestartState());
-    expect(await f.service.reconcileStartup()).toMatchObject({ selected: 2, recovered: delivered, deferred: 2 - delivered });
-    for (const receipt of before.slice(delivered)) expect(f.store.requireReceipt(receipt.id)).toEqual(receipt);
-    expect(f.send).toHaveBeenCalledTimes(delivered);
-  });
-
   it("continues past one failed ownership probe without mutating its receipt", async () => {
     const f = setup();
     f.created();
@@ -419,19 +378,6 @@ describe("bounded Focus launch startup recovery", () => {
     expect(f.store.requireReceipt(receipt.id)).toEqual(ambiguous);
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.create).not.toHaveBeenCalled();
-  });
-
-  it("leaves candidates untouched when restart readiness cannot be established", async () => {
-    const f = setup();
-    const { receipt } = f.created();
-    vi.mocked(restartController.refreshRestartState).mockRejectedValue(new Error("Restart state unavailable"));
-    expect(await f.service.reconcileStartup()).toMatchObject({
-      selected: 1, recovered: 0, deferred: 1, error: "Restart state unavailable",
-    });
-    expect(f.store.requireReceipt(receipt.id)).toEqual(receipt);
-    expect(f.getOwner).not.toHaveBeenCalled();
-    expect(f.send).not.toHaveBeenCalled();
-    await f.service.drain();
   });
 
   it("reports a failed scan once without an unhandled or endlessly retried worker", async () => {

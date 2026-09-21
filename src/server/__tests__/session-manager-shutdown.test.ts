@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { forceClearRestartPending, refreshRestartState, SessionManager } from "../session-manager.js";
+import { SessionManager } from "../session-manager.js";
+import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { CopilotBackend } from "../agent-backend/copilot-backend.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -16,13 +17,11 @@ function createFakeBrowserLifecycle(overrides: Partial<{ result: BrowserShutdown
 
 describe("SessionManager graceful shutdown", () => {
   beforeEach(async () => {
-    forceClearRestartPending();
-    await refreshRestartState();
+
   });
 
   afterEach(async () => {
-    forceClearRestartPending();
-    await refreshRestartState();
+
   });
 
   function createManager(overrides: Record<string, unknown> = {}) {
@@ -68,6 +67,33 @@ describe("SessionManager graceful shutdown", () => {
     });
     return session;
   }
+
+  it("waits for cached runtime work even after its visible run has ended", async () => {
+    const manager = createManager() as any;
+    const getActivity = vi.fn(async () => ({ processing: true }));
+    const session = makeAgentSessionStub({ getActivity });
+    manager.sessionObjects.set("session-a", session);
+    expect(manager.getActiveSessions()).toEqual([]);
+    expect(await manager.isRuntimeIdle()).toBe(false);
+    getActivity.mockResolvedValueOnce({ processing: false });
+    expect(await manager.isRuntimeIdle()).toBe(true);
+    await manager.gracefulShutdown();
+  });
+
+  it("does not assume an unknown cached runtime is idle", async () => {
+    const manager = createManager() as any;
+    manager.sessionObjects.set("session-a", makeAgentSessionStub({ getActivity: async () => undefined }));
+    expect(await manager.isRuntimeIdle()).toBe(false);
+    await manager.gracefulShutdown();
+  });
+
+  it("refuses new work synchronously only after shutdown begins", async () => {
+    const manager = createManager();
+    manager.stopAdmittingWork();
+    expect(() => manager.startWork("session-a", "hello")).toThrow(BRIDGE_RESTARTING_MESSAGE);
+    await expect(manager.createSession()).rejects.toThrow("shutting down");
+    await manager.gracefulShutdown();
+  });
 
   it("closes browser sessions and the primary bridge browser during graceful shutdown", async () => {
     const closeAll = vi.fn().mockResolvedValue(undefined);
@@ -137,7 +163,7 @@ describe("SessionManager graceful shutdown", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
-  it("aborts active runs and defer checks for a forced restart without stopping the backend", async () => {
+  it("aborts active runs and defer checks during shutdown", async () => {
     const session = makeSession();
     const stop = vi.fn().mockResolvedValue(undefined);
     const manager = createManager() as any;
@@ -153,12 +179,12 @@ describe("SessionManager graceful shutdown", () => {
       expect.objectContaining({ sessionId: "session-1", attentionMode: "normal" }),
     ]);
 
-    await manager.abortActiveWork();
+    await manager.gracefulShutdown();
 
     expect(session.abort).toHaveBeenCalledTimes(1);
     expect(abortDeferChecks).toHaveBeenCalledOnce();
     expect(manager.getActiveSessions()).toEqual([]);
-    expect(stop).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledOnce();
   });
 
   it("bounds a hung backend stop and forces stop without blocking shutdown", async () => {

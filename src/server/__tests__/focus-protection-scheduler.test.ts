@@ -7,7 +7,6 @@ import { createSessionMetaStore } from "../session-meta-store.js";
 import { createFocusProtectionStore, protectionRetryAt } from "../focus-protection-store.js";
 import { createMissedRunCatchUpController, type MissedRunCatchUpController } from "../scheduler-missed-runs.js";
 import type { SessionManager } from "../session-manager.js";
-import type { RestartState } from "../restart-state.js";
 import * as scheduler from "../scheduler.js";
 
 const state = vi.hoisted(() => ({
@@ -16,25 +15,6 @@ const state = vi.hoisted(() => ({
   cronTicks: [] as Array<() => void>,
   cronMissed: [] as Array<() => void>,
 }));
-
-vi.mock("../session-manager.js", () => {
-  const current = () => ({
-    requestId: state.phase === "idle" ? null : "restart",
-    phase: state.phase,
-    requestedAt: state.requestedAt,
-    waitingSessions: 0,
-    launcherHeartbeatAt: null,
-    releaseFailure: null,
-  });
-  return {
-    isRestartPending: () => state.phase !== "idle",
-    isRestartCutoverInProgress: (restart: RestartState) => restart.phase === "restarting",
-    refreshRestartState: async () => current(),
-    refreshRestartStateSync: current,
-    isRestartPendingError: (error: unknown) => error instanceof Error && error.message === "Restart pending",
-    RESTART_PENDING_MESSAGE: "Restart pending",
-  };
-});
 
 vi.mock("node-cron", () => ({
   default: {
@@ -279,7 +259,7 @@ describe("protected scheduler admission", () => {
     expect(ctx.claims(schedule.id)).toEqual([{ runKey: START, source: "once", status: "triggered" }]);
   });
 
-  it("retains the existing global-pause and restart-cutover gates for automatic and manual triggers", async () => {
+  it("retains global pause and focus protection without a restart admission gate", async () => {
     const ctx = fixture();
     ctx.protect();
     await ctx.start();
@@ -289,15 +269,12 @@ describe("protected scheduler admission", () => {
     expect(await scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: START }))
       .toEqual({ skipped: "Scheduling is globally paused" });
     scheduler.setGlobalPause(false);
-    state.phase = "restarting";
-    expect(await scheduler.triggerSchedule(schedule.id)).toEqual({ skipped: "Restart pending" });
+    ctx.globalBus.emit({ type: "server:restart-changed" });
     expect(await scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: START }))
-      .toEqual({ skipped: "Restart pending" });
+      .toEqual({ skipped: scheduler.FOCUS_PROTECTION_MESSAGE });
     expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.claims(schedule.id)).toEqual([]);
-    expect(ctx.focusProtectionStore.outstanding("schedule")).toEqual([]);
-
-    state.phase = "waiting-for-sessions";
+    expect(ctx.focusProtectionStore.outstanding("schedule")).toHaveLength(1);
     expect(await scheduler.triggerSchedule(schedule.id)).toEqual({ sessionId: "protected-session-1" });
   });
 });
@@ -382,12 +359,7 @@ describe("durable protected missed-run recovery", () => {
       computeNextRunAt: scheduler.computeNextRunAt,
       unregisterSchedule: vi.fn(),
       triggerSchedule,
-      isRestartPending: () => false,
-      refreshRestartState: async () => ({
-        requestId: null, phase: "idle", requestedAt: null, waitingSessions: 0,
-        launcherHeartbeatAt: null, releaseFailure: null,
-      }),
-      getRestartPendingMessage: () => "Restart pending",
+
       focusProtectionStore: () => ctx.focusProtectionStore,
     });
     controllers.push(controller);
@@ -503,22 +475,19 @@ describe("protected retry ownership", () => {
     expect(ctx.focusProtectionStore.impacts(window.id).dispositions).toEqual({ started: 1 });
   });
 
-  it("keeps unresolved holds through a long restart and a transient launch failure after protection expires", async () => {
+  it("keeps unresolved holds through a transient launch failure after protection expires", async () => {
     const ctx = fixture();
     const window = ctx.protect();
     const schedule = ctx.createSchedule("once");
     await ctx.start();
-    state.phase = "restarting";
-    state.requestedAt = START;
+    ctx.manager.createTaskSession.mockRejectedValueOnce(new Error("Temporary capacity failure"));
     vi.setSystemTime("2026-09-05T14:00:00.000Z");
     ctx.globalBus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
     await scheduler.waitForMissedRunCatchUpForTests();
     expect(ctx.manager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
     expect(ctx.focusProtectionStore.impacts(window.id)).toMatchObject({ pending: 1, dispositions: {} });
 
-    state.phase = "idle";
-    ctx.manager.createTaskSession.mockRejectedValueOnce(new Error("Temporary capacity failure"));
-    ctx.globalBus.emit({ type: "server:restart-cleared" });
+    ctx.globalBus.emit({ type: "server:restart-changed" });
     await scheduler.waitForMissedRunCatchUpForTests();
     expect(ctx.claims(schedule.id)).toEqual([]);
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(true);

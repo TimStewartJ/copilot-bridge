@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTestDir } from "./helpers.js";
 import {
-  isRestartAlreadyInFlight,
+  isRestartPending,
   sweepStaleRestartStateTempFiles,
 } from "../restart-state.js";
 
@@ -82,33 +82,33 @@ describe("sweepStaleRestartStateTempFiles", () => {
   });
 });
 
-describe("isRestartAlreadyInFlight", () => {
+describe("isRestartPending", () => {
   it("returns false for a clean data dir (no signals, idle state)", () => {
     const dataDir = freshDataDir();
-    expect(isRestartAlreadyInFlight(dataDir)).toBe(false);
+    expect(isRestartPending(dataDir)).toBe(false);
   });
 
   it("returns true when the queued restart signal file or the in-progress marker is present", () => {
     const dataDir1 = freshDataDir();
     writeFileSync(join(dataDir1, "restart.signal"), "{}", "utf8");
-    expect(isRestartAlreadyInFlight(dataDir1), "signal file").toBe(true);
+    expect(isRestartPending(dataDir1), "signal file").toBe(true);
 
     const dataDir2 = freshDataDir();
     writeFileSync(join(dataDir2, "restart-in-progress.json"), "{}", "utf8");
-    expect(isRestartAlreadyInFlight(dataDir2), "in-progress file").toBe(true);
+    expect(isRestartPending(dataDir2), "in-progress file").toBe(true);
   });
 
   it("returns true for non-idle restart-state.json and false for idle", () => {
     const dataDir1 = freshDataDir();
     writeFileSync(
       stateFile(dataDir1),
-      JSON.stringify({ phase: "queued", requestId: "r1", waitingSessions: 0 }),
+      JSON.stringify({ phase: "restarting", releaseFailure: null }),
       "utf8",
     );
-    expect(isRestartAlreadyInFlight(dataDir1), "queued phase").toBe(true);
+    expect(isRestartPending(dataDir1), "restarting phase").toBe(true);
 
     const dataDir2 = freshDataDir();
     writeFileSync(stateFile(dataDir2), JSON.stringify({ phase: "idle" }), "utf8");
-    expect(isRestartAlreadyInFlight(dataDir2), "idle phase").toBe(false);
+    expect(isRestartPending(dataDir2), "idle phase").toBe(false);
   });
 });

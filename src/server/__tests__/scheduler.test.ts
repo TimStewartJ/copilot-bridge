@@ -1,14 +1,6 @@
+import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { join } from "node:path";
-import {
-  forceClearRestartPending,
-  configureRestartStateStore,
-  isRestartPending,
-  refreshRestartState,
-  RESTART_PENDING_MESSAGE,
-  triggerRestartPending,
-} from "../session-manager.js";
-import { clearRestartState, writeRestartState } from "../restart-state.js";
+
 import * as scheduler from "../scheduler.js";
 import {
   computeNextRunAt,
@@ -17,12 +9,11 @@ import {
   matchesField,
   validateSupportedCronExpression,
 } from "../scheduler.js";
-import { makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {
-  forceClearRestartPending();
+
   if (scheduler.isInitialized()) {
     scheduler.shutdown();
   }
@@ -152,11 +143,11 @@ describe("cron math", () => {
 
 describe("scheduler restart gating", () => {
   beforeEach(() => {
-    forceClearRestartPending();
+
   });
 
   afterEach(() => {
-    forceClearRestartPending();
+
     scheduler.shutdown();
   });
 
@@ -188,7 +179,6 @@ describe("scheduler restart gating", () => {
       contextTier: "long_context",
     });
 
-    triggerRestartPending();
     const result = await scheduler.triggerSchedule(schedule.id);
 
     expect(result).toEqual({ sessionId: "sched-session" });
@@ -200,105 +190,6 @@ describe("scheduler restart gating", () => {
       contextTier: "long_context",
     });
     expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
-  });
-
-  it("triggers schedules when restart is pending with waiting sessions", async () => {
-    const tempDir = makeTestDir("restart-state-scheduler");
-    const { ctx } = createTestApp();
-    try {
-      configureRestartStateStore({ dataDir: tempDir, docsDir: tempDir, env: process.env });
-      await writeRestartState(join(tempDir, "restart-state.json"), {
-        requestId: "req-waiting",
-        phase: "waiting-for-sessions",
-        requestedAt: new Date().toISOString(),
-        waitingSessions: 2,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
-      if (!isRestartPending()) {
-        throw new Error(`BUG in test setup: isRestartPending() still false after refreshRestartState()`);
-      }
-
-      const sessionManager = {
-        isSessionBusy: vi.fn().mockReturnValue(false),
-        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-        startWorkAndWaitForDelivery: vi.fn(),
-        deleteSession: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Waiting-sessions gated schedule",
-        prompt: "run now",
-        type: "cron",
-        cron: "0 0 * * *",
-      });
-
-      const result = await scheduler.triggerSchedule(schedule.id);
-
-      expect(result).toEqual({ sessionId: "sched-session" });
-      expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
-    } finally {
-      forceClearRestartPending();
-      configureRestartStateStore(undefined);
-    }
-  });
-
-  it("skips triggering schedules while launcher restart cutover is in progress", async () => {
-    const tempDir = makeTestDir("restart-state-scheduler");
-    const { ctx } = createTestApp();
-    try {
-      configureRestartStateStore({ dataDir: tempDir, docsDir: tempDir, env: process.env });
-      await writeRestartState(join(tempDir, "restart-state.json"), {
-        requestId: "req-restarting",
-        phase: "restarting",
-        requestedAt: new Date().toISOString(),
-        waitingSessions: 0,
-        launcherHeartbeatAt: new Date().toISOString(),
-      });
-      await refreshRestartState();
-
-      const sessionManager = {
-        isSessionBusy: vi.fn().mockReturnValue(false),
-        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-        startWorkAndWaitForDelivery: vi.fn(),
-        deleteSession: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Restart cutover schedule",
-        prompt: "run now",
-        type: "cron",
-        cron: "0 0 * * *",
-      });
-
-      const result = await scheduler.triggerSchedule(schedule.id);
-
-      expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
-      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-      expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
-    } finally {
-      forceClearRestartPending();
-      configureRestartStateStore(undefined);
-    }
   });
 
   it("uses the persisted cron slot for delayed cron triggers and watchdog dedupe", async () => {
@@ -358,7 +249,7 @@ describe("scheduler restart gating", () => {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
       startWorkAndWaitForDelivery: vi.fn(() => {
-        throw new Error(RESTART_PENDING_MESSAGE);
+        throw new Error(BRIDGE_RESTARTING_MESSAGE);
       }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
     } as any;
@@ -379,9 +270,7 @@ describe("scheduler restart gating", () => {
       cron: "0 0 * * *",
     });
 
-    const result = await scheduler.triggerSchedule(schedule.id);
-
-    expect(result).toEqual({ skipped: RESTART_PENDING_MESSAGE });
+    await expect(scheduler.triggerSchedule(schedule.id)).rejects.toThrow(BRIDGE_RESTARTING_MESSAGE);
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.deleteSession).toHaveBeenCalledWith("sched-session");
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).not.toContain("sched-session");
@@ -1262,7 +1151,6 @@ describe("scheduler restart gating", () => {
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("sched-session");
   });
 
-
 });
 
 describe("scheduler startup recovery", () => {
@@ -1592,276 +1480,6 @@ describe("scheduler startup recovery", () => {
     const updated = ctx.scheduleStore.getSchedule(schedule.id)!;
     expect(updated.runCount).toBe(1);
     expect(updated.enabled).toBe(false);
-  });
-
-  it("polls persisted restart state and catches up after launcher-style restart clears", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
-
-    const tempDir = makeTestDir("restart-state-scheduler");
-    const docsDir = join(tempDir, "docs");
-    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
-    const restartStatePath = join(tempDir, "restart-state.json");
-    const { ctx } = createTestApp({
-      runtimePaths: { dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
-    });
-    try {
-      configureRestartStateStore({ dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
-      await writeRestartState(restartStatePath, {
-        requestId: "req-launcher-restart-catchup",
-        phase: "restarting",
-        requestedAt: new Date().toISOString(),
-        waitingSessions: 0,
-        launcherHeartbeatAt: new Date().toISOString(),
-      });
-      await refreshRestartState();
-
-      const sessionManager = {
-        isSessionBusy: vi.fn().mockReturnValue(false),
-        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "launcher-cleared-one-shot" }),
-        startWorkAndWaitForDelivery: vi.fn(),
-        deleteSession: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Launcher restart deferred one-shot",
-        prompt: "catch up after launcher clears",
-        type: "once",
-        runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
-      });
-
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      await scheduler.waitForMissedRunCatchUpForTests();
-      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-
-      await clearRestartState(restartStatePath);
-      await vi.advanceTimersByTimeAsync(5_000);
-      await scheduler.waitForMissedRunCatchUpForTests();
-
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith(
-        "launcher-cleared-one-shot",
-        "catch up after launcher clears",
-      );
-      expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-        runCount: 1,
-        enabled: false,
-      });
-    } finally {
-      forceClearRestartPending();
-      configureRestartStateStore(undefined);
-    }
-  });
-
-  it("rebuilds aged deferred one-shot eligibility after a launcher-style restart boots mid-restart", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
-
-    const tempDir = makeTestDir("restart-state-scheduler");
-    const docsDir = join(tempDir, "docs");
-    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
-    const restartStatePath = join(tempDir, "restart-state.json");
-    const { ctx } = createTestApp({
-      runtimePaths: { dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
-    });
-    try {
-      configureRestartStateStore({ dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
-      const restartRequestedAt = new Date().toISOString();
-      await writeRestartState(restartStatePath, {
-        requestId: "req-launcher-restart-aged-catchup",
-        phase: "restarting",
-        requestedAt: restartRequestedAt,
-        waitingSessions: 0,
-        launcherHeartbeatAt: restartRequestedAt,
-      });
-      await refreshRestartState();
-
-      const sessionManager = {
-        isSessionBusy: vi.fn().mockReturnValue(false),
-        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "launcher-aged-one-shot" }),
-        startWorkAndWaitForDelivery: vi.fn(),
-        deleteSession: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Launcher aged deferred one-shot",
-        prompt: "catch up after long restart",
-        type: "once",
-        runAt: new Date(Date.now() - 30 * 60_000).toISOString(),
-      });
-
-      await vi.advanceTimersByTimeAsync(90 * 60_000);
-
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      await scheduler.waitForMissedRunCatchUpForTests();
-      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-      expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(true);
-
-      await clearRestartState(restartStatePath);
-      await vi.advanceTimersByTimeAsync(5_000);
-      await scheduler.waitForMissedRunCatchUpForTests();
-
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith(
-        "launcher-aged-one-shot",
-        "catch up after long restart",
-      );
-      expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-        runCount: 1,
-        enabled: false,
-      });
-    } finally {
-      forceClearRestartPending();
-      configureRestartStateStore(undefined);
-    }
-  });
-
-  it("does not replay a deferred one-shot slot after the schedule is rescheduled before restart clears", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
-
-    triggerRestartPending();
-
-    const { ctx } = createTestApp();
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "rescheduled-one-shot" }),
-      startWorkAndWaitForDelivery: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
-
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const originalRunAt = new Date(Date.now() - 30 * 60_000).toISOString();
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Deferred rescheduled one-shot",
-      prompt: "run after reschedule",
-      type: "once",
-      runAt: originalRunAt,
-    });
-
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    await Promise.resolve();
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-
-    const rescheduledRunAt = new Date(Date.now() + 30 * 60_000).toISOString();
-    ctx.scheduleStore.updateSchedule(schedule.id, { runAt: rescheduledRunAt });
-    scheduler.armOneShot(schedule.id, rescheduledRunAt);
-    ctx.scheduleStore.updateNextRunAt(schedule.id, rescheduledRunAt);
-
-    forceClearRestartPending();
-    ctx.globalBus.emit({ type: "server:restart-cleared" });
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-      enabled: true,
-      runCount: 0,
-      runAt: rescheduledRunAt,
-      nextRunAt: rescheduledRunAt,
-    });
-
-    await vi.advanceTimersByTimeAsync(25 * 60_000);
-    expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    await vi.waitFor(() => {
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("rescheduled-one-shot", "run after reschedule");
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
-      enabled: false,
-      runCount: 1,
-    });
-  });
-
-  it("retries missed cron catch-up after restart clears", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
-
-    const tempDir = makeTestDir("restart-state-scheduler");
-    const docsDir = join(tempDir, "docs");
-    const docsSnapshotsDir = join(tempDir, "docs-snapshots");
-    const { ctx, db } = createTestApp({
-      runtimePaths: { dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env },
-    });
-    try {
-      configureRestartStateStore({ dataDir: tempDir, docsDir, docsSnapshotsDir, env: process.env });
-      await writeRestartState(join(tempDir, "restart-state.json"), {
-        requestId: "req-cron-catchup",
-        phase: "waiting-for-sessions",
-        requestedAt: new Date().toISOString(),
-        waitingSessions: 1,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
-
-      const sessionManager = {
-        isSessionBusy: vi.fn().mockReturnValue(false),
-        createTaskSession: vi.fn().mockResolvedValue({ sessionId: "restart-cleared-cron" }),
-        startWorkAndWaitForDelivery: vi.fn(),
-        deleteSession: vi.fn().mockResolvedValue(undefined),
-      } as any;
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Restart deferred cron",
-        prompt: "catch up cron",
-        type: "cron",
-        cron: "30 * * * *",
-      });
-      db.prepare("UPDATE schedules SET lastRunAt = ?, runCount = ? WHERE id = ?").run(
-        "2026-04-16T15:00:00.000Z",
-        1,
-        schedule.id,
-      );
-
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      await scheduler.waitForMissedRunCatchUpForTests();
-      expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-
-      forceClearRestartPending();
-      ctx.globalBus.emit({ type: "server:restart-cleared" });
-
-      await scheduler.waitForMissedRunCatchUpForTests();
-      expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-      expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("restart-cleared-cron", "catch up cron");
-      expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(2);
-    } finally {
-      forceClearRestartPending();
-      configureRestartStateStore(undefined);
-    }
   });
 
   it("disables stale one-shot schedules instead of replaying them", async () => {

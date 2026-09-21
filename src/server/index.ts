@@ -23,7 +23,6 @@ import {
 import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
-import { configureRestartStateStore, refreshRestartState } from "./session-manager.js";
 import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
 import { queueBootRecoveryPrompts } from "./restart-resume.js";
 import { setProcessLaunchObserver } from "./process-host.js";
@@ -196,14 +195,12 @@ async function main(): Promise<void> {
   console.log();
 
   await sessionManager.initialize();
-  configureRestartStateStore(runtimePaths);
   const sweptRestartTemps = sweepStaleRestartStateTempFiles(
     join(runtimePaths.dataDir, RESTART_STATE_FILE_NAME),
   );
   if (sweptRestartTemps > 0) {
     console.log(`[restart] Swept ${sweptRestartTemps} stale restart-state temp file(s) at startup`);
   }
-  await refreshRestartState();
   try {
     const voiceJobMaintenance = await defaultContext.voiceJobManager.startMaintenance();
     if (voiceJobMaintenance.terminalRowsPruned > 0 || voiceJobMaintenance.orphanDirectoriesRemoved > 0) {

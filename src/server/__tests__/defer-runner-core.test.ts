@@ -1,3 +1,4 @@
+import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { describe, expect, it } from "vitest";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
@@ -10,14 +11,11 @@ import {
   INITIAL_BACKOFF_MS,
   MAX_BACKOFF_MS,
 } from "../defer-runner-core.js";
-import {
-  PROMPT_DELIVERY_ABORTED_MESSAGE,
-  RESTART_PENDING_MESSAGE,
-} from "../session-manager.js";
+import { PROMPT_DELIVERY_ABORTED_MESSAGE } from "../session-manager.js";
 
 describe("defer-runner-core delivery errors", () => {
   it.each([
-    RESTART_PENDING_MESSAGE,
+    BRIDGE_RESTARTING_MESSAGE,
     PROMPT_DELIVERY_ABORTED_MESSAGE,
     BACKEND_DISCONNECTED_MESSAGE,
     BACKEND_RECONNECTING_MESSAGE,

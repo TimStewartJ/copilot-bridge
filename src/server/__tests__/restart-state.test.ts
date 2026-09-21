@@ -46,10 +46,8 @@ import {
   DEFAULT_RESTART_STATE,
   __setRestartStateFsRetrySleepForTests,
   __setRestartStateFsRetrySleepSyncForTests,
-  buildRestartStateWithReleaseFailure,
   clearRestartState,
-  isDeployBatchRestartUpdateWindowOpen,
-  isRestartAlreadyInFlight,
+  isRestartPending,
   readRestartState,
   readRestartStateSync,
   writeRestartState,
@@ -60,14 +58,7 @@ import {
 const statePath = join("repo", "data", "restart-state.json");
 const tempPath = join(dirname(statePath), `.${basename(statePath)}.restart-state-test.tmp`);
 
-const activeState: RestartState = {
-  requestId: "req-123",
-  phase: "waiting-for-sessions",
-  requestedAt: "2026-04-24T12:00:00.000Z",
-  waitingSessions: 3,
-  launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-  releaseFailure: null,
-};
+const activeState: RestartState = { phase: "restarting", releaseFailure: null };
 
 const releaseFailure: ReleaseFailureState = {
   event: "launcher-manual-intervention-required",
@@ -105,6 +96,13 @@ describe("restart-state", () => {
     __setRestartStateFsRetrySleepSyncForTests(() => {});
   });
 
+  it("round-trips idle state with release-failure diagnostics", async () => {
+    const failed: RestartState = { phase: "idle", releaseFailure };
+    await expect(writeRestartState(statePath, failed)).resolves.toEqual(failed);
+    readFileMock.mockResolvedValueOnce(JSON.stringify(failed));
+    await expect(readRestartState(statePath)).resolves.toEqual(failed);
+  });
+
   it("returns the default state when no persisted file exists", async () => {
     await expect(readRestartState(statePath)).resolves.toEqual(DEFAULT_RESTART_STATE);
     expect(readFileMock).toHaveBeenCalledWith(statePath, "utf8");
@@ -130,11 +128,7 @@ describe("restart-state", () => {
     }));
 
     await expect(readRestartState(statePath)).resolves.toEqual({
-      requestId: "req-123",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 3,
-      launcherHeartbeatAt: null,
+      phase: "idle",
       releaseFailure: {
         event: "launcher-manual-intervention-required",
         phase: "rollback",
@@ -216,91 +210,6 @@ describe("restart-state", () => {
     expect(rmMock).toHaveBeenCalledWith(statePath, { force: true });
   });
 
-  it("builds an idle restart state that preserves release failure metadata", () => {
-    expect(buildRestartStateWithReleaseFailure(activeState, releaseFailure)).toEqual({
-      ...activeState,
-      phase: "idle",
-      waitingSessions: 0,
-      releaseFailure,
-    });
-  });
-
-  it("opens deploy admission only while a deploy-batch restart is queued or waiting", () => {
-    const dataDir = join("repo", "data");
-    readFileSyncMock.mockImplementation((path: string) => {
-      if (path === join(dataDir, "restart-state.json")) return JSON.stringify(activeState);
-      if (path === join(dataDir, "restart-in-progress.json")) {
-        return JSON.stringify({
-          requestedAt: activeState.requestedAt,
-          requestId: activeState.requestId,
-          validationMode: "deploy",
-          source: "staging_deploy_batch",
-          releaseCandidate: {
-            id: "release-1",
-            root: "release-1",
-            commitSha: "commit-1",
-            source: "staging_deploy",
-            dependencyHash: "deps-1",
-          },
-        });
-      }
-      throw Object.assign(new Error("missing"), { code: "ENOENT" });
-    });
-
-    expect(isDeployBatchRestartUpdateWindowOpen(dataDir)).toBe(true);
-
-    readFileSyncMock.mockImplementation((path: string) => {
-      if (path === join(dataDir, "restart-state.json")) {
-        return JSON.stringify({ ...activeState, phase: "restarting" });
-      }
-      throw Object.assign(new Error("missing"), { code: "ENOENT" });
-    });
-    expect(isDeployBatchRestartUpdateWindowOpen(dataDir)).toBe(false);
-  });
-
-  it("round-trips queued, restarting, and idle phase states", async () => {
-    const queued: RestartState = {
-      requestId: "req-queued",
-      phase: "queued",
-      requestedAt: "2026-04-24T13:00:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: null,
-      releaseFailure: null,
-    };
-
-    const written1 = await writeRestartState(statePath, queued);
-    expect(written1).toEqual(queued);
-    readFileMock.mockResolvedValueOnce(JSON.stringify(written1));
-    expect(await readRestartState(statePath)).toEqual(queued);
-
-    const restarting: RestartState = {
-      requestId: "req-restarting",
-      phase: "restarting",
-      requestedAt: "2026-04-24T14:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: "2026-04-24T14:00:10.000Z",
-      releaseFailure: null,
-    };
-
-    const written2 = await writeRestartState(statePath, restarting);
-    expect(written2).toEqual(restarting);
-    readFileMock.mockResolvedValueOnce(JSON.stringify(written2));
-    expect(await readRestartState(statePath)).toEqual(restarting);
-
-    const idle: RestartState = {
-      requestId: null,
-      phase: "idle",
-      requestedAt: null,
-      waitingSessions: 0,
-      launcherHeartbeatAt: null,
-      releaseFailure: null,
-    };
-
-    const written3 = await writeRestartState(statePath, idle);
-    expect(written3).toEqual(idle);
-    expect(written3).toEqual(DEFAULT_RESTART_STATE);
-  });
-
   it("rejects an unknown phase instead of normalizing it to idle", async () => {
     readFileMock.mockResolvedValueOnce(JSON.stringify({
       requestId: "req-bad",
@@ -310,18 +219,6 @@ describe("restart-state", () => {
     }));
 
     await expect(readRestartState(statePath)).rejects.toThrow("invalid phase");
-  });
-
-  it("clamps negative waitingSessions to zero", async () => {
-    readFileMock.mockResolvedValueOnce(JSON.stringify({
-      requestId: "req-neg",
-      phase: "restarting",
-      requestedAt: "2026-04-24T15:00:00.000Z",
-      waitingSessions: -5,
-    }));
-
-    const result = await readRestartState(statePath);
-    expect(result.waitingSessions).toBe(0);
   });
 
   it("surfaces exhausted unreadable-state errors instead of treating them as missing", async () => {
@@ -346,9 +243,9 @@ describe("restart-state", () => {
     readFileSyncMock.mockReturnValue("{");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    expect(isRestartAlreadyInFlight(dirname(statePath))).toBe(true);
+    expect(isRestartPending(dirname(statePath))).toBe(true);
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("treating the lifecycle as busy"),
+      expect.stringContaining("treating a restart as pending"),
       expect.any(SyntaxError),
     );
     errorSpy.mockRestore();

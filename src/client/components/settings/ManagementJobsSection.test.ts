@@ -164,7 +164,7 @@ function mockManagementJobs(jobs: ManagementJobSummary[], runtimeStatus: Runtime
     retriedFrom: "job-1",
     reused: false,
   }));
-  const restartMutateAsync = vi.fn(async () => ({ ok: true, waitingSessions: 2 }));
+  const restartMutateAsync = vi.fn(async () => ({ ok: true, waitingOn: { sessions: 2, jobs: 0 } }));
   const evictIdleCacheMutateAsync = vi.fn(async () => ({
     ok: true,
     evictedSessions: 7,
@@ -218,10 +218,9 @@ function mockManagementJobs(jobs: ManagementJobSummary[], runtimeStatus: Runtime
     data: {
       pending: false,
       phase: "idle",
-      waitingSessions: 0,
+      waitingOn: { sessions: 0, jobs: 0, sessionIds: [] },
       requestedAt: null,
       serverInstanceId: "server-1",
-      canAcceptNewWork: true,
     },
     isFetching: false,
     error: null,
@@ -399,11 +398,12 @@ describe("ManagementJobsSection", () => {
         (harness.dom.container.textContent ?? "").includes("Self-update queued as self-updat"),
       );
 
-      await clickButton(harness, "Restart Bridge");
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining("3 active sessions, 1 stalled, 2 awaiting input"));
+      const confirmationsBeforeRestart = confirm.mock.calls.length;
+      await clickButton(harness, "Restart when idle");
+      expect(confirm).toHaveBeenCalledTimes(confirmationsBeforeRestart);
       expect(restartMutateAsync).toHaveBeenCalledOnce();
       await waitUntilAct(harness.act, () =>
-        (harness.dom.container.textContent ?? "").includes("Restart queued. Waiting for 2 active sessions."),
+        (harness.dom.container.textContent ?? "").includes("Restart requested. It happens once the Bridge is idle and blocks nothing until then."),
       );
     } finally {
       await harness.cleanup();
@@ -430,11 +430,11 @@ describe("ManagementJobsSection", () => {
     }
   });
 
-  it("enables force restart only for backend trouble or fully stalled active sessions", async () => {
+  it("offers restart now with explicit confirmation and resume", async () => {
     mockManagementJobs([], createRuntimeStatus());
     let harness = await renderSection();
     try {
-      expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(true);
+      expect(getReactProps(findButtonByText(harness.dom.container, "Restart now"))?.disabled).toBe(false);
     } finally {
       await harness.cleanup();
     }
@@ -446,10 +446,10 @@ describe("ManagementJobsSection", () => {
     harness = await renderSection();
     try {
       (globalThis.window as unknown as { confirm: typeof confirm }).confirm = confirm;
-      expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(false);
-      await clickButton(harness, "Force restart");
-      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("aborts every in-flight run and defer check"));
-      expect(disconnected.restartMutateAsync).toHaveBeenCalledWith({ force: true });
+      expect(getReactProps(findButtonByText(harness.dom.container, "Restart now"))?.disabled).toBe(false);
+      await clickButton(harness, "Restart now");
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("will stop and pick up where"));
+      expect(disconnected.restartMutateAsync).toHaveBeenCalledWith({ force: true, resume: true });
     } finally {
       await harness.cleanup();
     }
@@ -460,10 +460,25 @@ describe("ManagementJobsSection", () => {
     }));
     harness = await renderSection();
     try {
-      expect(getReactProps(findButtonByText(harness.dom.container, "Force restart"))?.disabled).toBe(false);
+      expect(getReactProps(findButtonByText(harness.dom.container, "Restart now"))?.disabled).toBe(false);
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("does not disable ordinary work or self-update merely because a restart is pending", async () => {
+    mockManagementJobs([]);
+    hookMocks.useRestartStatusQuery.mockImplementation(() => ({
+      data: { pending: true, phase: "waiting", requestedAt: "2026-09-20T17:00:00Z", serverInstanceId: "server-1",
+        waitingOn: { sessions: 2, jobs: 0, sessionIds: ["a", "b"] } },
+      isLoading: false, refetch: vi.fn(),
+    }));
+    const harness = await renderSection();
+    try {
+      for (const label of ["Queue self-update", "Restart when idle", "Restart now", "Evict idle cache"]) {
+        expect(getReactProps(findButtonByText(harness.dom.container, label))?.disabled).toBe(false);
+      }
+    } finally { await harness.cleanup(); }
   });
 
   it("disables restart-capable controls in staging previews", async () => {
@@ -504,7 +519,7 @@ describe("ManagementJobsSection", () => {
     const harness = await renderSection();
     try {
       const updateButton = findButtonByText(harness.dom.container, "Queue self-update");
-      const restartButton = findButtonByText(harness.dom.container, "Restart Bridge");
+      const restartButton = findButtonByText(harness.dom.container, "Restart when idle");
       const evictIdleCacheButton = findButtonByText(harness.dom.container, "Evict idle cache");
       expect(getReactProps(updateButton)?.disabled).toBe(true);
       expect(getReactProps(restartButton)?.disabled).toBe(true);

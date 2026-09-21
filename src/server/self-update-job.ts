@@ -10,8 +10,7 @@ import {
   readActiveRelease,
   type ReleaseSlotManifest,
 } from "./release-slots.js";
-import { isRestartAlreadyInFlight } from "./restart-state.js";
-import { lifecycleBusyToolFailure, writeRestartSignalOrRollback } from "./restart-inflight.js";
+import { requestRestart, RESTART_WHEN_IDLE_NOTE } from "./restart-signal.js";
 import { toolFailure } from "./tool-results.js";
 import { resolveBridgeControlRoot } from "./control-root.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
@@ -189,7 +188,11 @@ async function handleUnchangedHeadDrift(options: {
   }
 
   try {
-    writeRestartSignalOrRollback(options.signalFile, "deploy", "self_update", releaseSlotResult.manifest);
+    await requestRestart(options.dataDir, {
+      validationMode: "deploy",
+      source: "self_update",
+      releaseCandidate: releaseSlotResult.manifest,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return toolFailure("Release slot prepared but restart signal could not be written.", {
@@ -216,7 +219,7 @@ async function handleUnchangedHeadDrift(options: {
       `Repository HEAD is already ${options.shortHeadSha}, but the active release was still ` +
       `${options.activeRelease.commitSha.slice(0, 8)}. Restart queued to activate HEAD from ` +
       (releaseSlotResult.reused ? "the existing release slot." : "a freshly prepared release slot.") +
-      " Do NOT make any more tool calls once the launcher begins restart cutover.",
+      ` ${RESTART_WHEN_IDLE_NOTE}`,
   };
 }
 
@@ -253,16 +256,6 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
 
   if (runtimePaths.distributionMode === "release" || isBridgeReleaseMode(process.env, controlRoot)) {
     return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
-  }
-  if (isRestartAlreadyInFlight(dataDir)) {
-    // This job runs inside the management-job runner, so it is itself the
-    // active lifecycle job — only the on-disk restart state can tell it that
-    // someone else already queued a cutover.
-    return lifecycleBusyToolFailure({
-      busy: { reason: "restart_in_flight" },
-      retryTarget: "the update",
-      toolTelemetry: { signalFile },
-    });
   }
 
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
@@ -362,9 +355,12 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
     })();
   const dependencyChanged = await dependencyInputsChanged;
 
-  let otherBusy = 0;
   try {
-    otherBusy = writeRestartSignalOrRollback(signalFile, "deploy", "self_update", releaseSlotResult.manifest);
+    await requestRestart(dataDir, {
+      validationMode: "deploy",
+      source: "self_update",
+      releaseCandidate: releaseSlotResult.manifest,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return toolFailure("Updated code but restart signal could not be written.", {
@@ -376,10 +372,6 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
     });
   }
 
-  const waitNote = otherBusy > 0
-    ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
-    : "";
-
   return {
     success: true,
     previousSha: preUpdateSha.slice(0, 8),
@@ -388,7 +380,6 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
     message:
       `Updated ${preUpdateSha.slice(0, 8)} → ${newSha}. Restart queued; the launcher will swap to the prepared release slot and roll back automatically if needed.` +
       (dependencyChanged ? " Dependency inputs changed — the inactive release slot has its own dependency install." : "") +
-      `${waitNote} ` +
-      "Do NOT make any more tool calls once the launcher begins restart cutover.",
+      ` ${RESTART_WHEN_IDLE_NOTE}`,
   };
 }

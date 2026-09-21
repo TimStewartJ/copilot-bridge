@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBusRegistry } from "../server/event-bus.js";
-import { configureRestartStateStore, SessionManager } from "../server/session-manager.js";
+import { SessionManager } from "../server/session-manager.js";
 import { createSessionTitlesStore } from "../server/session-titles.js";
 import { createSessionWorkspaceStore } from "../server/session-workspace-store.js";
 import { createSettingsStore } from "../server/settings-store.js";
@@ -81,7 +81,7 @@ function createManager(copilotHome: string): TestSessionManager {
   const db = setupTestDb();
   const globalBus = createTestBus();
   const runtimePaths = makeTestRuntimePaths("session-delete", { copilotHome });
-  configureRestartStateStore(runtimePaths);
+
   const manager = new SessionManager({
     globalBus,
     eventBusRegistry: createEventBusRegistry(),
@@ -101,7 +101,7 @@ function createManager(copilotHome: string): TestSessionManager {
 describe("SessionManager.deleteSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    configureRestartStateStore(undefined);
+
   });
 
   it("removes catalog-only sessions when the SDK reports the session is missing", async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
-import type { BackgroundAgentsSummary, DeferSummary, RestartStatusPhase } from "./api";
+import type { BackgroundAgentsSummary, DeferSummary } from "./api";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
 
@@ -19,14 +19,7 @@ export type StatusEvent =
     }
   | { type: "session:defer-summary"; sessionId: string; deferSummary: DeferSummary }
   | { type: "session:history-truncated"; sessionId?: string }
-  | {
-      type: "server:restart-pending";
-      waitingSessions?: number;
-      phase?: RestartStatusPhase;
-      canAcceptNewWork?: boolean;
-      serverInstanceId?: string;
-    }
-  | { type: "server:restart-cleared"; serverInstanceId?: string }
+  | { type: "server:restart-changed" }
   | { type: "backend:status"; agentBackend: AgentBackendStatus }
   | { type: "status:connected" }
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }

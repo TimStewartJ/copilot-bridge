@@ -15,7 +15,6 @@ import {
   mkdirSync,
   providers,
   publishOutboundAttachment,
-  RESTART_PENDING_MESSAGE,
   request,
   scheduler,
   writeCopilotUsageEvents,

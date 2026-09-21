@@ -9,7 +9,6 @@ import {
   ManagementJobNotCancellableError,
   type ManagementJobStore,
 } from "../server/management-job-store.js";
-import { forceClearRestartPending } from "../server/restart-controller.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -33,7 +32,6 @@ function makeRealStagingDir(label: string): string {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-  forceClearRestartPending();
 });
 
 describe("management job API routes", () => {
@@ -410,8 +408,8 @@ describe("management job API routes", () => {
       expect(badInput.status).toBe(400);
     });
 
-    it("allows previews and deploys but rejects self-update when a restart is queued by another process", async () => {
-      const { app, ctx } = createManagementJobApiTestApp();
+    it("allows every management job type while a restart is pending", async () => {
+      const { app, ctx, store } = createManagementJobApiTestApp();
       const dataDir = ctx.runtimePaths?.dataDir;
       if (!dataDir) throw new Error("test app is missing runtime data dir");
       const signalFile = join(dataDir, "restart.signal");
@@ -419,11 +417,12 @@ describe("management job API routes", () => {
       // The management-job runner is a separate process: it triggers the
       // restart the server gets restarted by, so only the on-disk record can
       // tell the server a cutover is queued.
-      writeFileSync(signalFile, "{}");
+      writeFileSync(signalFile, JSON.stringify({ validationMode: "operational", requestedAt: new Date().toISOString() }));
       try {
         const update = await request(app).post("/api/management-jobs").send({ type: "self_update" });
-        expect(update.status).toBe(409);
-        expect(update.body.error).toContain("restart is already pending");
+        expect(update.status).toBe(201);
+        expect(update.body.status).toBe("queued");
+        store.succeed(update.body.jobId);
 
         const previewDir = makeRealStagingDir("preview-during-restart");
         const preview = await request(app)

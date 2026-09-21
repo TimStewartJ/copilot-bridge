@@ -1,4 +1,3 @@
-import type { RestartState } from "./restart-state.js";
 import type { Schedule, ScheduleStore } from "./schedule-store.js";
 import { matchesCron } from "./cron-next-run.js";
 import { protectionRetryAt, type FocusProtectionStore } from "./focus-protection-store.js";
@@ -41,9 +40,6 @@ interface MissedRunCatchUpDeps {
     scheduleId: string,
     options: { source: MissedRunCandidate["source"]; scheduledFor: string },
   ) => Promise<MissedRunTriggerResult>;
-  isRestartPending: () => boolean;
-  refreshRestartState: () => Promise<RestartState>;
-  getRestartPendingMessage: () => string;
   focusProtectionStore?: () => FocusProtectionStore | undefined;
   hasAutomaticRetry?: (scheduleId: string, scheduledFor: string) => boolean;
 }
@@ -92,8 +88,6 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
   const deferredCandidates = new Map<string, MissedRunCandidate>();
   const recordedHolds = new Map<string, Set<string>>();
   let generation = 0;
-  let restartRequestedAtForNextCatchUp: string | null = null;
-  let loggedRestartPendingSkip = false;
 
   function clearRetryTimer(): void {
     if (!retryTimer) return;
@@ -203,17 +197,12 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
     requested = false;
     deferredCandidates.clear();
     recordedHolds.clear();
-    restartRequestedAtForNextCatchUp = null;
-    loggedRestartPendingSkip = false;
   }
 
   function check(): void {
     if (inFlight) {
       requested = true;
       return;
-    }
-    if (deps.isRestartPending()) {
-      scheduleRetry();
     }
     const runGeneration = generation;
     inFlight = catchUpMissedRuns(runGeneration)
@@ -242,38 +231,17 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
     return `${candidate.id}:${candidate.source}:${candidate.scheduledFor}`;
   }
 
-  function rememberRestartRequestedAt(value?: string | null): void {
-    const normalized = normalizeIso(value);
-    if (!normalized) return;
-    if (
-      !restartRequestedAtForNextCatchUp
-      || Date.parse(normalized) < Date.parse(restartRequestedAtForNextCatchUp)
-    ) {
-      restartRequestedAtForNextCatchUp = normalized;
-    }
-  }
-
-  function consumeRestartRequestedAt(): string | null {
-    const requestedAt = restartRequestedAtForNextCatchUp;
-    restartRequestedAtForNextCatchUp = null;
-    return requestedAt;
-  }
-
   function isEligibleMissedRunTime(
     scheduledTime: number,
     now: number,
-    restartRequestedAt?: string | null,
     protection?: FocusProtectionWindow | null,
   ): boolean {
     if (scheduledTime >= now) return false;
     if ((now - scheduledTime) < MISSED_RUN_GRACE_WINDOW_MS) return true;
     if (protection && scheduledTime >= Date.parse(protection.startsAt) - MISSED_RUN_GRACE_WINDOW_MS) return true;
-    if (deps.focusProtectionStore?.()?.coveringSlot(new Date(scheduledTime).toISOString(), now, MISSED_RUN_GRACE_WINDOW_MS)) return true;
-
-    if (!restartRequestedAt) return false;
-    const restartRequestedTime = Date.parse(restartRequestedAt);
-    if (Number.isNaN(restartRequestedTime)) return false;
-    return scheduledTime >= (restartRequestedTime - MISSED_RUN_GRACE_WINDOW_MS);
+    return Boolean(
+      deps.focusProtectionStore?.()?.coveringSlot(new Date(scheduledTime).toISOString(), now, MISSED_RUN_GRACE_WINDOW_MS),
+    );
   }
 
   function revalidateDeferredCandidate(candidate: MissedRunCandidate, now: number): MissedRunCandidate | undefined {
@@ -307,7 +275,6 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
     now: number;
     disableStaleOneShots: boolean;
     preservedCandidateKeys?: ReadonlySet<string>;
-    restartRequestedAt?: string | null;
     protection?: FocusProtectionWindow | null;
   }): MissedRunCandidate[] {
     const scheduleStore = deps.scheduleStore();
@@ -336,7 +303,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
         const runAtTime = new Date(schedule.runAt).getTime();
         if (runAtTime >= options.now) continue;
         if (
-          isEligibleMissedRunTime(runAtTime, options.now, options.restartRequestedAt, options.protection)
+          isEligibleMissedRunTime(runAtTime, options.now, options.protection)
           || options.preservedCandidateKeys?.has(candidateKey)
         ) {
           missedRuns.push(candidate);
@@ -362,7 +329,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
       const nextExpectedTime = new Date(nextExpected).getTime();
       if (nextExpectedTime >= options.now) continue;
       if (
-        isEligibleMissedRunTime(nextExpectedTime, options.now, options.restartRequestedAt, options.protection)
+        isEligibleMissedRunTime(nextExpectedTime, options.now, options.protection)
         || options.preservedCandidateKeys?.has(candidateKey)
       ) {
         missedRuns.push(candidate);
@@ -379,31 +346,18 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
   }
 
   async function catchUpMissedRuns(runGeneration: number): Promise<void> {
-    const restartState = await deps.refreshRestartState();
+    // check() is called while the scheduler is still being wired up, so the pass starts a tick later.
+    await Promise.resolve();
     if (runGeneration !== generation) return;
-    const restartPending = restartState.phase !== "idle";
-    if (restartPending) {
-      rememberRestartRequestedAt(restartState.requestedAt);
-      scheduleRetry();
-      if (!loggedRestartPendingSkip) {
-        console.log("[scheduler] Skipping missed-run catch-up while restart is pending");
-        loggedRestartPendingSkip = true;
-      }
-      return;
-    }
-
-    loggedRestartPendingSkip = false;
     const now = Date.now();
     const protectionStore = deps.focusProtectionStore?.();
     const protection = protectionStore?.current(now);
     restoreProtectionHolds(now);
     const preservedCandidateKeys = new Set(deferredCandidates.keys());
-    const restartRequestedAt = consumeRestartRequestedAt() ?? restartState.requestedAt;
     const currentMissedRuns = collectMissedRunCandidates({
       now,
       disableStaleOneShots: !protection,
       preservedCandidateKeys,
-      restartRequestedAt,
       protection,
     });
 
@@ -463,10 +417,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
           if (recordedHolds.has(`${schedule.id}:${schedule.scheduledFor}`)) {
             settle(schedule.id, "started", schedule.scheduledFor, { sessionId: result.sessionId });
           }
-        } else if (
-          result.skipped === deps.getRestartPendingMessage()
-          || held(schedule.id, schedule.scheduledFor)
-        ) {
+        } else if (held(schedule.id, schedule.scheduledFor)) {
           rememberDeferred([schedule]);
           if (!deps.hasAutomaticRetry?.(schedule.id, schedule.scheduledFor)) scheduleRetry();
         }

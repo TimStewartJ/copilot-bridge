@@ -713,15 +713,17 @@ export interface TaskSessionStorage {
 
 export type TaskGitStatus = TaskGitStatusResponse;
 
-export type RestartStatusPhase = "idle" | "queued" | "waiting-for-sessions" | "restarting";
+/** `waiting`: a restart is asked for and happens once the Bridge is idle. It blocks nothing. */
+export type RestartStatusPhase = "idle" | "waiting" | "restarting";
 
 export interface RestartStatus {
   pending: boolean;
   phase: RestartStatusPhase;
-  waitingSessions: number;
   requestedAt: string | null;
+  /** What the restart is waiting for, as of this response. */
+  waitingOn: { sessions: number; jobs: number; operations?: number; sessionIds: string[] };
+  /** Changes when the server process does, which is how a finished restart shows. */
   serverInstanceId: string;
-  canAcceptNewWork: boolean;
 }
 
 // Derive API base from Vite's BASE_URL — enables staging previews at /staging/<prefix>/

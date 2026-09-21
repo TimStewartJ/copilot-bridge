@@ -53,6 +53,7 @@ import { groupActivitySegments } from "../lib/chat-activity";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import { useSessionStream, type LiveReasoningBlock } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
+import { holdPageReload } from "../lib/voice-capture-guard";
 import { useMcpStatusSnapshotQuery } from "../hooks/queries/useMcpStatus";
 import { useSessionUsageMetricsQuery } from "../hooks/queries/useSessionUsageMetrics";
 import useLongPressMenu from "../hooks/useLongPressMenu";
@@ -1918,6 +1919,10 @@ export default function ChatView({
     pendingSendsRef.current = next;
     setPendingSends(next);
   }, []);
+
+  // A message still being delivered, or one that failed and can be retried, exists only in this page.
+  const hasUndeliveredMessage = pendingSends.some((send) => send.delivery !== undefined);
+  useEffect(() => (hasUndeliveredMessage ? holdPageReload() : undefined), [hasUndeliveredMessage]);
 
   const updateOptimisticMessageDelivery = useCallback((
     messageId: string,

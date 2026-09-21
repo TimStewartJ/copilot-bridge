@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   didRestartRecover,
-  isDeployRestartUpdatePending,
-  resolveRestartSignalAction,
-  resolveRestartSignalUpdate,
+  parseRestartBusyState,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
@@ -11,89 +9,22 @@ import {
   shouldPersistReleaseFailureState,
 } from "./launcher-restart.js";
 
-describe("resolveRestartSignalAction", () => {
-  it("retries filesystem contention, rejects invalid claims, and restarts only valid claims", () => {
-    expect(resolveRestartSignalAction({ status: "none" })).toBe("none");
-    expect(resolveRestartSignalAction({
-      status: "retryable-error",
-      stage: "claim",
-      error: new Error("busy"),
-    })).toBe("retry");
-    expect(resolveRestartSignalAction({
-      status: "invalid",
-      error: new Error("malformed releaseCandidate"),
-      requestId: "restart-request-invalid",
-    })).toBe("reject");
-    expect(resolveRestartSignalAction({
-      status: "invalid",
-      error: new Error("legacy malformed releaseCandidate"),
-    })).toBe("reject");
-    expect(resolveRestartSignalAction({
-      status: "claimed",
-      signal: {
-        requestedAt: "2026-08-27T10:00:00.000-07:00",
-        validationMode: "operational",
-        requestId: "restart-request-valid",
-      },
-    })).toBe("restart");
+describe("restart idle checks", () => {
+  it("requires an explicit, consistent idle answer", () => {
+    expect(parseRestartBusyState({ busy: false, count: 0 })).toEqual({ busy: false, count: 0, jobs: 0 });
+    expect(parseRestartBusyState({ busy: true, count: 3, jobs: 1 })).toEqual({ busy: true, count: 3, jobs: 1 });
   });
 
-  describe("deploy restart candidate updates", () => {
-    const current = {
-      requestedAt: "2026-09-03T04:07:54.155Z",
-      validationMode: "deploy" as const,
-      requestId: "restart-request-batch",
-      source: "staging_deploy_batch",
-      releaseCandidate: {
-        id: "release-1",
-        root: "release-1",
-        commitSha: "commit-1",
-        source: "staging_deploy",
-        dependencyHash: "deps-1",
-      },
-    };
+  it.each([null, {}, { busy: false }, { busy: false, count: 1 }, { busy: true, count: 0 },
+    { busy: false, count: -1 }, { busy: true, count: 1.2 }, { busy: true, count: 1, jobs: 2 }])(
+    "does not mistake a malformed busy response for idle: %j", (value) => {
+      expect(() => parseRestartBusyState(value)).toThrow("Invalid busy-check response");
+    },
+  );
 
-    it("waits for running deploys and completed deploys whose candidate is not published yet", () => {
-      const baseJob = {
-        id: "job-1",
-        type: "staging_deploy" as const,
-        input: {},
-        createdAt: current.requestedAt,
-        updatedAt: current.requestedAt,
-      };
-      expect(isDeployRestartUpdatePending({ ...baseJob, status: "running" })).toBe(true);
-      expect(isDeployRestartUpdatePending({ ...baseJob, status: "queued" }, true)).toBe(true);
-      expect(isDeployRestartUpdatePending({ ...baseJob, status: "queued" })).toBe(false);
-      expect(isDeployRestartUpdatePending({
-        ...baseJob,
-        status: "succeeded",
-        result: { restartDeferred: true },
-      })).toBe(true);
-      expect(isDeployRestartUpdatePending({
-        ...baseJob,
-        status: "succeeded",
-        result: { restartQueued: true },
-      })).toBe(false);
-    });
-
-    it("accepts only a newer candidate for the same restart request", () => {
-      expect(resolveRestartSignalUpdate(current, {
-        status: "claimed",
-        signal: {
-          ...current,
-          releaseCandidate: {
-            ...current.releaseCandidate,
-            id: "release-2",
-            commitSha: "commit-2",
-          },
-        },
-      }).releaseCandidate).toMatchObject({ id: "release-2", commitSha: "commit-2" });
-
-      expect(() => resolveRestartSignalUpdate(current, {
-        status: "claimed",
-        signal: { ...current, requestId: "different-request" },
-      })).toThrow("did not match the active restart request");
-    });
+  it("keeps waiting outcomes separate from failures and successful activation", () => {
+    expect(didRestartRecover("waiting")).toBe(false);
+    expect(shouldPersistReleaseFailureState({ outcome: "waiting", hasPendingReleaseFailure: true })).toBe(false);
   });
 });
 

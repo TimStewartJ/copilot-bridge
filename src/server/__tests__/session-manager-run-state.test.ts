@@ -2,20 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readRestartState, writeRestartState } from "../restart-state.js";
-import {
-  forceClearRestartPending,
-  PENDING_INTERACTION_AUTO_ANSWER,
-  SessionManager,
-  RESTART_PENDING_MESSAGE,
-  configureRestartStateStore,
-  getRestartWaitingCount,
-  isRestartImminent,
-  isRestartPending,
-  refreshRestartState,
-  triggerRestartPending,
-} from "../session-manager.js";
-import { waitForAllRestartStateWritesForTests } from "../restart-controller.js";
+import { writeRestartState } from "../restart-state.js";
+import { PENDING_INTERACTION_AUTO_ANSWER, SessionManager } from "../session-manager.js";
+
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
@@ -48,7 +37,7 @@ describe("SessionManager run state", () => {
       opts.copilotHome ? { copilotHome: opts.copilotHome } : {},
     );
     const copilotHome = opts.copilotHome ?? runtimePaths.copilotHome;
-    configureRestartStateStore(runtimePaths);
+
     const sessionMetaStore = createSessionMetaStore(db);
     const manager = new SessionManager({
       globalBus,
@@ -186,14 +175,13 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   }
 
-
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useFakeTimers();
   });
 
   afterEach(() => {
-    configureRestartStateStore(undefined);
+
     vi.useRealTimers();
   });
 
@@ -239,23 +227,7 @@ describe("SessionManager run state", () => {
         resumeSession: vi.fn().mockResolvedValue(session),
       };
 
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      await writeRestartState(join(dataDir, "restart-state.json"), {
-        requestId: "req-run-state",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 2,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
+      await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
 
       expect(() => manager.startWork("session-1", "hello")).not.toThrow();
       await flushMicrotasks();
@@ -263,7 +235,7 @@ describe("SessionManager run state", () => {
       expect(manager.backend.resumeSession).toHaveBeenCalled();
       expect(manager.backend.resumeSession.mock.calls[0]?.[0]).toBe("session-1");
       expect(manager.getSessionRunState("session-1")).toBe("busy");
-      expect(getRestartWaitingCount()).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
 
       getReleaseSend()?.();
       await flushMicrotasks();
@@ -274,9 +246,9 @@ describe("SessionManager run state", () => {
       });
       await flushMicrotasks();
       expect(manager.getSessionRunState("session-1")).toBe("idle");
-      expect(getRestartWaitingCount()).toBe(0);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
     } finally {
-      configureRestartStateStore(undefined);
+
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
@@ -295,30 +267,14 @@ describe("SessionManager run state", () => {
         resumeSession: vi.fn().mockResolvedValue(session),
       };
 
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      await writeRestartState(join(dataDir, "restart-state.json"), {
-        requestId: "req-run-state-launcher-waiting",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 2,
-        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-      });
-      await refreshRestartState();
+      await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
 
       expect(() => manager.startWork("session-1", "hello")).not.toThrow();
       await flushMicrotasks();
 
       expect(manager.backend.resumeSession).toHaveBeenCalledWith("session-1", expect.anything());
       expect(manager.getSessionRunState("session-1")).toBe("busy");
-      expect(getRestartWaitingCount()).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
 
       getReleaseSend()?.();
       await flushMicrotasks();
@@ -330,7 +286,7 @@ describe("SessionManager run state", () => {
       await flushMicrotasks();
       expect(manager.getSessionRunState("session-1")).toBe("idle");
     } finally {
-      configureRestartStateStore(undefined);
+
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
@@ -1228,44 +1184,6 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
-  it("blocks startWork when the launcher-owned restart cutover is in progress", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-    try {
-      const { manager } = createManager({
-        copilotHome,
-      });
-      manager.backend = {
-        resumeSession: vi.fn(),
-      };
-
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      await writeRestartState(join(dataDir, "restart-state.json"), {
-        requestId: "req-run-state-restarting",
-        phase: "restarting",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 0,
-        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-      });
-      await refreshRestartState();
-
-      expect(() => manager.startWork("session-1", "hello")).toThrow(RESTART_PENDING_MESSAGE);
-      expect(manager.backend.resumeSession).not.toHaveBeenCalled();
-    } finally {
-      configureRestartStateStore(undefined);
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
-  });
-
   it("keeps restart waiting count nonzero when a normal run ends while a cold resume or model switch is active", async () => {
     // cold resume is active
     {
@@ -1274,15 +1192,6 @@ describe("SessionManager run state", () => {
     try {
       const { manager } = createManager({ copilotHome });
       const restartStatePath = join(dataDir, "restart-state.json");
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
 
       const messageSession = makeAgentSessionStub({ sessionId: "message-session" });
       let resolveMessageResume!: (session: typeof messageSession) => void;
@@ -1302,14 +1211,7 @@ describe("SessionManager run state", () => {
       manager.startWork("run-session", "hello");
       await flushMicrotasks();
 
-      await writeRestartState(restartStatePath, {
-        requestId: "req-run-and-resume",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 2,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
+      await writeRestartState(restartStatePath, { phase: "restarting", releaseFailure: null });
 
       getReleaseSend()?.();
       await flushMicrotasks();
@@ -1320,13 +1222,13 @@ describe("SessionManager run state", () => {
       });
       await flushMicrotasks();
 
-      expect(getRestartWaitingCount()).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
 
       resolveMessageResume(messageSession);
       await messageLoad;
-      expect(getRestartWaitingCount()).toBe(0);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
     } finally {
-      configureRestartStateStore(undefined);
+
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
@@ -1339,15 +1241,6 @@ describe("SessionManager run state", () => {
     try {
       const { manager } = createManager({ copilotHome });
       const restartStatePath = join(dataDir, "restart-state.json");
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
 
       let resolveSetModel!: () => void;
       const switchSession = {
@@ -1366,18 +1259,11 @@ describe("SessionManager run state", () => {
       manager.startWork("run-session", "hello");
       await flushMicrotasks();
 
-      await writeRestartState(restartStatePath, {
-        requestId: "req-run-and-switch",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 1,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
+      await writeRestartState(restartStatePath, { phase: "restarting", releaseFailure: null });
 
       const switching = manager.setSessionModel("switch-session", "gpt-5.5");
       await vi.waitFor(() => expect(switchSession.setModel).toHaveBeenCalledTimes(1));
-      expect(getRestartWaitingCount()).toBe(2);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(2);
 
       getReleaseSend()?.();
       await flushMicrotasks();
@@ -1388,13 +1274,13 @@ describe("SessionManager run state", () => {
       });
       await flushMicrotasks();
 
-      expect(getRestartWaitingCount()).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
 
       resolveSetModel();
       await switching;
-      expect(getRestartWaitingCount()).toBe(0);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
     } finally {
-      configureRestartStateStore(undefined);
+
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
@@ -1406,23 +1292,8 @@ describe("SessionManager run state", () => {
     try {
       const { manager } = createManager({ copilotHome });
       const restartStatePath = join(dataDir, "restart-state.json");
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      await writeRestartState(restartStatePath, {
-        requestId: "req-resume-only",
-        phase: "queued",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 0,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
+
+      await writeRestartState(restartStatePath, { phase: "restarting", releaseFailure: null });
 
       const resumedSession = makeAgentSessionStub({ sessionId: "session-1" });
       let resolveResume!: (session: typeof resumedSession) => void;
@@ -1435,14 +1306,14 @@ describe("SessionManager run state", () => {
       const messageLoad = manager.warmSession("message-session");
       await flushMicrotasks();
 
-      expect(getRestartWaitingCount()).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
 
       resolveResume(resumedSession);
       await messageLoad;
 
-      expect(getRestartWaitingCount()).toBe(0);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
     } finally {
-      configureRestartStateStore(undefined);
+
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
@@ -1490,106 +1361,6 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-run-superseded")).toBe("idle");
   });
 
-  it("keeps non-restart work isolated from live launcher restart state", async () => {
-    const liveDataDir = mkdtempSync(join(tmpdir(), "bridge-live-restart-state-"));
-    const liveDocsDir = join(liveDataDir, "docs");
-    try {
-      configureRestartStateStore({
-        dataDir: liveDataDir,
-        docsDir: liveDocsDir,
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: liveDataDir,
-          BRIDGE_DOCS_DIR: liveDocsDir,
-        },
-      });
-      await writeRestartState(join(liveDataDir, "restart-state.json"), {
-        requestId: "req-live-launcher",
-        phase: "restarting",
-        requestedAt: "2026-04-30T19:20:51.000Z",
-        waitingSessions: 0,
-        launcherHeartbeatAt: "2026-04-30T19:20:51.000Z",
-      });
-      await refreshRestartState();
-      expect(isRestartPending()).toBe(true);
-
-      const { manager } = createManager();
-      const { session, getHandler, getReleaseSend } = makeSession();
-      manager.backend = {
-        resumeSession: vi.fn().mockResolvedValue(session),
-      };
-
-      const accepted = manager.startWorkAndWaitForDelivery("session-isolated", "hello");
-      await flushMicrotasks();
-
-      expect(manager.backend.resumeSession).toHaveBeenCalledOnce();
-      getHandler()?.({
-        type: "user.message",
-        data: {},
-        timestamp: new Date(Date.now() + 1).toISOString(),
-      });
-      await expect(accepted).resolves.toBeUndefined();
-
-      getReleaseSend()?.();
-      await flushMicrotasks();
-      getHandler()?.({
-        type: "session.idle",
-        data: {},
-        timestamp: new Date(Date.now() + 2).toISOString(),
-      });
-      await flushMicrotasks();
-      expect(manager.getSessionRunState("session-isolated")).toBe("idle");
-    } finally {
-      rmSync(liveDataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("blocks startWork when persisted restart state advances to cutover after the cache was queued", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-    try {
-      const { manager } = createManager({
-        copilotHome,
-      });
-      manager.backend = {
-        resumeSession: vi.fn(),
-      };
-
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      const restartStatePath = join(dataDir, "restart-state.json");
-      await writeRestartState(restartStatePath, {
-        requestId: "req-run-state-race",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 1,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
-      await writeRestartState(restartStatePath, {
-        requestId: "req-run-state-race",
-        phase: "restarting",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 0,
-        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-      });
-
-      expect(() => manager.startWork("session-1", "hello")).toThrow(RESTART_PENDING_MESSAGE);
-      expect(manager.backend.resumeSession).not.toHaveBeenCalled();
-    } finally {
-      configureRestartStateStore(undefined);
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
-  });
-
   it("allows session creation paths while the launcher is waiting for active sessions", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
@@ -1601,28 +1372,12 @@ describe("SessionManager run state", () => {
         createSession: vi.fn().mockResolvedValue({ sessionId: "created-session" }),
       };
 
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      await writeRestartState(join(dataDir, "restart-state.json"), {
-        requestId: "req-create-launcher-waiting",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 2,
-        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-      });
-      await refreshRestartState();
+      await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
 
       await expect(manager.createSession()).resolves.toEqual({ sessionId: "created-session" });
       expect(manager.backend.createSession).toHaveBeenCalledOnce();
     } finally {
-      configureRestartStateStore(undefined);
+
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
     }
@@ -1648,54 +1403,6 @@ describe("SessionManager run state", () => {
     expect(manager.backend.createSession).not.toHaveBeenCalled();
     expect(manager.getRuntimeActivity().capacity.contexts.retained).toBe(0);
     expect(manager.getRuntimeActivity().capacity.weightedUnits.retained).toBe(0);
-  });
-
-  it("blocks session creation paths when persisted restart state advances to cutover after the cache was queued", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-    try {
-      const { manager } = createManager({
-        copilotHome,
-      });
-      manager.backend = {
-        createSession: vi.fn(),
-      };
-
-      configureRestartStateStore({
-        dataDir,
-        docsDir: join(dataDir, "docs"),
-        env: {
-          ...process.env,
-          BRIDGE_DATA_DIR: dataDir,
-          BRIDGE_DOCS_DIR: join(dataDir, "docs"),
-        },
-      });
-      const restartStatePath = join(dataDir, "restart-state.json");
-      await writeRestartState(restartStatePath, {
-        requestId: "req-create-race",
-        phase: "waiting-for-sessions",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 1,
-        launcherHeartbeatAt: null,
-      });
-      await refreshRestartState();
-      await writeRestartState(restartStatePath, {
-        requestId: "req-create-race",
-        phase: "restarting",
-        requestedAt: "2026-04-24T12:00:00.000Z",
-        waitingSessions: 0,
-        launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-      });
-
-      await expect(manager.createSession()).rejects.toThrow(RESTART_PENDING_MESSAGE);
-      await expect(manager.forkSession("source-session")).rejects.toThrow(RESTART_PENDING_MESSAGE);
-      await expect(manager.createTaskSession("task-1", "Task one", [], [], "")).rejects.toThrow(RESTART_PENDING_MESSAGE);
-      expect(manager.backend.createSession).not.toHaveBeenCalled();
-    } finally {
-      configureRestartStateStore(undefined);
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
   });
 
   it("startWorkAndWaitForDelivery resolves when the user prompt is accepted", async () => {
@@ -3418,307 +3125,6 @@ describe("SessionManager run state", () => {
     expect(session.abort).not.toHaveBeenCalled();
     expect(session.disconnect).not.toHaveBeenCalled();
     expect(resumeSession).toHaveBeenCalledTimes(1);
-  });
-
-  describe("syncRestartWaitingSessions handoff guard", () => {
-    it("does not clobber launcher-owned fields or phase when the launcher has heartbeated or advanced", async () => {
-      // does not clobber launcher-owned fields when launcher has heartbeated before queued write fires
-      {
-      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-handoff-"));
-      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-      try {
-        const { manager } = createManager({ copilotHome });
-        configureRestartStateStore({
-          dataDir,
-          docsDir: join(dataDir, "docs"),
-          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
-        });
-        const restartStatePath = join(dataDir, "restart-state.json");
-
-        // Start a session BEFORE restart becomes pending (startWork throws if restart is pending)
-        const { session, getHandler, getReleaseSend } = makeSession();
-        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
-        manager.startWork("session-1", "hello");
-        await flushMicrotasks();
-
-        // Server-initiated restart state (one session blocking)
-        await writeRestartState(restartStatePath, {
-          requestId: "req-handoff",
-          phase: "waiting-for-sessions",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: null,
-        });
-        await refreshRestartState();  // loads server state into in-memory cache
-
-        // Launcher picks up the restart and advances the file while server cache is still stale
-        await writeRestartState(restartStatePath, {
-          requestId: "req-handoff",
-          phase: "restarting",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: "2026-01-01T00:00:01.000Z",
-        });
-
-        // Session ends → syncRestartWaitingSessions is called with stale cached state
-        getReleaseSend()?.();
-        await flushMicrotasks();
-        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
-        await flushMicrotasks();
-
-        // Flush the write queue — refreshRestartState awaits _restartStateWriteQueue
-        await refreshRestartState();
-
-        // Launcher-owned fields must be intact on disk; the server must not have overwritten them
-        const diskState = await readRestartState(restartStatePath);
-        expect(diskState.phase).toBe("restarting");
-        expect(diskState.launcherHeartbeatAt).toBe("2026-01-01T00:00:01.000Z");
-        expect(diskState.requestId).toBe("req-handoff");
-        expect(diskState.waitingSessions).toBe(1);
-      } finally {
-        configureRestartStateStore(undefined);
-        rmSync(dataDir, { recursive: true, force: true });
-        rmSync(copilotHome, { recursive: true, force: true });
-      }
-      }
-
-      // does not clobber launcher phase when launcher advanced to restarting without a heartbeat yet
-      {
-      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-phase-"));
-      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home2-"));
-      try {
-        const { manager } = createManager({ copilotHome });
-        configureRestartStateStore({
-          dataDir,
-          docsDir: join(dataDir, "docs"),
-          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
-        });
-        const restartStatePath = join(dataDir, "restart-state.json");
-
-        const { session, getHandler, getReleaseSend } = makeSession();
-        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
-        manager.startWork("session-2", "hello");
-        await flushMicrotasks();
-
-        await writeRestartState(restartStatePath, {
-          requestId: "req-phase-only",
-          phase: "waiting-for-sessions",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: null,
-        });
-        await refreshRestartState();
-
-        // Launcher transitions phase to "restarting" but has not written launcherHeartbeatAt yet
-        await writeRestartState(restartStatePath, {
-          requestId: "req-phase-only",
-          phase: "restarting",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: null,
-        });
-
-        getReleaseSend()?.();
-        await flushMicrotasks();
-        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
-        await flushMicrotasks();
-
-        await refreshRestartState();
-
-        const diskState = await readRestartState(restartStatePath);
-        expect(diskState.phase).toBe("restarting");
-        expect(diskState.requestId).toBe("req-phase-only");
-      } finally {
-        configureRestartStateStore(undefined);
-        rmSync(dataDir, { recursive: true, force: true });
-        rmSync(copilotHome, { recursive: true, force: true });
-      }
-      }
-    });
-    it("emits live waiting-session updates after launcher handoff without rewriting disk", async () => {
-      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-handoff-events-"));
-      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-events-"));
-      try {
-        const { manager, globalBus } = createManager({ copilotHome });
-        configureRestartStateStore({
-          dataDir,
-          docsDir: join(dataDir, "docs"),
-          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
-        });
-        const restartStatePath = join(dataDir, "restart-state.json");
-        const restartEvents: Array<{ waitingSessions?: number }> = [];
-        globalBus.subscribe((event) => {
-          if (event.type === "server:restart-pending") {
-            restartEvents.push({ waitingSessions: event.waitingSessions });
-          }
-        });
-
-        const { session, getHandler, getReleaseSend } = makeSession();
-        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
-        manager.startWork("session-handoff-event", "hello");
-        await flushMicrotasks();
-
-        await writeRestartState(restartStatePath, {
-          requestId: "req-handoff-events",
-          phase: "waiting-for-sessions",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: "2026-01-01T00:00:01.000Z",
-        });
-        await refreshRestartState();
-
-        getReleaseSend()?.();
-        await flushMicrotasks();
-        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
-        await flushMicrotasks();
-
-        expect(restartEvents).toContainEqual({ waitingSessions: 0 });
-        expect(getRestartWaitingCount()).toBe(0);
-
-        await expect(refreshRestartState()).resolves.toMatchObject({
-          requestId: "req-handoff-events",
-          launcherHeartbeatAt: "2026-01-01T00:00:01.000Z",
-          waitingSessions: 0,
-        });
-        expect(getRestartWaitingCount()).toBe(0);
-
-        const diskState = await readRestartState(restartStatePath);
-        expect(diskState.phase).toBe("waiting-for-sessions");
-        expect(diskState.launcherHeartbeatAt).toBe("2026-01-01T00:00:01.000Z");
-        expect(diskState.requestId).toBe("req-handoff-events");
-        expect(diskState.waitingSessions).toBe(1);
-
-        await writeRestartState(restartStatePath, {
-          ...diskState,
-          waitingSessions: 2,
-          launcherHeartbeatAt: "2026-01-01T00:00:04.000Z",
-        });
-        await expect(refreshRestartState()).resolves.toMatchObject({
-          requestId: "req-handoff-events",
-          launcherHeartbeatAt: "2026-01-01T00:00:04.000Z",
-          waitingSessions: 2,
-        });
-      } finally {
-        configureRestartStateStore(undefined);
-        rmSync(dataDir, { recursive: true, force: true });
-        rmSync(copilotHome, { recursive: true, force: true });
-      }
-    });
-
-    it("keeps pre-pickup waiting-session countdown in memory without rewriting disk", async () => {
-      const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-pre-pickup-"));
-      const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home3-"));
-      try {
-        const { manager } = createManager({ copilotHome });
-        configureRestartStateStore({
-          dataDir,
-          docsDir: join(dataDir, "docs"),
-          env: { ...process.env, BRIDGE_DATA_DIR: dataDir, BRIDGE_DOCS_DIR: join(dataDir, "docs") },
-        });
-        const restartStatePath = join(dataDir, "restart-state.json");
-
-        const { session, getHandler, getReleaseSend } = makeSession();
-        manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
-        manager.startWork("session-3", "hello");
-        await flushMicrotasks();
-
-        // Server-initiated restart — launcher has NOT picked up yet (no launcherHeartbeatAt, no "restarting" phase)
-        await writeRestartState(restartStatePath, {
-          requestId: "req-pre-pickup",
-          phase: "waiting-for-sessions",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: null,
-        });
-        await refreshRestartState();
-
-        // Session ends — server should update in-memory/UI state only until the launcher picks up.
-        getReleaseSend()?.();
-        await flushMicrotasks();
-        getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
-        await flushMicrotasks();
-
-        const refreshedState = await refreshRestartState();
-
-        const diskState = await readRestartState(restartStatePath);
-        expect(refreshedState.phase).toBe("queued");
-        expect(refreshedState.waitingSessions).toBe(0);
-        expect(getRestartWaitingCount()).toBe(0);
-        expect(isRestartImminent()).toBe(true);
-        expect(diskState.phase).toBe("waiting-for-sessions");
-        expect(diskState.waitingSessions).toBe(1);
-        expect(diskState.requestId).toBe("req-pre-pickup");
-        expect(diskState.launcherHeartbeatAt).toBeNull();
-      } finally {
-        configureRestartStateStore(undefined);
-        rmSync(dataDir, { recursive: true, force: true });
-        rmSync(copilotHome, { recursive: true, force: true });
-      }
-    });
-
-    it("keeps queued restart-state writes bound to the path active when they were enqueued", async () => {
-      const firstDataDir = mkdtempSync(join(tmpdir(), "bridge-restart-first-"));
-      const secondDataDir = mkdtempSync(join(tmpdir(), "bridge-restart-second-"));
-      try {
-        const firstRuntimePaths = {
-          dataDir: firstDataDir,
-          docsDir: join(firstDataDir, "docs"),
-          env: { ...process.env, BRIDGE_DATA_DIR: firstDataDir, BRIDGE_DOCS_DIR: join(firstDataDir, "docs") },
-        };
-        const secondRuntimePaths = {
-          dataDir: secondDataDir,
-          docsDir: join(secondDataDir, "docs"),
-          env: { ...process.env, BRIDGE_DATA_DIR: secondDataDir, BRIDGE_DOCS_DIR: join(secondDataDir, "docs") },
-        };
-        const firstRestartStatePath = join(firstDataDir, "restart-state.json");
-        const secondRestartStatePath = join(secondDataDir, "restart-state.json");
-
-        configureRestartStateStore(firstRuntimePaths);
-        triggerRestartPending();
-        configureRestartStateStore(secondRuntimePaths);
-
-        // The first path's write was detached by the reconfigure above and runs
-        // real filesystem I/O, so await it directly instead of polling microtasks.
-        await waitForAllRestartStateWritesForTests();
-        expect((await readRestartState(firstRestartStatePath)).phase).toBe("queued");
-        expect(isRestartPending()).toBe(false);
-        await expect(refreshRestartState()).resolves.toMatchObject({ phase: "idle" });
-        expect((await readRestartState(secondRestartStatePath)).phase).toBe("idle");
-
-        await writeRestartState(firstRestartStatePath, {
-          requestId: "req-first",
-          phase: "waiting-for-sessions",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: null,
-        });
-        await writeRestartState(secondRestartStatePath, {
-          requestId: "req-second",
-          phase: "waiting-for-sessions",
-          requestedAt: "2026-01-01T00:00:00.000Z",
-          waitingSessions: 1,
-          launcherHeartbeatAt: null,
-        });
-
-        configureRestartStateStore(firstRuntimePaths);
-        await refreshRestartState();
-        forceClearRestartPending();
-        configureRestartStateStore(secondRuntimePaths);
-
-        await waitForAllRestartStateWritesForTests();
-        expect((await readRestartState(firstRestartStatePath)).phase).toBe("idle");
-        const secondDiskState = await readRestartState(secondRestartStatePath);
-        expect(secondDiskState.phase).toBe("waiting-for-sessions");
-        expect(secondDiskState.requestId).toBe("req-second");
-      } finally {
-        configureRestartStateStore(undefined);
-        // Settle any still-detached write before removing its target directory so
-        // cleanup never races a late rename into a deleted folder.
-        await waitForAllRestartStateWritesForTests();
-        rmSync(firstDataDir, { recursive: true, force: true });
-        rmSync(secondDataDir, { recursive: true, force: true });
-      }
-    });
   });
 
 });

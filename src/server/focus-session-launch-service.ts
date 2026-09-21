@@ -2,7 +2,6 @@ import type { AppContext } from "./app-context.js";
 import { formatLinkedPullRequest } from "./session-formatting.js";
 import { createDeadline } from "./deadline.js";
 import { captureProcessIdentity, getProcessIdentityStatus, type ProcessIdentity } from "./platform.js";
-import { isRestartCutoverInProgress, refreshRestartState } from "./restart-controller.js";
 import { FeedCardValidationError } from "./feed-store.js";
 import { focusEnum, focusFingerprint, focusRecord, focusText, isOpenLifecycle } from "./focus-details-store.js";
 import {
@@ -39,7 +38,7 @@ export interface FocusLaunchStartupRecoveryStats {
   unrecovered: number;
   skippedPrepared: number;
   skippedInspectOnly: number;
-  /** Eligible receipts beyond the first batch or deferred by restart cutover/read failure. */
+  /** Eligible receipts beyond the first batch or deferred by a read failure. */
   deferred: number;
   stopped: number;
   error: string | null;
@@ -249,15 +248,6 @@ export function createFocusSessionLaunchService(
       for (const [index, candidate] of receipts.entries()) {
         if (!accepting) {
           stats.stopped = receipts.length - index;
-          break;
-        }
-        const restarting = isRestartCutoverInProgress(await refreshRestartState());
-        if (!accepting) {
-          stats.stopped = receipts.length - index;
-          break;
-        }
-        if (restarting) {
-          stats.deferred += receipts.length - index;
           break;
         }
         try {

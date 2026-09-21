@@ -3,13 +3,8 @@ import { formatLinkedPullRequest } from "./session-formatting.js";
 import { mkdirSync } from "node:fs";
 import { copyFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isBridgeRestartingError } from "./backend-availability.js";
 import type { SessionManager } from "./session-manager.js";
-import {
-  isRestartCutoverInProgress,
-  isRestartPendingError,
-  RESTART_PENDING_MESSAGE,
-  refreshRestartState,
-} from "./session-manager.js";
 import type { TaskGroupStore } from "./task-group-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
@@ -104,9 +99,6 @@ export function createVoiceJobManager({
     originalFilename,
     sessionOptions,
   }: AcceptVoiceJobInput): Promise<VoiceJobSnapshot> {
-    if (isRestartCutoverInProgress(await refreshRestartState())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
-    }
     const id = randomUUID();
     const jobDir = join(voiceJobsDir, id);
     creatingJobIds.add(id);
@@ -170,10 +162,6 @@ export function createVoiceJobManager({
         const canResume =
           !!job && ["accepted", "transcribing", "sending"].includes(job.status);
         if (!canResume || !job) return;
-        if (isRestartCutoverInProgress(await refreshRestartState())) {
-          scheduleRetry(job.id);
-          return;
-        }
         await transcribeAndSend(job, job.transcript);
       } catch (error) {
         await handleUnexpectedProcessingError(jobId, error);
@@ -187,7 +175,7 @@ export function createVoiceJobManager({
   }
 
   async function handleUnexpectedProcessingError(jobId: string, error: unknown): Promise<void> {
-    if (isRestartPendingError(error)) {
+    if (isBridgeRestartingError(error)) {
       scheduleRetry(jobId);
       return;
     }
@@ -282,11 +270,6 @@ export function createVoiceJobManager({
       return;
     }
 
-    if (isRestartCutoverInProgress(await refreshRestartState())) {
-      scheduleRetry(job.id);
-      return;
-    }
-
     const isResumingSend = job.status === "sending";
     if (isResumingSend && await sessionHasAcceptedTranscript(targetSessionId, transcript, job.updatedAt)) {
       await markJobDone(job.id, transcript);
@@ -329,7 +312,7 @@ export function createVoiceJobManager({
       await waitForTranscriptAcceptance(targetSessionId, transcript, sendingJob.updatedAt);
       await markJobDone(job.id, transcript);
     } catch (error) {
-      if (isRestartPendingError(error)) {
+      if (isBridgeRestartingError(error)) {
         scheduleRetry(job.id);
         return;
       }
@@ -525,6 +508,7 @@ export function createVoiceJobManager({
     resumePendingJobs,
     runMaintenance,
     startMaintenance,
+    getActiveJobCount: () => creatingJobIds.size + processingJobRuns.size,
     shutdown,
   };
 }

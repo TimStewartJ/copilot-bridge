@@ -1,19 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { request } from "../test-support/api-routes.js";
 import { createTestApp } from "../test-support/api-routes.js";
 import { createManagementJobStore } from "../server/management-job-store.js";
-import {
-  forceClearRestartPending,
-  refreshRestartState,
-} from "../server/restart-controller.js";
+import { readRestartStatus } from "../server/restart-status.js";
 import { readRestartSignalFile } from "../server/restart-signal.js";
-
-afterEach(async () => {
-  forceClearRestartPending();
-  await refreshRestartState();
-});
 
 describe("server management API routes", () => {
   it("reports current in-memory session and agent activity", async () => {
@@ -83,15 +75,12 @@ describe("server management API routes", () => {
     const response = await request(app).post("/api/server/restart");
 
     expect(response.status).toBe(202);
-    expect(response.body).toEqual({ ok: true, waitingSessions: 3 });
+    expect(response.body).toEqual({ ok: true, waitingOn: { sessions: 3, jobs: 0 } });
     expect(readRestartSignalFile(join(dataDir, "restart.signal"))).toMatchObject({
       validationMode: "operational",
       source: "settings_ui",
     });
-    await expect(refreshRestartState()).resolves.toMatchObject({
-      phase: "waiting-for-sessions",
-      waitingSessions: 3,
-    });
+    await expect(readRestartStatus(dataDir)).resolves.toMatchObject({ phase: "waiting" });
   });
 
   it("evicts idle cached sessions from same-origin management requests", async () => {
@@ -135,7 +124,7 @@ describe("server management API routes", () => {
     expect(existsSync(join(production.ctx.runtimePaths!.dataDir, "restart.signal"))).toBe(false);
   });
 
-  it("rejects restart requests while an update or deploy job is active", async () => {
+  it("requests a restart while an update or deploy job is active", async () => {
     const { app, ctx, db } = createTestApp();
     const store = createManagementJobStore(db, { dataDir: ctx.runtimePaths!.dataDir });
     ctx.managementJobStore = store;
@@ -143,12 +132,9 @@ describe("server management API routes", () => {
 
     const response = await request(app).post("/api/server/restart");
 
-    expect(response.status).toBe(409);
-    expect(response.body.activeJob).toMatchObject({
-      id: active.id,
-      type: "self_update",
-      status: "queued",
-    });
-    expect(existsSync(join(ctx.runtimePaths!.dataDir, "restart.signal"))).toBe(false);
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({ ok: true, waitingOn: { sessions: 0, jobs: 1 } });
+    expect(store.get(active.id)?.status).toBe("queued");
+    expect(existsSync(join(ctx.runtimePaths!.dataDir, "restart.signal"))).toBe(true);
   });
 });

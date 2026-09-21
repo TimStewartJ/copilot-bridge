@@ -1,3 +1,4 @@
+import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
@@ -14,7 +15,7 @@ import {
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { RESTART_PENDING_MESSAGE } from "../session-manager.js";
+
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
@@ -741,7 +742,7 @@ describe("defer-loop-runner", () => {
     });
     const sm = makeMockSessionManager({
       sessions: ["session-1"],
-      startWorkError: new Error(RESTART_PENDING_MESSAGE),
+      startWorkError: new Error(BRIDGE_RESTARTING_MESSAGE),
     });
     const runner = createDeferLoopRunner(store, sm as any, bus);
 

@@ -6,14 +6,14 @@ export const MANAGEMENT_JOB_DEFER_GUIDANCE =
 
 export function queuedManagementJobResult(job: ManagementJob, action: string) {
   const batchNote = job.type === "staging_deploy"
-    ? " The runner combines up to 10 queued deploys into one restart."
+    ? " Deploys that finish before the Bridge is next idle share one restart, which blocks nothing while it waits."
     : "";
   return bridgeToolResult({
     success: true,
     jobId: job.id,
     status: job.status,
-    terminal: true,
-    toolNextAction: "respond_or_defer" as const,
+    terminal: false,
+    toolNextAction: "proceed" as const,
     retryable: false,
     summary:
       `${action} queued as management job ${job.id}. ` +

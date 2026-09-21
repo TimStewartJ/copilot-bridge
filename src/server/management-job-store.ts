@@ -41,6 +41,7 @@ export interface ManagementJobStore {
   get(id: string): ManagementJob | null;
   list(options?: ManagementJobListOptions): ManagementJob[];
   listActive(types?: readonly ManagementJobType[]): ManagementJob[];
+  listDeploysAwaitingActivation(): ManagementJob[];
   claimNext(options?: ClaimNextManagementJobOptions): ManagementJob | null;
   claimNextDeploy(options?: ClaimNextManagementJobOptions): ManagementJob | null;
   heartbeat(id: string, runnerPid?: number): void;
@@ -122,7 +123,6 @@ export class ManagementJobNotCancellableError extends Error {
 const ACTIVE_STATUSES: readonly ManagementJobStatus[] = ["queued", "running"];
 const CUTOVER_TYPES: readonly ManagementJobType[] = ["self_update", "staging_deploy"];
 export const DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS = 5 * 60_000;
-export const MANAGEMENT_DEPLOY_BATCH_MAX_JOBS = 10;
 export const DEFAULT_MANAGEMENT_JOB_LIST_LIMIT = 50;
 export const MAX_MANAGEMENT_JOB_LIST_LIMIT = 200;
 export const MANAGEMENT_JOB_MAX_AGE_DAYS_ENV = "BRIDGE_MANAGEMENT_JOB_MAX_AGE_DAYS";
@@ -244,7 +244,7 @@ function normalizedStagingDir(input: unknown): string {
   return value ? resolve(value) : "";
 }
 
-export function isDeployAwaitingActivation(job: ManagementJob): boolean {
+function isDeployAwaitingActivation(job: ManagementJob): boolean {
   return job.type === "staging_deploy"
     && job.status === "succeeded"
     && isRecord(job.result)
@@ -439,6 +439,22 @@ export function createManagementJobStore(
           AND status IN (${placeholders(ACTIVE_STATUSES)})
         ORDER BY createdAt ASC
       `).all(...types, ...ACTIVE_STATUSES) as unknown as ManagementJobRow[];
+      return rows.map(rowToJob);
+    },
+
+    listDeploysAwaitingActivation() {
+      const rows = db.prepare(`
+        SELECT * FROM management_jobs
+        WHERE type = 'staging_deploy' AND status = 'succeeded'
+          AND (
+            json_extract(result, '$.restartDeferred') = 1
+            OR (
+              json_extract(result, '$.restartQueued') = 1
+              AND COALESCE(json_extract(result, '$.restartActivated'), 0) != 1
+            )
+          )
+        ORDER BY createdAt ASC, rowid ASC
+      `).all() as unknown as ManagementJobRow[];
       return rows.map(rowToJob);
     },
 

@@ -14,10 +14,6 @@ import {
   type WorkspaceSessionNameMetadata,
 } from "./session-workspace-yaml.js";
 import {
-  isRestartCutoverInProgress,
-  refreshRestartStateSync,
-} from "./restart-controller.js";
-import {
   buildSessionNameHelperBaseConfig,
   type SetSessionNameOptions,
 } from "./session-name-rpc.js";
@@ -225,8 +221,6 @@ export class SessionNameAutogenerator {
   }
 
   private async generateSessionName(userMessages: string[]): Promise<string | undefined> {
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) return undefined;
-
     const model = selectSessionTitleModel(await this.deps.listModels());
     if (!model) return undefined;
 
