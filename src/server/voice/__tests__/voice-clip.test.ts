@@ -112,7 +112,7 @@ describe("planSpeechChunks", () => {
     const chunks = planSpeechChunks([{ start: 100, end: 300 }, { start: 420, end: 500 }], 1_000, { ...options, maxGapSeconds: 1 });
     expect(chunks).toEqual([{ start: 50, end: 350 }, { start: 370, end: 550 }]);
     const tight = planSpeechChunks([{ start: 0, end: 300 }, { start: 950, end: 1_400 }], 1_450, { ...options, maxChunkSeconds: 5, maxGapSeconds: 10 });
-    expect(tight).toEqual([{ start: 0, end: 350 }, { start: 900, end: 1_450 }]);
+    expect(tight).toEqual([{ start: 0, end: 350 }, { start: 925, end: 1_425 }]);
     expect(tight[0]!.end).toBeLessThanOrEqual(tight[1]!.start);
   });
 
@@ -129,6 +129,65 @@ describe("planSpeechChunks", () => {
 
   it("uses recognizer-friendly defaults", () => {
     expect(CLIP_CHUNK_PLAN).toEqual({ maxChunkSeconds: 20, maxGapSeconds: 1.5, padSeconds: 0.25 });
+  });
+
+  describe("speech that ran longer than a chunk without a detectable pause", () => {
+    const lengths = (chunks: Array<{ start: number; end: number }>) => chunks.map((chunk) => chunk.end - chunk.start);
+
+    it("cuts it into the fewest even pieces when there is no audio to look at", () => {
+      const chunks = planSpeechChunks([{ start: 0, end: 4_500 }], 4_500, { ...options, padSeconds: 0 });
+      expect(lengths(chunks)).toEqual([900, 900, 900, 900, 900]);
+      expect(chunks[0]!.start).toBe(0);
+      expect(chunks.at(-1)!.end).toBe(4_500);
+    });
+
+    it("cuts it at the quietest points, so a pause is cut rather than a word", () => {
+      const samples = new Float32Array(3_000).fill(0.5);
+      const pauses = [{ start: 800, end: 840 }, { start: 1_600, end: 1_640 }];
+      for (const pause of pauses) samples.fill(0.01, pause.start, pause.end);
+
+      const chunks = planSpeechChunks([{ start: 0, end: 2_500 }], 3_000, { ...options, samples });
+
+      expect(chunks).toHaveLength(3);
+      for (const length of lengths(chunks)) expect(length).toBeLessThanOrEqual(options.maxChunkSeconds * sampleRate);
+      // The pieces tile the speech: padding is only added at its outer edges, never across a cut.
+      expect(chunks[0]!.start).toBe(0);
+      expect(chunks.at(-1)!.end).toBe(2_550);
+      for (const [index, pause] of pauses.entries()) {
+        expect(chunks[index]!.end).toBe(chunks[index + 1]!.start);
+        expect(chunks[index]!.end).toBeGreaterThanOrEqual(pause.start);
+        expect(chunks[index]!.end).toBeLessThanOrEqual(pause.end);
+      }
+    });
+
+    it("bounds a long stretch between shorter segments without disturbing them", () => {
+      const chunks = planSpeechChunks([{ start: 0, end: 300 }, { start: 600, end: 3_100 }, { start: 3_500, end: 3_700 }], 4_000, { ...options, padSeconds: 0, maxGapSeconds: 0.5 });
+      expect(chunks[0]).toEqual({ start: 0, end: 300 });
+      expect(chunks.at(-1)).toEqual({ start: 3_500, end: 3_700 });
+      const middle = chunks.slice(1, -1);
+      expect(middle[0]!.start).toBe(600);
+      expect(middle.at(-1)!.end).toBe(3_100);
+      for (const length of lengths(middle)) expect(length).toBeLessThanOrEqual(1_000);
+    });
+
+    it("uses the fewest pieces even when all candidate cuts are equally quiet", () => {
+      const samples = new Float32Array(4_500).fill(0.5);
+      const chunks = planSpeechChunks([{ start: 0, end: samples.length }], samples.length, { ...options, samples });
+      expect(chunks).toHaveLength(5);
+      expect(chunks[0]!.start).toBe(0);
+      expect(chunks.at(-1)!.end).toBe(samples.length);
+      for (const length of lengths(chunks)) expect(length).toBeLessThanOrEqual(1_000);
+      for (let i = 1; i < chunks.length; i++) expect(chunks[i]!.start).toBe(chunks[i - 1]!.end);
+    });
+
+    it("includes padding in the cap without cutting speech", () => {
+      const chunks = planSpeechChunks([{ start: 100, end: 1_100 }], 1_300, options);
+      expect(chunks).toEqual([{ start: 100, end: 1_100 }]);
+    });
+
+    it("leaves speech that fits in one chunk alone", () => {
+      expect(planSpeechChunks([{ start: 0, end: 1_000 }], 1_000, { ...options, samples: new Float32Array(1_000) })).toEqual([{ start: 0, end: 1_000 }]);
+    });
   });
 });
 

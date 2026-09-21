@@ -106,15 +106,70 @@ export interface SpeechChunkPlanOptions {
   maxGapSeconds: number;
   /** Extra audio kept around each chunk so word edges are not clipped. */
   padSeconds: number;
+  /** The audio being planned. With it, speech too long for one chunk is cut where it is quietest. */
+  samples?: Float32Array;
 }
 
-export const CLIP_CHUNK_PLAN: Omit<SpeechChunkPlanOptions, "sampleRate"> = {
+export const CLIP_CHUNK_PLAN: Omit<SpeechChunkPlanOptions, "sampleRate" | "samples"> = {
   maxChunkSeconds: 20,
   maxGapSeconds: 1.5,
   padSeconds: 0.25,
 };
 
-/** Merges detected speech segments into padded, non-overlapping recognizer chunks. */
+const QUIET_WINDOW_SECONDS = 0.2;
+const QUIET_HOP_SECONDS = 0.01;
+
+/** Centre of the quietest stretch between two samples: far more often a pause than a word. */
+function quietestPoint(samples: Float32Array, from: number, to: number, sampleRate: number): number {
+  const hop = Math.max(1, Math.round(QUIET_HOP_SECONDS * sampleRate));
+  const hopsPerWindow = Math.max(1, Math.round(QUIET_WINDOW_SECONDS / QUIET_HOP_SECONDS));
+  const energies: number[] = [];
+  for (let offset = from; offset + hop <= to; offset += hop) {
+    let energy = 0;
+    for (let i = offset; i < offset + hop; i++) energy += samples[i]! * samples[i]!;
+    energies.push(energy);
+  }
+  if (energies.length < hopsPerWindow) return Math.floor((from + to) / 2);
+  let quietest = 0;
+  let quietestEnergy = Infinity;
+  let windowEnergy = 0;
+  for (let i = 0; i < energies.length; i++) {
+    windowEnergy += energies[i]!;
+    if (i >= hopsPerWindow) windowEnergy -= energies[i - hopsPerWindow]!;
+    if (i >= hopsPerWindow - 1 && windowEnergy < quietestEnergy) {
+      quietestEnergy = windowEnergy;
+      quietest = i - hopsPerWindow + 1;
+    }
+  }
+  return from + quietest * hop + Math.floor((hopsPerWindow * hop) / 2);
+}
+
+/**
+ * Cuts speech that is too long for one chunk. Steady background noise hides pauses from the speech
+ * detector, which then reports half a minute or more as a single segment, and the recognizer drops
+ * whole sentences from input that long. The speech is cut into the fewest pieces that fit, each cut
+ * at the quietest point within half a piece of an even split.
+ */
+function splitLongSegment(segment: SampleRange, maxChunk: number, options: SpeechChunkPlanOptions): SampleRange[] {
+  const pieces: SampleRange[] = [];
+  let start = segment.start;
+  while (segment.end - start > maxChunk) {
+    const remainingPieces = Math.ceil((segment.end - start) / maxChunk);
+    const evenPiece = Math.ceil((segment.end - start) / remainingPieces);
+    const slack = Math.floor(evenPiece / 2);
+    const target = start + evenPiece;
+    const earliest = Math.max(target - slack, segment.end - (remainingPieces - 1) * maxChunk);
+    const cut = options.samples
+      ? quietestPoint(options.samples, earliest, Math.min(target + slack, start + maxChunk), options.sampleRate)
+      : target;
+    pieces.push({ start, end: cut });
+    start = cut;
+  }
+  pieces.push({ start, end: segment.end });
+  return pieces;
+}
+
+/** Turns detected speech segments into padded, non-overlapping recognizer chunks, none longer than the maximum. */
 export function planSpeechChunks(segments: readonly SampleRange[], totalSamples: number, options: SpeechChunkPlanOptions): SampleRange[] {
   const maxChunk = Math.round(options.maxChunkSeconds * options.sampleRate);
   const maxGap = Math.round(options.maxGapSeconds * options.sampleRate);
@@ -122,7 +177,8 @@ export function planSpeechChunks(segments: readonly SampleRange[], totalSamples:
   const sorted = segments
     .map((segment) => ({ start: Math.max(0, Math.floor(segment.start)), end: Math.min(totalSamples, Math.ceil(segment.end)) }))
     .filter((segment) => segment.end > segment.start)
-    .sort((a, b) => a.start - b.start);
+    .sort((a, b) => a.start - b.start)
+    .flatMap((segment) => segment.end - segment.start > maxChunk ? splitLongSegment(segment, maxChunk, options) : [segment]);
 
   const merged: SampleRange[] = [];
   for (const segment of sorted) {
@@ -139,9 +195,12 @@ export function planSpeechChunks(segments: readonly SampleRange[], totalSamples:
     const next = merged[index + 1];
     const lowerBound = previous ? Math.floor((previous.end + chunk.start) / 2) : 0;
     const upperBound = next ? Math.ceil((chunk.end + next.start) / 2) : totalSamples;
+    const paddingRoom = maxChunk - (chunk.end - chunk.start);
+    const before = Math.min(pad, chunk.start - lowerBound, Math.floor(paddingRoom / 2));
+    const after = Math.min(pad, upperBound - chunk.end, paddingRoom - before);
     return {
-      start: Math.max(lowerBound, chunk.start - pad),
-      end: Math.min(upperBound, chunk.end + pad),
+      start: chunk.start - before,
+      end: chunk.end + after,
     };
   });
 }
