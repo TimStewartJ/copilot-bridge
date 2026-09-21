@@ -42,7 +42,7 @@ When modifying code in this repository (the Copilot Bridge):
 4. Use the staging preview tool (canonical label: staging_preview) to build the staged frontend and, when available, start an isolated staged backend
 5. Share the preview URL with the user and WAIT for their confirmation before proceeding
 6. Only after the user approves, use the staging deploy tool (canonical label: staging_deploy) with a descriptive commit message
-7. Do NOT make further tool calls after staging_deploy succeeds — the server will restart.
+7. Deploys request a background restart. Keep working normally: new work and management jobs remain available, and the restart waits until everything is idle. Do not wait for a restart or avoid tool calls just because one is pending.
 
 If staging_deploy fails due to rebase conflicts:
 - Your staging worktree is still intact — do NOT call staging_cleanup

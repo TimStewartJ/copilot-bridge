@@ -58,9 +58,6 @@ const ASSISTANT_PREVIEW_MAX_LENGTH = 160;
 
 export interface SessionRunStateControllerDeps {
   globalBus: GlobalBus;
-  isRestartPending(): boolean;
-  syncRestartWaitingSessions(activeSessionCount: number): void;
-  getActiveSessionCount?(): number;
   cancelPendingInteractions(sessionId: string): void;
   onRunIdle?(sessionId: string, at: number): void;
   promptDeliveryAbortedMessage: string;
@@ -285,9 +282,6 @@ export class SessionRunStateController {
           ...(assistantPreview ? { assistantPreview } : {}),
         });
       }
-      if (this.deps.isRestartPending()) {
-        this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
-      }
       return;
     }
 
@@ -308,9 +302,6 @@ export class SessionRunStateController {
     if (current?.state === state) return;
 
     this.deps.globalBus.emit({ type: state === "stalled" ? "session:stalled" : "session:busy", sessionId });
-    if (this.deps.isRestartPending() && !current) {
-      this.deps.syncRestartWaitingSessions(this.getActiveSessionCount());
-    }
   }
 
   setSessionRunMetadata(
@@ -325,10 +316,6 @@ export class SessionRunStateController {
       ...current,
       ...metadata,
     });
-  }
-
-  private getActiveSessionCount(): number {
-    return this.deps.getActiveSessionCount?.() ?? this.sessionRuns.size;
   }
 
   /** Marker persistence is best-effort: a storage failure must never fail or wedge the run itself. */

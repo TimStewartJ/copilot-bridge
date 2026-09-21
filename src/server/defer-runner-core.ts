@@ -3,7 +3,7 @@
 // Recomputes all timers from SQLite on startup; no in-memory state is authoritative.
 
 import type { GlobalBus } from "./global-bus.js";
-import { isPromptDeliveryInterruptedError, isRestartPendingError, type SessionManager } from "./session-manager.js";
+import { isPromptDeliveryInterruptedError, type SessionManager } from "./session-manager.js";
 import type { DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summary.js";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -28,11 +28,7 @@ export const DEFER_WATCHDOG_INTERVAL_MS = 60_000;
 export type DeferDeliveryErrorClassification = "pause" | "retry";
 
 export function classifyDeferDeliveryError(error: unknown): DeferDeliveryErrorClassification {
-  if (
-    isRestartPendingError(error)
-    || isPromptDeliveryInterruptedError(error)
-    || isBackendUnavailableError(error)
-  ) {
+  if (isPromptDeliveryInterruptedError(error) || isBackendUnavailableError(error)) {
     return "pause";
   }
   return "retry";
@@ -599,9 +595,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
         return;
       }
 
-      if (event.type === "server:restart-cleared"
-        || event.type === "focus:protection-cleared"
-        || event.type === "focus:protection-changed") {
+      if (event.type === "focus:protection-cleared" || event.type === "focus:protection-changed") {
         const scheduledGeneration = generation;
         if (!started || scheduledGeneration !== generation) return;
         processDue().catch((err) => {

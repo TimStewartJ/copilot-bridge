@@ -27,12 +27,6 @@ import {
   normalizePendingUserInputRequest,
 } from "./pending-interaction-validation.js";
 import {
-  PROMPT_DELIVERY_ABORTED_MESSAGE,
-  RESTART_PENDING_MESSAGE,
-  isRestartCutoverInProgress,
-  refreshRestartStateSync,
-} from "./restart-controller.js";
-import {
   type SessionRunController,
   type SessionRunStateController,
 } from "./session-run-state-controller.js";
@@ -526,9 +520,6 @@ export class SessionRunner {
     options: StartWorkOptions = {},
   ): SessionRunController {
     this.assertBackendAvailable();
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
-    }
 
     if (this.deps.isSessionBusy(sessionId)) {
       throw new Error("Session is busy processing another message");
@@ -575,9 +566,6 @@ export class SessionRunner {
     clientMessageId?: string,
   ): Promise<void> {
     this.assertBackendAvailable();
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
-    }
 
     const runState = this.deps.runStateController.getSessionRunState(sessionId);
     if (runState === "idle") {

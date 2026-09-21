@@ -8,9 +8,7 @@ import {
 } from "./management-job-store.js";
 import type { AppContext } from "./app-context.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
-import { isRestartAlreadyInFlight } from "./restart-state.js";
 import { isRecord } from "../shared/is-record.js";
-import { PRODUCTION_DATA_DIR } from "./staging-preview-shared.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 
 export class ManagementJobEnqueueError extends Error {
@@ -139,14 +137,6 @@ function applyPreflightGuards(ctx: AppContext, type: ManagementJobType): void {
       );
     }
   }
-  // Self-update would queue another cutover. Preview builds are safe while a
-  // restart is pending, and deploy jobs have their own serialized batching.
-  if (
-    type === "self_update"
-    && isRestartAlreadyInFlight(ctx.runtimePaths?.dataDir ?? PRODUCTION_DATA_DIR)
-  ) {
-    throw new ManagementJobEnqueueError("A restart is already pending.", 409);
-  }
 }
 
 export function enqueueManagementJob(
@@ -160,9 +150,6 @@ export function enqueueManagementJob(
 
   const { type, input } = normalizeRequest(request);
 
-  // Check for a reusable active job BEFORE restart-pending so a duplicate
-  // request does not get masked by a pending restart that the active job
-  // itself initiated.
   const reusable = findReusableJob(store, type, input);
   if (reusable) {
     ctx.stagingPreviewDiscovery?.watchJob(reusable);

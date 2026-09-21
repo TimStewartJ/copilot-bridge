@@ -2,7 +2,7 @@
 
 import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -30,22 +30,17 @@ import {
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { gitHash } from "./launcher-git.js";
-import { fetchRestartBusyState, waitForIdleSessions as waitForIdleSessionsImpl } from "./server/restart-coordinator.js";
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
 import {
-  DEPLOY_BATCH_RESTART_SOURCE,
   consumeRestartSignalFile,
+  readCurrentRestartSignalFile,
+  writeRestartSignalFile,
   type RestartSignal,
   type RestartSignalConsumption,
   type RestartValidationMode,
 } from "./server/restart-signal.js";
-import {
-  createManagementJobStore,
-  isDeployAwaitingActivation,
-  MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
-} from "./server/management-job-store.js";
 import {
   pruneReleaseSlots,
   readActiveRelease,
@@ -54,7 +49,6 @@ import {
   type ReleaseSlotManifest,
 } from "./server/release-slots.js";
 import {
-  buildRestartStateWithReleaseFailure,
   clearRestartState,
   readRestartState,
   type ReleaseFailurePhase,
@@ -78,16 +72,8 @@ import {
   markPersistentRollbackFailureState,
 } from "./launcher-rollback-state.js";
 import {
-  buildRestartingState,
-  buildRestartingWaitingState,
-  buildWaitingState,
-  type RestartPickupInfo,
-} from "./launcher-restart-state-ops.js";
-import {
   didRestartRecover,
-  isDeployRestartUpdatePending,
-  resolveRestartSignalAction,
-  resolveRestartSignalUpdate,
+  parseRestartBusyState,
   resolveReleaseCandidateRestartOutcome,
   resolveRollbackRecoveryOutcome,
   rollbackRecoveryRequiresServerStart,
@@ -130,7 +116,6 @@ import {
 } from "./launcher-process.js";
 import { TunnelSupervisor } from "./launcher-tunnel-supervisor.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
-import { openDatabase } from "./server/db.js";
 import { createGitPullRebaseCommand } from "./server/git-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -157,7 +142,6 @@ if (!process.env.BRIDGE_LAUNCHER_LOG_PATH) {
 }
 const LAUNCHER_LOG_PATH = getLauncherLogPath();
 const MAX_FAILURES = 3;
-const MAX_CLAIMED_SIGNAL_READ_FAILURES = 3;
 const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 120_000;
 const HEALTH_POLL_INTERVAL = 30_000;
@@ -177,9 +161,7 @@ const BLOCKED_BACKEND_RECOVERY_RESTART_WINDOW_MS = 60 * 60_000;
 const WEBHOOK_URL = process.env.BRIDGE_WEBHOOK_URL || "";
 const WEBHOOK_TIMEOUT_MS = 10_000;
 
-const BUSY_CHECK_INTERVAL = 3_000;
-const BUSY_WAIT_TIMEOUT = 3_600_000; // 60 minutes max wait
-const STALE_THRESHOLD = 300_000; // 5 minutes — session with no events is "stuck"
+const IDLE_PROBE_TIMEOUT = 10_000; // an unanswered idle probe counts as busy
 const GRACEFUL_EXIT_WAIT = 15_000; // wait for clean exit after POST /api/shutdown
 const GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT = 5_000; // bound shutdown POST so force-kill fallback is reachable
 const CHILD_IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
@@ -203,13 +185,13 @@ const DEPENDENCY_INSTALL_TIMEOUT = 600_000;
 let serverProcess: ChildProcess | null = null;
 let serverLaunchTarget: ServerLaunchTarget | null = null;
 let managementJobRunnerProcess: ChildProcess | null = null;
-let cyclingManagementJobRunner = false;
 const childProcessIdentities = new WeakMap<ChildProcess, Promise<ProcessIdentity | null>>();
 let consecutiveFailures = 0;
 let restarting = false;
+let restartCheckInFlight = false;
 let shuttingDown = false;
-let retryClaimedSignalRead = false;
-let claimedSignalReadFailures = 0;
+let lastRestartWaitLog = "";
+let restartSignalClaimed = false;
 let crashRestarts = 0;
 let lastCrashTime = 0;
 let steadyHealthFailures = 0;
@@ -340,10 +322,14 @@ function markReleaseUpdateActivationRejected(candidateId: string, message: strin
   }
 }
 
-function clearStaleInProgressSignal() {
-  if (!existsSync(SIGNAL_FILE) && existsSync(IN_PROGRESS_SIGNAL_FILE)) {
-    log("Discarding stale in-progress restart signal from a previous launcher run");
-    clearInProgressSignal();
+function restorePendingRestartSignal() {
+  if (!existsSync(IN_PROGRESS_SIGNAL_FILE)) return;
+  if (existsSync(SIGNAL_FILE)) {
+    const error = clearInProgressSignalStrict();
+    if (error) throw error;
+  } else {
+    renameSync(IN_PROGRESS_SIGNAL_FILE, SIGNAL_FILE);
+    log("Restored an unfinished restart request from the previous launcher");
   }
 }
 
@@ -598,12 +584,6 @@ function clearRollbackCheckpointAfterHealthyState() {
   clearRollbackCheckpoint(PRE_DEPLOY_SHA_FILE);
 }
 
-/** Read existing queued state to preserve requestId / requestedAt for continuity. */
-async function readRestartPickupInfo(): Promise<RestartPickupInfo> {
-  const state = await readRestartState(RESTART_STATE_FILE);
-  return { requestId: state.requestId, requestedAt: state.requestedAt };
-}
-
 /** Write restart state without throwing — state writes are monitoring aids, not critical path. */
 async function safeWriteRestartState(state: Parameters<typeof writeRestartState>[1]): Promise<void> {
   try {
@@ -678,11 +658,7 @@ function formatReleaseFailureMessage(
 async function safePersistPendingReleaseFailure(): Promise<void> {
   if (!pendingReleaseFailure) return;
   try {
-    const state = await readRestartState(RESTART_STATE_FILE);
-    await writeRestartState(
-      RESTART_STATE_FILE,
-      buildRestartStateWithReleaseFailure(state, pendingReleaseFailure),
-    );
+    await writeRestartState(RESTART_STATE_FILE, { phase: "idle", releaseFailure: pendingReleaseFailure });
   } catch (err) {
     log(`Failed to persist release failure state (non-fatal): ${err}`);
   }
@@ -725,58 +701,14 @@ async function recordFailureAndMaybeStop(
   }
 }
 
-async function clearRestartRequestViaServer(requestId: string): Promise<boolean> {
-  const response = await fetch(bridgeLocalUrl("/api/restart-clear"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ requestId }),
-  });
-  if (!response.ok) {
-    throw new Error(`restart lifecycle clear returned HTTP ${response.status}`);
-  }
-  const body = await response.json() as { cleared?: unknown };
-  if (typeof body.cleared !== "boolean") {
-    throw new Error("restart lifecycle clear returned an invalid response");
-  }
-  return body.cleared;
-}
-
-async function rejectInvalidRestartSignal(
+function rejectInvalidRestartSignal(
   result: Extract<RestartSignalConsumption, { status: "invalid" }>,
-): Promise<void> {
-  const message =
-    `Claimed restart signal is invalid: ${result.error.message}. No restart was attempted.`;
+): void {
+  const message = `Restart signal is invalid: ${result.error.message}. No restart was attempted.`;
   log(`❌ ${message}`);
   if (result.releaseCandidateId) {
     markReleaseUpdateActivationRejected(result.releaseCandidateId, message);
   }
-  if (!result.requestId) {
-    log(
-      "Invalid claimed restart signal did not contain a valid requestId; "
-      + "the rejected claim will be removed without clearing restart state. "
-      + "Use POST /api/restart-clear after confirming any remaining pending lifecycle is stale.",
-    );
-  } else {
-    try {
-      const cleared = await clearRestartRequestViaServer(result.requestId);
-      if (cleared) {
-        log(`Cleared rejected restart request ${result.requestId}`);
-      } else {
-        log(
-          `Rejected restart request ${result.requestId} was no longer current; `
-          + "preserving the newer pending lifecycle",
-        );
-      }
-    } catch (error) {
-      log(
-        `Failed to clear rejected restart request ${result.requestId}: `
-        + `${error instanceof Error ? error.message : String(error)}. `
-        + "The rejected claim will still be removed; use POST /api/restart-clear "
-        + "after confirming any remaining pending lifecycle is stale.",
-      );
-    }
-  }
-
   const clearError = clearInProgressSignalStrict();
   if (clearError) {
     log(
@@ -786,53 +718,77 @@ async function rejectInvalidRestartSignal(
   }
 }
 
-async function processRestartSignal(): Promise<void> {
-  if (restarting || shuttingDown) return;
-  restarting = true;
-  let restartOutcome: RestartOutcome = "failed";
-  let consumedSignal = false;
+/**
+ * Whether the Bridge has nothing in flight: no run, no session being created, no queued or running
+ * management job. A pending restart blocks nothing and simply asks again on the next poll, for as
+ * long as it takes. An unanswered probe counts as busy; a hung server is the health poll's to recover.
+ */
+async function isBridgeIdle(): Promise<boolean> {
+  if (!serverProcess) return true;
+  let reason = "the server is not answering";
   try {
-    const result = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
-    const action = resolveRestartSignalAction(result);
-    if (action === "none") {
-      retryClaimedSignalRead = false;
-      claimedSignalReadFailures = 0;
-      return;
-    }
-    if (action === "retry") {
-      if (result.status !== "retryable-error") {
-        throw new Error(`Unexpected restart signal result for retry action: ${result.status}`);
-      }
-      if (result.stage === "read") {
-        claimedSignalReadFailures++;
-        retryClaimedSignalRead = claimedSignalReadFailures < MAX_CLAIMED_SIGNAL_READ_FAILURES;
-        const retryDetail = retryClaimedSignalRead
-          ? "will retry"
-          : "retry limit reached; inspect restart-in-progress.json and clear stale restart state manually";
-        log(`Failed to read claimed restart signal (${retryDetail}): ${result.error}`);
+    const response = await fetch(bridgeLocalUrl("/api/busy"), { signal: AbortSignal.timeout(IDLE_PROBE_TIMEOUT) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const busy = parseRestartBusyState(await response.json());
+    if (!busy.busy) return true;
+    const jobs = busy.jobs;
+    const sessions = busy.count - jobs;
+    const work = [
+      sessions > 0 ? `${sessions} active operation(s)` : "",
+      jobs > 0 ? `${jobs} management job(s)` : "",
+    ].filter(Boolean).join(" and ") || "active work";
+    reason = `waiting for ${work} to finish`;
+  } catch (error) {
+    if (!serverProcess) return true;
+    reason = `idle check failed (will retry): ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (reason !== lastRestartWaitLog) {
+    log(`Restart pending — ${reason}`);
+    lastRestartWaitLog = reason;
+  }
+  return false;
+}
+
+/**
+ * Acts on a pending restart request. The request stays where it is until the Bridge is idle, so
+ * later requests keep joining it; it is claimed only once the server has agreed to stop.
+ * `force` skips the wait: the server is already gone or is being replaced because it is unhealthy.
+ */
+async function processRestartSignal(force = false): Promise<void> {
+  if (restartCheckInFlight || restarting || shuttingDown) return;
+  restartCheckInFlight = true;
+  restartSignalClaimed = false;
+  let restartOutcome: RestartOutcome = "waiting";
+  try {
+    let signal: RestartSignal;
+    try {
+      const current = readCurrentRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
+      if (!current) return;
+      signal = current;
+    } catch (error) {
+      if (error instanceof Error && "code" in error) {
+        if (error.code !== "ENOENT") log(`Failed to read restart signal (will retry): ${error.message}`);
         return;
       }
-      log(
-        `Failed to claim restart signal (will retry): ${result.error}`,
-      );
-      return;
-    }
-    retryClaimedSignalRead = false;
-    claimedSignalReadFailures = 0;
-    if (action === "reject") {
-      if (result.status !== "invalid") {
-        throw new Error(`Unexpected restart signal result for reject action: ${result.status}`);
+      const claim = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
+      if (claim.status === "invalid") rejectInvalidRestartSignal(claim);
+      else if (claim.status === "claimed") {
+        // A valid request replaced the unreadable one in between: it goes back to waiting.
+        writeRestartSignalFile(SIGNAL_FILE, claim.signal);
+        clearInProgressSignal();
       }
-      await rejectInvalidRestartSignal(result);
       return;
     }
-    if (result.status !== "claimed") {
-      throw new Error(`Unexpected restart signal result for restart action: ${result.status}`);
-    }
-    consumedSignal = true;
-    restartOutcome = await restart(result.signal);
+    if (!force && !(await isBridgeIdle())) return;
+    lastRestartWaitLog = "";
+    if (force) restarting = true;
+    restartOutcome = await restart(signal, force);
+  } catch (error) {
+    restartOutcome = "failed";
+    throw error;
   } finally {
-    if (consumedSignal) {
+    const restartRan = restartSignalClaimed;
+    if (restartRan && restartOutcome !== "waiting") {
       const clearError = clearInProgressSignalStrict();
       if (clearError) {
         log(
@@ -850,23 +806,19 @@ async function processRestartSignal(): Promise<void> {
       }
     }
     restarting = false;
-    if (consumedSignal) {
-      if (didRestartRecover(restartOutcome)) {
-        clearFailedRollbackState();
-        clearRollbackCheckpointAfterHealthyState();
-      }
-      if (!shouldCheckFollowUpRecovery({ autoRecoverySuppressed: suppressAutoRecovery })) {
-        return;
-      }
+    restartCheckInFlight = false;
+    if (restartRan && didRestartRecover(restartOutcome)) {
+      clearFailedRollbackState();
+      clearRollbackCheckpointAfterHealthyState();
+    }
+    if (shouldCheckFollowUpRecovery({ autoRecoverySuppressed: suppressAutoRecovery })) {
       const followUpRecovery = evaluatePostRecoveryState({
         hasServerProcess: serverProcess !== null,
         restarting,
         recoveringServer,
         shuttingDown,
       });
-      if (followUpRecovery) {
-        recoverServer(followUpRecovery.reason, followUpRecovery.options);
-      }
+      if (followUpRecovery) recoverServer(followUpRecovery.reason, followUpRecovery.options);
     }
   }
 }
@@ -941,7 +893,10 @@ function recoverServer(reason: string, options: { killExisting?: boolean; delayM
     autoRecoverySuppressed: suppressAutoRecovery,
   });
   if (recoveryExecution.type === "restart") {
-    void processRestartSignal();
+    // The server is gone or is being replaced as unhealthy, so there is no work to wait for.
+    processRestartSignal(true).catch((error) => {
+      log(`Recovery restart failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
     return;
   }
   if (recoveryExecution.type === "skip") {
@@ -1205,7 +1160,7 @@ function startManagementJobRunner(): ChildProcess | null {
     if (wasActive) {
       managementJobRunnerProcess = null;
     }
-    if (wasActive && !shuttingDown && !cyclingManagementJobRunner) {
+    if (wasActive && !shuttingDown) {
       setTimeout(() => {
         if (!shuttingDown && !managementJobRunnerProcess) startManagementJobRunner();
       }, CRASH_RESTART_DELAY);
@@ -1217,7 +1172,7 @@ function startManagementJobRunner(): ChildProcess | null {
     onSpawnFailure: () => {
       if (managementJobRunnerProcess !== child) return;
       managementJobRunnerProcess = null;
-      if (!shuttingDown && !cyclingManagementJobRunner) {
+      if (!shuttingDown) {
         setTimeout(() => {
           if (!shuttingDown && !managementJobRunnerProcess) startManagementJobRunner();
         }, CRASH_RESTART_DELAY);
@@ -1225,105 +1180,6 @@ function startManagementJobRunner(): ChildProcess | null {
     },
   });
   return child;
-}
-
-async function killManagementJobRunner(): Promise<boolean> {
-  const existingRunner = managementJobRunnerProcess;
-  if (!existingRunner) return true;
-  log("Stopping management job runner...");
-  const outcome = await stopLauncherChild(
-    asLauncherChild("management job runner", existingRunner),
-    { terminateProcessTree, waitForChildExit, log },
-    { deadline: createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS) },
-  );
-  if (outcome.ok && managementJobRunnerProcess === existingRunner) {
-    managementJobRunnerProcess = null;
-  }
-  return outcome.ok;
-}
-
-async function cycleManagementJobRunner(reason: string): Promise<void> {
-  if (!managementJobRunnerProcess) {
-    startManagementJobRunner();
-    return;
-  }
-  if (hasRunningManagementJobs()) {
-    log(`Skipping management job runner cycle after ${reason} because a job is running`);
-    return;
-  }
-  log(`Cycling management job runner after ${reason}`);
-  cyclingManagementJobRunner = true;
-  const stopped = await killManagementJobRunner();
-  if (!stopped) {
-    cyclingManagementJobRunner = false;
-    log("❌ Management job runner stop could not be verified; refusing to start a replacement");
-    return;
-  }
-  setTimeout(() => {
-    cyclingManagementJobRunner = false;
-    if (!shuttingDown) startManagementJobRunner();
-  }, CRASH_RESTART_DELAY);
-}
-
-function hasRunningManagementJobs(): boolean {
-  let db: ReturnType<typeof openDatabase> | null = null;
-  try {
-    db = openDatabase(DATA_DIR);
-    const store = createManagementJobStore(db, { dataDir: DATA_DIR });
-    return store.listActive().some((job) => job.status === "running");
-  } catch (error) {
-    log(`Unable to inspect management jobs before runner cycle; leaving runner active: ${error instanceof Error ? error.message : String(error)}`);
-    return true;
-  } finally {
-    db?.close();
-  }
-}
-
-function listPendingDeployRestartUpdates(includeQueued: boolean) {
-  let db: ReturnType<typeof openDatabase> | null = null;
-  try {
-    db = openDatabase(DATA_DIR);
-    const store = createManagementJobStore(db, { dataDir: DATA_DIR });
-    const jobs = store.list({
-      types: ["staging_deploy"],
-      statuses: ["queued", "running", "succeeded"],
-      order: "created-asc",
-      limit: 200,
-    });
-    const batchSize = jobs.filter((job) => (
-      job.status === "running" || isDeployAwaitingActivation(job)
-    )).length;
-    return jobs.filter((job) => isDeployRestartUpdatePending(
-      job,
-      includeQueued && batchSize < MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
-    ));
-  } finally {
-    db?.close();
-  }
-}
-
-async function waitForDeployRestartUpdates(includeQueued: boolean): Promise<void> {
-  const startedAt = Date.now();
-  let quietChecks = 0;
-  let lastPendingIds = "";
-  while (!shuttingDown) {
-    const pending = listPendingDeployRestartUpdates(includeQueued);
-    if (pending.length === 0) {
-      quietChecks++;
-      if (quietChecks >= 2) return;
-    } else {
-      quietChecks = 0;
-      const pendingIds = pending.map((job) => job.id).join(",");
-      if (pendingIds !== lastPendingIds) {
-        log(`Waiting for ${pending.length} deploy candidate update(s) before restart cutover`);
-        lastPendingIds = pendingIds;
-      }
-    }
-    if (Date.now() - startedAt >= BUSY_WAIT_TIMEOUT) {
-      throw new Error("Timed out waiting for deploy candidate updates before restart cutover");
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, POLL_INTERVAL));
-  }
 }
 
 function trackChildProcessIdentity(proc: ChildProcess): void {
@@ -1400,26 +1256,54 @@ async function forceKillServerAndWait(
   return outcome.ok;
 }
 
-async function waitForIdleSessions(onWaiting?: (count: number) => void | Promise<void>): Promise<boolean> {
-  const busyUrl = bridgeLocalUrl("/api/busy");
-  return waitForIdleSessionsImpl({
-    fetchBusy: () => fetchRestartBusyState({ fetch, busyUrl, log }),
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    log,
-    isServerAlive: () => serverProcess !== null,
-    busyCheckInterval: BUSY_CHECK_INTERVAL,
-    busyWaitTimeout: BUSY_WAIT_TIMEOUT,
-    staleThreshold: STALE_THRESHOLD,
-    onWaiting,
-  });
+async function requestServerShutdown(deadline: Deadline, ifIdle: boolean): Promise<"stopping" | "busy"> {
+  const controller = new AbortController();
+  const requestTimeoutMs = Math.max(1, Math.min(GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT, remainingMs(deadline)));
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetch(bridgeLocalUrl("/api/shutdown"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deadlineUnixMs: deadline.expiresAtUnixMs, ...(ifIdle ? { ifIdle: true } : {}) }),
+      signal: controller.signal,
+    });
+    if (ifIdle && response.status === 409) return "busy";
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return "stopping";
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-async function gracefulStopServer(): Promise<boolean> {
+/**
+ * Stops the server for a restart. With `ifIdle` the server agrees only while nothing is in flight,
+ * and checks that in the same step as it stops taking work, so the restart cannot cut off a run
+ * that began after the launcher last looked. "busy" leaves everything as it was. `onStopping`
+ * runs once the stop is certain.
+ */
+async function stopServerForRestart(
+  ifIdle: boolean,
+  onStopping: () => Promise<void>,
+): Promise<"stopped" | "busy" | "failed"> {
   const existingServer = serverProcess;
-  if (!existingServer) return true;
+  if (!existingServer) {
+    await onStopping();
+    return "stopped";
+  }
 
   const deadline = createDeadline(GRACEFUL_EXIT_WAIT + PROCESS_TREE_TERMINATION_BUDGET_MS);
   const gracefulDeadline = deadlineBefore(deadline, PROCESS_TREE_TERMINATION_BUDGET_MS);
+  let shutdownRequested = false;
+  if (ifIdle) {
+    try {
+      if ((await requestServerShutdown(gracefulDeadline, true)) === "busy") return "busy";
+      shutdownRequested = true;
+    } catch (error) {
+      log(`Server did not answer the shutdown request (${error instanceof Error ? error.message : String(error)})`);
+      return "busy";
+    }
+  }
+  await onStopping();
   const outcome = await stopLauncherChild(
     asLauncherChild("server", existingServer),
     { terminateProcessTree, waitForChildExit, log },
@@ -1427,27 +1311,9 @@ async function gracefulStopServer(): Promise<boolean> {
       deadline,
       gracefulDeadline,
       requestGraceful: async (shutdownDeadline) => {
+        if (shutdownRequested) return;
         log("Requesting graceful shutdown...");
-        const controller = new AbortController();
-        const requestTimeoutMs = Math.max(
-          1,
-          Math.min(
-            GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT,
-            remainingMs(shutdownDeadline),
-          ),
-        );
-        const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
-        try {
-          const response = await fetch(bridgeLocalUrl("/api/shutdown"), {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ deadlineUnixMs: shutdownDeadline.expiresAtUnixMs }),
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        } finally {
-          clearTimeout(timeout);
-        }
+        await requestServerShutdown(shutdownDeadline, false);
       },
     },
   );
@@ -1458,21 +1324,45 @@ async function gracefulStopServer(): Promise<boolean> {
   if (outcome.ok) {
     log(outcome.mode === "graceful" ? "Server exited cleanly" : "Server stop verified");
   }
-  return outcome.ok;
+  return outcome.ok ? "stopped" : "failed";
 }
 
-async function restart(signal: RestartSignal): Promise<RestartOutcome> {
-  log("═══ Restart requested ═══");
+/** Takes the request out of its waiting place. Whatever joined it since it was first read comes along. */
+function claimRestartSignal(): RestartSignal {
+  const claim = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
+  if (claim.status === "claimed") {
+    restartSignalClaimed = true;
+    return claim.signal;
+  }
+  if (claim.status === "invalid") {
+    rejectInvalidRestartSignal(claim);
+    throw claim.error;
+  }
+  if (claim.status === "retryable-error") {
+    throw new Error(`Failed to claim restart signal (${claim.stage})`, { cause: claim.error });
+  }
+  throw new Error("Restart request disappeared before cutover");
+}
+
+/**
+ * Swaps the server. Called only while the Bridge is idle, or with `force`. Until the server has
+ * agreed to stop nothing is changed, so "waiting" means the request simply stays pending.
+ */
+async function restart(signal: RestartSignal, force: boolean): Promise<RestartOutcome> {
+  log(force ? "═══ Restarting ═══" : "═══ Bridge is idle — restarting ═══");
   const validationMode = signal.validationMode;
   clearReleaseFailureTracking();
   releaseCandidateSha = null;
-  let effectiveSignal = signal;
-  let candidateRelease = resolveReleaseCandidate(DATA_DIR, effectiveSignal.releaseCandidate);
-  let candidateOutcome = resolveReleaseCandidateRestartOutcome({
+  let candidateRelease = resolveReleaseCandidate(DATA_DIR, signal.releaseCandidate);
+  const candidateOutcome = resolveReleaseCandidateRestartOutcome({
     releaseCandidateRequested: signal.releaseCandidate !== undefined,
     releaseCandidateResolved: candidateRelease !== null,
   });
   if (candidateOutcome) {
+    const claimed = claimRestartSignal();
+    if (JSON.stringify(claimed.releaseCandidate) !== JSON.stringify(signal.releaseCandidate)) {
+      return "waiting";
+    }
     if (signal.releaseCandidate) {
       markReleaseUpdateActivationRejected(
         signal.releaseCandidate.id,
@@ -1484,66 +1374,25 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   }
   const hadRunningServerAtStart = serverProcess !== null;
   const previousLaunchTarget = serverLaunchTarget ?? resolveStartupLaunchTarget();
-
-  // Preserve requestId / requestedAt from the queued state written by the server.
-  const pickupInfo = await readRestartPickupInfo();
-
-  // Transition: queued → waiting-for-sessions
-  await safeWriteRestartState(buildWaitingState(pickupInfo, 0, new Date().toISOString()));
-
-  // First session wait — refresh waitingSessions + launcherHeartbeatAt on every busy check.
-  await waitForIdleSessions(async (count) => {
-    await safeWriteRestartState(buildWaitingState(pickupInfo, count, new Date().toISOString()));
-  });
-
-  if (effectiveSignal.source === DEPLOY_BATCH_RESTART_SOURCE) {
-    // Let the runner publish deploys that arrived while sessions were draining,
-    // then close admission and catch a claim that raced the phase transition.
-    await waitForDeployRestartUpdates(true);
-    await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
-    await waitForDeployRestartUpdates(false);
-
-    effectiveSignal = resolveRestartSignalUpdate(
-      effectiveSignal,
-      consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE),
-    );
-    if (effectiveSignal.releaseCandidate?.id !== signal.releaseCandidate?.id) {
-      log(
-        `Retargeted pending restart to release ${effectiveSignal.releaseCandidate?.id} `
-        + `(${effectiveSignal.releaseCandidate?.commitSha.slice(0, 8)})`,
-      );
-    }
-  } else {
-    await safeWriteRestartState(buildRestartingState(pickupInfo, new Date().toISOString()));
-  }
-  candidateRelease = resolveReleaseCandidate(DATA_DIR, effectiveSignal.releaseCandidate);
-  candidateOutcome = resolveReleaseCandidateRestartOutcome({
-    releaseCandidateRequested: effectiveSignal.releaseCandidate !== undefined,
-    releaseCandidateResolved: candidateRelease !== null,
-  });
-  if (candidateOutcome) {
-    if (effectiveSignal.releaseCandidate) {
-      markReleaseUpdateActivationRejected(
-        effectiveSignal.releaseCandidate.id,
-        "The updated release candidate metadata was invalid or missing; the current server was left running.",
-      );
-    }
-    log("Updated restart signal referenced an invalid release candidate — leaving the current server running");
-    return candidateOutcome;
-  }
   releaseCandidateSha = candidateRelease?.commitSha ?? normalizeGitHash(gitHash());
+  const buildHeadSha = candidateRelease ? null : gitFullHash();
 
   if (candidateRelease) {
     log(`Using prepared release candidate ${candidateRelease.id} (${candidateRelease.commitSha.slice(0, 8)}) — skipping production-root build`);
   } else if (!build(validationMode)) {
+    const latest = readCurrentRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
+    if (!buildHeadSha || gitFullHash() !== buildHeadSha || latest?.releaseCandidate
+      || (!force && !(await isBridgeIdle()))) {
+      log("Restart preparation failed while work or the checkout changed — leaving it untouched and retrying later");
+      return "waiting";
+    }
+    if (claimRestartSignal().releaseCandidate) return "waiting";
     log("Build failed — rolling back");
     await notifyWebhook(`⚠️ Build failed — rolling back to last checkpoint (${tag()})`, tunnelSupervisor.getUrl());
     const rollbackSucceeded = rollback();
     if (!rollbackSucceeded) {
       log("Rollback did not complete successfully");
       enterStoppedStateAfterFailedRollback();
-      try { await fetch(bridgeLocalUrl("/api/restart-clear"), { method: "POST" }); }
-      catch { /* server may be unreachable */ }
       await recordFailureAndMaybeStop("rollback", {
         manualInterventionMessage: "Rollback failed after build validation failure — manual intervention required.",
         retryReason: "rollback failure after build validation failure",
@@ -1565,10 +1414,6 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       }
     }
 
-    // Old server is still running with restart banner — dismiss it immediately
-    try { await fetch(bridgeLocalUrl("/api/restart-clear"), { method: "POST" }); }
-    catch { /* server may be unreachable */ }
-
     const outcome = resolveRollbackRecoveryOutcome({
       rollbackSucceeded,
       hadRunningServerAtStart,
@@ -1588,16 +1433,35 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
     return "recovered-via-rollback";
   }
 
-  // Second session wait (new sessions that started during the build) — still in "restarting".
-  await waitForIdleSessions(async (count) => {
-    await safeWriteRestartState(buildRestartingWaitingState(pickupInfo, count, new Date().toISOString()));
-  });
   if (shuttingDown) return "failed";
 
-  const replacementTarget = candidateRelease ? releaseLaunchTarget(candidateRelease) : resolveStartupLaunchTarget();
+  const stop = await stopServerForRestart(!force, async () => {
+    restarting = true;
+    const claimed = claimRestartSignal();
+    await safeWriteRestartState({ phase: "restarting", releaseFailure: null });
+    if (!claimed.releaseCandidate || claimed.releaseCandidate.id === signal.releaseCandidate?.id) return;
+    const newerRelease = resolveReleaseCandidate(DATA_DIR, claimed.releaseCandidate);
+    if (newerRelease) {
+      candidateRelease = newerRelease;
+      releaseCandidateSha = newerRelease.commitSha;
+      log(`Restart picked up newer release ${newerRelease.id} (${newerRelease.commitSha.slice(0, 8)})`);
+    } else {
+      markReleaseUpdateActivationRejected(
+        claimed.releaseCandidate.id,
+        "Prepared release candidate metadata was invalid or missing; it was not activated.",
+      );
+      throw new Error(`Updated release candidate ${claimed.releaseCandidate.id} is invalid`);
+    }
+  });
+  if (stop === "busy") {
+    log("Work arrived before the server stopped — the restart keeps waiting");
+    return "waiting";
+  }
+  if (shuttingDown) return "failed";
+
   const replacementTransition = await startAfterVerifiedStop(
-    () => gracefulStopServer(),
-    () => startServer(replacementTarget),
+    async () => stop === "stopped",
+    () => startServer(candidateRelease ? releaseLaunchTarget(candidateRelease) : resolveStartupLaunchTarget()),
   );
   if (shuttingDown) return "failed";
   if (!replacementTransition.stopped) {
@@ -1620,8 +1484,11 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
   const healthy = await healthCheck(replacementServer);
   if (shuttingDown) return "failed";
   if (healthy) {
+    if (candidateRelease) await writeActiveRelease(DATA_DIR, candidateRelease);
+    // The restart is over for everyone watching it; what follows is the launcher's own housekeeping.
+    clearInProgressSignal();
+    await safeClearRestartState();
     if (candidateRelease) {
-      await writeActiveRelease(DATA_DIR, candidateRelease);
       markReleaseUpdateActivationSucceeded(candidateRelease.id);
       const pruned = pruneReleaseSlots(DATA_DIR, {
         extraKeepIds: [previousLaunchTarget.release?.id],
@@ -1630,7 +1497,7 @@ async function restart(signal: RestartSignal): Promise<RestartOutcome> {
       if (pruned > 0) {
         log(`Pruned ${pruned} stale release slot artifact(s)`);
       }
-      await cycleManagementJobRunner("successful release activation");
+      startManagementJobRunner();
       syncProductionRootDepsAfterReleaseActivation();
     } else {
       startManagementJobRunner();
@@ -1751,7 +1618,11 @@ async function main() {
   console.log("╚════════════════════════════════════════╝");
   console.log();
 
-  clearStaleInProgressSignal();
+  restorePendingRestartSignal();
+  const previousRestartState = await readRestartState(RESTART_STATE_FILE);
+  if (previousRestartState.phase === "restarting") {
+    await safeWriteRestartState({ phase: "idle", releaseFailure: previousRestartState.releaseFailure });
+  }
 
   const sweptRestartTemps = sweepStaleRestartStateTempFiles(RESTART_STATE_FILE);
   if (sweptRestartTemps > 0) {
@@ -1822,18 +1693,13 @@ async function main() {
 
   if (shuttingDown) return;
 
-  // Poll for restart signal
-  setInterval(async () => {
-    if (
-      !restarting
-      && !recoveringServer
-      && (
-        existsSync(SIGNAL_FILE)
-        || (retryClaimedSignalRead && existsSync(IN_PROGRESS_SIGNAL_FILE))
-      )
-    ) {
-      await processRestartSignal();
-    }
+  // A pending restart is looked at on every poll until the Bridge is idle enough to act on it.
+  setInterval(() => {
+    if (restartCheckInFlight || restarting || recoveringServer
+      || (!existsSync(SIGNAL_FILE) && !existsSync(IN_PROGRESS_SIGNAL_FILE))) return;
+    processRestartSignal().catch((error) => {
+      log(`Restart attempt failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+    });
   }, POLL_INTERVAL);
 
   setInterval(() => {

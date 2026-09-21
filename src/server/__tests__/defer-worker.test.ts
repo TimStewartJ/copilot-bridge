@@ -1,3 +1,4 @@
+import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import {
   isDisposableDeferWorkerSessionId,
 } from "../defer-worker.js";
 import { DEFER_CHECKPOINT_MAX_BYTES } from "../defer-checkpoint.js";
-import { RESTART_PENDING_MESSAGE } from "../restart-controller.js";
+
 import type { BridgeNativeTool } from "../bridge-native-tools.js";
 import { makeTestDir } from "./helpers.js";
 
@@ -312,7 +313,7 @@ describe("defer worker", () => {
     await started;
     worker.abortAll();
 
-    await expect(result).rejects.toThrow(RESTART_PENDING_MESSAGE);
+    await expect(result).rejects.toThrow(BRIDGE_RESTARTING_MESSAGE);
     expect(abort).toHaveBeenCalledOnce();
     await lifecycle.completed;
     expect(deleteSession).toHaveBeenCalledOnce();
@@ -321,7 +322,7 @@ describe("defer worker", () => {
       "defer.worker",
       expect.any(Number),
       "parent-session",
-      expect.objectContaining({ action: "error", error: RESTART_PENDING_MESSAGE }),
+      expect.objectContaining({ action: "error", error: BRIDGE_RESTARTING_MESSAGE }),
     );
   });
 

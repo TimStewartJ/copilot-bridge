@@ -20,6 +20,8 @@ export const BACKEND_NOT_READY_MESSAGE = "Agent backend is not ready yet; try ag
 /** Model refresh rotation (pre-existing wording, kept for compatibility). */
 export const BACKEND_REFRESH_IN_PROGRESS_MESSAGE = "Copilot SDK client refresh is in progress; try again shortly";
 export const BACKEND_NOT_INITIALIZED_MESSAGE = "SessionManager not initialized";
+/** The server is stopping, for a restart or a shutdown. Whoever asked finds the next server in seconds. */
+export const BRIDGE_RESTARTING_MESSAGE = "Bridge is restarting; try again shortly.";
 
 /** Prompt re-sent to interactive sessions whose turn was cut off by a backend disconnect. */
 export const BACKEND_RECOVERY_CONTINUE_PROMPT = [
@@ -38,11 +40,17 @@ const BACKEND_UNAVAILABLE_MESSAGES = [
   BACKEND_NOT_READY_MESSAGE,
   BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
   BACKEND_NOT_INITIALIZED_MESSAGE,
+  BRIDGE_RESTARTING_MESSAGE,
 ];
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return typeof error === "string" ? error : "";
+}
+
+/** The request met a server that was stopping. It was not started, so it is safe to repeat on the next one. */
+export function isBridgeRestartingError(error: unknown): boolean {
+  return errorMessage(error).includes(BRIDGE_RESTARTING_MESSAGE);
 }
 
 /** The backend is known to be absent, rotating, or freshly lost: safe to retry without consuming an attempt. */

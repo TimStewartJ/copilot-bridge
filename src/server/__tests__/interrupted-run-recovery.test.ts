@@ -64,8 +64,7 @@ describe("SessionRunStateController interrupted-run markers", () => {
     const warn = vi.fn();
     const controller = new SessionRunStateController({
       globalBus: { emit: vi.fn() } as unknown as GlobalBus,
-      isRestartPending: () => false,
-      syncRestartWaitingSessions: () => {},
+
       cancelPendingInteractions: () => {},
       promptDeliveryAbortedMessage: "aborted",
       promptDeliveryShutdownMessage: "shutdown",

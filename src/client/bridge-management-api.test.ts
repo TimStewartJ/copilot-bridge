@@ -80,17 +80,16 @@ describe("bridge management client API", () => {
       { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
     );
 
-    stubJsonResponse({ ok: true, waitingSessions: 2 }, { status: 202 });
-    await expect(restartBridge()).resolves.toEqual({ ok: true, waitingSessions: 2 });
+    stubJsonResponse({ ok: true, waitingOn: { sessions: 2, jobs: 0 } }, { status: 202 });
+    await expect(restartBridge()).resolves.toEqual({ ok: true, waitingOn: { sessions: 2, jobs: 0 } });
     expect(fetch).toHaveBeenLastCalledWith(
       "/api/server/restart",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: "{\"force\":false}" },
     );
 
-    stubJsonResponse({ ok: true, waitingSessions: 0, forced: true, abortedRuns: 2, resumingRuns: 1 }, { status: 202 });
+    stubJsonResponse({ ok: true, forced: true, abortedRuns: 2, resumingRuns: 1 }, { status: 202 });
     await expect(restartBridge({ force: true, resume: true })).resolves.toEqual({
       ok: true,
-      waitingSessions: 0,
       forced: true,
       abortedRuns: 2,
       resumingRuns: 1,

@@ -10,7 +10,7 @@ import {
   serializeDeferCheckpoint,
   type DeferCheckpoint,
 } from "./defer-checkpoint.js";
-import { RESTART_PENDING_MESSAGE } from "./restart-controller.js";
+import { BRIDGE_RESTARTING_MESSAGE } from "./backend-availability.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import { selectCheapHelperModel } from "./session-name-generator.js";
 import type { AppSettings } from "./settings-store.js";
@@ -311,7 +311,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
 
   constructor(private readonly deps: DisposableDeferWorkerDeps) {}
 
-  /** Abort in-flight checks; they fail as restart-pending so runners requeue them without an attempt. */
+  /** Abort in-flight checks; they fail as "Bridge is restarting" so runners requeue them without an attempt. */
   abortAll(): void {
     for (const abort of this.abortHandlers) abort();
   }
@@ -394,7 +394,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
     let aborted = false;
     const abort = () => {
       aborted = true;
-      submission.fail(new Error(RESTART_PENDING_MESSAGE));
+      submission.fail(new Error(BRIDGE_RESTARTING_MESSAGE));
       void session?.abort().catch(() => undefined);
     };
     this.abortHandlers.add(abort);
@@ -468,7 +468,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       };
       releaseCapacityReservation = await this.deps.reserveCapacity(sessionConfig);
       session = await this.deps.createSession(sessionConfig);
-      if (aborted) throw new Error(RESTART_PENDING_MESSAGE);
+      if (aborted) throw new Error(BRIDGE_RESTARTING_MESSAGE);
       await session.sendAndWait({
         prompt: buildDeferWorkerPrompt(input),
         attachments: [],
@@ -478,7 +478,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      completionError = aborted ? RESTART_PENDING_MESSAGE : normalizedError.message;
+      completionError = aborted ? BRIDGE_RESTARTING_MESSAGE : normalizedError.message;
       submission.fail(normalizedError);
     } finally {
       this.abortHandlers.delete(abort);

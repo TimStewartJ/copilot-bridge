@@ -59,11 +59,10 @@ import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 import { invalidateFocusMutationQueries, invalidateFocusProtectionQueries } from "./lib/focus-query-invalidation";
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
-import { reduceRestartBannerState, type RestartBannerState } from "./lib/restart-banner-state";
-import { whenNoVoiceCapture } from "./lib/voice-capture-guard";
+import { schedulePageReloadWhenSafe } from "./lib/voice-capture-guard";
 import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
-import { useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
+import { describeRestartNotice, useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
 import { useRestartBridgeMutation } from "./hooks/queries/useBridgeRuntimeStatus";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
@@ -110,7 +109,7 @@ import { HandsFreePill } from "./voice/HandsFreeDock";
 import { BridgeReferenceContext } from "./components/BridgeReference";
 import { useSearchBackground } from "./hooks/useSearchBackground";
 import SessionList from "./components/SessionList";
-import RestartBanner from "./components/RestartBanner";
+import RestartNotice from "./components/RestartNotice";
 import BackendStatusBanner from "./components/BackendStatusBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
@@ -226,14 +225,6 @@ function AppShell() {
       return next;
     });
   }, []);
-  const [restartBanner, setRestartBanner] = useState<RestartBannerState>({
-    phase: null, restartPhase: "idle",
-    waitingSessions: 0, canAcceptNewWork: true,
-    shouldReload: false,
-    reconnectedSincePending: false,
-    pendingSnapshotSeen: false,
-    pendingServerInstanceId: null,
-  });
   const [backendStatusBanner, setBackendStatusBanner] = useState(createBackendStatusBannerState);
   const [sessionReloadSignals, setSessionReloadSignals] = useState<Record<string, number>>({});
   const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
@@ -244,8 +235,13 @@ function AppShell() {
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
-  const { data: restartStatus, refetch: refetchRestartStatus } = useRestartStatusQuery();
-  const abortSessionsForRestart = useRestartBridgeMutation();
+  const { data: restartStatus, isError: restartStatusUnreachable, refetch: refetchRestartStatus } = useRestartStatusQuery();
+  const restartNow = useRestartBridgeMutation();
+  // The server this page was loaded from. A different one answering means a restart has happened.
+  const pageServerInstanceIdRef = useRef<string | undefined>(undefined);
+  pageServerInstanceIdRef.current ??= restartStatus?.serverInstanceId;
+  const restartNotice = describeRestartNotice(restartStatus, pageServerInstanceIdRef.current, restartStatusUnreachable);
+  const [restartReloadHeld, setRestartReloadHeld] = useState(false);
   useFavicon(settings?.favicon);
 
   // Buffer task:changed SSE invalidations during optimistic task mutations so
@@ -254,16 +250,6 @@ function AppShell() {
     () => createDeferredTaskChangeInvalidator(queryClient),
     [queryClient],
   );
-
-  useEffect(() => {
-    if (!restartStatus) return;
-    setRestartBanner((prev) => reduceRestartBannerState(prev, {
-      type: "snapshot:restart-status",
-      pending: restartStatus.pending, phase: restartStatus.phase,
-      waitingSessions: restartStatus.waitingSessions, canAcceptNewWork: restartStatus.canAcceptNewWork,
-      serverInstanceId: restartStatus.serverInstanceId,
-    }));
-  }, [restartStatus?.pending, restartStatus?.phase, restartStatus?.waitingSessions, restartStatus?.canAcceptNewWork, restartStatus?.requestedAt, restartStatus?.serverInstanceId]);
 
   // Derive active IDs and mode from URL
   const mobileRouteMeta = getMobileRouteMeta(location.pathname, location.search);
@@ -586,20 +572,8 @@ function AppShell() {
           bumpSessionHistorySignal(event.sessionId);
         }
         break;
-      case "server:restart-pending":
-        void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
-        setRestartBanner((prev) => reduceRestartBannerState(prev, {
-          type: "server:restart-pending", phase: event.phase,
-          waitingSessions: event.waitingSessions, canAcceptNewWork: event.canAcceptNewWork,
-          serverInstanceId: event.serverInstanceId,
-        }));
-        break;
-      case "server:restart-cleared":
-        void queryClient.invalidateQueries({ queryKey: queryKeys.restartStatus });
-        setRestartBanner((prev) => reduceRestartBannerState(prev, {
-          type: "server:restart-cleared",
-          serverInstanceId: event.serverInstanceId,
-        }));
+      case "server:restart-changed":
+        void refetchRestartStatus();
         break;
       case "backend:status":
         void queryClient.invalidateQueries({ queryKey: queryKeys.bridgeRuntimeStatus });
@@ -655,7 +629,6 @@ function AppShell() {
         break;
       case "status:connected":
         void refetchRestartStatus();
-        setRestartBanner((prev) => reduceRestartBannerState(prev, { type: "status:connected" }));
         // Refresh sessions and lightweight Home urgency data on reconnect.
         invalidateSessions();
         invalidateDashboard();
@@ -663,18 +636,14 @@ function AppShell() {
         break;
     }
   }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
+  const restarted = restartNotice?.kind === "restarted";
   useEffect(() => {
-    if (!restartBanner.shouldReload) return;
-    // A reload would destroy a recording in progress or cut off its upload, so wait for both.
-    let timer: number | undefined;
-    const cancel = whenNoVoiceCapture(() => {
-      timer = window.setTimeout(() => window.location.reload(), 1000);
-    });
-    return () => {
-      cancel();
-      clearTimeout(timer);
-    };
-  }, [restartBanner.shouldReload]);
+    if (!restarted) return;
+    return schedulePageReloadWhenSafe(
+      () => { setRestartReloadHeld(false); window.location.reload(); },
+      () => setRestartReloadHeld(true),
+    );
+  }, [restarted]);
 
   useEffect(() => {
     if (backendStatusBanner.recoveryExpiresAt === null) return;
@@ -1819,11 +1788,6 @@ function AppShell() {
     search: location.pathname === "/search",
     helm: mobileRouteMeta.route === "helm",
   };
-  const newWorkDisabledByRestart = restartBanner.phase === "pending" && !restartBanner.canAcceptNewWork;
-  const newWorkDisabledByRestartHint = newWorkDisabledByRestart
-    ? "Bridge is restarting; new messages and chats will resume after reconnect."
-    : undefined;
-
   return (
     <>
     <BridgeReferenceContext.Provider value={bridgeReferenceContext}>
@@ -1832,15 +1796,21 @@ function AppShell() {
       className="flex flex-col h-dvh bg-bg-primary text-text-primary"
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
-      {restartBanner.phase && (
-        <RestartBanner
-          phase={restartBanner.phase}
-          restartPhase={restartBanner.restartPhase}
-          waitingSessions={restartBanner.waitingSessions}
-          canAcceptNewWork={restartBanner.canAcceptNewWork}
-          abortingSessions={abortSessionsForRestart.isPending}
-          abortError={abortSessionsForRestart.error instanceof Error ? abortSessionsForRestart.error.message : null}
-          onAbortSessionsAndResume={() => abortSessionsForRestart.mutate({ force: true, resume: true })}
+      {restartNotice && (
+        <RestartNotice
+          notice={restartNotice}
+          waitingSessionTitles={restartNotice.kind === "waiting"
+            ? restartNotice.sessionIds.map((id) => sessions.find((session) => session.sessionId === id)?.summary ?? id.slice(0, 8))
+            : undefined}
+          reloadHeld={restartReloadHeld}
+          restartingNow={restartNow.isPending}
+          error={restartNow.error instanceof Error ? `Restart failed: ${restartNow.error.message}` : null}
+          onRestartNow={() => {
+            if (window.confirm("Restart now?\n\nRunning sessions stop and pick up where they left off once the Bridge is back.")) {
+              restartNow.mutate({ force: true, resume: true });
+            }
+          }}
+          onReload={() => window.location.reload()}
         />
       )}
       {backendStatusBanner.banner && (
@@ -2167,8 +2137,6 @@ function AppShell() {
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
                   sessionHistorySignals={sessionHistorySignals}
-                  newWorkDisabled={newWorkDisabledByRestart}
-                  newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
@@ -2248,8 +2216,6 @@ function AppShell() {
                   sessionBusySignals={sessionBusySignals}
                   onForkSession={handleForkSession}
                   sessionHistorySignals={sessionHistorySignals}
-                  newWorkDisabled={newWorkDisabledByRestart}
-                  newWorkDisabledHint={newWorkDisabledByRestartHint}
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
@@ -2277,8 +2243,6 @@ function AppShell() {
                     sessionReloadSignals={sessionReloadSignals}
                     sessionBusySignals={sessionBusySignals}
                     sessionHistorySignals={sessionHistorySignals}
-                    newWorkDisabled={newWorkDisabledByRestart}
-                    newWorkDisabledHint={newWorkDisabledByRestartHint}
                   />
                 </Suspense>
               }
@@ -2547,8 +2511,6 @@ function SessionRoute({
   sessionBusySignals,
   onForkSession,
   sessionHistorySignals,
-  newWorkDisabled,
-  newWorkDisabledHint,
   defaultModelId,
   defaultReasoningEffort,
   defaultContextTier,
@@ -2582,8 +2544,6 @@ function SessionRoute({
   sessionBusySignals: Record<string, number>;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   sessionHistorySignals: Record<string, number>;
-  newWorkDisabled?: boolean;
-  newWorkDisabledHint?: string;
   defaultModelId?: string;
   defaultReasoningEffort?: string;
   defaultContextTier?: CopilotContextTier;
@@ -2974,12 +2934,8 @@ function SessionRoute({
       externallyInUse={activeSession?.externallyInUse}
       backgroundAgents={activeSession?.backgroundAgents}
       onForkSession={onForkSession}
-      newWorkDisabled={newWorkDisabled || launchConfigurationLoading}
-      newWorkDisabledHint={newWorkDisabled
-        ? newWorkDisabledHint
-        : launchConfigurationLoading
-          ? "Loading model defaults…"
-          : newWorkDisabledHint}
+      newWorkDisabled={launchConfigurationLoading}
+      newWorkDisabledHint={launchConfigurationLoading ? "Loading model defaults…" : undefined}
     />
   );
 }

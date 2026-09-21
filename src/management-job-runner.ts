@@ -5,34 +5,31 @@ import { fileURLToPath } from "node:url";
 import { openDatabase, type DatabaseSync } from "./server/db.js";
 import { resolveRuntimePaths } from "./server/runtime-paths.js";
 import {
-  RESTART_IN_PROGRESS_FILE_NAME,
   RESTART_STATE_FILE_NAME,
-  RESTART_SIGNAL_FILE_NAME,
-  isDeployBatchRestartUpdateWindowOpen,
-  isRestartAlreadyInFlight,
+  isRestartPending,
   sweepStaleRestartStateTempFiles,
 } from "./server/restart-state.js";
 import {
   createManagementJobStore,
   DEFAULT_MANAGEMENT_JOB_STALE_AFTER_MS,
   getManagementJobStaleAfterMs,
-  MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
   type ManagementJob,
   type ManagementJobStore,
 } from "./server/management-job-store.js";
-export { MANAGEMENT_DEPLOY_BATCH_MAX_JOBS } from "./server/management-job-store.js";
 import {
   dispatchManagementJob,
   ManagementJobExecutionError,
   type ManagementJobDispatchOptions,
 } from "./server/management-job-dispatch.js";
 import { readActiveRelease } from "./server/release-slots.js";
-import { writeRestartSignalOrRollback } from "./server/restart-inflight.js";
 import { cleanupCompletedStagingDeploy } from "./server/staging-tools.js";
+import { getProcessHost } from "./server/process-host.js";
+import { resolveBridgeControlRoot } from "./server/control-root.js";
+import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { isRecord } from "./shared/is-record.js";
 import {
-  DEPLOY_BATCH_RESTART_SOURCE,
-  publishDeployBatchRestartUpdate,
+  DEPLOY_RESTART_SOURCE,
+  requestRestart,
   type RestartReleaseCandidate,
 } from "./server/restart-signal.js";
 
@@ -43,19 +40,16 @@ export interface ManagementJobRunnerOptions {
   heartbeatIntervalMs?: number;
   staleAfterMs?: number;
   shouldStop?: () => boolean;
-  getHoldReason?: () => string | null;
-  deployBatchDataDir?: string;
-  queueDeployRestart?: (dataDir: string, candidate: RestartReleaseCandidate) => void;
-  retargetDeployRestart?: (dataDir: string, candidate: RestartReleaseCandidate) => void;
-  getActiveRelease?: (dataDir: string) => RestartReleaseCandidate | null;
-  cleanupDeploy?: (stagingDir: string) => Promise<void>;
   /**
-   * Checked after each job completes. When it returns true the loop exits so the
-   * launcher can respawn the runner on fresh code. Used to step aside once a
-   * deploy/update job has queued a restart, instead of relying on the launcher's
-   * cycleManagementJobRunner (which it skips when a job is still running).
+   * Where the restart for finished deploys is requested. The runner asks once for all of them and
+   * follows them until their release is active. Unset, each deploy job asks for its own restart.
    */
-  shouldStopAfterJob?: (job: ManagementJob) => boolean;
+  deployBatchDataDir?: string;
+  requestDeployRestart?: (dataDir: string, candidate: RestartReleaseCandidate) => void | Promise<void>;
+  isRestartPending?: (dataDir: string) => boolean;
+  getActiveRelease?: (dataDir: string) => RestartReleaseCandidate | null;
+  isCommitIncluded?: (commitSha: string, activeSha: string) => Promise<boolean>;
+  cleanupDeploy?: (stagingDir: string) => Promise<void>;
   log?: (message: string) => void;
 }
 
@@ -100,11 +94,7 @@ function wait(ms: number): Promise<void> {
   });
 }
 
-/**
- * Keeps management job rows and their logs bounded in long-lived runner
- * processes. Skipped when the loop is stepping aside for a restart so retention
- * never delays a deploy cutover — the restarted server sweeps at startup.
- */
+/** Keeps management job rows and their logs bounded in long-lived runner processes. */
 async function pruneManagementJobArtifacts(
   store: ManagementJobStore,
   log: (message: string) => void,
@@ -181,16 +171,26 @@ function pendingDeploy(job: ManagementJob): PendingDeploy | null {
 }
 
 function listPendingDeploys(store: ManagementJobStore): PendingDeploy[] {
-  return store.list({
-    types: ["staging_deploy"],
-    statuses: ["succeeded"],
-    order: "created-asc",
-    limit: 200,
-  }).map(pendingDeploy).filter((entry): entry is PendingDeploy => entry !== null);
+  return store.listDeploysAwaitingActivation().map(pendingDeploy)
+    .filter((entry): entry is PendingDeploy => entry !== null);
 }
 
 function activeRelease(options: ManagementJobRunnerOptions, dataDir: string): RestartReleaseCandidate | null {
   return options.getActiveRelease ? options.getActiveRelease(dataDir) : readActiveRelease(dataDir);
+}
+
+async function isCommitIncluded(commitSha: string, activeSha: string): Promise<boolean> {
+  try {
+    await getProcessHost().execFile("git", ["merge-base", "--is-ancestor", commitSha, activeSha], {
+      cwd: resolveBridgeControlRoot(join(dirname(fileURLToPath(import.meta.url)), "..")),
+      timeout: 30_000,
+      env: withNonInteractiveCommandEnv(process.env),
+    });
+    return true;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === 1) return false;
+    throw error;
+  }
 }
 
 function cancelQueuedDeploys(store: ManagementJobStore, reason: string): void {
@@ -210,7 +210,20 @@ async function reconcileDeploys(
   const latest = pending[pending.length - 1];
   const active = activeRelease(options, dataDir);
 
-  if (active?.id === latest.candidate.id && active.commitSha === latest.candidate.commitSha) {
+  let activated = active?.commitSha === latest.candidate.commitSha;
+  if (!activated && active && latest.result.restartQueued === true
+    && !(options.isRestartPending ?? isRestartPending)(dataDir)) {
+    try {
+      // A self-update can supersede the deploy candidate while still containing every merged deploy.
+      activated = await (options.isCommitIncluded ?? isCommitIncluded)(latest.candidate.commitSha, active.commitSha);
+    } catch (error) {
+      const message = `Deployment activation could not be verified: ${formatError(error)}`;
+      log(message);
+      for (const entry of pending) store.fail(entry.job.id, message, entry.result);
+      return;
+    }
+  }
+  if (activated) {
     for (const entry of pending) {
       let cleanupWarning: string | undefined;
       if (isRecord(entry.job.input) && typeof entry.job.input.stagingDir === "string") {
@@ -233,36 +246,27 @@ async function reconcileDeploys(
   }
 
   if (latest.result.restartQueued === true) {
-    if (isRestartAlreadyInFlight(dataDir)) return;
-    const message = "The shared deploy restart did not activate the expected release.";
+    // The restart waits for the Bridge to go idle for as long as that takes; only its end is a verdict.
+    if ((options.isRestartPending ?? isRestartPending)(dataDir)) return;
+    const message = "The restart for this deploy did not activate its release.";
     for (const entry of pending) store.fail(entry.job.id, message, entry.result);
     cancelQueuedDeploys(store, `${message} Requeue after recovery.`);
     return;
   }
 
-  const retargeting = pending.some((entry) => entry.result.restartQueued === true);
+  // Asking joins whatever restart is already pending, and the newest release is the one it activates.
   try {
-    if (retargeting && options.retargetDeployRestart) {
-      options.retargetDeployRestart(dataDir, latest.candidate);
-    } else if (retargeting) {
-      publishDeployBatchRestartUpdate(
-        join(dataDir, RESTART_SIGNAL_FILE_NAME),
-        join(dataDir, RESTART_IN_PROGRESS_FILE_NAME),
-        latest.candidate,
-      );
-    } else if (options.queueDeployRestart) {
-      options.queueDeployRestart(dataDir, latest.candidate);
+    if (options.requestDeployRestart) {
+      await options.requestDeployRestart(dataDir, latest.candidate);
     } else {
-      writeRestartSignalOrRollback(
-        join(dataDir, RESTART_SIGNAL_FILE_NAME),
-        "deploy",
-        DEPLOY_BATCH_RESTART_SOURCE,
-        latest.candidate,
-      );
+      await requestRestart(dataDir, {
+        validationMode: "deploy",
+        source: DEPLOY_RESTART_SOURCE,
+        releaseCandidate: latest.candidate,
+      });
     }
   } catch (error) {
-    const action = retargeting ? "updated" : "queued";
-    const message = `Shared deploy restart could not be ${action}: ${formatError(error)}`;
+    const message = `The restart for this deploy could not be requested: ${formatError(error)}`;
     for (const entry of pending) store.fail(entry.job.id, message, entry.result);
     cancelQueuedDeploys(store, `${message} Requeue after recovery.`);
     return;
@@ -276,86 +280,28 @@ async function reconcileDeploys(
       deployBatchSize: pending.length,
     });
   }
-  log(
-    retargeting
-      ? `Updated the pending restart to the newest of ${pending.length} batched deploy(s)`
-      : `Queued one restart for ${pending.length} batched deploy(s)`,
-  );
-}
-
-async function runDeployBatch(
-  options: ManagementJobRunnerOptions,
-  firstJob?: ManagementJob,
-): Promise<void> {
-  const dataDir = options.deployBatchDataDir;
-  if (!dataDir) return;
-  let attempted = listPendingDeploys(options.store).length;
-  let job = firstJob;
-  while (attempted < MANAGEMENT_DEPLOY_BATCH_MAX_JOBS) {
-    job ??= options.store.claimNextDeploy({
-      runnerPid: process.pid,
-      staleAfterMs: options.staleAfterMs,
-    }) ?? undefined;
-    if (!job) break;
-    attempted++;
-    const outcome = await runClaimedManagementJob(options.store, job, options);
-    job = undefined;
-    if (!outcome.succeeded) {
-      cancelQueuedDeploys(options.store, "Cancelled after an earlier deploy failed.");
-      break;
-    }
-  }
-  await reconcileDeploys(options.store, dataDir, options.log ?? runnerLog, options);
+  log(`Requested one restart for ${pending.length} finished deploy(s)`);
 }
 
 export async function runManagementJobRunnerLoop(options: ManagementJobRunnerOptions): Promise<void> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const log = options.log ?? runnerLog;
-  let holdReason: string | null = null;
-  /** A preview never conflicts with a restart, so previews run while every other job waits for one. */
-  const runPreviewOrWait = async (): Promise<void> => {
-    const previewJob = options.store.claimNext({ runnerPid: process.pid, staleAfterMs, types: ["staging_preview"] });
-    if (!previewJob) return wait(pollIntervalMs);
-    await runClaimedManagementJob(options.store, previewJob, options);
-    await pruneManagementJobArtifacts(options.store, log);
-  };
+  const dataDir = options.deployBatchDataDir;
 
   log(`Runner PID ${process.pid} started`);
+  // Jobs run whenever there are jobs. A pending restart holds none of them back: it waits for them.
   while (!options.shouldStop?.()) {
-    const nextHold = options.getHoldReason?.() ?? null;
-    if (nextHold) {
-      if (nextHold !== holdReason) log(`Holding queued jobs: ${nextHold}`);
-      holdReason = nextHold;
-      await runPreviewOrWait();
-      continue;
-    }
-    holdReason = null;
-    const pending = options.deployBatchDataDir ? listPendingDeploys(options.store) : [];
-    if (options.deployBatchDataDir && pending.length > 0) {
-      await runDeployBatch(options);
-      await pruneManagementJobArtifacts(options.store, log);
-      // Deploys stay pending until their shared restart activates, which can wait on busy sessions
-      // for an hour. Without a pause here the loop ran flat out on one core and starved previews.
-      if (listPendingDeploys(options.store).length > 0) await runPreviewOrWait();
-      continue;
-    }
     const job = options.store.claimNext({ runnerPid: process.pid, staleAfterMs });
-    if (!job) {
-      await wait(pollIntervalMs);
-      continue;
+    if (job) {
+      const outcome = await runClaimedManagementJob(options.store, job, options);
+      if (job.type === "staging_deploy" && !outcome.succeeded) {
+        cancelQueuedDeploys(options.store, "Cancelled after an earlier deploy failed.");
+      }
     }
-    if (job.type === "staging_deploy" && options.deployBatchDataDir) {
-      await runDeployBatch(options, job);
-      await pruneManagementJobArtifacts(options.store, log);
-      continue;
-    }
-    await runClaimedManagementJob(options.store, job, options);
-    if (options.shouldStopAfterJob?.(job)) {
-      log(`Stopping after ${job.type} job so the launcher can respawn the runner on fresh code`);
-      break;
-    }
-    await pruneManagementJobArtifacts(options.store, log);
+    if (dataDir) await reconcileDeploys(options.store, dataDir, log, options);
+    if (job) await pruneManagementJobArtifacts(options.store, log);
+    else await wait(pollIntervalMs);
   }
   log("Runner stopping");
 }
@@ -375,6 +321,7 @@ async function main(): Promise<void> {
     runnerLog(`Swept ${sweptTemps} stale restart-state temp file(s) at startup`);
   }
   let stopping = false;
+  const initialReleaseId = readActiveRelease(runtimePaths.dataDir)?.id;
   let db: DatabaseSync | null = openDatabase(runtimePaths.dataDir);
   const store = createManagementJobStore(db, { dataDir: runtimePaths.dataDir });
 
@@ -388,24 +335,9 @@ async function main(): Promise<void> {
   try {
     await runManagementJobRunnerLoop({
       store,
-      shouldStop: () => stopping,
-      getHoldReason: () => {
-        if (!isRestartAlreadyInFlight(runtimePaths.dataDir)) return null;
-        return isDeployBatchRestartUpdateWindowOpen(runtimePaths.dataDir)
-          ? null
-          : "a restart is in flight";
-      },
+      // Refresh the runner's code between jobs after activation, never by killing a job in flight.
+      shouldStop: () => stopping || readActiveRelease(runtimePaths.dataDir)?.id !== initialReleaseId,
       deployBatchDataDir: runtimePaths.dataDir,
-      // After a deploy/update job, step aside if a restart is now queued so the
-      // launcher respawns this runner on the freshly deployed code (it otherwise
-      // skips its own cycleManagementJobRunner while a job is running). The deploy
-      // job writes the restart signal before it returns, so isRestartAlreadyInFlight
-      // sees durable on-disk state here — not a race against the launcher.
-      shouldStopAfterJob: (job) => {
-        if (!isRestartAlreadyInFlight(runtimePaths.dataDir)) return false;
-        runnerLog(`Restart queued by ${job.type} job — exiting for a clean respawn on the new code`);
-        return true;
-      },
       pollIntervalMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_POLL_INTERVAL_MS) || DEFAULT_POLL_INTERVAL_MS,
       heartbeatIntervalMs: Number(process.env.BRIDGE_MANAGEMENT_JOB_HEARTBEAT_INTERVAL_MS) || DEFAULT_HEARTBEAT_INTERVAL_MS,
       staleAfterMs: getManagementJobStaleAfterMs(process.env),

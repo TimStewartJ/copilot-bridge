@@ -16,7 +16,6 @@ import {
   mkdirSync,
   providers,
   publishOutboundAttachment,
-  RESTART_PENDING_MESSAGE,
   request,
   scheduler,
   writeCopilotUsageEvents,
@@ -222,13 +221,7 @@ describe("Voice job routes", () => {
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
     sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
     const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-voice-job",
-      phase: "queued",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: null,
-    });
+    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
     ({ app } = createTestApp({
       runtimePaths,
       sessionManager,

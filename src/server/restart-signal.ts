@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { RESTART_IN_PROGRESS_FILE_NAME, RESTART_SIGNAL_FILE_NAME } from "./restart-state.js";
 
 export type RestartValidationMode = "deploy" | "operational";
-export const DEPLOY_BATCH_RESTART_SOURCE = "staging_deploy_batch";
+/** A launcher from before restart-when-idle only picks up a newer release candidate for this source. */
+export const DEPLOY_RESTART_SOURCE = "staging_deploy_batch";
 
 export interface RestartReleaseCandidate {
   id: string;
@@ -135,27 +138,60 @@ export function readCurrentRestartSignalFile(
   return null;
 }
 
-export function isDeployBatchRestartSignal(signal: RestartSignal | null): signal is RestartSignal {
-  return signal?.validationMode === "deploy"
-    && signal.source === DEPLOY_BATCH_RESTART_SOURCE
-    && signal.releaseCandidate !== undefined;
+/** What a tool tells its agent after asking for a restart. */
+export const RESTART_WHEN_IDLE_NOTE =
+  "The Bridge restarts on its own once every session and management job is idle, this session included. "
+  + "Nothing is blocked until then: keep working normally, and do not wait for the restart or avoid tool calls.";
+
+export interface RestartRequest {
+  validationMode: RestartValidationMode;
+  source: string;
+  releaseCandidate?: RestartReleaseCandidate;
 }
 
-export function publishDeployBatchRestartUpdate(
-  signalFile: string,
-  inProgressSignalFile: string,
-  releaseCandidate: RestartReleaseCandidate,
-): RestartSignal {
-  const current = readCurrentRestartSignalFile(signalFile, inProgressSignalFile);
-  if (!isDeployBatchRestartSignal(current) || !current.requestId) {
-    throw new Error("No mutable deploy-batch restart is waiting for a release candidate update");
+/** Join the pending restart; the serialized management runner publishes its newest release here. */
+export async function requestRestart(dataDir: string, request: RestartRequest): Promise<RestartSignal> {
+  const signalFile = join(dataDir, RESTART_SIGNAL_FILE_NAME);
+  await mkdir(dataDir, { recursive: true });
+  while (true) {
+    const pending = await readPendingRestartSignal(dataDir);
+    if (pending && !request.releaseCandidate) return pending;
+    const signal = createRestartSignal({
+      requestedAt: pending?.requestedAt,
+      requestId: pending?.requestId ?? randomUUID(),
+      validationMode: pending?.validationMode === "deploy" ? "deploy" : request.validationMode,
+      source: request.source,
+      releaseCandidate: request.releaseCandidate,
+    });
+    const tempFile = join(dataDir, `.${RESTART_SIGNAL_FILE_NAME}.${randomUUID()}.tmp`);
+    try {
+      await writeFile(tempFile, serializeRestartSignal(signal), "utf8");
+      if (request.releaseCandidate) {
+        await rename(tempFile, signalFile);
+      } else {
+        // Create, never overwrite: an operational request racing a deploy must not erase its candidate.
+        await link(tempFile, signalFile);
+      }
+      return signal;
+    } catch (error) {
+      if (request.releaseCandidate || !isErrnoException(error) || error.code !== "EEXIST") throw error;
+    } finally {
+      await rm(tempFile, { force: true });
+    }
   }
-  const updated = createRestartSignal({
-    ...current,
-    releaseCandidate,
-  });
-  writeRestartSignalFile(signalFile, updated);
-  return updated;
+}
+
+/** Reads control files asynchronously: the launcher may be writing them while the server answers. */
+export async function readPendingRestartSignal(dataDir: string): Promise<RestartSignal | null> {
+  for (const name of [RESTART_SIGNAL_FILE_NAME, RESTART_IN_PROGRESS_FILE_NAME]) {
+    try {
+      return parseRestartSignalContent(await readFile(join(dataDir, name), "utf-8"));
+    } catch (error) {
+      if (isErrnoException(error) && error.code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  return null;
 }
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {

@@ -1,21 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RestartState } from "../restart-state.js";
 import type { Schedule } from "../schedule-store.js";
 import { computeNextRunAt } from "../cron-next-run.js";
 import { createMissedRunCatchUpController } from "../scheduler-missed-runs.js";
 
 const NOW = "2026-04-16T17:30:00.000Z";
-
-function restartState(phase: RestartState["phase"], requestedAt: string | null = null): RestartState {
-  return {
-    requestId: phase === "idle" ? null : "restart-1",
-    phase,
-    requestedAt,
-    waitingSessions: phase === "idle" ? 0 : 1,
-    launcherHeartbeatAt: null,
-    releaseFailure: null,
-  };
-}
 
 function schedule(overrides: Partial<Schedule>): Schedule {
   return {
@@ -60,32 +48,6 @@ describe("scheduler missed-run catch-up", () => {
     vi.useRealTimers();
   });
 
-  it("does not scan schedules or compute cron slots while restart is pending", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(NOW));
-
-    const store = fakeStore([]);
-    const computeNextRunAt = vi.fn(() => {
-      throw new Error("restart-pending catch-up should not compute cron slots");
-    });
-    const controller = createMissedRunCatchUpController({
-      scheduleStore: () => store as any,
-      computeNextRunAt,
-      unregisterSchedule: vi.fn(),
-      triggerSchedule: vi.fn(),
-      isRestartPending: () => true,
-      refreshRestartState: vi.fn().mockResolvedValue(restartState("waiting-for-sessions", "2026-04-16T16:00:00.000Z")),
-      getRestartPendingMessage: () => "restart pending",
-    });
-
-    controller.check();
-    await controller.waitForIdle();
-
-    expect(store.listDueSchedules).not.toHaveBeenCalled();
-    expect(computeNextRunAt).not.toHaveBeenCalled();
-    controller.reset();
-  });
-
   it("collects cron catch-up work from due schedules without scanning all schedules", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00.000Z"));
@@ -103,9 +65,7 @@ describe("scheduler missed-run catch-up", () => {
       computeNextRunAt,
       unregisterSchedule: vi.fn(),
       triggerSchedule,
-      isRestartPending: () => false,
-      refreshRestartState: vi.fn().mockResolvedValue(restartState("idle")),
-      getRestartPendingMessage: () => "restart pending",
+
     });
 
     controller.check();
@@ -140,9 +100,7 @@ describe("scheduler missed-run catch-up", () => {
       computeNextRunAt,
       unregisterSchedule: vi.fn(),
       triggerSchedule,
-      isRestartPending: () => false,
-      refreshRestartState: vi.fn().mockResolvedValue(restartState("idle")),
-      getRestartPendingMessage: () => "restart pending",
+
     });
 
     controller.check();
@@ -152,46 +110,6 @@ describe("scheduler missed-run catch-up", () => {
     expect(triggerSchedule).toHaveBeenCalledWith("cron-six", {
       source: "catchup",
       scheduledFor: "2026-04-16T16:05:00.000Z",
-    });
-  });
-
-  it("preserves the restart request window for one post-clear catch-up", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(NOW));
-
-    const due = schedule({
-      id: "once-1",
-      type: "once",
-      cron: undefined,
-      runAt: "2026-04-16T15:30:00.000Z",
-      nextRunAt: "2026-04-16T15:30:00.000Z",
-    });
-    const store = fakeStore([due]);
-    const triggerSchedule = vi.fn().mockResolvedValue({ sessionId: "catch-up-session" });
-    const controller = createMissedRunCatchUpController({
-      scheduleStore: () => store as any,
-      computeNextRunAt: vi.fn(),
-      unregisterSchedule: vi.fn(),
-      triggerSchedule,
-      isRestartPending: vi.fn()
-        .mockReturnValueOnce(true)
-        .mockReturnValue(false),
-      refreshRestartState: vi.fn()
-        .mockResolvedValueOnce(restartState("restarting", "2026-04-16T16:00:00.000Z"))
-        .mockResolvedValueOnce(restartState("idle")),
-      getRestartPendingMessage: () => "restart pending",
-    });
-    controller.check();
-    controller.check();
-    expect(triggerSchedule).not.toHaveBeenCalled();
-    expect(triggerSchedule).not.toHaveBeenCalled();
-    controller.check();
-    controller.check();
-    await controller.waitForIdle();
-    expect(triggerSchedule).toHaveBeenCalledTimes(1);
-    expect(triggerSchedule).toHaveBeenCalledWith("once-1", {
-      source: "once",
-      scheduledFor: "2026-04-16T15:30:00.000Z",
     });
   });
 
@@ -212,9 +130,7 @@ describe("scheduler missed-run catch-up", () => {
       computeNextRunAt: vi.fn().mockReturnValue("2026-04-16T18:30:00.000Z"),
       unregisterSchedule,
       triggerSchedule,
-      isRestartPending: () => false,
-      refreshRestartState: vi.fn().mockResolvedValue(restartState("idle")),
-      getRestartPendingMessage: () => "restart pending",
+
     });
 
     controller.check();
