@@ -29,7 +29,9 @@ import {
 import { makeTestDir } from "./helpers.js";
 
 const execFileMock = vi.hoisted(() => vi.fn());
+const windowsSnapshotMock = vi.hoisted(() => vi.fn());
 
+vi.mock("../windows-process-table.js", () => ({ readNativeWindowsProcessTable: windowsSnapshotMock }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, execFile: execFileMock };
@@ -65,6 +67,15 @@ function mockExec(handler: ExecHandler): void {
     handler(command, args, options, callback);
     return {} as ChildProcess;
   });
+  windowsSnapshotMock.mockImplementation((timeout: number) => new Promise((resolve, reject) => {
+    execFileMock("mock-native-process-snapshot", [], { timeout }, (error: Error | null, output: string) => {
+      if (error) { reject(error); return; }
+      resolve(output.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+        const [pid, ppid, startMarker = ""] = line.trim().split(/\s+/);
+        return { pid: Number(pid), ppid: Number(ppid), startMarker };
+      }));
+    });
+  }));
 }
 
 function isDirectoryLinkCapabilityError(error: unknown): boolean {
@@ -97,6 +108,7 @@ const canCreateDirectoryLinks = probeDirectoryLinkCapability();
 afterEach(() => {
   vi.restoreAllMocks();
   execFileMock.mockReset();
+  windowsSnapshotMock.mockReset();
   restorePlatform();
 });
 
@@ -119,10 +131,10 @@ describe("process tree platform helpers", () => {
     expect(shouldSpawnDetachedProcessGroup()).toBe(false);
   });
 
-  it("captures a mandatory Windows identity with one bulk CIM call", async () => {
+  it("captures a mandatory Windows identity with one native snapshot", async () => {
     setPlatform("win32");
     mockExec((command, _args, _options, callback) => {
-      expect(command).toBe("powershell.exe");
+      expect(command).toBe("mock-native-process-snapshot");
       callback(null, ["100 1 1000", "101 100 1001"].join("\n"), "");
     });
 
@@ -159,17 +171,17 @@ describe("process tree platform helpers", () => {
   it("does not treat an unreadable survivor snapshot as proof of exit", async () => {
     setPlatform("win32");
     const identity = { pid: 100, startMarker: "1000" };
-    mockExec((_command, _args, _options, callback) => callback(new Error("CIM unavailable"), "", ""));
+    mockExec((_command, _args, _options, callback) => callback(new Error("native snapshot unavailable"), "", ""));
     expect((await getProcessIdentityStatuses([identity], createDeadline(5_000))).get(identity)).toBe("unknown");
   });
 
-  it("captures Windows process start times from .NET ticks with one bulk CIM call", async () => {
+  it("captures Windows process start times from .NET ticks with one native snapshot", async () => {
     setPlatform("win32");
     const unixEpochTicks = 621_355_968_000_000_000n;
     const firstStart = (unixEpochTicks + 1_000n * 10_000n).toString();
     const secondStart = (unixEpochTicks + 2_000n * 10_000n).toString();
     mockExec((command, _args, _options, callback) => {
-      expect(command).toBe("powershell.exe");
+      expect(command).toBe("mock-native-process-snapshot");
       callback(null, [`100 1 ${firstStart}`, `101 100 ${secondStart}`].join("\n"), "");
     });
 
@@ -200,7 +212,7 @@ describe("process tree platform helpers", () => {
     }
     let snapshotCalls = 0;
     mockExec((command, args, _options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         snapshotCalls++;
         callback(null, snapshotCalls === 1 ? rows.join("\n") : "", "");
         return;
@@ -227,7 +239,7 @@ describe("process tree platform helpers", () => {
     setPlatform("win32");
     let snapshots = 0;
     mockExec((command, args, options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         snapshots++;
         callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "", "");
         return;
@@ -251,7 +263,7 @@ describe("process tree platform helpers", () => {
     setPlatform("win32");
     let snapshots = 0;
     mockExec((command, _args, _options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         snapshots++;
         callback(
           null,
@@ -274,7 +286,7 @@ describe("process tree platform helpers", () => {
     // No destructive command when root PID was reused
     execFileMock.mockReset();
     mockExec((command, _args, _options, callback) => {
-      expect(command).toBe("powershell.exe");
+      expect(command).toBe("mock-native-process-snapshot");
       callback(null, "100 1 2222", "");
     });
 
@@ -285,47 +297,95 @@ describe("process tree platform helpers", () => {
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 
-  it("fails closed when a captured descendant has no birth marker", async () => {
+  it.each([
+    { label: "a captured descendant", table: "100 1 1000\n101 100" },
+    { label: "the root process", table: "100 1" },
+  ])("fails closed without signalling when $label stays unqueryable through the snapshot budget", async ({ table }) => {
     setPlatform("win32");
-    mockExec((command, _args, _options, callback) => {
-      expect(command).toBe("powershell.exe");
-      callback(null, ["100 1 1000", "101 100 "].join("\n"), "");
-    });
-
-    await expect(terminateProcessTree(
-      { pid: 100, startMarker: "1000" },
-      createDeadline(5_000),
-    )).resolves.toMatchObject({ ok: false, status: "identity-unavailable" });
-    expect(execFileMock).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      mockExec((command, _args, _options, callback) => {
+        expect(command).toBe("mock-native-process-snapshot");
+        callback(null, table, "");
+      });
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(200));
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(result).resolves.toMatchObject({ ok: false, status: "identity-unavailable" });
+      expect(execFileMock.mock.calls.some(([command]) => command === "taskkill")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("fails closed when the root birth marker is unreadable rather than calling it replaced", async () => {
+  it("waits for a complete pre-kill identity snapshot instead of signalling through a churning unreadable edge", async () => {
     setPlatform("win32");
-    mockExec((_command, _args, _options, callback) => callback(null, "100 1", ""));
-    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(5_000)))
-      .toMatchObject({ ok: false, status: "identity-unavailable" });
-    expect(execFileMock).toHaveBeenCalledOnce();
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      let snapshots = 0;
+      mockExec((command, _args, _options, callback) => {
+        if (command === "mock-native-process-snapshot") {
+          snapshots++;
+          callback(null, snapshots === 1 ? "100 1 1000\n101 100" : snapshots === 2 ? "100 1 1000\n101 100 1001" : "", "");
+        } else callback(null, "", "");
+      });
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(200));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(execFileMock.mock.calls.some(([command]) => command === "taskkill")).toBe(false);
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(result).resolves.toMatchObject({ ok: true, status: "terminated" });
+      expect(snapshots).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("does not acknowledge termination if verification loses a captured birth marker", async () => {
+  it("does not acknowledge termination if a captured birth marker remains unavailable through the verification budget", async () => {
     setPlatform("win32");
-    let snapshots = 0;
-    mockExec((command, _args, _options, callback) => {
-      if (command === "powershell.exe") {
-        snapshots++;
-        callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "101 1", "");
-      } else callback(null, "", "");
-    });
-    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000)))
-      .toMatchObject({ ok: false, status: "identity-unavailable", error: expect.stringContaining("101") });
-    expect(execFileMock).toHaveBeenCalledTimes(3);
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      let snapshots = 0;
+      mockExec((command, _args, _options, callback) => {
+        if (command === "mock-native-process-snapshot") {
+          snapshots++;
+          callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "101 1", "");
+        } else callback(null, "", "");
+      });
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(200));
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(result).resolves.toMatchObject({ ok: false, status: "identity-unavailable", error: expect.stringContaining("101") });
+      expect(snapshots).toBeGreaterThan(2);
+      expect(execFileMock.mock.calls.filter(([command]) => command === "taskkill")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rechecks a just-terminated unqueryable entry and acknowledges only its observed disappearance", async () => {
+    setPlatform("win32");
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      let snapshots = 0;
+      mockExec((command, _args, _options, callback) => {
+        if (command === "mock-native-process-snapshot") {
+          snapshots++;
+          callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : snapshots === 2 ? "101 1" : "", "");
+        } else callback(null, "", "");
+      });
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(200));
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(result).resolves.toMatchObject({ ok: true, status: "terminated" });
+      expect(snapshots).toBe(3);
+      expect(execFileMock.mock.calls.filter(([command]) => command === "taskkill")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports phase timings and surviving processes without changing verification semantics", async () => {
     setPlatform("win32");
     const onPhase = vi.fn();
     mockExec((command, _args, _options, callback) => {
-      if (command === "powershell.exe") callback(null, "100 1 1000", "");
+      if (command === "mock-native-process-snapshot") callback(null, "100 1 1000", "");
       else callback(new Error("access denied"), "", "");
     });
     expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000), onPhase))
@@ -341,7 +401,7 @@ describe("process tree platform helpers", () => {
     setPlatform("win32");
     let snapshots = 0;
     mockExec((command, _args, _options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         snapshots++;
         callback(null, snapshots === 1 ? "100 1 1000" : "", "");
         return;
@@ -363,7 +423,7 @@ describe("process tree platform helpers", () => {
   it("fails closed after taskkill failure when verification finds a survivor", async () => {
     setPlatform("win32");
     mockExec((command, _args, _options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         callback(null, "100 1 1000", "");
         return;
       }
@@ -386,7 +446,7 @@ describe("process tree platform helpers", () => {
     setPlatform("win32");
     let taskkillTimeoutMs = Number.POSITIVE_INFINITY;
     mockExec((command, _args, options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         callback(null, "100 1 1000", "");
         return;
       }
@@ -411,7 +471,7 @@ describe("process tree platform helpers", () => {
     setPlatform("win32");
     let snapshots = 0;
     mockExec((command, _args, options, callback) => {
-      if (command === "powershell.exe") {
+      if (command === "mock-native-process-snapshot") {
         snapshots++;
         callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "101 100 1001", "");
         return;
@@ -432,14 +492,14 @@ describe("process tree platform helpers", () => {
       });
   });
 
-  it("completes an eleven-second CIM snapshot that an eight-second cap used to kill", async () => {
+  it("allows a delayed native snapshot within the unchanged observation deadline", async () => {
     setPlatform("win32");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
     try {
       const latencyMs = 11_000;
       const snapshotTimeouts: number[] = [];
       mockExec((command, _args, options, callback) => {
-        if (command !== "powershell.exe") {
+        if (command !== "mock-native-process-snapshot") {
           callback(null, "", "");
           return;
         }
@@ -468,29 +528,23 @@ describe("process tree platform helpers", () => {
     }
   });
 
-  it("names the failed snapshot and why it failed instead of repeating the command line", async () => {
+  it("reports a native snapshot timeout or enumeration error without treating it as exit", async () => {
     setPlatform("win32");
     mockExec((_command, _args, _options, callback) => callback(
-      Object.assign(new Error("Command failed: powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process"), {
-        killed: true, signal: "SIGTERM", code: null,
-      }),
-      "",
-      "",
+      new Error("Native Windows process snapshot timed out after 20000ms"), "", "",
     ));
     expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS)))
       .toMatchObject({
         ok: false,
         status: "snapshot-unavailable",
-        error: expect.stringMatching(/^CIM process snapshot timed out after \d+ms$/),
+        error: "Native Windows process snapshot failed: Native Windows process snapshot timed out after 20000ms",
       });
 
     mockExec((_command, _args, _options, callback) => callback(
-      Object.assign(new Error("Command failed: powershell.exe\nAccess denied"), { killed: false, code: 1, stderr: "Access denied\r\n" }),
-      "",
-      "Access denied\r\n",
+      new Error("Process32 enumeration failed with Windows error 5"), "", "",
     ));
     expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS)))
-      .toMatchObject({ ok: false, status: "snapshot-unavailable", error: "CIM process snapshot exited with code 1: Access denied" });
+      .toMatchObject({ ok: false, status: "snapshot-unavailable", error: "Native Windows process snapshot failed: Process32 enumeration failed with Windows error 5" });
   });
 
   it.skipIf(!canCreateDirectoryLinks)("creates and removes directory links with native filesystem APIs", () => {
@@ -513,7 +567,7 @@ describe("sampleProcessTree", () => {
   it("returns root identity and all descendants from a Windows snapshot", async () => {
     setPlatform("win32");
     mockExec((command, _args, _options, callback) => {
-      expect(command).toBe("powershell.exe");
+      expect(command).toBe("mock-native-process-snapshot");
       callback(
         null,
         ["2000 1 9000", "2001 2000 9001", "2002 2001 9002", "2003 2001 9003"].join("\n"),
@@ -587,6 +641,6 @@ describe("sampleProcessTree", () => {
 
     await sampleProcessTree(6000, createDeadline(5_000));
     expect(execFileMock).toHaveBeenCalledTimes(1);
-    expect(execFileMock.mock.calls.every(([cmd]) => cmd === "powershell.exe")).toBe(true);
+    expect(execFileMock.mock.calls.every(([cmd]) => cmd === "mock-native-process-snapshot")).toBe(true);
   });
 });

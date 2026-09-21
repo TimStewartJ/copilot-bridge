@@ -858,21 +858,21 @@ export class CopilotBackend implements AgentBackend {
   ): Promise<void> {
     const startedAt = performance.now();
     let pending = survivors;
+    let uncertain = false;
     try {
       do {
         const statuses = await getProcessIdentityStatuses(pending, deadline);
+        uncertain = false;
         pending = pending.filter((identity) => {
           const status = statuses.get(identity);
-          if (!status || status === "unknown") {
-            throw new RuntimeFenceError(`Runtime fencing failed: survivors (${identity.pid}, unknown)`, true);
-          }
-          return status === "alive";
+          if (!status || status === "unknown") uncertain = true;
+          return !status || status === "unknown" || status === "alive";
         });
         if (pending.length === 0) return;
       } while (await sleepUntilDeadline(100, deadline));
       throw new RuntimeFenceError(
-        `Runtime fencing failed: survivors (${pending.map((identity) => identity.pid).join(", ")}, alive)`,
-        false,
+        `Runtime fencing failed: survivors (${pending.map((identity) => identity.pid).join(", ")}, ${uncertain ? "unknown" : "alive"})`,
+        uncertain,
       );
     } finally {
       onPhase?.({ phase: "survivors", durationMs: performance.now() - startedAt,

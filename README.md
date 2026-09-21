@@ -264,6 +264,8 @@ npm run test:slow-report # full Vitest pass + top slowest files
 
 Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Coverage is CI-owned: the GitHub Actions CI workflow runs `test:coverage` on PRs, pushes, manual dispatches, and its nightly schedule; local deploy validation still runs the full non-coverage test lanes through `check:pr`. Client type-checking (`npm run typecheck:client`) is a plain `tsc --noEmit` over `tsconfig.client.json` and must stay at zero diagnostics. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior.
 
+Windows process-tree identity snapshots use `CreateToolhelp32Snapshot` and `GetProcessTimes` on a dedicated worker thread. They do not start PowerShell or query WMI/CIM. Native creation times retain the microsecond precision of persisted CIM markers. Unqueryable entries during process creation or exit are re-observed within the existing snapshot and fencing budgets. No process is signalled through an unknown identity, and unknown survivors never count as exited. Incomplete snapshots, recycled PIDs, and worker failures retain the existing refusal behavior. Snapshot, fencing, and RPC deadlines are unchanged; POSIX snapshots continue to use `ps`.
+
 ### Pagination query parameters
 
 The GET endpoints `/api/schedules/:id/sessions`, `/api/docs/search`, and
