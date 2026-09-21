@@ -26,6 +26,15 @@ import {
   type FocusNotificationPolicyUpdate,
 } from "../shared/focus-notification-policy.js";
 
+import {
+  DEFAULT_RESPONSE_STYLE_GUIDANCE,
+  MAX_RESPONSE_STYLE_GUIDANCE_LENGTH,
+  isResponseDetail,
+  resolveResponseStyle,
+  type ResponseStyleSettings,
+} from "../shared/response-style.js";
+import { migrateLegacyResponseQualityBlock } from "./response-style-migration.js";
+
 export type ThemePreference = "light" | "dark" | "system";
 // Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
 // so this is an open string alias rather than a fixed enumeration.
@@ -77,6 +86,7 @@ export interface AppSettings {
   theme?: ThemePreference;
   identity?: string;
   customInstructions?: string;
+  responseStyle?: ResponseStyleSettings;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -494,6 +504,23 @@ function normalizeMcpServers(value: unknown): Record<string, McpServerConfig> {
   return Object.fromEntries(entries);
 }
 
+function normalizeResponseStyle(value: unknown): ResponseStyleSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("responseStyle must be an object");
+  for (const key of Object.keys(value)) {
+    if (key !== "detail" && key !== "guidance") validationError(`responseStyle key "${key}" is not supported`);
+  }
+  const detail = value.detail === undefined ? "adaptive" : value.detail;
+  if (!isResponseDetail(detail)) validationError("responseStyle.detail must be adaptive, concise, or detailed");
+  const guidance = value.guidance === undefined ? DEFAULT_RESPONSE_STYLE_GUIDANCE : value.guidance;
+  if (typeof guidance !== "string") validationError("responseStyle.guidance must be a string");
+  const trimmed = guidance.trim();
+  if (trimmed.length > MAX_RESPONSE_STYLE_GUIDANCE_LENGTH) {
+    validationError(`responseStyle.guidance must be at most ${MAX_RESPONSE_STYLE_GUIDANCE_LENGTH} characters`);
+  }
+  return resolveResponseStyle({ detail, guidance: trimmed });
+}
+
 function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if (!isRecord(value)) validationError("settings must be an object");
   const normalized = structuredClone(base);
@@ -504,6 +531,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("customInstructions" in value) {
     normalized.customInstructions = normalizeOptionalString(value.customInstructions, "customInstructions");
   }
+  if ("responseStyle" in value) normalized.responseStyle = normalizeResponseStyle(value.responseStyle);
   if ("model" in value) {
     normalized.model = normalizeOptionalString(value.model, "model", { trim: true, emptyAsUndefined: true });
   }
@@ -536,6 +564,11 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("focusNotifications" in value) {
     normalized.focusNotifications = normalizeFocusNotifications(value.focusNotifications);
+  }
+  const legacy = migrateLegacyResponseQualityBlock(normalized.customInstructions);
+  if (legacy.migrated) {
+    normalized.customInstructions = legacy.customInstructions;
+    normalized.responseStyle ??= resolveResponseStyle();
   }
   return normalized;
 }
