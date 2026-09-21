@@ -23,7 +23,7 @@ function createEngine(result: Partial<Awaited<ReturnType<TranscriptionSpeechEngi
   const release = vi.fn();
   const engine = {
     retain: vi.fn(() => release),
-    transcribeFile: vi.fn(async () => ({ text: " Hello bridge ", audioSeconds: 2, speechSeconds: 1.5, chunks: 1, ms: 40, ...result })),
+    transcribeFile: vi.fn(async () => ({ text: " Hello bridge ", audioSeconds: 2, speechSeconds: 1.5, chunks: 1, ms: 40, format: "opus" as const, bytes: 8_192, ...result })),
   };
   return { engine, release };
 }
@@ -55,7 +55,40 @@ describe("transcription service", () => {
       provider: "speech-engine",
       label: "Parakeet v3 (local)",
       maxDurationSeconds: 300,
+      opusUploads: true,
     });
+  });
+
+  it("stops advertising compressed uploads when they are switched off", () => {
+    const { engine } = createEngine();
+    const service = createTranscriptionService({
+      installer: { getStatus: () => installStatus() },
+      engine,
+      env: { BRIDGE_TRANSCRIPTION_OPUS_UPLOADS: "false" },
+    });
+    expect(service.getStatus().opusUploads).toBe(false);
+  });
+
+  it("disables compression and reports an invalid switch value", () => {
+    const { engine } = createEngine();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine,
+        env: { BRIDGE_TRANSCRIPTION_OPUS_UPLOADS: "flase" } });
+      expect(service.getStatus().opusUploads).toBe(false);
+      expect(warning).toHaveBeenCalledOnce();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs how each recording arrived, so a browser that stopped compressing shows up", async () => {
+    const { engine } = createEngine();
+    const logger = { log: vi.fn() };
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {}, logger });
+
+    await service.transcribe({ filePath: "clip.ogg" });
+    expect(logger.log).toHaveBeenCalledWith("[transcription] 2s clip (opus, 8 KB; 1.5s speech, 1 chunk) in 40ms");
   });
 
   it("honors the configured maximum recording length", () => {
