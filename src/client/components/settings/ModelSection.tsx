@@ -8,11 +8,14 @@ import { timeAgo } from "../../time";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
+import { ReasoningEffortSection } from "./ReasoningEffortSection";
+import { Button, Details } from "../../design/primitives";
 import {
   getContextTierLabel,
   modelSupportsLongContext,
   type CopilotContextTier,
 } from "../../../shared/copilot-context.js";
+import { DS, cx } from "../../design/tokens";
 
 export function shouldClearUnsupportedContextTier({
   contextTier,
@@ -95,25 +98,19 @@ export function ModelSection({
     return () => clearInterval(interval);
   }, [clientCreatedAtIso]);
 
-  useEffect(() => {
-    if (!shouldClearUnsupportedContextTier({
-      contextTier: draft.contextTier,
-      modelsLoaded,
-      currentModel,
-      selectedModelSupportsLongContext: supportsLongContext,
-      selectedModelKnown: selectedModel !== undefined,
-    })) return;
-    const next = structuredClone(draft);
-    next.contextTier = undefined;
-    setDraft(next);
-  }, [currentModel, draft, modelsLoaded, selectedModel, setDraft, supportsLongContext]);
-
   return (
     <SettingsSection
-      title="Model"
-      description="Choose the default AI model for new sessions. Existing sessions keep their current model unless changed explicitly."
+      title="Chat defaults"
+      description="Model and effort for new chats. Existing sessions keep their current settings."
+      action={(
+        <Button size="sm" variant="ghost" onClick={() => void handleRefresh()} disabled={refreshing}
+          title="Refresh available models. The SDK client rotates when no sessions are active."
+          icon={<RotateCw size={13} className={refreshing ? "animate-spin" : undefined} />}>
+          {refreshing ? "Refreshing" : "Refresh"}
+        </Button>
+      )}
     >
-      <div className="bg-bg-elevated border border-border rounded-md p-4">
+      <div className={DS.layout.formGroup}>
         {isLoading ? (
           <LoadingSkeletonRegion
             isLoading
@@ -124,32 +121,20 @@ export function ModelSection({
             <SkeletonText lines={1} widths={["42%"]} lineClassName="h-2.5" />
           </LoadingSkeletonRegion>
         ) : error ? (
-          <div className="flex items-center gap-2 text-xs text-error">
+          <div role="alert" className="flex items-center gap-2 text-xs text-error">
             <AlertTriangle className="w-3 h-3" />
             Failed to load models
           </div>
         ) : (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs text-text-faint">
-                Refresh rotates the SDK client when no sessions are active, so newly entitled models appear without restarting Bridge.
-              </p>
-              <button
-                type="button"
-                onClick={() => { void handleRefresh(); }}
-                disabled={refreshing}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-surface disabled:opacity-50"
-              >
-                <RotateCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-                {refreshing ? "Refreshing" : "Refresh"}
-              </button>
-            </div>
+          <div className="space-y-4">
             {refreshError && (
-              <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-                {refreshError}
-              </div>
+              <div role="alert" className={cx(DS.notice.surface, "text-error")}>{refreshError}</div>
             )}
+            <div className="grid min-w-0 gap-4 @[34rem]/settings-content:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-2">
+              <label htmlFor="settings-model-select" className={DS.field.label}>Model</label>
             <select
+              id="settings-model-select"
               value={currentModel}
               onChange={(e) => {
                 const next = structuredClone(draft);
@@ -158,26 +143,37 @@ export function ModelSection({
                 if (nextModel?.supportedReasoningEfforts?.length === 0) {
                   next.reasoningEffort = undefined;
                 }
-                if (!modelSupportsLongContext(nextModel)) {
+                if (shouldClearUnsupportedContextTier({
+                  contextTier: next.contextTier,
+                  modelsLoaded,
+                  currentModel: next.model ?? "",
+                  selectedModelSupportsLongContext: modelSupportsLongContext(nextModel),
+                  selectedModelKnown: nextModel !== undefined,
+                })) {
                   next.contextTier = undefined;
-                } else if (!next.contextTier) {
+                } else if (modelSupportsLongContext(nextModel) && !next.contextTier) {
                   next.contextTier = "default";
                 }
                 setDraft(next);
               }}
-              className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none cursor-pointer"
+              className={cx(DS.field.input, DS.field.inputSize.md)}
             >
               <option value="">Default (SDK default)</option>
+              {currentModel && !selectedModel && <option value={currentModel}>{currentModel} (not in the current catalog)</option>}
               {availableModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}{formatMultiplier(m.billing?.multiplier)}
                 </option>
               ))}
             </select>
-            {currentModel && (
-              <p className="text-xs text-text-faint">
-                Model ID: <code className="text-text-muted">{currentModel}</code>
-              </p>
+            </div>
+            <ReasoningEffortSection draft={draft} setDraft={setDraft} embedded />
+            </div>
+            {modelsLoaded && !supportsLongContext && draft.contextTier === "long_context" && (
+              <div role="status" className="text-xs leading-relaxed text-warning">
+                The saved long-context preference is not advertised for this model. It has been preserved.
+                <Button variant="ghost" size="sm" className="ml-1" onClick={() => setDraft({ ...draft, contextTier: undefined })}>Use model default</Button>
+              </div>
             )}
             {supportsLongContext && (
               <div className="space-y-1">
@@ -192,7 +188,7 @@ export function ModelSection({
                     next.contextTier = e.target.value as CopilotContextTier;
                     setDraft(next);
                   }}
-                  className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary focus:outline-none focus:ring-1 focus:ring-accent appearance-none cursor-pointer"
+                  className={cx(DS.field.input, DS.field.inputSize.md)}
                 >
                   <option value="default">{getContextTierLabel(selectedModel, "default") ?? "Standard context"}</option>
                   <option value="long_context">{getContextTierLabel(selectedModel, "long_context") ?? "Long context"} · higher price</option>
@@ -204,14 +200,13 @@ export function ModelSection({
             )}
           </div>
         )}
-        {clientAge && (
-          <p
-            className="mt-3 border-t border-border pt-3 text-xs text-text-faint"
-            title={`SDK client created ${new Date(clientAge.iso).toLocaleString()}`}
-          >
-            Active SDK client started {timeAgo(clientAge.iso)}
-          </p>
-        )}
+        <Details label="Model catalog details">
+          <div className="space-y-1 pt-2 text-xs leading-relaxed text-text-secondary">
+            {currentModel && <p>Model ID: <code>{currentModel}</code></p>}
+            <p>Refresh rotates the SDK client when no sessions are active, so newly entitled models appear without restarting Bridge.</p>
+            {clientAge && <p title={`SDK client created ${new Date(clientAge.iso).toLocaleString()}`}>Active SDK client started {timeAgo(clientAge.iso)}</p>}
+          </div>
+        </Details>
       </div>
     </SettingsSection>
   );

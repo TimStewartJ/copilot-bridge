@@ -3,6 +3,7 @@ import { Check, ExternalLink, Minus } from "lucide-react";
 import type { DbSchema } from "../../api";
 import { dbFieldLabel, formatDocDate, visibleDbFields, type DbField, type EntryFormValues } from "./docs-model";
 import { cx, DocsField, DocsInput, DocsSelect } from "./docs-ui";
+import { DS } from "../../design/tokens";
 
 const SELECT_TONES = [
   "bg-blue-500/15 text-blue-400",
@@ -39,7 +40,7 @@ export function DbValue({ field, value, wrap = false }: { field: DbField; value:
     case "select": {
       const text = String(value);
       return (
-        <span className={cx("inline-flex max-w-full items-center rounded-full px-2 py-0.5 text-xs font-medium", selectTone(text, field.options))}>
+        <span className={cx(DS.badge.base, "max-w-full items-center text-xs", selectTone(text, field.options))}>
           <span className="truncate">{text}</span>
         </span>
       );
@@ -104,7 +105,7 @@ export function EntryFieldsForm({ schema, values, errors, onChange, disabled, co
                 checked={value === true}
                 disabled={disabled}
                 onChange={(event) => onChange(field.name, event.target.checked)}
-                className="h-4 w-4 rounded border-border accent-accent"
+                className={cx(DS.control.checkbox, "border-border")}
               />
               {label}
             </label>

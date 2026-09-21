@@ -320,8 +320,8 @@ export default function TaskDashboard({
 
           <StatRow stats={contextStats} />
 
-          <div className="grid grid-cols-1 gap-x-12 gap-y-8 lg:grid-cols-[1.05fr_0.95fr]">
-            <Section level="page" label="Task brief">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.05fr_0.95fr]">
+            <Section level="page" label="Task brief" surface>
               <FieldList>
                 <Field icon={<StickyNote size={13} />} label="Summary" empty="No notes captured yet.">
                   {notesExcerpt}
@@ -358,7 +358,7 @@ export default function TaskDashboard({
               </FieldList>
             </Section>
 
-            <Section level="page" label="Readiness intelligence">
+            <Section level="page" label="Readiness intelligence" surface>
               <Notice
                 tone={NOTICE_TONE[readiness.tone]}
                 role="status"
@@ -389,6 +389,7 @@ export default function TaskDashboard({
           </div>
 
           <Section
+            surface
             level="page"
             label="Session usage"
             count={isSessionUsageLoading

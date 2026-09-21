@@ -20,10 +20,11 @@ These instructions apply to the whole repository. Keep changes small, typed, cro
 ## Client design system
 
 - Every client screen is built from `src/client/design/`. Read `src/client/design/README.md` before writing or changing UI: it holds the rules and says which primitive to use for what.
-- Use the primitives in `primitives.tsx` and the class recipes in `tokens.ts` (`DS`, `cx`). Do not hand-write a class string for something the system already has, and do not import `components/shared/design-system.ts`, the legacy tokens that pending screens still use.
+- Use the primitives in `primitives.tsx` and the class recipes in `tokens.ts` (`DS`, `cx`). Do not hand-write a class string for something the system already has; the legacy `components/shared/design-system.ts` module is retired.
+- Use opaque semantic surface levels: canvas, pane, group, inset, selection and overlay. Significant regions use `Section surface`; loaded collections have one boundary and a header band, not a box per row/value. Never nest same-level groups. Preserve readable text (4.5:1), composed badge contrast, visible input boundaries (3:1), and use shadows only for overlays.
 - When something is missing and a second screen will need it, add it to the design folder with a comment that says what it is for. Do not grow a private `Section`, `Card`, `Chip` or button style inside a component.
 - `npm run test:design-audit` is part of `check:fast`, `check:client`, `check:pr` and CI. It blocks the retired patterns: accent fills and outlines, white-on-colour fills, tinted boxes, `rounded-full` state pills, dashed empty boxes, shadows on in-page surfaces, uppercase labels, nested `Panel` components.
-- Never add a file to `src/client/design/audit-pending.ts`. It lists screens written before the system existed and only shrinks. When you change one of those screens, migrate it (`npx tsx src/client/design/audit.ts --explain <file>` lists what it breaks) and remove it from the list.
+- Never add a file to `src/client/design/audit-pending.ts`. The migration backlog is empty; a regression test keeps it empty. `npx tsx src/client/design/audit.ts --explain <file>` explains violations without exempting the screen.
 - `// design-audit-ignore-next-line: <reason>` is for content with conventions of its own, such as a diff. It is not for a screen that is hard to restyle.
 - Check UI work in both themes and at phone width, on the real screen, before calling it done.
 

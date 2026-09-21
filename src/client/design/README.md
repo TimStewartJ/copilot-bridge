@@ -13,10 +13,12 @@ quiet, dense with information, and calm until something needs attention.
 
 1. **Content is the only full-contrast text.** A reply, a task's brief, a document. Every label,
    figure and control around it is one step quieter than the thing it describes (`DS.text`).
-2. **Group with space, a hairline or a rail, not with boxes.** The page is one background. A bordered
-   surface (`Panel`) is for a self-contained object such as a question to answer, and is never put
-   inside another one. Rows of one list are divided by hairlines (`DS.surface.divided`); content
-   opened beneath a row hangs from a rail (`DS.rail`).
+2. **Surface levels show hierarchy; rows and values stay simple.** The workspace is a canvas,
+   navigation and inspectors are panes, and a significant region gets one opaque neutral group
+   (`Section surface`, `DS.surface.group`). Grouping only with whitespace makes loaded task views
+   hard to scan. A collection has one boundary and a header band, not a card around every row.
+   Individual values remain unboxed; rows use hairlines (`DS.surface.divided`) and expanded content
+   uses a rail (`DS.rail`) or an inset. Never nest Panels or two same-level group surfaces.
 3. **One line that says what it is, which opens for more.** Closed by default: the reader chooses
    what to open (`DisclosureRow`, `Details`). Rows read as sentences ("Searched for …", "Worked for
    2m · 14 steps") and the raw details are one click away.
@@ -41,8 +43,31 @@ quiet, dense with information, and calm until something needs attention.
 12. **Touch targets are 40px on a phone** (`DS.button.size.md`, `DS.field.inputSize.md`), and a text
     field is 16px there so iOS does not zoom the page.
 
-Colours are theme variables from `index.css`, used by role (`text-text-muted`, `bg-bg-hover`), never
-by value, so both themes keep working. Scrollbars and native controls follow the theme globally.
+Colours are theme variables from `index.css`, used by role, never by value. Scrollbars and native
+controls follow the theme globally.
+
+## Surface hierarchy
+
+| Level | Purpose | Recipe |
+| --- | --- | --- |
+| Canvas | Workspace behind panes and groups | `DS.surface.canvas` |
+| Pane | Persistent navigation, task rail, task inspector | `DS.surface.pane` |
+| Group | A logical region: Momentum, Sessions, a settings category | `Section surface`, `DS.surface.group` |
+| Inset | Inputs, raw details, evidence opened inside a group | `DS.field`, `DS.surface.inset` / `.detail` |
+| Selected | The active row or choice, visibly distinct from hover | `DS.row.selected`, `DS.surface.selected` |
+| Overlay | Menus, dialogs, sheets and the composer | `DS.surface.floating` / `.dialog` / `.sheet` / `.composer` |
+
+Use opaque surfaces, not opacity variants whose appearance changes with the parent. A pane is
+separated from the workspace by its tone and an edge; a group by a neutral boundary and consistent
+padding. A loaded collection gets a header band (`DS.collection.header`) and divided rows. Do not
+use a surface for a count, timestamp, label or individual field value. Shadows remain for overlays
+only. Light mode uses white groups on a neutral canvas/pane; dark mode steps from canvas to pane to
+group. Selection and control boundaries must remain visible in both themes.
+
+Hierarchy comes from layout, type size/weight and surfaces, not illegibly faint text. Every enabled
+text role and semantic state must reach 4.5:1 on the supported surfaces; input boundaries reach 3:1.
+Keep these contrast checks in the design tests and verify the actual composed UI, including badges,
+hover/selected rows and constrained panes.
 
 ## What to use
 
@@ -53,7 +78,7 @@ by value, so both themes keep working. Scrollbars and native controls follow the
 | A choice between a few options | `SegmentedControl` |
 | Options that wrap, or a multi-select | `ChoiceButton` in `DS.choice.group` |
 | A text field, select, labelled control | `TextInput`, `TextArea`, `Select`, `FormRow` |
-| A group of rows with a label | `Section` (`level="page"` on a full-page view) |
+| A group of rows with a label | `Section` (`surface` for a significant region; `level="page"` on a full-page view) |
 | Something that opens to show more | `DisclosureRow`; `Details` when no state is needed |
 | Labelled values | `FieldList` + `Field`, not one box per value |
 | Headline figures | `StatRow`, not tiles |
@@ -88,10 +113,8 @@ in-page surfaces, uppercase labels, imports of the legacy `shared/design-system`
 not just class strings on one line. Each failure names the rule and what to use instead. The audit
 also runs in the CI, preview-package and release-package workflows.
 
-- Files in `audit-pending.ts` are exempt until they are migrated. **Never add a file to that list.**
-  New screens, and screens you change, follow the system.
-- When a pending file comes clean the audit fails until you remove it from the list, which is what
-  keeps it clean afterwards.
+- `audit-pending.ts` is now empty, and a regression test requires it to stay empty. **Never add a
+  file to that list.** Every runtime screen is held to the system; the legacy token module is retired.
 - A real exception takes a comment on the line above, and the reason is required:
   `// design-audit-ignore-next-line: a diff is content, and added lines are green by convention`.
   An exception is for content that has its own conventions, not for a screen that is hard to restyle.
@@ -99,16 +122,49 @@ also runs in the CI, preview-package and release-package workflows.
 ## Migrating a screen
 
 1. `npx tsx src/client/design/audit.ts --explain <file>` lists what it still breaks.
-2. Rebuild it from the primitives. Expect to delete more than you add: boxes, borders, pills, labels
-   in capitals, and local `Section`/`Card`/`Chip` helpers all go.
+2. Rebuild it from the primitives. Replace redundant nested boxes and per-value tiles with one
+   group surface, divided rows and insets. Retire pills, labels in capitals and private copies of
+   `Section`/`Card`/`Chip`; do not flatten away meaningful boundaries.
 3. Check it in both themes and at phone width. Look at the real screen, not only the tests.
-4. Remove the file from `audit-pending.ts` and run `npm run check:client`.
+4. Run `npm run check:client`; no screen can be added to an exemption list.
 
-The chat transcript (`components/chat/`, `ToolCallBlock`, `SubAgentGroup`), the chat container, the
-new-chat screen, the task panel, the task rail and lists, the shared phone navigation, and the task
-overview are on the system. Copilot usage is migrated across the quota rail/tooltip/dialog, mobile
-quota summary, local usage settings, task analytics, session cost/context details and deferred-work
-receipts. Focus, the dashboard, remaining settings, docs, search, Helm and remaining sheets are pending.
+## Migration coverage
+
+The first migration covered task/chat/usage. The second audited the 81 remaining exempt files and
+363 literal violations, then moved every file onto the system and removed the legacy tokens.
+
+| Batch | Surfaces |
+| --- | --- |
+| Shared controls | Docs adapters, settings sections/configuration rows, compound fields, menus, dialogs, notices and feedback |
+| Focus and dashboard | Actions, alerts, decisions, coverage, digests, quiet sources, history, lifecycle/launch/protection review and work map |
+| Docs and search | Navigation, landing/folders, collections, page reader, editor, fields, tags, contents rail, dialogs and saved-text search |
+| Settings | Every category: general/response style, models/effort/workers, appearance, providers/MCP/skills/tags, notifications/devices, speech, updates/jobs/commits and diagnostics |
+| Supporting surfaces | Workspace, notes, schedule, task picker/deletion, agent/doc/reference/artifact previews, model-switch prompt, backend banner/toasts, Helm and hands-free |
+| Readable surfaces | Loaded task collections, inspector identity/Momentum/Sessions/Checklist/Details and task overview groups, with explicit canvas/pane/group/inset/overlay roles |
+
+Visual migration does not change billing/indexing, task completion, Focus lifecycle/authority,
+user-controlled protection, settings save boundaries, docs conflict/draft handling or voice capture.
+The audit is a regression guard, not proof of visual quality: use real data and inspect representative
+loaded/empty/error states, both themes and phone/container widths before publishing a preview.
+
+## Search and settings
+
+- Search is one top-anchored overlay. Its query and source controls stay outside the single results
+  scroller. It grows with content up to a viewport bound, rather than leaving a tall empty panel.
+  Source headings, dividers and bounded excerpts do the grouping; do not put result cards inside
+  another card. Notes/docs use plain Markdown excerpts; message excerpts remain literal for code
+  searches. Query syntax, coverage details and help are available without competing with results.
+- Settings uses one neutral category surface with separated sections, not one card per setting.
+  Keep common defaults visible, and use disclosures for long instruction text, catalog details and
+  optional icon choices. Mobile category selection must expose every category without a sideways
+  hunt. Live quota remains one tap away in the mobile header. Long configuration lists follow the
+  primary controls; row actions stay in the shared overflow menu instead of crowding phone layouts.
+- Draft controls use the page's Save/Discard pair. Save only changed top-level fields; do not write
+  unchanged or independently saved values back from an older snapshot. Theme changes are reversible
+  previews until Save, and revert on Discard or leaving settings. Model metadata arriving is a read,
+  never an implicit edit to the saved draft. Missing/error states offer a real retry.
+- Labels must be associated with their input, select or textarea. Field errors are described by the
+  affected control, and native dropdown affordances remain visible.
 
 ## Copilot usage presentation
 

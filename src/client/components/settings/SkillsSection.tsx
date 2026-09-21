@@ -9,6 +9,7 @@ import {
 } from "../../api";
 import EmptyState from "../shared/EmptyState";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 function sortSkills(skills: Skill[]): Skill[] {
   return [...skills].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
@@ -47,11 +48,11 @@ function SkillCard({
   const isBundled = skill.source === "bundled";
 
   return (
-    <div className="bg-bg-elevated border border-border rounded-md p-4 group">
+    <div className={cx(DS.layout.objectRow, "group")}>
       <div className="flex items-start justify-between gap-2">
         <button
           onClick={toggleExpanded}
-          className="flex flex-1 min-w-0 items-start gap-2 text-left"
+          className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "flex-1 items-start gap-2 py-2")}
           aria-expanded={expanded}
         >
           <span className="mt-0.5 text-text-muted">
@@ -61,11 +62,9 @@ function SkillCard({
             <span className="flex items-center gap-2">
               <span className="text-sm font-medium text-accent">{skill.name}</span>
               <span
-                className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                  isBundled
+                className={cx(DS.text.sectionLabel, "rounded px-1.5 py-0.5 font-medium", isBundled
                     ? "bg-bg-surface text-text-muted"
-                    : "bg-accent-surface text-accent"
-                }`}
+                    : "text-accent")}
               >
                 {skill.source}
               </span>
@@ -79,7 +78,7 @@ function SkillCard({
           <button
             onClick={onRemove}
             disabled={removing}
-            className="p-1.5 text-text-muted hover:text-error transition-colors disabled:opacity-50"
+            className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "hover:text-error disabled:opacity-50")}
             title="Delete skill"
           >
             <Trash2 size={14} />
@@ -166,7 +165,7 @@ export function SkillsSection() {
     >
       <div className="space-y-2">
         {error && (
-          <div className="rounded-md border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
+          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
             {error}
           </div>
         )}
@@ -181,7 +180,7 @@ export function SkillsSection() {
         ))}
 
         {loading && (
-          <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
+          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
             Loading skills…
           </div>
         )}

@@ -13,6 +13,7 @@ import EmptyState from "../shared/EmptyState";
 import { ServerCard } from "./ServerCard";
 import { ServerEditor } from "./ServerEditor";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 function sortServers(servers: McpServer[]): McpServer[] {
   return [...servers].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
@@ -158,7 +159,7 @@ export function McpServersSection({
         <button
           onClick={() => setAddingServer(true)}
           disabled={addingServer || loadingServers}
-          className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface disabled:opacity-50")}
         >
           + Add Server
         </button>
@@ -166,7 +167,7 @@ export function McpServersSection({
     >
       <div className="space-y-2">
         {error && (
-          <div className="rounded-md border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
+          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
             {error}
           </div>
         )}
@@ -197,7 +198,7 @@ export function McpServersSection({
         )}
 
         {loadingServers && (
-          <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
+          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
             Loading MCP servers…
           </div>
         )}

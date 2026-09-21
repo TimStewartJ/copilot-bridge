@@ -2,7 +2,8 @@ import { useId, useRef, useState } from "react";
 import type { FocusObject } from "../api";
 import FocusDialog from "./FocusDialog";
 import FocusEvidenceValidity from "./FocusEvidenceValidity";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 export type FocusLifecycleIntent = "resolved" | "accepted_risk" | "dismissed" | "reactivate";
 const INTENT_TEXT: Record<FocusLifecycleIntent, { title: string; explanation: string }> = {
@@ -63,7 +64,7 @@ export default function FocusLifecycleDialog({ object, intent, pending, error, n
                   type="button"
                   disabled={pending}
                   aria-describedby={dismissReasonHelpId}
-                  className={`${UI.button.secondary} min-h-11 text-sm disabled:opacity-50`}
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-sm disabled:opacity-50")}
                   onClick={() => {
                     setSelectedDismissReason(preset);
                     onSubmit(preset, "");
@@ -78,20 +79,20 @@ export default function FocusLifecycleDialog({ object, intent, pending, error, n
         <label className="block space-y-1.5 text-sm text-text-secondary">
           <span>{intent === "reactivate" ? "Episode reason (required)" : showDismissPresets ? "Or enter a custom reason (required)" : "Reason (required)"}</span>
           <textarea required value={reason} disabled={pending} onChange={(event) => setReason(event.target.value)}
-            className="min-h-24 w-full rounded-lg border border-border bg-bg-surface p-3 focus-visible:outline-accent" />
+            className={cx(DS.field.input, DS.field.textarea, DS.focus, "min-h-24")} />
         </label>
         {intent !== "reactivate" && (
           <label className="block space-y-1.5 text-sm text-text-secondary">
             <span>{outcomeRequired ? "Outcome / remaining risk (required)" : "Outcome (optional)"}</span>
             <textarea required={outcomeRequired} value={outcome} disabled={pending} onChange={(event) => setOutcome(event.target.value)}
-              className="min-h-24 w-full rounded-lg border border-border bg-bg-surface p-3 focus-visible:outline-accent" />
+              className={cx(DS.field.input, DS.field.textarea, DS.focus, "min-h-24")} />
           </label>
         )}
-        {error && <div role="alert" className="text-sm text-error">{error}<button type="button" disabled={pending} onClick={onReload} className="ml-2 min-h-11 underline">Reload item</button></div>}
+        {error && <div role="alert" className="text-sm text-error">{error}<button type="button" disabled={pending} onClick={onReload} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-2 underline")}>Reload item</button></div>}
         <div className="flex flex-wrap justify-end gap-2">
-          <button type="button" disabled={pending} onClick={onClose} className={`${UI.button.secondary} min-h-11`}>Cancel</button>
+          <button type="button" disabled={pending} onClick={onClose} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}>Cancel</button>
           <button type="submit" disabled={pending || !reason.trim() || (outcomeRequired && !outcome.trim())}
-            className={`${UI.button.primary} min-h-11 disabled:opacity-50`}>{pending ? "Saving..." : copy.title}</button>
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}>{pending ? "Saving..." : copy.title}</button>
         </div>
       </form>
     </FocusDialog>

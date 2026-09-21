@@ -25,6 +25,7 @@ import {
   type DbFilterState,
   type DbSortState,
 } from "./docs-model";
+import { DS } from "../../design/tokens";
 
 /** Beyond a few dropdowns the toolbar stops being scannable; the text filter covers the rest. */
 const MAX_SELECT_FILTERS = 3;
@@ -71,10 +72,7 @@ function SortableHeader({
       <button
         type="button"
         onClick={() => onSort(field)}
-        className={cx(
-          "group inline-flex h-9 items-center gap-1 text-xs transition-colors hover:text-text-primary",
-          active ? "text-text-primary" : "text-text-muted",
-        )}
+        className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "group gap-1", active ? cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost) : cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost))}
       >
         {label}
         <Arrow size={12} className={cx("transition-opacity", active ? "opacity-100" : "opacity-0 group-hover:opacity-40")} aria-hidden="true" />
@@ -113,11 +111,7 @@ function EntryTable({ schema, entries, sort, onSort }: { schema: DbSchema; entri
               {fields.map((field) => (
                 <td
                   key={field.name}
-                  className={cx(
-                    "border-b border-border-subtle px-3.5 py-2.5 align-top text-text-secondary",
-                    field.type === "number" && "text-right",
-                    field.type === "text" ? "max-w-[20rem]" : "whitespace-nowrap",
-                  )}
+                  className={cx("border-b border-border-subtle px-3.5 py-2.5 align-top text-text-secondary", field.type === "number" && "text-right", field.type === "text" ? "max-w-[20rem]" : "whitespace-nowrap")}
                 >
                   {field.type === "text"
                     ? <div className="line-clamp-2 whitespace-normal break-words leading-5"><DbValue field={field} value={entry.fields[field.name]} /></div>
@@ -228,7 +222,7 @@ export default function DocsCollectionView({ folder, onMissing }: DocsCollection
       ) : (
         <div className={cx("docs-content-in flex min-h-0 flex-1 flex-col px-4 pt-6 sm:px-8 sm:pt-8", isMobile ? "overflow-y-auto" : "pb-6")}>
           <div className="flex items-start gap-3.5">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-surface text-accent">
+            <div className={"flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-accent"}>
               <Database size={19} aria-hidden="true" />
             </div>
             <div className="min-w-0 flex-1">
@@ -257,7 +251,7 @@ export default function DocsCollectionView({ folder, onMissing }: DocsCollection
                   onChange={(event) => setFilter((current) => ({ ...current, text: event.target.value }))}
                   placeholder="Filter entries…"
                   aria-label="Filter entries"
-                  className="h-9 w-full rounded-md border border-border bg-bg-primary pl-9 pr-3 text-sm text-text-primary placeholder:text-text-faint transition-colors hover:border-text-faint/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
+                  className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "pl-9 pr-3 hover:border-text-faint/60")}
                 />
               </div>
               {selectFields.map((field) => (
@@ -266,7 +260,7 @@ export default function DocsCollectionView({ folder, onMissing }: DocsCollection
                   aria-label={`Filter by ${dbFieldLabel(field.name)}`}
                   value={filter.selects[field.name] ?? ""}
                   onChange={(event) => setFilter((current) => ({ ...current, selects: { ...current.selects, [field.name]: event.target.value } }))}
-                  className={cx(isMobile ? "min-w-0 flex-1 basis-[9rem]" : "w-auto max-w-[11rem]", filter.selects[field.name] && "border-accent-border text-accent")}
+                  className={cx(isMobile ? "min-w-0 flex-1 basis-[9rem]" : "w-auto max-w-[11rem]", filter.selects[field.name] && cx(DS.choice.selected, "text-accent"))}
                 >
                   <option value="">{dbFieldLabel(field.name)}: any</option>
                   {selectFilterOptions(field, entries).map((option) => <option key={option} value={option}>{option}</option>)}
@@ -305,14 +299,14 @@ export default function DocsCollectionView({ folder, onMissing }: DocsCollection
 
           <div className="mt-4 flex min-h-0 flex-1 flex-col">
             {entries.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-border px-6 py-14 text-center">
+              <div className={cx(DS.text.empty, "px-6 py-14 text-center")}>
                 <Database size={22} className="mx-auto text-text-faint" aria-hidden="true" />
                 <p className="mt-3 text-sm font-medium text-text-primary">No entries yet</p>
                 <p className="mt-1 text-[13px] text-text-muted">Add the first one, or ask an agent to fill this collection in.</p>
                 <DocsButton variant="primary" icon={Plus} onClick={() => openNewEntry(folder)} className="mt-4">New entry</DocsButton>
               </div>
             ) : visibleEntries.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-border px-6 py-14 text-center">
+              <div className={cx(DS.text.empty, "px-6 py-14 text-center")}>
                 <SearchX size={22} className="mx-auto text-text-faint" aria-hidden="true" />
                 <p className="mt-3 text-sm font-medium text-text-primary">No entries match these filters</p>
                 <DocsButton onClick={() => setFilter(EMPTY_DB_FILTER)} className="mt-4">Clear filters</DocsButton>

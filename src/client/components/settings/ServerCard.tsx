@@ -11,6 +11,7 @@ import {
   summarizeMcpServerConfig,
   summarizeMcpServerExecution,
 } from "./mcp-display";
+import { DS, cx } from "../../design/tokens";
 
 export function ServerCard({
   name,
@@ -38,38 +39,38 @@ export function ServerCard({
     switch (st) {
       case "connected":
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5" title={MCP_CONNECTION_GUIDANCE}>
+          <span className={cx(DS.badge.base, "bg-success/15 text-success flex items-center gap-0.5")} title={MCP_CONNECTION_GUIDANCE}>
             <CheckCircle2 size={10} /> connected
           </span>
         );
       case "failed":
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-error/15 text-error rounded-full flex items-center gap-0.5" title={status?.error}>
+          <span className={cx(DS.badge.base, "bg-error/15 text-error flex items-center gap-0.5")} title={status?.error}>
             <XCircle size={10} /> failed
           </span>
         );
       case "needs-auth":
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning rounded-full flex items-center gap-0.5" title="Open a session using this server to sign in.">
+          <span className={cx(DS.badge.base, "bg-warning/15 text-warning flex items-center gap-0.5")} title="Open a session using this server to sign in.">
             <AlertTriangle size={10} /> needs auth
           </span>
         );
       case "pending":
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-warning/15 text-warning rounded-full flex items-center gap-0.5">
+          <span className={cx(DS.badge.base, "bg-warning/15 text-warning flex items-center gap-0.5")}>
             <Loader2 size={10} className="animate-spin" /> connecting
           </span>
         );
       case "disabled":
       case "not_configured":
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-bg-secondary text-text-muted rounded-full">
+          <span className={cx(DS.badge.base, "bg-bg-secondary text-text-muted")}>
             {st}
           </span>
         );
       default:
         return (
-          <span className="text-[10px] px-1.5 py-0.5 bg-bg-secondary text-text-faint rounded-full flex items-center gap-0.5">
+          <span className={cx(DS.badge.base, "bg-bg-secondary text-text-faint flex items-center gap-0.5")}>
             <AlertTriangle size={10} /> no status
           </span>
         );
@@ -161,7 +162,7 @@ export function ServerCard({
               checked={!!enabledByDefault}
               disabled={defaultToggleDisabled}
               onChange={(e) => onToggleEnabledByDefault(e.target.checked)}
-              className="mt-0.5 h-3.5 w-3.5 accent-accent disabled:opacity-50"
+              className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5 disabled:opacity-50")}
             />
             <span>
               <span className="font-medium text-text-secondary">Enabled by default</span>

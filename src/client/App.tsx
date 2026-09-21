@@ -121,6 +121,7 @@ import { useDocumentTitle } from "./useDocumentTitle";
 import { resolveDocumentTitle } from "./lib/document-title";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat, getLastMobileWorkSegment, setLastMobileWorkSegment } from "./last-viewed";
 import { createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
+import { DS, cx } from "./design/tokens";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
 
@@ -1793,7 +1794,7 @@ function AppShell() {
     <BridgeReferenceContext.Provider value={bridgeReferenceContext}>
     <div
       inert={searchOpen || undefined}
-      className="flex flex-col h-dvh bg-bg-primary text-text-primary"
+      className={cx(DS.surface.canvas, "flex h-dvh flex-col text-text-primary")}
       style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
       {restartNotice && (

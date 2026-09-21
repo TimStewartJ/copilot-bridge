@@ -6,6 +6,7 @@ import { describeRecordingLimit } from "../../lib/voice-ui-state";
 import { fetchVoiceStatus, startVoiceInstall, type VoiceEngineCapability, type VoiceInstallStatus, type VoiceStatus } from "../../voice/voice-api";
 import { formatBytes } from "../../voice/voice-view-model";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 const CAPABILITY_NAMES: Record<VoiceEngineCapability, string> = {
   asr: "speech recognition",
@@ -21,7 +22,7 @@ function joinNames(names: string[]): string {
 export function describeInstallBadge(install: VoiceInstallStatus): { text: string; className: string } {
   if (!install.supported) return { text: "Unsupported", className: "bg-bg-surface text-text-secondary" };
   if (install.installing) {
-    return { text: `Installing ${Math.round((install.progress?.overallFraction ?? 0) * 100)}%`, className: "bg-accent-surface text-accent" };
+    return { text: `Installing ${Math.round((install.progress?.overallFraction ?? 0) * 100)}%`, className: "text-accent" };
   }
   if (install.installed) return { text: "Installed", className: "bg-success/15 text-success" };
   if (install.error) return { text: "Setup failed", className: "bg-error/10 text-error" };
@@ -102,14 +103,14 @@ export function SpeechEngineSection() {
         <button
           type="button"
           onClick={() => void refresh()}
-          className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors inline-flex items-center gap-1.5"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface gap-1.5")}
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
         </button>
       )}
     >
-      <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-4">
+      <div className={DS.layout.formGroup}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -120,13 +121,13 @@ export function SpeechEngineSection() {
               One install powers both features: speech detection, end-of-turn detection, speech recognition and voices, all running on the CPU.
             </p>
           </div>
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${badge.className}`}>
+          <span className={cx(DS.badge.base, "shrink-0", badge.className)}>
             {badge.text}
           </span>
         </div>
 
         {installStatus && !installStatus.supported && (
-          <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">
+          <div className={cx(DS.layout.formGroup, "text-xs text-text-secondary")}>
             The speech engine isn&apos;t available for this host ({installStatus.target}). It supports Windows x64, Linux x64 and Arm64, and Apple Silicon Macs.
           </div>
         )}
@@ -138,7 +139,7 @@ export function SpeechEngineSection() {
               <span className="tabular-nums">{Math.round(progress.overallFraction * 100)}%</span>
             </div>
             <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-bg-surface">
-              <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(2, progress.overallFraction * 100)}%` }} />
+              <div className={cx(DS.meter.fill, "transition-[width] duration-500")} style={{ width: `${Math.max(2, progress.overallFraction * 100)}%` }} />
             </div>
           </div>
         )}
@@ -148,7 +149,7 @@ export function SpeechEngineSection() {
             type="button"
             onClick={() => void install()}
             disabled={startingInstall}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-wait disabled:opacity-60"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "gap-1.5 disabled:opacity-60")}
           >
             {startingInstall ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
             {installStatus.error ? "Retry setup" : "Download and set up"} ({formatBytes(installStatus.remainingBytes || installStatus.totalBytes)})
@@ -156,14 +157,14 @@ export function SpeechEngineSection() {
         )}
 
         {installStatus?.error && !installStatus.installing && (
-          <div className="break-words rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          <div className={cx(DS.notice.surface, "break-words px-3 py-2 text-xs text-error")}>
             Setup failed: {installStatus.error}
           </div>
         )}
 
         {voiceStatus && (
           <div className="grid gap-2 text-xs md:grid-cols-2">
-            <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+            <div className={DS.layout.formGroup}>
               <div className="flex items-center gap-1.5 font-medium text-text-secondary"><Mic size={12} /> Chat mic</div>
               <p className="mt-1 text-text-muted">
                 {micStatus?.available
@@ -171,7 +172,7 @@ export function SpeechEngineSection() {
                   : micStatus?.reason ?? "Unavailable."}
               </p>
             </div>
-            <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+            <div className={DS.layout.formGroup}>
               <div className="flex items-center gap-1.5 font-medium text-text-secondary"><AudioLines size={12} /> Hands-free (Helm)</div>
               <p className="mt-1 text-text-muted">
                 {installStatus?.installed ? "Ready for hands-free conversations." : "Available once the speech engine is installed."}
@@ -182,7 +183,7 @@ export function SpeechEngineSection() {
                 </Link>
               )}
             </div>
-            <div className="rounded-md border border-border bg-bg-primary px-3 py-2 md:col-span-2">
+            <div className={cx(DS.layout.formGroup, "md:col-span-2")}>
               <div className="flex items-center gap-1.5 font-medium text-text-secondary"><Cpu size={12} /> Engine</div>
               <p className="mt-1 text-text-muted">{describeEngineState(voiceStatus.engine)}</p>
             </div>
@@ -191,7 +192,7 @@ export function SpeechEngineSection() {
 
         {assets.length > 0 && (
           <div>
-            <div className="text-[11px] font-medium uppercase tracking-wide text-text-faint">Components</div>
+            <div className={cx(DS.text.sectionLabel, "font-medium text-text-faint")}>Components</div>
             <ul className="mt-1.5 divide-y divide-border rounded-md border border-border bg-bg-primary text-xs">
               {assets.map((asset) => (
                 <li key={asset.id} className="flex items-center justify-between gap-3 px-3 py-1.5">
@@ -209,7 +210,7 @@ export function SpeechEngineSection() {
         )}
 
         {error && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
             {error}
           </div>
         )}

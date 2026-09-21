@@ -1,8 +1,11 @@
+import { useEffect } from "react";
 import type { AppSettings, ThemePreference } from "../../api";
 import { FAVICON_OPTIONS, DEFAULT_FAVICON, faviconAssetUrl, type FaviconOption } from "../../faviconOptions";
 import { useTheme } from "../../useTheme";
 import ThemePicker from "../ThemePicker";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
+import { Details } from "../../design/primitives";
 
 export function AppearanceSection({
   draft,
@@ -11,10 +14,14 @@ export function AppearanceSection({
   draft: AppSettings;
   setDraft: (d: AppSettings) => void;
 }) {
-  const { theme, setTheme, effectiveTheme } = useTheme();
+  const { theme, savedTheme, previewTheme, effectiveTheme } = useTheme();
   const currentFavicon = draft.favicon ?? DEFAULT_FAVICON;
   const bridgeOptions = FAVICON_OPTIONS.filter((o) => o.group === "bridge");
   const altOptions = FAVICON_OPTIONS.filter((o) => o.group === "alt");
+  useEffect(() => {
+    previewTheme(draft.theme ?? savedTheme);
+    return () => previewTheme(null);
+  }, [draft.theme, savedTheme, previewTheme]);
 
   const selectFavicon = (key: string) => {
     const next = structuredClone(draft);
@@ -23,7 +30,6 @@ export function AppearanceSection({
   };
 
   const handleThemeChange = (t: ThemePreference) => {
-    setTheme(t);
     const next = structuredClone(draft);
     next.theme = t;
     setDraft(next);
@@ -32,34 +38,35 @@ export function AppearanceSection({
   return (
     <SettingsSection
       title="Appearance"
-      description="Customize the look and feel of the app."
+      description="Preview your theme here. Save to keep it, or Discard to restore the saved appearance."
     >
-      <div className="bg-bg-elevated border border-border rounded-md p-4 space-y-5">
+      <div className={DS.layout.formGroup}>
         {/* Theme */}
         <div>
           <p className="text-xs text-text-faint mb-2">Theme</p>
           <ThemePicker value={theme} onChange={handleThemeChange} />
         </div>
 
-        {/* Favicon — Bridge variants */}
-        <div>
-          <p className="text-xs text-text-faint mb-2">Icon — Bridge</p>
-          <div className="flex flex-wrap gap-3">
-            {bridgeOptions.map((opt) => (
-              <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
-            ))}
+        <Details label="App icon" detail={FAVICON_OPTIONS.find((option) => option.key === currentFavicon)?.label}>
+          <div className="space-y-4 pt-2">
+            <div>
+              <p className="text-xs text-text-secondary mb-2">Icon — Bridge</p>
+              <div className="flex flex-wrap gap-3">
+                {bridgeOptions.map((opt) => (
+                  <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-text-secondary mb-2">Icon — Alternative</p>
+              <div className="flex flex-wrap gap-3">
+                {altOptions.map((opt) => (
+                  <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-
-        {/* Favicon — Alt variants */}
-        <div>
-          <p className="text-xs text-text-faint mb-2">Icon — Alternative</p>
-          <div className="flex flex-wrap gap-3">
-            {altOptions.map((opt) => (
-              <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
-            ))}
-          </div>
-        </div>
+        </Details>
       </div>
     </SettingsSection>
   );
@@ -80,11 +87,9 @@ function FaviconTile({
   return (
     <button
       onClick={() => onSelect(option.key)}
-      className={`flex flex-col items-center gap-1.5 p-2 rounded-lg transition-all cursor-pointer
-        ${selected
-          ? "ring-2 ring-accent bg-accent/10"
-          : "hover:bg-bg-hover border border-transparent hover:border-border"
-        }`}
+      type="button"
+      aria-pressed={selected}
+      className={cx(DS.choice.option, "flex-col justify-center gap-1.5", selected ? DS.choice.selected : DS.choice.unselected)}
       title={option.label}
     >
       <img
@@ -92,7 +97,7 @@ function FaviconTile({
         alt={option.label}
         className="w-10 h-10 rounded-md"
       />
-      <span className={`text-[10px] ${selected ? "text-accent font-medium" : "text-text-muted"}`}>
+      <span className={cx("text-[10px]", selected ? "text-accent font-medium" : "text-text-muted")}>
         {option.label}
       </span>
     </button>

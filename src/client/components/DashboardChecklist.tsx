@@ -4,9 +4,9 @@ import { GROUP_COLOR_DOT } from "../group-colors";
 import type { DashboardChecklistState } from "../hooks/useDashboardChecklist";
 import ChecklistItemRow from "./ChecklistItemRow";
 import EmptyState from "./shared/EmptyState";
-import { UI } from "./shared/design-system";
 import { SORT_LABELS, type ChecklistSort } from "./dashboard-checklist-helpers";
 import { getDashboardPanelId, getDashboardTabId } from "../lib/dashboard-routes";
+import { DS, cx } from "../design/tokens";
 
 interface DashboardChecklistProps {
   active: boolean;
@@ -42,7 +42,7 @@ export default function DashboardChecklist({
       className="space-y-3"
     >
       <div className="flex items-center justify-between">
-        <h2 className={UI.text.sectionTitle}>
+        <h2 className={cx(DS.text.sectionTitle, "flex items-center gap-1.5")}>
           <CheckSquare size={14} />
           {heading}
           {checklist.visibleOpenChecklistItems.length > 0 && (
@@ -58,11 +58,9 @@ export default function DashboardChecklist({
               <button
                 key={sort}
                 onClick={() => checklist.handleSortChange(sort)}
-                className={`min-h-11 text-[11px] px-1.5 py-0.5 rounded transition-colors ${
-                  checklist.checklistSort === sort
-                    ? `${UI.chip.selected} font-medium`
-                    : "text-text-faint hover:text-text-secondary"
-                }`}
+                className={cx("text-[11px] px-1.5 py-0.5 rounded transition-colors", checklist.checklistSort === sort
+                    ? cx(DS.segmented.selected, "font-medium")
+                    : cx(DS.button.base, DS.button.size.sm, "text-text-faint hover:text-text-secondary"))}
               >
                 {SORT_LABELS[sort]}
               </button>
@@ -72,7 +70,7 @@ export default function DashboardChecklist({
       </div>
 
       <form onSubmit={checklist.handleAddChecklistItem}>
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-bg-surface border border-border focus-within:border-accent transition-colors">
+        <div className={DS.field.group}>
           <Plus size={14} className="text-text-faint shrink-0" />
           <input
             type="text"
@@ -80,7 +78,7 @@ export default function DashboardChecklist({
             onChange={(event) => checklist.setNewChecklistItemText(event.target.value)}
             placeholder={heading === "Actions" ? "Add a Global Action..." : "Add a checklist item..."}
             aria-label={heading === "Actions" ? "Add a Global Action" : "Add a checklist item"}
-            className="min-h-11 min-w-0 flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-faint outline-none"
+            className={DS.field.inline}
           />
         </div>
       </form>
@@ -90,7 +88,7 @@ export default function DashboardChecklist({
         aria-label={bounded ? `${heading} list` : undefined}
         tabIndex={bounded ? 0 : undefined}
         className={bounded
-          ? "outline-none xl:max-h-[36rem] xl:overflow-y-auto xl:overscroll-contain xl:pr-1 xl:focus-visible:ring-2 xl:focus-visible:ring-accent-border"
+          ? cx(DS.focus, "xl:max-h-[36rem] xl:overflow-y-auto xl:overscroll-contain xl:pr-1")
           : undefined}
       >
         {checklist.localOpenChecklistItems.length === 0 && checklist.localCompletedChecklistItems.length === 0 ? (
@@ -111,14 +109,14 @@ export default function DashboardChecklist({
                     <div key={group.key} className="bg-bg-surface border border-border rounded-lg overflow-hidden">
                       <button
                         onClick={() => checklist.toggleGroupCollapse(group.key)}
-                        className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-bg-hover transition-colors"
+                        className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "w-full gap-2")}
                       >
                         {isCollapsed
                           ? <ChevronRight size={14} className="text-text-faint shrink-0" />
                           : <ChevronDown size={14} className="text-text-faint shrink-0" />
                         }
                         {group.taskGroupColor && (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${GROUP_COLOR_DOT[group.taskGroupColor] ?? ""}`} />
+                          <span className={cx("w-2 h-2 rounded-full shrink-0", GROUP_COLOR_DOT[group.taskGroupColor] ?? "")} />
                         )}
                         <span className="font-medium text-text-secondary truncate">
                           {group.taskTitle ?? (heading === "Actions" ? "Global Actions" : "Global Checklist")}
@@ -191,7 +189,7 @@ export default function DashboardChecklist({
               <>
                 <button
                   onClick={() => checklist.setShowCompleted((value) => !value)}
-                  className={UI.text.sectionTitle}
+                  className={cx(DS.text.sectionTitle, "flex items-center gap-1.5")}
                 >
                   {checklist.showCompleted ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   <Check size={14} />
@@ -221,7 +219,7 @@ export default function DashboardChecklist({
         )}
       </div>
       {bounded && checklist.sortedOpenChecklistItems.length > 6 && (
-        <button type="button" aria-expanded={showAllActions} className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => setShowAllActions((value) => !value)}>
+        <button type="button" aria-expanded={showAllActions} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => setShowAllActions((value) => !value)}>
           {showAllActions ? "Show fewer Actions" : `Show all ${checklist.sortedOpenChecklistItems.length} Actions`}
         </button>
       )}

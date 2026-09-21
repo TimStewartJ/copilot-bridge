@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import type { SessionModelSwitchConfirmation } from "../api";
+import { DS, cx } from "../design/tokens";
 
 export const MODEL_SWITCH_COMPACTION_TITLE = "Compact conversation before switching?";
 
@@ -36,7 +37,7 @@ export default function ModelSwitchCompactionPrompt({
 
   return (
     <div
-      className="w-full max-w-md bg-bg-secondary border border-border rounded-lg shadow-xl p-4 space-y-4"
+      className={"w-full max-w-md bg-bg-secondary border border-border rounded-lg p-4 space-y-4"}
       onClick={(event) => event.stopPropagation()}
     >
       <div>
@@ -52,7 +53,7 @@ export default function ModelSwitchCompactionPrompt({
       )}
 
       {error && (
-        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
           {error}
         </div>
       )}
@@ -60,7 +61,7 @@ export default function ModelSwitchCompactionPrompt({
       <div className="flex justify-end gap-2">
         <button
           type="button"
-          className="rounded-md border border-border px-3 py-2 text-sm font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "border border-border disabled:opacity-50")}
           onClick={onKeepCurrentModel}
           disabled={compacting}
         >
@@ -68,7 +69,7 @@ export default function ModelSwitchCompactionPrompt({
         </button>
         <button
           type="button"
-          className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}
           onClick={onCompact}
           disabled={compacting}
         >

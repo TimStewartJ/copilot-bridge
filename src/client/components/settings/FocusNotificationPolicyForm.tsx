@@ -8,6 +8,7 @@ import {
   type FocusNotificationPolicy,
 } from "../../../shared/focus-notification-policy.js";
 import { useSettingsMutation, useSettingsQuery } from "../../hooks/queries/useSettings";
+import { DS, cx } from "../../design/tokens";
 
 interface PolicyDraft {
   timezone: string;
@@ -99,8 +100,8 @@ function validatePolicy(draft: PolicyDraft): { policy: FocusNotificationPolicy |
   };
 }
 
-const inputClassName = "min-h-11 w-full min-w-0 rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50";
-const buttonClassName = "min-h-11 rounded-md px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50";
+const inputClassName = cx(DS.field.input, DS.field.inputSize.md, DS.focus, "min-h-11 min-w-0");
+const buttonClassName = cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "disabled:opacity-50");
 
 export function FocusNotificationPolicyForm() {
   const settingsQuery = useSettingsQuery();
@@ -172,7 +173,7 @@ export function FocusNotificationPolicyForm() {
   const errors = editor?.errors ?? {};
 
   return (
-    <div className="mt-4 space-y-4 rounded-md border border-border bg-bg-elevated p-4">
+    <div className={cx(DS.layout.formGroup, "mt-4")}>
       <div>
         <h3 id={`${id}-heading`} className="text-sm font-medium text-text-primary">Focus delivery policy</h3>
         <p className="mt-1 text-xs text-text-muted">
@@ -182,7 +183,7 @@ export function FocusNotificationPolicyForm() {
       </div>
 
       {settingsQuery.error && (
-        <div className="space-y-2 rounded-md border border-error/25 bg-error/10 p-3">
+        <div className={cx(DS.notice.surface, "space-y-2 p-3")}>
           <p role="alert" className="text-xs text-error">
             Could not load Focus delivery policy: {settingsQuery.error.message}
             {editor ? " Showing the last loaded policy; unsaved edits are preserved." : ""}
@@ -191,7 +192,7 @@ export function FocusNotificationPolicyForm() {
             type="button"
             onClick={() => void settingsQuery.refetch()}
             disabled={settingsQuery.isFetching}
-            className={`${buttonClassName} bg-bg-surface text-text-secondary hover:bg-bg-hover`}
+            className={cx(buttonClassName, "bg-bg-surface text-text-secondary hover:bg-bg-hover")}
           >
             {settingsQuery.isFetching ? "Retrying…" : "Retry policy loading"}
           </button>
@@ -264,7 +265,7 @@ export function FocusNotificationPolicyForm() {
                   checked={draft.quietHoursEnabled}
                   onChange={(event) => updateDraft({ quietHoursEnabled: event.target.checked })}
                   aria-describedby={`${id}-quiet-help`}
-                  className="h-4 w-4 accent-accent"
+                  className={DS.control.checkbox}
                 />
                 Use quiet hours
               </label>
@@ -332,7 +333,7 @@ export function FocusNotificationPolicyForm() {
                   onChange={(event) => updateDraft({ enableAuthorizedImmediate: event.target.checked })}
                   aria-labelledby={`${id}-immediate-label`}
                   aria-describedby={`${id}-immediate-help`}
-                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                  className={cx(DS.control.checkbox, "mt-0.5 shrink-0")}
                 />
                 <span>
                   <span id={`${id}-immediate-label`} className="font-medium">Allow authorized immediate Focus alerts</span>
@@ -349,7 +350,7 @@ export function FocusNotificationPolicyForm() {
                   onChange={(event) => updateDraft({ allowGrantQuietHoursOverride: event.target.checked })}
                   aria-labelledby={`${id}-override-label`}
                   aria-describedby={`${id}-override-help`}
-                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                  className={cx(DS.control.checkbox, "mt-0.5 shrink-0")}
                 />
                 <span>
                   <span id={`${id}-override-label`} className="font-medium">Allow grant-authorized quiet-hours override</span>
@@ -368,7 +369,7 @@ export function FocusNotificationPolicyForm() {
           {editor.feedback && (
             <p
               role={editor.feedback.tone === "error" ? "alert" : "status"}
-              className={`text-xs ${editor.feedback.tone === "error" ? "text-error" : "text-success"}`}
+              className={cx("text-xs", editor.feedback.tone === "error" ? "text-error" : "text-success")}
             >
               {editor.feedback.message}
             </p>
@@ -377,7 +378,7 @@ export function FocusNotificationPolicyForm() {
             <button
               type="submit"
               disabled={!dirty || saving}
-              className={`${buttonClassName} inline-flex items-center gap-1.5 bg-accent text-white hover:bg-accent-hover`}
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary)}
             >
               {saving && <Loader2 size={12} aria-hidden="true" className="animate-spin" />}
               {saving ? "Saving policy…" : "Save policy"}
@@ -386,7 +387,7 @@ export function FocusNotificationPolicyForm() {
               type="button"
               onClick={discard}
               disabled={!dirty || saving}
-              className={`${buttonClassName} bg-bg-surface text-text-secondary hover:bg-bg-hover`}
+              className={cx(buttonClassName, "bg-bg-surface text-text-secondary hover:bg-bg-hover")}
             >
               Discard changes
             </button>
@@ -394,7 +395,7 @@ export function FocusNotificationPolicyForm() {
               type="button"
               onClick={() => updateDraft(policyDraft())}
               disabled={saving}
-              className={`${buttonClassName} text-text-muted hover:bg-bg-hover`}
+              className={cx(buttonClassName, "text-text-muted hover:bg-bg-hover")}
             >
               Use defaults
             </button>

@@ -151,7 +151,7 @@ describe("design audit", () => {
     expect(result.pendingFiles).toBe(DESIGN_AUDIT_PENDING.length);
   });
 
-  it("keeps the pending list sorted and free of duplicates", () => {
-    expect([...DESIGN_AUDIT_PENDING]).toEqual([...new Set(DESIGN_AUDIT_PENDING)].sort());
+  it("holds every runtime screen to the design system without grandfathered exceptions", () => {
+    expect(DESIGN_AUDIT_PENDING).toEqual([]);
   });
 });

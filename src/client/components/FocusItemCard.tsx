@@ -3,7 +3,8 @@ import { ApiError, fetchFocusLaunchReceiptById, type FocusObject } from "../api"
 import { useFocusLaunchReceiptsQuery } from "../hooks/queries/useFocus";
 import FocusCard from "./FocusCard";
 import { FocusInteractionProvider, useFocusInteractions, type FocusInteractionProps } from "./FocusInteractions";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 interface FocusItemCardProps extends FocusInteractionProps {
   object: FocusObject;
@@ -48,15 +49,15 @@ function ConnectedFocusItem({ object, compact = false, readOnly = false }: Focus
       onInspectHistory={interactions.onInspectHistory} snapshot={interactions.snapshot} nowMs={interactions.nowMs}
     />
     {expanded && receipts.error && <p role="alert" className="mt-2 text-xs text-error">Saved launch receipts unavailable: {receipts.error.message}
-      <button type="button" className="ml-2 min-h-11 underline" onClick={() => void receipts.refetch()}>Retry launch receipts</button>
+      <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-2 underline")} onClick={() => void receipts.refetch()}>Retry launch receipts</button>
     </p>}
     {expanded && receipts.data?.map((receipt) => <div key={receipt.id} className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-border p-2 text-xs text-text-muted">
       <span>{receipt.source === "discussion" ? "Discussion" : "Prompt launch"}: {receipt.status}. Source resolution is separate.</span>
-      {receipt.sessionId && <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`}
+      {receipt.sessionId && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")}
         onClick={() => interactions.onSelectSession(receipt.sessionId!, receipt.taskId ?? undefined)}>
         {receipt.source === "discussion" ? "Open discussion session" : "Open launch session"}
       </button>}
-      {!readOnly && <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => interactions.launch(object, receipt.source)}>Review launch receipt</button>}
+      {!readOnly && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => interactions.launch(object, receipt.source)}>Review launch receipt</button>}
     </div>)}
   </div>;
 }

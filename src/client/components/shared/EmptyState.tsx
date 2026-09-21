@@ -1,4 +1,6 @@
 import { Plus } from "lucide-react";
+import { Button, EmptyHint } from "../../design/primitives";
+import { DS, cx } from "../../design/tokens";
 
 interface EmptyStateProps {
   message: string;
@@ -9,17 +11,13 @@ interface EmptyStateProps {
 
 export default function EmptyState({ message, sub, action, actionLabel }: EmptyStateProps) {
   return (
-    <div className="text-center py-6 px-4 rounded-md bg-bg-surface border border-border">
-      <div className="text-sm text-text-muted">{message}</div>
-      <div className="text-xs text-text-faint mt-1">{sub}</div>
+    <div className="px-4 py-6 text-center">
+      <EmptyHint>{message}</EmptyHint>
+      <p className={cx(DS.field.help, "mt-1")}>{sub}</p>
       {action && actionLabel && (
-        <button
-          onClick={action}
-          className="mt-3 text-xs text-accent hover:text-accent-hover flex items-center gap-1 mx-auto"
-        >
-          <Plus size={12} />
+        <Button onClick={action} variant="ghost" size="sm" icon={<Plus size={12} />} className="mx-auto mt-3">
           {actionLabel}
-        </button>
+        </Button>
       )}
     </div>
   );

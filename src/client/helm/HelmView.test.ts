@@ -221,7 +221,7 @@ describe("HelmView", () => {
   it("enters hands-free on the same conversation and docks it above the composer", async () => {
     state.helm = helmState({ current: conversation({}) });
     await render();
-    const toggle = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === false && buttonProps.className?.includes("rounded-full"));
+    const toggle = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === false && buttonProps["aria-label"] === "Hands-free");
     await harness.act(() => toggle.onClick());
     expect(handsFree.start).toHaveBeenCalledWith(SESSION_A);
 
@@ -255,7 +255,7 @@ describe("HelmView", () => {
     state.helm = helmState({ current: conversation({}) });
     handsFree.status = { install: { installed: false } };
     await render();
-    const toggle = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === false && buttonProps.className?.includes("rounded-full"));
+    const toggle = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === false && buttonProps["aria-label"] === "Hands-free");
     await harness.act(() => toggle.onClick());
     expect(handsFree.start).not.toHaveBeenCalled();
     expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.["data-setup"])).toBe(true);

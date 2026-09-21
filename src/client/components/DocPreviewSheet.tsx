@@ -11,6 +11,7 @@ import { stripLeadingTitle } from "./docs/docs-model";
 import { APP_PROSE } from "./shared/prose-classes";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx } from "../design/tokens";
 
 interface DocPreviewSheetProps {
   docPath: string;
@@ -41,7 +42,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
       {/* Sheet */}
       <div
         {...dialogProps}
-        className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+        className={cx(DS.surface.dialog, "relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] rounded-t-2xl md:rounded-xl flex flex-col")}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
@@ -52,7 +53,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => { onClose(); navigate(`/docs/${docPath}`); }}
-              className="text-text-muted hover:text-accent transition-colors flex items-center gap-1 text-xs"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "hover:text-accent gap-1")}
               title="Open in Docs"
             >
               <ExternalLink size={13} />
@@ -60,7 +61,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
             </button>
             <button
               onClick={onClose}
-              className="text-text-muted hover:text-text-secondary transition-colors"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
               aria-label="Close"
             >
               <X size={16} />
@@ -88,7 +89,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
             <div className="text-center py-8 text-error text-sm">{error}</div>
           )}
           {doc && !loading && (
-            <div className={`max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}
+            <div className={cx("max-w-none", APP_PROSE, "prose-pre:bg-bg-secondary prose-th:bg-bg-secondary")}
             >
               {/* Same line handling as the Docs reader: pages are hard-wrapped, and the sheet's
                   header already shows the title the body opens with. */}

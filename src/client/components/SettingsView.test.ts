@@ -166,7 +166,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   stubLocalStorage();
   settingsMocks.mutateAsync.mockReset();
-  settingsMocks.mutateAsync.mockImplementation(async (settings: AppSettings) => settings);
+  settingsMocks.mutateAsync.mockImplementation(async (settings: Partial<AppSettings>) => ({ ...savedSettings, ...settings }));
   settingsMocks.useSettingsMutation.mockReset();
   settingsMocks.useSettingsMutation.mockReturnValue({
     mutateAsync: settingsMocks.mutateAsync,
@@ -235,6 +235,24 @@ describe("SettingsView category persistence", () => {
 });
 
 describe("SettingsView save controls", () => {
+  it("keeps a pending tag query stable instead of copying a new empty array into state on every render", async () => {
+    settingsMocks.useTagsQuery.mockReturnValue({ data: undefined, isLoading: true });
+    const harness = await renderSettingsView();
+    expect(harness.dom.container.textContent).toContain("Loading tags");
+    expect(buttonsWithText(harness.dom.container, "Save")).toHaveLength(0);
+  });
+
+  it("distinguishes a failed tag read from an empty tag list and offers retry", async () => {
+    const refetch = vi.fn();
+    settingsMocks.useTagsQuery.mockReturnValue({ data: undefined, error: new Error("Tag read unavailable"), refetch });
+    const harness = await renderSettingsView();
+    expect(harness.dom.container.textContent).toContain("Tags could not load");
+    expect(harness.dom.container.textContent).toContain("Tag read unavailable");
+    expect(harness.dom.container.textContent).not.toContain("Loading tags");
+    await harness.act(async () => { getReactProps(buttonWithText(harness.dom.container, "Retry tags"))?.onClick?.(); });
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
   it("does not overwrite independently saved Focus delivery policy with a stale general draft", async () => {
     const oldPolicy = { ...DEFAULT_FOCUS_NOTIFICATION_POLICY, timezone: "UTC" };
     settingsMocks.useSettingsQuery.mockReturnValue({ data: { ...savedSettings, focusNotifications: oldPolicy }, isLoading: false });
@@ -294,15 +312,17 @@ describe("SettingsView save controls", () => {
 
     const savingButton = buttonWithText(harness.dom.container, "Saving…");
     expect(buttonsWithText(harness.dom.container, "Discard")).toHaveLength(1);
+    expect(getReactProps(buttonWithText(harness.dom.container, "Discard"))?.disabled).toBe(true);
     expect(getReactProps(savingButton)?.disabled).toBe(true);
     expect(settingsMocks.mutateAsync).toHaveBeenCalledTimes(1);
+    expect(settingsMocks.mutateAsync).toHaveBeenCalledWith({ identity: "saved-changed" });
 
     const submittedSettings = settingsMocks.mutateAsync.mock.calls[0][0] as AppSettings;
     const completeSave = resolveSave;
     const pendingSave = savePromise;
     if (!completeSave || !pendingSave) throw new Error("Pending save was not initialized");
     await harness.act(async () => {
-      completeSave(submittedSettings);
+      completeSave({ ...savedSettings, ...submittedSettings });
       await pendingSave;
     });
 
@@ -329,5 +349,19 @@ describe("SettingsView save controls", () => {
     expect(feedbackWithRole(harness.dom.container, "alert").textContent).toBe(
       "Save failed: offline",
     );
+  });
+
+  it("shows initial fetch failure with retry instead of an endless loading shell", async () => {
+    const refetch = vi.fn();
+    settingsMocks.useSettingsQuery.mockReturnValue({ data: undefined, isLoading: false, error: new Error("Settings offline"), refetch });
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(MemoryRouter, null, createElement(SettingsView)));
+      expect(harness.dom.container.textContent).toContain("Settings could not load");
+      expect(harness.dom.container.textContent).toContain("Settings offline");
+      await harness.act(async () => { getReactProps(buttonWithText(harness.dom.container, "Retry"))?.onClick?.(); });
+      expect(refetch).toHaveBeenCalledOnce();
+      expect(buttonsWithText(harness.dom.container, "Save")).toHaveLength(0);
+    } finally { await harness.cleanup(); }
   });
 });

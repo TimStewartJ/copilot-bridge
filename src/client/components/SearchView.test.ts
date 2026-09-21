@@ -156,9 +156,10 @@ describe("SearchView", () => {
     });
     await advanceTimersByTimeAct(rendered.act, 500);
     expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "needle", kind: "task" }), expect.any(Object));
-    expect(rendered.dom.container.textContent).toContain("type:task");
-    const chip = findAllByTag(rendered.dom.container, "BUTTON").find((node) => getReactProps(node)?.["aria-label"] === "Remove type filter");
-    await rendered.act(async () => { getReactProps(chip)?.onClick?.(); });
+    const source = findAllByTag(rendered.dom.container, "BUTTON").find((node) => node.textContent === "Tasks");
+    expect(getReactProps(source)?.["aria-pressed"]).toBe(true);
+    const all = findAllByTag(rendered.dom.container, "BUTTON").find((node) => node.textContent === "All");
+    await rendered.act(async () => { getReactProps(all)?.onClick?.(); });
     expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "needle", kind: "all" }), expect.any(Object));
   });
 
@@ -175,6 +176,27 @@ describe("SearchView", () => {
       getReactProps(dialog)?.onKeyDown?.({ key: "Tab", preventDefault: vi.fn() });
     });
     expect(document.activeElement).toBe(close);
+  });
+
+  it("keeps the query and source controls outside the sole results scroller", async () => {
+    const rendered = await render("/search");
+    const scroll = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.["data-testid"] === "search-scroll");
+    const dialog = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.role === "dialog");
+    expect(getReactProps(dialog)?.className).toContain("overflow-hidden");
+    expect(findAllByTag(scroll, "INPUT")).toHaveLength(0);
+    expect(findAllByTag(scroll, "BUTTON").filter((node) => node.textContent === "All")).toHaveLength(0);
+    expect(rendered.dom.container.textContent).toContain("Find something you saved");
+    expect(searchBridgeMock).not.toHaveBeenCalled();
+  });
+
+  it("switches source without losing text or task scope and resets pagination", async () => {
+    searchBridgeMock.mockResolvedValue(response());
+    const rendered = await render("/search?q=release&scope=task&taskId=task-1&offset=20");
+    const docs = findAllByTag(rendered.dom.container, "BUTTON").find((node) => node.textContent === "Docs");
+    await rendered.act(async () => { getReactProps(docs)?.onClick?.(); });
+    expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      q: "release", scope: "task", taskId: "task-1", kind: "doc", offset: 0,
+    }), expect.any(Object));
   });
 
   it("debounces search into a URL replace and hides stale results while the new request loads", async () => {
@@ -216,7 +238,7 @@ describe("SearchView", () => {
 
     const input = findAllByTag(rendered.dom.container, "INPUT")[0];
     const searchRoot = findAllByTag(rendered.dom.container, "DIV").find(
-      (candidate) => getReactProps(candidate)?.["data-testid"] === "search-scroll",
+      (candidate) => getReactProps(candidate)?.["data-testid"] === "search-layout",
     );
     await rendered.act(async () => {
       getReactProps(input)?.onChange?.({ target: { value: "pending" } });

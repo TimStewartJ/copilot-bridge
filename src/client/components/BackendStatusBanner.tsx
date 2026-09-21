@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
 import type { AgentBackendStatus } from "../../shared/agent-backend-status.js";
 import type { BackendStatusBannerView } from "../lib/backend-status-banner-state";
+import { IconButton, Notice } from "../design/primitives";
 
 interface Props {
   banner: BackendStatusBannerView;
@@ -9,38 +10,20 @@ interface Props {
 
 export default function BackendStatusBanner({ banner, onDismiss }: Props) {
   const { title, detail } = describeBackendStatusBanner(banner.status);
-  const styles = banner.variant === "success"
-    ? {
-        wrapper: "border-success/30 bg-success/10 text-success",
-        icon: <CheckCircle2 size={16} />,
-      }
-    : banner.variant === "error"
-      ? {
-          wrapper: "border-error/30 bg-error/10 text-error",
-          icon: <AlertTriangle size={16} />,
-        }
-      : {
-          wrapper: "border-warning/30 bg-warning/10 text-warning",
-          icon: <Loader2 size={16} className="animate-spin" />,
-        };
+  const tone = banner.variant === "error" ? "danger" : banner.variant === "success" ? "success" : "warning";
+  const icon = banner.variant === "success" ? <CheckCircle2 size={16} />
+    : banner.variant === "error" ? <AlertTriangle size={16} /> : <Loader2 size={16} className="animate-spin" />;
 
   return (
-    <div className={`shrink-0 border-b px-4 py-3 text-sm ${styles.wrapper}`}>
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 shrink-0">{styles.icon}</div>
-        <div className="min-w-0 flex-1">
-          <div className="font-semibold">{title}</div>
-          <div className="opacity-90">{detail}</div>
-        </div>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="rounded p-1 opacity-70 transition hover:bg-black/5 hover:opacity-100"
-          aria-label="Dismiss agent backend status"
-        >
-          <X size={14} />
-        </button>
-      </div>
+    <div className="shrink-0 border-b border-border px-3 py-2 sm:px-4">
+      <Notice
+        tone={tone}
+        icon={icon}
+        title={title}
+        action={<IconButton onClick={onDismiss} label="Dismiss agent backend status"><X size={14} /></IconButton>}
+      >
+        {detail}
+      </Notice>
     </div>
   );
 }

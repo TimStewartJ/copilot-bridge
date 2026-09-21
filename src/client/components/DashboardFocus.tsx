@@ -12,12 +12,12 @@ import FocusDigestSection from "./FocusDigestSection";
 import FocusHistorySection from "./FocusHistorySection";
 import FocusItemCard from "./FocusItemCard";
 import { FocusInteractionProvider, type FocusInteractionProps } from "./FocusInteractions";
-import { UI } from "./shared/design-system";
 import type { FocusSubjectTarget } from "../lib/focus-subject-links";
 import FocusSubjectDialog from "./FocusSubjectDialog";
 import FocusQuietSources from "./FocusQuietSources";
 import FocusDialog from "./FocusDialog";
 import { useMediaQuery } from "../useIsMobile";
+import { DS, cx } from "../design/tokens";
 
 export const FOCUS_WIDE_PREVIEW_QUERY = "(min-width: 1280px)";
 
@@ -88,25 +88,25 @@ function FocusObjectSection({ title, objects, total, health, hasMore, loadingMor
   const previewLimit = wide ? 3 : 1;
   const problem = focusQueryProblem(title, health, nowMs);
   const preview = showAll ? objects : objects.slice(0, previewLimit);
-  return <section id={`focus-${title.toLowerCase()}`} data-dashboard-panel={title.toLowerCase()} data-focus-preview={showAll ? "expanded" : "bounded"} data-priority-preview-limit={previewLimit} className={`${FOCUS_DASHBOARD_PANEL_CLASS} focus-priority-preview`}>
+  return <section id={`focus-${title.toLowerCase()}`} data-dashboard-panel={title.toLowerCase()} data-focus-preview={showAll ? "expanded" : "bounded"} data-priority-preview-limit={previewLimit} className={cx(FOCUS_DASHBOARD_PANEL_CLASS, "focus-priority-preview")}>
     <h3 className="flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">{title === "Alerts" ? <AlertTriangle size={15} /> : <Inbox size={15} />}{title} <span className="text-text-faint">({total ?? "unknown"})</span></h3>
     <p className="mt-1 text-xs text-text-muted">{title === "Alerts" ? "Conditions, evidence, and useful intervention time." : "Exact questions, consequences, and no-response behavior."}</p>
     {problem && <div role={health.error ? "alert" : "status"} className="mt-3 rounded-lg border border-warning/25 p-3 text-xs text-warning">
       {problem}.{health.error instanceof Error ? ` ${health.error.message}` : ""}
-      <button type="button" className={`${UI.button.secondary} ml-2 min-h-11 text-xs`} onClick={onRetry}>Retry {title}</button>
+      <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "ml-2 text-xs")} onClick={onRetry}>Retry {title}</button>
     </div>}
     <div className="mt-3 space-y-3">
       {health.loading && objects.length === 0 ? <p className="text-sm text-text-muted">Loading {title.toLowerCase()}...</p>
         : objects.length === 0 && !problem ? <p className="text-sm text-text-muted">No {title.toLowerCase()} in the checked attention scope.</p>
-          : <ol aria-label={`${title} priority previews`} className="space-y-3">
+          : <ol aria-label={`${title} priority previews`} className={DS.surface.divided}>
             {preview.map((object) => <li key={object.id}><FocusItemCard object={object} compact {...interactions} /></li>)}
           </ol>}
     </div>
     {(objects.length > previewLimit || hasMore) && <div className="mt-3 space-y-2 border-t border-border pt-3">
       <p className="text-xs text-text-faint">Showing {preview.length} of {total ?? "an unknown number of"} {title.toLowerCase()}. Previews are bounded on mobile and desktop; no records are discarded.</p>
       <div className="flex flex-wrap gap-2">
-        {objects.length > previewLimit && <button type="button" aria-expanded={showAll} className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => setShowAll((value) => !value)}>{showAll ? `Show fewer ${title.toLowerCase()}` : `Show all ${objects.length} loaded ${title.toLowerCase()}`}</button>}
-        {hasMore && <button type="button" disabled={loadingMore} className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => { setShowAll(true); onLoadMore(); }}>{loadingMore ? "Loading..." : `Load more ${title.toLowerCase()}`}</button>}
+        {objects.length > previewLimit && <button type="button" aria-expanded={showAll} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => setShowAll((value) => !value)}>{showAll ? `Show fewer ${title.toLowerCase()}` : `Show all ${objects.length} loaded ${title.toLowerCase()}`}</button>}
+        {hasMore && <button type="button" disabled={loadingMore} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => { setShowAll(true); onLoadMore(); }}>{loadingMore ? "Loading..." : `Load more ${title.toLowerCase()}`}</button>}
       </div>
     </div>}
   </section>;
@@ -116,7 +116,7 @@ function DigestList({ digests, ...props }: FocusInteractionProps & { digests: Fo
   const [showAll, setShowAll] = useState(false);
   return <div className="space-y-3">
     <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">{(showAll ? digests : digests.slice(0, 6)).map((digest) => <FocusDigestSection key={digest.id} digest={digest} {...props} />)}</div>
-    {digests.length > 6 && <button type="button" aria-expanded={showAll} className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => setShowAll((value) => !value)}>{showAll ? "Show fewer sources" : `Show all ${digests.length} sources`}</button>}
+    {digests.length > 6 && <button type="button" aria-expanded={showAll} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => setShowAll((value) => !value)}>{showAll ? "Show fewer sources" : `Show all ${digests.length} sources`}</button>}
   </div>;
 }
 
@@ -194,7 +194,7 @@ export default function DashboardFocus({
         onInspectHandoffs={() => inspectHistory({ lifecycle: "handed_off" })}
         dueFollowUpCount={dueFollowUps.length} state={assessment.state === "clear" && (attentionCount ?? 0) > 0 ? "complete" : assessment.state}
         problems={assessment.problems} generatedAt={focusSnapshot?.generatedAt} onRetry={() => void onRetryFocus()} />
-      <section id="focus-next-intervention" data-dashboard-panel="next-intervention" className={`${FOCUS_DASHBOARD_PANEL_CLASS} border-info-border`}>
+      <section id="focus-next-intervention" data-dashboard-panel="next-intervention" className={FOCUS_DASHBOARD_PANEL_CLASS}>
         <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary"><Clock3 size={15} />Next intervention</h3>
         {next ? <div className="mt-2 space-y-2 text-sm text-text-secondary">
           <p className="font-medium">{next.title}</p>
@@ -203,7 +203,7 @@ export default function DashboardFocus({
           <p className={Date.parse(next.at) <= nowMs ? "text-warning" : ""}>{Date.parse(next.at) <= nowMs ? "Intervention time reached / passed: " : "Intervene by: "}{focusTime(next.at)}</p>
           {nextObject?.details.consequenceOfDelay && <p>Waiting: {nextObject.details.consequenceOfDelay}</p>}
           {nextObject?.details.fallback && <p>No response: {nextObject.details.fallback}</p>}
-          <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => next.coverage
+          <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => next.coverage
             ? document.getElementById("focus-coverage")?.scrollIntoView({ block: "start" })
             : inspectSubject({ objectId: next.id, activationId: next.activationId })}>Review intervention</button>
           {windows.length > 1 && <p className="text-xs text-text-muted">{windows.length - 1} further known windows remain in coverage and record details.</p>}
@@ -211,7 +211,7 @@ export default function DashboardFocus({
         </div> : <p className="mt-2 text-sm text-text-muted">{assessment.state === "partial" ? "Next intervention unknown until the affected checks recover." : "No intervention window is currently admitted for review in the checked sources."}</p>}
         {(overdueHandoffTotal ?? 0) > 0 && <div className="mt-3 text-xs text-warning">
           <p>{overdueHandoffTotal} handed-off concerns require overdue review. Snapshot details are bounded; History retains all handed-off work.</p>
-          <button type="button" className="min-h-11 underline" onClick={() => inspectHistory({ lifecycle: "handed_off" })}>Inspect handed-off History</button>
+          <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "underline")} onClick={() => inspectHistory({ lifecycle: "handed_off" })}>Inspect handed-off History</button>
         </div>}
       </section>
       <FocusAuditWarning exceptions={focusSnapshot?.auditExceptions ?? []} observedAt={focusSnapshot?.generatedAt} onInspectHistory={interactions.onInspectHistory!} />
@@ -224,8 +224,8 @@ export default function DashboardFocus({
           <FocusObjectSection title="Decisions" objects={decisions} total={decisionTotal} health={health.Decisions} hasMore={decisionsHasMore} loadingMore={decisionsLoadingMore}
             onLoadMore={() => void onLoadMoreDecisions()} onRetry={() => void onRetryFocus()} nowMs={nowMs} {...interactions} />
         </div>
-        <section id="focus-actions" data-dashboard-panel="actions" className={`${FOCUS_DASHBOARD_PANEL_CLASS} xl:col-span-8`}>
-          {actionProblem && <div role={actionsError ? "alert" : "status"} className="mb-3 text-sm text-warning">{actionProblem}. <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => void onRefresh()}>Retry Actions</button></div>}
+        <section id="focus-actions" data-dashboard-panel="actions" className={cx(FOCUS_DASHBOARD_PANEL_CLASS, "xl:col-span-8")}>
+          {actionProblem && <div role={actionsError ? "alert" : "status"} className="mb-3 text-sm text-warning">{actionProblem}. <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => void onRefresh()}>Retry Actions</button></div>}
           {actionsLoading && checklist.localOpenChecklistItems.length === 0 ? <p className="text-sm text-text-muted">Loading Actions...</p>
             : !actionsError || checklist.localOpenChecklistItems.length > 0 || checklist.localCompletedChecklistItems.length > 0
               ? <DashboardChecklist active embedded bounded heading="Actions" checklist={checklist} onSelectTask={onSelectTask} onInspectFocusObject={interactions.onInspectHistory} />
@@ -238,7 +238,7 @@ export default function DashboardFocus({
       <section data-dashboard-panel="digests" className={FOCUS_DASHBOARD_PANEL_CLASS}>
         <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary"><Layers3 size={15} />Active digests</h3>
         <p className="mt-1 text-xs text-text-muted">Recent observations and pinned Events, grouped by source. No obligation to clear them. Horizon: 7 days plus pinned records.</p>
-        {digestUnknown && <p role={focusError ? "alert" : "status"} className="mt-3 text-xs text-warning">{focusLoading ? "Loading event digests..." : "Digest state unavailable or incomplete; any shown sources are the last loaded view."} <button type="button" className={`${UI.button.secondary} min-h-11`} onClick={() => void onRetryFocus()}>Retry digests</button></p>}
+        {digestUnknown && <p role={focusError ? "alert" : "status"} className="mt-3 text-xs text-warning">{focusLoading ? "Loading event digests..." : "Digest state unavailable or incomplete; any shown sources are the last loaded view."} <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)} onClick={() => void onRetryFocus()}>Retry digests</button></p>}
         <div className="mt-4">{digests.length > 0 ? <DigestList digests={digests} {...interactions} /> : !digestUnknown && <p className="text-sm text-text-muted">No active-source Events in this horizon. This does not establish coverage.</p>}</div>
       </section>
       <FocusQuietSources snapshot={focusSnapshot} {...interactions} />

@@ -4,6 +4,7 @@ import type { AppSettings, GitHubProviderConfig, LinearProviderConfig, Providers
 import { SettingsSection } from "./SettingsSection";
 import { ConfigCard } from "./ConfigCard";
 import { ProviderEditor, type ProviderEditorField } from "./ProviderEditor";
+import { DS, cx } from "../../design/tokens";
 
 const ADO_FIELDS: ProviderEditorField[] = [
   { key: "org", label: "Organization", placeholder: "e.g. my-org", required: true },
@@ -63,14 +64,14 @@ export function ProvidersSection({
   };
 
   const configuredBadge = (
-    <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
+    <span className={cx(DS.badge.base, "bg-success/15 text-success flex items-center gap-0.5")}>
       <Check size={10} />
       configured
     </span>
   );
 
   const notConfiguredBadge = (
-    <span className="text-[10px] px-1.5 py-0.5 bg-bg-surface text-text-faint rounded-full">
+    <span className={cx(DS.badge.base, "bg-bg-surface text-text-faint")}>
       not configured
     </span>
   );
@@ -78,14 +79,14 @@ export function ProvidersSection({
   // GitHub enrichment works without settings, so its badge reports whether
   // defaults for short refs exist rather than whether the provider is usable.
   const githubDefaultsBadge = (
-    <span className="text-[10px] px-1.5 py-0.5 bg-success/15 text-success rounded-full flex items-center gap-0.5">
+    <span className={cx(DS.badge.base, "bg-success/15 text-success flex items-center gap-0.5")}>
       <Check size={10} />
       defaults set
     </span>
   );
 
   const githubNoDefaultsBadge = (
-    <span className="text-[10px] px-1.5 py-0.5 bg-bg-surface text-text-faint rounded-full">
+    <span className={cx(DS.badge.base, "bg-bg-surface text-text-faint")}>
       no defaults
     </span>
   );

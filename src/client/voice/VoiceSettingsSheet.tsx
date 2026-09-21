@@ -4,6 +4,7 @@ import { useModelsQuery } from "../hooks/queries/useModels";
 import { REASONING_EFFORT_LEVELS, resolveSupportedReasoningEffort, sortReasoningEfforts } from "../../shared/reasoning-effort";
 import type { VoiceModeController } from "./useVoiceMode";
 import type { VoiceSettings } from "./voice-api";
+import { DS, cx } from "../design/tokens";
 
 export interface HelmModelPreference {
   value: string;
@@ -64,9 +65,9 @@ export function VoiceSettingsSheet({
     accent,
     voices: (status?.voices ?? []).filter((voice) => voice.accent === accent),
   }));
-  const label = "text-[11px] font-medium uppercase tracking-wide text-text-muted";
+  const label = cx(DS.text.sectionLabel, "font-medium text-text-muted");
   const help = "mt-1 text-[11px] text-text-faint";
-  const field = "w-full min-w-0 appearance-none truncate rounded-lg border border-border bg-bg-surface py-2 pl-2.5 pr-9 text-base text-text-primary sm:text-sm";
+  const field = cx(DS.field.input, DS.field.inputSize.md, "min-w-0 appearance-none truncate pl-2.5 pr-9 sm:text-sm");
   const selectArrow = <ChevronDown size={16} aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-text-muted" />;
 
   return (
@@ -80,7 +81,7 @@ export function VoiceSettingsSheet({
       >
         <div className="flex shrink-0 items-center justify-between px-5 pt-5" style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
           <div className="text-sm font-semibold">Helm settings</div>
-          <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary">
+          <button type="button" onClick={onClose} aria-label="Close settings" className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}>
             <X size={16} />
           </button>
         </div>

@@ -28,6 +28,7 @@ import {
   type EntryFormValues,
   type PageDraftFields,
 } from "./docs-model";
+import { DS } from "../../design/tokens";
 
 const DRAFT_SAVE_DELAY_MS = 500;
 /** The preview re-renders the whole document; on a long page that must wait for a pause in typing. */
@@ -359,10 +360,7 @@ export default function DocsEditor({ page, schema, onClose }: DocsEditorProps) {
                   type="button"
                   aria-pressed={effectiveMode === option}
                   onClick={() => setMode(option)}
-                  className={cx(
-                    "inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors",
-                    effectiveMode === option ? "bg-bg-hover text-text-primary shadow-sm" : "text-text-muted hover:text-text-primary",
-                  )}
+                  className={cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "gap-1.5", effectiveMode === option ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "bg-bg-hover text-text-primary") : cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "text-text-muted hover:text-text-primary"))}
                 >
                   <Icon size={13} />
                   {label}
@@ -373,10 +371,7 @@ export default function DocsEditor({ page, schema, onClose }: DocsEditorProps) {
 
           <div
             ref={editorCardRef}
-            className={cx(
-              "rounded-xl border border-border bg-bg-primary [overflow:clip]",
-              effectiveMode === "split" && "grid grid-cols-2 divide-x divide-border",
-            )}
+            className={cx("rounded-xl border border-border bg-bg-primary [overflow:clip]", effectiveMode === "split" && "grid grid-cols-2 divide-x divide-border")}
           >
             {effectiveMode !== "preview" && (
               <MarkdownEditor id={bodyId} value={draft.body} disabled={saving} textareaRef={textareaRef} onSave={() => void save()} onChange={(body) => setDraft((current) => ({ ...current, body }))} />

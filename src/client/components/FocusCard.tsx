@@ -11,9 +11,10 @@ import { timeAgo } from "../time";
 import CodeBlock from "./CodeBlock";
 import VisualArtifactCard from "./VisualArtifactCard";
 import { APP_PROSE } from "./shared/prose-classes";
-import { UI } from "./shared/design-system";
 import type { FocusLifecycleIntent } from "./FocusLifecycleDialog";
 import FocusEvidenceValidity from "./FocusEvidenceValidity";
+import { DS, cx } from "../design/tokens";
+import { Badge } from "../design/primitives";
 
 interface FocusCardProps {
   card: FocusObject;
@@ -33,7 +34,7 @@ interface FocusCardProps {
   onInspectHistory?: (id: string) => void;
 }
 
-const BUTTON = `${UI.button.secondary} inline-flex min-h-11 min-w-0 items-center justify-center gap-1.5 text-xs focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50`;
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-w-0 gap-1.5");
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const SAFE_SCHEME = /^(https?|mailto|tel):/i;
 
@@ -44,7 +45,7 @@ function MarkdownLink({ href, node: _node, ...props }: ComponentPropsWithoutRef<
 }
 
 export function FocusMarkdown({ children }: { children: string }) {
-  return <div className={`max-w-none min-w-0 break-words text-sm leading-relaxed ${APP_PROSE} prose-pre:max-w-full prose-pre:overflow-x-auto prose-a:break-all`}>
+  return <div className={cx("max-w-none min-w-0 break-words text-sm leading-relaxed", APP_PROSE, "prose-pre:max-w-full prose-pre:overflow-x-auto prose-a:break-all")}>
     <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock, a: MarkdownLink }}>{children}</ReactMarkdown>
   </div>;
 }
@@ -53,7 +54,7 @@ export function FocusEvidenceList({ evidence }: { evidence: FocusEvidence[] }) {
   return evidence.length === 0
     ? <p className="text-xs text-warning">No supporting evidence provided; confidence is not established.</p>
     : <ul className="space-y-2">
-      {evidence.map((entry, index) => <li key={index} className="min-w-0 rounded-lg border border-border/60 p-2 text-text-muted">
+      {evidence.map((entry, index) => <li key={index} className={cx(DS.rail, "min-w-0 py-1 text-text-secondary")}>
         <FocusMarkdown>{typeof entry === "string" ? entry : entry.summary}</FocusMarkdown>
         {typeof entry !== "string" && entry.observedAt && <p className="mt-1 text-xs">Observed: <time dateTime={entry.observedAt}>{focusTime(entry.observedAt)}</time></p>}
         {typeof entry !== "string" && entry.url && <a href={entry.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1 text-xs text-accent underline">Open evidence <ExternalLink size={12} /></a>}
@@ -62,10 +63,10 @@ export function FocusEvidenceList({ evidence }: { evidence: FocusEvidence[] }) {
 }
 
 export function FocusLifecycleBadge({ lifecycle }: { lifecycle: FocusLifecycle }) {
-  const tone = lifecycle === "resolved" ? "border-success/25 text-success"
-    : lifecycle === "dismissed" ? "border-border text-text-muted"
-      : lifecycle === "accepted_risk" ? "border-warning/25 text-warning" : "border-info-border text-info";
-  return <span data-focus-lifecycle={lifecycle} className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}>{FOCUS_LIFECYCLE_LABELS[lifecycle]}</span>;
+  const tone = lifecycle === "resolved" ? "success"
+    : lifecycle === "dismissed" ? "neutral"
+      : lifecycle === "accepted_risk" ? "warning" : "info";
+  return <Badge data-focus-lifecycle={lifecycle} tone={tone}>{FOCUS_LIFECYCLE_LABELS[lifecycle]}</Badge>;
 }
 
 function DeliveryEvidence({ object }: { object: FocusObject }) {
@@ -77,7 +78,7 @@ function DeliveryEvidence({ object }: { object: FocusObject }) {
     {expanded && <div className="mt-2 space-y-2 text-xs text-text-muted">
       <p>Latest 100 delivery records, filtered to this episode. Eligibility, delivery, viewing, and resolution are separate.</p>
       {query.isLoading && <p role="status">Loading delivery records...</p>}
-      {query.error && <p role="alert">Delivery records unavailable: {query.error.message} <button type="button" className="min-h-11 underline" onClick={() => void query.refetch()}>Retry delivery records</button></p>}
+      {query.error && <p role="alert">Delivery records unavailable: {query.error.message} <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "underline")} onClick={() => void query.refetch()}>Retry delivery records</button></p>}
       {!query.isLoading && !query.error && records.length === 0 && <p>No record in this window. Eligibility and delivery are unknown, not confirmed.</p>}
       {records.map((delivery) => <div key={delivery.id} className="rounded-lg border border-border p-2">
         <p>Delivery: {delivery.status} - {delivery.reason}</p>
@@ -116,17 +117,17 @@ export default function FocusCard({
 
   return (
     <article data-focus-object-id={card.id} aria-busy={pending || undefined}
-      className={`${UI.surface.card} min-w-0 overflow-hidden rounded-xl border-l-4 p-4 ${card.objectType === "alert" && open ? "border-l-error" : card.objectType === "decision" && open ? "border-l-warning" : "border-l-border"} ${pending ? "opacity-80" : ""}`}>
+      className={cx(DS.layout.objectRow, "overflow-hidden", pending && "opacity-80")}>
       <header className="space-y-2">
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
           {source && <span title={metadataSource} className="font-medium">{source}</span>}
-          <span>{kind}</span>
+          <span className={card.objectType === "alert" && open ? DS.tone.danger : card.objectType === "decision" && open ? DS.tone.warning : undefined}>{kind}</span>
           {card.objectType === "event" && <span>Event</span>}
           <FocusLifecycleBadge lifecycle={card.lifecycle} />
           {card.pinned && <span className="inline-flex items-center gap-1 text-accent"><Pin size={11} />Pinned</span>}
           {pending && <span role="status">Saving...</span>}
         </div>
-        <h4 className="break-words text-base font-semibold leading-snug text-text-primary">{card.title}</h4>
+        <h4 className={cx(DS.text.objectTitle, "break-words")}>{card.title}</h4>
         <p className="break-words text-xs text-text-faint">{card.taskTitle ?? (card.taskState === "orphaned" ? "Removed task" : "Global Focus")} · {card.taskState} · Updated {timeAgo(card.updatedAt)}</p>
       </header>
 
@@ -142,29 +143,29 @@ export default function FocusCard({
             {card.objectType === "decision" && <div><span className="font-medium">Recommendation: </span>{details.recommendation ?? "No recommendation provided."}</div>}
           </>
         )}
-        <p className={`text-xs ${interventionLate && open ? "font-medium text-warning" : "text-text-muted"}`}>
+        <p className={cx("text-xs", interventionLate && open ? "font-medium text-warning" : "text-text-muted")}>
           {interventionLate && open ? "Intervention time reached / passed: " : "Intervene by: "}
           {details.interventionBy ? <time dateTime={details.interventionBy}>{focusTime(details.interventionBy)}</time> : "Not specified"}
         </p>
         {(card.objectType === "decision" || details.fallback) && <div className="text-xs"><span className="font-medium">No response / fallback: </span>{details.fallback ?? "Not specified. Silence is not approval."}</div>}
         {card.objectType === "decision" && <FocusEvidenceValidity details={details} nowMs={nowMs} />}
-        {(card.objectType === "alert" || (card.objectType === "event" && expanded)) && <p className={`text-xs ${validity !== "Within stated observation validity" ? "text-warning" : "text-text-muted"}`}>
+        {(card.objectType === "alert" || (card.objectType === "event" && expanded)) && <p className={cx("text-xs", validity !== "Within stated observation validity" ? "text-warning" : "text-text-muted")}>
           {validity}. Observed {focusTime(details.observedAt)}; valid until {focusTime(details.validUntil)}.
         </p>}
-        {!open && <div className="rounded-lg border border-border bg-bg-secondary p-3">
+        {!open && <div className={cx(DS.rail, "py-1")}>
           <p>Reason: {details.resolutionReason ?? "No recorded reason"}</p>
           <p className="mt-1">Outcome: {details.outcome ?? "No outcome recorded"}</p>
         </div>}
       </div>
 
-      {card.linkedActions.length > 0 && <div className="mt-3 rounded-lg border border-border bg-bg-secondary/50 p-3">
+      {card.linkedActions.length > 0 && <div className={cx(DS.rail, "mt-3 space-y-2")}>
         <p className="text-xs font-medium text-text-secondary">Linked Actions: {linkedOpenCount} open · {card.linkedActions.length - linkedOpenCount} completed</p>
         <p className="mt-1 text-xs text-text-muted">{card.objectType === "event" ? "Linked Action state is separate from this observation." : `Action completion does not resolve this ${card.objectType}.`}</p>
         {card.linkedActions.map((link) => <div key={`${link.activationId}:${link.actionId}`} className="mt-2 break-words text-xs text-text-secondary">
           <span className="font-medium">{link.action.text}</span> — {link.action.done ? "Action completed" : "Work open"}{link.activationId !== card.activationId ? " (earlier episode)" : ""}
           <div className="flex flex-wrap items-center gap-2">
-            {link.action.taskId ? <button type="button" className="min-h-11 text-accent underline" onClick={() => onSelectTask(link.action.taskId!, { checklistItemId: link.actionId })}>Open linked Action in task</button>
-              : <button type="button" className="min-h-11 text-accent underline" onClick={() => onInspectHistory ? onInspectHistory(link.actionId) : document.getElementById("focus-actions")?.scrollIntoView()}>Global Actions</button>}
+            {link.action.taskId ? <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-accent underline")} onClick={() => onSelectTask(link.action.taskId!, { checklistItemId: link.actionId })}>Open linked Action in task</button>
+              : <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-accent underline")} onClick={() => onInspectHistory ? onInspectHistory(link.actionId) : document.getElementById("focus-actions")?.scrollIntoView()}>Global Actions</button>}
           </div>
         </div>)}
       </div>}
@@ -172,10 +173,10 @@ export default function FocusCard({
       <div className="mt-3 flex flex-wrap gap-2">
         {!readOnly && open ? <>
           {card.objectType !== "event" && card.lifecycle === "active" && <button type="button" disabled={pending} className={BUTTON} onClick={() => onLifecycle(card, "acknowledged")}>Acknowledge</button>}
-          <button type="button" disabled={pending} className={`${UI.button.primary} min-h-11 text-xs disabled:opacity-50`} onClick={() => onPromote(card)}>{card.objectType === "event" ? "Create Action" : "Hand off / Create Action"}</button>
+          <button type="button" disabled={pending} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)} onClick={() => onPromote(card)}>{card.objectType === "event" ? "Create Action" : "Hand off / Create Action"}</button>
           {card.objectType !== "event" && (
           <details>
-            <summary className={`${BUTTON} cursor-pointer`}>Lifecycle options</summary>
+            <summary className={cx(BUTTON, "cursor-pointer")}>Lifecycle options</summary>
             <div className="mt-2 flex flex-wrap gap-2">
               <button type="button" disabled={pending} className={BUTTON} onClick={() => onLifecycle(card, "resolved")}>Resolve</button>
               <button type="button" disabled={pending} className={BUTTON} onClick={() => onLifecycle(card, "accepted_risk")}>Accept risk</button>
@@ -202,7 +203,7 @@ export default function FocusCard({
         </dl>
         {details.episodeReason && <p className="text-xs text-text-secondary">Episode reason: {details.episodeReason}</p>}
         <section><h5 className="mb-2 text-xs font-semibold text-text-primary">Evidence</h5><FocusEvidenceList evidence={details.evidence} /></section>
-        {card.objectType === "alert" && <section className="rounded-lg border border-border p-3 text-xs text-text-secondary">
+        {card.objectType === "alert" && <section className={cx(DS.rail, "space-y-2 text-xs text-text-secondary")}>
           <h5 className="font-semibold">Authority and notification eligibility</h5>
           <p className="mt-2">Requested mode: {details.notificationMode}. Persistence alone does not authorize interruption.</p>
           <p className="mt-2">{grantActive ? `Matching active grant: ${grant!.title}` : "No currently verified matching grant. Immediate eligibility is not established."}</p>
@@ -217,14 +218,14 @@ export default function FocusCard({
         </section>}
         {card.visual && <div className="min-w-0 overflow-hidden rounded-xl border border-border p-2"><VisualArtifactCard visual={card.visual} /></div>}
         <div className="flex flex-wrap gap-2">
-          {!readOnly && card.objectType !== "event" && open && card.launchPrompt && <button type="button" disabled={pending} className={`${UI.button.primary} min-h-11 text-xs`} onClick={() => onAction(card)}><MessageSquare size={14} />{card.launchPrompt.label ?? DEFAULT_FOCUS_ACTION_LABEL}</button>}
+          {!readOnly && card.objectType !== "event" && open && card.launchPrompt && <button type="button" disabled={pending} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)} onClick={() => onAction(card)}><MessageSquare size={14} />{card.launchPrompt.label ?? DEFAULT_FOCUS_ACTION_LABEL}</button>}
           {!readOnly && onChat && <button type="button" disabled={pending} className={BUTTON} onClick={() => onChat(card)}>{DEFAULT_FOCUS_CHAT_LABEL}</button>}
           {card.taskId && <button type="button" className={BUTTON} onClick={() => onSelectTask(card.taskId!)}>Open task</button>}
           {card.sessionId && <button type="button" className={BUTTON} onClick={() => onSelectSession(card.sessionId!, card.taskId ?? undefined)}>Open session</button>}
-          {links.map((link, index) => <a key={`${link.url}:${index}`} href={link.url} target="_blank" rel="noopener noreferrer" className={`${BUTTON} break-all`}>{link.label}<ExternalLink size={12} /></a>)}
+          {links.map((link, index) => <a key={`${link.url}:${index}`} href={link.url} target="_blank" rel="noopener noreferrer" className={cx(BUTTON, "break-all")}>{link.label}<ExternalLink size={12} /></a>)}
           {onInspectHistory && <button type="button" className={BUTTON} onClick={() => onInspectHistory(card.id)}>Object history</button>}
         </div>
-        {!readOnly && card.objectType !== "event" && <details><summary className="min-h-11 cursor-pointer text-xs text-text-faint">Record options</summary><button type="button" disabled={pending} className={`${BUTTON} text-error`} onClick={() => onDelete(card)}>Delete item</button></details>}
+        {!readOnly && card.objectType !== "event" && <details><summary className="min-h-11 cursor-pointer text-xs text-text-faint">Record options</summary><button type="button" disabled={pending} className={cx(BUTTON, "text-error")} onClick={() => onDelete(card)}>Delete item</button></details>}
       </div>}
     </article>
   );

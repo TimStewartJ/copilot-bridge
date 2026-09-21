@@ -25,6 +25,7 @@ import {
   type TextEdit,
 } from "./docs-markdown-edit";
 import { cx } from "./docs-ui";
+import { DS } from "../../design/tokens";
 
 interface ToolbarItem {
   action: MarkdownAction;
@@ -182,7 +183,7 @@ export default function MarkdownEditor({
                 // Keep the textarea's selection: a toolbar press must not blur it first.
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => runAction(action)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
+                className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, DS.focus, "disabled:opacity-40")}
               >
                 <Icon size={16} />
               </button>
@@ -205,10 +206,7 @@ export default function MarkdownEditor({
           spellCheck
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={handleKeyDown}
-          className={cx(
-            sharedText,
-            "resize-none overflow-hidden border-0 bg-transparent text-text-primary placeholder:text-text-faint focus:outline-none",
-          )}
+          className={cx(sharedText, DS.focus, "resize-none overflow-hidden border-0 bg-transparent text-text-primary placeholder:text-text-faint disabled:opacity-60")}
         />
       </div>
     </div>

@@ -10,6 +10,7 @@ import {
 } from "../../../mcp-config";
 import { Field } from "./Field";
 import { withUneditedMcpServerFields } from "./mcp-editor-config";
+import { DS, cx } from "../../design/tokens";
 
 function parseKeyValueLines(text: string): Record<string, string> {
   const values: Record<string, string> = {};
@@ -131,7 +132,7 @@ export function ServerEditor({
   };
 
   return (
-    <div className="bg-bg-elevated border border-accent/20 rounded-md p-4 space-y-3">
+    <div className={cx(DS.layout.formGroup, DS.choice.selected)}>
       <div className="text-xs font-medium text-accent mb-2">
         {isNew ? "Add MCP Server" : `Edit: ${initialName}`}
       </div>
@@ -142,7 +143,7 @@ export function ServerEditor({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. ado, github, filesystem"
-          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+          className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
           autoFocus={isNew}
         />
       </Field>
@@ -151,7 +152,7 @@ export function ServerEditor({
         <select
           value={transport}
           onChange={(e) => setTransport(e.target.value as "local" | "http" | "sse")}
-          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+          className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
         >
           <option value="local">Local / stdio</option>
           <option value="http">Remote HTTP</option>
@@ -160,18 +161,20 @@ export function ServerEditor({
       </Field>
 
       {transport === "local" && (
+        <div>
         <Field label="Execution policy">
           <select
             value={executionScope}
             onChange={(e) => setExecutionScope(e.target.value as McpExecutionScope)}
-            className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
           >
             <option value="auto">Automatic (recommended)</option>
             <option value="shared">Shared broker (when available)</option>
             <option value="session">Session isolated</option>
           </select>
-          <p className="mt-1 text-[10px] text-text-faint">{execution.reason}</p>
         </Field>
+        <p className="mt-1 text-xs text-text-secondary">{execution.reason}</p>
+        </div>
       )}
 
       <Field
@@ -183,14 +186,14 @@ export function ServerEditor({
             value={command}
             onChange={(e) => setCommand(e.target.value)}
             placeholder="e.g. npx, uvx, node"
-            className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
           />
         ) : (
           <input
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder="https://example.com/mcp"
-            className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
           />
         )}
       </Field>
@@ -203,7 +206,7 @@ export function ServerEditor({
               onChange={(e) => setArgsText(e.target.value)}
               placeholder={"mcp\nremote\n--url\nhttps://..."}
               rows={4}
-              className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none font-mono resize-y"
+              className={cx(DS.field.input, DS.field.textarea, DS.focus, "font-mono resize-y")}
             />
           </Field>
 
@@ -213,7 +216,7 @@ export function ServerEditor({
               onChange={(e) => setEnvText(e.target.value)}
               placeholder="API_KEY=abc123"
               rows={2}
-              className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none font-mono resize-y"
+              className={cx(DS.field.input, DS.field.textarea, DS.focus, "font-mono resize-y")}
             />
           </Field>
         </>
@@ -224,7 +227,7 @@ export function ServerEditor({
             onChange={(e) => setHeadersText(e.target.value)}
             placeholder="Authorization=Bearer ..."
             rows={3}
-            className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none font-mono resize-y"
+            className={cx(DS.field.input, DS.field.textarea, DS.focus, "font-mono resize-y")}
           />
         </Field>
       )}
@@ -235,7 +238,7 @@ export function ServerEditor({
           value={toolsText}
           onChange={(e) => setToolsText(e.target.value)}
           placeholder="* (all tools)"
-          className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+          className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
         />
       </Field>
 
@@ -243,18 +246,16 @@ export function ServerEditor({
       <div className="flex justify-end gap-2 pt-1">
         <button
           onClick={onCancel}
-          className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
         >
           Cancel
         </button>
         <button
           onClick={handleSubmit}
           disabled={!canSave}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
-            canSave
-              ? "bg-accent text-white hover:bg-accent-hover"
-              : "bg-bg-elevated text-text-faint cursor-not-allowed"
-          }`}
+          className={cx("px-4 py-1.5 text-xs font-medium rounded-md transition-colors", canSave
+              ? cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary)
+              : cx(DS.button.base, DS.button.size.sm, "bg-bg-elevated text-text-faint cursor-not-allowed"))}
         >
           {isNew ? "Add" : "Update"}
         </button>

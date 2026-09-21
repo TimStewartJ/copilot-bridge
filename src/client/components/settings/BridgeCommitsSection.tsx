@@ -16,6 +16,7 @@ import {
 } from "../../lib/bridge-commit-status";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 const LAUNCHER_LOG_LINE_COUNT = 8;
 
@@ -83,7 +84,7 @@ export function BridgeCommitsSection() {
         <button
           onClick={() => refresh(true)}
           disabled={loading}
-          className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors inline-flex items-center gap-1.5"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface gap-1.5")}
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
@@ -118,7 +119,7 @@ export function BridgeCommitsSection() {
         />
 
         {error && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
             Bridge status check failed: {error}
           </div>
         )}
@@ -143,7 +144,7 @@ function CommitOverviewCard({
   const runningSummary = describeRunningVsLocal(commits?.comparisons.runningVsLocal, loading);
 
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -171,7 +172,7 @@ function ComparisonSummaryCard({
   descriptor: BridgeStatusDescriptor;
 }) {
   return (
-    <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+    <div className={DS.layout.formGroup}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
@@ -191,7 +192,7 @@ function StatusPill({
   compact?: boolean;
 }) {
   return (
-    <span className={`shrink-0 rounded-full font-medium ${compact ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]"} ${statusToneClassName(descriptor.tone)}`}>
+    <span className={cx("shrink-0 rounded-full font-medium", compact ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]", statusToneClassName(descriptor.tone))}>
       {descriptor.label}
     </span>
   );
@@ -236,7 +237,7 @@ function CommitCard({
       : "bg-error/10 text-error";
 
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -245,7 +246,7 @@ function CommitCard({
           </div>
           <p className="mt-1 text-xs text-text-muted">{subtitle}</p>
         </div>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${badgeClassName}`}>
+        <span className={cx(DS.badge.base, "shrink-0", badgeClassName)}>
           {badgeText}
         </span>
       </div>
@@ -272,7 +273,7 @@ function CommitCard({
           </code>
         </div>
       ) : (
-        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
           {snapshot?.error ?? "Commit metadata is unavailable."}
         </div>
       )}
@@ -301,7 +302,7 @@ function LauncherLogCard({
       : "bg-error/10 text-error";
 
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -312,7 +313,7 @@ function LauncherLogCard({
             Latest {LAUNCHER_LOG_LINE_COUNT} lines from the running launcher process.
           </p>
         </div>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${badgeClassName}`}>
+        <span className={cx(DS.badge.base, "shrink-0", badgeClassName)}>
           {badgeText}
         </span>
       </div>
@@ -324,7 +325,7 @@ function LauncherLogCard({
           className="space-y-2"
         >
           {Array.from({ length: 3 }, (_, index) => (
-            <div key={index} className="rounded-md border border-border bg-bg-primary px-3 py-2">
+            <div key={index} className={DS.layout.formGroup}>
               <SkeletonText lines={1} widths={[index === 0 ? "92%" : index === 1 ? "76%" : "84%"]} />
             </div>
           ))}
@@ -335,12 +336,12 @@ function LauncherLogCard({
             {launcherLog.lines.join("\n")}
           </pre>
         ) : (
-          <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
             The launcher log file exists, but no lines have been written yet.
           </div>
         )
       ) : (
-        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
           {launcherLog?.error ?? "Launcher log is unavailable."}
         </div>
       )}
