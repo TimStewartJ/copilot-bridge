@@ -1,8 +1,18 @@
+import { useId } from "react";
 import type { AppSettings } from "../../api";
+import {
+  DEFAULT_RESPONSE_STYLE_GUIDANCE,
+  MAX_RESPONSE_STYLE_GUIDANCE_LENGTH,
+  RESPONSE_DETAIL_OPTIONS,
+  resolveResponseStyle,
+} from "../../../shared/response-style.js";
 import { SettingsSection } from "./SettingsSection";
 
 const DEFAULT_IDENTITY_PLACEHOLDER =
   "You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.";
+
+const TEXTAREA_CLASS_NAME = "w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary placeholder:text-text-faint/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent resize-y";
+const FIELD_LABEL_CLASS_NAME = "text-xs text-text-secondary block mb-1.5";
 
 export function SystemPromptSection({
   draft,
@@ -11,19 +21,25 @@ export function SystemPromptSection({
   draft: AppSettings;
   setDraft: (d: AppSettings) => void;
 }) {
+  const id = useId();
+  const style = draft.responseStyle ?? resolveResponseStyle();
+  const detailDescription = RESPONSE_DETAIL_OPTIONS.find((option) => option.value === style.detail)?.description;
+  const isDefaultStyle = style.detail === "adaptive" && style.guidance === DEFAULT_RESPONSE_STYLE_GUIDANCE;
+  const customInstructions = draft.customInstructions ?? "";
+  const hasLegacyBlock = customInstructions.includes("<anti_slop_response_quality") || customInstructions.includes("</anti_slop_response_quality");
+
   return (
-    <SettingsSection
-      title="System Prompt"
-      description="Customize the agent's identity and behavior. Changes apply on next session interaction."
-    >
-      <div className="bg-bg-elevated border border-border rounded-md p-4 space-y-4">
-        {/* Identity */}
+    <SettingsSection title="System Prompt">
+      <p className="text-xs text-text-secondary">Saved changes apply to new chats and fresh session resumes. Chats already in progress are not interrupted.</p>
+      <div className="bg-bg-elevated border border-border rounded-md p-4 space-y-6">
         <div>
-          <label className="text-xs text-text-faint block mb-1.5">Identity</label>
-          <p className="text-xs text-text-muted mb-2">
+          <label htmlFor={`${id}-identity`} className={FIELD_LABEL_CLASS_NAME}>Identity</label>
+          <p id={`${id}-identity-help`} className="text-xs text-text-secondary mb-2">
             Defines who the agent is. Replaces the default system identity.
           </p>
           <textarea
+            id={`${id}-identity`}
+            aria-describedby={`${id}-identity-help`}
             value={draft.identity ?? ""}
             onChange={(e) => {
               const next = structuredClone(draft);
@@ -32,27 +48,102 @@ export function SystemPromptSection({
             }}
             placeholder={DEFAULT_IDENTITY_PLACEHOLDER}
             rows={3}
-            className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary placeholder:text-text-faint/50 focus:outline-none focus:ring-1 focus:ring-accent resize-y"
+            className={TEXTAREA_CLASS_NAME}
           />
         </div>
 
-        {/* Custom Instructions */}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-medium text-text-primary">Response Style</h3>
+              <p className="text-xs text-text-secondary mt-1">Natural and direct by default. Explicit requests for tone, detail, or format take precedence.</p>
+            </div>
+            <button
+              type="button"
+              disabled={isDefaultStyle}
+              onClick={() => {
+                const next = structuredClone(draft);
+                next.responseStyle = resolveResponseStyle();
+                setDraft(next);
+              }}
+              className="min-h-11 px-3 text-xs text-text-secondary border border-border rounded-md hover:bg-bg-hover disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              Reset to default
+            </button>
+          </div>
+
+          <fieldset aria-describedby={`${id}-detail-help`}>
+            <legend className="text-xs text-text-secondary mb-1">Default detail</legend>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {RESPONSE_DETAIL_OPTIONS.map((option) => (
+                <label key={option.value} className="inline-flex min-h-11 items-center gap-2 text-xs text-text-secondary cursor-pointer">
+                  <input
+                    type="radio"
+                    name={`${id}-detail`}
+                    value={option.value}
+                    checked={style.detail === option.value}
+                    onChange={() => {
+                      const next = structuredClone(draft);
+                      next.responseStyle = { ...style, detail: option.value };
+                      setDraft(next);
+                    }}
+                    className="accent-accent focus-visible:ring-2 focus-visible:ring-accent"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+            <p id={`${id}-detail-help`} className="text-xs text-text-secondary">{detailDescription}</p>
+          </fieldset>
+
+          <div>
+            <label htmlFor={`${id}-style`} className={FIELD_LABEL_CLASS_NAME}>Style guidance</label>
+            <textarea
+              id={`${id}-style`}
+              aria-describedby={`${id}-style-help`}
+              value={style.guidance}
+              onChange={(e) => {
+                const next = structuredClone(draft);
+                next.responseStyle = { ...style, guidance: e.target.value };
+                setDraft(next);
+              }}
+              maxLength={MAX_RESPONSE_STYLE_GUIDANCE_LENGTH}
+              rows={8}
+              className={TEXTAREA_CLASS_NAME}
+            />
+            <div className="flex flex-wrap justify-between gap-2 text-xs text-text-secondary mt-1.5">
+              <p id={`${id}-style-help`}>Leave blank to use the default guidance. Use Save to apply edits or reset.</p>
+              <span>{style.guidance.length.toLocaleString()} / {MAX_RESPONSE_STYLE_GUIDANCE_LENGTH.toLocaleString()}</span>
+            </div>
+          </div>
+
+          <div className="text-xs text-text-secondary">
+            <p className="font-medium mb-1">Response quality (always on)</p>
+            <p>Bridge always includes guidance for supported claims, clear uncertainty, independent judgment, and honest reporting of research, changes, and tests. Style preferences do not remove these safeguards.</p>
+          </div>
+        </div>
+
         <div>
-          <label className="text-xs text-text-faint block mb-1.5">Custom Instructions</label>
-          <p className="text-xs text-text-muted mb-2">
-            Additional instructions appended to every session — personality, preferences, domain context, or rules.
+          <label htmlFor={`${id}-custom`} className={FIELD_LABEL_CLASS_NAME}>Custom Instructions</label>
+          <p id={`${id}-custom-help`} className="text-xs text-text-secondary mb-2">
+            Additional domain context, preferences, or rules. Set presentation preferences in Response Style instead.
           </p>
           <textarea
-            value={draft.customInstructions ?? ""}
+            id={`${id}-custom`}
+            aria-describedby={`${id}-custom-help`}
+            value={customInstructions}
             onChange={(e) => {
               const next = structuredClone(draft);
               next.customInstructions = e.target.value;
               setDraft(next);
             }}
-            placeholder="e.g. Always respond in a friendly tone. Prefer TypeScript over JavaScript. When unsure, ask clarifying questions."
+            placeholder="e.g. Prefer TypeScript over JavaScript. Use the terminology from my project."
             rows={3}
-            className="w-full px-3 py-2 text-xs bg-bg-surface border border-border rounded-md text-text-primary placeholder:text-text-faint/50 focus:outline-none focus:ring-1 focus:ring-accent resize-y"
+            className={TEXTAREA_CLASS_NAME}
           />
+          {hasLegacyBlock && (
+            <p role="note" className="text-xs text-text-secondary mt-2">An edited or incomplete legacy response-quality block was preserved here. Review it to avoid overlapping response-style guidance.</p>
+          )}
         </div>
       </div>
     </SettingsSection>

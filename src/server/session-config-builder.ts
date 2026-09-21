@@ -28,10 +28,12 @@ import {
   DEFAULT_IDENTITY,
   FEED_GUIDANCE,
   RESEARCH_GUIDANCE,
+  RESPONSE_QUALITY_GUIDANCE,
   STAGING_INSTRUCTIONS,
   TOOL_NAMING_GUIDANCE,
   WORK_REFERENCE_GUIDANCE,
 } from "./session-instructions.js";
+import { renderResponseStyle } from "../shared/response-style.js";
 import {
   formatPromptTagList,
   formatLinkedPullRequest,
@@ -341,6 +343,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   // Keep stable guidance ahead of mutable task, tag, and docs context.
   const contextParts: string[] = [
+    RESPONSE_QUALITY_GUIDANCE,
+    renderResponseStyle(settings?.responseStyle),
     ...(settings?.customInstructions?.trim() ? [settings.customInstructions.trim()] : []),
     RESEARCH_GUIDANCE,
     FEED_GUIDANCE,

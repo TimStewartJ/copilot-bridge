@@ -5,6 +5,12 @@ import { createSettingsStore } from "../settings-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { DatabaseSync } from "../db.js";
 import { testExecutablePath } from "./test-paths.js";
+import {
+  DEFAULT_RESPONSE_STYLE_GUIDANCE,
+  MAX_RESPONSE_STYLE_GUIDANCE_LENGTH,
+  resolveResponseStyle,
+} from "../../shared/response-style.js";
+import { LEGACY_RESPONSE_QUALITY_BLOCK } from "../response-style-migration.js";
 
 let db: DatabaseSync;
 let store: SettingsStore;
@@ -25,6 +31,99 @@ function readRawSettings(): string {
 }
 
 describe("settings-store", () => {
+  it("persists response-style settings without changing identity, custom instructions, or other preferences", () => {
+    store.updateSettings({ identity: "Bridge", customInstructions: "Prefer TypeScript.", theme: "dark" });
+    const responseStyle = { detail: "detailed" as const, guidance: "Use precise terms.\nKeep useful examples." };
+    expect(store.updateSettings({ responseStyle }).responseStyle).toEqual(responseStyle);
+    expect(createSettingsStore(db).getSettings()).toMatchObject({
+      identity: "Bridge", customInstructions: "Prefer TypeScript.", theme: "dark", responseStyle,
+    });
+  });
+
+  it("prepares response-style changes without persisting them", () => {
+    store.updateSettings({ responseStyle: { detail: "detailed", guidance: "Original guidance." } });
+    const prepared = store.prepareSettingsUpdate({ responseStyle: { detail: "concise", guidance: "New guidance." } });
+    expect(prepared.next.responseStyle?.detail).toBe("concise");
+    expect(store.getSettings().responseStyle?.detail).toBe("detailed");
+  });
+
+  it("normalizes blank guidance and resets explicitly to adaptive defaults", () => {
+    expect(store.updateSettings({ responseStyle: { detail: "concise", guidance: " \r\n " } }).responseStyle).toEqual({
+      detail: "concise", guidance: DEFAULT_RESPONSE_STYLE_GUIDANCE,
+    });
+    expect(store.updateSettings({ responseStyle: resolveResponseStyle() }).responseStyle).toEqual(resolveResponseStyle());
+    writeRawSettings(JSON.stringify({ responseStyle: {} }));
+    expect(store.getSettings().responseStyle).toEqual(resolveResponseStyle());
+    writeRawSettings(JSON.stringify({ responseStyle: { detail: "detailed" } }));
+    expect(store.getSettings().responseStyle).toEqual({ detail: "detailed", guidance: DEFAULT_RESPONSE_STYLE_GUIDANCE });
+  });
+
+  it("accepts exactly the guidance limit and rejects one more character without modifying persisted settings", () => {
+    const responseStyle = { detail: "adaptive" as const, guidance: "x".repeat(MAX_RESPONSE_STYLE_GUIDANCE_LENGTH) };
+    expect(store.updateSettings({ responseStyle }).responseStyle).toEqual(responseStyle);
+    const before = readRawSettings();
+    expect(() => store.updateSettings({ responseStyle: { ...responseStyle, guidance: responseStyle.guidance + "x" } }))
+      .toThrow(`at most ${MAX_RESPONSE_STYLE_GUIDANCE_LENGTH} characters`);
+    expect(readRawSettings()).toBe(before);
+  });
+
+  it.each([
+    ["a scalar", "natural", "responseStyle must be an object"],
+    ["an array", [], "responseStyle must be an object"],
+    ["an unknown detail", { detail: "brief" }, "responseStyle.detail must be adaptive, concise, or detailed"],
+    ["a null detail", { detail: null }, "responseStyle.detail must be adaptive, concise, or detailed"],
+    ["non-string guidance", { guidance: 123 }, "responseStyle.guidance must be a string"],
+    ["null guidance", { guidance: null }, "responseStyle.guidance must be a string"],
+    ["an unsupported key", { mood: "friendly" }, 'responseStyle key "mood" is not supported'],
+  ] as const)("rejects %s in a JSON-boundary update without changing settings", (_label, responseStyle, message) => {
+    store.updateSettings({ theme: "dark" });
+    const before = readRawSettings();
+    expect(() => Reflect.apply(store.updateSettings, store, [{ responseStyle }])).toThrow(message);
+    expect(readRawSettings()).toBe(before);
+  });
+
+  it("fails visibly on invalid persisted response-style settings and leaves the row untouched", () => {
+    const raw = JSON.stringify({ responseStyle: { detail: "brief" } });
+    writeRawSettings(raw);
+    expect(() => store.getSettings()).toThrow("Persisted app settings are unreadable");
+    expect(readRawSettings()).toBe(raw);
+  });
+
+  it("normalizes the exact owned legacy block on read and persists the migration on the next save", () => {
+    const raw = JSON.stringify({ customInstructions: LEGACY_RESPONSE_QUALITY_BLOCK, theme: "dark" });
+    writeRawSettings(raw);
+    const migrated = store.getSettings();
+    expect(migrated.customInstructions).toBeUndefined();
+    expect(migrated.responseStyle).toEqual(resolveResponseStyle());
+    expect(migrated.theme).toBe("dark");
+    expect(readRawSettings()).toBe(raw);
+    store.updateSettings({ identity: "Bridge" });
+    expect(readRawSettings()).not.toContain("anti_slop_response_quality");
+    expect(createSettingsStore(db).getSettings()).toMatchObject({ responseStyle: resolveResponseStyle(), theme: "dark", identity: "Bridge" });
+  });
+
+  it("migrates CRLF and repeated owned blocks while preserving all surrounding custom text and an explicit style", () => {
+    const before = "  Keep my terminology.\r\n\r\n";
+    const after = "\r\n\r\nPrefer TypeScript.  ";
+    const responseStyle = { detail: "detailed" as const, guidance: "Keep my chosen style." };
+    writeRawSettings(JSON.stringify({
+      customInstructions: before + LEGACY_RESPONSE_QUALITY_BLOCK.replace(/\n/g, "\r\n") + LEGACY_RESPONSE_QUALITY_BLOCK + after,
+      responseStyle,
+    }));
+    expect(store.getSettings().customInstructions).toBe(before + after);
+    expect(store.getSettings().responseStyle).toEqual(responseStyle);
+  });
+
+  it.each([
+    LEGACY_RESPONSE_QUALITY_BLOCK.replace("Answer directly.", "Use a formal voice."),
+    "<anti_slop_response_quality>Incomplete custom guidance.",
+    "Ordinary instructions with no legacy block.",
+  ])("preserves edited, incomplete, or unrelated custom instructions", (customInstructions) => {
+    writeRawSettings(JSON.stringify({ customInstructions }));
+    expect(store.getSettings().customInstructions).toBe(customInstructions);
+    expect(store.getSettings().responseStyle).toBeUndefined();
+  });
+
   it("updateSettings persists and returns updated settings", () => {
     const updated = store.updateSettings({
       mcpServers: {
