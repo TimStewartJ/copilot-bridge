@@ -10,7 +10,7 @@ const CLAMP_CHARS = 560;
 const CLAMP_LINES = 8;
 
 export const THOUGHT_PROSE = [
-  "chat-prose prose prose-invert prose-sm max-w-none text-[13px] leading-relaxed text-text-muted",
+  "ds-prose prose prose-invert prose-sm max-w-none text-[13px] leading-relaxed text-text-muted",
   "prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-headings:my-1.5 prose-headings:text-[13px]",
   "prose-strong:font-medium prose-strong:text-text-secondary prose-headings:text-text-secondary",
   "prose-pre:my-2 prose-pre:rounded-md prose-pre:bg-bg-surface prose-pre:p-2.5 prose-pre:text-xs",

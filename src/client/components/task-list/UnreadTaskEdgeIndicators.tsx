@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { DS, cx } from "../../design/tokens";
 
 const UNREAD_TASK_ROW_SELECTOR = "[data-unread-task-id]";
 const SCROLL_EPSILON = 1;
@@ -246,9 +247,9 @@ export function UnreadTaskEdgePill({ edge, direction, onJump }: UnreadTaskEdgePi
         type="button"
         aria-label={`Jump to ${formatUnreadLabel(edge.count)} ${directionLabel}`}
         onClick={() => onJump(edge.targetTaskId!)}
-        className={`pointer-events-auto inline-flex items-center gap-2 rounded-full border border-success/35 bg-bg-elevated/95 px-3 py-1.5 text-xs font-semibold leading-4 text-text-primary shadow-lg shadow-black/25 backdrop-blur transition-colors hover:border-success/60 hover:bg-bg-hover ${isAbove ? "-translate-y-1/2" : "-translate-y-full"}`}
+        className={cx("pointer-events-auto", DS.surface.floatingPill, DS.focus, isAbove ? "-translate-y-1/2" : "-translate-y-full")}
       >
-        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-success shadow-[0_0_8px_rgba(34,197,94,0.55)]" />
+        <span aria-hidden="true" className={cx(DS.dot, "bg-success")} />
         {label}
       </button>
     </div>

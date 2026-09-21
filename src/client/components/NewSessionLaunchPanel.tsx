@@ -7,6 +7,8 @@ import ModelPresetPicker from "./shared/ModelPresetPicker";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
+import { DS } from "../design/tokens";
+import { FormRow, Select } from "../design/primitives";
 
 interface NewSessionLaunchPanelProps {
   models: readonly ModelInfo[];
@@ -67,26 +69,31 @@ export default function NewSessionLaunchPanel({
 
   return (
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-4 md:items-center md:py-8">
-      <div className="w-full max-w-lg px-1 py-5">
-        <div className="mb-5">
-          <h2 className="text-base font-semibold text-text-primary">Start a new chat</h2>
-          <p className="mt-1 text-sm text-text-muted">
-            Model, effort, context, and agent choices apply when this chat starts.
+      <div className="w-full max-w-xl px-1 py-5">
+        <div className="mb-6">
+          <h2 className={DS.text.title}>Start a new chat</h2>
+          <p className={`mt-1 ${DS.text.prose}`}>
+            These choices apply when the chat starts.
           </p>
         </div>
 
         <div className="space-y-4">
           {agentDefinitions !== undefined && (
-            <div className="space-y-1.5">
-              <label htmlFor="new-session-agent" className="text-xs font-medium text-text-muted">
-                Agent definition
-              </label>
-              <select
+            <FormRow
+              label="Agent"
+              htmlFor="new-session-agent"
+              hideLabel
+              help={agentDefinitionsLoading
+                ? "Loading attached agents..."
+                : agentDefinitions.length === 0
+                  ? "No agent definitions are attached to this task."
+                  : "Blank starts with the default agent. Selecting one makes the new chat run as that specialist."}
+            >
+              <Select
                 id="new-session-agent"
                 value={selectedAgentName ?? ""}
                 disabled={agentDefinitionsLoading}
                 onChange={(event) => onAgentChange?.(event.target.value || undefined)}
-                className="w-full rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
               >
                 <option value="">Default Copilot agent</option>
                 {agentDefinitions
@@ -96,19 +103,12 @@ export default function NewSessionLaunchPanel({
                       {definition.displayName ?? definition.name}
                     </option>
                   ))}
-              </select>
-              <p className="text-xs text-text-faint">
-                {agentDefinitionsLoading
-                  ? "Loading attached agents..."
-                  : agentDefinitions.length === 0
-                    ? "No agent definitions are attached to this task."
-                    : "Blank starts with the default agent. Selecting one makes the new chat run as that specialist."}
-              </p>
-            </div>
+              </Select>
+            </FormRow>
           )}
-          <div className="space-y-1.5">
+          <FormRow label="Model" hideLabel>
             {modelsLoading ? (
-              <div className="rounded-md border border-border bg-bg-surface px-3 py-2 text-sm text-text-faint">
+              <div className={`flex h-10 items-center text-[13px] md:h-9 ${DS.motion.live}`} role="status">
                 Loading models...
               </div>
             ) : (
@@ -131,14 +131,14 @@ export default function NewSessionLaunchPanel({
               </p>
             )}
             {!modelsLoading && !modelsError && !hasResolvedModelSelection && (
-              <p className="text-xs text-text-faint">
+              <p className={DS.field.help}>
                 No concrete default model is available. Choose one to override the server selection.
               </p>
             )}
-          </div>
+          </FormRow>
 
           {reasoningEffortOptions.length > 0 && (
-            <div className="space-y-1.5">
+            <FormRow label="Effort" hideLabel>
               <LaunchOptionRow
                 ariaLabel="Effort for new session"
                 options={reasoningEffortOptions}
@@ -148,25 +148,27 @@ export default function NewSessionLaunchPanel({
                 }}
               />
               {!selectedReasoningEffort && (
-                <p className="text-xs text-text-faint">
+                <p className={DS.field.help}>
                   The SDK does not report this model&apos;s default effort. Choose a level to override it.
                 </p>
               )}
-            </div>
+            </FormRow>
           )}
 
           {contextOptions.length > 0 && (
-            <LaunchOptionRow
-              ariaLabel="Context for new session"
-              options={contextOptions}
-              selectedValue={selectedContextTier}
-              onChange={(value) => {
-                if (value) onContextTierChange(value);
-              }}
-            />
+            <FormRow label="Context" hideLabel>
+              <LaunchOptionRow
+                ariaLabel="Context for new session"
+                options={contextOptions}
+                selectedValue={selectedContextTier}
+                onChange={(value) => {
+                  if (value) onContextTierChange(value);
+                }}
+              />
+            </FormRow>
           )}
 
-          <div className="space-y-1.5">
+          <FormRow label="Mode" hideLabel>
             <LaunchOptionRow
               ariaLabel="Run mode for new session"
               options={MODE_OPTIONS}
@@ -175,7 +177,7 @@ export default function NewSessionLaunchPanel({
                 if (value) onModeChange(value);
               }}
             />
-          </div>
+          </FormRow>
         </div>
       </div>
     </div>

@@ -879,6 +879,18 @@ describe("ChatView external session use", () => {
 });
 
 describe("ChatView cached resume loading state", () => {
+  it("passes failed session-cost reads to the status bar without replacing the reading", async () => {
+    const { cleanup, render } = await renderChatView({ streamOverrides: { isStreaming: false } });
+    try {
+      useSessionUsageMetricsQueryMock.mockReturnValue({ data: { costUsd: 0.0025 }, isLoading: false, error: new Error("Metering offline") });
+      await render();
+      expect(mcpStatusBarMock.mock.calls.at(-1)?.[0]).toMatchObject({ sessionCostUsd: 0.0025, sessionCostError: "Metering offline" });
+      useSessionUsageMetricsQueryMock.mockReturnValue({ data: { costUsd: null }, isLoading: false, error: null });
+      await render();
+      expect(mcpStatusBarMock.mock.calls.at(-1)?.[0]).toMatchObject({ sessionCostUsd: null, sessionCostError: undefined });
+    } finally { await cleanup(); }
+  });
+
   it("routes streamed MCP status into the query-owned status bar data", async () => {
     const { act, cleanup } = await renderChatView({
       streamOverrides: { isStreaming: false, pendingOrigin: null },

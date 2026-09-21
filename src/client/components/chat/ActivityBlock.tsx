@@ -15,6 +15,7 @@ import { describeToolCall, formatDuration } from "../../lib/tool-presentation";
 import ToolCallNodeGroup from "../ToolCallNodeGroup";
 import ReasoningStep from "./ReasoningStep";
 import { useChatRunActive } from "./chat-run-context";
+import { DS, cx } from "../../design/tokens";
 
 interface ActivityBlockProps {
   block: ActivityBlockModel;
@@ -66,7 +67,7 @@ function ThoughtWindow({ content }: { content: string }) {
   return (
     <div
       ref={windowRef}
-      className={`chat-reveal ml-[5px] mt-1 flex max-h-[3.9rem] flex-col justify-end overflow-hidden border-l border-border pl-4 ${
+      className={`ds-reveal ml-[5px] mt-1 flex max-h-[3.9rem] flex-col justify-end overflow-hidden border-l border-border pl-4 ${
         overflowing ? "chat-thought-window" : ""
       }`}
       aria-hidden="true"
@@ -239,19 +240,19 @@ export default memo(function ActivityBlock({
         type="button"
         onClick={() => onToggle(block.key, !expanded)}
         aria-expanded={expanded}
-        className="group/activity -mx-1.5 inline-flex max-w-[calc(100%+0.75rem)] min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left align-top text-[13px] transition-colors hover:bg-bg-hover/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+        className={cx("group/activity", DS.row.inline, DS.row.interactive)}
       >
         <ChevronRight
           size={13}
           aria-hidden="true"
-          className={`shrink-0 text-text-faint transition-transform duration-150 group-hover/activity:text-text-muted ${expanded ? "rotate-90" : ""}`}
+          className={cx(DS.row.chevron, "group-hover/activity:text-text-muted", expanded && DS.row.chevronOpen)}
         />
         {/* The label keeps its width; the detail takes whatever is left and truncates first. */}
-        <span className={`min-w-0 shrink truncate font-medium ${active ? "shimmer-text" : "text-text-secondary"}`}>
+        <span className={cx(DS.row.label, "font-medium", active ? DS.motion.live : "text-text-secondary")}>
           {header.label}
         </span>
         {header.detail && (
-          <span className={`min-w-0 flex-1 truncate text-text-muted ${header.detailMono ? "font-mono text-[12px]" : ""}`}>
+          <span className={cx(DS.row.detail, "text-text-muted", header.detailMono && "font-mono text-[12px]")}>
             {header.detail}
           </span>
         )}
@@ -268,7 +269,7 @@ export default memo(function ActivityBlock({
       </button>
       {showThoughtWindow && <ThoughtWindow content={streamingThought} />}
       {expanded && (
-        <div className="chat-reveal ml-[5px] mt-1 border-l border-border pb-1 pl-4">
+        <div className={cx(DS.rail, DS.motion.reveal, "pb-1")}>
           {block.steps.map((step) => {
             if (step.kind === "reasoning") return <ReasoningStep key={step.key} entry={step.entry} />;
             const roots = buildRenderableSegmentRoots(step.entries, toolForest);

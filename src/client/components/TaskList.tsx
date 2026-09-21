@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
-import { GROUP_COLOR_BG } from "../group-colors";
+import { GROUP_COLOR_DOT } from "../group-colors";
 import { ChevronDown, ChevronRight, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
 import NotesSheet from "./NotesSheet";
 import EmptyState from "./shared/EmptyState";
@@ -9,7 +9,8 @@ import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections } from "../task-helpers";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+import { Button } from "../design/primitives";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
@@ -165,12 +166,9 @@ export default function TaskList({
 
   return (
     <div ref={taskListScopeRef} className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
-      <button
-        onClick={() => onNewTask()}
-        className={`${UI.button.primary} w-full`}
-      >
-        + New Task
-      </button>
+      <Button fullWidth icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
+        New task
+      </Button>
       <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
         {hasGroups && displaySections ? (
@@ -178,20 +176,19 @@ export default function TaskList({
             const group = section.group;
             const isCollapsed = group?.collapsed ?? false;
             const groupId = group?.id ?? "__ungrouped__";
-            const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
-
             return (
               <DroppableGroup key={groupId} id={groupId}>
-                <div className={colorBg ? `${colorBg} rounded-lg` : ""}>
+                <div>
                 {group && (
                 <div className="flex items-center">
                   <button
                     onClick={() => {
                       if (onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
                     }}
-                    className="flex-1 px-3 py-1.5 text-xs font-semibold tracking-wide text-text-secondary flex items-center gap-1.5"
+                    className="flex min-h-9 flex-1 items-center gap-1.5 px-3 text-xs font-medium text-text-muted"
                   >
-                    {isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+                    {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                    <span className={cx(DS.dot, GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")} aria-hidden="true" />
                     {group.name}
                   </button>
                   <button

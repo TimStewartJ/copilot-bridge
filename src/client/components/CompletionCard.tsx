@@ -24,7 +24,7 @@ export default function CompletionCard({ entry }: CompletionCardProps) {
         <Icon size={14} className="shrink-0" aria-hidden="true" />
         <span>{entry.completion.title}</span>
       </div>
-      <div className={`chat-prose mt-2 max-w-none text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}>
+      <div className={`ds-prose mt-2 max-w-none text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}>
         <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
           {entry.content}
         </ReactMarkdown>

@@ -6,6 +6,8 @@ import type {
   SessionContextSummary,
   SessionContextTurn,
 } from "../../shared/session-context.js";
+import { DS } from "../design/tokens";
+import { Badge } from "../design/primitives";
 
 export type SummaryMetrics = {
   limit?: number;
@@ -187,24 +189,12 @@ export function capabilityLabel(value: SessionContextCapabilities[keyof SessionC
 
 export function CapabilityPill({ label, value }: { label: string; value?: SessionContextCapabilities[keyof SessionContextCapabilities] }) {
   if (!value) return null;
-  const className = value === "exact"
-    ? "border-success/30 bg-success/10 text-success"
-    : value === "partial" || value === "marker"
-      ? "border-warning/30 bg-warning/10 text-warning"
-      : "border-border bg-bg-secondary text-text-muted";
+  // An exact reading is the ordinary case and takes no colour; only a weaker one is worth a look.
+  const tone = value === "partial" || value === "marker" ? "warning" : "neutral";
   return (
-    <span className={`rounded-full border px-2 py-0.5 text-[10px] ${className}`}>
+    <Badge tone={tone}>
       {label}: {capabilityLabel(value)}
-    </span>
-  );
-}
-
-export function MetricChip({ label, value }: { label: string; value: number | undefined }) {
-  if (value === undefined) return null;
-  return (
-    <span className="rounded-full border border-border bg-bg px-2 py-0.5 text-[10px] text-text-muted">
-      {label}: {formatNumber(value)}
-    </span>
+    </Badge>
   );
 }
 
@@ -221,43 +211,24 @@ export function provenanceLabel(provenance: SessionContextFieldProvenance | null
 export function ProvenanceChip({ provenance }: { provenance?: SessionContextFieldProvenance | null }) {
   const label = provenanceLabel(provenance);
   if (!label) return null;
-  const className = provenance?.source === "estimated"
-    ? "border-warning/30 bg-warning/10 text-warning"
-    : provenance?.source === "backfill"
-      ? "border-accent/30 bg-accent/10 text-accent"
-      : "border-success/30 bg-success/10 text-success";
-  return (
-    <span className={`rounded-full border px-2 py-0.5 text-[10px] ${className}`}>
-      {label}
-    </span>
-  );
-}
-
-export function sumOptionalNumbers(...values: Array<number | null | undefined>): number | undefined {
-  let total = 0;
-  let hasValue = false;
-  for (const value of values) {
-    const normalized = optionalNumber(value);
-    if (normalized === undefined) continue;
-    total += normalized;
-    hasValue = true;
-  }
-  return hasValue ? total : undefined;
+  const tone = provenance?.source === "estimated" ? "warning" : provenance?.source === "backfill" ? "info" : "neutral";
+  return <Badge tone={tone}>{label}</Badge>;
 }
 
 export function ContextMeter({ metrics }: { metrics: SummaryMetrics }) {
   if (metrics.used === undefined || metrics.limit === undefined) return null;
   const percent = metrics.percent ?? 0;
-  const tone = percent >= 90 ? "bg-error" : percent >= 75 ? "bg-warning" : "bg-success";
+  // A window with room in it is not a state; the bar takes a colour only once it is filling up.
+  const fill = percent >= 90 ? "bg-error" : percent >= 75 ? "bg-warning" : "bg-text-muted";
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-[11px] text-text-muted">
+      <div className="flex items-center justify-between text-xs tabular-nums text-text-muted">
         <span>{metrics.percent !== undefined ? `${formatPercent(metrics.percent)} used` : "Usage"}</span>
         <span>{formatNumber(metrics.used)} / {formatNumber(metrics.limit)} tokens</span>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-bg" role="progressbar" aria-label="Context used" aria-valuenow={metrics.percent} aria-valuemin={0} aria-valuemax={100}>
+      <div className={DS.meter.track} role="progressbar" aria-label="Context used" aria-valuenow={metrics.percent} aria-valuemin={0} aria-valuemax={100}>
         <div
-          className={`h-full rounded-full ${tone}`}
+          className={`h-full rounded-full ${fill}`}
           style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
         />
       </div>

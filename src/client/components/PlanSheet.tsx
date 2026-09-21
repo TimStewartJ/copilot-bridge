@@ -9,6 +9,7 @@ import { APP_PROSE } from "./shared/prose-classes";
 import EmptyState from "./shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS } from "../design/tokens";
 
 interface PlanSheetProps {
   sessionId: string;
@@ -46,7 +47,7 @@ export default function PlanSheet({
       {/* Sheet */}
       <div
         {...dialogProps}
-        className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+        className={DS.surface.sheet}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">

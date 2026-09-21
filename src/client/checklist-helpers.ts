@@ -77,7 +77,7 @@ export const DEADLINE_STYLES: Record<DeadlineUrgency, string> = {
 };
 
 export const CHECKBOX_URGENCY: Record<DeadlineUrgency, string> = {
-  none: "border-text-faint hover:border-accent",
+  none: "border-text-faint hover:border-text-primary",
   soon: "border-warning hover:border-warning",
   overdue: "border-error hover:border-error",
 };

@@ -76,13 +76,9 @@ export default function TaskChecklistSection({
   }, [showReadyCue]);
 
   const readyCue = showReadyCue && (
-    <div className={`mx-3 rounded-md border border-success/25 bg-success/8 px-3 py-2 text-xs text-success ${
-      isCard ? "mb-2" : "mb-1.5"
-    }`}>
-      <div className="flex items-start gap-2">
-        <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
-        <span>Ready to complete — the checklist is finished. Use Complete task when you&apos;re ready.</span>
-      </div>
+    <div role="status" className={`flex items-start gap-2 text-xs leading-relaxed text-text-secondary ${isCard ? "mx-3 mb-2" : "mb-1.5"}`}>
+      <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-success" aria-hidden="true" />
+      <span>Ready to complete — the checklist is finished. Use Complete task when you&apos;re ready.</span>
     </div>
   );
 

@@ -90,6 +90,10 @@ jobs:
         shell: pwsh
         run: npm run test:xplat-audit
 
+      - name: Design system audit
+        shell: pwsh
+        run: npm run test:design-audit
+
       - name: Client typecheck
         shell: pwsh
         run: npm run typecheck:client

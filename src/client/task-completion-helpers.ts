@@ -115,18 +115,6 @@ export function getTaskStatusLabel(task: Pick<Task, "status" | "completedAt">): 
   return "Active";
 }
 
-/** Tailwind colour classes for a small status badge (rounded pill). */
-export function getTaskLifecycleBadgeClass(task: Pick<Task, "status" | "completedAt">): string {
-  const state = getTaskLifecycleDisplayState(task);
-  const colours =
-    state === "completed"
-      ? "bg-success/15 text-success"
-      : state === "archived"
-        ? "bg-text-muted/15 text-text-muted"
-        : "bg-info-surface text-info";
-  return `rounded-full px-1.5 py-0.5 text-[10px] ${colours}`;
-}
-
 /** Tailwind text-colour class for a small inline status label. */
 export function getTaskStatusTextClass(task: Pick<Task, "status" | "completedAt">): string {
   const state = getTaskLifecycleDisplayState(task);

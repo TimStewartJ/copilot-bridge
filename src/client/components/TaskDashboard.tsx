@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import type {
   BatchAction,
   CopilotUsageCostBreakdownUsd,
@@ -21,7 +21,6 @@ import { useTaskSessionStorageQuery } from "../hooks/queries/useTaskSessionStora
 import {
   getTaskCompletionCounts,
   getTaskCompletionState,
-  getTaskLifecycleBadgeClass,
   getTaskLifecycleDisplayState,
   getTaskStatusLabel,
 } from "../task-completion-helpers";
@@ -30,17 +29,18 @@ import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import { TagPillList } from "./TagPill";
 import TaskKindBadge from "./TaskKindBadge";
 import { getFollowUpState } from "./TaskMomentumFields";
-import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
-import { UI } from "./shared/design-system";
+import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
+import { DS, cx } from "../design/tokens";
+import { Badge, EmptyHint, Field, FieldList, Notice, Section, StatRow } from "../design/primitives";
+import { describeMeteredCoverage, formatUsageCredits as formatAiCredits, formatUsageNumber as formatNumber, formatUsageUsd as formatUsd, meteredCostUsd } from "../lib/usage-presentation";
+import UsageModelList from "./usage/UsageModelList";
 import {
   AlertTriangle,
   CheckCircle2,
-  CircleDot,
   ClipboardCheck,
-  FileText,
   FolderOpen,
+  GitBranch,
   Info,
-  MessageSquare,
   Milestone,
   StickyNote,
   Tags,
@@ -90,12 +90,18 @@ interface ReadinessInsight {
   signals: ReadinessSignal[];
 }
 
-const SIGNAL_TONE_CLASS: Record<SignalTone, string> = {
-  success: "border-success/30 bg-success/10 text-success",
-  warning: "border-warning/30 bg-warning/10 text-warning",
-  danger: "border-error/30 bg-error/10 text-error",
-  info: "border-info-border bg-info-surface text-info",
-  muted: "border-border bg-bg-surface text-text-muted",
+const NOTICE_TONE: Record<SignalTone, "success" | "warning" | "danger" | "info" | "neutral"> = {
+  success: "success",
+  warning: "warning",
+  danger: "danger",
+  info: "info",
+  muted: "neutral",
+};
+
+const LIFECYCLE_TONE: Record<ReturnType<typeof getTaskLifecycleDisplayState>, "success" | "neutral" | "info"> = {
+  completed: "success",
+  archived: "neutral",
+  active: "info",
 };
 
 const ZERO_USAGE_TOTALS: CopilotUsageTotals = {
@@ -121,65 +127,34 @@ export function TaskDashboardRouteSkeleton() {
     >
       <div className="h-full min-h-0 relative">
         <div className="absolute inset-0 overflow-y-auto">
-          <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
+          <div className={cx(DS.layout.pageColumn, "space-y-8")}>
             <header className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Skeleton width={14} height={14} shape="circle" />
-                <Skeleton width={116} height={10} shape="pill" />
+              <div className="flex flex-wrap gap-2">
+                <Skeleton width={72} height={14} shape="pill" />
+                <Skeleton width={56} height={14} shape="pill" />
+                <Skeleton width={110} height={14} shape="pill" />
               </div>
-              <div className="space-y-2">
-                <div className="flex flex-wrap gap-2">
-                  <Skeleton width={72} height={18} shape="pill" />
-                  <Skeleton width={56} height={18} shape="pill" />
-                  <Skeleton width={90} height={18} shape="pill" />
-                </div>
-                <Skeleton width="58%" height={28} shape="pill" />
-                <SkeletonText lines={2} widths={["72%", "52%"]} className="max-w-3xl" />
-              </div>
+              <Skeleton width="58%" height={28} shape="pill" />
+              <SkeletonText lines={1} widths={["64%"]} className="max-w-3xl" />
             </header>
 
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-              <section className="space-y-2">
-                <Skeleton width={96} height={10} shape="pill" />
-                <SkeletonCard className="space-y-4">
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {Array.from({ length: 6 }, (_, index) => (
-                      <SkeletonCard key={index} className="space-y-2 p-3">
-                        <Skeleton width="62%" height={9} shape="pill" />
-                        <Skeleton width="36%" height={14} shape="pill" />
-                      </SkeletonCard>
-                    ))}
-                  </div>
-                  <SkeletonText lines={5} widths={["100%", "94%", "88%", "78%", "64%"]} />
-                </SkeletonCard>
-              </section>
+            <StatRowSkeleton count={6} />
 
-              <section className="space-y-2">
-                <Skeleton width={132} height={10} shape="pill" />
-                <SkeletonCard className="space-y-4">
-                  <SkeletonCard className="space-y-2 border-info-border bg-info-surface">
-                    <Skeleton width="48%" height={14} shape="pill" />
-                    <SkeletonText lines={2} widths={["92%", "68%"]} />
-                  </SkeletonCard>
-                  <SkeletonText lines={6} widths={["100%", "74%", "100%", "68%", "100%", "82%"]} />
-                </SkeletonCard>
+            <div className="grid grid-cols-1 gap-x-12 gap-y-8 lg:grid-cols-[1.05fr_0.95fr]">
+              <section className="space-y-4">
+                <Skeleton width={84} height={12} shape="pill" />
+                <FieldListSkeleton rows={6} />
+              </section>
+              <section className="space-y-4">
+                <Skeleton width={148} height={12} shape="pill" />
+                <SkeletonText lines={2} widths={["88%", "64%"]} />
+                <FieldListSkeleton rows={3} />
               </section>
             </div>
 
-            <section className="space-y-2">
-              <Skeleton width={104} height={10} shape="pill" />
-              <SkeletonCard className="space-y-5">
-                <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
-                  {Array.from({ length: 6 }, (_, index) => (
-                    <SkeletonCard key={index} className="space-y-2 p-3">
-                      <Skeleton width="54%" height={9} shape="pill" />
-                      <Skeleton width="44%" height={14} shape="pill" />
-                      <Skeleton width="64%" height={9} shape="pill" />
-                    </SkeletonCard>
-                  ))}
-                </div>
-                <SkeletonText lines={4} widths={["100%", "94%", "82%", "70%"]} />
-              </SkeletonCard>
+            <section className="space-y-5">
+              <Skeleton width={104} height={12} shape="pill" />
+              <SessionUsageSkeleton />
             </section>
           </div>
         </div>
@@ -188,6 +163,31 @@ export function TaskDashboardRouteSkeleton() {
   );
 }
 
+function StatRowSkeleton({ count }: { count: number }) {
+  return (
+    <div className="flex flex-wrap gap-x-8 gap-y-3">
+      {Array.from({ length: count }, (_, index) => (
+        <div key={index} className="space-y-1.5">
+          <Skeleton width={44} height={18} shape="pill" />
+          <Skeleton width={64} height={9} shape="pill" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FieldListSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className={DS.surface.divided}>
+      {Array.from({ length: rows }, (_, index) => (
+        <div key={index} className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-4 py-3">
+          <Skeleton width={72} height={10} shape="pill" />
+          <Skeleton width={index % 2 === 0 ? "82%" : "56%"} height={10} shape="pill" />
+        </div>
+      ))}
+    </div>
+  );
+}
 export default function TaskDashboard({
   task,
   taskGroups = [],
@@ -214,6 +214,7 @@ export default function TaskDashboard({
   const {
     data: copilotUsage,
     isLoading: copilotUsageLoading,
+    error: copilotUsageError,
     refresh: refreshCopilotUsage,
   } = useCopilotUsageQuery({ taskId: task.id, sessionIds: task.sessionIds });
   const {
@@ -296,481 +297,312 @@ export default function TaskDashboard({
         className="absolute inset-0"
         scrollRestoration={scrollRestoration}
       >
-        <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 space-y-6">
-          <header className="space-y-3">
-            <div className={UI.text.pageKicker}>
-              <CircleDot size={14} className="text-info" />
-              Task intelligence
-            </div>
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                {group && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-bg-hover px-2 py-0.5 text-[10px] text-text-muted">
-                    <span className={`h-2 w-2 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
-                    {group.name}
-                  </span>
-                )}
-                <span className={getTaskLifecycleBadgeClass(task)}>
-                  {getTaskStatusLabel(task)}
+        <div className={cx(DS.layout.pageColumn, "space-y-8")}>
+          <header className="space-y-2">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
+              {group && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className={cx(DS.dot, GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")} aria-hidden="true" />
+                  {group.name}
                 </span>
-                <TaskKindBadge kind={task.kind} showTask />
-                <span className="text-[10px] text-text-faint">
-                  Last activity {timeAgo(lastActivity)}
-                </span>
-              </div>
-              <h1 className={UI.text.pageTitle}>
-                {task.title}
-              </h1>
-              <p className={UI.text.pageDescription}>
-                A read-only overview of readiness, context, and recent activity. Use the task cockpit for edits and actions.
-              </p>
+              )}
+              <Badge tone={LIFECYCLE_TONE[getTaskLifecycleDisplayState(task)]}>{getTaskStatusLabel(task)}</Badge>
+              <TaskKindBadge kind={task.kind} showTask />
+              <span className={DS.text.meta}>Last activity {timeAgo(lastActivity)}</span>
             </div>
+            <h1 className={DS.text.pageTitle}>
+              {task.title}
+            </h1>
+            <p className={cx(DS.text.prose, "max-w-3xl")}>
+              A read-only overview of readiness, context, and recent activity. Use the task cockpit for edits and actions.
+            </p>
           </header>
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-            <Section
-              icon={<FileText size={14} />}
-              title="Task brief"
-            >
-              <div className={`${UI.surface.card} space-y-4 p-4`}>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {contextStats.map((stat) => (
-                    <div key={stat.label} className={`${UI.surface.cardInset} px-3 py-2`}>
-                      <div className={UI.text.metricLabel}>
-                        {stat.label}
-                      </div>
-                      <div className="mt-1 text-sm font-semibold text-text-primary">
-                        {stat.value}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+          <StatRow stats={contextStats} />
 
-                <div className="space-y-3">
-                  <BriefRow
-                    icon={<StickyNote size={13} />}
-                    label="Summary"
-                    value={notesExcerpt || "No notes captured yet."}
-                  />
-                  <BriefRow
-                    icon={<Milestone size={13} />}
-                    label="Done when"
-                    value={task.kind === "ongoing" ? "Ongoing item; no finish line required." : task.doneWhen || "No finish line defined."}
-                  />
-                  <BriefRow
-                    icon={<ClipboardCheck size={13} />}
-                    label="Next action"
-                    value={task.nextAction || "No next action captured."}
-                  />
-                  <BriefRow
-                    icon={<AlertTriangle size={13} />}
-                    label="Waiting on"
-                    value={task.waitingOn || "No blocker captured."}
-                  />
-                  <BriefRow
-                    icon={<TimerReset size={13} />}
-                    label="Follow-up"
-                    value={formatFollowUp(task.nextTouchAt)}
-                  />
-                  <BriefRow
-                    icon={<FolderOpen size={13} />}
-                    label="Workspace"
-                    value={task.cwd || "No workspace set."}
-                    valueClassName={task.cwd ? "font-mono text-[11px]" : undefined}
-                  />
-                  {taskGitStatus && (
-                    <div className={`${UI.surface.cardInset} px-3 py-2`}>
-                      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-text-muted">
-                        <FolderOpen size={12} />
-                        Git status
-                      </div>
-                      <TaskGitStatusSummary gitStatus={taskGitStatus} className="text-[11px]" />
-                    </div>
-                  )}
-                  <div className={`${UI.surface.cardInset} px-3 py-2`}>
-                    <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-text-muted">
-                      <Tags size={12} />
-                      Tags
-                    </div>
-                    {effectiveTags.length > 0 ? (
-                      <TagPillList tags={effectiveTags} inheritedTagIds={inheritedTagSet} size="sm" />
-                    ) : (
-                      <div className="text-xs text-text-muted">No tags attached.</div>
-                    )}
-                  </div>
-                </div>
-              </div>
+          <div className="grid grid-cols-1 gap-x-12 gap-y-8 lg:grid-cols-[1.05fr_0.95fr]">
+            <Section level="page" label="Task brief">
+              <FieldList>
+                <Field icon={<StickyNote size={13} />} label="Summary" empty="No notes captured yet.">
+                  {notesExcerpt}
+                </Field>
+                <Field
+                  icon={<Milestone size={13} />}
+                  label="Done when"
+                  empty={task.kind === "ongoing" ? "Ongoing item; no finish line required." : "No finish line defined."}
+                >
+                  {task.kind === "ongoing" ? undefined : task.doneWhen}
+                </Field>
+                <Field icon={<ClipboardCheck size={13} />} label="Next action" empty="No next action captured.">
+                  {task.nextAction}
+                </Field>
+                <Field icon={<AlertTriangle size={13} />} label="Waiting on" empty="No blocker captured.">
+                  {task.waitingOn}
+                </Field>
+                <Field icon={<TimerReset size={13} />} label="Follow-up" empty="No follow-up scheduled.">
+                  {task.nextTouchAt ? formatFollowUp(task.nextTouchAt) : undefined}
+                </Field>
+                <Field icon={<FolderOpen size={13} />} label="Workspace" empty="No workspace set." mono>
+                  {task.cwd}
+                </Field>
+                {taskGitStatus && (
+                  <Field icon={<GitBranch size={13} />} label="Git status">
+                    <TaskGitStatusSummary gitStatus={taskGitStatus} />
+                  </Field>
+                )}
+                <Field icon={<Tags size={13} />} label="Tags" empty="No tags attached.">
+                  {effectiveTags.length > 0
+                    ? <TagPillList tags={effectiveTags} inheritedTagIds={inheritedTagSet} size="sm" />
+                    : undefined}
+                </Field>
+              </FieldList>
             </Section>
 
-            <div>
-              <Section
-                icon={<CheckCircle2 size={14} />}
-                title="Readiness intelligence"
+            <Section level="page" label="Readiness intelligence">
+              <Notice
+                tone={NOTICE_TONE[readiness.tone]}
+                role="status"
+                icon={readiness.tone === "success" ? <CheckCircle2 size={15} /> : <Info size={15} />}
+                title={<span className="text-[13px]">{readiness.title}</span>}
               >
-                <div className={`${UI.surface.card} space-y-4 p-4`}>
-                  <div className={`rounded-lg border px-4 py-3 ${SIGNAL_TONE_CLASS[readiness.tone]}`}>
-                    <div className="flex items-start gap-3">
-                      <div className="mt-0.5">
-                        {readiness.tone === "success" ? <CheckCircle2 size={18} /> : <Info size={18} />}
+                {readiness.description}
+              </Notice>
+
+              <div className={cx(DS.surface.divided, "mt-2")}>
+                {readiness.signals.map((signal) => (
+                  <div key={signal.label} className="py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[13px] font-medium text-text-primary">
+                        {signal.label}
                       </div>
-                      <div>
-                        <div className="text-sm font-semibold">
-                          {readiness.title}
-                        </div>
-                        <div className="mt-1 text-xs leading-relaxed opacity-90">
-                          {readiness.description}
-                        </div>
-                      </div>
+                      <Badge tone={signal.tone === "danger" ? "danger" : signal.tone === "warning" ? "warning" : "neutral"}>
+                        {signal.tone === "danger" ? "Blocking" : signal.tone === "warning" ? "Attention" : "Clear"}
+                      </Badge>
+                    </div>
+                    <div className="mt-0.5 text-xs leading-relaxed text-text-muted">
+                      {signal.detail}
                     </div>
                   </div>
-
-                  <div className="space-y-2">
-                    {readiness.signals.map((signal) => (
-                      <div
-                        key={signal.label}
-                        className={`${UI.surface.cardInset} px-3 py-2`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs font-medium text-text-primary">
-                            {signal.label}
-                          </div>
-                          <span className={`rounded-full border px-2 py-0.5 text-[10px] ${SIGNAL_TONE_CLASS[signal.tone]}`}>
-                            {signal.tone === "danger" ? "Blocking" : signal.tone === "warning" ? "Attention" : "Clear"}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-xs leading-relaxed text-text-muted">
-                          {signal.detail}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </Section>
-            </div>
+                ))}
+              </div>
+            </Section>
           </div>
 
-          <div>
-            <Section
-              icon={<MessageSquare size={14} />}
-              title="Session usage"
-              count={isSessionUsageLoading
-                ? undefined
-                : `${sessionUsage.includedSessions.length}/${Math.max(task.sessionIds.length, sessionUsage.includedSessions.length)} tokenized`}
-            >
-              {isSessionUsageLoading ? (
-                <LoadingSkeletonRegion
-                  isLoading
-                  label="Loading session usage"
-                  className={`${UI.surface.card} space-y-5 p-4`}
-                >
-                  <SessionUsageSkeleton />
-                </LoadingSkeletonRegion>
-              ) : (
-                <div className={`${UI.surface.card} space-y-5 p-4`}>
+          <Section
+            level="page"
+            label="Session usage"
+            count={isSessionUsageLoading
+              ? undefined
+              : `${sessionUsage.includedSessions.length}/${Math.max(task.sessionIds.length, sessionUsage.includedSessions.length)} tokenized`}
+          >
+            {copilotUsageError && (
+              <Notice tone="danger" icon={<AlertTriangle size={14} />} className="mb-3">
+                Could not refresh task usage: {copilotUsageError instanceof Error ? copilotUsageError.message : String(copilotUsageError)}.
+                {copilotUsage ? " The previous reading is still shown." : " No usage totals are available."}
+              </Notice>
+            )}
+            {copilotUsage?.index.state === "error" && (
+              <Notice tone="danger" icon={<AlertTriangle size={14} />} className="mb-3">
+                {copilotUsage.index.error ?? "Task usage indexing failed; cached readings are shown."}
+              </Notice>
+            )}
+            {copilotUsage?.index.warning && (
+              <Notice tone="warning" icon={<AlertTriangle size={14} />} className="mb-3">{copilotUsage.index.warning}</Notice>
+            )}
+            {isSessionUsageLoading ? (
+              <LoadingSkeletonRegion
+                isLoading
+                label="Loading session usage"
+                className="space-y-6"
+              >
+                <SessionUsageSkeleton />
+              </LoadingSkeletonRegion>
+            ) : copilotUsageError && !copilotUsage ? null : (
+              <div className="space-y-7">
                 {copilotUsage?.index.state === "scanning" && (
-                  <div className="flex items-start gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-text-muted">
-                    <Info size={14} className="mt-0.5 shrink-0 text-accent" />
-                    <span>
-                      Usage is still indexing in the background. These task totals update as linked sessions are cached.
-                    </span>
-                  </div>
+                  <Notice tone="info" icon={<Info size={14} />}>
+                    Usage is still indexing in the background. These task totals update as linked sessions are cached.
+                  </Notice>
                 )}
-                <div className={sessionUsage.cost.hasCostEstimate
-                  ? "grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7"
-                  : "grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6"}
-                >
-                  <MetricCard label="Tokens" value={formatNumber(sessionUsage.totals.totalTokens)} sub="posted" />
-                  {sessionUsage.cost.hasCostEstimate && (
-                    <MetricCard
-                      label="Est. cost"
-                      value={formatUsd(sessionUsage.cost.estimatedCostUsd)}
-                      sub={`${formatAiCredits(sessionUsage.cost.estimatedAiCredits)} credits`}
-                    />
-                  )}
-                  <MetricCard label="Requests" value={formatNumber(sessionUsage.totals.requests)} sub="completed" />
-                  <MetricCard label="Tokenized" value={String(sessionUsage.includedSessions.length)} sub="sessions" />
-                  <MetricCard label="Pending" value={String(sessionUsage.sessionsWithoutUsage)} sub="no shutdown yet" />
-                  <MetricCard label="Busy" value={String(sessionUsage.busySessions)} sub="running/stalled" />
-                  <MetricCard
-                    label="Storage"
-                    value={sessionStorageLoading && !sessionStorage ? "..." : formatBytes(sessionUsage.totalDiskSizeBytes)}
-                    sub="session files"
-                  />
-                </div>
+                <StatRow
+                  stats={[
+                    { label: "Tokens", value: formatNumber(sessionUsage.totals.totalTokens), detail: "posted" },
+                    ...(sessionUsage.cost.hasCostEstimate
+                      ? [{
+                        label: "Est. cost",
+                        value: formatUsd(sessionUsage.cost.estimatedCostUsd),
+                        detail: `${formatAiCredits(sessionUsage.cost.estimatedAiCredits)} AI credits`,
+                      }]
+                      : []),
+                    {
+                      label: "Metered cost",
+                      value: formatUsd(meteredCostUsd(sessionUsage.totals)),
+                      detail: meteredCostUsd(sessionUsage.totals) !== null ? describeMeteredCoverage(sessionUsage.totals) : "No SDK metering recorded",
+                    },
+                    { label: "Requests", value: formatNumber(sessionUsage.totals.requests), detail: "completed" },
+                    { label: "Tokenized", value: String(sessionUsage.includedSessions.length), detail: "sessions" },
+                    { label: "Pending", value: String(sessionUsage.sessionsWithoutUsage), detail: "no shutdown yet" },
+                    { label: "Busy", value: String(sessionUsage.busySessions), detail: "running/stalled" },
+                    {
+                      label: "Storage",
+                      value: sessionStorageLoading && !sessionStorage ? "..." : formatBytes(sessionUsage.totalDiskSizeBytes),
+                      detail: "session files",
+                    },
+                  ]}
+                />
 
-                <div className={`${UI.surface.cardInset} p-3`}>
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div>
-                      <h3 className="text-xs font-semibold text-text-primary">Tokens by day</h3>
-                      <p className="mt-0.5 text-[11px] text-text-muted">
-                        Based on completed assistant turns and shutdown summaries linked to this task.
-                      </p>
-                    </div>
-                    {sessionUsage.latestUsageAt && (
-                      <span className="shrink-0 text-[11px] text-text-faint">
-                        Updated {timeAgo(sessionUsage.latestUsageAt)}
-                      </span>
-                    )}
-                  </div>
+                <Section
+                  label="Tokens by day"
+                  action={sessionUsage.latestUsageAt
+                    ? <span className={DS.usage.meta}>Updated {timeAgo(sessionUsage.latestUsageAt)}</span>
+                    : undefined}
+                >
+                  <p className={cx(DS.text.empty, "mb-3")}>
+                    Based on completed assistant turns and shutdown summaries linked to this task.
+                  </p>
                   {sessionUsage.dayBuckets.length > 0 ? (
                     <div className="space-y-2">
                       {sessionUsage.dayBuckets.map((bucket) => (
-                        <div key={bucket.key} className="grid grid-cols-[5.5rem_1fr_auto] items-center gap-3">
-                          <div className="text-[11px] text-text-muted">{bucket.label}</div>
-                          <div className="h-2 rounded-full bg-bg-hover">
+                        <div key={bucket.key} className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 text-xs tabular-nums">
+                          <div className="text-text-secondary">{bucket.label}</div>
+                          <div className={DS.meter.track}>
                             <div
-                              className="h-2 rounded-full bg-accent"
-                              style={{ width: `${Math.max(6, Math.round((bucket.totalTokens / sessionUsage.maxDayTokens) * 100))}%` }}
+                              className={DS.meter.fill}
+                              style={{ width: `${(bucket.totalTokens / sessionUsage.maxDayTokens) * 100}%`, minWidth: bucket.totalTokens > 0 ? 2 : undefined }}
                             />
                           </div>
-                          <div className="text-right text-[11px] font-medium text-text-primary">
-                            <div>{formatNumber(bucket.totalTokens)}</div>
+                          <div className="min-w-[5.5rem] text-right text-text-primary">
+                            {formatNumber(bucket.totalTokens)}
                             {bucket.hasCostEstimate && (
-                              <div className="text-[10px] font-normal text-text-faint">{formatUsd(bucket.estimatedCostUsd)}</div>
+                              <span className="ml-2 text-text-secondary">{formatUsd(bucket.estimatedCostUsd)} est.</span>
                             )}
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-text-muted">
+                    <EmptyHint>
                       No token totals yet. Tokens appear here after linked sessions complete assistant turns or write usage summaries.
-                    </div>
+                    </EmptyHint>
                   )}
-                </div>
+                </Section>
 
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  <div className={`${UI.surface.cardInset} p-3`}>
-                    <h3 className="mb-2 text-xs font-semibold text-text-primary">Heaviest sessions</h3>
+                <div className="grid grid-cols-1 gap-x-12 gap-y-7 lg:grid-cols-2">
+                  <Section label="Heaviest sessions">
                     {sessionUsage.topSessions.length > 0 ? (
-                      <div className="space-y-2">
-                        {sessionUsage.topSessions.map((row) => (
-                          <div key={row.sessionId} className="rounded-md border border-border/60 bg-bg-secondary/60 px-3 py-2">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate text-xs font-medium text-text-primary">
+                      <div className={DS.surface.divided}>
+                        {sessionUsage.topSessions.map((row) => {
+                          const body = (
+                            <>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-[13px] font-medium text-text-primary">
                                   {row.label}
                                 </div>
-                                <div className="mt-0.5 text-[11px] text-text-muted">
+                                <div className="mt-0.5 truncate text-xs text-text-muted">
                                   {row.shutdownAt ? `Usage posted ${timeAgo(row.shutdownAt)}` : "Usage posted without a timestamp"}
                                   {row.models.length > 0 ? ` · ${row.models.map((model) => model.model).join(", ")}` : ""}
                                 </div>
                               </div>
-                              <div className="shrink-0 text-right">
-                                <div className="text-xs font-semibold text-text-primary">{formatNumber(row.totalTokens)}</div>
-                                <div className="text-[10px] text-text-faint">
+                              <div className="shrink-0 text-right tabular-nums">
+                                <div className="text-[13px] font-medium text-text-primary">{formatNumber(row.totalTokens)}</div>
+                                <div className={DS.usage.meta}>
                                   {formatNumber(row.requests)} req
-                                  {row.hasCostEstimate ? ` · ${formatUsd(row.estimatedCostUsd)}` : ""}
+                                  {row.hasCostEstimate ? ` · ${formatUsd(row.estimatedCostUsd)} est.` : ""}
                                 </div>
                               </div>
+                            </>
+                          );
+                          return row.hasLoadedSession ? (
+                            <button
+                              key={row.sessionId}
+                              type="button"
+                              onClick={() => onSelectSession(row.sessionId)}
+                              title="Open session"
+                              className={cx("-mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-bg-hover/60", DS.focus)}
+                            >
+                              {body}
+                            </button>
+                          ) : (
+                            <div key={row.sessionId} className="flex items-center gap-3 py-2">
+                              {body}
                             </div>
-                            {row.hasLoadedSession && (
-                              <button
-                                onClick={() => onSelectSession(row.sessionId)}
-                                className="mt-2 text-xs font-medium text-accent hover:text-accent-hover"
-                              >
-                                Open session
-                              </button>
-                            )}
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
-                      <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-text-muted">
-                        Linked sessions do not have token summaries yet.
-                      </div>
+                      <EmptyHint>Linked sessions do not have token summaries yet.</EmptyHint>
                     )}
-                  </div>
+                  </Section>
 
-                  <div className={`${UI.surface.cardInset} p-3`}>
-                    <h3 className="mb-2 text-xs font-semibold text-text-primary">Models used</h3>
-                    {sessionUsage.modelRows.length > 0 ? (
-                      <div className="space-y-2">
-                        {sessionUsage.modelRows.map((row) => (
-                          <div key={row.model} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-md border border-border/60 bg-bg-secondary/60 px-3 py-2">
-                            <div className="min-w-0">
-                              <div className="truncate text-xs font-medium text-text-primary">{row.model}</div>
-                              <div className="text-[11px] text-text-muted">
-                                {row.sessions} {row.sessions === 1 ? "session" : "sessions"} · {formatNumber(row.requests)} requests
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <div className="text-xs font-semibold text-text-primary">{formatNumber(row.totalTokens)}</div>
-                              {row.hasCostEstimate && (
-                                <div className="text-[10px] text-text-faint">
-                                  {row.hasUnpricedUsage && row.estimatedCostUsd === 0 ? "unpriced" : formatUsd(row.estimatedCostUsd)}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-text-muted">
-                        Model breakdown will appear after session usage is available.
-                      </div>
+                  <Section label="Models used">
+                    {sessionUsage.modelRows.length > 0 ? <UsageModelList models={sessionUsage.modelRows} /> : (
+                      <EmptyHint>Model breakdown will appear after session usage is available.</EmptyHint>
                     )}
-                  </div>
+                  </Section>
                 </div>
 
-                  {sessionUsage.sessionsWithoutUsage > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border border-info-border bg-info-surface px-3 py-2 text-xs text-info">
-                      <Info size={14} className="mt-0.5 shrink-0" />
-                      <p>
+                {(sessionUsage.sessionsWithoutUsage > 0 || sessionUsage.cost.unpricedModelNames.length > 0) && (
+                  <div className="space-y-2">
+                    {sessionUsage.sessionsWithoutUsage > 0 && (
+                      <Notice tone="info" icon={<Info size={14} />}>
                         {sessionUsage.sessionsWithoutUsage} linked {sessionUsage.sessionsWithoutUsage === 1 ? "session has" : "sessions have"} no token total yet.
                         Running or recently active sessions usually post usage after assistant turns complete or after shutdown.
-                      </p>
-                    </div>
-                  )}
-                  {sessionUsage.cost.unpricedModelNames.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning">
-                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                      <p>
+                      </Notice>
+                    )}
+                    {sessionUsage.cost.unpricedModelNames.length > 0 && (
+                      <Notice tone="warning" role="status" icon={<AlertTriangle size={14} />}>
                         Estimated cost excludes {formatNumber(sessionUsage.cost.unpricedTokens.totalTokens)} tokens from unpriced linked{" "}
                         {sessionUsage.cost.unpricedModelNames.length === 1 ? "model" : "models"}: {sessionUsage.cost.unpricedModelNames.slice(0, 3).join(", ")}
                         {sessionUsage.cost.unpricedModelNames.length > 3 ? ` +${sessionUsage.cost.unpricedModelNames.length - 3} more` : ""}.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </Section>
-          </div>
+                      </Notice>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </Section>
         </div>
       </PullToRefresh>
     </div>
   );
 }
-
-function MetricCard({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub: string;
-}) {
-  return (
-    <div className={`${UI.surface.cardInset} px-3 py-2`}>
-      <div className={UI.text.metricLabel}>
-        {label}
-      </div>
-      <div className="mt-1 text-sm font-semibold text-text-primary">
-        {value}
-      </div>
-      <div className="text-[10px] text-text-muted">
-        {sub}
-      </div>
-    </div>
-  );
-}
-
 function SessionUsageSkeleton() {
   return (
     <>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
-        {Array.from({ length: 6 }, (_, index) => (
-          <SkeletonCard key={index} className="space-y-2 px-3 py-2">
-            <Skeleton height={9} width="58%" shape="pill" />
-            <Skeleton height={16} width="44%" shape="pill" />
-            <Skeleton height={9} width="72%" shape="pill" />
-          </SkeletonCard>
+      <StatRowSkeleton count={6} />
+
+      <div className="space-y-3">
+        <Skeleton height={10} width={96} shape="pill" />
+        {Array.from({ length: 4 }, (_, index) => (
+          <div key={index} className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3">
+            <Skeleton height={9} width={52} shape="pill" />
+            <Skeleton height={6} width="100%" shape="pill" />
+            <Skeleton height={9} width={56} shape="pill" />
+          </div>
         ))}
       </div>
 
-      <SkeletonCard className="space-y-4 p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1 space-y-2">
-            <Skeleton height={12} width={96} shape="pill" />
-            <Skeleton height={9} width="62%" shape="pill" />
-          </div>
-          <Skeleton height={9} width={84} shape="pill" className="shrink-0" />
-        </div>
-        <div className="space-y-3">
-          {Array.from({ length: 4 }, (_, index) => (
-            <div key={index} className="grid grid-cols-[5.5rem_1fr_auto] items-center gap-3">
-              <Skeleton height={9} width={52} shape="pill" />
-              <Skeleton height={8} width="100%" shape="pill" />
-              <Skeleton height={9} width={42} shape="pill" />
-            </div>
-          ))}
-        </div>
-      </SkeletonCard>
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-x-12 gap-y-7 lg:grid-cols-2">
         {["Heaviest sessions", "Models used"].map((label) => (
-          <SkeletonCard key={label} className="space-y-3 p-3">
-            <Skeleton height={12} width={label === "Models used" ? 78 : 110} shape="pill" />
-            {Array.from({ length: 3 }, (_, index) => (
-              <div key={index} className="rounded-md border border-border/60 bg-bg-secondary/60 px-3 py-2">
-                <div className="grid grid-cols-[1fr_auto] items-center gap-3">
-                  <div className="min-w-0 space-y-2">
+          <div key={label} className="space-y-1">
+            <Skeleton height={10} width={label === "Models used" ? 78 : 110} shape="pill" />
+            <div className={DS.surface.divided}>
+              {Array.from({ length: 3 }, (_, index) => (
+                <div key={index} className="flex items-center gap-3 py-2.5">
+                  <div className="min-w-0 flex-1 space-y-2">
                     <Skeleton height={10} width="74%" shape="pill" />
                     <Skeleton height={9} width="52%" shape="pill" />
                   </div>
                   <Skeleton height={12} width={48} shape="pill" />
                 </div>
-              </div>
-            ))}
-          </SkeletonCard>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </>
   );
 }
-
-function Section({
-  icon,
-  title,
-  count,
-  children,
-}: {
-  icon: ReactNode;
-  title: string;
-  count?: number | string;
-  children: ReactNode;
-}) {
-  return (
-    <section>
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className={UI.text.sectionTitle}>
-          {icon}
-          {title}
-          {count !== undefined && (
-            <span className="font-normal text-text-faint">({count})</span>
-          )}
-        </h2>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function BriefRow({
-  icon,
-  label,
-  value,
-  valueClassName = "",
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  valueClassName?: string;
-}) {
-  return (
-    <div className={`${UI.surface.cardInset} px-3 py-2`}>
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-text-muted">
-        {icon}
-        {label}
-      </div>
-      <div className={`text-xs leading-relaxed text-text-secondary ${valueClassName}`.trim()}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
 function buildReadinessInsight({
   task,
   checklistLoaded,
@@ -1120,10 +952,6 @@ function formatUsageDayLabel(value: string): string {
   });
 }
 
-function formatNumber(value: number): string {
-  return Math.round(value).toLocaleString();
-}
-
 function formatBytes(value: number): string {
   if (value <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"] as const;
@@ -1134,28 +962,6 @@ function formatBytes(value: number): string {
     unitIndex += 1;
   }
   return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
-}
-
-function formatUsd(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "$0";
-  const fractionDigits = value >= 1
-    ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
-    : value >= 0.01
-      ? { minimumFractionDigits: 2, maximumFractionDigits: 4 }
-      : { minimumFractionDigits: 4, maximumFractionDigits: 6 };
-  return value.toLocaleString(undefined, {
-    style: "currency",
-    currency: "USD",
-    ...fractionDigits,
-  });
-}
-
-function formatAiCredits(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0";
-  if (value >= 100) return Math.round(value).toLocaleString();
-  return value.toLocaleString(undefined, {
-    maximumFractionDigits: value >= 10 ? 1 : 2,
-  });
 }
 
 function createSessionUsageModelRow(model: string): SessionUsageModelDisplayRow {

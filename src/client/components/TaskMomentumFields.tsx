@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
 import type { Task } from "../api";
 import { patchTask } from "../api";
+import { DS, cx } from "../design/tokens";
+import { Button, Field, FieldList, Section, TextInput } from "../design/primitives";
 
 type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
 
@@ -10,7 +13,6 @@ export type PanelFieldTone = "danger" | "warning" | null;
 
 interface TaskMomentumFieldsProps {
   task: Task;
-  variant?: "panel" | "dashboard";
   onSaved?: () => void;
   onPatched?: (task: Task) => void;
 }
@@ -55,7 +57,6 @@ export function isExpandablePanelValue(value: string): boolean {
 
 export default function TaskMomentumFields({
   task,
-  variant = "panel",
   onSaved,
   onPatched,
 }: TaskMomentumFieldsProps) {
@@ -74,7 +75,6 @@ export default function TaskMomentumFields({
     setExpandedFields(new Set());
   }, [task.id, task.kind, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
 
-  const isDashboard = variant === "dashboard";
   const visibleFieldKeys = getVisibleMomentumFieldKeys(task.kind);
   const orderedPanelFields = PANEL_FIELD_ORDER
     .filter((key) => visibleFieldKeys.includes(key))
@@ -155,222 +155,107 @@ export default function TaskMomentumFields({
     void persistField(field, "");
   };
 
-  if (!isDashboard) {
-    return (
-      <div className="rounded-md border border-border bg-bg-surface overflow-hidden">
-        <div className="px-3 py-2 border-b border-border/70 bg-bg-secondary/40">
-          <div className="text-xs font-semibold tracking-wide text-text-secondary">
-            Momentum
-          </div>
-          <div className="text-[11px] text-text-faint mt-0.5">
-            {getPanelSummary(values)}
-          </div>
-        </div>
-
-        {visiblePanelFields.length > 0 ? (
-          <div className="divide-y divide-border/70">
-            {visiblePanelFields.map((field) => {
-              const currentValue = values[field.key];
-              const isEditing = editingField === field.key;
-              const isSaving = savingField === field.key;
-              const tone = getPanelFieldTone(field.key, currentValue);
-              const rowClassName = tone === "danger"
-                ? "bg-error/10"
-                : tone === "warning"
-                  ? "bg-warning/10"
-                  : "";
-              const labelClassName = tone === "danger"
-                ? "text-error"
-                : tone === "warning"
-                  ? "text-warning"
-                  : "text-text-muted";
-              const displayValue = formatFieldDisplay(field.key, currentValue);
-              const isExpanded = expandedFields.has(field.key);
-              const isExpandable = isExpandablePanelValue(displayValue);
-
-              return (
-                <div key={field.key} className={`px-3 py-2 ${rowClassName}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`text-[11px] font-medium tracking-wide ${labelClassName}`}>
-                      {field.label}
-                    </span>
-                    {isSaving ? (
-                      <span className="text-[10px] text-text-faint">Saving…</span>
-                    ) : currentValue && !isEditing ? (
-                      <div className="flex shrink-0 items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => startEditingField(field.key)}
-                          className="text-[10px] text-text-faint transition-colors hover:text-text-primary"
-                          aria-label={`Edit ${field.label}`}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => clearField(field.key)}
-                          className="text-[10px] text-text-faint transition-colors hover:text-text-primary"
-                          aria-label={`Clear ${field.label}`}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {isEditing ? (
-                    <input
-                      autoFocus
-                      type={field.type}
-                      value={drafts[field.key]}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setDrafts((current) => ({ ...current, [field.key]: nextValue }));
-                      }}
-                      onBlur={() => {
-                        void persistField(field.key, drafts[field.key]);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void persistField(field.key, drafts[field.key]);
-                        }
-                        if (event.key === "Escape") {
-                          setDrafts((current) => ({ ...current, [field.key]: values[field.key] }));
-                          setEditingField(null);
-                        }
-                      }}
-                      className="mt-1.5 w-full rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary outline-none focus:border-accent"
-                      placeholder={field.placeholder}
-                    />
-                  ) : (
-                    isExpandable ? (
-                      <button
-                        type="button"
-                        onClick={() => toggleExpandedField(field.key)}
-                        className="mt-1 block w-full text-left text-xs leading-5 text-text-primary transition-colors hover:text-accent"
-                        title={currentValue || field.placeholder}
-                        aria-expanded={isExpanded}
-                        aria-label={`${isExpanded ? "Collapse" : "Expand"} ${field.label}`}
-                      >
-                        <span className={
-                          isExpanded
-                            ? "block whitespace-pre-wrap break-words"
-                            : "block max-h-[3.75rem] overflow-hidden break-words line-clamp-3 md:max-h-10 md:line-clamp-2"
-                        }>
-                          {displayValue}
-                        </span>
-                      </button>
-                    ) : (
-                      <div
-                        className="mt-1 text-xs leading-5 text-text-primary break-words"
-                        title={currentValue || field.placeholder}
-                      >
-                        {displayValue}
-                      </div>
-                    )
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ) : null}
-
-        {quickAddFields.length > 0 && (
-          <div className={`px-3 py-2 flex flex-wrap gap-1.5 ${visiblePanelFields.length > 0 ? "border-t border-border/70" : ""}`}>
-            {quickAddFields.map((field) => (
-              <button
-                key={field.key}
-                type="button"
-                onClick={() => startEditingField(field.key)}
-                className="rounded-full border border-border bg-bg-secondary px-2 py-1 text-[10px] font-medium text-text-muted transition-colors hover:border-text-muted/40 hover:text-text-primary"
-              >
-                {field.actionLabel}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
-    <div className={isDashboard ? "grid grid-cols-1 sm:grid-cols-2 gap-3" : "space-y-2"}>
-      {FIELD_CONFIGS.filter((field) => visibleFieldKeys.includes(field.key)).map((field) => {
-        const currentValue = values[field.key];
-        const isEditing = editingField === field.key;
-        const isSaving = savingField === field.key;
+    <Section label="Momentum">
+      {visiblePanelFields.length > 0 && (
+        <FieldList>
+          {visiblePanelFields.map((field) => {
+            const currentValue = values[field.key];
+            const isEditing = editingField === field.key;
+            const isSaving = savingField === field.key;
+            const tone = getPanelFieldTone(field.key, currentValue);
+            const displayValue = formatFieldDisplay(field.key, currentValue);
+            const isExpanded = expandedFields.has(field.key);
+            const isExpandable = isExpandablePanelValue(displayValue);
 
-        return (
-          <div
-            key={field.key}
-            className={`rounded-md border border-border bg-bg-surface ${isDashboard ? "px-3 py-2.5" : "px-2.5 py-2"}`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-medium tracking-wide text-text-secondary">
-                {field.label}
-              </span>
-              {isSaving ? (
-                <span className="text-[10px] text-text-faint">Saving…</span>
-              ) : currentValue && !isEditing ? (
-                <button
-                  type="button"
-                  onClick={() => void persistField(field.key, "")}
-                  className="text-[10px] text-text-faint hover:text-text-primary transition-colors"
-                >
-                  Clear
-                </button>
-              ) : null}
-            </div>
-
-            {isEditing ? (
-              <input
-                autoFocus
-                type={field.type}
-                value={drafts[field.key]}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  setDrafts((current) => ({ ...current, [field.key]: nextValue }));
-                }}
-                onBlur={() => {
-                  void persistField(field.key, drafts[field.key]);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void persistField(field.key, drafts[field.key]);
-                  }
-                  if (event.key === "Escape") {
-                    setDrafts((current) => ({ ...current, [field.key]: values[field.key] }));
-                    setEditingField(null);
-                  }
-                }}
-                className="mt-1 w-full rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary outline-none focus:border-accent"
-                placeholder={field.placeholder}
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setDrafts(values);
-                  setEditingField(field.key);
-                }}
-                className={`mt-1 w-full text-left text-xs transition-colors ${
-                  currentValue
-                    ? "text-text-primary hover:text-accent"
-                    : "text-text-faint hover:text-text-muted"
-                }`}
-                title={currentValue || field.placeholder}
+            return (
+              <Field
+                key={field.key}
+                stacked
+                label={<span className={tone ? DS.tone[tone] : undefined}>{field.label}</span>}
+                action={isSaving ? (
+                  <span className={DS.text.meta} role="status">Saving…</span>
+                ) : currentValue && !isEditing ? (
+                  <div className="-mr-2.5 flex shrink-0 items-center">
+                    <Button size="sm" variant="ghost" onClick={() => startEditingField(field.key)} aria-label={`Edit ${field.label}`}>
+                      Edit
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => clearField(field.key)} aria-label={`Clear ${field.label}`}>
+                      Clear
+                    </Button>
+                  </div>
+                ) : undefined}
               >
-                {field.key === "nextTouchAt"
-                  ? (currentValue ? formatFollowUpDisplay(currentValue) : field.placeholder)
-                  : (currentValue || field.placeholder)}
-              </button>
-            )}
-          </div>
-        );
-      })}
-    </div>
+                {isEditing ? (
+                  <TextInput
+                    autoFocus
+                    inputSize="sm"
+                    type={field.type}
+                    aria-label={`Edit ${field.label}`}
+                    value={drafts[field.key]}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setDrafts((current) => ({ ...current, [field.key]: nextValue }));
+                    }}
+                    onBlur={() => {
+                      void persistField(field.key, drafts[field.key]);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void persistField(field.key, drafts[field.key]);
+                      }
+                      if (event.key === "Escape") {
+                        setDrafts((current) => ({ ...current, [field.key]: values[field.key] }));
+                        setEditingField(null);
+                      }
+                    }}
+                    placeholder={field.placeholder}
+                  />
+                ) : isExpandable ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleExpandedField(field.key)}
+                    className={cx("block w-full rounded text-left text-[13px] leading-5 text-text-primary", DS.focus)}
+                    title={currentValue || field.placeholder}
+                    aria-expanded={isExpanded}
+                    aria-label={`${isExpanded ? "Collapse" : "Expand"} ${field.label}`}
+                  >
+                    <span className={
+                      isExpanded
+                        ? "block whitespace-pre-wrap break-words"
+                        : "block max-h-[3.75rem] overflow-hidden break-words line-clamp-3 md:max-h-10 md:line-clamp-2"
+                    }>
+                      {displayValue}
+                    </span>
+                  </button>
+                ) : (
+                  <div className="break-words leading-5" title={currentValue || field.placeholder}>
+                    {displayValue}
+                  </div>
+                )}
+              </Field>
+            );
+          })}
+        </FieldList>
+      )}
+
+      {quickAddFields.length > 0 && (
+        <div className={cx("-mx-2 flex flex-wrap", visiblePanelFields.length > 0 && "mt-1")}>
+          {quickAddFields.map((field) => (
+            <Button
+              key={field.key}
+              size="sm"
+              variant="ghost"
+              icon={<Plus size={12} aria-hidden="true" />}
+              onClick={() => startEditingField(field.key)}
+            >
+              {field.actionLabel}
+            </Button>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -443,17 +328,6 @@ function formatFollowUpDisplay(value: string): string {
 function formatFieldDisplay(field: MomentumFieldKey, value: string): string {
   if (!value) return FIELD_CONFIG_BY_KEY[field].placeholder;
   return field === "nextTouchAt" ? formatFollowUpDisplay(value) : value;
-}
-
-function getPanelSummary(values: FieldValues): string {
-  const cues: string[] = [];
-  if (values.nextAction) cues.push("next step ready");
-  if (values.waitingOn) cues.push("blocker noted");
-  if (values.nextTouchAt) cues.push("follow-up set");
-  if (values.doneWhen) cues.push("finish line defined");
-  return cues.length > 0
-    ? cues.slice(0, 2).join(" · ")
-    : "Keep the next step, blocker, or follow-up close at hand.";
 }
 
 function startOfLocalDay(value: Date): Date {

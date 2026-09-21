@@ -28,6 +28,7 @@ import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
+import { DS } from "../design/tokens";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 pb-3 pt-1 sm:px-4 md:px-6 md:pb-4 lg:px-8";
@@ -674,7 +675,7 @@ export default function ChatInput({
         )}
         {slashCommandsSupported && (slashSuggestions.length > 0 || exactSlashCommand) && (
           <div
-            className="mb-2 overflow-hidden rounded-lg border border-border bg-bg-primary shadow-lg"
+            className={`mb-2 overflow-hidden p-1 ${DS.surface.floating}`}
             role="listbox"
             aria-label="Slash command suggestions"
           >
@@ -691,10 +692,10 @@ export default function ChatInput({
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => insertSlashCommand(command)}
                     title={commandDisabled ? "This command cannot run while the agent is busy." : undefined}
-                    className={`block w-full px-3 py-2 text-left text-sm transition-colors ${
+                    className={`block w-full rounded-md px-2.5 py-1.5 text-left text-sm transition-colors ${
                       index === selectedSlashCommandIndex
-                        ? "bg-accent/10 text-text-primary"
-                        : "text-text-secondary hover:bg-bg-elevated"
+                        ? "bg-bg-hover text-text-primary"
+                        : "text-text-secondary hover:bg-bg-hover/60"
                     } ${commandDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                   >
                     <span className="flex items-center justify-between gap-3">
@@ -725,7 +726,7 @@ export default function ChatInput({
         )}
 
         <div
-          className="flex items-end gap-0.5 rounded-2xl border border-border bg-bg-secondary shadow-lg shadow-black/10 transition-colors focus-within:border-text-faint"
+          className={`flex items-end gap-0.5 ${DS.surface.composer}`}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
         >
@@ -796,7 +797,7 @@ export default function ChatInput({
             className="min-h-[48px] max-h-[200px] flex-1 resize-none bg-transparent py-3 pl-1 pr-2 text-base leading-6 text-text-primary placeholder:text-text-faint focus:outline-none md:text-sm"
           />
           <div
-            className={`mb-2 mr-2 flex-shrink-0 select-none touch-manipulation ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
+            className={`mb-1 mr-1 flex-shrink-0 select-none touch-manipulation md:mb-2 md:mr-2 ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
             style={{ WebkitTouchCallout: "none" } as React.CSSProperties}
             onClick={modeMenuBindings.onClick}
             onContextMenu={modeMenuEnabled ? modeMenuBindings.onContextMenu : undefined}
@@ -810,9 +811,9 @@ export default function ChatInput({
               aria-haspopup={modeMenuEnabled ? "menu" : undefined}
               aria-expanded={modeMenuEnabled ? Boolean(sendModeMenu) : undefined}
               tabIndex={!showAbortControl && !canSend ? -1 : undefined}
-              className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+              className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors md:h-8 md:w-8 ${DS.focus} ${
                 showAbortControl || canSend
-                  ? "bg-text-primary text-bg-primary hover:opacity-85"
+                  ? DS.button.variant.primary
                   : "cursor-not-allowed bg-bg-hover text-text-faint"
               }`}
               title={submitControlTitle}

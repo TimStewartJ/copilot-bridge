@@ -17,6 +17,7 @@ describe("McpStatusBar status ownership", () => {
         chatEntries: [{ type: "tool", toolCall: { toolCallId: "query", name: "kusto-query", success: false, result: "403 Forbidden" } }],
       }));
       const button = findAllByTag(harness.dom.container, "BUTTON")[0];
+      expect(button.textContent).toContain("1 tool issue");
       await harness.act(async () => getReactProps(button)?.onClick?.());
       expect(harness.dom.container.textContent).toContain("1/1 connected");
       expect(harness.dom.container.textContent).toContain("permission");
@@ -37,6 +38,51 @@ describe("McpStatusBar status ownership", () => {
         statusState: "ready",
       }));
       expect(harness.dom.container.textContent).toBe("");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps the chat identity and plan action visible even with nothing to report", async () => {
+    const harness = await createReactDomHarness();
+    const onPlan = vi.fn();
+    try {
+      await harness.render(createElement(McpStatusBar, {
+        servers: [],
+        statusState: "ready",
+        leading: createElement("span", null, "Chat title / Model"),
+        actions: createElement("button", { onClick: onPlan }, "Plan"),
+      }));
+      expect(harness.dom.container.textContent).toBe("Chat title / ModelPlan");
+      const buttons = findAllByTag(harness.dom.container, "BUTTON");
+      expect(buttons).toHaveLength(1);
+      await harness.act(async () => getReactProps(buttons[0])?.onClick?.());
+      expect(onPlan).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("opens session details without making the identity or plan part of its button", async () => {
+    const harness = await createReactDomHarness();
+    const onPlan = vi.fn();
+    try {
+      await harness.render(createElement(McpStatusBar, {
+        servers: [],
+        statusState: "ready",
+        sessionCostUsd: 0.025,
+        leading: createElement("span", null, "Chat title / Model"),
+        actions: createElement("button", { onClick: onPlan }, "Plan"),
+      }));
+      const toggle = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => getReactProps(button)?.["aria-label"] === "Session details");
+      expect(toggle?.textContent).toContain("Cost $0.03");
+      expect(toggle?.textContent).not.toContain("Chat title");
+      expect(toggle?.textContent).not.toContain("Plan");
+      await harness.act(async () => getReactProps(toggle)?.onClick?.());
+      expect(getReactProps(toggle)?.["aria-expanded"]).toBe(true);
+      expect(harness.dom.container.textContent).toContain("Session cost");
+      expect(onPlan).not.toHaveBeenCalled();
     } finally {
       await harness.cleanup();
     }
@@ -114,6 +160,38 @@ describe("McpStatusBar status ownership", () => {
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("labels a successful SDK response with no cost as not recorded, rather than hiding or zeroing it", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(McpStatusBar, { servers: [], statusState: "ready", sessionCostUsd: null }));
+      expect(harness.dom.container.textContent).toBe("Cost Not recorded");
+      expect(harness.dom.container.textContent).not.toContain("$0.00");
+    } finally { await harness.cleanup(); }
+  });
+
+  it("keeps a small positive session cost visible instead of showing a free run", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(McpStatusBar, { servers: [], statusState: "ready", sessionCostUsd: 0.0025 }));
+      expect(harness.dom.container.textContent).toBe("Cost $0.0025");
+    } finally { await harness.cleanup(); }
+  });
+
+  it("surfaces failed cost reads without fabricating a zero and keeps cached readings marked", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      const props = { servers: [], statusState: "ready" as const, sessionCostError: "Metering offline" };
+      await harness.render(createElement(McpStatusBar, props));
+      expect(harness.dom.container.textContent).toContain("Cost unavailable");
+      expect(harness.dom.container.textContent).not.toContain("$0.00");
+      await harness.act(async () => getReactProps(findAllByTag(harness.dom.container, "BUTTON")[0])?.onClick?.());
+      expect(harness.dom.container.textContent).toContain("Cost refresh failed: Metering offline");
+      await harness.render(createElement(McpStatusBar, { ...props, sessionCostUsd: 0.025 }));
+      expect(harness.dom.container.textContent).toContain("$0.03");
+      expect(harness.dom.container.textContent).toContain("Showing the previous reading.");
+    } finally { await harness.cleanup(); }
   });
 
   it("tucks healthy servers away but opens failures and keeps sign-in actionable", async () => {

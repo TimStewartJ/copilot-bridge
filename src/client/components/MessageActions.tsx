@@ -2,6 +2,7 @@ import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal, TextSelect, Undo2
 import type { ChatMessage } from "../api";
 import { timeAgo } from "../time";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
+import { DS } from "../design/tokens";
 
 export interface MessageActionMenuTarget {
   key: string;
@@ -31,7 +32,7 @@ interface MessageActionToolbarProps {
   onOpenMenu: (x: number, y: number, key: string, message: ChatMessage) => void;
 }
 
-const actionButtonClass = "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50";
+const actionButtonClass = `inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-wait disabled:opacity-50 ${DS.focus}`;
 
 export function MessageActionToolbar({
   messageKey,

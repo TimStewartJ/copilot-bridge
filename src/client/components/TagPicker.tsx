@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useTagsQuery, useCreateTagMutation } from "../hooks/queries/useTags";
 import TagPill from "./TagPill";
-import { TAG_COLOR_BG, TAG_COLOR_TEXT } from "../tag-colors";
 import { Plus, Search } from "lucide-react";
+import { DS, cx } from "../design/tokens";
 
 interface TagPickerProps {
   /** Currently selected tag IDs (own tags, not inherited) */
@@ -84,23 +84,26 @@ export default function TagPicker({
   return (
     <div ref={containerRef} className="relative inline-block">
       <button
+        type="button"
         onClick={() => setOpen(!open)}
-        className={`inline-flex items-center gap-1 text-text-muted hover:text-text-primary transition-colors ${
-          compact
-            ? "p-0.5"
-            : "text-[10px] px-1.5 py-0.5 rounded-full bg-bg-hover hover:bg-bg-elevated"
-        }`}
+        aria-label="Manage tags"
+        aria-expanded={open}
+        className={cx(
+          "inline-flex items-center gap-1 rounded-md text-text-muted transition-colors hover:bg-bg-hover/60 hover:text-text-primary",
+          DS.focus,
+          compact ? "h-5 w-5 justify-center" : "h-5 px-1.5 text-[11px] font-medium",
+        )}
         title="Manage tags"
       >
-        <Plus size={compact ? 12 : 10} />
+        <Plus size={12} aria-hidden="true" />
         {!compact && <span>Tag</span>}
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 w-52 bg-bg-secondary border border-border rounded-lg shadow-xl overflow-hidden">
+        <div className={cx("absolute left-0 z-50 mt-1 w-52 overflow-hidden", DS.surface.floating)}>
           {/* Search */}
           <div className="p-2 border-b border-border">
-            <div className="flex items-center gap-1.5 bg-bg-surface rounded px-2 py-1">
+            <div className="flex items-center gap-1.5 rounded-md bg-bg-hover/40 px-2 py-1">
               <Search size={12} className="text-text-faint shrink-0" />
               <input
                 ref={inputRef}
@@ -122,28 +125,24 @@ export default function TagPicker({
             {filtered.map((tag) => {
               const isSelected = allSelectedSet.has(tag.id);
               const isInherited = inheritedTagIds?.has(tag.id);
-              const bg = TAG_COLOR_BG[tag.color] ?? "bg-slate-500/15";
-              const text = TAG_COLOR_TEXT[tag.color] ?? "text-slate-400";
 
               return (
                 <button
                   key={tag.id}
+                  type="button"
+                  aria-pressed={isSelected}
                   onClick={() => toggle(tag.id)}
                   disabled={isInherited}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors ${
+                  className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
                     isInherited
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:bg-bg-hover cursor-pointer"
+                      ? "cursor-not-allowed opacity-50"
+                      : "cursor-pointer hover:bg-bg-hover/60"
                   }`}
                 >
-                  <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] ${
-                    isSelected ? "bg-accent border-accent text-white" : "border-border"
-                  }`}>
+                  <span className={cx(DS.checkbox.base, isSelected ? DS.checkbox.checked : DS.checkbox.unchecked)} aria-hidden="true">
                     {isSelected && "✓"}
                   </span>
-                  <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${bg} ${text}`}>
-                    {tag.name}
-                  </span>
+                  <TagPill tag={tag} />
                   {isInherited && (
                     <span className="text-[9px] text-text-faint ml-auto">inherited</span>
                   )}
@@ -160,9 +159,9 @@ export default function TagPicker({
               <button
                 onClick={handleCreate}
                 disabled={createTagMutation.isPending}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-bg-hover transition-colors text-accent"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover/60 hover:text-text-primary"
               >
-                <Plus size={12} />
+                <Plus size={12} aria-hidden="true" />
                 Create "{search.trim()}"
               </button>
             )}
