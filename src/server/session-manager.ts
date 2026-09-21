@@ -639,6 +639,11 @@ export interface SessionUsageMetrics {
   totalUserRequests: number | null;
 }
 
+export interface SessionWarmOptions {
+  /** Only passive chat navigation is eligible for resume-event suppression. */
+  source?: "chat-open";
+}
+
 export type SessionHistoryUndoErrorCode = "busy" | "stale-boundary" | "unsupported";
 
 type ResumePurpose = "warmup" | "send" | "reload" | "model-switch" | "name" | "mcp-auth" | "history-undo";
@@ -770,6 +775,7 @@ export class SessionManager {
     DEFAULT_DEFER_STARTUP_HOLD_MS,
   );
   private deps: SessionManagerDeps;
+  private readonly suppressPassiveResumeEvents: boolean;
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
   private resumingSessions = new Map<string, number>();
@@ -912,6 +918,12 @@ export class SessionManager {
 
   constructor(deps: SessionManagerDeps) {
     this.deps = { ...deps, browserLifecycle: deps.browserLifecycle ?? noopBrowserLifecycle };
+    const env = deps.clientEnv ?? deps.runtimePaths?.env ?? process.env;
+    const passiveResumeSetting = env.BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS?.trim().toLowerCase() ?? "";
+    if (passiveResumeSetting && passiveResumeSetting !== "true" && passiveResumeSetting !== "false") {
+      console.warn("[sdk] BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS must be true or false; passive resume-event suppression is disabled.");
+    }
+    this.suppressPassiveResumeEvents = passiveResumeSetting === "true";
     this.workspaceController = new SessionWorkspaceController({
       sessionWorkspaceStore: deps.sessionWorkspaceStore,
       taskStore: deps.taskStore,
@@ -5141,7 +5153,7 @@ export class SessionManager {
    * Warm a session by resuming it in the background.
    * Returns a promise that resolves when the session is ready for interaction.
    */
-  async warmSession(sessionId: string): Promise<void> {
+  async warmSession(sessionId: string, options: SessionWarmOptions = {}): Promise<void> {
     if (this.deletingSessions.has(sessionId)) {
       throw new Error("Session is being deleted");
     }
@@ -5182,6 +5194,10 @@ export class SessionManager {
 
     const linkedTask = this.findLinkedTask(sessionId);
     const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
+    const suppressResumeEvent = options.source === "chat-open"
+      && this.suppressPassiveResumeEvents
+      && client.id === "copilot";
+    if (suppressResumeEvent) resumeConfig.suppressResumeEvent = true;
 
     const warmPromise = this.withSessionResumeLifecycle({
       backend: client,
@@ -5195,9 +5211,10 @@ export class SessionManager {
       this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
 
       const duration = Date.now() - t0;
-      this.recordSpan("session.warm.coldResume", duration, sessionId);
-      this.recordSpan("session.warm", duration, sessionId);
-      console.log(`[sdk] [${sid}] Session warm (${duration}ms)`);
+      const metadata = { source: options.source ?? "lifecycle", resumeEventSuppressed: suppressResumeEvent };
+      this.recordSpan("session.warm.coldResume", duration, sessionId, metadata);
+      this.recordSpan("session.warm", duration, sessionId, metadata);
+      console.log(`[sdk] [${sid}] Session warm (${duration}ms${suppressResumeEvent ? ", resume event suppressed" : ""})`);
     });
     this.warmSessionPromises.set(sessionId, warmPromise);
     try {
