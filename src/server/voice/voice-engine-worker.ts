@@ -344,6 +344,19 @@ async function pumpAsr(): Promise<void> {
   }
 }
 
+/**
+ * Transcribes speech of any length. The recognizer drops whole sentences from input much longer
+ * than a chunk, so it only ever sees chunk-sized pieces, however long the speech ran without a pause.
+ */
+async function decodeSpeech(samples: Float32Array, speech: readonly SampleRange[], priority: AsrPriority): Promise<{ text: string; chunks: number }> {
+  const chunks = planSpeechChunks(speech, samples.length, { sampleRate: SAMPLE_RATE, ...CLIP_CHUNK_PLAN, samples });
+  const parts: string[] = [];
+  for (const chunk of chunks) {
+    parts.push(await decode(samples.slice(chunk.start, chunk.end), priority));
+  }
+  return { text: joinTranscripts(parts), chunks: chunks.length };
+}
+
 async function detectSpeech(samples: Float32Array): Promise<SampleRange[]> {
   const vad = createVad({ minSilenceDuration: 0.3, maxSpeechDuration: CLIP_CHUNK_PLAN.maxChunkSeconds });
   const segments: SampleRange[] = [];
@@ -377,19 +390,15 @@ async function transcribeFile(filePath: string): Promise<VoiceClipTranscription>
     ? wav.samples
     : new (runtime().sherpa.LinearResampler)(wav.sampleRate, SAMPLE_RATE).flush(wav.samples);
   const segments = await detectSpeech(samples);
-  let chunks = planSpeechChunks(segments, samples.length, { sampleRate: SAMPLE_RATE, ...CLIP_CHUNK_PLAN });
-  if (chunks.length === 0 && samples.length >= SAMPLE_RATE / 10 && samples.length <= CLIP_FALLBACK_MAX_SAMPLES) {
-    chunks = [{ start: 0, end: samples.length }];
-  }
-  const parts: string[] = [];
-  for (const chunk of chunks) {
-    parts.push(await decode(samples.slice(chunk.start, chunk.end), "clip"));
+  let speech = await decodeSpeech(samples, segments, "clip");
+  if (speech.chunks === 0 && samples.length >= SAMPLE_RATE / 10 && samples.length <= CLIP_FALLBACK_MAX_SAMPLES) {
+    speech = await decodeSpeech(samples, [{ start: 0, end: samples.length }], "clip");
   }
   return {
-    text: joinTranscripts(parts),
+    text: speech.text,
     audioSeconds: Math.round((samples.length / SAMPLE_RATE) * 100) / 100,
     speechSeconds: Math.round((segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / SAMPLE_RATE) * 100) / 100,
-    chunks: chunks.length,
+    chunks: speech.chunks,
     ms: Math.round(performance.now() - started),
   };
 }
@@ -464,7 +473,9 @@ async function handle(message: VoiceEngineRequest): Promise<void> {
       case "transcribe": {
         const started = performance.now();
         const samples = extract(message.streamId, message.fromSample, message.toSample);
-        const text = samples.length >= SAMPLE_RATE / 10 ? await decode(samples, "live") : "";
+        const text = samples.length >= SAMPLE_RATE / 10
+          ? (await decodeSpeech(samples, [{ start: 0, end: samples.length }], "live")).text
+          : "";
         value = { text, ms: performance.now() - started };
         break;
       }
