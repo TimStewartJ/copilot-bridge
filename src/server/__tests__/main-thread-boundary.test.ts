@@ -138,6 +138,7 @@ describe("server main-thread boundary", () => {
       "server/voice/voice-engine.ts",
       "server/process-host.ts",
       "server/process-host-worker.ts",
+      "server/windows-process-table.ts",
       "server/cli-session-store.ts",
       "server/cli-session-store-worker.ts",
     ]) {
@@ -201,5 +202,6 @@ describe("server main-thread boundary", () => {
     const modules = new Set([...graph.keys()].map(display));
     expect(modules).not.toContain("launcher-git.ts");
     expect(modules).not.toContain("server/sync-command-runner.ts");
+    expect(modules).not.toContain("server/windows-process-table-worker.ts");
   });
 });
