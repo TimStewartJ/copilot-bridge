@@ -221,13 +221,16 @@ describe("Copilot owned-runtime fence", () => {
   });
 
   it("does not equate a stopped loader with an exited native runtime", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
     const { backend, child, client } = backendFixture();
     await backend.start();
     Reflect.set(child, "exitCode", 0);
     Reflect.set(client, "cliProcess", null);
     vi.mocked(terminateProcessTree).mockResolvedValue({ ok: false, status: "survivors", root: runtime, survivors: [runtime] });
-    const fence = backend.fence();
-    await expect(fence).rejects.toThrow("survivors");
+    const fence = backend.fence({ deadline: createDeadline(300) });
+    const rejected = expect(fence).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("survivors") });
+    await vi.advanceTimersByTimeAsync(300);
+    await rejected;
     // An unreadable survivor check proves nothing: a later attempt re-checks the retained survivor
     // with one read and fails again without signalling anything or assuming exit.
     const retry = backend.fence();
@@ -444,6 +447,26 @@ describe("Copilot owned-runtime fence", () => {
     await expect(fence).resolves.toBeUndefined();
     expect(terminateProcessTree).toHaveBeenCalledTimes(2);
     expect(getProcessIdentityStatuses).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits through an unreadable terminating survivor until a later snapshot proves exit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
+    const { backend } = backendFixture();
+    await backend.start();
+    vi.mocked(terminateProcessTree).mockResolvedValueOnce({
+      ok: false, status: "survivors", root: runtime, survivors: [runtime],
+    });
+    vi.mocked(getProcessIdentityStatuses).mockResolvedValueOnce(new Map([[runtime, "unknown"]]))
+      .mockResolvedValueOnce(new Map([[runtime, "exited"]]));
+    const fence = backend.fence({ deadline: createDeadline(300) });
+    let completed = false;
+    void fence.then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(fence).resolves.toBeUndefined();
+    expect(getProcessIdentityStatuses).toHaveBeenCalledTimes(2);
+    expect(terminateProcessTree).toHaveBeenCalledTimes(2);
   });
 
   it("rejects a runtime that remains alive after the caller's verification budget", async () => {

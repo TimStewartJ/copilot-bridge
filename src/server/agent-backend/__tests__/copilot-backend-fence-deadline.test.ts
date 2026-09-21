@@ -6,8 +6,22 @@ import { CopilotBackend } from "../copilot-backend.js";
 import { RUNTIME_FENCE_BUDGET_MS, type RuntimeFenceObservation } from "../runtime-fence.js";
 
 const execFileMock = vi.hoisted(() => vi.fn());
+const windowsSnapshotMock = vi.hoisted(() => vi.fn());
+vi.mock("../../windows-process-table.js", () => ({ readNativeWindowsProcessTable: windowsSnapshotMock }));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(), execFile: execFileMock,
+}));
+vi.mock("../../process-host.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../process-host.js")>(),
+  getProcessHost: () => ({
+    mode: "inline",
+    execFile: (command: string, args: readonly string[], options: ExecFileOptions) => new Promise((resolve, reject) => {
+      execFileMock(command, args, options, (error: Error | null, stdout: string, stderr: string) => {
+        if (error) reject(error);
+        else resolve({ stdout, stderr });
+      });
+    }),
+  }),
 }));
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 
@@ -16,6 +30,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   execFileMock.mockReset();
+  windowsSnapshotMock.mockReset();
 });
 
 async function fixture(snapshotLatency = 6_000) {
@@ -29,32 +44,34 @@ async function fixture(snapshotLatency = 6_000) {
   for (let pid = 102; pid < 122; pid++) table.set(pid, `${pid} 101 ${1000 + pid}`);
   let snapshots = 0;
   const killed: number[] = [];
-  execFileMock.mockImplementation((command: string, args: string[], options: ExecFileOptions,
+  windowsSnapshotMock.mockImplementation((timeout: number) => new Promise((resolve, reject) => {
+    snapshots++;
+    const latency = snapshots === 1 ? 0 : snapshotLatency;
+    const finish = () => {
+      if (latency > timeout) { reject(new Error("Native snapshot timed out")); return; }
+      resolve([...table.values()].map((row) => {
+        const [pid, ppid, startMarker] = row.split(" ");
+        return { pid: Number(pid), ppid: Number(ppid), startMarker };
+      }));
+    };
+    if (latency === 0) finish();
+    else setTimeout(finish, Math.min(latency, timeout));
+  }));
+  execFileMock.mockImplementation((command: string, args: string[], _options: ExecFileOptions,
     callback: (error: Error | null, stdout: string, stderr: string) => void) => {
-    if (command === "powershell.exe") {
-      snapshots++;
-      // Initial ownership capture is immediate. All fencing snapshots simulate a loaded host.
-      const latency = snapshots === 1 ? 0 : snapshotLatency;
-      const timeout = Number(options.timeout);
-      const finish = () => callback(latency > timeout ? new Error("CIM snapshot timed out") : null,
-        [...table.values()].join("\r\n"), "");
-      if (latency === 0) finish();
-      else setTimeout(finish, Math.min(latency, timeout));
-    } else {
-      expect(command).toBe("taskkill");
-      const pid = Number(args[3]);
-      expect(args.slice(0, 3)).toEqual(["/T", "/F", "/PID"]);
-      killed.push(pid);
-      setTimeout(() => {
-        if (pid === 101) for (const key of table.keys()) { if (key !== 100) table.delete(key); }
-        else {
-          table.delete(pid);
-          Reflect.set(child, "exitCode", 0);
-          child.emit("exit", 0, null);
-        }
-        callback(null, "", "");
-      }, 1_000);
-    }
+    expect(command).toBe("taskkill");
+    const pid = Number(args[3]);
+    expect(args.slice(0, 3)).toEqual(["/T", "/F", "/PID"]);
+    killed.push(pid);
+    setTimeout(() => {
+      if (pid === 101) for (const key of table.keys()) { if (key !== 100) table.delete(key); }
+      else {
+        table.delete(pid);
+        Reflect.set(child, "exitCode", 0);
+        child.emit("exit", 0, null);
+      }
+      callback(null, "", "");
+    }, 1_000);
     return child;
   });
   await backend.start();
@@ -68,7 +85,7 @@ describe("fencing through the real platform helper with mocked Windows side effe
     const deadline = createDeadline(RUNTIME_FENCE_BUDGET_MS);
     const fence = backend.fence({ deadline, onPhase: (phase) => phases.push(phase) });
     expect(backend.fence({ deadline: createDeadline(1_000) })).toBe(fence);
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.runAllTimersAsync();
     await expect(fence).resolves.toBeUndefined();
     expect(killed).toEqual([101, 100]);
     expect(getSnapshots()).toBe(5); // One ownership capture, two snapshots per terminated subtree.
@@ -92,7 +109,7 @@ describe("fencing through the real platform helper with mocked Windows side effe
     // The snapshot was only too slow for that deadline; a later attempt with a fresh budget can still prove the runtime gone.
     const retry = backend.fence({ deadline: createDeadline(RUNTIME_FENCE_BUDGET_MS) });
     expect(retry).not.toBe(fence);
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.runAllTimersAsync();
     await expect(retry).resolves.toBeUndefined();
     expect(killed).toEqual([101, 100]);
     await expect(backend.start()).rejects.toThrow("fenced");

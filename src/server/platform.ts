@@ -1,5 +1,5 @@
 // Platform abstraction — encapsulates OS-specific operations behind a unified API.
-// Windows uses one CIM snapshot + one taskkill + one verification snapshot.
+// Windows reads process identities on a native worker, then uses taskkill with verified snapshots.
 
 import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
 import { cp, rename, rm } from "node:fs/promises";
@@ -13,6 +13,7 @@ import {
   type Deadline,
 } from "./deadline.js";
 import { getProcessHost, type HostExecOptions } from "./process-host.js";
+import { readNativeWindowsProcessTable } from "./windows-process-table.js";
 
 function execFileAsync(
   command: string,
@@ -32,18 +33,6 @@ const PROCESS_TABLE_VERIFICATION_RESERVE_MS = PROCESS_TABLE_READ_TIMEOUT_MS;
 // Initial snapshot, taskkill, and verification snapshot, plus process spawn overhead.
 export const PROCESS_TREE_TERMINATION_BUDGET_MS =
   (PROCESS_TABLE_READ_TIMEOUT_MS * 2) + TASKKILL_TIMEOUT_MS + PROCESS_TREE_DEADLINE_OVERHEAD_MS;
-const WINDOWS_PROCESS_TABLE_COMMAND = [
-  // Fetch only the parsed properties. Materializing every Win32_Process
-  // property is roughly twice as slow and pushes loaded machines past the
-  // snapshot timeout.
-  "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate |",
-  "ForEach-Object {",
-  "$t = '';",
-  "if ($_.CreationDate) { try { $t = $_.CreationDate.ToUniversalTime().Ticks } catch { $t = '' } }",
-  "\"$($_.ProcessId) $($_.ParentProcessId) $t\"",
-  "}",
-].join(" ");
-
 type ProcessTableEntry = { ppid: number; startMarker: string };
 type ProcessTableReadResult =
   | { ok: true; table: Map<number, ProcessTableEntry> }
@@ -158,24 +147,6 @@ function assertValidPid(pid: number): number {
   return pid;
 }
 
-function parseWindowsProcessTable(output: string): Map<number, ProcessTableEntry> {
-  const table = new Map<number, ProcessTableEntry>();
-  for (const line of output.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const parts = trimmed.split(/\s+/);
-    if (parts.length < 2) continue;
-    const pid = Number(parts[0]);
-    const ppid = Number(parts[1]);
-    if (!isValidPid(pid) || !Number.isSafeInteger(ppid) || ppid < 0) continue;
-    // Windows CreationDate ticks are 18-digit values that exceed Number.MAX_SAFE_INTEGER,
-    // so the marker is kept as a string and only compared numerically via BigInt.
-    const startMarker = parts[2] && /^\d+$/.test(parts[2]) ? parts[2] : "";
-    table.set(pid, { ppid, startMarker });
-  }
-  return table;
-}
-
 function parsePosixProcessTable(output: string): Map<number, ProcessTableEntry> {
   const table = new Map<number, ProcessTableEntry>();
   for (const line of output.split(/\r?\n/)) {
@@ -227,21 +198,12 @@ async function readWindowsProcessTable(
   timeoutCapMs = PROCESS_TABLE_READ_TIMEOUT_MS,
 ): Promise<ProcessTableReadResult> {
   const timeoutMs = remainingMs(deadline, timeoutCapMs);
-  if (timeoutMs <= 0) return { ok: false, error: "deadline exceeded before CIM snapshot" };
+  if (timeoutMs <= 0) return { ok: false, error: "deadline exceeded before native Windows snapshot" };
   try {
-    const { stdout } = await execFileAsync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_TABLE_COMMAND],
-      {
-        encoding: "utf8",
-        timeout: timeoutMs,
-        windowsHide: true,
-        maxBuffer: PROCESS_TABLE_MAX_BUFFER,
-      },
-    );
-    return { ok: true, table: parseWindowsProcessTable(String(stdout)) };
+    const entries = await readNativeWindowsProcessTable(timeoutMs);
+    return { ok: true, table: new Map(entries.map(({ pid, ppid, startMarker }) => [pid, { ppid, startMarker }])) };
   } catch (error) {
-    return { ok: false, error: describeProcessCommandFailure("CIM process snapshot", error, timeoutMs) };
+    return { ok: false, error: `Native Windows process snapshot failed: ${commandError(error)}` };
   }
 }
 
@@ -427,6 +389,19 @@ function identityMatches(table: Map<number, ProcessTableEntry>, identity: Proces
   return table.get(identity.pid)?.startMarker === identity.startMarker;
 }
 
+function hasUnqueryableTree(root: ProcessIdentity, table: Map<number, ProcessTableEntry>): boolean {
+  const entry = table.get(root.pid);
+  return !!entry && (!entry.startMarker
+    || (entry.startMarker === root.startMarker && collectDescendantIdentities(root.pid, table).missingMarker));
+}
+
+function hasUnqueryableIdentities(identities: readonly ProcessIdentity[], table: Map<number, ProcessTableEntry>): boolean {
+  return identities.some((identity) => {
+    const entry = table.get(identity.pid);
+    return !!entry && !entry.startMarker;
+  });
+}
+
 function matchingIdentities(
   table: Map<number, ProcessTableEntry>,
   identities: ProcessIdentity[],
@@ -478,8 +453,8 @@ function requestPosixTreeKill(snapshot: ProcessTreeSnapshot): string | undefined
 /**
  * Identity-safe, bounded process-tree termination.
  *
- * Windows performs exactly one pre-kill CIM snapshot, one taskkill /T /F, and
- * one verification CIM snapshot. It has no WMIC, per-PID PowerShell, or
+ * Windows uses native snapshots and one taskkill /T /F. Unqueryable entries
+ * are re-observed within each snapshot budget. It has no WMIC, per-PID PowerShell, or
  * bare-PID fallback path.
  */
 export async function terminateProcessTree(
@@ -495,7 +470,13 @@ export async function terminateProcessTree(
   }
 
   const snapshotStartedAt = performance.now();
-  const initial = await readProcessTable(capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS));
+  const snapshotDeadline = capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS);
+  let initial = await readProcessTable(snapshotDeadline);
+  while (isWindows() && initial.ok && hasUnqueryableTree(root, initial.table)
+    && await sleepUntilDeadline(25, snapshotDeadline)) {
+    if (deadlineExpired(snapshotDeadline)) break;
+    initial = await readProcessTable(snapshotDeadline);
+  }
   onPhase?.({ phase: "snapshot", durationMs: performance.now() - snapshotStartedAt,
     outcome: initial.ok ? "completed" : "failed", pid: root.pid, ...(!initial.ok ? { error: initial.error } : {}) });
   if (!initial.ok) {
@@ -548,7 +529,15 @@ export async function terminateProcessTree(
     await sleepUntilDeadline(25, deadline);
   }
   const verificationStartedAt = performance.now();
-  const verification = await readProcessTable(deadline);
+  const verificationDeadline = capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS);
+  const capturedIdentities = [root, ...descendants];
+  let verification = await readProcessTable(verificationDeadline);
+  // Native snapshots can catch a terminated process before Windows removes its unqueryable entry.
+  while (isWindows() && verification.ok && hasUnqueryableIdentities(capturedIdentities, verification.table)
+    && await sleepUntilDeadline(25, verificationDeadline)) {
+    if (deadlineExpired(verificationDeadline)) break;
+    verification = await readProcessTable(verificationDeadline);
+  }
   if (!verification.ok) {
     onPhase?.({ phase: "verify", durationMs: performance.now() - verificationStartedAt,
       outcome: "failed", pid: root.pid, error: verification.error });
