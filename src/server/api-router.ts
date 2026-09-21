@@ -91,6 +91,7 @@ import {
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
+import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
 import { isSendMode } from "../shared/send-mode.js";
 import {
   type BackgroundAgentsSummary,
@@ -909,7 +910,7 @@ async function enforceRetentionForSchedule(ctx: AppContext, schedule: Schedule):
   }
 }
 
-class InvalidWavError extends Error {}
+class InvalidRecordingError extends Error {}
 
 async function cleanupTranscriptionUpload(req: express.Request): Promise<void> {
   const dir = (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir;
@@ -918,13 +919,22 @@ async function cleanupTranscriptionUpload(req: express.Request): Promise<void> {
   delete (req as express.Request & { _transcriptionTempDir?: string })._transcriptionTempDir;
 }
 
-async function getWavDurationSeconds(filePath: string): Promise<number> {
-  return parseWavDurationSeconds(await readFile(filePath));
+/** Length of an uploaded recording, read from its container without decoding any audio. */
+async function getRecordingDurationSeconds(filePath: string): Promise<number> {
+  const buffer = await readFile(filePath);
+  if (!isOggOpus(buffer)) return parseWavDurationSeconds(buffer);
+  try {
+    const durationSeconds = oggOpusDurationSeconds(demuxOggOpus(buffer));
+    if (durationSeconds <= 0) throw new OggOpusError("Uploaded Ogg Opus file does not contain audio.");
+    return durationSeconds;
+  } catch (error) {
+    throw error instanceof OggOpusError ? new InvalidRecordingError(error.message) : error;
+  }
 }
 
 function parseWavDurationSeconds(buffer: Buffer): number {
   if (buffer.length < 12 || buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
-    throw new InvalidWavError("Uploaded audio must be a WAV file.");
+    throw new InvalidRecordingError("Uploaded audio must be a WAV or Ogg Opus file.");
   }
 
   let offset = 12;
@@ -935,11 +945,11 @@ function parseWavDurationSeconds(buffer: Buffer): number {
     const chunkSize = buffer.readUInt32LE(offset + 4);
     const chunkStart = offset + 8;
     if (chunkStart + chunkSize > buffer.length) {
-      throw new InvalidWavError("Uploaded WAV data is truncated.");
+      throw new InvalidRecordingError("Uploaded WAV data is truncated.");
     }
     if (chunkId === "fmt ") {
       if (chunkSize < 16) {
-        throw new InvalidWavError("Uploaded WAV format chunk is invalid.");
+        throw new InvalidRecordingError("Uploaded WAV format chunk is invalid.");
       }
       byteRate = buffer.readUInt32LE(chunkStart + 8);
     } else if (chunkId === "data") {
@@ -949,12 +959,12 @@ function parseWavDurationSeconds(buffer: Buffer): number {
   }
 
   if (byteRate === undefined || byteRate <= 0 || dataSize === undefined) {
-    throw new InvalidWavError("Uploaded WAV file is missing required audio data.");
+    throw new InvalidRecordingError("Uploaded WAV file is missing required audio data.");
   }
 
   const durationSeconds = dataSize / byteRate;
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
-    throw new InvalidWavError("Uploaded WAV file does not contain audio samples.");
+    throw new InvalidRecordingError("Uploaded WAV file does not contain audio samples.");
   }
   return durationSeconds;
 }
@@ -1204,7 +1214,7 @@ export function createApiRouter(
           return res.status(503).json({ error: status.reason ?? "Voice input is unavailable." });
         }
 
-        const durationSeconds = await getWavDurationSeconds(req.file.path);
+        const durationSeconds = await getRecordingDurationSeconds(req.file.path);
         if (durationSeconds > status.maxDurationSeconds) {
           return res.status(400).json({ error: `Audio exceeds ${status.maxDurationSeconds} seconds.` });
         }
@@ -1213,7 +1223,7 @@ export function createApiRouter(
         console.log(`[web] Transcribed voice input via ${result.provider}`);
         return res.json(result);
       } catch (error) {
-        return res.status(error instanceof InvalidWavError ? 400 : 500).json({
+        return res.status(error instanceof InvalidRecordingError ? 400 : 500).json({
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {
@@ -1279,7 +1289,7 @@ export function createApiRouter(
           return res.status(503).json({ error: status.reason ?? "Voice input is unavailable." });
         }
 
-        const durationSeconds = await getWavDurationSeconds(req.file.path);
+        const durationSeconds = await getRecordingDurationSeconds(req.file.path);
         if (durationSeconds > status.maxDurationSeconds) {
           return res.status(400).json({ error: `Audio exceeds ${status.maxDurationSeconds} seconds.` });
         }
@@ -1297,7 +1307,7 @@ export function createApiRouter(
         if (error instanceof TaskAgentDefinitionValidationError) {
           return res.status(400).json({ error: error.message });
         }
-        return res.status(error instanceof InvalidWavError ? 400 : 500).json({
+        return res.status(error instanceof InvalidRecordingError ? 400 : 500).json({
           error: error instanceof Error ? error.message : String(error),
         });
       } finally {

@@ -71,6 +71,7 @@
     "mermaid": "^11.14.0",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
+    "opus-decoder": "^0.7.12",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",

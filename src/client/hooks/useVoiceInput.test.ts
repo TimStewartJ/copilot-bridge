@@ -16,6 +16,12 @@ vi.mock("../lib/voice-capture-guard", () => ({
   holdVoiceCapture: () => holdVoiceCaptureMock(),
 }));
 
+const createOpusRecordingEncoderMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../lib/voice-recording-opus", () => ({
+  createOpusRecordingEncoder: (sampleRate: number) => createOpusRecordingEncoderMock(sampleRate),
+}));
+
 describe("useVoiceInput recording limit", () => {
   const SAMPLE_RATE = 16_000;
   const WAV_HEADER_BYTES = 44;
@@ -23,6 +29,7 @@ describe("useVoiceInput recording limit", () => {
   let voice: ReturnType<typeof useVoiceInput> | null = null;
   let processor: { onaudioprocess: ((event: unknown) => void) | null; connect(): void; disconnect(): void };
   let getUserMedia: () => Promise<unknown>;
+  let inputSampleRate = SAMPLE_RATE;
 
   async function mount(options: Partial<Parameters<typeof useVoiceInput>[0]>) {
     harness = await createReactDomHarness();
@@ -30,7 +37,11 @@ describe("useVoiceInput recording limit", () => {
     Object.assign(globalThis.navigator, { mediaDevices: { getUserMedia: () => getUserMedia() } });
     Object.assign(globalThis.window, {
       AudioContext: class {
-        sampleRate = SAMPLE_RATE;
+        sampleRate: number;
+        constructor(options?: AudioContextOptions) {
+          this.sampleRate = options?.sampleRate ?? SAMPLE_RATE;
+          inputSampleRate = this.sampleRate;
+        }
         destination = {};
         resume = async () => {};
         close = async () => {};
@@ -57,7 +68,7 @@ describe("useVoiceInput recording limit", () => {
   async function hear(seconds: number) {
     await harness!.act(async () => {
       processor.onaudioprocess?.({
-        inputBuffer: { getChannelData: () => new Float32Array(seconds * SAMPLE_RATE).fill(0.25) },
+        inputBuffer: { getChannelData: () => new Float32Array(seconds * inputSampleRate).fill(0.25) },
       });
     });
   }
@@ -130,6 +141,119 @@ describe("useVoiceInput recording limit", () => {
     expect(onAudioCaptured).toHaveBeenCalledOnce();
     expect(onAudioCaptured.mock.calls[0]![0]).toMatchObject({ contextKey: "session-1" });
     expect(onAudioCaptured.mock.calls[0]![0].audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
+  });
+
+  describe("compressed uploads", () => {
+    const opusBlob = new Blob([new Uint8Array(900)], { type: "audio/ogg" });
+    let pushed: number[];
+    let encoder: { push: (samples: Float32Array) => void; finish: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> };
+
+    beforeEach(() => {
+      pushed = [];
+      encoder = { push: (samples) => pushed.push(samples.length), finish: vi.fn(async () => opusBlob), cancel: vi.fn() };
+      createOpusRecordingEncoderMock.mockResolvedValue(encoder);
+      fetchTranscriptionStatusMock.mockResolvedValue({
+        available: true,
+        provider: "speech-engine",
+        label: "Parakeet v3 (local)",
+        maxDurationSeconds: 2,
+        opusUploads: true,
+      });
+    });
+
+    it("hands over the Opus encoding of exactly the audio that was kept", async () => {
+      const onAudioCaptured = vi.fn(async (_capture: { audio: Blob; contextKey: string }) => {});
+      await startRecording({ onAudioCaptured });
+      expect(createOpusRecordingEncoderMock).toHaveBeenCalledWith(48_000);
+
+      await hear(1.25);
+      await hear(1.25);
+      await waitUntilAct(harness!.act, () => onAudioCaptured.mock.calls.length === 1);
+
+      expect(pushed).toEqual([1.25 * 48_000, 0.75 * 48_000]);
+      expect(onAudioCaptured.mock.calls[0]![0].audio).toBe(opusBlob);
+      expect(encoder.cancel).not.toHaveBeenCalled();
+    });
+
+    it("sends the WAV when the encoding cannot be trusted", async () => {
+      encoder.finish.mockResolvedValue(null);
+      const onAudioCaptured = vi.fn(async (_capture: { audio: Blob; contextKey: string }) => {});
+      await startRecording({ onAudioCaptured });
+      await hear(1);
+      await harness!.act(async () => {
+        await voice!.stopRecording();
+      });
+
+      const { audio } = onAudioCaptured.mock.calls[0]![0];
+      expect(audio.type).toBe("audio/wav");
+      expect(audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
+    });
+
+    it("records plain WAV in a browser that cannot encode Opus", async () => {
+      createOpusRecordingEncoderMock.mockResolvedValue(null);
+      const onAudioCaptured = vi.fn(async (_capture: { audio: Blob; contextKey: string }) => {});
+      await startRecording({ onAudioCaptured });
+      await hear(1);
+      await harness!.act(async () => {
+        await voice!.stopRecording();
+      });
+      expect(onAudioCaptured.mock.calls[0]![0].audio.type).toBe("audio/wav");
+    });
+
+    it("keeps WAV capture working if the browser refuses the preferred capture rate", async () => {
+      createOpusRecordingEncoderMock.mockResolvedValue(null);
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const onAudioCaptured = vi.fn(async (_capture: { audio: Blob; contextKey: string }) => {});
+      await mount({ onAudioCaptured });
+      Object.assign(globalThis.window, {
+        AudioContext: class {
+          sampleRate = SAMPLE_RATE;
+          destination = {};
+          constructor(options?: AudioContextOptions) {
+            if (options?.sampleRate === 48_000) throw Object.assign(new Error("rate unsupported"), { name: "NotSupportedError" });
+            inputSampleRate = SAMPLE_RATE;
+          }
+          resume = async () => {};
+          close = async () => {};
+          createMediaStreamSource = () => ({ connect() {}, disconnect() {} });
+          createScriptProcessor = () => processor;
+        },
+      });
+      try {
+        await harness!.act(async () => { await voice!.startRecording(); });
+        await hear(1);
+        await harness!.act(async () => { await voice!.stopRecording(); });
+        expect(onAudioCaptured.mock.calls[0]![0].audio.type).toBe("audio/wav");
+        expect(voice!.error).toBeNull();
+        expect(warning).toHaveBeenCalledOnce();
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it("lets go of the encoder when the microphone cannot be opened", async () => {
+      getUserMedia = async () => ({ getTracks: () => [{ stop() {} }] });
+      await mount({});
+      const realAudioContext = (globalThis.window as unknown as { AudioContext: new () => object }).AudioContext;
+      Object.assign(globalThis.window, {
+        AudioContext: class extends realAudioContext {
+          createMediaStreamSource = () => {
+            throw new Error("source failed");
+          };
+        },
+      });
+      await harness!.act(async () => {
+        await voice!.startRecording();
+      });
+      expect(voice!.phase).toBe("idle");
+      expect(voice!.error).toBe("source failed");
+      expect(encoder.cancel).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("never asks for an encoder when the server does not take compressed recordings", async () => {
+    await startRecording({});
+    expect(createOpusRecordingEncoderMock).not.toHaveBeenCalled();
   });
 
   it("leaves nothing running when the view goes away while the microphone is still opening", async () => {

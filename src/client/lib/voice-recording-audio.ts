@@ -55,7 +55,7 @@ export class SpeechResampler {
   }
 
   /** Resamples one chunk; state carries across calls so chunked input matches one-shot input. */
-  push(input: Float32Array): Float32Array {
+  push(input: Float32Array): Float32Array<ArrayBuffer> {
     if (this.ratio === 1) return input.slice();
     const output = new Float32Array(Math.ceil(input.length / this.ratio) + 2);
     let count = 0;

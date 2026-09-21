@@ -3377,6 +3377,8 @@ export interface TranscriptionStatus {
   label: string;
   reason?: string;
   maxDurationSeconds: number;
+  /** The server decodes Ogg Opus recordings. Absent on servers from before it could. */
+  opusUploads?: boolean;
 }
 
 export interface TranscriptionResult {
@@ -3458,9 +3460,14 @@ function uploadRecording<T>(path: string, form: FormData, { signal, onUploadProg
   });
 }
 
+/** The server reads the format from the bytes; the name only keeps a stored recording recognisable. */
+function recordingFilename(audio: Blob): string {
+  return audio.type === "audio/ogg" ? "voice-input.ogg" : "voice-input.wav";
+}
+
 export async function transcribeAudio(audio: Blob, options: RecordingUploadOptions = {}): Promise<TranscriptionResult> {
   const form = new FormData();
-  form.append("audio", audio, "voice-input.wav");
+  form.append("audio", audio, recordingFilename(audio));
   return uploadRecording<TranscriptionResult>("/api/transcribe", form, options);
 }
 
@@ -3470,7 +3477,7 @@ export async function createVoiceJob(
   options: RecordingUploadOptions = {},
 ): Promise<VoiceJobStatusResponse> {
   const form = new FormData();
-  form.append("audio", audio, "voice-input.wav");
+  form.append("audio", audio, recordingFilename(audio));
   form.append("composerKey", request.composerKey);
   if (request.sessionId) form.append("sessionId", request.sessionId);
   if (request.taskId) form.append("taskId", request.taskId);

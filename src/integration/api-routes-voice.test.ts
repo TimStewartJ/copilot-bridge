@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { muxOggOpus } from "../shared/ogg-opus.js";
+import { oggOpusToneFixture } from "../test-support/ogg-opus-fixture.js";
 import type { ApiRouteTestState, DeferredPromptRunner } from "../test-support/api-routes.js";
 import {
   createCopilotUsageTestHome,
@@ -159,10 +161,85 @@ describe("Transcription routes", () => {
     expect(res.body.error).toContain("Audio exceeds 1 seconds");
     expect(transcribe).not.toHaveBeenCalled();
   });
+
+  describe("compressed recordings", () => {
+    /** A valid stream of 20 ms packets; nothing here decodes it, so the payload can be anything. */
+    const oggOpusRecording = (seconds: number) => Buffer.from(muxOggOpus({
+      channels: 1,
+      preSkip: 312,
+      inputSampleRate: 16_000,
+      packets: Array.from({ length: Math.round(seconds * 50) }, () => new Uint8Array([0x48, 1, 2, 3])),
+    }));
+
+    function createAppWithLimit(maxDurationSeconds: number) {
+      const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
+      ({ app } = createTestApp({
+        transcriptionService: createMockTranscriptionService({
+          getStatus: () => ({ available: true, provider: "speech-engine", label: "Parakeet v3 (local)", maxDurationSeconds, opusUploads: true }),
+          transcribe,
+        }),
+      }));
+      return transcribe;
+    }
+
+    it("POST /api/transcribe accepts an Ogg Opus recording", async () => {
+      const transcribe = createAppWithLimit(120);
+
+      const res = await request(app)
+        .post("/api/transcribe")
+        .attach("audio", oggOpusRecording(3), { filename: "voice-input.ogg", contentType: "audio/ogg" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ text: "Hello bridge", provider: "speech-engine" });
+      expect(transcribe.mock.calls[0]![0].filePath).toMatch(/voice-input\.ogg$/);
+    });
+
+    it("POST /api/transcribe measures an Ogg Opus recording against the duration limit", async () => {
+      const transcribe = createAppWithLimit(1);
+
+      const tooLong = await request(app)
+        .post("/api/transcribe")
+        .attach("audio", oggOpusRecording(2), { filename: "voice-input.ogg", contentType: "audio/ogg" });
+      expect(tooLong.status).toBe(400);
+      expect(tooLong.body.error).toContain("Audio exceeds 1 seconds");
+
+      // A recording stopped exactly at the limit: the encoder padded it to 51 packets, and it still fits.
+      const atTheLimit = Buffer.from(muxOggOpus({
+        channels: 1,
+        preSkip: 312,
+        inputSampleRate: 16_000,
+        packets: Array.from({ length: 51 }, () => new Uint8Array([0x48, 1, 2, 3])),
+        endSample: 312 + 48_000,
+      }));
+      const fits = await request(app)
+        .post("/api/transcribe")
+        .attach("audio", atTheLimit, { filename: "voice-input.ogg", contentType: "audio/ogg" });
+      expect(fits.status).toBe(200);
+      expect(transcribe).toHaveBeenCalledOnce();
+    });
+
+    it("POST /api/transcribe rejects a damaged or empty Ogg Opus recording as a bad upload", async () => {
+      const transcribe = createAppWithLimit(120);
+      const recording = oggOpusRecording(3);
+
+      const truncated = await request(app)
+        .post("/api/transcribe")
+        .attach("audio", recording.subarray(0, recording.length - 10), { filename: "voice-input.ogg", contentType: "audio/ogg" });
+      expect(truncated.status).toBe(400);
+      expect(truncated.body.error).toContain("truncated");
+
+      const empty = await request(app)
+        .post("/api/transcribe")
+        .attach("audio", oggOpusRecording(0), { filename: "voice-input.ogg", contentType: "audio/ogg" });
+      expect(empty.status).toBe(400);
+      expect(empty.body.error).toContain("does not contain audio");
+      expect(transcribe).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("Voice job routes", () => {
-  it("POST /api/voice-jobs accepts and starts a server-owned autosend for an existing session", async () => {
+  it.each(["wav", "opus"] as const)("POST /api/voice-jobs accepts %s and starts a server-owned autosend for an existing session", async (format) => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
     sessionManager.readMessagesFromDisk = vi.fn().mockImplementation(async () => ({
@@ -193,9 +270,9 @@ describe("Voice job routes", () => {
       .post("/api/voice-jobs")
       .field("composerKey", "existing-session")
       .field("sessionId", "existing-session")
-      .attach("audio", createWavBuffer(1), {
-        filename: "recording.wav",
-        contentType: "audio/wav",
+      .attach("audio", format === "opus" ? Buffer.from(oggOpusToneFixture()) : createWavBuffer(1), {
+        filename: format === "opus" ? "recording.ogg" : "recording.wav",
+        contentType: format === "opus" ? "audio/ogg" : "audio/wav",
       });
 
     expect(res.status).toBe(202);

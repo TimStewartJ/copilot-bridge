@@ -17,7 +17,8 @@ import {
   type VoiceEngineRequest,
   type VoiceEngineResponse,
 } from "./voice-engine-protocol.js";
-import { CLIP_CHUNK_PLAN, decodeWav, joinTranscripts, planSpeechChunks, type SampleRange } from "./voice-clip.js";
+import { CLIP_CHUNK_PLAN, joinTranscripts, planSpeechChunks, type SampleRange } from "./voice-clip.js";
+import { decodeRecording } from "./voice-recording.js";
 import { VOICE_MODEL_FILES } from "./voice-catalog.js";
 import { createSmartTurnFeatureExtractor, SMART_TURN_FRAMES, SMART_TURN_MEL_BINS } from "./smart-turn-features.js";
 
@@ -385,10 +386,11 @@ async function detectSpeech(samples: Float32Array): Promise<SampleRange[]> {
 async function transcribeFile(filePath: string): Promise<VoiceClipTranscription> {
   requireCapability("asr");
   const started = performance.now();
-  const wav = decodeWav(await readFile(filePath));
-  const samples = wav.sampleRate === SAMPLE_RATE
-    ? wav.samples
-    : new (runtime().sherpa.LinearResampler)(wav.sampleRate, SAMPLE_RATE).flush(wav.samples);
+  const file = await readFile(filePath);
+  const recording = await decodeRecording(file, SAMPLE_RATE);
+  const samples = recording.sampleRate === SAMPLE_RATE
+    ? recording.samples
+    : new (runtime().sherpa.LinearResampler)(recording.sampleRate, SAMPLE_RATE).flush(recording.samples);
   const segments = await detectSpeech(samples);
   let speech = await decodeSpeech(samples, segments, "clip");
   if (speech.chunks === 0 && samples.length >= SAMPLE_RATE / 10 && samples.length <= CLIP_FALLBACK_MAX_SAMPLES) {
@@ -400,6 +402,8 @@ async function transcribeFile(filePath: string): Promise<VoiceClipTranscription>
     speechSeconds: Math.round((segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / SAMPLE_RATE) * 100) / 100,
     chunks: speech.chunks,
     ms: Math.round(performance.now() - started),
+    format: recording.format,
+    bytes: file.length,
   };
 }
 
