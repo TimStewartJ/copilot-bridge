@@ -10,6 +10,8 @@ export interface TranscriptionStatus {
   label: string;
   reason?: string;
   maxDurationSeconds: number;
+  /** Recordings may arrive as Ogg Opus. A browser only compresses for a server that says so. */
+  opusUploads?: boolean;
 }
 
 export interface TranscriptionResult {
@@ -65,12 +67,17 @@ export function createTranscriptionService({ installer, engine, env = process.en
   const maxDurationSeconds = parsePositiveInt(env.BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS, DEFAULT_MAX_DURATION_SECONDS);
   const timeoutMs = Math.max(MIN_TIMEOUT_MS, maxDurationSeconds * 5_000);
   let activeTranscriptions = 0;
+  const opusSetting = env.BRIDGE_TRANSCRIPTION_OPUS_UPLOADS?.trim().toLowerCase() ?? "";
+  if (opusSetting && opusSetting !== "true" && opusSetting !== "false") {
+    console.warn("[transcription] BRIDGE_TRANSCRIPTION_OPUS_UPLOADS must be true or false; compression is disabled.");
+  }
+  const opusUploads = opusSetting === "" || opusSetting === "true";
 
   const getStatus = (): TranscriptionStatus => {
     const reason = describeTranscriptionUnavailable(installer.getStatus());
     return reason
-      ? { available: false, provider: "disabled", label: "Unavailable", reason, maxDurationSeconds }
-      : { available: true, provider: TRANSCRIPTION_PROVIDER, label: TRANSCRIPTION_LABEL, maxDurationSeconds };
+      ? { available: false, provider: "disabled", label: "Unavailable", reason, maxDurationSeconds, opusUploads }
+      : { available: true, provider: TRANSCRIPTION_PROVIDER, label: TRANSCRIPTION_LABEL, maxDurationSeconds, opusUploads };
   };
 
   return {
@@ -83,7 +90,7 @@ export function createTranscriptionService({ installer, engine, env = process.en
       activeTranscriptions++;
       try {
         const result = await engine.transcribeFile(filePath, { timeoutMs });
-        logger?.log(`[transcription] ${result.audioSeconds}s clip (${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms`);
+        logger?.log(`[transcription] ${result.audioSeconds}s clip (${result.format}, ${Math.round(result.bytes / 1024)} KB; ${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms`);
         const text = result.text.trim();
         if (!text) throw new Error("No speech was detected in the recording.");
         return { text, provider: TRANSCRIPTION_PROVIDER };

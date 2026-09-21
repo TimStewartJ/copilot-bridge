@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { OPUS_CLOCK_RATE } from "../../shared/ogg-opus.js";
 import { fetchTranscriptionStatus, type TranscriptionStatus } from "../api";
 import { encodeWav, SpeechResampler } from "../lib/voice-recording-audio";
+import { createOpusRecordingEncoder, type OpusRecordingEncoder } from "../lib/voice-recording-opus";
 import { holdVoiceCapture } from "../lib/voice-capture-guard";
 import type { VoiceRecorderPhase } from "../lib/voice-ui-state";
 
@@ -54,6 +56,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   const phaseRef = useRef<VoiceRecorderPhase>("idle");
   const sampleRateRef = useRef(0);
   const chunksRef = useRef<Float32Array[]>([]);
+  const opusEncoderRef = useRef<OpusRecordingEncoder | null>(null);
   const releaseCaptureRef = useRef<(() => void) | null>(null);
   const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
   const maxDurationReachedRef = useRef<() => void>(() => {});
@@ -105,6 +108,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     chunksRef.current = [];
     sampleRateRef.current = 0;
     activeContextKeyRef.current = null;
+    opusEncoderRef.current?.cancel();
+    opusEncoderRef.current = null;
   }, []);
 
   /** Lets go of the capture hold; only once the audio is stored or deliberately dropped. */
@@ -166,7 +171,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     setError(null);
     setElapsedSeconds(0);
     try {
-      const { maxDurationSeconds } = await ensureAvailable();
+      const { maxDurationSeconds, opusUploads } = await ensureAvailable();
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -174,9 +179,13 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       if (!AudioContextCtor) {
         throw new Error("Voice input is not supported in this browser.");
       }
-      const audioContext = new AudioContextCtor();
+      const audioContext = createCaptureAudioContext(AudioContextCtor, opusUploads === true);
       audioContextRef.current = audioContext;
       await audioContext.resume();
+      const resampler = new SpeechResampler(audioContext.sampleRate);
+      // Encode the native 48 kHz capture while retaining downsampled PCM for the WAV fallback.
+      const opusEncoder = opusUploads ? await createOpusRecordingEncoder(audioContext.sampleRate) : null;
+      opusEncoderRef.current = opusEncoder;
       // The view can go away while the microphone is still being opened; nothing may be left running.
       if (!mountedRef.current) throw new Error("Voice input closed before recording started.");
       const source = audioContext.createMediaStreamSource(stream);
@@ -184,7 +193,6 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
 
       sourceRef.current = source;
       processorRef.current = processor;
-      const resampler = new SpeechResampler(audioContext.sampleRate);
       sampleRateRef.current = resampler.outputRate;
       chunksRef.current = [];
       activeContextKeyRef.current = contextKeyRef.current;
@@ -192,13 +200,22 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       // The server rejects audio past its limit, so capture ends exactly there instead of
       // letting a finished recording fail on upload.
       const maxSamples = maxDurationSeconds * resampler.outputRate;
+      const maxInputSamples = maxDurationSeconds * audioContext.sampleRate;
       let capturedSamples = 0;
+      let capturedInputSamples = 0;
       processor.onaudioprocess = (event) => {
         const room = maxSamples - capturedSamples;
         if (room <= 0) return;
-        const chunk = resampler.push(event.inputBuffer.getChannelData(0));
-        chunksRef.current.push(chunk.length > room ? chunk.subarray(0, room) : chunk);
-        capturedSamples += Math.min(chunk.length, room);
+        const input = event.inputBuffer.getChannelData(0);
+        const chunk = resampler.push(input);
+        const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
+        chunksRef.current.push(kept);
+        if (opusEncoder) {
+          const keptInput = input.subarray(0, Math.max(0, maxInputSamples - capturedInputSamples));
+          opusEncoder.push(keptInput);
+          capturedInputSamples += keptInput.length;
+        }
+        capturedSamples += kept.length;
         if (mountedRef.current) setElapsedSeconds(Math.floor(capturedSamples / resampler.outputRate));
         if (capturedSamples >= maxSamples) maxDurationReachedRef.current();
       };
@@ -225,9 +242,15 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     setError(null);
 
     try {
-      const wavBlob = encodeWav(chunksRef.current, sampleRateRef.current);
+      // Capture ends here; what follows only packages what was recorded.
+      if (processorRef.current) processorRef.current.onaudioprocess = null;
+      const opusEncoder = opusEncoderRef.current;
+      opusEncoderRef.current = null;
+      const chunks = chunksRef.current;
+      const sampleRate = sampleRateRef.current;
       await cleanupRecorder();
-      await onAudioCaptured({ audio: wavBlob, contextKey: startedContextKey });
+      const audio = (await opusEncoder?.finish()) ?? encodeWav(chunks, sampleRate);
+      await onAudioCaptured({ audio, contextKey: startedContextKey });
     } catch (err) {
       if (mountedRef.current) {
         setError(err instanceof Error ? err.message : String(err));
@@ -258,6 +281,17 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     stopRecording,
     refreshStatus,
   };
+}
+
+function createCaptureAudioContext(Ctor: typeof AudioContext, opusUploads: boolean): AudioContext {
+  if (!opusUploads) return new Ctor();
+  try {
+    return new Ctor({ sampleRate: OPUS_CLOCK_RATE });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "NotSupportedError") throw error;
+    console.warn("[voice-input] 48 kHz capture is unsupported; using WAV.", error);
+    return new Ctor();
+  }
 }
 
 function getAudioContextCtor(): typeof AudioContext | undefined {

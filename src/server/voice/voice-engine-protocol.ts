@@ -45,6 +45,10 @@ export interface VoiceClipTranscription {
   speechSeconds: number;
   chunks: number;
   ms: number;
+  /** How the recording arrived: compressed by the browser, or the WAV every browser can send. */
+  format: "wav" | "opus";
+  /** Size of the uploaded recording. */
+  bytes: number;
 }
 
 export type VoiceEngineResponse =
