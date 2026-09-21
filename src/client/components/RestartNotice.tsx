@@ -53,7 +53,7 @@ export default function RestartNotice({
     <div
       role="status"
       title={waiting && waitingSessionTitles.length > 0 ? `Waiting for: ${waitingSessionTitles.join(", ")}` : undefined}
-      className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-bg-secondary px-4 py-1 text-xs text-text-muted"
+      className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-bg-secondary px-4 py-1 text-xs text-text-secondary"
     >
       {notice.kind === "restarted"
         ? <Check size={12} className="shrink-0" />
