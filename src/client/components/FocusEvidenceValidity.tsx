@@ -1,5 +1,6 @@
 import type { FocusObjectDetails } from "../api";
 import { focusEvidenceValidity, focusTime } from "../focus-view-model";
+import { DS, cx } from "../design/tokens";
 
 export default function FocusEvidenceValidity({ details, nowMs = Date.now(), materialOnly = false }: {
   details: Pick<FocusObjectDetails, "observedAt" | "validUntil">;
@@ -9,7 +10,7 @@ export default function FocusEvidenceValidity({ details, nowMs = Date.now(), mat
   const state = focusEvidenceValidity(details, nowMs);
   if (materialOnly && state === "valid") return null;
   return <div data-evidence-validity={state} role="note"
-    className={`text-xs ${state === "valid" ? "text-text-muted" : "rounded-lg border border-warning/25 bg-warning/5 p-3 text-warning"}`}>
+    className={cx("text-xs", state === "valid" ? "text-text-muted" : cx(DS.notice.surface, "p-3 text-warning"))}>
     <p className={state === "valid" ? "" : "font-medium"}>
       {state === "expired" ? "Evidence validity expired. Recheck the evidence before judgment or handoff."
         : state === "unknown" ? "Evidence validity unknown. Do not infer a current basis for judgment or handoff."

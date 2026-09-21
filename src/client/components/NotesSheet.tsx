@@ -7,6 +7,7 @@ import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
 import EmptyState from "./shared/EmptyState";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx } from "../design/tokens";
 
 interface NotesSheetProps {
   notes: string;
@@ -47,7 +48,7 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
       {/* Sheet */}
       <div
         {...dialogProps}
-        className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+        className={cx(DS.surface.dialog, "relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] rounded-t-2xl md:rounded-xl flex flex-col")}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
@@ -59,7 +60,7 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
             {!editing && (
               <button
                 onClick={() => { setDraft(notes); setEditing(true); }}
-                className="text-text-muted hover:text-text-secondary transition-colors"
+                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
                 aria-label="Edit"
                 title="Edit notes"
               >
@@ -68,7 +69,7 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
             )}
             <button
               onClick={onClose}
-              className="text-text-muted hover:text-text-secondary transition-colors"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
               aria-label="Close"
             >
               <X size={16} />
@@ -85,19 +86,19 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={16}
-                className="w-full flex-1 px-3 py-2 bg-bg-secondary text-text-primary border border-border rounded-md text-sm font-mono resize-y focus:outline-none focus:border-accent min-h-[200px]"
+                className={cx(DS.field.input, DS.field.textarea, DS.focus, "flex-1 font-mono resize-y min-h-[200px]")}
                 placeholder="Write notes in markdown..."
               />
               <div className="flex gap-2">
                 <button
                   onClick={handleSave}
-                  className="px-3 py-1.5 bg-accent hover:bg-accent-hover text-white text-xs rounded-md transition-colors"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary)}
                 >
                   Save
                 </button>
                 <button
                   onClick={handleCancel}
-                  className="px-3 py-1.5 text-text-muted hover:text-text-primary text-xs transition-colors"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
                 >
                   Cancel
                 </button>
@@ -106,7 +107,7 @@ export default function NotesSheet({ notes, onSave, onClose, startInEditMode = f
           ) : notes ? (
             <div
               onClick={() => { setDraft(notes); setEditing(true); }}
-              className={`cursor-pointer max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}
+              className={cx("cursor-pointer max-w-none", APP_PROSE, "prose-pre:bg-bg-secondary prose-th:bg-bg-secondary")}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>{notes}</ReactMarkdown>
             </div>

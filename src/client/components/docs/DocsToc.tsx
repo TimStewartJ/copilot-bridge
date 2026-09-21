@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { DocHeading } from "./docs-model";
 import { cx } from "./docs-ui";
+import { DS } from "../../design/tokens";
 
 /** A heading counts as "current" once it has scrolled to within this distance of the top. */
 const ACTIVE_OFFSET_PX = 96;
@@ -96,17 +97,7 @@ export default function DocsToc({ headings, activeId, onSelect, variant = "rail"
               aria-current={active ? "location" : undefined}
               onClick={() => onSelect(heading.id)}
               style={{ paddingLeft: `${(isRail ? 14 : 12) + depth * 12}px` }}
-              className={cx(
-                "block w-full text-left transition-colors",
-                isRail
-                  ? "-ml-px border-l py-1 pr-2 text-[13px] leading-5"
-                  : "rounded-md py-2.5 pr-3 text-sm leading-5",
-                isRail && (active
-                  ? "border-accent font-medium text-accent"
-                  : "border-transparent text-text-muted hover:border-text-faint hover:text-text-primary"),
-                !isRail && (active ? "bg-accent-surface font-medium text-accent" : "text-text-secondary hover:bg-bg-hover"),
-                depth === 0 && !active && isRail && "text-text-secondary",
-              )}
+              className={cx(DS.row.stacked, "py-2 leading-5", isRail && "-ml-px border-l", active ? cx(DS.row.selected, "border-control-edge font-medium") : "border-transparent text-text-secondary")}
             >
               {heading.text}
             </button>

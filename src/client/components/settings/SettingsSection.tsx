@@ -1,3 +1,6 @@
+import { Section } from "../../design/primitives";
+import { DS, cx } from "../../design/tokens";
+
 export function SettingsSection({
   title,
   description,
@@ -9,28 +12,10 @@ export function SettingsSection({
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const heading = (
-    <>
-      <h2 className="text-sm font-semibold tracking-tight text-text-primary">
-        {title}
-      </h2>
-      {description && (
-        <p className="text-xs text-text-muted mt-0.5">{description}</p>
-      )}
-    </>
-  );
-
   return (
-    <section>
-      {action ? (
-        <div className="flex items-center justify-between mb-3">
-          <div>{heading}</div>
-          {action}
-        </div>
-      ) : (
-        <div className="mb-3">{heading}</div>
-      )}
-      {children}
-    </section>
+    <Section label={title} action={action} level="page" className="min-w-0">
+      {description && <p className={cx(DS.text.prose, "mb-4 max-w-[72ch]")}>{description}</p>}
+      <div className="min-w-0">{children}</div>
+    </Section>
   );
 }

@@ -143,10 +143,24 @@ export default function CopilotQuotaMenu({ collapsed = false }: CopilotQuotaMenu
 }
 
 /** The quota as a tappable summary for places without a rail to hover, such as mobile Settings. */
-export function CopilotQuotaCard({ className = "" }: { className?: string }) {
+export function CopilotQuotaCard({ className = "", compact = false }: { className?: string; compact?: boolean }) {
   const details = useQuotaDetails();
   const { status, snapshot, isLoading, usedPercent } = details;
   const available = Boolean(status?.available && snapshot);
+
+  if (compact) {
+    return (
+      <>
+        <Button variant="ghost" size="sm" className={className} onClick={details.openDetails}
+          aria-label={details.accessibleLabel} aria-haspopup="dialog" aria-expanded={details.detailsOpen}
+          icon={isLoading ? <Loader2 size={14} className="animate-spin" /> : details.error
+            ? <AlertTriangle size={14} className="text-warning" /> : <Gauge size={14} />}>
+          Quota {available && usedPercent !== null && <span className="tabular-nums">{formatPercent(usedPercent)}</span>}
+        </Button>
+        {details.dialog}
+      </>
+    );
+  }
 
   return (
     <>

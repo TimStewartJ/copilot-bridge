@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import { Field } from "./Field";
+import { DS, cx } from "../../design/tokens";
 
 export interface ProviderEditorField {
   key: string;
@@ -52,7 +53,7 @@ export function ProviderEditor({
   const canSave = Object.values(errors).every((e) => e === null);
 
   return (
-    <div className="bg-bg-elevated border border-accent/20 rounded-md p-4 space-y-3">
+    <div className={cx(DS.layout.formGroup, DS.choice.selected)}>
       <div className="flex items-center justify-between">
         <div className="text-xs font-medium text-accent">
           {isEditing ? `Edit: ${title}` : `Configure ${title}`}
@@ -60,7 +61,7 @@ export function ProviderEditor({
         {isEditing && onClear && (
           <button
             onClick={onClear}
-            className="text-[10px] text-text-muted hover:text-error transition-colors flex items-center gap-1"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-[10px] hover:text-error gap-1")}
           >
             <X size={10} />
             Clear
@@ -76,7 +77,7 @@ export function ProviderEditor({
               setValues((prev) => ({ ...prev, [f.key]: e.target.value }))
             }
             placeholder={f.placeholder}
-            className="w-full bg-bg-surface text-text-primary text-xs px-3 py-2 rounded-md border border-border focus:border-accent focus:outline-none"
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
             autoFocus={i === 0}
           />
         </Field>
@@ -85,7 +86,7 @@ export function ProviderEditor({
       <div className="flex justify-end gap-2 pt-1">
         <button
           onClick={onCancel}
-          className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
         >
           Cancel
         </button>
@@ -100,11 +101,9 @@ export function ProviderEditor({
             onSave(trimmed);
           }}
           disabled={!canSave}
-          className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
-            canSave
-              ? "bg-accent text-white hover:bg-accent-hover"
-              : "bg-bg-elevated text-text-faint cursor-not-allowed"
-          }`}
+          className={cx("px-4 py-1.5 text-xs font-medium rounded-md transition-colors", canSave
+              ? cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary)
+              : cx(DS.button.base, DS.button.size.sm, "bg-bg-elevated text-text-faint cursor-not-allowed"))}
         >
           {isEditing ? "Update" : "Configure"}
         </button>

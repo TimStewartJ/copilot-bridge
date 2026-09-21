@@ -1,4 +1,4 @@
-// Theme context — provides theme preference with server-side persistence.
+// Theme context: saved preferences plus a reversible preview while settings are edited.
 
 import {
   createContext,
@@ -8,8 +8,10 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { patchSettings, type ThemePreference } from "./api";
+import type { ThemePreference } from "./api";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
+import { Button, Notice } from "./design/primitives";
+import { DS } from "./design/tokens";
 
 type EffectiveTheme = "light" | "dark";
 
@@ -18,8 +20,9 @@ interface ThemeContextValue {
   theme: ThemePreference;
   /** Resolved theme after system preference resolution */
   effectiveTheme: EffectiveTheme;
-  /** Update preference (persisted to server) */
-  setTheme: (t: ThemePreference) => void;
+  savedTheme: ThemePreference;
+  /** Preview a settings draft; null returns to the saved preference. Persistence belongs to Save. */
+  previewTheme: (preference: ThemePreference | null) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
@@ -49,19 +52,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, _setTheme] = useState<ThemePreference>("dark");
   const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>("dark");
   const [loaded, setLoaded] = useState(false);
+  const [preview, setPreview] = useState<ThemePreference | null>(null);
 
-  const { data: settings } = useSettingsQuery();
+  const { data: settings, error, refetch } = useSettingsQuery();
 
   // Sync theme from server settings (on initial load and when settings change)
   useEffect(() => {
     if (!settings) return;
-    const pref = settings.theme ?? "dark";
+    const pref = preview ?? settings.theme ?? "dark";
     _setTheme(pref);
     const eff = resolveTheme(pref);
     setEffectiveTheme(eff);
     applyTheme(eff);
     setLoaded(true);
-  }, [settings]);
+  }, [settings, preview]);
 
   // Apply default theme immediately while loading
   useEffect(() => {
@@ -82,23 +86,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => mq.removeEventListener("change", handler);
   }, [theme]);
 
-  const setTheme = useCallback(
-    (next: ThemePreference) => {
-      _setTheme(next);
-      const eff = resolveTheme(next);
-      setEffectiveTheme(eff);
-      applyTheme(eff);
-      // Persist to server (fire-and-forget)
-      patchSettings({ theme: next }).catch(() => {});
-    },
-    [],
-  );
+  const previewTheme = useCallback((preference: ThemePreference | null) => setPreview(preference), []);
 
   // Don't render children until we've loaded the theme to avoid flash
-  if (!loaded) return null;
+  if (!loaded) {
+    if (error) {
+      return (
+        <div className={DS.layout.pageColumn}>
+          <Notice tone="danger" title="Bridge preferences could not load"
+            action={<Button size="sm" onClick={() => void refetch()}>Retry</Button>}>
+            {error instanceof Error ? error.message : String(error)}
+          </Notice>
+        </div>
+      );
+    }
+    return null;
+  }
 
   return (
-    <ThemeContext.Provider value={{ theme, effectiveTheme, setTheme }}>
+    <ThemeContext.Provider value={{ theme, effectiveTheme, savedTheme: settings?.theme ?? "dark", previewTheme }}>
       {children}
     </ThemeContext.Provider>
   );

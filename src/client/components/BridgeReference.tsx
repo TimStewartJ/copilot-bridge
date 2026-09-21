@@ -16,7 +16,8 @@ import { useSessionsQuery } from "../hooks/queries/useSessions";
 import { useTasksQuery } from "../hooks/queries/useTasks";
 import { getSessionPath } from "../lib/session-path";
 import { timeAgo } from "../time";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 export interface BridgeReferenceContextValue {
   isUnread?: (sessionId: string, activityTime?: string) => boolean;
@@ -212,12 +213,12 @@ export function BridgeReferenceChip({ target, label }: { target: BridgeLinkTarge
       data-bridge-reference-state={reference.tone ?? "none"}
       aria-label={describeReference(reference)}
       title={[reference.tone ? TONE_LABEL[reference.tone] : "", reference.detail, reference.meta].filter(Boolean).join(" · ") || undefined}
-      className={`not-prose mx-0.5 inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-bg-surface px-1.5 py-px align-baseline text-[0.92em] font-medium no-underline transition-colors hover:border-accent-border hover:bg-accent-surface ${reference.found ? "text-text-primary" : "text-text-muted"}`}
+      className={cx(DS.surface.inset, DS.focus, "not-prose mx-0.5 inline-flex max-w-full items-center gap-1 px-1.5 py-px align-baseline text-[0.92em] font-medium no-underline transition-colors hover:bg-surface-selected", reference.found ? "text-text-primary" : "text-text-muted")}
     >
       <Icon size={12} aria-hidden="true" className="shrink-0 text-text-muted" />
       <span className="truncate">{reference.title}</span>
       {reference.tone && reference.tone !== "idle" && reference.tone !== "unknown" && (
-        <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${TONE_DOT[reference.tone]}`} />
+        <span aria-hidden="true" className={cx("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[reference.tone])} />
       )}
     </a>
   );
@@ -236,19 +237,19 @@ export function BridgeReferenceCard({ target, label }: { target: BridgeLinkTarge
         data-bridge-reference-state={reference.tone ?? "none"}
         data-bridge-reference-card="true"
         aria-label={describeReference(reference)}
-        className={`${UI.surface.cardInset} block border-l-2 border-l-accent px-3 py-2.5 no-underline transition-colors hover:bg-bg-hover`}
+        className={cx(DS.surface.detail, "block border-l-2 border-l-accent px-3 py-2.5 no-underline transition-colors hover:bg-bg-hover")}
       >
         <span className="flex items-center gap-2">
           <Icon size={13} aria-hidden="true" className="shrink-0 text-text-muted" />
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">{KIND_NAME[reference.kind]}</span>
+          <span className={cx(DS.text.sectionLabel, "font-semibold text-text-muted")}>{KIND_NAME[reference.kind]}</span>
           {reference.tone && (
             <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-              <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${TONE_DOT[reference.tone]}`} />
+              <span aria-hidden="true" className={cx("h-1.5 w-1.5 rounded-full", TONE_DOT[reference.tone])} />
               {TONE_LABEL[reference.tone]}
             </span>
           )}
         </span>
-        <span className={`mt-1 block text-sm font-medium leading-snug ${reference.found ? "text-text-primary" : "text-text-muted"}`}>
+        <span className={cx("mt-1 block text-sm font-medium leading-snug", reference.found ? "text-text-primary" : "text-text-muted")}>
           {reference.title}
         </span>
         {reference.detail && <span className="mt-1 block truncate text-xs text-text-secondary">{reference.detail}</span>}

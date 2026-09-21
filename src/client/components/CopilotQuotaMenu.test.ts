@@ -128,6 +128,19 @@ describe("CopilotQuotaMenu", () => {
     expect(harness.dom.container.textContent).toContain("Click for quota details");
   });
 
+  it("offers the full quota dialog from a compact mobile settings control", async () => {
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaCard, { compact: true }));
+    const button = findAllByTag(harness.dom.container, "BUTTON")[0];
+    expect(button.textContent).toContain("Quota");
+    expect(button.textContent).toContain("0.8%");
+    expect(getReactProps(button)?.["aria-haspopup"]).toBe("dialog");
+    expect(paceFill(harness.dom.container, "usage")).toBeUndefined();
+    await harness.act(async () => { getReactProps(button)?.onClick?.(); });
+    expect(harness.dom.container.textContent).toContain("Live account quota");
+    expect(harness.dom.container.textContent).toContain("79,393.9");
+  });
+
   it("opens detailed quota information from the rail control", async () => {
     harness = await createReactDomHarness();
     await harness.render(createElement(CopilotQuotaMenu));

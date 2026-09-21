@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Archive, Loader2, Trash2, X } from "lucide-react";
 import type { SessionDisposition, Task, TaskDeletionPreview } from "../api";
+import { DS, cx } from "../design/tokens";
 
 /**
  * Above this many sessions a delete is warned about rather than blocked: each
@@ -66,14 +67,14 @@ export default function ConfirmTaskDeleteDialog({
       aria-modal="true"
       aria-label="Delete task"
     >
-      <div className="bg-bg-secondary border border-border rounded-xl shadow-2xl w-full max-w-[440px] mx-4 flex flex-col">
+      <div className={cx(DS.surface.dialog, "w-full max-w-[440px] mx-4 flex flex-col")}>
         <div className="flex items-center justify-between p-4 border-b border-border">
           <h3 className="font-medium text-sm">Delete task</h3>
           <button
             onClick={onClose}
             disabled={isBusy}
             aria-label="Close"
-            className="text-text-muted hover:text-text-secondary disabled:opacity-40"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "disabled:opacity-40")}
           >
             <X size={16} />
           </button>
@@ -156,7 +157,7 @@ export default function ConfirmTaskDeleteDialog({
             ref={archiveRef}
             onClick={() => onConfirm("archive")}
             disabled={isBusy || !preview}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm bg-bg-primary border border-border hover:bg-bg-hover disabled:opacity-50 transition-colors"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "w-full gap-2 bg-bg-primary border border-border disabled:opacity-50")}
           >
             {busy === "archive"
               ? <Loader2 size={14} className="animate-spin" />
@@ -169,7 +170,7 @@ export default function ConfirmTaskDeleteDialog({
               onClick={() => onConfirm("delete")}
               disabled={isBusy || !preview || deleteBlocked}
               title={deleteBlocked ? "Some linked sessions are still running" : undefined}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm bg-error/10 text-error border border-error/30 hover:bg-error/20 disabled:opacity-40 transition-colors"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "w-full gap-2 disabled:opacity-40")}
             >
               {busy === "delete"
                 ? <Loader2 size={14} className="animate-spin" />
@@ -181,7 +182,7 @@ export default function ConfirmTaskDeleteDialog({
           <button
             onClick={onClose}
             disabled={isBusy}
-            className="w-full px-3 py-2 rounded-md text-sm text-text-muted hover:text-text-secondary disabled:opacity-40 transition-colors"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "w-full disabled:opacity-40")}
           >
             Cancel
           </button>

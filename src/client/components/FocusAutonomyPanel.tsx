@@ -5,9 +5,10 @@ import { coverageNeedsRefresh, focusTime, isFocusReadFresh } from "../focus-view
 import { useFocusAuthorityPagesQuery, useFocusCoveragePagesQuery } from "../hooks/queries/useFocus";
 import { FocusEvidenceList } from "./FocusCard";
 import { FOCUS_DASHBOARD_PANEL_CLASS } from "./FocusDashboardWidgets";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
 
-const BUTTON = `${UI.button.secondary} min-h-11 text-xs`;
+
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs");
 
 function AuthorityDisclosure({ snapshot, tasks, nowMs, onSelectTask }: {
   snapshot?: FocusSnapshot; tasks: Task[]; nowMs: number; onSelectTask: (id: string) => void;
@@ -71,18 +72,18 @@ export default function FocusAutonomyPanel({ snapshot, nowMs, tasks, onRetry, on
   return <section id="focus-coverage" data-dashboard-panel="coverage" className={FOCUS_DASHBOARD_PANEL_CLASS}>
     <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary"><ShieldCheck size={16} />Autonomy coverage</h3>
     <p className="mt-1 text-xs text-text-muted">Assurances are bounded by the stated scope, evidence, and horizon. No claim of overall safety.</p>
-    {(unavailable || timeChanged || !summary?.total) && <div className="mt-3 rounded-lg border border-warning/25 bg-warning/10 p-3 text-xs text-warning">
+    {(unavailable || timeChanged || !summary?.total) && <div className={cx(DS.notice.surface, "mt-3 p-3 text-xs text-warning")}>
       {timeChanged ? "A stated observation or validity horizon has elapsed. Refresh before relying on these counts."
         : stale ? "Coverage freshness unknown or stale."
           : snapshot?.domainHealth.coverage.error ?? "Coverage is incomplete or unknown. No assurance can be inferred from absent Alerts."}
-      <button type="button" className={`${BUTTON} mt-2`} onClick={() => { onRetry(); if (expanded) void query.refetch(); }}>Retry coverage checks</button>
+      <button type="button" className={cx(BUTTON, "mt-2")} onClick={() => { onRetry(); if (expanded) void query.refetch(); }}>Retry coverage checks</button>
     </div>}
     {summary && <div className="mt-4 space-y-3">
       <p className="text-xs text-text-faint">Reported at the last successful check, not continuously verified:</p>
-      <dl className="grid grid-cols-2 gap-2">
+      <dl className="flex flex-wrap gap-x-6 gap-y-3">
         {([
           ["valid", "Valid assurances"], ["at-risk", "At risk"], ["expired", "Expired"], ["broken", "Broken"], ["unknown", "Unknown"],
-        ] as const).map(([state, label]) => <div key={state} data-coverage-state={state} className="rounded-lg border border-border/70 bg-bg-surface p-2.5">
+        ] as const).map(([state, label]) => <div key={state} data-coverage-state={state} className="min-w-0">
           <dt className="text-xs text-text-muted">{label}</dt><dd className="mt-1 font-semibold text-text-primary">{summary.counts[state]}</dd>
         </div>)}
       </dl>
@@ -101,7 +102,7 @@ export default function FocusAutonomyPanel({ snapshot, nowMs, tasks, onRetry, on
         <p className="mt-1 text-text-muted">A missing or expired grant can prevent a Focus notification from being eligible. It does not, by itself, prove that execution is stopped or blocked.</p>
       </div>
     </div>}
-    <button type="button" className={`${BUTTON} mt-4`} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>Inspect coverage assertions</button>
+    <button type="button" className={cx(BUTTON, "mt-4")} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>Inspect coverage assertions</button>
     {expanded && <div className="mt-3 space-y-3">
       {query.isLoading && <p className="text-xs text-text-muted" role="status">Loading assertions...</p>}
       {query.error && <p role="alert" className="text-xs text-error">Coverage assertions unavailable: {query.error.message}</p>}

@@ -211,3 +211,18 @@ describe("ProvidersSection GitHub defaults badge", () => {
     });
   });
 });
+
+describe("provider editor presentation", () => {
+  it.each([
+    { index: 0, placeholder: "e.g. my-org", label: "Organization" },
+    { index: 2, placeholder: "e.g. my-company", label: "Workspace slug" },
+  ])("keeps the $label example as plain text with an associated input", async ({ index, placeholder, label }) => {
+    const harness = await createReactDomHarness();
+    await harness.render(createElement(ProvidersSection, { draft: { mcpServers: {} }, setDraft: vi.fn() }));
+    await harness.act(async () => { getReactProps(findEditButtons(harness.dom.container)[index])?.onClick?.(); });
+    const input = findAllByTag(harness.dom.container, "INPUT")[0];
+    expect(getReactProps(input)?.placeholder).toBe(placeholder);
+    const associated = findAllByTag(harness.dom.container, "LABEL").find((node) => getReactProps(node)?.htmlFor === getReactProps(input)?.id);
+    expect(associated?.textContent).toContain(label);
+  });
+});

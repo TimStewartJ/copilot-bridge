@@ -13,7 +13,7 @@ import {
   useDeleteTagMutation,
   useReorderTagsMutation,
 } from "../../hooks/queries/useTags";
-import { ArrowDown, ArrowUp, Check, Pencil, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import {
   TAG_COLORS,
   TAG_COLOR_BG,
@@ -24,9 +24,11 @@ import {
 import { SettingsSection } from "./SettingsSection";
 import EmptyState from "../shared/EmptyState";
 import { summarizeMcpServerConfig } from "./mcp-display";
+import { DS, cx } from "../../design/tokens";
+import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "../ContextMenu";
 
 const iconButtonClass =
-  "inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30";
+  cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "disabled:opacity-30");
 
 export function getNextTagMcpServerIds(currentIds: string[], serverId: string, checked: boolean): string[] {
   return checked
@@ -36,7 +38,7 @@ export function getNextTagMcpServerIds(currentIds: string[], serverId: string, c
 
 function TagMetaBadge({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full border border-border bg-bg-primary px-2 py-0.5 text-[10px] font-medium text-text-muted">
+    <span className={cx(DS.badge.base, "border-border bg-bg-primary text-text-muted")}>
       {children}
     </span>
   );
@@ -55,8 +57,8 @@ function TagPillPreview({
   const text = TAG_COLOR_TEXT[color] ?? "text-slate-400";
 
   return (
-    <span className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${bg} ${border} ${text}`}>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+    <span className={cx(DS.badge.base, "max-w-full items-center gap-1.5 text-xs font-semibold", bg, border, text)}>
+      <span className={cx("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
       <span className="truncate">{name || "Untitled tag"}</span>
     </span>
   );
@@ -84,14 +86,11 @@ function TagColorPicker({
               onClick={() => onChange(color)}
               aria-label={`Use ${color} tag color`}
               aria-pressed={selected}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${TAG_COLOR_DOT[color]} transition ${
-                selected
-                  ? "ring-2 ring-accent ring-offset-2 ring-offset-bg-surface"
-                  : "opacity-70 hover:scale-105 hover:opacity-100"
-              }`}
+              className={cx(DS.button.base, DS.button.icon.md, DS.button.variant.ghost, selected && DS.row.selected)}
               title={color}
             >
-              {selected && <Check size={14} className="text-white drop-shadow" />}
+              <span aria-hidden="true" className={cx("size-4 rounded-full", TAG_COLOR_DOT[color])} />
+              {selected && <Check size={12} className="ml-0.5 text-text-primary" />}
             </button>
           );
         })}
@@ -113,24 +112,22 @@ export function TagMcpServerOption({
 }) {
   return (
     <label
-      className={`flex items-start gap-3 rounded-lg border px-3 py-2 text-xs transition-colors ${
-        checked
-          ? "border-accent/30 bg-accent/10"
-          : "border-border bg-bg-primary hover:bg-bg-hover"
-      } ${disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+      className={cx("flex items-start gap-3 rounded-lg border px-3 py-2 text-xs transition-colors", checked
+          ? cx(DS.notice.surface, DS.choice.selected, DS.row.selected)
+          : "border-border bg-bg-primary hover:bg-bg-hover", disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer")}
     >
       <input
         type="checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(server.id, e.target.checked)}
-        className="mt-0.5 h-3.5 w-3.5 accent-accent disabled:opacity-50"
+        className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5 disabled:opacity-50")}
       />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5">
           <span className="truncate font-mono text-text-primary">{server.name}</span>
           {server.enabledByDefault && (
-            <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-medium text-accent">
+            <span className={cx(DS.badge.base, DS.row.selected, "shrink-0 text-[9px] text-accent")}>
               default
             </span>
           )}
@@ -161,7 +158,7 @@ function TagMcpServerPicker({
   onChange: (tagId: string, serverId: string, checked: boolean) => void;
 }) {
   return (
-    <section className="rounded-lg border border-border bg-bg-elevated p-3">
+    <section className={DS.layout.formGroup}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold tracking-wide text-text-secondary">
@@ -173,24 +170,24 @@ function TagMcpServerPicker({
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           <TagMetaBadge>{selectedMcpServerIds.size} selected</TagMetaBadge>
-          <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent">
+          <span className={cx(DS.badge.base, DS.row.selected, "text-accent")}>
             Saved automatically
           </span>
         </div>
       </div>
 
       {mcpSelectionError && (
-        <div className="mb-2 rounded-md border border-error/20 bg-error/10 px-3 py-2 text-[10px] text-error">
+        <div className={cx(DS.notice.surface, "mb-2 px-3 py-2 text-[10px] text-error")}>
           {mcpSelectionError}
         </div>
       )}
 
       {loadingMcpServers ? (
-        <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+        <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
           Loading MCP servers…
         </div>
       ) : availableMcpServers.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-bg-primary px-3 py-3 text-xs text-text-faint">
+        <div className={cx(DS.layout.formGroup, DS.text.empty, "text-xs text-text-faint")}>
           No registered MCP servers. Add definitions in MCP Servers settings first.
         </div>
       ) : (
@@ -226,14 +223,15 @@ function TagCard({
   onDelete: (tag: Tag) => void;
 }) {
   const hasInstructions = tag.instructions.trim().length > 0;
+  const [menu, setMenu] = useState<ContextMenuPosition | null>(null);
 
   return (
-    <div className="rounded-xl border border-border bg-bg-surface transition-colors hover:bg-bg-elevated">
-      <div className="flex items-stretch">
+    <div className={DS.layout.objectRow}>
+      <div className="flex items-start gap-1">
         <button
           type="button"
           onClick={() => onEdit(tag)}
-          className="min-w-0 flex-1 rounded-l-xl bg-transparent p-4 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-primary"
+          className={cx(DS.row.stacked, "flex-1")}
           aria-label={`Edit ${tag.name}`}
         >
           <div className="min-w-0 space-y-2">
@@ -251,51 +249,24 @@ function TagCard({
           </div>
         </button>
 
-        <div className="flex shrink-0 items-center gap-1 p-4 pl-0">
-          {tagCount > 1 && (
-            <>
-              <button
-                type="button"
-                onClick={() => onMove(tagIndex, -1)}
-                disabled={tagIndex === 0}
-                className={iconButtonClass}
-                title="Move up"
-                aria-label={`Move ${tag.name} up`}
-              >
-                <ArrowUp size={13} />
-              </button>
-              <button
-                type="button"
-                onClick={() => onMove(tagIndex, 1)}
-                disabled={tagIndex === tagCount - 1}
-                className={iconButtonClass}
-                title="Move down"
-                aria-label={`Move ${tag.name} down`}
-              >
-                <ArrowDown size={13} />
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => onEdit(tag)}
-            className={iconButtonClass}
-            title="Edit"
-            aria-label={`Edit ${tag.name}`}
-          >
-            <Pencil size={13} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onDelete(tag)}
-            className={`${iconButtonClass} hover:text-error`}
-            title="Delete"
-            aria-label={`Delete ${tag.name}`}
-          >
-            <Trash2 size={13} />
-          </button>
-        </div>
+        <button type="button" aria-label={`Actions for ${tag.name}`} aria-haspopup="menu" aria-expanded={Boolean(menu)}
+          className={cx(iconButtonClass, "mt-2")}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMenu({ x: rect.right - 180, y: rect.bottom + 4 });
+          }}>
+          <MoreHorizontal size={15} />
+        </button>
       </div>
+      {menu && <ContextMenu position={menu} onClose={() => setMenu(null)}>
+        <CtxItem icon={<Pencil size={14} />} label={`Edit ${tag.name}`} onClick={() => { setMenu(null); onEdit(tag); }} />
+        {tagCount > 1 && <>
+          <CtxItem icon={<ArrowUp size={14} />} label="Move up" disabled={tagIndex === 0} onClick={() => { setMenu(null); onMove(tagIndex, -1); }} />
+          <CtxItem icon={<ArrowDown size={14} />} label="Move down" disabled={tagIndex === tagCount - 1} onClick={() => { setMenu(null); onMove(tagIndex, 1); }} />
+        </>}
+        <CtxDivider />
+        <CtxItem icon={<Trash2 size={14} />} label={`Delete ${tag.name}`} className="text-error" onClick={() => { setMenu(null); onDelete(tag); }} />
+      </ContextMenu>}
     </div>
   );
 }
@@ -320,7 +291,7 @@ function CreateTagCard({
   const canCreate = newName.trim().length > 0 && !saving;
 
   return (
-    <div className="rounded-xl border border-accent/20 bg-bg-surface p-4 shadow-sm">
+    <div className={cx(DS.layout.formGroup, DS.choice.selected)}>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-text-primary">Create tag</h3>
@@ -344,7 +315,7 @@ function CreateTagCard({
               if (e.key === "Enter" && canCreate) onCreate();
               if (e.key === "Escape") onCancel();
             }}
-            className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-faint focus:border-accent"
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
             placeholder="Tag name"
           />
         </label>
@@ -355,7 +326,7 @@ function CreateTagCard({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
         >
           Cancel
         </button>
@@ -363,7 +334,7 @@ function CreateTagCard({
           type="button"
           onClick={onCreate}
           disabled={!canCreate}
-          className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}
         >
           {saving ? "Creating…" : "Create"}
         </button>
@@ -410,7 +381,7 @@ function EditTagCard({
   const canSave = editName.trim().length > 0 && !saving;
 
   return (
-    <div className="rounded-xl border border-accent/20 bg-bg-surface p-4 shadow-sm">
+    <div className={cx(DS.layout.formGroup, DS.choice.selected)}>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-text-primary">Edit tag</h3>
@@ -422,7 +393,7 @@ function EditTagCard({
       </div>
 
       <div className="space-y-4">
-        <section className="rounded-lg border border-border bg-bg-elevated p-3">
+        <section className={DS.layout.formGroup}>
           <div className="mb-3 text-xs font-semibold tracking-wide text-text-secondary">
             Basics
           </div>
@@ -439,7 +410,7 @@ function EditTagCard({
                   if (e.key === "Enter" && canSave) onSave(tag.id);
                   if (e.key === "Escape") onCancel();
                 }}
-                className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-faint focus:border-accent"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 placeholder="Tag name"
               />
             </label>
@@ -447,7 +418,7 @@ function EditTagCard({
           </div>
         </section>
 
-        <section className="rounded-lg border border-border bg-bg-elevated p-3">
+        <section className={DS.layout.formGroup}>
           <label>
             <span className="mb-2 block text-xs font-semibold tracking-wide text-text-secondary">
               Instructions
@@ -456,7 +427,7 @@ function EditTagCard({
               value={editInstructions}
               onChange={(e) => onInstructionsChange(e.target.value)}
               placeholder="Custom instructions for sessions with this tag (optional)"
-              className="min-h-24 w-full resize-y rounded-md border border-border bg-bg-primary px-3 py-2 text-xs leading-5 text-text-primary outline-none transition-colors placeholder:text-text-faint focus:border-accent"
+              className={cx(DS.field.input, DS.field.textarea, DS.focus, "min-h-24 resize-y leading-5 outline-none")}
               rows={4}
             />
           </label>
@@ -477,7 +448,7 @@ function EditTagCard({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
         >
           Cancel
         </button>
@@ -485,7 +456,7 @@ function EditTagCard({
           type="button"
           onClick={() => onSave(tag.id)}
           disabled={!canSave}
-          className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}
         >
           {saving ? "Saving…" : "Save"}
         </button>
@@ -635,7 +606,7 @@ export function TagsSection({
             setAdding(true);
           }}
           disabled={adding}
-          className="rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface disabled:opacity-50")}
         >
           + Add Tag
         </button>

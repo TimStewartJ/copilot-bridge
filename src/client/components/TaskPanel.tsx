@@ -102,8 +102,8 @@ export function TaskPanelRouteSkeleton() {
       delayMs={160}
       className="flex-1 min-w-0 min-h-0 relative"
     >
-      <div className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-bg-secondary">
-        <div className="space-y-3 px-4 pb-1 pt-3">
+      <div className={cx(DS.surface.pane, "absolute inset-0 overflow-y-auto overflow-x-hidden")}>
+        <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-3 p-3")}>
           <div className="flex items-center justify-between gap-2">
             <Skeleton width={64} height={10} shape="pill" />
             <Skeleton width={96} height={22} shape="rounded" />
@@ -116,18 +116,18 @@ export function TaskPanelRouteSkeleton() {
           <Skeleton width="100%" height={36} shape="rounded" />
         </div>
 
-        <div className="space-y-5 px-4 pb-6 pt-3">
-          <section className="space-y-2">
+        <div className="space-y-3 px-3 pb-6 pt-3">
+          <section className={cx(DS.layout.section, "space-y-2")}>
             <Skeleton width={72} height={10} shape="pill" />
             <SkeletonText lines={2} widths={["100%", "68%"]} />
           </section>
-          <section className="space-y-1">
+          <section className={cx(DS.layout.section, "space-y-1")}>
             <Skeleton width={64} height={10} shape="pill" className="mb-2" />
             <SkeletonRow leading={false} className="px-0" />
             <SkeletonRow leading={false} className="px-0" />
             <SkeletonRow leading={false} className="px-0" />
           </section>
-          <section className="space-y-1">
+          <section className={cx(DS.layout.section, "space-y-1")}>
             <Skeleton width={72} height={10} shape="pill" className="mb-2" />
             <SkeletonRow leading="square" className="px-0" />
             <SkeletonRow leading="square" className="px-0" />
@@ -415,13 +415,13 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="relative min-h-0 min-w-0 flex-1 md:bg-bg-secondary">
+    <div className={cx(DS.surface.pane, "relative min-h-0 min-w-0 flex-1")}>
       <PullToRefresh
         onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }}
         className="absolute inset-0 overflow-x-hidden"
         scrollRestoration={scrollRestoration}
       >
-        <div className="space-y-3 px-4 pb-1 pt-3">
+        <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-3 p-3")}>
         <div className="flex items-center justify-between gap-2">
           {onViewDashboard ? (
             <Button
@@ -534,7 +534,7 @@ export default function TaskPanel({
         )}
       </div>
 
-        <div className="space-y-5 px-4 pb-6 pt-3">
+        <div className="space-y-3 px-3 pb-6 pt-3">
           {showMomentumFields && (
             <TaskMomentumFields
               task={currentTask}
@@ -546,6 +546,7 @@ export default function TaskPanel({
           )}
 
           <Section
+            surface
             label="Sessions"
             count={task.sessionIds.length}
             action={(
@@ -602,6 +603,7 @@ export default function TaskPanel({
           </Section>
 
           <Section
+            surface
             label="Checklist"
             count={checklistItems.length > 0
               ? `${checklistItems.filter((item) => item.done).length}/${checklistItems.length}`
@@ -622,7 +624,7 @@ export default function TaskPanel({
           </Section>
 
           {showSecondarySummaries && (
-            <Section label="Details">
+            <Section label="Details" surface>
               <div className="space-y-0.5">
                 {task.workItems.length > 0 && (
                   <WorkItemList

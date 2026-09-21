@@ -1,5 +1,6 @@
 import type { DashboardChecklistItem } from "../api";
 import type { HomeChecklistIndicatorState } from "../checklist-helpers";
+import { DS, cx } from "../design/tokens";
 
 export type ChecklistSort = "deadline" | "task";
 
@@ -21,9 +22,9 @@ const TASK_STATUS_ORDER: Record<string, number> = { active: 0, archived: 1 };
 export function dashboardChecklistCountClass(state: HomeChecklistIndicatorState): string {
   switch (state) {
     case "overdue":
-      return "border-error/30 bg-error/10 text-error";
+      return cx(DS.notice.surface, "text-error");
     case "due-today":
-      return "border-warning/30 bg-warning/10 text-warning";
+      return cx(DS.notice.surface, "text-warning");
     default:
       return "border-border bg-bg-hover text-text-faint";
   }

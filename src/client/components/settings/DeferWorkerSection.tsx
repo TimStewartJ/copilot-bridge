@@ -8,6 +8,7 @@ import {
   type CopilotContextTier,
 } from "../../../shared/copilot-context.js";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 export function DeferWorkerSection({
   draft,
@@ -45,10 +46,10 @@ export function DeferWorkerSection({
 
   return (
     <SettingsSection
-      title="Deferred Work"
+      title="Deferred workers"
       description="Run defers in temporary sessions instead of reloading the parent conversation. Temporary sessions are deleted after each check."
     >
-      <div className="grid gap-4 rounded-md border border-border bg-bg-elevated p-4 md:grid-cols-3">
+      <div className="grid min-w-0 gap-4 @[36rem]/settings-content:grid-cols-3">
         <label className="space-y-1 text-xs font-medium text-text-secondary">
           <span>Model</span>
           <select
@@ -72,7 +73,7 @@ export function DeferWorkerSection({
                   : settings.reasoningEffort,
               });
             }}
-            className="w-full appearance-none rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+            className={cx(DS.field.input, DS.field.inputSize.md)}
           >
             <option value="">Automatic (economy model when available)</option>
             {availableModels.map((model) => (
@@ -87,7 +88,7 @@ export function DeferWorkerSection({
             value={selectedModelUsesDynamicSelection ? "" : settings.contextTier ?? "default"}
             onChange={(event) => update({ contextTier: event.target.value as CopilotContextTier })}
             disabled={selectedModelUsesDynamicSelection}
-            className="w-full appearance-none rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+            className={cx(DS.field.input, DS.field.inputSize.md)}
           >
             {selectedModelUsesDynamicSelection && <option value="">Selected dynamically</option>}
             <option value="default">
@@ -107,7 +108,7 @@ export function DeferWorkerSection({
             value={selectedModelUsesDynamicSelection ? "" : settings.reasoningEffort ?? ""}
             onChange={(event) => update({ reasoningEffort: event.target.value || undefined })}
             disabled={selectedModelUsesDynamicSelection}
-            className="w-full appearance-none rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+            className={cx(DS.field.input, DS.field.inputSize.md)}
           >
             <option value="">{selectedModelUsesDynamicSelection ? "Selected dynamically" : "Model default"}</option>
             {efforts.map((effort) => (

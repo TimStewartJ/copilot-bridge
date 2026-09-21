@@ -12,7 +12,10 @@
 
 /** Keyboard focus, identical on every interactive element. */
 const FOCUS = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50";
-const SHEET = "relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-border bg-bg-primary shadow-2xl shadow-black/30 md:mb-16 md:mt-16 md:max-h-[80vh] md:rounded-2xl";
+const GROUP_SURFACE = "rounded-xl border border-surface-edge bg-surface-group";
+const INSET_SURFACE = "rounded-lg border border-surface-edge bg-surface-inset";
+const SHEET = "relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-surface-edge bg-surface-overlay shadow-2xl shadow-black/30 md:mb-16 md:mt-16 md:max-h-[80vh] md:rounded-2xl";
+const NOTICE_SURFACE = `${INSET_SURFACE} px-3 py-2 text-xs leading-relaxed text-text-secondary`;
 
 export const DS = {
   focus: FOCUS,
@@ -28,6 +31,8 @@ export const DS = {
     title: "text-lg font-semibold leading-snug tracking-tight text-text-primary",
     /** A large title for a full-page view. */
     pageTitle: "text-2xl font-semibold leading-tight tracking-tight text-text-primary",
+    /** The content title of an object in Focus, search or a document list. */
+    objectTitle: "text-base font-medium leading-snug text-text-primary",
     /** The label of a section: what the rows beneath it are. */
     sectionLabel: "text-xs font-medium text-text-secondary",
     /** The heading of a section on a full-page view, where sections are the page's outline. */
@@ -56,12 +61,16 @@ export const DS = {
    */
   row: {
     base: `-mx-1.5 flex w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] transition-colors ${FOCUS}`,
+    /** A multi-line navigation result or history entry must grow with its content. */
+    stacked: `block w-full min-w-0 rounded-lg px-3 py-3 text-left text-[13px] transition-colors hover:bg-surface-selected ${FOCUS}`,
     /** A row that hugs its content, for a line that stands alone between paragraphs. */
     inline: `-mx-1.5 inline-flex max-w-[calc(100%+0.75rem)] min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left align-top text-[13px] transition-colors ${FOCUS}`,
     interactive: "cursor-pointer hover:bg-bg-hover/60",
+    /** Navigation and list controls need a full touch target, even when the value is short. */
+    touch: "min-h-10 md:min-h-7",
     inert: "cursor-default",
     /** The current item in a list. Selection is a neutral fill; accent is kept for unread and focus. */
-    selected: "bg-bg-hover text-text-primary",
+    selected: "bg-surface-selected text-text-primary",
     /** The label keeps its width; the detail takes what is left and truncates first. */
     label: "min-w-0 shrink truncate",
     detail: "min-w-0 flex-1 truncate",
@@ -85,33 +94,37 @@ export const DS = {
     chevron: "shrink-0 text-text-faint transition-transform duration-150 group-open/details:rotate-90",
   },
 
-  /**
-   * Surfaces. The page is one background. Grouping is done with space, a hairline or a rail. A
-   * bordered surface is for a self-contained object (a question to answer, raw details, an
-   * artefact) and is never placed inside another one.
-   */
+  /** Opaque surface levels show hierarchy; rows and values remain unboxed within one group. */
   surface: {
-    /** The one bordered container. No shadow: it sits in the page, it does not float over it. */
-    panel: "rounded-xl border border-border bg-bg-secondary/60",
-    /** Raw detail opened from a row: arguments, output, logs. */
-    detail: "rounded-lg border border-border-subtle bg-bg-secondary/70",
+    /** Workspace behind the panes and content groups. */
+    canvas: "bg-surface-canvas",
+    /** Persistent navigation and inspectors are distinct from their content groups. */
+    pane: "bg-surface-pane",
+    /** One logical region: a task's Momentum, its session list or a settings section. */
+    group: GROUP_SURFACE,
+    /** A self-contained object to act on. Do not nest Panels or same-level groups. */
+    panel: GROUP_SURFACE,
+    /** Raw detail opened from a row is an inset, not another raised group. */
+    detail: INSET_SURFACE,
+    inset: INSET_SURFACE,
+    selected: "bg-surface-selected text-text-primary",
     /** Something that floats above the page: a menu, the composer, a jump button. */
-    floating: "rounded-xl border border-border bg-bg-elevated shadow-lg shadow-black/10",
+    floating: "rounded-xl border border-surface-edge bg-surface-overlay shadow-lg shadow-black/10",
     /** Words that float over a list to say what is off screen and jump there. */
-    floatingPill: "inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated/95 py-1.5 pl-2.5 pr-3 text-xs font-medium text-text-primary shadow-lg shadow-black/10 backdrop-blur transition-colors hover:bg-bg-hover",
+    floatingPill: "inline-flex items-center gap-2 rounded-full border border-surface-edge bg-surface-overlay py-1.5 pl-2.5 pr-3 text-xs font-medium text-text-primary shadow-lg shadow-black/10 transition-colors hover:bg-surface-selected",
     /** The shadow alone, for a floating control with a shape of its own, such as a round button. */
     lift: "shadow-lg shadow-black/10",
     /** The message composer: the one floating surface that is always on screen. */
-    composer: "rounded-2xl border border-border bg-bg-secondary shadow-lg shadow-black/10 transition-colors focus-within:border-text-faint",
+    composer: "rounded-2xl border border-control-edge bg-surface-group shadow-lg shadow-black/10 transition-colors focus-within:border-text-secondary",
     /** A dialog, and the scrim that holds the page back while it is open. */
-    dialog: "rounded-2xl border border-border bg-bg-elevated shadow-2xl shadow-black/30",
+    dialog: "rounded-2xl border border-surface-edge bg-surface-overlay shadow-2xl shadow-black/30",
     /** Long content opened over the page: a sheet from the bottom on a phone, a dialog on a desktop. */
     sheet: `${SHEET} md:max-w-2xl`,
     compactSheet: `${SHEET} md:max-w-lg`,
     scrim: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4",
     /** Hairlines between the rows of one list. */
     divided: "divide-y divide-border-subtle",
-    hairline: "border-border",
+    hairline: "border-surface-edge",
   },
 
   /**
@@ -147,7 +160,7 @@ export const DS = {
       md: "h-10 text-[13px] md:h-8",
     },
     optionFull: "min-w-fit flex-1",
-    selected: "bg-bg-hover text-text-primary",
+    selected: "bg-surface-selected text-text-primary",
     unselected: "text-text-secondary enabled:hover:text-text-primary",
     disabled: "disabled:cursor-default",
   },
@@ -159,7 +172,7 @@ export const DS = {
   choice: {
     group: "flex flex-wrap gap-1.5",
     option: `inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-lg border px-3 py-1.5 text-left text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 md:min-h-9 ${FOCUS}`,
-    selected: "border-text-faint bg-bg-hover text-text-primary",
+    selected: "border-control-edge bg-surface-selected text-text-primary",
     unselected: "border-border text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary",
   },
 
@@ -213,6 +226,11 @@ export const DS = {
   /** A small dot that stands for a state or an identity beside a name. Pair it with a colour class. */
   dot: "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
 
+  /** A band names a loaded collection without turning each row into another surface. */
+  collection: {
+    header: "flex min-h-10 min-w-0 items-center border-b border-surface-edge bg-surface-inset md:min-h-8",
+  },
+
   /** Scannable usage rows: one model, its figures, and a breakdown on demand. */
   usage: {
     rowSummary: "-mx-1.5 flex min-h-10 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-1.5 py-2 text-[13px] transition-colors hover:bg-bg-hover/60 [&::-webkit-details-marker]:hidden",
@@ -244,11 +262,35 @@ export const DS = {
    * field takes focus.
    */
   field: {
-    input: `w-full rounded-lg border border-border bg-bg-hover/30 px-3 text-base text-text-primary placeholder:text-text-faint transition-colors focus:border-text-faint focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 md:text-[13px]`,
+    input: `w-full rounded-lg border border-control-edge bg-surface-inset px-3 text-base text-text-primary placeholder:text-text-faint transition-colors focus:border-text-secondary focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 md:text-[13px]`,
     inputSize: { sm: "h-10 md:h-8", md: "h-10 md:h-9" },
     textarea: "py-2 leading-relaxed",
-    label: "text-xs font-medium text-text-muted",
-    help: "text-xs text-text-faint",
+    /** Generic fields shared by inputs, selects and textareas must not force a textarea height. */
+    control: "min-h-10 py-2 md:min-h-9 md:py-1.5",
+    /** Text inside a compound field, such as search filters, tags or quick Action entry. */
+    inline: "min-h-10 min-w-0 flex-1 bg-transparent text-base text-text-primary placeholder:text-text-faint outline-none md:text-[13px]",
+    group: "flex min-h-10 min-w-0 flex-wrap items-center gap-2 rounded-lg border border-control-edge bg-surface-inset px-3 py-2 transition-colors focus-within:border-text-secondary",
+    label: "text-xs font-medium text-text-secondary",
+    help: "text-xs text-text-secondary",
+  },
+
+  /** Menu actions and search suggestions share a full-width, touch-safe row. */
+  menu: {
+    item: `flex min-h-10 w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:text-text-faint md:min-h-8 ${FOCUS}`,
+    selected: "bg-bg-hover text-text-primary",
+    divider: "my-1 border-t border-border-subtle",
+  },
+
+  /** Native selection controls used by settings and voice forms. */
+  control: {
+    checkbox: `size-4 shrink-0 rounded accent-text-primary disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS}`,
+  },
+
+  /** Inline notices keep their surface neutral; state belongs to their icon or title. */
+  notice: {
+    base: `flex items-start gap-2.5 ${NOTICE_SURFACE}`,
+    /** Existing status regions that own their DOM composition share the surface, not flex layout. */
+    surface: NOTICE_SURFACE,
   },
 
   /** A tick box drawn by hand, for a row that is itself the button. Ticked is a neutral fill. */
@@ -273,6 +315,11 @@ export const DS = {
     pageColumn: "mx-auto w-full max-w-5xl px-4 py-5 md:px-8 md:py-7",
     /** One quiet line of chrome on the page's background. Its container owns the bottom hairline. */
     headerBar: "flex min-h-10 shrink-0 items-center gap-2 px-3 text-xs text-text-muted sm:px-4",
+    /** One neutral group per dashboard or inspector region; its rows and values stay unboxed. */
+    section: `${GROUP_SURFACE} min-w-0 p-3 sm:p-4`,
+    formGroup: "min-w-0 space-y-4",
+    /** Domain objects in Focus, configuration and search lists are separated by one hairline. */
+    objectRow: "min-w-0 border-b border-border-subtle py-4 last:border-b-0",
   },
 } as const;
 

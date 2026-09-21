@@ -19,13 +19,13 @@ import { timeAgo } from "../time";
 import { getDashboardPanelId, getDashboardTabId } from "../lib/dashboard-routes";
 import EmptyState from "./shared/EmptyState";
 import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonText } from "./shared/Skeleton";
-import { UI } from "./shared/design-system";
 import { PullRequestPreviewCard, WorkItemPreviewCard } from "./WorkReferenceCards";
 import {
   DEFAULT_WORK_MAP_FILTERS,
   loadWorkMapFilters,
   saveWorkMapFilters,
 } from "../work-map-filter-state";
+import { DS, cx } from "../design/tokens";
 
 interface DashboardWorkMapProps {
   active: boolean;
@@ -63,8 +63,8 @@ function isClosedWorkItem(item: WorkMapWorkItem): boolean {
 }
 
 function taskTone(task: WorkMapTask): string {
-  if (task.status === "archived") return UI.chip.faint;
-  return task.kind === "ongoing" ? UI.chip.selected : UI.chip.info;
+  if (task.status === "archived") return cx(DS.badge.base, DS.badge.tone.neutral);
+  return task.kind === "ongoing" ? DS.segmented.selected : cx(DS.badge.base, DS.badge.tone.info);
 }
 
 function taskAssociation(
@@ -147,10 +147,10 @@ function MetricCard({
   return (
     <div
       aria-label={`${label}: ${value}`}
-      className={`${UI.surface.cardInset} px-3 py-2.5`}
+      className={cx(DS.surface.detail, "px-3 py-2.5")}
     >
-      <div className={`text-xl font-semibold ${tone}`}>{value}</div>
-      <div className={UI.text.metricLabel}>{label}</div>
+      <div className={cx("text-xl font-semibold", tone)}>{value}</div>
+      <div className={DS.text.sectionLabel}>{label}</div>
     </div>
   );
 }
@@ -168,7 +168,7 @@ function TaskCard({
     <button
       type="button"
       onClick={() => onSelectTask(task.id)}
-      className={`${UI.surface.cardInset} w-full border-l-2 border-l-accent px-3 py-3 text-left transition-colors hover:bg-bg-hover`}
+      className={cx(DS.surface.detail, "w-full border-l-2 border-l-accent px-3 py-3 text-left transition-colors hover:bg-bg-hover")}
     >
       <div className="flex items-center gap-2">
         {task.status === "archived"
@@ -177,7 +177,7 @@ function TaskCard({
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
           {task.title}
         </span>
-        <span className={`rounded-full px-1.5 py-0.5 text-[9px] ${taskTone(task)}`}>
+        <span className={cx(DS.badge.base, "text-[9px]", taskTone(task))}>
           {task.status === "archived" ? "Archived" : task.kind === "ongoing" ? "Ongoing" : "Task"}
         </span>
       </div>
@@ -202,7 +202,7 @@ function Connector({ label }: { label: string }) {
 
 function StackLabel({ children }: { children: string }) {
   return (
-    <div className="mb-1 mt-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-text-faint first:mt-0 md:hidden">
+    <div className={cx(DS.text.sectionLabel, "mb-1 mt-3 flex items-center gap-2 font-semibold text-text-faint first:mt-0 md:hidden")}>
       <div className="h-px flex-1 bg-border" />
       <span>{children}</span>
       <div className="h-px flex-1 bg-border" />
@@ -380,7 +380,7 @@ export default function DashboardWorkMap({
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className={UI.text.pageKicker}>
+          <div className={cx(DS.text.sectionLabel, "inline-flex items-center gap-2")}>
             <Workflow size={14} />
             Connected work
           </div>
@@ -393,7 +393,7 @@ export default function DashboardWorkMap({
           type="button"
           onClick={() => { void onRefresh(); }}
           disabled={isRefreshing}
-          className={`${UI.button.secondary} inline-flex items-center justify-center gap-1.5 self-start disabled:opacity-50`}
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "inline-flex items-center justify-center gap-1.5 self-start disabled:opacity-50")}
         >
           <RefreshCw size={12} className={isRefreshing ? "animate-spin" : ""} />
           {isRefreshing ? "Refreshing..." : "Refresh ADO"}
@@ -403,12 +403,12 @@ export default function DashboardWorkMap({
       {isLoading && !data ? <WorkMapSkeleton /> : null}
 
       {error && !data ? (
-        <div className="rounded-lg border border-error/30 bg-error/10 px-4 py-3 text-sm text-error" role="alert">
+        <div className={cx(DS.notice.surface, "px-4 py-3 text-sm text-error")} role="alert">
           <div className="font-medium">Work map could not be loaded</div>
           <button
             type="button"
             onClick={() => { void onRefresh(); }}
-            className="mt-2 text-xs font-medium underline underline-offset-2"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "mt-2 underline underline-offset-2")}
           >
             Try again
           </button>
@@ -425,7 +425,7 @@ export default function DashboardWorkMap({
       {data?.enabled ? (
         <>
           {data.warnings.length > 0 && (
-            <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" role="status">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-warning")} role="status">
               <div className="flex items-start gap-2">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                 <div>{data.warnings.join(" ")}</div>
@@ -433,7 +433,7 @@ export default function DashboardWorkMap({
             </div>
           )}
           {createTaskError && (
-            <div className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error" role="alert">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")} role="alert">
               Could not create the Bridge task: {createTaskError}
             </div>
           )}
@@ -449,7 +449,7 @@ export default function DashboardWorkMap({
             />
           </div>
 
-          <div className={`${UI.surface.cardInset} flex flex-col gap-2 p-2 sm:flex-row sm:items-center`}>
+          <div className={cx(DS.surface.detail, "flex flex-col gap-2 p-2 sm:flex-row sm:items-center")}>
             <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md bg-bg-primary px-2.5 py-2">
               <Search size={13} className="shrink-0 text-text-faint" />
               <input
@@ -457,10 +457,10 @@ export default function DashboardWorkMap({
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search work items, PRs, or tasks..."
-                className="min-w-0 flex-1 bg-transparent text-xs text-text-primary outline-none placeholder:text-text-faint"
+                className={cx(DS.field.input, DS.field.inputSize.md, "min-w-0 flex-1 bg-transparent outline-none")}
               />
             </label>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               <button
                 type="button"
                 aria-pressed={assignedToMeOnly}
@@ -468,9 +468,7 @@ export default function DashboardWorkMap({
                   ? `Show work assigned to ${data.currentUser.displayName}`
                   : "Show work assigned to the signed-in ADO user"}
                 onClick={() => onAssignedToMeChange(!assignedToMeOnly)}
-                className={`rounded-md px-2.5 py-2 text-[11px] font-medium transition-colors ${
-                  assignedToMeOnly ? UI.chip.selected : "text-text-muted hover:bg-bg-hover"
-                }`}
+                className={cx(DS.button.base, DS.button.size.sm, assignedToMeOnly ? DS.segmented.selected : DS.button.variant.ghost)}
               >
                 Assigned to me
               </button>
@@ -478,9 +476,7 @@ export default function DashboardWorkMap({
                 type="button"
                 aria-pressed={openAdoOnly}
                 onClick={() => setOpenAdoOnly((value) => !value)}
-                className={`rounded-md px-2.5 py-2 text-[11px] font-medium transition-colors ${
-                  openAdoOnly ? UI.chip.selected : "text-text-muted hover:bg-bg-hover"
-                }`}
+                className={cx(DS.button.base, DS.button.size.sm, openAdoOnly ? DS.segmented.selected : DS.button.variant.ghost)}
               >
                 Open ADO
               </button>
@@ -488,9 +484,7 @@ export default function DashboardWorkMap({
                 type="button"
                 aria-pressed={gapsOnly}
                 onClick={() => setGapsOnly((value) => !value)}
-                className={`rounded-md px-2.5 py-2 text-[11px] font-medium transition-colors ${
-                  gapsOnly ? UI.chip.selected : "text-text-muted hover:bg-bg-hover"
-                }`}
+                className={cx(DS.button.base, DS.button.size.sm, gapsOnly ? DS.segmented.selected : DS.button.variant.ghost)}
               >
                 Gaps only
               </button>
@@ -498,9 +492,7 @@ export default function DashboardWorkMap({
                 type="button"
                 aria-pressed={includeArchived}
                 onClick={() => onIncludeArchivedChange(!includeArchived)}
-                className={`rounded-md px-2.5 py-2 text-[11px] font-medium transition-colors ${
-                  includeArchived ? UI.chip.selected : "text-text-muted hover:bg-bg-hover"
-                }`}
+                className={cx(DS.button.base, DS.button.size.sm, includeArchived ? DS.segmented.selected : DS.button.variant.ghost)}
               >
                 Archived tasks
               </button>
@@ -508,7 +500,7 @@ export default function DashboardWorkMap({
                 <button
                   type="button"
                   onClick={resetFilters}
-                  className="rounded-md px-2.5 py-2 text-[11px] font-medium text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-text-faint")}
                 >
                   Reset
                 </button>
@@ -529,16 +521,16 @@ export default function DashboardWorkMap({
           ) : (
             <div className="space-y-3">
               {renderedClusters.map((cluster) => (
-                <article key={cluster.workItem.id} className={`${UI.surface.card} overflow-hidden p-3 md:p-4`}>
+                <article key={cluster.workItem.id} className={cx(DS.surface.panel, "overflow-hidden p-3 md:p-4")}>
                   {cluster.attention.length > 0 && (
-                    <div className="mb-3 flex items-start gap-2 rounded-md border border-warning/20 bg-warning/10 px-2.5 py-2 text-[11px] text-warning">
+                    <div className={cx(DS.notice.surface, "mb-3 flex items-start gap-2 px-2.5 py-2 text-[11px] text-warning")}>
                       <AlertTriangle size={13} className="mt-0.5 shrink-0" />
                       <span>{cluster.attention.join(". ")}</span>
                     </div>
                   )}
                   <div className="grid items-center gap-0 md:grid-cols-[minmax(0,1fr)_2rem_minmax(0,1fr)_2rem_minmax(0,1fr)]">
                     <div>
-                      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-faint">
+                      <div className={cx(DS.text.sectionLabel, "mb-1.5 font-semibold text-text-faint")}>
                         ADO work item
                       </div>
                       <WorkItemPreviewCard item={cluster.workItem} />
@@ -546,14 +538,14 @@ export default function DashboardWorkMap({
                     <Connector label="Related pull requests" />
                     <div>
                       <StackLabel>Related pull requests</StackLabel>
-                      <div className="mb-1.5 hidden text-[10px] font-semibold uppercase tracking-wide text-text-faint md:block">
+                      <div className={cx(DS.text.sectionLabel, "mb-1.5 hidden font-semibold text-text-faint md:block")}>
                         Related pull requests
                       </div>
                       <div className="space-y-2">
                         {cluster.pullRequests.length > 0 ? cluster.pullRequests.map((pr) => (
                           <PullRequestPreviewCard key={pr.key} pullRequest={pr} />
                         )) : (
-                          <div className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-xs text-text-faint">
+                          <div className={cx(DS.text.empty, "px-3 py-5 text-center text-xs text-text-faint")}>
                             No related PR discovered
                           </div>
                         )}
@@ -562,7 +554,7 @@ export default function DashboardWorkMap({
                     <Connector label="Bridge tasks" />
                     <div>
                       <StackLabel>Bridge tasks</StackLabel>
-                      <div className="mb-1.5 hidden text-[10px] font-semibold uppercase tracking-wide text-text-faint md:block">
+                      <div className={cx(DS.text.sectionLabel, "mb-1.5 hidden font-semibold text-text-faint md:block")}>
                         Bridge tasks
                       </div>
                       <div className="space-y-2">
@@ -579,7 +571,7 @@ export default function DashboardWorkMap({
                             aria-label={`Create Bridge task for work item ${cluster.workItem.id}`}
                             disabled={creatingTaskForWorkItemId !== null}
                             onClick={() => { void createTaskForWorkItem(cluster.workItem); }}
-                            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-warning/40 bg-warning/5 px-3 py-5 text-center text-xs font-medium text-warning transition-colors hover:border-warning/60 hover:bg-warning/10 disabled:cursor-wait disabled:opacity-50"
+                            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "w-full gap-1.5 disabled:opacity-50")}
                           >
                             <Plus size={13} />
                             {creatingTaskForWorkItemId === cluster.workItem.id
@@ -594,13 +586,13 @@ export default function DashboardWorkMap({
               ))}
 
               {renderedOrphans.map(({ pullRequest, tasks }) => (
-                <article key={pullRequest.key} className={`${UI.surface.card} overflow-hidden p-3 md:p-4`}>
-                  <div className="mb-3 flex items-start gap-2 rounded-md border border-warning/20 bg-warning/10 px-2.5 py-2 text-[11px] text-warning">
+                <article key={pullRequest.key} className={cx(DS.surface.panel, "overflow-hidden p-3 md:p-4")}>
+                  <div className={cx(DS.notice.surface, "mb-3 flex items-start gap-2 px-2.5 py-2 text-[11px] text-warning")}>
                     <AlertTriangle size={13} className="mt-0.5 shrink-0" />
                     <span>This Bridge-linked PR has no related ADO work item.</span>
                   </div>
                   <div className="grid items-center gap-0 md:grid-cols-[minmax(0,1fr)_2rem_minmax(0,1fr)_2rem_minmax(0,1fr)]">
-                    <div className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-xs text-text-faint">
+                    <div className={cx(DS.text.empty, "px-3 py-5 text-center text-xs text-text-faint")}>
                       No related work item
                     </div>
                     <Connector label="Pull request" />
@@ -629,7 +621,7 @@ export default function DashboardWorkMap({
                 <button
                   type="button"
                   onClick={() => setVisibleRelationshipCount((count) => count + VISIBLE_RELATIONSHIP_STEP)}
-                  className={`${UI.button.secondary} mx-auto flex items-center justify-center`}
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "mx-auto flex items-center justify-center")}
                 >
                   Show {Math.min(VISIBLE_RELATIONSHIP_STEP, visibleTotal - renderedTotal)} more
                 </button>

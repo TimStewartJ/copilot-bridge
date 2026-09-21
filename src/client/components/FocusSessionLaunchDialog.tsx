@@ -11,10 +11,11 @@ import { queryKeys } from "../queryClient";
 import FocusActionDialog, { type FocusActionSubmitMode } from "./FocusActionDialog";
 import FocusDialog from "./FocusDialog";
 import type { FocusInteractionProps } from "./FocusInteractions";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 type LaunchOperation = { input: FocusLaunchRequest } | { receiptId: string };
-const BUTTON = `${UI.button.secondary} min-h-11 text-xs`;
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs");
 
 export function focusLaunchReady(receipt: FocusSessionLaunch): boolean {
   return receipt.status === "ready" && receipt.sessionId !== null && receipt.linkedAt !== null && receipt.promptStatus === "sent";
@@ -203,7 +204,7 @@ export default function FocusSessionLaunchDialog({
         {(error || receipt.error || lookup.error) && <p role="alert" className="text-sm text-error">{error ?? receipt.error ?? lookup.error?.message}</p>}
         <div className="flex flex-wrap gap-2">
           {receiptMatches && receipt.sessionId && <button type="button" onClick={openSession} disabled={working} className={BUTTON}>Open existing session</button>}
-          {canResume && <button type="button" disabled={working} onClick={() => void start("foreground")} className={`${UI.button.primary} min-h-11 text-xs`}>Resume / reconcile existing launch</button>}
+          {canResume && <button type="button" disabled={working} onClick={() => void start("foreground")} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "text-xs")}>Resume / reconcile existing launch</button>}
           <button type="button" disabled={working || lookup.isFetching} onClick={() => void recover()} className={BUTTON}>Check launch status</button>
           <button type="button" disabled={working} onClick={onClose} className={BUTTON}>Close</button>
         </div>
@@ -213,7 +214,7 @@ export default function FocusSessionLaunchDialog({
   if (lookup.data === undefined || recoveryBlocked) {
     return <FocusDialog title="Recover episode launch" description="Checking the server for a launch already prepared by this or another client. This read does not create or send anything." pending={working} onClose={onClose}>
       {lookup.isLoading ? <p role="status" className="text-sm text-text-muted">Checking saved launch receipts...</p> : <p role="alert" className="text-sm text-error">{error ?? lookup.error?.message ?? "Launch receipt state is unavailable."}</p>}
-      <button type="button" className={`${BUTTON} mt-3`} disabled={working || lookup.isFetching} onClick={() => void recover()}>Recover launch receipt</button>
+      <button type="button" className={cx(BUTTON, "mt-3")} disabled={working || lookup.isFetching} onClick={() => void recover()}>Recover launch receipt</button>
     </FocusDialog>;
   }
   return <FocusActionDialog
@@ -226,7 +227,7 @@ export default function FocusSessionLaunchDialog({
     onPromptChange={setPrompt} onClose={onClose} onStart={() => void start("foreground")} onStartInBackground={() => void start("background")} onReload={() => void reloadReview()}
     destinationControl={<label className="block space-y-1 text-xs text-text-muted">
       <span>Session destination (required)</span>
-      <select value={destination} disabled={working} onChange={(event) => setDestination(event.target.value)} className="min-h-11 w-full min-w-0 rounded-lg border border-border bg-bg-surface p-2 text-sm text-text-primary">
+      <select value={destination} disabled={working} onChange={(event) => setDestination(event.target.value)} className={cx(DS.field.input, DS.field.inputSize.md, "min-h-11 min-w-0")}>
         <option value="">Choose a visible destination</option><option value="__global__">Standalone / Global sessions (explicit)</option>
         {visibleTasks.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
       </select>

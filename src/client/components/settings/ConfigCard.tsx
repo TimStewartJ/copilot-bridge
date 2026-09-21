@@ -1,4 +1,6 @@
 import { Pencil, Trash2 } from "lucide-react";
+import { IconButton } from "../../design/primitives";
+import { DS, cx } from "../../design/tokens";
 
 export interface ConfigCardProps {
   title: string;
@@ -18,31 +20,23 @@ export function ConfigCard({
   children,
 }: ConfigCardProps) {
   return (
-    <div className="bg-bg-elevated border border-border rounded-md p-4 group">
+    <div className={DS.layout.objectRow}>
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-accent">{title}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cx(DS.text.sectionTitle, "break-words")}>{title}</span>
             {badge}
           </div>
           {children}
         </div>
-        <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={onEdit}
-            className="p-1.5 text-text-muted hover:text-accent transition-colors"
-            title="Edit"
-          >
+        <div className="ml-2 flex shrink-0 items-center gap-1">
+          <IconButton onClick={onEdit} label={`Edit ${title}`} title="Edit">
             <Pencil size={14} />
-          </button>
+          </IconButton>
           {onRemove && (
-            <button
-              onClick={onRemove}
-              className="p-1.5 text-text-muted hover:text-error transition-colors"
-              title={removeTitle}
-            >
+            <IconButton onClick={onRemove} label={removeTitle} variant="danger">
               <Trash2 size={14} />
-            </button>
+            </IconButton>
           )}
         </div>
       </div>

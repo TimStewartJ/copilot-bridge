@@ -15,6 +15,7 @@ import {
   validateNewPagePath,
   type EntryFormValues,
 } from "./docs-model";
+import { DS, cx } from "../../design/tokens";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -115,7 +116,7 @@ export function NewPageDialog({ initialFolder, initialSlug = "", onClose }: { in
             />
           </DocsField>
         </div>
-        <div role={pathProblem ? "alert" : undefined} className={`rounded-md border px-3 py-2 text-[13px] ${pathProblem ? "border-error/30 bg-error/10 text-error" : "border-border bg-bg-primary text-text-muted"}`}>
+        <div role={pathProblem ? "alert" : undefined} className={cx("rounded-md border px-3 py-2 text-[13px]", pathProblem ? cx(DS.notice.surface, "text-error") : "border-border bg-bg-primary text-text-muted")}>
           {pathProblem ?? (
             <>Will be created at <span className="break-all font-mono text-text-secondary">docs/{path || "…"}</span></>
           )}

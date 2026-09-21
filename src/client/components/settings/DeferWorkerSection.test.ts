@@ -77,7 +77,7 @@ describe("DeferWorkerSection", () => {
     const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     await harness.render(createElement(DeferWorkerSection, { draft, setDraft }));
 
-    expect(harness.dom.container.textContent).toContain("Deferred Work");
+    expect(harness.dom.container.textContent).toContain("Deferred workers");
     expect(harness.dom.container.textContent).toContain("Automatic (economy model when available)");
     const selects = findAllByTag(harness.dom.container, "SELECT");
     expect(selects).toHaveLength(3);

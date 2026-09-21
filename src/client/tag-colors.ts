@@ -20,16 +20,16 @@ export const TAG_COLOR_BG: Record<string, string> = {
 };
 
 export const TAG_COLOR_TEXT: Record<string, string> = {
-  blue: "text-blue-400",
-  purple: "text-purple-400",
-  amber: "text-amber-400",
-  rose: "text-rose-400",
-  cyan: "text-cyan-400",
-  orange: "text-orange-400",
-  slate: "text-slate-400",
-  emerald: "text-emerald-400",
-  indigo: "text-indigo-400",
-  pink: "text-pink-400",
+  blue: "text-blue-300 [[data-theme=light]_&]:text-blue-900",
+  purple: "text-purple-300 [[data-theme=light]_&]:text-purple-900",
+  amber: "text-amber-300 [[data-theme=light]_&]:text-amber-900",
+  rose: "text-rose-300 [[data-theme=light]_&]:text-rose-900",
+  cyan: "text-cyan-300 [[data-theme=light]_&]:text-cyan-900",
+  orange: "text-orange-300 [[data-theme=light]_&]:text-orange-900",
+  slate: "text-slate-300 [[data-theme=light]_&]:text-slate-900",
+  emerald: "text-emerald-300 [[data-theme=light]_&]:text-emerald-900",
+  indigo: "text-indigo-300 [[data-theme=light]_&]:text-indigo-900",
+  pink: "text-pink-300 [[data-theme=light]_&]:text-pink-900",
 };
 
 export const TAG_COLOR_BORDER: Record<string, string> = {

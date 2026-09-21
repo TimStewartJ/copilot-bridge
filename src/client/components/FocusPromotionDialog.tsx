@@ -2,7 +2,8 @@ import { useState } from "react";
 import type { FocusActionPromotionResult, FocusObject, FocusPromotionInput, Task } from "../api";
 import FocusDialog from "./FocusDialog";
 import FocusEvidenceValidity from "./FocusEvidenceValidity";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 interface FocusPromotionDialogProps {
   object: FocusObject;
@@ -37,7 +38,7 @@ export default function FocusPromotionDialog({ object, tasks, pending, error, re
     <FocusDialog title="Hand off / Create Action" description="Accept executable work in a visible destination. Handoff leaves the source unresolved." pending={pending} onClose={onClose}>
       {result ? (
         <div className="space-y-4">
-          <div role="status" className="rounded-lg border border-info-border bg-info-surface p-3 text-sm text-text-primary">
+          <div role="status" className={cx(DS.notice.surface, "p-3 text-sm text-text-primary")}>
             <p className="font-semibold">{result.created ? "Action created" : "Linked existing Action"}</p>
             <p className="mt-1 break-words">{result.action.text}</p>
             <p className="mt-2">Work is {result.action.done ? "complete" : "open"}. The source is {result.object.lifecycle.replaceAll("_", " ")}, not resolved by this handoff.</p>
@@ -45,12 +46,12 @@ export default function FocusPromotionDialog({ object, tasks, pending, error, re
             <p className="mt-2">Destination: {result.action.taskId ? tasks.find((task) => task.id === result.action.taskId)?.title ?? result.action.taskId : "Global Actions"}</p>
           </div>
           <div className="flex flex-wrap justify-end gap-2">
-            <button type="button" className={`${UI.button.secondary} min-h-11`} onClick={() => {
+            <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)} onClick={() => {
               if (result.action.taskId) onSelectTask(result.action.taskId, { checklistItemId: result.action.id });
               else onInspectAction(result.action.id);
               onClose();
             }}>Open Action</button>
-            <button type="button" className={`${UI.button.primary} min-h-11`} onClick={onClose}>Close</button>
+            <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary)} onClick={onClose}>Close</button>
           </div>
         </div>
       ) : (
@@ -70,12 +71,12 @@ export default function FocusPromotionDialog({ object, tasks, pending, error, re
             <span>Executable Action text (required)</span>
             {!existing && <span className="block text-xs text-text-muted">State what to do and how to know it is complete, rather than copying an unresolved question.</span>}
             <textarea required value={text} readOnly={Boolean(existing)} disabled={pending} onChange={(event) => setText(event.target.value)}
-              className="min-h-28 w-full rounded-lg border border-border bg-bg-surface p-3 focus-visible:outline-accent" />
+              className={cx(DS.field.input, DS.field.textarea, DS.focus, "min-h-28")} />
           </label>
           <label className="block space-y-1.5 text-sm text-text-secondary">
             <span>Destination (required)</span>
             <select required value={destination} disabled={pending} onChange={(event) => { setDestination(event.target.value); setMoveConfirmed(false); }}
-              className="min-h-11 w-full min-w-0 rounded-lg border border-border bg-bg-surface p-3 focus-visible:outline-accent">
+              className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "min-h-11 min-w-0")}>
               <option value="">Choose a visible destination</option>
               <option value="__global__">Global Actions (explicit)</option>
               {visibleTasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}
@@ -85,10 +86,10 @@ export default function FocusPromotionDialog({ object, tasks, pending, error, re
             <input type="checkbox" className="mt-1" checked={moveConfirmed} disabled={pending} onChange={(event) => setMoveConfirmed(event.target.checked)} />
             <span>Move this existing Action from {currentDestinationLabel} to {destinationLabel(destination === "__global__" ? null : destination)}. I confirm this destination change.</span>
           </label>}
-          {error && <div role="alert" className="text-sm text-error">{error}<button type="button" disabled={pending} onClick={onReload} className="ml-2 min-h-11 underline">Reload item</button></div>}
+          {error && <div role="alert" className="text-sm text-error">{error}<button type="button" disabled={pending} onClick={onReload} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-2 underline")}>Reload item</button></div>}
           <div className="flex flex-wrap justify-end gap-2">
-            <button type="button" disabled={pending} onClick={onClose} className={`${UI.button.secondary} min-h-11`}>Cancel</button>
-            <button type="submit" disabled={pending || !destinationValid || !text.trim() || (moving && !moveConfirmed)} className={`${UI.button.primary} min-h-11 disabled:opacity-50`}>
+            <button type="button" disabled={pending} onClick={onClose} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}>Cancel</button>
+            <button type="submit" disabled={pending || !destinationValid || !text.trim() || (moving && !moveConfirmed)} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}>
               {pending ? "Saving..." : existing ? "Link existing Action" : "Create Action"}
             </button>
           </div>

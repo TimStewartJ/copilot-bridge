@@ -15,6 +15,7 @@ import {
 } from "../../api";
 import { Field } from "./Field";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 function statusToneClassName(tone: BrowserDiagnosticsTone): string {
   switch (tone) {
@@ -214,14 +215,14 @@ export function BrowserDiagnosticsSection({
           type="button"
           onClick={refresh}
           disabled={loading}
-          className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
         </button>
       )}
     >
-      <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-4">
+      <div className={DS.layout.formGroup}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -233,7 +234,7 @@ export function BrowserDiagnosticsSection({
             </p>
           </div>
           {summary && (
-            <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${statusToneClassName(summary.tone)}`}>
+            <span className={cx(DS.badge.base, "shrink-0", statusToneClassName(summary.tone))}>
               {summary.label}
             </span>
           )}
@@ -241,7 +242,7 @@ export function BrowserDiagnosticsSection({
 
         {diagnostics && (
           <div className="grid gap-3 xl:grid-cols-3">
-            <div className="rounded-md border border-border bg-bg-primary p-3">
+            <div className={DS.layout.formGroup}>
               <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
                 <Activity size={14} />
                 Runtime
@@ -254,7 +255,7 @@ export function BrowserDiagnosticsSection({
               </div>
             </div>
 
-            <div className="rounded-md border border-border bg-bg-primary p-3">
+            <div className={DS.layout.formGroup}>
               <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
                 <Globe2 size={14} />
                 Public browser
@@ -273,14 +274,14 @@ export function BrowserDiagnosticsSection({
                 type="button"
                 onClick={() => void probeContext("public")}
                 disabled={probing !== null}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "mt-3 gap-1.5 bg-bg-surface disabled:text-text-faint")}
               >
                 {probing === "public" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
                 Check public browser
               </button>
             </div>
 
-            <div className="rounded-md border border-border bg-bg-primary p-3">
+            <div className={DS.layout.formGroup}>
               <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
                 <ShieldCheck size={14} />
                 Authenticated browser
@@ -305,7 +306,7 @@ export function BrowserDiagnosticsSection({
                   type="button"
                   onClick={() => void probeContext("authenticated")}
                   disabled={probing !== null}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
                 >
                   {probing === "authenticated" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
                   Check browser
@@ -314,7 +315,7 @@ export function BrowserDiagnosticsSection({
                   type="button"
                   onClick={() => void checkAdo()}
                   disabled={checkingAdo || probing !== null}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
                 >
                   {checkingAdo ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
                   Verify ADO
@@ -330,7 +331,7 @@ export function BrowserDiagnosticsSection({
               value={executablePathValue}
               onChange={(event) => updateBrowserSetting("executablePath", event.target.value)}
               placeholder="Leave blank to use the environment override, or auto-detect Chrome"
-              className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-faint focus:border-accent"
+              className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
             />
           </Field>
           <Field label="Authenticated browser profile directory">
@@ -338,7 +339,7 @@ export function BrowserDiagnosticsSection({
               value={masterProfileDirectoryValue}
               onChange={(event) => updateBrowserSetting("masterProfileDirectory", event.target.value)}
               placeholder="Leave blank to use Bridge's dedicated authenticated profile"
-              className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-faint focus:border-accent"
+              className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
             />
           </Field>
         </div>
@@ -348,7 +349,7 @@ export function BrowserDiagnosticsSection({
             type="checkbox"
             checked={headedValue}
             onChange={(event) => updateBrowserHeaded(event.target.checked)}
-            className="mt-0.5 h-3.5 w-3.5 accent-accent"
+            className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5")}
           />
           <span className="min-w-0">
             <span className="block text-xs font-medium text-text-secondary">
@@ -388,7 +389,7 @@ export function BrowserDiagnosticsSection({
         </div>
 
         {config && (
-          <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted space-y-1">
+          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
             <div>
               <span className="text-text-faint">effective browser:</span>{" "}
               <code className="break-all text-text-secondary">{config.executablePath ?? "agent-browser auto-detect"}</code>
@@ -413,7 +414,7 @@ export function BrowserDiagnosticsSection({
             type="button"
             onClick={() => void launchHeaded()}
             disabled={launching || closing}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-wait disabled:bg-bg-surface disabled:text-text-faint"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "gap-1.5 disabled:bg-bg-surface disabled:text-text-faint")}
           >
             {launching ? <Loader2 size={12} className="animate-spin" /> : <Monitor size={12} />}
             Launch authenticated browser
@@ -422,7 +423,7 @@ export function BrowserDiagnosticsSection({
             type="button"
             onClick={() => void closeHeaded()}
             disabled={launching || closing}
-            className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
           >
             {closing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
             Close authenticated browser
@@ -432,7 +433,7 @@ export function BrowserDiagnosticsSection({
           </span>
         </div>
 
-        <div className="rounded-md border border-border bg-bg-primary px-3 py-3">
+        <div className={DS.layout.formGroup}>
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-medium text-text-secondary">Recent browser signals</div>
             <div className="text-[11px] text-text-faint">
@@ -442,10 +443,10 @@ export function BrowserDiagnosticsSection({
           {diagnostics?.issues.length ? (
             <div className="mt-3 grid gap-2 lg:grid-cols-2">
               {diagnostics.issues.map((issue) => (
-                <div key={issue.code} className="rounded-md border border-border bg-bg-elevated px-3 py-2">
+                <div key={issue.code} className={DS.layout.formGroup}>
                   <div className="flex items-center justify-between gap-2 text-xs">
                     <span className="font-medium text-text-secondary">{issue.label}</span>
-                    <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning">
+                    <span className={cx(DS.badge.base, "bg-warning/15 text-warning")}>
                       {issue.count}
                     </span>
                   </div>
@@ -463,11 +464,9 @@ export function BrowserDiagnosticsSection({
         </div>
 
         {(message || error) && (
-          <div className={`rounded-md border px-3 py-2 text-xs ${
-            error
-              ? "border-error/30 bg-error/10 text-error"
-              : "border-success/25 bg-success/10 text-success"
-          }`}>
+          <div className={cx("rounded-md border px-3 py-2 text-xs", error
+              ? cx(DS.notice.surface, "text-error")
+              : cx(DS.notice.surface, "text-success"))}>
             {error ?? message}
           </div>
         )}

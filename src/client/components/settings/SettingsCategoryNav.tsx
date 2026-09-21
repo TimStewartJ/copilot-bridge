@@ -1,4 +1,6 @@
-import { SETTINGS_CATEGORIES, type CategoryId, type CategoryMeta } from "./settings-layout";
+import { normalizeCategory, SETTINGS_CATEGORIES, type CategoryId, type CategoryMeta } from "./settings-layout";
+import { DS, cx } from "../../design/tokens";
+import { Select } from "../../design/primitives";
 
 export interface SettingsCategoryNavProps {
   activeCategory: CategoryId;
@@ -9,74 +11,43 @@ export interface SettingsCategoryNavProps {
   desktopStickyTopClassName?: string;
 }
 
-function classes(...values: Array<string | false | null | undefined>) {
-  return values.filter(Boolean).join(" ");
-}
-
 export function SettingsCategoryNav({
   activeCategory,
   onSelectCategory,
   categories = SETTINGS_CATEGORIES,
   ariaLabel = "Settings categories",
   className,
-  desktopStickyTopClassName = "md:top-6",
+  desktopStickyTopClassName = "@[44rem]/settings-layout:top-6",
 }: SettingsCategoryNavProps) {
   return (
-    <div className={className}>
-      <nav aria-label={ariaLabel} className="md:hidden">
-        <div className="-mx-1 overflow-x-auto pb-1">
-          <div className="inline-flex min-w-full gap-1 rounded-xl border border-border bg-bg-elevated p-1">
-            {categories.map((category) => {
-              const isActive = category.id === activeCategory;
-
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  onClick={() => onSelectCategory(category.id)}
-                  aria-pressed={isActive}
-                  className={classes(
-                    "flex-1 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-accent-surface text-accent shadow-sm ring-1 ring-accent-border"
-                      : "text-text-muted hover:bg-bg-hover hover:text-text-secondary",
-                  )}
-                >
-                  {category.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+    <div className={cx("min-w-0", className)}>
+      <nav aria-label={ariaLabel} className="@[44rem]/settings-layout:hidden">
+        <Select
+          aria-label="Settings category"
+          value={activeCategory}
+          onChange={(event) => onSelectCategory(normalizeCategory(event.target.value))}
+        >
+          {categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
+        </Select>
       </nav>
 
-      <nav aria-label={ariaLabel} className={classes("hidden md:block md:sticky", desktopStickyTopClassName)}>
-        <div className="rounded-xl border border-border bg-bg-elevated p-2">
-          <p className="px-2 pb-2 text-xs font-semibold tracking-wide text-text-secondary">
-            Categories
-          </p>
-          <div className="space-y-1">
-            {categories.map((category) => {
-              const isActive = category.id === activeCategory;
-
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  onClick={() => onSelectCategory(category.id)}
-                  aria-pressed={isActive}
-                  className={classes(
-                    "flex w-full items-center rounded-lg px-3 py-2.5 text-left transition-colors",
-                    isActive
-                      ? "bg-accent-surface text-accent ring-1 ring-accent-border"
-                      : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
-                  )}
-                >
-                  <span className="min-w-0 text-sm font-medium">{category.label}</span>
-                </button>
-              );
-            })}
-          </div>
+      <nav aria-label={ariaLabel} className={cx("hidden @[44rem]/settings-layout:block @[44rem]/settings-layout:sticky", desktopStickyTopClassName)}>
+        <div className="space-y-1">
+          {categories.map((category) => {
+            const active = category.id === activeCategory;
+            return (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => onSelectCategory(category.id)}
+                aria-pressed={active}
+                aria-current={active ? "page" : undefined}
+                className={cx(DS.menu.item, active && DS.menu.selected)}
+              >
+                {category.label}
+              </button>
+            );
+          })}
         </div>
       </nav>
     </div>

@@ -77,6 +77,8 @@ describe("inline search filters", () => {
     const { commit, change, key, input } = await render();
     await change("needle task:Bridge");
     expect(getReactProps(input)?.["aria-expanded"]).toBe(true);
+    const suggestions = findAllByTag(harness!.dom.container, "DIV").find((node) => getReactProps(node)?.role === "listbox");
+    expect(getReactProps(suggestions)?.className).toContain("max-h-[min(15rem,35dvh)]");
     await key("ArrowDown");
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
     await key("Enter");

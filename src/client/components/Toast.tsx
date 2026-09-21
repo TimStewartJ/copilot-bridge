@@ -1,4 +1,5 @@
 import { AlertCircle, ArrowRight, CheckCircle2, Info, Loader2, Undo2, X } from "lucide-react";
+import { DS, cx } from "../design/tokens";
 
 export type ToastTone = "success" | "info" | "error";
 
@@ -30,7 +31,7 @@ const TONE_STYLES: Record<ToastTone, { border: string; icon: string }> = {
 
 function ToneIcon({ tone, loading }: { tone: ToastTone; loading?: boolean }) {
   const className = `mt-0.5 shrink-0 ${TONE_STYLES[tone].icon}`;
-  if (loading) return <Loader2 size={18} className={`${className} animate-spin`} />;
+  if (loading) return <Loader2 size={18} className={cx(className, "animate-spin")} />;
   if (tone === "error") return <AlertCircle size={18} className={className} />;
   if (tone === "info") return <Info size={18} className={className} />;
   return <CheckCircle2 size={18} className={className} />;
@@ -49,7 +50,7 @@ export default function Toast({ toast, actionPending = false, onAction, onDismis
     <div
       role={toast.tone === "error" ? "alert" : "status"}
       aria-live={toast.tone === "error" ? "assertive" : "polite"}
-      className={`pointer-events-auto w-full max-w-md rounded-xl border bg-bg-elevated/95 shadow-lg backdrop-blur ${TONE_STYLES[toast.tone].border}`}
+      className={cx(DS.surface.floating, "pointer-events-auto w-full max-w-md backdrop-blur", TONE_STYLES[toast.tone].border)}
     >
       <div className="flex items-start gap-3 px-4 py-3">
         <ToneIcon tone={toast.tone} loading={toast.loading} />
@@ -67,7 +68,7 @@ export default function Toast({ toast, actionPending = false, onAction, onDismis
                 type="button"
                 onClick={onAction}
                 disabled={actionPending}
-                className="inline-flex items-center gap-1 text-xs font-medium text-accent transition-colors hover:text-accent-hover disabled:cursor-wait disabled:text-text-faint"
+                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1 text-accent hover:text-accent-hover disabled:text-text-faint")}
               >
                 {action.icon === "open" ? <ArrowRight size={12} /> : <Undo2 size={12} />}
                 {actionPending ? action.pendingLabel ?? action.label : action.label}
@@ -76,7 +77,7 @@ export default function Toast({ toast, actionPending = false, onAction, onDismis
             <button
               type="button"
               onClick={onDismiss}
-              className="text-xs text-text-faint transition-colors hover:text-text-muted"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-text-faint")}
             >
               Dismiss
             </button>
@@ -85,7 +86,7 @@ export default function Toast({ toast, actionPending = false, onAction, onDismis
         <button
           type="button"
           onClick={onDismiss}
-          className="shrink-0 rounded p-1 text-text-faint transition-colors hover:bg-bg-hover hover:text-text-muted"
+          className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "text-text-faint")}
           aria-label={`Dismiss notification: ${toast.title}`}
         >
           <X size={14} />

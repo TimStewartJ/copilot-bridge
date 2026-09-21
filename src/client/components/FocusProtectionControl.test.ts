@@ -292,7 +292,7 @@ describe("compact protection affordance and accessible review", () => {
     expect(button("Confirm protection").disabled).toBe(false);
   });
 
-  it("uses wrapping mobile controls, bounded inputs and accessible 44px touch targets", async () => {
+  it("uses wrapping mobile controls, bounded inputs and the shared touch target sizes", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     await openCreate();
     await changeFocusField(harness, "Reason", "long-unbroken-reason".repeat(20));
@@ -306,9 +306,10 @@ describe("compact protection affordance and accessible review", () => {
       expect(props.className).toContain("w-full");
       expect(props.className).toContain("max-w-full");
       expect(props.className).toContain("min-w-0");
-      expect(props.className).toContain("min-h-11");
+      expect(props.className).toContain("min-h-10");
+      expect(props.className).toContain("text-base");
     }
-    for (const node of findAllByTag(modal(), "BUTTON")) expect(getReactProps(node)?.className).toContain("min-h-11");
+    for (const node of findAllByTag(modal(), "BUTTON")) expect(getReactProps(node)?.className).toContain("h-10");
     const classes = findAllByTag(modal(), "DIV").map((node) => getReactProps(node)?.className ?? "").join(" ");
     expect(classes).toContain("flex-wrap");
     expect(classes).toContain("[overflow-wrap:anywhere]");

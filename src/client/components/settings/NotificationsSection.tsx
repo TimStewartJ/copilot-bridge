@@ -9,6 +9,7 @@ import {
 } from "../../push-notifications";
 import { FocusNotificationPolicyForm } from "./FocusNotificationPolicyForm";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 function statusToneClassName(tone: "success" | "warning" | "error" | "neutral"): string {
   switch (tone) {
@@ -134,14 +135,14 @@ export function NotificationsSection() {
           type="button"
           onClick={() => void refresh()}
           disabled={busy}
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-wait disabled:text-text-faint"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
         </button>
       )}
     >
-      <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-4">
+      <div className={DS.layout.formGroup}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -154,7 +155,7 @@ export function NotificationsSection() {
               Changing policy does not subscribe or unsubscribe this browser.
             </p>
           </div>
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${statusToneClassName(descriptor.tone)}`}>
+          <span className={cx(DS.badge.base, "shrink-0", statusToneClassName(descriptor.tone))}>
             {descriptor.label}
           </span>
         </div>
@@ -189,7 +190,7 @@ export function NotificationsSection() {
             type="button"
             onClick={() => void runAction("enable", () => enablePushNotifications(state?.server ?? null), () => "Notifications enabled for this browser.")}
             disabled={busy || !canEnable}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:bg-bg-surface disabled:text-text-faint"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.focus, "gap-1.5 disabled:bg-bg-surface disabled:text-text-faint")}
           >
             {action === "enable" ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />}
             Enable
@@ -198,7 +199,7 @@ export function NotificationsSection() {
             type="button"
             onClick={() => void runAction("disable", disablePushNotifications, () => "Notifications disabled for this browser.")}
             disabled={busy || !canDisable}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:text-text-faint"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
           >
             {action === "disable" ? <Loader2 size={12} className="animate-spin" /> : <BellOff size={12} />}
             Disable
@@ -214,7 +215,7 @@ export function NotificationsSection() {
                   : "No active subscription was available to notify.";
             })}
             disabled={busy || !canTest}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:text-text-faint"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
           >
             {action === "test" ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
             Send test
@@ -222,7 +223,7 @@ export function NotificationsSection() {
         </div>
 
         {message && (
-          <div role="status" className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+          <div role="status" className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
             {message}
           </div>
         )}

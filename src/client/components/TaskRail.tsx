@@ -268,7 +268,7 @@ export default function TaskRail({
   // ── Collapsed (icon-only) mode ─────────────────────────────────
   if (!expanded) {
     return (
-      <div className="hidden md:flex flex-col h-full w-14 shrink-0 bg-bg-secondary border-r border-border">
+      <div className={cx(DS.surface.pane, "hidden h-full w-14 shrink-0 flex-col border-r border-surface-edge md:flex")}>
         {/* Brand / Home */}
         <div className="flex items-center justify-center py-3">
           <button
@@ -492,7 +492,7 @@ export default function TaskRail({
 
   // ── Expanded mode ──────────────────────────────────────────────
   return (
-    <div className="hidden md:flex flex-col h-full w-56 shrink-0 bg-bg-secondary border-r border-border">
+    <div className={cx(DS.surface.pane, "hidden h-full w-56 shrink-0 flex-col border-r border-surface-edge md:flex")}>
       {/* Header */}
       <div className="px-3 py-3 border-b border-border flex items-center justify-between">
         <button
@@ -574,10 +574,10 @@ export default function TaskRail({
 
                     return (
                       <DroppableGroup key={groupId} id={groupId}>
-                        <div className="mb-2">
+                        <div className={cx(DS.surface.group, "mb-3 overflow-hidden")} data-ds-surface="group">
                           {/* Group header (skip for ungrouped tasks) */}
                           {group && (
-                          <div className="flex items-center group/header">
+                          <div className={cx(DS.collection.header, "group/header")}>
                           <button
                             onClick={() => {
                               if (onUpdateGroup) {
@@ -588,7 +588,8 @@ export default function TaskRail({
                               e.preventDefault();
                               setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
                             }}
-                            className="flex-1 min-w-0 flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                            aria-expanded={!isCollapsed}
+                            className={cx(DS.focus, "flex min-h-10 min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-3 text-xs text-text-secondary transition-colors hover:text-text-primary md:min-h-8")}
                           >
                             {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} aria-hidden="true" />

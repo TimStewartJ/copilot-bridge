@@ -16,12 +16,12 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
-import { Loader2, X, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Info, Loader2, X, type LucideIcon } from "lucide-react";
+import { Button, IconButton, Notice, Select, TextArea, TextInput } from "../../design/primitives";
+import { DS, cx } from "../../design/tokens";
 import { useModalDialog } from "../shared/useModalDialog";
 
-export function cx(...values: Array<string | false | null | undefined>): string {
-  return values.filter(Boolean).join(" ");
-}
+export { cx } from "../../design/tokens";
 
 /** Live width of an element, for layout decisions that depend on the pane rather than the window. */
 export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
@@ -39,24 +39,10 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
   return width;
 }
 
-const FOCUS_RING = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70";
-
 // ── Buttons ───────────────────────────────────────────────────────
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md";
-
-const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: "bg-accent text-white hover:bg-accent-hover disabled:bg-bg-hover disabled:text-text-faint",
-  secondary: "border border-border bg-bg-surface text-text-primary hover:bg-bg-hover disabled:text-text-faint",
-  ghost: "text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:text-text-faint",
-  danger: "bg-error text-white hover:bg-error-hover disabled:bg-bg-hover disabled:text-text-faint",
-};
-
-const BUTTON_SIZES: Record<ButtonSize, string> = {
-  sm: "h-8 gap-1.5 px-2.5 text-[13px]",
-  md: "h-9 gap-2 px-3.5 text-sm",
-};
 
 export interface DocsButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -70,22 +56,18 @@ export const DocsButton = forwardRef<HTMLButtonElement, DocsButtonProps>(functio
   ref,
 ) {
   return (
-    <button
+    <Button
       {...rest}
       ref={ref}
       type={type}
+      variant={variant}
+      size={size}
       disabled={disabled || loading}
-      className={cx(
-        "inline-flex shrink-0 select-none items-center justify-center rounded-md font-medium transition-colors disabled:cursor-not-allowed",
-        BUTTON_VARIANTS[variant],
-        BUTTON_SIZES[size],
-        FOCUS_RING,
-        className,
-      )}
+      icon={loading ? <Loader2 size={14} className="animate-spin" /> : Icon ? <Icon size={14} /> : undefined}
+      className={className}
     >
-      {loading ? <Loader2 size={14} className="animate-spin" /> : Icon ? <Icon size={14} /> : null}
       {children}
-    </button>
+    </Button>
   );
 });
 
@@ -101,21 +83,15 @@ export const DocsIconButton = forwardRef<HTMLButtonElement, DocsIconButtonProps>
   ref,
 ) {
   return (
-    <button
+    <IconButton
       {...rest}
       ref={ref}
       type={type}
-      aria-label={label}
-      title={rest.title ?? label}
-      className={cx(
-        "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-        active ? "bg-bg-hover text-text-primary" : "text-text-muted hover:bg-bg-hover hover:text-text-primary",
-        FOCUS_RING,
-        className,
-      )}
+      label={label}
+      className={cx(active && DS.row.selected, className)}
     >
       <Icon size={size} />
-    </button>
+    </IconButton>
   );
 });
 
@@ -129,29 +105,25 @@ export function Kbd({ children }: { children: ReactNode }) {
 
 // ── Form fields ───────────────────────────────────────────────────
 
-const FIELD_BASE =
-  "w-full rounded-md border border-border bg-bg-primary px-3 text-sm text-text-primary placeholder:text-text-faint transition-colors "
-  + "hover:border-text-faint/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:opacity-60";
-
 export const DocsInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }>(
   function DocsInput({ className, invalid, ...rest }, ref) {
-    return <input {...rest} ref={ref} aria-invalid={invalid || undefined} className={cx(FIELD_BASE, "h-9", invalid && "border-error/70", className)} />;
+    return <TextInput {...rest} ref={ref} aria-invalid={invalid || undefined} className={cx(invalid && "border-error/70", className)} />;
   },
 );
 
 export const DocsSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement> & { invalid?: boolean }>(
   function DocsSelect({ className, invalid, children, ...rest }, ref) {
     return (
-      <select {...rest} ref={ref} aria-invalid={invalid || undefined} className={cx(FIELD_BASE, "h-9 pr-8", invalid && "border-error/70", className)}>
+      <Select {...rest} ref={ref} aria-invalid={invalid || undefined} className={cx("pr-8", invalid && "border-error/70", className)}>
         {children}
-      </select>
+      </Select>
     );
   },
 );
 
 export const DocsTextarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement> & { invalid?: boolean }>(
   function DocsTextarea({ className, invalid, ...rest }, ref) {
-    return <textarea {...rest} ref={ref} aria-invalid={invalid || undefined} className={cx(FIELD_BASE, "py-2 leading-6", invalid && "border-error/70", className)} />;
+    return <TextArea {...rest} ref={ref} aria-invalid={invalid || undefined} className={cx(invalid && "border-error/70", className)} />;
   },
 );
 
@@ -195,16 +167,16 @@ export function DocsBanner({
   children: ReactNode;
   actions?: ReactNode;
 }) {
-  const tones = {
-    error: "border-error/30 bg-error/10 text-error",
-    warning: "border-warning/30 bg-warning/10 text-text-primary",
-    info: "border-info-border bg-info-surface text-text-primary",
-  } as const;
   return (
-    <div role={tone === "error" ? "alert" : "status"} className={cx("flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border px-3.5 py-2.5 text-[13px] leading-5", tones[tone])}>
-      <div className="min-w-0 flex-1">{children}</div>
-      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
-    </div>
+    <Notice
+      tone={tone === "error" ? "danger" : tone}
+      icon={tone === "info" ? <Info size={15} /> : <AlertTriangle size={15} />}
+      role={tone === "error" ? "alert" : "status"}
+      action={actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      className="flex-wrap text-[13px]"
+    >
+      {children}
+    </Notice>
   );
 }
 
@@ -267,11 +239,7 @@ export function DocsDialog({ title, description, onClose, children, footer, busy
         {...dialogProps}
         ref={panelRef}
         onKeyDown={trapFocus}
-        className={cx(
-          "docs-dialog-in relative flex w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-bg-secondary shadow-2xl md:rounded-xl",
-          tall ? "h-[88dvh] md:h-auto md:max-h-[76vh]" : "max-h-[88dvh] md:max-h-[76vh]",
-          DIALOG_WIDTHS[size],
-        )}
+        className={cx(DS.surface.dialog, "docs-dialog-in relative flex w-full flex-col overflow-hidden rounded-b-none md:rounded-b-2xl", tall ? "h-[88dvh] md:h-auto md:max-h-[76vh]" : "max-h-[88dvh] md:max-h-[76vh]", DIALOG_WIDTHS[size])}
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
         <div className="flex items-start gap-3 border-b border-border px-5 py-4">

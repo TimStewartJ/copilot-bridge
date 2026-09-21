@@ -45,6 +45,7 @@ import {
   visibleDbFields,
   type DocsPageRef,
 } from "./docs-model";
+import { DS } from "../../design/tokens";
 
 /** Narrowest reading pane that still fits the contents rail beside a readable column. */
 const TOC_RAIL_MIN_WIDTH = 900;
@@ -57,7 +58,7 @@ function PageDescription({ text, clamp }: { text: string; clamp: boolean }) {
     <div className="mt-3">
       <p className={cx("text-[15px] leading-7 text-text-secondary", clamped && "line-clamp-3")}>{text}</p>
       {clamped && (
-        <button type="button" onClick={() => setExpanded(true)} className="mt-1 text-[13px] font-medium text-accent hover:text-accent-hover">
+        <button type="button" onClick={() => setExpanded(true)} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "mt-1 text-accent hover:text-accent-hover")}>
           Show more
         </button>
       )}
@@ -75,7 +76,7 @@ export function DocTagChips({ tags, onSelect }: { tags: string[]; onSelect?: (ta
         const tone = color
           ? `${TAG_COLOR_BG[color] ?? "bg-bg-surface"} ${TAG_COLOR_TEXT[color] ?? "text-text-secondary"}`
           : "bg-bg-surface text-text-secondary";
-        const className = cx("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium", tone);
+        const className = cx(DS.badge.base, "items-center text-xs", tone);
         return (
           <li key={tag}>
             {onSelect ? (
@@ -97,10 +98,7 @@ function NeighbourLink({ page, direction }: { page: DocsPageRef; direction: "pre
   return (
     <Link
       to={docsRoute(page.path)}
-      className={cx(
-        "group flex min-w-0 flex-1 flex-col gap-1 rounded-xl border border-border px-4 py-3 transition-colors hover:border-accent-border hover:bg-bg-secondary",
-        isNext && "items-end text-right",
-      )}
+      className={cx("group flex min-w-0 flex-1 flex-col gap-1 rounded-xl border border-border px-4 py-3 transition-colors hover:bg-bg-secondary", isNext && "items-end text-right")}
     >
       <span className="flex items-center gap-1.5 text-xs text-text-muted">
         {!isNext && <ArrowLeft size={12} aria-hidden="true" />}
@@ -126,7 +124,7 @@ export function FolderChildList({ nodes }: { nodes: DocTreeNode[] }) {
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm font-medium text-text-primary group-hover:text-accent">{nodeLabel(node)}</span>
                   {count !== null && (
-                    <span className="shrink-0 rounded-full bg-bg-surface px-1.5 py-0.5 text-[11px] text-text-muted">
+                    <span className={cx(DS.badge.base, "shrink-0 bg-bg-surface text-text-muted")}>
                       {kind === "collection" ? `${count} entries` : `${count} items`}
                     </span>
                   )}
@@ -332,7 +330,7 @@ export default function DocsPageView({ page, schema, hash, onEdit, onDelete }: D
                 onAnchorSelect={handleAnchorSelect}
               />
             ) : (
-              <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
+              <div className={cx(DS.text.empty, "px-6 py-10 text-center")}>
                 <FileText size={22} className="mx-auto text-text-faint" aria-hidden="true" />
                 <p className="mt-3 text-sm text-text-muted">This page is empty.</p>
                 <DocsButton variant="primary" icon={Pencil} onClick={onEdit} className="mt-4">Start writing</DocsButton>

@@ -12,7 +12,8 @@ import CodeBlock from "./CodeBlock";
 import { APP_PROSE } from "./shared/prose-classes";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { useModalDialog } from "./shared/useModalDialog";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 interface AgentDefinitionPreviewSheetProps {
   taskId: string;
@@ -56,7 +57,7 @@ export default function AgentDefinitionPreviewSheet({
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div
         {...dialogProps}
-        className="relative flex max-h-[88vh] w-full flex-col rounded-t-2xl border border-border bg-bg-primary shadow-2xl md:mt-12 md:mb-12 md:max-h-[84vh] md:max-w-2xl md:rounded-xl"
+        className={cx(DS.surface.dialog, "relative flex max-h-[88vh] w-full flex-col rounded-t-2xl md:mt-12 md:mb-12 md:max-h-[84vh] md:max-w-2xl md:rounded-xl")}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3">
           <h2 id={titleId} className="flex min-w-0 items-center gap-2 text-sm font-medium text-text-primary">
@@ -66,7 +67,7 @@ export default function AgentDefinitionPreviewSheet({
           <button
             type="button"
             onClick={onClose}
-            className="text-text-muted transition-colors hover:text-text-secondary"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
             aria-label="Close agent definition preview"
           >
             <X size={16} />
@@ -75,13 +76,13 @@ export default function AgentDefinitionPreviewSheet({
 
         <div className="shrink-0 border-b border-border/50 px-5 py-3">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${UI.chip.muted}`}>
+            <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>
               {definition.name}
             </span>
-            <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${definition.infer ? UI.chip.info : UI.chip.muted}`}>
+            <span className={cx(DS.badge.base, definition.infer ? cx(DS.badge.base, DS.badge.tone.info) : cx(DS.badge.base, DS.badge.tone.neutral))}>
               {definition.infer ? "Auto + explicit" : "Explicit only"}
             </span>
-            <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${UI.chip.muted}`}>
+            <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>
               {toolsLabel(definition.tools)}
             </span>
           </div>
@@ -103,17 +104,17 @@ export default function AgentDefinitionPreviewSheet({
           {detail && (
             <>
               <section>
-                <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-faint">
+                <h3 className={cx(DS.text.sectionLabel, "mb-2 font-medium text-text-faint")}>
                   Agent instructions
                 </h3>
-                <div className={`max-w-none rounded-lg bg-bg-surface px-4 py-3 ${APP_PROSE}`}>
+                <div className={cx("max-w-none rounded-lg bg-bg-surface px-4 py-3", APP_PROSE)}>
                   <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
                     {detail.prompt}
                   </ReactMarkdown>
                 </div>
               </section>
               <section>
-                <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-faint">
+                <h3 className={cx(DS.text.sectionLabel, "mb-2 font-medium text-text-faint")}>
                   Raw profile
                 </h3>
                 <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-bg-secondary px-4 py-3 text-xs text-text-secondary">
