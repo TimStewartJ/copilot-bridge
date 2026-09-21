@@ -328,7 +328,7 @@ describe("CopilotBackend disconnect detection", () => {
       disconnect: vi.fn(),
       on: vi.fn(() => () => undefined),
       registerElicitationHandler: vi.fn(),
-      rpc: {},
+      rpc: { permissions: { setMode: vi.fn(async () => ({ success: true, mode: "allow-all" })) } },
     };
     client.resumeSession = vi.fn(async () => session);
     const backend = new CopilotBackend(client, { logger: silentLogger });
@@ -365,7 +365,7 @@ describe("CopilotBackend disconnect detection", () => {
         return () => handlers.delete(handler);
       }),
       registerElicitationHandler: vi.fn(),
-      rpc: {},
+      rpc: { permissions: { setMode: vi.fn(async () => ({ success: true, mode: "allow-all" })) } },
     };
     client.resumeSession = vi.fn(async () => session);
     const backend = new CopilotBackend(client, { logger: silentLogger });

@@ -510,7 +510,7 @@ export interface AgentBackend {
 
   /**
    * Backend-native handler for permission requests during session execution.
-   * Backends that auto-accept via CLI flags can return undefined.
+   * Backends that configure native automatic approvals can return undefined.
    * Step 3 will replace the Copilot-shaped alias with a backend-neutral type.
    */
   readonly permissionPolicy: AgentPermissionPolicy | undefined;
