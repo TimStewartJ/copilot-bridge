@@ -7,6 +7,8 @@ import { focusTime } from "../focus-view-model";
 import { timeAgo } from "../time";
 import FocusItemCard from "./FocusItemCard";
 import type { FocusInteractionProps } from "./FocusInteractions";
+import { DS, cx } from "../design/tokens";
+import { Badge } from "../design/primitives";
 
 interface FocusDigestSectionProps extends FocusInteractionProps {
   digest: FocusDigest;
@@ -56,9 +58,7 @@ export default function FocusDigestSection({
   return (
     <article
       data-expanded={expanded}
-      className={`overflow-hidden rounded-xl border border-border/75 bg-bg-surface shadow-sm transition-colors hover:border-accent-border ${
-        expanded ? "md:col-span-2 xl:col-span-3" : ""
-      }`}
+      className={cx(DS.layout.objectRow, "overflow-hidden", expanded && "md:col-span-2 xl:col-span-3")}
     >
       <button
         type="button"
@@ -68,11 +68,9 @@ export default function FocusDigestSection({
         }}
         aria-expanded={expanded}
         aria-controls={contentId}
-        className={`group flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors ${
-          expanded ? "bg-bg-hover/70" : "hover:bg-bg-hover"
-        }`}
+        className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "group items-start gap-3 py-2", expanded && DS.row.selected)}
       >
-        <span className="mt-0.5 inline-flex shrink-0 rounded-lg border border-border/70 bg-bg-secondary p-1.5 text-text-faint transition-colors group-hover:border-accent-border group-hover:text-accent">
+        <span className={"mt-0.5 inline-flex shrink-0 rounded-lg border border-border/70 bg-bg-secondary p-1.5 text-text-faint transition-colors group-hover:text-accent"}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
         <span className="min-w-0 flex-1">
@@ -101,33 +99,29 @@ export default function FocusDigestSection({
             </span>
           )}
         </span>
-        <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-          digest.quiet
-            ? "border-border bg-bg-hover text-text-muted"
-            : "border-info-border bg-info-surface text-info"
-        }`}>
+        <Badge tone="neutral">
           {digest.quiet && <VolumeX size={10} />}
           {digest.quiet ? `Quiet · ${digest.count}` : `${digest.count} items`}
-        </span>
+        </Badge>
       </button>
 
       {expanded && (
-        <div id={contentId} className="space-y-3 border-t border-border bg-bg-primary/35 p-3">
+        <div id={contentId} className={cx(DS.rail, "mt-3 space-y-3 pb-1")}>
           <p className="text-xs text-text-muted">Digest horizon: meaningful changes in the last 7 days, plus pinned Events. Older active Events remain in History. These observations are not a coverage assurance; omissions and failed sources may be unknown.</p>
           {digest.quiet && <p className="text-xs text-text-muted">Quiet source: muted, archived, or removed task context. Quiet does not mean resolved or healthy.</p>}
-          {onInspectHistoryFilter && <button type="button" className="min-h-11 text-xs text-accent underline" onClick={() => onInspectHistoryFilter({
+          {onInspectHistoryFilter && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-accent underline")} onClick={() => onInspectHistoryFilter({
             ...(digest.sourceFamily ? { sourceFamily: digest.sourceFamily } : {}),
             ...(digest.orphaned && digest.originalTaskId ? { originalTaskId: digest.originalTaskId } : digest.taskId ? { taskId: digest.taskId } : {}),
           })}>{digest.sourceFamily ? "Inspect source History" : "Inspect task History (source family not recorded)"}</button>}
           {markViewed.error && <p role="alert" className="text-xs text-error">
             Could not record this view: {markViewed.error.message}
-            <button type="button" disabled={markViewed.isPending} className="ml-2 min-h-11 underline" onClick={() => {
+            <button type="button" disabled={markViewed.isPending} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-2 underline")} onClick={() => {
               if (receipt.current?.viewedAt) markViewed.mutate({ digestId: digest.id, viewedAt: receipt.current.viewedAt });
             }}>Retry view receipt</button>
           </p>}
-          {query.error && <div role="alert" className="rounded-lg border border-error/25 bg-error/10 px-3 py-2 text-sm text-error">
+          {query.error && <div role="alert" className={cx(DS.notice.surface, "px-3 py-2 text-sm text-error")}>
             Source items unavailable or incomplete: {query.error.message}
-            <button type="button" className="ml-2 min-h-11 underline" onClick={() => void query.refetch()}>Retry source items</button>
+            <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-2 underline")} onClick={() => void query.refetch()}>Retry source items</button>
           </div>}
           {query.isLoading && cards.length === 0 ? (
             <div className="px-2 py-4 text-sm text-text-muted">Loading source items…</div>
@@ -153,7 +147,7 @@ export default function FocusDigestSection({
               type="button"
               onClick={() => { void query.fetchNextPage(); }}
               disabled={query.isFetchingNextPage}
-              className="w-full rounded-lg border border-border bg-bg-secondary px-3 py-2 text-sm font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "w-full border border-border disabled:opacity-60")}
             >
               {query.isFetchingNextPage ? "Loading more…" : "Load more items"}
             </button>

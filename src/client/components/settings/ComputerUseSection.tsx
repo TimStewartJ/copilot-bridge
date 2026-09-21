@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchComputerUseStatus, type AppSettings, type ComputerUseStatus } from "../../api";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 export function ComputerUseSection({
   draft,
@@ -41,7 +42,7 @@ export function ComputerUseSection({
       title="Computer use"
       description="Let sessions read and control desktop apps through the Computer Use server that ships with the Copilot SDK."
     >
-      <div className="space-y-3 rounded-md border border-border bg-bg-elevated p-4">
+      <div className={DS.layout.formGroup}>
         <label className="flex items-start gap-3 rounded-md border border-border bg-bg-primary px-3 py-2">
           <input
             type="checkbox"
@@ -51,7 +52,7 @@ export function ComputerUseSection({
               ...draft,
               computerUse: event.target.checked ? { enabled: true } : undefined,
             })}
-            className="mt-0.5 h-3.5 w-3.5 accent-accent"
+            className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5")}
           />
           <span className="min-w-0">
             <span className="block text-xs font-medium text-text-secondary">
@@ -63,7 +64,7 @@ export function ComputerUseSection({
           </span>
         </label>
 
-        <p className={`text-xs ${unavailable || error ? "text-warning" : "text-text-muted"}`}>
+        <p className={cx("text-xs", unavailable || error ? "text-warning" : "text-text-muted")}>
           {availability}
         </p>
         <p className="text-[11px] text-text-faint">

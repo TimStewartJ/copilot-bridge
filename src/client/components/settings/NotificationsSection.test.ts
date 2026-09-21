@@ -116,7 +116,7 @@ describe("NotificationsSection", () => {
     expect(settingsMocks.mutateAsync).not.toHaveBeenCalled();
     expect(settingsMocks.refetch).not.toHaveBeenCalled();
     for (const label of ["Enable", "Disable", "Send test", "Refresh"]) {
-      expect(getReactProps(button(label))!.className).toContain("min-h-11");
+      expect(getReactProps(button(label))!.className).toContain("h-10");
     }
   });
 

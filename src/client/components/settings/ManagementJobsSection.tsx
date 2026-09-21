@@ -40,6 +40,7 @@ import { useRestartStatusQuery } from "../../hooks/queries/useRestartStatus";
 import { isRecord } from "../../../shared/is-record.js";
 import EmptyState from "../shared/EmptyState";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 const JOB_TYPES = MANAGEMENT_JOB_TYPES;
 const JOB_STATUSES = MANAGEMENT_JOB_STATUSES;
@@ -271,7 +272,7 @@ export function ManagementJobsSection() {
           type="button"
           onClick={() => void refresh()}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-md bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-wait disabled:text-text-faint"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
         >
           {busy ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
@@ -309,17 +310,17 @@ export function ManagementJobsSection() {
         {(activeJobsQuery.error || jobsQuery.error || actionError || actionMessage) && (
           <div className="space-y-2">
             {(activeJobsQuery.error || jobsQuery.error) && (
-              <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+              <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
                 Failed to load management jobs: {formatError(activeJobsQuery.error ?? jobsQuery.error)}
               </div>
             )}
             {actionError && (
-              <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+              <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
                 {actionError}
               </div>
             )}
             {actionMessage && (
-              <div className="rounded-md border border-success/25 bg-success/10 px-3 py-2 text-xs text-success">
+              <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-success")}>
                 {actionMessage}
               </div>
             )}
@@ -343,7 +344,7 @@ export function ManagementJobsSection() {
           actionBusy={jobActionBusy}
         />
 
-        <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+        <div className={DS.layout.formGroup}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -406,7 +407,7 @@ function CurrentActivityCard({
   const sessions = status?.sessions;
   const agents = status?.agents;
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -423,7 +424,7 @@ function CurrentActivityCard({
       </div>
 
       {error && !status ? (
-        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
           Runtime status unavailable: {formatError(error)}
         </div>
       ) : (
@@ -461,7 +462,7 @@ function CurrentActivityCard({
 function AgentBackendBlock({ backend }: { backend: AgentBackendStatus | null }) {
   if (!backend) {
     return (
-      <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+      <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
         Agent backend status is unavailable from this server version.
       </div>
     );
@@ -469,7 +470,7 @@ function AgentBackendBlock({ backend }: { backend: AgentBackendStatus | null }) 
 
   const lastDisconnect = backend.lastDisconnect;
   return (
-    <div className="rounded-md border border-border bg-bg-primary p-3 text-xs">
+    <div className={cx(DS.layout.formGroup, "text-xs")}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-text-secondary">Agent backend</span>
         <AgentBackendStateBadge state={backend.state} />
@@ -500,7 +501,7 @@ function AgentBackendBlock({ backend }: { backend: AgentBackendStatus | null }) 
 
 function AgentBackendStateBadge({ state }: { state: AgentBackendLifecycleState }) {
   return (
-    <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${agentBackendStateClassName(state)}`}>
+    <span className={cx(DS.badge.base, agentBackendStateClassName(state))}>
       {state}
     </span>
   );
@@ -531,7 +532,7 @@ function CapacityCard({
 }) {
   const capacity = status?.capacity;
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -548,11 +549,11 @@ function CapacityCard({
       </div>
 
       {error && !status ? (
-        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
           Capacity status unavailable: {formatError(error)}
         </div>
       ) : !capacity ? (
-        <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+        <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
           {loading ? "Loading capacity status…" : "Capacity statistics are unavailable from this server version."}
         </div>
       ) : (
@@ -596,12 +597,12 @@ function CapacityCard({
           </div>
 
           {capacity.cleanup.failed > 0 && (
-            <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
               New work is blocked while {capacity.cleanup.failed} failed cleanup{capacity.cleanup.failed === 1 ? "" : "s"} remain. Bridge retries these automatically; restart if the count does not clear.
             </div>
           )}
           {capacity.cleanup.failed === 0 && capacity.waitingRequests > 0 && (
-            <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-warning")}>
               {capacity.waitingRequests} request{capacity.waitingRequests === 1 ? " is" : "s are"} waiting for live capacity or cleanup headroom.
             </div>
           )}
@@ -635,7 +636,7 @@ function CapacityBar({
 }) {
   const percentage = limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0;
   return (
-    <div className="rounded-md border border-border bg-bg-primary p-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex items-center justify-between gap-3 text-xs">
         <span className="font-medium text-text-secondary">{label}</span>
         <span className="text-text-muted">
@@ -644,7 +645,7 @@ function CapacityBar({
       </div>
       <div className="mt-2 h-2 overflow-hidden rounded-full bg-bg-surface">
         <div
-          className={`h-full rounded-full transition-[width] ${capacityBarClassName(used, limit)}`}
+          className={cx("h-full rounded-full transition-[width]", capacityBarClassName(used, limit))}
           style={{ width: `${percentage}%` }}
         />
       </div>
@@ -680,7 +681,7 @@ function BridgeControlsCard({
   onEvictIdleCache: () => void;
 }) {
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div>
         <div className="flex items-center gap-2 text-sm font-medium text-accent">
           <Power size={15} />
@@ -691,7 +692,7 @@ function BridgeControlsCard({
         </p>
       </div>
       <div className="grid gap-3 lg:grid-cols-3">
-        <div className="rounded-md border border-border bg-bg-primary p-3">
+        <div className={DS.layout.formGroup}>
           <div className="text-sm font-medium text-text-secondary">Self-update</div>
           <p className="mt-1 text-xs text-text-muted">
             Pull the latest source, validate it, and restart with automatic rollback if activation fails.
@@ -700,7 +701,7 @@ function BridgeControlsCard({
             type="button"
             onClick={onQueueSelfUpdate}
             disabled={Boolean(selfUpdateDisabledReason)}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "mt-3 gap-1.5 disabled:opacity-50")}
           >
             {queueingUpdate ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
             {queueingUpdate ? "Queueing…" : "Queue self-update"}
@@ -710,7 +711,7 @@ function BridgeControlsCard({
           </p>
         </div>
 
-        <div className="rounded-md border border-border bg-bg-primary p-3">
+        <div className={DS.layout.formGroup}>
           <div className="text-sm font-medium text-text-secondary">Operational restart</div>
           <p className="mt-1 text-xs text-text-muted">
             Reload configuration and dependencies without pulling or deploying code changes.
@@ -720,7 +721,7 @@ function BridgeControlsCard({
               type="button"
               onClick={onRestart}
               disabled={Boolean(restartDisabledReason)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-50"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1.5 disabled:opacity-50")}
             >
               {restarting ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
               {restarting ? "Requesting…" : "Restart when idle"}
@@ -729,7 +730,7 @@ function BridgeControlsCard({
               type="button"
               onClick={onRestartNow}
               disabled={Boolean(restartDisabledReason)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-error/40 bg-error/10 px-3 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "gap-1.5 disabled:opacity-50")}
             >
               {restarting ? <Loader2 size={12} className="animate-spin" /> : <AlertTriangle size={12} />}
               {restarting ? "Requesting…" : "Restart now"}
@@ -742,7 +743,7 @@ function BridgeControlsCard({
           </p>
         </div>
 
-        <div className="rounded-md border border-border bg-bg-primary p-3">
+        <div className={DS.layout.formGroup}>
           <div className="text-sm font-medium text-text-secondary">Idle session cache</div>
           <p className="mt-1 text-xs text-text-muted">
             Disconnect every cached session tree that has no active turn or running background agent.
@@ -751,7 +752,7 @@ function BridgeControlsCard({
             type="button"
             onClick={onEvictIdleCache}
             disabled={Boolean(evictIdleCacheDisabledReason)}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "mt-3 gap-1.5 border border-border bg-bg-surface disabled:opacity-50")}
           >
             {evictingIdleCache ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
             {evictingIdleCache ? "Evicting…" : "Evict idle cache"}
@@ -780,7 +781,7 @@ function RunnerSummaryCard({
   const staleCount = list?.staleCount ?? jobs.filter((job) => job.stale).length;
 
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -820,9 +821,9 @@ function SummaryMetric({
   tone?: "default" | "success" | "warning" | "error" | "info";
 }) {
   return (
-    <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+    <div className={DS.layout.formGroup}>
       <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
-      <div className={`mt-1 text-lg font-semibold ${metricToneClassName(tone)}`}>{value}</div>
+      <div className={cx("mt-1 text-lg font-semibold", metricToneClassName(tone))}>{value}</div>
     </div>
   );
 }
@@ -855,7 +856,7 @@ function JobListCard({
   actionBusy: boolean;
 }) {
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-3">
+    <div className={DS.layout.formGroup}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -864,7 +865,7 @@ function JobListCard({
           </div>
           <p className="mt-1 text-xs text-text-muted">{description}</p>
         </div>
-        <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] font-medium text-text-secondary">
+        <span className={cx(DS.badge.base, "shrink-0 bg-bg-primary text-text-secondary")}>
           {jobs.length} shown
         </span>
       </div>
@@ -907,7 +908,7 @@ function FilterControls({
           aria-label="Management job type filter"
           value={typeFilter}
           onChange={(event) => onTypeFilterChange(event.target.value as JobTypeFilter)}
-          className="rounded-md border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+          className={cx(DS.field.input, DS.field.inputSize.md)}
         >
           <option value="all">all</option>
           {JOB_TYPES.map((type) => (
@@ -921,7 +922,7 @@ function FilterControls({
           aria-label="Management job status filter"
           value={statusFilter}
           onChange={(event) => onStatusFilterChange(event.target.value as JobStatusFilter)}
-          className="rounded-md border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+          className={cx(DS.field.input, DS.field.inputSize.md)}
         >
           <option value="all">all</option>
           {JOB_STATUSES.map((status) => (
@@ -935,7 +936,7 @@ function FilterControls({
           aria-label="Management job limit filter"
           value={limit}
           onChange={(event) => onLimitChange(Number(event.target.value))}
-          className="rounded-md border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary"
+          className={cx(DS.field.input, DS.field.inputSize.md)}
         >
           {LIMITS.map((value) => (
             <option key={value} value={value}>{value}</option>
@@ -971,7 +972,7 @@ function JobTableOrEmpty({
 }) {
   if (loading) {
     return (
-      <div className="rounded-md border border-border bg-bg-primary p-4 text-sm text-text-muted">
+      <div className={cx(DS.layout.formGroup, "text-sm text-text-muted")}>
         Loading management jobs…
       </div>
     );
@@ -1038,16 +1039,12 @@ function JobRow({
   const elapsedStart = job.startedAt ?? job.createdAt;
   const elapsedEnd = job.completedAt;
   const isRetryable = RETRYABLE_STATUSES.has(job.status);
-  const rowClassName = selected
-    ? "border-b border-border bg-accent-surface/50"
-    : job.stale
-      ? "border-b border-warning/30 bg-warning/5 hover:bg-warning/10"
-      : "border-b border-border hover:bg-bg-hover";
+  const rowClassName = cx("border-b border-border", selected ? DS.row.selected : "hover:bg-bg-hover");
 
   return (
     <tr className={rowClassName} onClick={onSelect}>
       <td className="px-3 py-2 align-top">
-        <button type="button" className="text-left" onClick={onSelect}>
+        <button type="button" className={cx(DS.row.stacked, "p-0")} onClick={onSelect}>
           <div className="font-medium text-text-secondary">{jobTypeLabel(job.type)}</div>
           <code className="text-[11px] text-text-faint">{shortJobId(job.id)}</code>
         </button>
@@ -1085,7 +1082,7 @@ function JobRow({
                 onCancel();
               }}
               disabled={actionBusy}
-              className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-[11px] font-medium text-warning hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-60"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "gap-1 disabled:opacity-60")}
             >
               {actionBusy ? <Loader2 size={10} className="animate-spin" /> : <XCircle size={10} />}
               Cancel
@@ -1096,7 +1093,7 @@ function JobRow({
               type="button"
               disabled
               title="Running job cancellation is not enabled until cooperative cancellation is implemented."
-              className="inline-flex cursor-not-allowed items-center gap-1 rounded-md border border-border bg-bg-surface px-2 py-1 text-[11px] text-text-faint"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "cursor-not-allowed gap-1 border border-border bg-bg-surface text-text-faint")}
             >
               Cancel unavailable
             </button>
@@ -1109,7 +1106,7 @@ function JobRow({
                 onRetry();
               }}
               disabled={actionBusy}
-              className="inline-flex items-center gap-1 rounded-md border border-accent/30 bg-accent/10 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.choice.selected, "gap-1 border text-accent disabled:opacity-60")}
             >
               {actionBusy ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
               Retry
@@ -1146,7 +1143,7 @@ function JobDetailPanel({
 }) {
   if (!job) {
     return (
-      <div className="rounded-md border border-border bg-bg-elevated p-4">
+      <div className={DS.layout.formGroup}>
         <EmptyState
           message="Select a management job"
           sub="Choose a row above to inspect job metadata, sanitized logs, and action state."
@@ -1160,7 +1157,7 @@ function JobDetailPanel({
   const canRetry = RETRYABLE_STATUSES.has(job.status);
 
   return (
-    <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-4">
+    <div className={DS.layout.formGroup}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-accent">
@@ -1175,7 +1172,7 @@ function JobDetailPanel({
             type="button"
             onClick={onRefresh}
             disabled={loading}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-primary px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary disabled:cursor-wait disabled:opacity-60"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1 border border-border bg-bg-primary disabled:opacity-60")}
           >
             {loading ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
             Refresh detail
@@ -1185,7 +1182,7 @@ function JobDetailPanel({
               type="button"
               onClick={() => onCancel(job)}
               disabled={actionBusy}
-              className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-60"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "gap-1 disabled:opacity-60")}
             >
               <XCircle size={11} />
               Cancel queued
@@ -1196,7 +1193,7 @@ function JobDetailPanel({
               type="button"
               disabled
               title="Running job cancellation is not enabled until cooperative cancellation is implemented."
-              className="inline-flex cursor-not-allowed items-center gap-1 rounded-md border border-border bg-bg-surface px-2.5 py-1 text-xs text-text-faint"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "cursor-not-allowed gap-1 border border-border bg-bg-surface text-text-faint")}
             >
               Cancel unavailable
             </button>
@@ -1206,7 +1203,7 @@ function JobDetailPanel({
               type="button"
               onClick={() => onRetry(job)}
               disabled={actionBusy}
-              className="inline-flex items-center gap-1 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.choice.selected, "gap-1 border text-accent disabled:opacity-60")}
             >
               <RotateCcw size={11} />
               Retry
@@ -1216,13 +1213,13 @@ function JobDetailPanel({
       </div>
 
       {job.stale && (
-        <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-warning")}>
           This running job appears stale{staleAfterMs ? ` because its heartbeat is older than ${formatDurationMs(staleAfterMs)}` : ""}.
         </div>
       )}
 
       {error ? (
-        <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
           Detail refresh failed: {formatError(error)}
         </div>
       ) : null}
@@ -1244,19 +1241,19 @@ function JobDetailPanel({
           <JsonDetails label="Result JSON" value={detail.result} empty="No result recorded yet." />
         </div>
       ) : (
-        <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+        <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
           {loading ? "Loading detail payload…" : "Detail payload is not loaded yet."}
         </div>
       )}
 
       {job.error && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-3">
+        <div className={cx(DS.notice.surface, "p-3")}>
           <div className="text-xs font-medium text-error">Error</div>
           <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words text-[11px] text-error">{job.error}</pre>
         </div>
       )}
 
-      <div className="rounded-md border border-border bg-bg-primary p-3">
+      <div className={DS.layout.formGroup}>
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs font-medium text-text-secondary">Sanitized recent log tail</div>
           {loading && <Loader2 size={12} className="animate-spin text-text-muted" />}
@@ -1271,7 +1268,7 @@ function JobDetailPanel({
 
 function DetailStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+    <div className={DS.layout.formGroup}>
       <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
       <div className="mt-1 break-words text-xs text-text-secondary">{value}</div>
     </div>
@@ -1306,7 +1303,7 @@ function JsonDetails({
 
 function StatusPill({ status, stale }: { status: ManagementJobStatus; stale?: boolean }) {
   return (
-    <span className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${statusToneClassName(status, stale)}`}>
+    <span className={cx(DS.badge.base, "w-fit items-center", statusToneClassName(status, stale))}>
       {stale ? "stale" : statusLabel(status)}
     </span>
   );

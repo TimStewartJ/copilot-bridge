@@ -1,5 +1,6 @@
 import type { FocusProtectionPreview, FocusProtectionRequest } from "../api";
 import { protectionTime } from "../focus-protection-helpers";
+import { DS, cx } from "../design/tokens";
 
 export function FocusProtectionDisclosures() {
   return <div className="min-w-0 space-y-2 text-xs text-text-muted [overflow-wrap:anywhere]">
@@ -33,7 +34,7 @@ export default function FocusProtectionPreviewPanel({ preview }: { preview: Focu
   const expiringLoops = preview.defers.filter((defer) => defer.kind === "defer-loop" && defer.expiresDuringProtection).length;
   const at = (value: string) => protectionTime(value, preview.request.timezone);
   return <div className="min-w-0 space-y-4 break-words text-sm text-text-secondary [overflow-wrap:anywhere]" data-protection-preview="server">
-    <div className="space-y-1 rounded-lg border border-info-border bg-info-surface p-3">
+    <div className={cx(DS.notice.surface, "space-y-1 p-3")}>
       <h3 className="font-semibold">Review the server preview</h3>
       <p>Reason: {preview.request.reason}</p>
       <p>{preview.request.startsAt ? `Starts ${at(preview.startsAt)}` : "Starts on confirmation"}.

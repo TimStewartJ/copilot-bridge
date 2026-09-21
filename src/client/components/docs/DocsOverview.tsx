@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Database, FilePlus, FileSearch, Folder, Library, Search } from "lucide-react";
 import { getLastViewedDoc } from "../../last-viewed";
@@ -17,10 +17,8 @@ import {
   recentPages,
   summarizeFolders,
 } from "./docs-model";
-
-function SectionHeading({ children }: { children: ReactNode }) {
-  return <h2 className="mb-3 text-sm font-semibold text-text-secondary">{children}</h2>;
-}
+import { DS, cx } from "../../design/tokens";
+import { Section } from "../../design/primitives";
 
 /** Landing screen for the knowledge base when it has no root index page of its own. */
 export function DocsHome() {
@@ -44,7 +42,7 @@ export function DocsHome() {
         <div className="docs-content-in mx-auto w-full max-w-[58rem] px-5 pb-24 pt-10 sm:px-8">
           {isEmpty ? (
             <div className="mx-auto mt-16 max-w-md text-center">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-accent-surface text-accent">
+              <div className={"mx-auto flex h-12 w-12 items-center justify-center rounded-xl text-accent"}>
                 <Library size={22} aria-hidden="true" />
               </div>
               <h1 className="mt-5 text-xl font-semibold tracking-tight text-text-primary">Your knowledge base is empty</h1>
@@ -56,7 +54,7 @@ export function DocsHome() {
           ) : (
             <>
               <header>
-                <h1 className="text-[1.75rem] font-semibold tracking-tight text-text-primary">Docs</h1>
+                <h1 className={DS.text.pageTitle}>Docs</h1>
                 <p className="mt-1.5 text-sm text-text-muted">
                   {pluralize(stats.pages, "page")}
                   {stats.folders > 0 && ` in ${pluralize(stats.folders, "folder")}`}
@@ -67,7 +65,7 @@ export function DocsHome() {
               <button
                 type="button"
                 onClick={focusSearch}
-                className="mt-6 flex h-11 w-full items-center gap-3 rounded-lg border border-border bg-bg-secondary px-3.5 text-left text-sm text-text-muted transition-colors hover:border-text-faint/60 hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                className={cx(DS.row.base, DS.row.interactive, DS.focus, "mt-6 h-11 w-full gap-3 border border-border bg-bg-secondary text-left text-text-muted hover:border-text-faint/60 hover:text-text-secondary", DS.row.touch)}
               >
                 <Search size={16} aria-hidden="true" />
                 <span className="flex-1">Search titles, tags and page text</span>
@@ -77,7 +75,7 @@ export function DocsHome() {
               {lastViewed && (
                 <Link
                   to={docsRoute(lastViewed.path)}
-                  className="group mt-4 flex items-center gap-3 rounded-lg border border-border px-3.5 py-2.5 transition-colors hover:border-accent-border hover:bg-bg-secondary"
+                  className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "group mt-4 gap-3 py-2.5")}
                 >
                   <span className="shrink-0 text-xs text-text-muted">Continue reading</span>
                   <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary group-hover:text-accent">{lastViewed.title}</span>
@@ -86,14 +84,13 @@ export function DocsHome() {
               )}
 
               {recent.length > 0 && (
-                <section className="mt-10">
-                  <SectionHeading>Recently updated</SectionHeading>
-                  <ul className="divide-y divide-border-subtle overflow-hidden rounded-xl border border-border">
+                <Section label="Recently updated" level="page" className="mt-8">
+                  <ul className={DS.surface.divided}>
                     {recent.map((page) => {
                       const folder = index.folders.get(page.isEntry || page.folder !== page.path ? page.folder : parentPath(page.path));
                       return (
                         <li key={page.path}>
-                          <Link to={docsRoute(page.path)} className="group flex items-start gap-4 px-4 py-3 transition-colors hover:bg-bg-secondary">
+                          <Link to={docsRoute(page.path)} className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "group items-start gap-4 py-3")}>
                             <div className="min-w-0 flex-1">
                               <div className="flex min-w-0 items-baseline gap-2">
                                 <span className="truncate text-sm font-medium text-text-primary group-hover:text-accent">{page.title}</span>
@@ -107,20 +104,19 @@ export function DocsHome() {
                       );
                     })}
                   </ul>
-                </section>
+                </Section>
               )}
 
               {sections.length > 0 && (
-                <section className="mt-10">
-                  <SectionHeading>Browse</SectionHeading>
-                  <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <Section label="Browse" level="page" className="mt-8">
+                  <ul className={DS.surface.divided}>
                     {sections.map((section) => {
                       const Icon = section.kind === "collection" ? Database : Folder;
                       return (
                         <li key={section.node.path}>
                           <Link
                             to={docsRoute({ path: section.node.path, kind: section.kind })}
-                            className="group flex h-full items-start gap-3 rounded-xl border border-border px-4 py-3.5 transition-colors hover:border-accent-border hover:bg-bg-secondary"
+                            className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "group items-start gap-3 py-3")}
                           >
                             <Icon size={17} className={section.kind === "collection" ? "mt-0.5 shrink-0 text-accent" : "mt-0.5 shrink-0 text-text-muted"} aria-hidden="true" />
                             <div className="min-w-0 flex-1">
@@ -137,14 +133,13 @@ export function DocsHome() {
                       );
                     })}
                   </ul>
-                </section>
+                </Section>
               )}
 
               {topLevelPages.length > 0 && (
-                <section className="mt-10">
-                  <SectionHeading>Pages</SectionHeading>
+                <Section label="Pages" level="page" className="mt-8">
                   <FolderChildList nodes={topLevelPages} />
-                </section>
+                </Section>
               )}
             </>
           )}
@@ -185,7 +180,7 @@ export function DocsFolderPage({ path }: { path: string }) {
           {children.length > 0 ? (
             <FolderChildList nodes={children} />
           ) : (
-            <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
+            <div className={cx(DS.text.empty, "px-6 py-12 text-center")}>
               <p className="text-sm text-text-muted">This folder is empty.</p>
               <DocsButton variant="primary" icon={FilePlus} onClick={() => openNewPage(path)} className="mt-4">New page here</DocsButton>
             </div>

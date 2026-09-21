@@ -5,10 +5,11 @@ import { useCreateFocusProtectionMutation, usePreviewFocusProtectionMutation } f
 import FocusDialog from "./FocusDialog";
 import FocusProtectionHistory from "./FocusProtectionHistory";
 import FocusProtectionPreviewPanel, { FocusProtectionDisclosures } from "./FocusProtectionPreview";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
 
-const INPUT = "min-h-11 w-full min-w-0 max-w-full rounded-lg border border-border bg-bg-surface p-2 text-sm text-text-primary";
-const BUTTON = `${UI.button.secondary} min-h-11 min-w-0 max-w-full whitespace-normal break-words`;
+
+const INPUT = cx(DS.field.input, DS.field.control, "min-w-0 max-w-full");
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "min-w-0 max-w-full whitespace-normal break-words");
 
 export default function FocusProtectionDialog({
   onClose, onCreated, unavailable, onRetryStatus,
@@ -130,7 +131,7 @@ export default function FocusProtectionDialog({
             ["30", "30 minutes"], ["60", "60 minutes"], ["90", "90 minutes"],
             ["custom-duration", "Custom duration"], ["custom-end", "Custom end time"],
           ] as [ProtectionDuration, string][]).map(([value, label]) => <button type="button" key={value} aria-pressed={form.duration === value}
-            disabled={busy} onClick={() => update("duration", value)} className={`${BUTTON} ${form.duration === value ? "ring-2 ring-accent" : ""}`}>{label}</button>)}</div>
+            disabled={busy} onClick={() => update("duration", value)} className={cx(BUTTON, form.duration === value ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, DS.choice.selected, DS.segmented.selected) : "")}>{label}</button>)}</div>
           {form.duration === "custom-duration" && <label className="block min-w-0 space-y-1 text-xs text-text-muted">
             <span>Duration in minutes</span>
             <input type="number" min="1" max="10080" step="1" required value={form.customMinutes} disabled={busy} className={INPUT} onChange={(event) => update("customMinutes", event.target.value)} />
@@ -149,7 +150,7 @@ export default function FocusProtectionDialog({
           <input type="checkbox" checked={form.allowAuthorizedDeadlineOverride} disabled={busy} className="mt-0.5 size-5 shrink-0" onChange={(event) => update("allowAuthorizedDeadlineOverride", event.target.checked)} />
           <span className="min-w-0">Allow eligible authorized immediate Alert deadlines to bypass</span>
         </label>
-        <button type="submit" disabled={busy || Boolean(unavailable) || !form.reason.trim()} className={`${UI.button.primary} min-h-11 min-w-0 max-w-full whitespace-normal`}>
+        <button type="submit" disabled={busy || Boolean(unavailable) || !form.reason.trim()} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "min-w-0 max-w-full whitespace-normal")}>
           {operation === "preview" ? "Loading server preview…" : error ? "Retry preview" : "Preview protection"}
         </button>
       </form>}
@@ -163,7 +164,7 @@ export default function FocusProtectionDialog({
           <span className="min-w-0">I acknowledge the intervention conflicts before protection ends, including the consequences of delay.</span>
         </label>}
         <div className="flex min-w-0 flex-wrap gap-2">
-          <button type="button" disabled={busy || Boolean(unavailable) || previewStale || previewExpired || (conflicts && !conflictsConfirmed)} className={`${UI.button.primary} min-h-11 min-w-0 max-w-full whitespace-normal`} onClick={() => void confirm()}>
+          <button type="button" disabled={busy || Boolean(unavailable) || previewStale || previewExpired || (conflicts && !conflictsConfirmed)} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "min-w-0 max-w-full whitespace-normal")} onClick={() => void confirm()}>
             {operation === "create" ? "Confirming protection…" : "Confirm protection"}
           </button>
           <button type="button" disabled={busy || Boolean(unavailable)} className={BUTTON} onClick={() => void refreshPreview()}>{operation === "preview" ? "Loading server preview…" : "Refresh preview"}</button>

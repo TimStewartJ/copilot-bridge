@@ -48,6 +48,7 @@ import {
   type HelmState,
   type HelmTurnMode,
 } from "./helm-api";
+import { DS, cx } from "../design/tokens";
 
 export const HELM_DRAFT_COMPOSER_KEY = "draft:helm";
 
@@ -86,7 +87,7 @@ function describeConversation(conversation: HelmConversation): string {
   ].filter(Boolean).join(" · ");
 }
 
-const HEADER_BUTTON = "inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50";
+const HEADER_BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-w-9 gap-1.5 disabled:opacity-50");
 
 function HistoryPanel({
   state,
@@ -117,12 +118,12 @@ function HistoryPanel({
         role="dialog"
         aria-label="Helm conversations"
         onClick={(event) => event.stopPropagation()}
-        className="absolute inset-x-2 top-14 mx-auto flex max-h-[70dvh] max-w-md flex-col overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-xl md:inset-x-auto md:right-4"
+        className={cx(DS.surface.floating, "absolute inset-x-2 top-14 mx-auto flex max-h-[70dvh] max-w-md flex-col overflow-hidden md:inset-x-auto md:right-4")}
         style={{ marginTop: "env(safe-area-inset-top)" }}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
           <div className="text-xs font-semibold text-text-primary">Recent conversations</div>
-          <button type="button" onClick={onClose} aria-label="Close history" className="rounded-md p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary">
+          <button type="button" onClick={onClose} aria-label="Close history" className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}>
             <X size={14} />
           </button>
         </div>
@@ -135,7 +136,7 @@ function HistoryPanel({
                 type="button"
                 onClick={() => onResume(conversation)}
                 disabled={busyId !== null}
-                className="min-w-0 flex-1 px-2.5 py-2 text-left disabled:opacity-60"
+                className={cx(DS.row.stacked, "flex-1 disabled:opacity-60")}
               >
                 <span className="flex items-center gap-1.5">
                   {conversation.kept && <Pin size={11} aria-hidden="true" className="shrink-0 text-accent" />}
@@ -152,7 +153,7 @@ function HistoryPanel({
                     onClick={() => onKeep(conversation, !conversation.kept)}
                     aria-label={conversation.kept ? `Stop keeping ${conversationLabel(conversation)}` : `Keep ${conversationLabel(conversation)}`}
                     title={conversation.kept ? "Let it expire normally" : "Keep (never expires)"}
-                    className="shrink-0 rounded-md p-1.5 text-text-faint hover:bg-bg-surface hover:text-text-primary"
+                    className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "text-text-faint")}
                   >
                     {conversation.kept ? <PinOff size={13} /> : <Pin size={13} />}
                   </button>
@@ -161,7 +162,7 @@ function HistoryPanel({
                     onClick={() => onDelete(conversation)}
                     aria-label={`Delete ${conversationLabel(conversation)}`}
                     title="Delete now"
-                    className="mr-1 shrink-0 rounded-md p-1.5 text-text-faint hover:bg-error/10 hover:text-error"
+                    className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "mr-1 text-text-faint hover:bg-error/10 hover:text-error")}
                   >
                     <Trash2 size={13} />
                   </button>
@@ -210,11 +211,11 @@ function HelmWelcome({
             type="button"
             onClick={() => onResume(resumable)}
             disabled={resuming}
-            className="mt-5 flex w-full items-center gap-3 rounded-xl border border-accent-border bg-accent-surface px-3.5 py-3 text-left transition-colors hover:border-accent disabled:opacity-60"
+            className={cx(DS.row.base, DS.row.interactive, DS.choice.selected, DS.row.selected, "mt-5 w-full gap-3 border text-left disabled:opacity-60", DS.row.touch)}
           >
             {resuming ? <Loader2 size={16} className="shrink-0 animate-spin text-accent" /> : <RotateCcw size={16} aria-hidden="true" className="shrink-0 text-accent" />}
             <span className="min-w-0 flex-1">
-              <span className="block text-[11px] font-medium uppercase tracking-wide text-accent">Pick up where you left off</span>
+              <span className={cx(DS.text.sectionLabel, "block font-medium text-accent")}>Pick up where you left off</span>
               <span className="mt-0.5 block truncate text-sm font-medium text-text-primary">{conversationLabel(resumable)}</span>
               <span className="block truncate text-[11px] text-text-muted">{describeConversation(resumable)}</span>
             </span>
@@ -227,7 +228,7 @@ function HelmWelcome({
               type="button"
               onClick={() => onSuggestion(prompt)}
               disabled={disabled}
-              className="rounded-lg border border-border bg-bg-secondary px-3 py-2.5 text-left text-sm text-text-secondary transition-colors hover:border-accent-border hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+              className={cx(DS.row.stacked, DS.surface.inset, "disabled:opacity-50")}
             >
               {prompt}
             </button>
@@ -237,7 +238,7 @@ function HelmWelcome({
           type="button"
           onClick={onHandsFree}
           disabled={disabled || handsFreeBusy}
-          className="mt-5 inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-60"
+          className={cx(DS.button.base, DS.button.size.md, DS.button.variant.secondary, "mt-5 gap-2 disabled:opacity-60")}
         >
           {handsFreeBusy ? <Loader2 size={15} className="animate-spin" /> : <AudioLines size={15} aria-hidden="true" />}
           Go hands-free
@@ -512,11 +513,8 @@ export default function HelmView({
           onClick={() => void (handsFreeHere ? endHandsFree() : startHandsFree())}
           disabled={switching || handsFree.phase === "connecting"}
           aria-pressed={handsFreeHere}
-          className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors disabled:opacity-60 ${
-            handsFreeHere
-              ? "border-accent bg-accent text-white hover:bg-accent-hover"
-              : "border-accent-border bg-accent-surface text-accent hover:border-accent"
-          }`}
+          aria-label={handsFreeHere ? "Hands-free on" : "Hands-free"}
+          className={cx(HEADER_BUTTON, handsFreeHere && DS.row.selected)}
         >
           {handsFree.phase === "connecting" ? <Loader2 size={14} className="animate-spin" /> : <AudioLines size={14} aria-hidden="true" />}
           <span>{handsFreeHere ? "Hands-free on" : "Hands-free"}</span>
@@ -543,7 +541,7 @@ export default function HelmView({
             aria-pressed={current.kept}
             aria-label={current.kept ? "Stop keeping this conversation" : "Keep this conversation"}
             title={current.kept ? "Kept: never expires. Click to let it expire normally." : "Keep this conversation so it never expires"}
-            className={`${HEADER_BUTTON} ${current.kept ? "text-accent" : ""}`}
+            className={cx(HEADER_BUTTON, current.kept ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, DS.segmented.selected) : "")}
           >
             <Pin size={15} />
           </button>
@@ -553,7 +551,7 @@ export default function HelmView({
         </button>
       </header>
       {(actionError || helmQuery.error || (handsFree.error && !handsFreeHere && !setupOpen)) && (
-        <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-error/20 bg-error/10 px-4 py-2 text-xs text-error">
+        <div role="alert" className={cx(DS.notice.surface, "flex shrink-0 items-start gap-2 border-b px-4 py-2 text-xs text-error")}>
           <span className="min-w-0 flex-1 break-words">
             {actionError ?? (helmQuery.error instanceof Error ? helmQuery.error.message : null) ?? handsFree.error}
           </span>
@@ -565,7 +563,7 @@ export default function HelmView({
                 handsFree.clearError();
               }}
               aria-label="Dismiss"
-              className="shrink-0 rounded p-0.5 hover:bg-error/10"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "hover:bg-error/10")}
             >
               <X size={13} />
             </button>

@@ -2,11 +2,12 @@ import type { FocusEpisodeSnapshot, FocusTransition } from "../api";
 import { FOCUS_LIFECYCLE_LABELS, focusTime } from "../focus-view-model";
 import { FocusEvidenceList, FocusLifecycleBadge, FocusMarkdown } from "./FocusCard";
 import type { FocusInteractionProps } from "./FocusInteractions";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 type HistoryNavigation = Pick<FocusInteractionProps, "onSelectTask" | "onSelectSession" | "onInspectHistory">;
 
-const BUTTON = `${UI.button.secondary} min-h-11 text-xs`;
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs");
 
 function RecordedTime({ label, value }: { label: string; value: string | null }) {
   return <div>

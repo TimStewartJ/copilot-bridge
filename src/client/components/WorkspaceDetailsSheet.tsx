@@ -22,6 +22,7 @@ import {
 } from "../lib/workspace-presentation";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx } from "../design/tokens";
 
 const TASK_WORKSPACE_NOT_CONFIGURED = "Task workspace is not configured.";
 
@@ -56,10 +57,9 @@ function WorkspaceChoice({
   return (
     <button
       type="button"
+      aria-pressed={selected}
       onClick={() => onSelect(worktree.cwd)}
-      className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-        selected ? "border-accent bg-accent/10" : "border-border bg-bg-secondary hover:bg-bg-hover"
-      }`}
+      className={cx(DS.row.stacked, "border", selected ? DS.choice.selected : DS.choice.unselected)}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -257,7 +257,7 @@ export default function WorkspaceDetailsSheet({
 
       <div
         {...dialogProps}
-        className="relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-border bg-bg-primary shadow-2xl md:mb-16 md:mt-16 md:max-h-[80vh] md:max-w-2xl md:rounded-xl"
+        className={cx(DS.surface.dialog, "relative flex max-h-[85vh] w-full flex-col rounded-t-2xl md:mb-16 md:mt-16 md:max-h-[80vh] md:max-w-2xl md:rounded-xl")}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-3 shrink-0">
           <h2 id={titleId} className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-text-primary">
@@ -266,7 +266,7 @@ export default function WorkspaceDetailsSheet({
           </h2>
           <button
             onClick={onClose}
-            className="text-text-muted transition-colors hover:text-text-secondary"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
             aria-label="Close"
           >
             <X size={16} />
@@ -275,14 +275,14 @@ export default function WorkspaceDetailsSheet({
 
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
           {warningMessage && (
-            <div className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
               {warningMessage}
             </div>
           )}
           {sessionWorkspace?.warnings?.map((warning) => (
             <div
               key={warning.code}
-              className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary"
+              className={cx(DS.notice.surface, "px-3 py-2 text-xs text-text-secondary")}
             >
               <div className="flex items-start gap-2">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
@@ -294,7 +294,7 @@ export default function WorkspaceDetailsSheet({
             </div>
           ))}
           {sessionId && busy && (
-            <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-text-secondary")}>
               Workspace changes are only allowed while the session is idle.
             </div>
           )}
@@ -314,12 +314,12 @@ export default function WorkspaceDetailsSheet({
                         {pathLabel(sessionWorkspace?.effectiveCwd)}
                       </span>
                       {sessionWorkspace?.overridesTaskWorkspace && (
-                        <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                        <span className={cx(DS.badge.base, "bg-warning/15 text-warning")}>
                           Overrides task workspace
                         </span>
                       )}
                       {sessionWorkspace?.pathState === "missing" && (
-                        <span className="rounded-full bg-error/15 px-1.5 py-0.5 text-[10px] font-medium text-error">
+                        <span className={cx(DS.badge.base, "bg-error/15 text-error")}>
                           Missing
                         </span>
                       )}
@@ -363,11 +363,11 @@ export default function WorkspaceDetailsSheet({
               <div className="space-y-2 text-xs text-text-secondary">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="font-medium text-text-primary">{formatGitHead(gitHead)}</span>
-                  <span className="rounded-full bg-bg-hover px-1.5 py-0.5 text-[10px] text-text-muted">
+                  <span className={cx(DS.badge.base, "bg-bg-hover text-text-muted")}>
                     {workspaceKindLabel(gitWorkspaceKind)}
                   </span>
                   {!gitDirtyState.clean && (
-                    <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning">
+                    <span className={cx(DS.badge.base, "bg-warning/15 text-warning")}>
                       Dirty
                     </span>
                   )}
@@ -436,13 +436,13 @@ export default function WorkspaceDetailsSheet({
               <input
                 value={draftPath}
                 onChange={(event) => setDraftPath(event.target.value)}
-                className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-xs font-mono text-text-primary outline-none focus:border-accent"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "font-mono outline-none")}
                 placeholder="Enter a workspace path"
               />
               <button
                 onClick={() => copyAndFlash(draftPath.trim())}
                 disabled={!draftPath.trim()}
-                className="rounded-md border border-border px-2 py-2 text-text-muted transition-colors hover:text-text-primary disabled:opacity-50"
+                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "border border-border disabled:opacity-50")}
                 title="Copy path"
               >
                 {copiedPath && areWorkspacePathsEqual(copiedPath, draftPath) ? <Check size={14} /> : <Copy size={14} />}
@@ -459,7 +459,7 @@ export default function WorkspaceDetailsSheet({
           </div>
 
           {error && (
-            <div className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
+            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
               {error}
             </div>
           )}
@@ -469,21 +469,21 @@ export default function WorkspaceDetailsSheet({
           <button
             onClick={handleUseForSession}
             disabled={!sessionId || loading || busy || actionPending || !draftPath.trim()}
-            className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}
           >
             Use for this session
           </button>
           <button
             onClick={handleSetTaskDefault}
             disabled={actionPending || !draftPath.trim()}
-            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "border border-border disabled:opacity-50")}
           >
             Set as task default
           </button>
           <button
             onClick={handleResetSession}
             disabled={!sessionId || loading || busy || actionPending || !sessionWorkspace?.canResetToTask}
-            className="inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1 border border-border disabled:opacity-50")}
           >
             <RotateCcw size={12} />
             Revert session to task default

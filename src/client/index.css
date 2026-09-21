@@ -8,21 +8,31 @@
   /* ── Design tokens (dark defaults, overridden by [data-theme] selectors) ── */
 
   /* Backgrounds */
-  --color-bg-primary: #09090b;
-  --color-bg-secondary: #111113;
-  --color-bg-surface: #18181b;
-  --color-bg-elevated: #1e1e22;
-  --color-bg-hover: #27272a;
+  --color-bg-primary: #0b0b0f;
+  --color-bg-secondary: #131319;
+  --color-bg-surface: #1b1b23;
+  --color-bg-elevated: #24242e;
+  --color-bg-hover: #30303b;
+
+  /* Surface levels are opaque so their separation does not depend on what is behind them. */
+  --color-surface-canvas: #0b0b0f;
+  --color-surface-pane: #131319;
+  --color-surface-group: #1b1b23;
+  --color-surface-inset: #0f0f14;
+  --color-surface-overlay: #24242e;
+  --color-surface-selected: #30303b;
+  --color-surface-edge: #383842;
+  --color-control-edge: #62626e;
 
   /* Text */
   --color-text-primary: #fafafa;
-  --color-text-secondary: #a1a1aa;
-  --color-text-muted: #71717a;
-  --color-text-faint: #52525b;
+  --color-text-secondary: #c4c4cf;
+  --color-text-muted: #aaaab7;
+  --color-text-faint: #9c9caa;
 
   /* Accent */
-  --color-accent: #3b82f6;
-  --color-accent-hover: #2563eb;
+  --color-accent: #93c5fd;
+  --color-accent-hover: #bfdbfe;
   --color-accent-muted: #3b82f6/15%;
   --color-accent-surface: rgba(59, 130, 246, 0.12);
   --color-accent-border: rgba(96, 165, 250, 0.30);
@@ -34,8 +44,8 @@
   /* Semantic */
   --color-success: #22c55e;
   --color-warning: #eab308;
-  --color-error: #ef4444;
-  --color-error-hover: #dc2626;
+  --color-error: #fca5a5;
+  --color-error-hover: #fecaca;
   --color-info: #38bdf8;
   --color-info-surface: rgba(56, 189, 248, 0.13);
   --color-info-border: rgba(125, 211, 252, 0.30);
@@ -56,18 +66,27 @@
 
 [data-theme="light"] {
   --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f8f8fa;
-  --color-bg-surface: #f0f0f3;
-  --color-bg-elevated: #e8e8ec;
-  --color-bg-hover: #dddde2;
+  --color-bg-secondary: #e5e7ec;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-hover: #d7d7df;
+
+  --color-surface-canvas: #f1f2f5;
+  --color-surface-pane: #e5e7ec;
+  --color-surface-group: #ffffff;
+  --color-surface-inset: #f3f4f7;
+  --color-surface-overlay: #ffffff;
+  --color-surface-selected: #d7d7df;
+  --color-surface-edge: #c8cad3;
+  --color-control-edge: #898993;
 
   --color-text-primary: #111113;
-  --color-text-secondary: #505058;
-  --color-text-muted: #71717a;
-  --color-text-faint: #a1a1aa;
+  --color-text-secondary: #3f3f4b;
+  --color-text-muted: #50505d;
+  --color-text-faint: #5b5b68;
 
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
+  --color-accent: #1e40af;
+  --color-accent-hover: #1e3a8a;
   --color-accent-muted: rgba(37, 99, 235, 0.10);
   --color-accent-surface: rgba(37, 99, 235, 0.08);
   --color-accent-border: rgba(37, 99, 235, 0.22);
@@ -75,11 +94,11 @@
   --color-border: #d4d4d8;
   --color-border-subtle: #e4e4e7;
 
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-  --color-error: #dc2626;
-  --color-error-hover: #b91c1c;
-  --color-info: #0284c7;
+  --color-success: #14532d;
+  --color-warning: #78350f;
+  --color-error: #991b1b;
+  --color-error-hover: #7f1d1d;
+  --color-info: #075985;
   --color-info-surface: rgba(2, 132, 199, 0.08);
   --color-info-border: rgba(2, 132, 199, 0.20);
 
@@ -881,8 +900,14 @@ html[data-theme="light"] {
 .docs-editor-textarea {
   tab-size: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.8438rem;
+  font-size: 1rem;
   line-height: 1.7;
+}
+
+@media (min-width: 768px) {
+  .docs-editor-textarea {
+    font-size: 0.8438rem;
+  }
 }
 
 @keyframes docs-fade-in {

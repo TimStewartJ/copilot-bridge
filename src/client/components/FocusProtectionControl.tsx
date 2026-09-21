@@ -7,9 +7,10 @@ import FocusDialog from "./FocusDialog";
 import FocusProtectionDialog from "./FocusProtectionDialog";
 import FocusProtectionHistory from "./FocusProtectionHistory";
 import { FocusProtectionBypasses, FocusProtectionDisclosures } from "./FocusProtectionPreview";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
 
-const BUTTON = `${UI.button.secondary} min-h-11 min-w-0 max-w-full whitespace-normal break-words`;
+
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "min-w-0 max-w-full whitespace-normal break-words");
 
 export default function FocusProtectionControl() {
   const query = useFocusProtectionCurrentQuery();
@@ -59,7 +60,7 @@ export default function FocusProtectionControl() {
       {!uncertain && window.status === "active" && ` · ${protectionCountdown(Date.parse(window.endsAt) - query.nowMs)} remaining`}
       {!uncertain && window.status === "scheduled" && ` · starts in ${protectionCountdown(Date.parse(window.startsAt) - query.nowMs)}`}
     </p>
-    <p className={`break-words ${compact ? "line-clamp-2" : ""}`}>{window.reason}</p>
+    <p className={cx("break-words", compact ? "line-clamp-2" : "")}>{window.reason}</p>
     <p className="text-text-muted">{window.status === "scheduled" && `Starts ${protectionTime(window.startsAt, window.timezone)} · `}
       Ends {protectionTime(window.endsAt, window.timezone)} ({window.timezone}).</p>
     <FocusProtectionBypasses request={window} />
@@ -70,14 +71,14 @@ export default function FocusProtectionControl() {
       {" "}Counts are held work/slots, not a promise to replay every tick.</p>
     : <p className="text-warning">Postponement totals are not yet verified.</p>;
 
-  return <div className={`min-w-0 max-w-full text-xs text-text-secondary [overflow-wrap:anywhere] ${protection || statusText ? "basis-full" : "sm:ml-auto"}`}
+  return <div className={cx("min-w-0 max-w-full text-xs text-text-secondary [overflow-wrap:anywhere]", protection || statusText ? "basis-full" : "sm:ml-auto")}
     data-focus-protection-state={query.statusUnknown ? "unknown" : query.isFetching ? "verifying" : protection?.status ?? "inactive"}>
     <div className="min-w-0 space-y-2">
       {status}
       {protection && <>{windowContext(protection, true)}{summary}</>}
       {error && <p role="alert" className="text-error">{error}</p>}
       <div className="flex min-w-0 flex-wrap gap-2">
-        {!protection && <button type="button" className={`${BUTTON} inline-flex items-center gap-2`} disabled={uncertain || cancelling} onClick={() => setDialog("create")}><Shield size={14} className="shrink-0" />Protect focus</button>}
+        {!protection && <button type="button" className={cx(BUTTON, "inline-flex items-center gap-2")} disabled={uncertain || cancelling} onClick={() => setDialog("create")}><Shield size={14} className="shrink-0" />Protect focus</button>}
         {protection && <button type="button" className={BUTTON} onClick={() => setDialog("details")}>Protection details</button>}
         {canCancel && <button type="button" className={BUTTON} disabled={cancelling} onClick={() => void cancel(protection!)}>{cancelling ? "Cancelling protection…" : "Cancel protection"}</button>}
         {(query.statusUnknown || error) && <button type="button" className={BUTTON} disabled={query.isFetching || cancelling} onClick={refresh}>Retry protection status</button>}

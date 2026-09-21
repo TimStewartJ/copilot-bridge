@@ -17,7 +17,7 @@ import { DS, cx, type DsButtonSize, type DsButtonVariant, type DsTone } from "./
 
 // ── Actions ─────────────────────────────────────────────────────────────────
 
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface ButtonProps extends ComponentProps<"button"> {
   /** `primary` is the one action a screen exists for. There is at most one, and chat's is Send. */
   variant?: DsButtonVariant;
   size?: DsButtonSize;
@@ -47,7 +47,7 @@ export function Button({
   );
 }
 
-interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label"> {
+interface IconButtonProps extends Omit<ComponentProps<"button">, "aria-label"> {
   /** An icon alone says nothing to a screen reader, so the label is required. */
   label: string;
   variant?: Exclude<DsButtonVariant, "primary">;
@@ -240,6 +240,7 @@ export function Section({
   count,
   action,
   level = "group",
+  surface = false,
   children,
   className,
   labelClassName,
@@ -250,6 +251,8 @@ export function Section({
   action?: ReactNode;
   /** `page` is a heading in a full-page view's outline; `group` labels rows in a panel. */
   level?: "group" | "page";
+  /** Give a significant region one group surface; never box its individual values or nest groups. */
+  surface?: boolean;
   children: ReactNode;
   className?: string;
   labelClassName?: string;
@@ -257,7 +260,7 @@ export function Section({
   const headingId = useId();
   const Heading = level === "page" ? "h2" : "h3";
   return (
-    <section aria-labelledby={headingId} className={className}>
+    <section aria-labelledby={headingId} data-ds-surface={surface ? "group" : undefined} className={cx(surface && DS.layout.section, className)}>
       <div className={cx("flex items-center justify-between gap-2", level === "page" ? "mb-2 min-h-8" : "min-h-7", labelClassName)}>
         <Heading id={headingId} className={level === "page" ? DS.text.sectionTitle : DS.text.sectionLabel}>
           {label}
@@ -424,14 +427,10 @@ export function Badge({
   children,
   title,
   className,
-}: {
-  tone?: keyof typeof DS.badge.tone;
-  children: ReactNode;
-  title?: string;
-  className?: string;
-}) {
+  ...rest
+}: ComponentProps<"span"> & { tone?: keyof typeof DS.badge.tone }) {
   return (
-    <span className={cx(DS.badge.base, DS.badge.tone[tone], className)} title={title}>
+    <span {...rest} className={cx(DS.badge.base, DS.badge.tone[tone], className)} title={title}>
       {children}
     </span>
   );
@@ -582,7 +581,7 @@ export function Notice({
   return (
     <div
       role={role ?? (tone === "danger" ? "alert" : "status")}
-      className={cx("flex items-start gap-2.5 rounded-lg border border-border bg-bg-secondary/60 px-3 py-2 text-xs leading-relaxed text-text-secondary", className)}
+      className={cx(DS.notice.base, className)}
     >
       {icon && <span className={cx("mt-0.5 shrink-0", DS.tone[tone])}>{icon}</span>}
       <div className="min-w-0 flex-1">

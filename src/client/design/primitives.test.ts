@@ -1,4 +1,4 @@
-import { createElement, type ReactElement } from "react";
+import { createElement, createRef, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createReactDomHarness,
@@ -7,6 +7,7 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import {
+  Badge,
   Button,
   ChoiceButton,
   CountBadge,
@@ -50,6 +51,35 @@ describe("design primitives", () => {
     expect(props?.type).toBe("button");
     expect(props?.className).toContain(DS.button.variant.secondary);
     expect(props?.className).not.toContain(DS.button.variant.primary);
+  });
+
+  it("forwards native refs through actions used by docs adapters and dialogs", async () => {
+    const buttonRef = createRef<HTMLButtonElement>();
+    const iconRef = createRef<HTMLButtonElement>();
+    const container = await render(createElement("div", null,
+      createElement(Button, { ref: buttonRef }, "Save"),
+      createElement(IconButton, { ref: iconRef, label: "Close" }, "x"),
+    ));
+    const [button, icon] = findAllByTag(container, "BUTTON");
+    expect(buttonRef.current).toBe(button);
+    expect(iconRef.current).toBe(icon);
+  });
+
+  it("preserves state attributes on a canonical badge", async () => {
+    const attributes = { tone: "warning", "aria-label": "Risk accepted", "data-focus-lifecycle": "accepted_risk" } as const;
+    const container = await render(createElement(Badge, attributes, "Accepted risk"));
+    const props = getReactProps(findAllByTag(container, "SPAN")[0]);
+    expect(props?.["data-focus-lifecycle"]).toBe("accepted_risk");
+    expect(props?.["aria-label"]).toBe("Risk accepted");
+    expect(props?.className).toContain(DS.badge.tone.warning);
+  });
+
+  it("gives a significant region one group surface without boxing its values", async () => {
+    const container = await render(createElement(Section, { label: "Sessions", surface: true, children: "rows" }));
+    const section = findAllByTag(container, "SECTION")[0];
+    expect(getReactProps(section)?.["data-ds-surface"]).toBe("group");
+    expect(getReactProps(section)?.className).toContain(DS.surface.group);
+    expect(getReactProps(section)?.className).not.toContain("shadow");
   });
 
   it("names an icon button for screen readers and on hover", async () => {

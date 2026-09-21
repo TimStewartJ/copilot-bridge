@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import type { SearchKind, SearchScope } from "../../shared/search.js";
+import { DS, cx } from "../design/tokens";
 
 export interface SearchScopeOption {
   id: string;
@@ -24,6 +25,7 @@ interface Props {
   sessions: SearchScopeOption[];
   onChange: (value: string) => void;
   onCommit: (query: string, filters: SearchFilterChange) => void;
+  showTypeChip?: boolean;
 }
 
 interface Suggestion {
@@ -51,7 +53,7 @@ export function extractSearchTypeFilters(value: string): { query: string; kind: 
   return kind ? { query: query.trim(), kind } : null;
 }
 
-export default function SearchQueryInput({ draft, kind, scope, taskId, sessionId, tasks, sessions, onChange, onCommit }: Props) {
+export default function SearchQueryInput({ draft, kind, scope, taskId, sessionId, tasks, sessions, onChange, onCommit, showTypeChip = true }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const activeOptionRef = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -89,22 +91,22 @@ export default function SearchQueryInput({ draft, kind, scope, taskId, sessionId
     inputRef.current?.focus();
   };
   return <div className="relative">
-    <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-border bg-bg-surface px-3 py-2 focus-within:border-accent">
+    <div className={DS.field.group}>
       <Search size={17} className="shrink-0 text-text-muted" />
       {scope !== "global" && <button type="button" aria-label="Remove scope" title={scopeTitle}
         onClick={() => remove({ scope: null, taskId: null, sessionId: null })}
-        className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md border border-accent-border bg-accent-surface px-2 text-xs text-accent">
+        className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "max-w-full gap-1")}>
         <span className="truncate">{scope === "task" ? "task" : "chat"}:{scopeTitle}</span><X size={12} className="shrink-0" />
       </button>}
-      {kind !== "all" && <button type="button" aria-label="Remove type filter" onClick={() => remove({ kind: null })}
-        className="inline-flex min-h-8 items-center gap-1 rounded-md border border-accent-border bg-accent-surface px-2 text-xs text-accent">
+      {showTypeChip && kind !== "all" && <button type="button" aria-label="Remove type filter" onClick={() => remove({ kind: null })}
+        className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1")}>
         type:{kind}<X size={12} />
       </button>}
       <input ref={inputRef} id="bridge-global-search-input" role="combobox" aria-label="Search chats, tasks, and docs"
         aria-autocomplete="list" aria-expanded={expanded} aria-controls={expanded ? listId : undefined}
         aria-activedescendant={expanded && options.length ? `${listId}-${activeIndex}` : undefined}
-        value={draft} placeholder="Search...  type:  task:  chat:" autoComplete="off"
-        className="min-h-8 min-w-32 flex-1 bg-transparent text-sm text-text-primary outline-none"
+        value={draft} placeholder="Search chats, tasks, and docs…" autoComplete="off"
+        className={cx(DS.field.inline, "min-w-32")}
         onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)}
         onChange={(event) => {
           const value = event.target.value;
@@ -135,14 +137,14 @@ export default function SearchQueryInput({ draft, kind, scope, taskId, sessionId
         }}
       />
       {draft && <button type="button" aria-label="Clear search" onClick={() => { onChange(""); inputRef.current?.focus(); }}
-        className="flex min-h-8 min-w-8 items-center justify-center rounded-md text-text-muted hover:bg-bg-hover"><X size={15} /></button>}
+        className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}><X size={15} /></button>}
     </div>
     {expanded && <div id={listId} role="listbox" aria-label="Search filters"
-      className="absolute inset-x-0 top-full z-10 mt-1 max-h-60 overflow-y-auto rounded-xl border border-border bg-bg-surface p-1 shadow-xl">
+      className={cx(DS.surface.floating, "absolute inset-x-0 top-full z-10 mt-1 max-h-[min(15rem,35dvh)] overflow-y-auto p-1")}>
       {options.map((option, index) => <div key={`${option.label}-${index}`} id={`${listId}-${index}`} role="option" aria-selected={index === activeIndex}
         ref={index === activeIndex ? activeOptionRef : undefined}
         onMouseDown={(event) => event.preventDefault()} onClick={() => commit(option)}
-        className={`cursor-pointer break-words rounded-lg px-3 py-2 text-sm ${index === activeIndex ? "bg-accent-surface text-accent" : "text-text-secondary hover:bg-bg-hover"}`}>
+        className={cx(DS.menu.item, "cursor-pointer break-words", index === activeIndex && DS.menu.selected)}>
         {option.label}
       </div>)}
       {!options.length && <div role="status" className="px-3 py-2 text-sm text-text-muted">

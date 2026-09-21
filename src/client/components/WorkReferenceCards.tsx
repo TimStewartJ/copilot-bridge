@@ -1,7 +1,8 @@
 import { ClipboardList, GitPullRequest } from "lucide-react";
 import type { EnrichedPR, EnrichedWorkItem } from "../api";
 import { PR_STATUS_STYLES, WI_STATE_STYLES, WI_TYPE_ICONS } from "../work-item-styles";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 export function WorkItemPreviewCard({ item }: { item: EnrichedWorkItem }) {
   const typeInfo = WI_TYPE_ICONS[item.type ?? ""];
@@ -10,7 +11,7 @@ export function WorkItemPreviewCard({ item }: { item: EnrichedWorkItem }) {
       href={item.url}
       target="_blank"
       rel="noopener"
-      className={`${UI.surface.cardInset} block border-l-2 border-l-error px-3 py-3 transition-colors hover:bg-bg-hover`}
+      className={cx(DS.surface.detail, "block border-l-2 border-l-error px-3 py-3 transition-colors hover:bg-bg-hover")}
       data-work-reference-kind="workItem"
     >
       <span className="flex items-center gap-2">
@@ -19,7 +20,7 @@ export function WorkItemPreviewCard({ item }: { item: EnrichedWorkItem }) {
         </span>
         <span className="text-xs font-semibold text-accent">#{item.id}</span>
         {item.state && (
-          <span className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] ${WI_STATE_STYLES[item.state] ?? UI.chip.muted}`}>
+          <span className={cx(DS.badge.base, "ml-auto", WI_STATE_STYLES[item.state] ?? cx(DS.badge.base, DS.badge.tone.neutral))}>
             {item.state}
           </span>
         )}
@@ -44,12 +45,12 @@ export function PullRequestPreviewCard({ pullRequest }: { pullRequest: EnrichedP
       href={pullRequest.url}
       target="_blank"
       rel="noopener"
-      className={`${UI.surface.cardInset} block border-l-2 border-l-info px-3 py-3 transition-colors hover:bg-bg-hover`}
+      className={cx(DS.surface.detail, "block border-l-2 border-l-info px-3 py-3 transition-colors hover:bg-bg-hover")}
       data-work-reference-kind="pullRequest"
     >
       <span className="flex items-center gap-2">
         {statusInfo
-          ? <span className={`h-2 w-2 shrink-0 rounded-full ${statusInfo.dot}`} />
+          ? <span className={cx("h-2 w-2 shrink-0 rounded-full", statusInfo.dot)} />
           : <GitPullRequest size={13} className="text-text-muted" />}
         <span className="text-xs font-semibold text-accent">PR #{pullRequest.prId}</span>
         {statusInfo && (

@@ -1,5 +1,6 @@
 import { Sun, Moon, Monitor } from "lucide-react";
 import type { ThemePreference } from "../api";
+import { SegmentedControl } from "../design/primitives";
 
 const OPTIONS: { value: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { value: "light", label: "Light", Icon: Sun },
@@ -14,25 +15,12 @@ interface Props {
 
 export default function ThemePicker({ value, onChange }: Props) {
   return (
-    <div className="flex gap-1.5">
-      {OPTIONS.map(({ value: v, label, Icon }) => {
-        const active = value === v;
-        return (
-          <button
-            key={v}
-            onClick={() => onChange(v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-all cursor-pointer
-              ${active
-                ? "border border-accent-border bg-accent-surface text-accent font-medium"
-                : "bg-bg-surface text-text-muted hover:text-text-secondary hover:bg-bg-hover border border-transparent hover:border-border"
-              }`}
-            title={label}
-          >
-            <Icon size={14} />
-            {label}
-          </button>
-        );
-      })}
-    </div>
+    <SegmentedControl
+      ariaLabel="Theme"
+      value={value}
+      onChange={onChange}
+      onReselect={onChange}
+      options={OPTIONS.map(({ value: option, label, Icon }) => ({ value: option, label, title: label, icon: <Icon size={14} /> }))}
+    />
   );
 }

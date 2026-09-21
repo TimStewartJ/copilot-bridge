@@ -3,6 +3,7 @@ import type { Task } from "../api";
 import { X } from "lucide-react";
 import TaskKindBadge from "./TaskKindBadge";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx } from "../design/tokens";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-info-surface text-info",
@@ -45,14 +46,14 @@ export default function TaskPickerDialog({
     >
       <div
         {...dialogProps}
-        className="bg-bg-secondary border border-border rounded-xl shadow-2xl w-full max-w-[400px] mx-4 max-h-[60vh] flex flex-col"
+        className={cx(DS.surface.dialog, "w-full max-w-[400px] mx-4 max-h-[60vh] flex flex-col")}
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <h3 id={titleId} className="font-medium text-sm">Link to Task</h3>
           <button
             onClick={onClose}
-            className="text-text-muted hover:text-text-secondary"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
             aria-label="Close"
           >
             <X size={16} />
@@ -66,7 +67,7 @@ export default function TaskPickerDialog({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter tasks…"
-            className="w-full px-3 py-2 bg-bg-primary border border-border rounded-md text-sm focus:outline-none focus:border-accent"
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.focus)}
           />
         </div>
 
@@ -83,7 +84,7 @@ export default function TaskPickerDialog({
               <button
                 key={task.id}
                 onClick={() => onSelect(task.id)}
-                className="w-full text-left px-3 py-2.5 rounded-md text-sm hover:bg-bg-hover transition-colors"
+                className={cx(DS.row.base, DS.row.interactive, "w-full text-left hover:bg-bg-hover", DS.row.touch)}
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium truncate flex-1">
@@ -91,7 +92,7 @@ export default function TaskPickerDialog({
                   </span>
                   <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
                   <span
-                    className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${STATUS_COLORS[task.status] ?? ""}`}
+                    className={cx(DS.badge.base, "shrink-0", STATUS_COLORS[task.status] ?? "")}
                   >
                     {task.status}
                   </span>

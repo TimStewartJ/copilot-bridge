@@ -7,13 +7,13 @@ import FocusItemCard from "./FocusItemCard";
 import { FocusLifecycleBadge } from "./FocusCard";
 import FocusEpisodeDetails, { FocusTransitionList } from "./FocusEpisodeDetails";
 import type { FocusInteractionProps } from "./FocusInteractions";
-import { UI } from "./shared/design-system";
 import FocusTaskFilter from "./FocusTaskFilter";
 import { describeFocusFilters, focusTaskContext, normalizeFocusReadFilter } from "../focus-filter-helpers";
 import { useFocusFilterChoices } from "../hooks/useFocusFilterChoices";
+import { DS, cx } from "../design/tokens";
 
-const BUTTON = `${UI.button.secondary} min-h-11 text-xs`;
-const FIELD = "mt-1 min-h-11 w-full min-w-0 rounded-lg border border-border bg-bg-surface px-3 text-sm text-text-primary";
+const BUTTON = cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs");
+const FIELD = cx(DS.field.input, DS.field.inputSize.md, "mt-1 min-h-11 min-w-0");
 const FILTER_LABELS: Record<keyof FocusHistoryFilter, string> = {
   query: "Search", objectId: "Object or Action ID", objectType: "Record type", taskId: "Task",
   originalTaskId: "Original task", lifecycle: "Lifecycle", sourceFamily: "Source family", activationId: "Episode ID",
@@ -73,7 +73,7 @@ function HistoryRecord({ entry, nowMs, ...props }: FocusInteractionProps & { ent
   const currentEpisodeId = entry.object && "activationId" in entry.object ? entry.object.activationId : null;
   const agedEvent = focus?.objectType === "event" && isFocusOpen(focus.lifecycle)
     && !focus.pinned && Date.parse(focus.details.lastMeaningfulChangeAt) < nowMs - 7 * 86_400_000;
-  return <article className="min-w-0 rounded-xl border border-border bg-bg-secondary/50 p-3">
+  return <article className={DS.layout.objectRow}>
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0">
         <h4 className="break-words text-sm font-semibold text-text-primary">{title}</h4>
@@ -148,8 +148,8 @@ export default function FocusHistorySection({
     document.getElementById("focus-history")?.scrollIntoView({ block: "start" });
   }, [targetKey, targetRevision]);
 
-  return <section id="focus-history" data-dashboard-panel="history" className="min-w-0 rounded-2xl border border-border/60 bg-bg-secondary/45 p-4">
-    <h3><button type="button" className="min-h-11 text-sm font-semibold text-text-secondary" aria-expanded={expanded} aria-controls={labelId} onClick={() => setExpanded((value) => !value)}>History</button></h3>
+  return <section id="focus-history" data-dashboard-panel="history" className={DS.layout.section}>
+    <h3><button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "font-semibold")} aria-expanded={expanded} aria-controls={labelId} onClick={() => setExpanded((value) => !value)}>History</button></h3>
     <p className="text-xs text-text-muted">Quiet retrieval, not an inbox. Includes open and aged records, lifecycle outcomes, linked work, and cleared or deleted records. No unread state.</p>
     {expanded && <div id={labelId} className="mt-4 space-y-3">
       <form className="space-y-3" onSubmit={(event) => {
@@ -199,7 +199,7 @@ export default function FocusHistorySection({
       <div key={JSON.stringify(filter)} className="space-y-3">
         {entries.map((entry) => <HistoryRecord key={`${entry.id}:${entry.matchSource}:${entry.matchedTransition?.id ?? ""}`} entry={entry} nowMs={nowMs} {...props} />)}
       </div>
-      {query.hasNextPage && <button type="button" disabled={query.isFetchingNextPage} className={`${BUTTON} w-full`} onClick={() => void query.fetchNextPage()}>{query.isFetchingNextPage ? "Loading more history..." : "Load more history"}</button>}
+      {query.hasNextPage && <button type="button" disabled={query.isFetchingNextPage} className={cx(BUTTON, "w-full")} onClick={() => void query.fetchNextPage()}>{query.isFetchingNextPage ? "Loading more history..." : "Load more history"}</button>}
     </div>}
   </section>;
 }

@@ -11,7 +11,8 @@ import FocusDialog from "./FocusDialog";
 import FocusLifecycleDialog, { type FocusLifecycleIntent } from "./FocusLifecycleDialog";
 import FocusPromotionDialog from "./FocusPromotionDialog";
 import FocusSessionLaunchDialog from "./FocusSessionLaunchDialog";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 export interface FocusInteractionProps {
   tasks: Task[];
@@ -137,7 +138,7 @@ export function FocusInteractionProvider({
     remove: (object) => open({ kind: "delete", object }),
   };
   return <Context.Provider value={value}>
-    {(notice || (error && !dialog)) && <div role={error ? "alert" : "status"} className={`mb-4 rounded-xl border p-3 text-sm ${error ? "border-error/25 text-error" : "border-info-border text-text-secondary"}`}>{error ?? notice}</div>}
+    {(notice || (error && !dialog)) && <div role={error ? "alert" : "status"} className={cx("mb-4 rounded-xl border p-3 text-sm", error ? "border-error/25 text-error" : "border-info-border text-text-secondary")}>{error ?? notice}</div>}
     {children}
     {dialog?.kind === "lifecycle" && <FocusLifecycleDialog key={`${dialog.object.activationId}:${dialog.object.details.contentFingerprint}:${dialog.intent}`}
       object={dialog.object} intent={dialog.intent} nowMs={nowMs} pending={pending} error={error} onClose={close} onReload={reload} onSubmit={submitLifecycle} />}
@@ -151,8 +152,8 @@ export function FocusInteractionProvider({
       <p className="mb-4 break-words text-sm text-text-primary">{dialog.object.title}</p>
       {error && <p role="alert" className="text-sm text-error">{error}</p>}
       <div className="flex flex-wrap justify-end gap-2">
-        <button type="button" disabled={pending} className={`${UI.button.secondary} min-h-11`} onClick={close}>Cancel</button>
-        <button type="button" disabled={pending} className={`${UI.button.secondary} min-h-11 text-error`} onClick={() => {
+        <button type="button" disabled={pending} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)} onClick={close}>Cancel</button>
+        <button type="button" disabled={pending} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-error")} onClick={() => {
           const object = dialog.object;
           void run(async () => { await revalidate(object); await deleteFocusObject(object.objectType, object.id); setDialog(null); setNotice("Record deleted. History is retained."); });
         }}>Delete record</button>

@@ -14,7 +14,9 @@ import { writeClipboardText } from "../lib/clipboard";
 import { getAppAbsoluteUrl } from "../lib/app-url";
 import { getSessionPath } from "../lib/session-path";
 import useElementScrollRestoration from "../hooks/useElementScrollRestoration";
-import { getSearchHighlightTerms } from "../lib/search-text";
+import { formatSearchExcerpt, getSearchHighlightTerms } from "../lib/search-text";
+import { DS, cx } from "../design/tokens";
+import { Button, SegmentedControl } from "../design/primitives";
 
 const PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -65,7 +67,7 @@ function Highlight({ text, query }: { text: string; query: string }) {
   let cursor = 0;
   for (const range of merged) {
     if (range.start > cursor) parts.push(text.slice(cursor, range.start));
-    parts.push(<mark key={`${range.start}:${range.end}`} className="rounded-sm bg-warning/25 px-0.5 text-inherit">{text.slice(range.start, range.end)}</mark>);
+    parts.push(<mark key={`${range.start}:${range.end}`} className="rounded-sm bg-surface-selected px-0.5 font-semibold text-text-primary">{text.slice(range.start, range.end)}</mark>);
     cursor = range.end;
   }
   if (cursor < text.length) parts.push(text.slice(cursor));
@@ -261,20 +263,19 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
   };
 
   return (
-    <FocusDialog title="Search Bridge" closeLabel="Close search" pending={false} onClose={goBack}>
-    <div ref={scrollRef} data-testid="search-scroll" className="max-h-[70dvh] min-h-[min(55dvh,24rem)] overflow-y-auto bg-bg-primary text-text-primary" onKeyDown={(event) => {
+    <FocusDialog title="Search Bridge" closeLabel="Close search" pending={false} onClose={goBack} size="wide" contained>
+    <div data-testid="search-layout" className="flex min-h-0 flex-1 flex-col" onKeyDown={(event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       goBack();
     }}>
-      <div className="space-y-4">
-        <header className="sticky top-0 z-10 space-y-2 bg-bg-primary pb-2">
+        <header className="z-10 shrink-0 space-y-3 border-b border-border px-4 pb-3 sm:px-5">
           <form onSubmit={(event) => {
             event.preventDefault();
             if (getSearchFilterToken(draft)) return;
             updateParams({ q: draft.trim() || null, offset: null });
           }}>
-            <SearchQueryInput draft={draft} kind={kind} scope={scope} taskId={taskId} sessionId={sessionId}
+            <SearchQueryInput draft={draft} kind={kind} scope={scope} taskId={taskId} sessionId={sessionId} showTypeChip={false}
               tasks={tasks.map((task) => ({ id: task.id, title: task.title }))}
               sessions={sessions.map((session) => ({ id: session.sessionId, title: session.summary || session.sessionId }))}
               onChange={setDraft}
@@ -284,34 +285,53 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
               }}
             />
           </form>
-          <p className="text-xs text-text-muted">Filter with type:chat, type:task, type:doc, task: or chat:. Use arrows and Enter to choose.</p>
+          <SegmentedControl
+            ariaLabel="Search sources"
+            value={kind}
+            onChange={(value) => updateParams({ kind: value === "all" ? null : value, offset: null })}
+            options={[
+              { value: "all", label: "All" },
+              { value: "chat", label: "Chats" },
+              { value: "task", label: "Tasks" },
+              { value: "doc", label: "Docs" },
+            ]}
+            size="sm"
+          />
         </header>
 
-        {loading && <p role="status" className="text-sm text-text-muted">Searching saved Bridge content…</p>}
-        {error && <div role="alert" className="rounded-xl border border-error/30 bg-error/10 p-4 text-sm text-error">
+      <div ref={scrollRef} data-testid="search-scroll" className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+        {!query.trim() && !loading && (
+          <div className="py-5">
+            <p className={DS.text.sectionTitle}>Find something you saved</p>
+            <p className={cx(DS.text.prose, "mt-1")}>Search a phrase, task name, or topic. Choose a source above to narrow the results.</p>
+          </div>
+        )}
+        {loading && <p role="status" className={DS.text.prose}>Searching saved Bridge content…</p>}
+        {error && <div role="alert" className={cx(DS.notice.surface, "text-error")}>
           Search could not load: {error}
-          <button type="button" onClick={() => setRetryRevision((current) => current + 1)} className="ml-2 underline">Retry</button>
+          <Button variant="ghost" size="sm" onClick={() => setRetryRevision((current) => current + 1)} className="ml-2">Retry</Button>
         </div>}
-        <details className="text-xs text-text-muted"><summary className="cursor-pointer">About saved-text search</summary><p className="mt-2">Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched. Search retrieves saved text only; it does not ask AI.</p></details>
         {visibleResponse && <div className="space-y-3">
-          {visibleResponse.coverage.state !== "ready" && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+          {visibleResponse.coverage.state !== "ready" && <div role="status" className={cx(DS.notice.surface, "p-4 text-sm text-warning")}>
             {visibleResponse.coverage.state === "partial" ? "Search coverage is partial." : ""}
             {(visibleResponse.coverage.reconciling ?? (visibleResponse.coverage.state === "indexing")) ? " Search indexing is still in progress." : ""}
             {" "}{visibleResponse.coverage.indexedSessions} of {visibleResponse.coverage.totalSessions} chats indexed.
           </div>}
-          {visibleResponse.coverage.errors.length > 0 && <div role="alert" className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+          {visibleResponse.coverage.errors.length > 0 && <div role="alert" className={cx(DS.notice.surface, "p-4 text-sm text-warning")}>
             Some sources could not be searched:
             <ul className="mt-2 list-disc pl-5">{visibleResponse.coverage.errors.map((coverageError) => <li key={coverageError}>{coverageError}</li>)}</ul>
           </div>}
-          <p className="text-sm text-text-muted">{total === 0
+          <p className={DS.text.prose} aria-live="polite">{total === 0
             ? "No matches in the searched coverage."
             : scope === "session"
               ? `${sessionMatchCount} matching message${sessionMatchCount === 1 ? "" : "s"} in this chat.`
-              : `${total} results across source sections.`}</p>
+              : `${total} result${total === 1 ? "" : "s"}.`}</p>
+          {total === 0 && <p className={DS.text.prose}>Try fewer words, a different phrase, or another source.</p>}
         </div>}
 
-        {visibleResponse && visibleResponse.chats.items.length > 0 && <section aria-labelledby="search-chats" className="space-y-3">
-          <h2 id="search-chats" className="flex items-center gap-2 text-lg font-semibold"><MessageSquare size={18} /> Chats <span className="text-sm font-normal text-text-muted">({visibleResponse.chats.total})</span></h2>
+        {visibleResponse && visibleResponse.chats.items.length > 0 && <section aria-labelledby="search-chats">
+          <h3 id="search-chats" className={cx(DS.text.sectionLabel, "mb-2 flex items-center gap-2")}><MessageSquare size={14} /> Chats <span className="tabular-nums text-text-muted">({visibleResponse.chats.total})</span></h3>
+          <div className={DS.surface.divided}>
           {visibleResponse.chats.items.map((hit) => {
             const titleTarget = hit.matches[0]
               ? chatPath(
@@ -322,17 +342,17 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
                   scope === "session" ? offset : 0,
                 )
               : chatHistoryPath(hit, currentSearchUrl);
-            return <article key={hit.sessionId} className="rounded-xl border border-border bg-bg-secondary p-4">
+            return <article key={hit.sessionId} className="py-3 first:pt-0">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
                 <h3>
-                  <button type="button" onClick={() => navigate(titleTarget)} className="text-left font-semibold text-text-primary hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+                  <button type="button" onClick={() => navigate(titleTarget)} className={cx(DS.focus, "min-h-10 rounded py-1 text-left text-sm font-medium text-text-primary hover:underline md:min-h-7")}>
                     <Highlight text={hit.title} query={query} />
                   </button>
                 </h3>
                 <p className="text-xs text-text-muted">{hit.taskTitle ? `Task: ${hit.taskTitle}` : "Quick chat"}{hit.archived ? " · Archived" : ""} · {hit.matches.length === 0 ? "Title match · no matching message text" : `${hit.matchCount} message match${hit.matchCount === 1 ? "" : "es"}`}</p>
               </div>
-              <button type="button" onClick={() => updateParams({ scope: "session", sessionId: hit.sessionId, taskId: null, kind: null, offset: null })} className="min-h-9 rounded-lg px-3 text-xs text-accent hover:bg-accent-surface">Search whole chat</button>
+              <button type="button" onClick={() => updateParams({ scope: "session", sessionId: hit.sessionId, taskId: null, kind: null, offset: null })} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-h-9 text-accent")}>Search whole chat</button>
             </div>
             <div className="mt-3 divide-y divide-border/60">
               {hit.matches.map((match) => {
@@ -356,10 +376,10 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
                         () => setCopiedId(match.sourceEventId),
                         (reason: unknown) => setCopyError(reason instanceof Error ? reason.message : String(reason)),
                       );
-                    }} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 hover:bg-bg-hover"><Clipboard size={13} /> {copiedId === match.sourceEventId ? "Copied" : "Copy link"}</button>
+                    }} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-h-9 gap-1")}><Clipboard size={13} /> {copiedId === match.sourceEventId ? "Copied" : "Copy link"}</button>
                   </div>
-                  <button type="button" onClick={() => navigate(target)} className="mt-1 w-full rounded-lg p-2 text-left text-sm leading-relaxed text-text-secondary hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-                    <Highlight text={match.snippet} query={query} />
+                  <button type="button" onClick={() => navigate(target)} className={cx(DS.row.stacked, "mt-1 px-0 py-1.5 text-text-secondary")}>
+                    <span className="block break-words leading-6 line-clamp-3"><Highlight text={match.snippet} query={query} /></span>
                   </button>
                 </div>;
               })}
@@ -367,39 +387,49 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
             {hit.matches.length < hit.matchCount && scope !== "session" && <p className="mt-3 text-xs text-warning">Showing {hit.matches.length} of {hit.matchCount} matching messages. Additional matches are not loaded in this result page.</p>}
           </article>;
           })}
+          </div>
         </section>}
         {copyError && <p role="alert" className="text-sm text-error">Could not copy the message link: {copyError}</p>}
 
-        {visibleResponse && visibleResponse.tasks.items.length > 0 && <section aria-labelledby="search-tasks" className="space-y-3">
-          <h2 id="search-tasks" className="flex items-center gap-2 text-lg font-semibold"><FileText size={18} /> Tasks <span className="text-sm font-normal text-text-muted">({visibleResponse.tasks.total})</span></h2>
-          <div className="grid gap-3">{visibleResponse.tasks.items.map((hit) => <button key={hit.taskId} type="button" onClick={() => navigate(`/tasks/${hit.taskId}`)} className="rounded-xl border border-border bg-bg-secondary p-4 text-left hover:bg-bg-hover">
-            <h3 className="font-semibold"><Highlight text={hit.title} query={query} /></h3>
-            <p className="mt-1 text-xs text-text-muted">{hit.archived ? "Archived task" : "Task"}</p>
-            <p className="mt-2 text-sm text-text-secondary"><Highlight text={hit.snippet} query={query} /></p>
-          </button>)}</div>
+        {visibleResponse && visibleResponse.tasks.items.length > 0 && <section aria-labelledby="search-tasks">
+          <h3 id="search-tasks" className={cx(DS.text.sectionLabel, "mb-2 flex items-center gap-2")}><FileText size={14} /> Tasks <span className="tabular-nums text-text-muted">({visibleResponse.tasks.total})</span></h3>
+          <div className={DS.surface.divided}>{visibleResponse.tasks.items.map((hit) => <div key={hit.taskId} className="py-1"><button type="button" onClick={() => navigate(`/tasks/${hit.taskId}`)} className={DS.row.stacked}>
+            <span className="block text-sm font-medium text-text-primary"><Highlight text={hit.title} query={query} /></span>
+            <span className="mt-1 block text-xs text-text-muted">{hit.archived ? "Archived task" : "Task"}</span>
+            <span className="mt-1.5 block break-words leading-6 text-text-secondary line-clamp-3"><Highlight text={formatSearchExcerpt(hit.snippet, query)} query={query} /></span>
+          </button></div>)}</div>
         </section>}
 
-        {visibleResponse && visibleResponse.docs.items.length > 0 && <section aria-labelledby="search-docs" className="space-y-3">
-          <h2 id="search-docs" className="flex items-center gap-2 text-lg font-semibold"><BookOpen size={18} /> Docs <span className="text-sm font-normal text-text-muted">({visibleResponse.docs.total})</span></h2>
-          <div className="grid gap-3">{visibleResponse.docs.items.map((hit) => <button key={hit.path} type="button" onClick={() => navigate(`/docs/${hit.path}`)} className="rounded-xl border border-border bg-bg-secondary p-4 text-left hover:bg-bg-hover">
-            <h3 className="font-semibold"><Highlight text={hit.title} query={query} /></h3>
-            <p className="mt-1 text-xs text-text-muted">{hit.path}</p>
-            <p className="mt-2 text-sm text-text-secondary"><Highlight text={hit.snippet} query={query} /></p>
-          </button>)}</div>
+        {visibleResponse && visibleResponse.docs.items.length > 0 && <section aria-labelledby="search-docs">
+          <h3 id="search-docs" className={cx(DS.text.sectionLabel, "mb-2 flex items-center gap-2")}><BookOpen size={14} /> Docs <span className="tabular-nums text-text-muted">({visibleResponse.docs.total})</span></h3>
+          <div className={DS.surface.divided}>{visibleResponse.docs.items.map((hit) => <div key={hit.path} className="py-1"><button type="button" onClick={() => navigate(`/docs/${hit.path}`)} className={DS.row.stacked}>
+            <span className="block text-sm font-medium text-text-primary"><Highlight text={hit.title} query={query} /></span>
+            <span className="mt-1 block truncate text-xs text-text-muted">{hit.path}</span>
+            <span className="mt-1.5 block break-words leading-6 text-text-secondary line-clamp-3"><Highlight text={formatSearchExcerpt(hit.snippet, query)} query={query} /></span>
+          </button></div>)}</div>
         </section>}
 
-        {query.trim() && <button type="button" onClick={() => navigate(historyUrl)} className="inline-flex min-h-11 items-center gap-2 text-sm text-accent underline underline-offset-2">
+        {query.trim() && <button type="button" onClick={() => navigate(historyUrl)} className={cx(DS.row.stacked, "text-accent")}>
           Search Focus History for “{query.trim()}”
         </button>}
 
-        {visibleResponse && total > 0 && <nav aria-label="Search result pages" className="flex items-center justify-between border-t border-border pt-4">
-          <button type="button" disabled={offset === 0} onClick={() => updateParams({ offset: offset > PAGE_SIZE ? String(offset - PAGE_SIZE) : null })} className="min-h-11 rounded-lg px-4 text-sm disabled:opacity-40 hover:bg-bg-hover">Previous</button>
+        {visibleResponse && total > 0 && <nav aria-label="Search result pages" className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+          <button type="button" disabled={offset === 0} onClick={() => updateParams({ offset: offset > PAGE_SIZE ? String(offset - PAGE_SIZE) : null })} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "disabled:opacity-40")}>Previous</button>
           <span className="text-xs text-text-muted">{scope === "session"
             ? `Showing ${sessionVisibleMatchCount > 0 ? `${offset + 1}–${offset + sessionVisibleMatchCount}` : "0"} of ${sessionMatchCount} matching messages`
             : `Showing ${visibleCount} result${visibleCount === 1 ? "" : "s"}${offset > 0 ? ` from section offset ${offset + 1}` : ""}`}</span>
-          <button type="button" disabled={!hasNextPage} onClick={() => updateParams({ offset: String(offset + PAGE_SIZE) })} className="min-h-11 rounded-lg px-4 text-sm disabled:opacity-40 hover:bg-bg-hover">Next</button>
+          <button type="button" disabled={!hasNextPage} onClick={() => updateParams({ offset: String(offset + PAGE_SIZE) })} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "disabled:opacity-40")}>Next</button>
         </nav>}
       </div>
+      <footer className="shrink-0 border-t border-border px-4 py-2 sm:px-5">
+        <details className={DS.details.root}>
+          <summary className={cx(DS.details.summary, DS.row.touch, "text-xs text-text-secondary")}>Search tips and coverage</summary>
+          <div className="space-y-1 pb-2 text-xs leading-relaxed text-text-secondary">
+            <p>Use type:chat, type:task, type:doc, task: or chat: to filter. Use arrows and Enter to choose a suggestion.</p>
+            <p>Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched. Search retrieves saved text only; it does not ask AI.</p>
+          </div>
+        </details>
+      </footer>
     </div>
     </FocusDialog>
   );

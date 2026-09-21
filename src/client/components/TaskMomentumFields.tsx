@@ -156,7 +156,7 @@ export default function TaskMomentumFields({
   };
 
   return (
-    <Section label="Momentum">
+    <Section label="Momentum" surface>
       {visiblePanelFields.length > 0 && (
         <FieldList>
           {visiblePanelFields.map((field) => {

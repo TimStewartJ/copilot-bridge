@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import EmptyState from "./shared/EmptyState";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx } from "../design/tokens";
 
 const CRON_PRESETS = [
   { label: "Every weekday at 8 AM", cron: "0 8 * * 1-5" },
@@ -101,7 +102,7 @@ export default function ScheduleDetailSheet({
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div
         {...dialogProps}
-        className="relative w-full md:max-w-lg md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+        className={cx(DS.surface.dialog, "relative w-full md:max-w-lg md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] rounded-t-2xl md:rounded-xl flex flex-col")}
       >
         {isEditing ? (
           <EditMode
@@ -207,7 +208,7 @@ function ViewMode({
           <div className="relative">
             <button
               onClick={() => setShowOverflow(!showOverflow)}
-              className="p-1 text-text-muted hover:text-text-secondary transition-colors rounded"
+              className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}
               aria-label="More actions"
             >
               <MoreVertical size={14} />
@@ -215,17 +216,17 @@ function ViewMode({
             {showOverflow && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowOverflow(false)} />
-                <div className="absolute right-0 top-full mt-1 z-20 bg-bg-surface border border-border rounded-lg shadow-lg py-1 min-w-[140px]">
+                <div className={cx(DS.surface.dialog, "absolute right-0 top-full mt-1 z-20 py-1 min-w-[140px]")}>
                   <button
                     onClick={() => { onToggle(schedule); setShowOverflow(false); }}
-                    className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover transition-colors flex items-center gap-2"
+                    className={cx(DS.row.base, DS.row.interactive, "w-full text-left text-text-secondary hover:bg-bg-hover gap-2", DS.row.touch)}
                   >
                     {schedule.enabled ? <Pause size={12} /> : <Play size={12} />}
                     {schedule.enabled ? "Pause" : "Resume"}
                   </button>
                   <button
                     onClick={() => { setShowDeleteConfirm(true); setShowOverflow(false); }}
-                    className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-bg-hover transition-colors flex items-center gap-2"
+                    className={cx(DS.row.base, DS.row.interactive, "w-full text-left text-error hover:bg-bg-hover gap-2", DS.row.touch)}
                   >
                     <Trash2 size={12} />
                     Delete
@@ -234,7 +235,7 @@ function ViewMode({
               </>
             )}
           </div>
-          <button onClick={onClose} className="p-1 text-text-muted hover:text-text-secondary transition-colors" aria-label="Close">
+          <button onClick={onClose} className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)} aria-label="Close">
             <X size={16} />
           </button>
         </div>
@@ -247,8 +248,8 @@ function ViewMode({
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div>
               <span className="text-text-faint block mb-0.5">Status</span>
-              <span className={`inline-flex items-center gap-1 font-medium ${schedule.enabled ? "text-success" : "text-text-muted"}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${schedule.enabled ? "bg-success" : "bg-text-faint"}`} />
+              <span className={cx("inline-flex items-center gap-1 font-medium", schedule.enabled ? "text-success" : "text-text-muted")}>
+                <span className={cx("w-1.5 h-1.5 rounded-full", schedule.enabled ? "bg-success" : "bg-text-faint")} />
                 {schedule.enabled ? "Active" : "Paused"}
               </span>
             </div>
@@ -282,9 +283,9 @@ function ViewMode({
                 <span className="text-text-faint block mb-0.5">Task</span>
                 <button
                   onClick={() => onSelectTask?.(schedule.taskId)}
-                  className="text-accent hover:text-accent-hover transition-colors truncate block max-w-full text-left flex items-center gap-1"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-w-0 max-w-full justify-start gap-1 px-0 text-left text-accent")}
                 >
-                  {taskTitle}
+                  <span className="min-w-0 truncate">{taskTitle}</span>
                   <ExternalLink size={10} className="shrink-0" />
                 </button>
               </div>
@@ -337,11 +338,9 @@ function ViewMode({
 
         {/* Prompt */}
         <div className="px-5 py-3 border-b border-border">
-          <div className="text-[10px] uppercase tracking-wider text-text-faint mb-1.5">Prompt</div>
+          <div className={cx(DS.text.sectionLabel, "text-text-faint mb-1.5")}>Prompt</div>
           <div
-            className={`text-xs text-text-secondary bg-bg-surface rounded-md px-3 py-2 border border-border font-mono whitespace-pre-wrap ${
-              !promptExpanded && schedule.prompt.length > 200 ? "max-h-[80px] overflow-hidden relative" : ""
-            }`}
+            className={cx("text-xs text-text-secondary bg-bg-surface rounded-md px-3 py-2 border border-border font-mono whitespace-pre-wrap", !promptExpanded && schedule.prompt.length > 200 ? "max-h-[80px] overflow-hidden relative" : "")}
           >
             {schedule.prompt}
             {!promptExpanded && schedule.prompt.length > 200 && (
@@ -351,7 +350,7 @@ function ViewMode({
           {schedule.prompt.length > 200 && (
             <button
               onClick={() => setPromptExpanded(!promptExpanded)}
-              className="text-[10px] text-accent hover:text-accent-hover mt-1 flex items-center gap-0.5"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "text-[10px] text-accent hover:text-accent-hover mt-1 gap-0.5")}
             >
               <ChevronDown size={10} className={promptExpanded ? "rotate-180" : ""} />
               {promptExpanded ? "Show less" : "Show more"}
@@ -361,7 +360,7 @@ function ViewMode({
 
         {/* Run History */}
         <div className="px-5 py-3">
-          <div className="text-[10px] uppercase tracking-wider text-text-faint mb-2">
+          <div className={cx(DS.text.sectionLabel, "text-text-faint mb-2")}>
             Run History {totalRuns > 0 && <span className="text-text-muted">({totalRuns})</span>}
           </div>
           {sessions.length === 0 ? (
@@ -384,7 +383,7 @@ function ViewMode({
                     type="button"
                     onClick={() => { void fetchNextPage(); }}
                     disabled={isFetchingNextPage}
-                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-bg-surface text-text-primary hover:bg-bg-hover border border-border transition-colors disabled:opacity-50"
+                    className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface border border-border disabled:opacity-50")}
                   >
                     {isFetchingNextPage ? "Loading..." : "Load more"}
                   </button>
@@ -402,13 +401,13 @@ function ViewMode({
       <div className="px-5 py-3 border-t border-border flex items-center gap-2 shrink-0">
         <button
           onClick={() => onTrigger(schedule.id)}
-          className="px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-white hover:bg-accent-hover transition-colors flex items-center gap-1.5"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "gap-1.5")}
         >
           <Play size={12} /> Run Now
         </button>
         <button
           onClick={onSwitchToEdit}
-          className="px-3 py-1.5 text-xs font-medium rounded-md bg-bg-surface text-text-primary hover:bg-bg-hover border border-border transition-colors flex items-center gap-1.5"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface border border-border gap-1.5")}
         >
           <Pencil size={12} /> Edit
         </button>
@@ -444,18 +443,18 @@ function DeleteConfirm({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div {...dialogProps} className="relative bg-bg-primary border border-border rounded-xl p-5 max-w-sm mx-4 shadow-2xl">
+      <div {...dialogProps} className={cx(DS.surface.dialog, "relative p-5 max-w-sm mx-4")}>
         <h3 id={titleId} className="text-sm font-medium text-text-primary mb-2">Delete schedule?</h3>
         <p className="text-xs text-text-muted mb-4">
           "{scheduleName}" will be permanently deleted. This cannot be undone.
         </p>
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-3 py-1.5 text-xs rounded-md text-text-secondary hover:text-text-primary transition-colors">
+          <button onClick={onCancel} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}>
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-error text-white hover:bg-error/90 transition-colors"
+            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger)}
           >
             Delete
           </button>
@@ -612,7 +611,7 @@ function EditMode({
           <Clock size={14} className="text-accent" />
           {isCreating ? "New Schedule" : "Edit Schedule"}
         </h2>
-        <button onClick={onClose} className="p-1 text-text-muted hover:text-text-secondary transition-colors" aria-label="Close">
+        <button onClick={onClose} className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)} aria-label="Close">
           <X size={16} />
         </button>
       </div>
@@ -626,7 +625,7 @@ function EditMode({
               <span className="text-text-faint block mb-1">Name</span>
               <input
                 autoFocus
-                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 placeholder="e.g. Daily standup prep"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -639,13 +638,13 @@ function EditMode({
               <div className="flex gap-2">
                 <button
                   onClick={() => setType("cron")}
-                  className={`flex-1 text-xs py-1.5 rounded-lg border transition-colors ${type === "cron" ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-text-faint"}`}
+                  className={cx("flex-1 text-xs py-1.5 rounded-lg border transition-colors", type === "cron" ? cx(DS.button.base, DS.button.size.sm, DS.choice.selected, "text-accent") : cx(DS.button.base, DS.button.size.sm, "border-border text-text-muted hover:border-text-faint"))}
                 >
                   Recurring
                 </button>
                 <button
                   onClick={() => setType("once")}
-                  className={`flex-1 text-xs py-1.5 rounded-lg border transition-colors ${type === "once" ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-text-faint"}`}
+                  className={cx("flex-1 text-xs py-1.5 rounded-lg border transition-colors", type === "once" ? cx(DS.button.base, DS.button.size.sm, DS.choice.selected, "text-accent") : cx(DS.button.base, DS.button.size.sm, "border-border text-text-muted hover:border-text-faint"))}
                 >
                   One-time
                 </button>
@@ -658,7 +657,7 @@ function EditMode({
               {type === "cron" ? (
                 <>
                   <select
-                    className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent mb-2"
+                    className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none mb-2")}
                     value={selectedPreset}
                     onChange={(e) => {
                       setSelectedPreset(e.target.value);
@@ -672,7 +671,7 @@ function EditMode({
                   </select>
                   {(selectedPreset === "Custom" || !CRON_PRESETS.find((p) => p.label === selectedPreset)?.cron) && (
                     <input
-                      className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent font-mono"
+                      className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none font-mono")}
                       placeholder="0 8 * * 1-5"
                       value={cronExpr}
                       onChange={(e) => setCronExpr(e.target.value)}
@@ -684,7 +683,7 @@ function EditMode({
                 <input
                   type="datetime-local"
                   min={toDatetimeLocalValue(new Date())}
-                  className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                  className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                   value={runAt}
                   onChange={(e) => setRunAt(e.target.value)}
                 />
@@ -693,7 +692,7 @@ function EditMode({
                 <div className="mt-2">
                   <span className="text-text-faint block mb-1">Timezone</span>
                   <input
-                    className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                    className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                     placeholder="e.g. America/New_York"
                     value={timezone}
                     onChange={(e) => setTimezone(e.target.value)}
@@ -708,7 +707,7 @@ function EditMode({
               </label>
               <select
                 id="schedule-model-select"
-                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 value={model}
                 onChange={(e) => {
                   const nextModel = e.target.value;
@@ -745,7 +744,7 @@ function EditMode({
               </label>
               <select
                 id="schedule-reasoning-effort-select"
-                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent disabled:opacity-60"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 value={reasoningEffort}
                 disabled={!model || (reasoningEffortOptions.length === 0 && !reasoningEffort)}
                 onChange={(e) => setReasoningEffort(e.target.value)}
@@ -768,7 +767,7 @@ function EditMode({
               </label>
               <select
                 id="schedule-context-tier-select"
-                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent disabled:opacity-60"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 value={contextTier}
                 disabled={!model || (contextTierOptions.length === 0 && !contextTier)}
                 onChange={(e) => setContextTier(e.target.value as "" | CopilotContextTier)}
@@ -792,7 +791,7 @@ function EditMode({
               <input
                 type="number"
                 min="1"
-                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 placeholder="∞"
                 value={maxRuns}
                 onChange={(e) => setMaxRuns(e.target.value)}
@@ -804,7 +803,7 @@ function EditMode({
                 type="number"
                 min="1"
                 max={MAX_AUTO_ARCHIVE_KEEP}
-                className="w-full text-sm bg-bg-surface border border-border rounded-lg px-3 py-1.5 text-text-primary outline-none focus:border-accent"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
                 placeholder="Off"
                 value={autoArchiveKeep}
                 onChange={(e) => setAutoArchiveKeep(e.target.value)}
@@ -818,9 +817,9 @@ function EditMode({
 
         {/* Prompt — outside the grid, full width */}
         <div className="px-5 py-3">
-          <div className="text-[10px] uppercase tracking-wider text-text-faint mb-1.5">Prompt</div>
+          <div className={cx(DS.text.sectionLabel, "text-text-faint mb-1.5")}>Prompt</div>
           <textarea
-            className="min-h-40 w-full resize-y rounded-md border border-border bg-bg-surface px-3 py-2 font-mono text-xs leading-relaxed text-text-primary outline-none focus:border-accent"
+            className={cx(DS.field.input, DS.field.textarea, DS.focus, "min-h-40 resize-y font-mono leading-relaxed outline-none")}
             rows={8}
             placeholder="What should the agent do when this schedule fires?"
             value={prompt}
@@ -830,19 +829,19 @@ function EditMode({
 
         {/* Error */}
         {error && (
-          <div className="mx-5 mb-3 text-xs text-error bg-error/10 border border-error/20 rounded-lg px-3 py-2">{error}</div>
+          <div className={cx(DS.notice.surface, "mx-5 mb-3 text-xs text-error px-3 py-2")}>{error}</div>
         )}
       </div>
 
       {/* Footer */}
       <div className="flex justify-end gap-2 px-5 py-3 border-t border-border shrink-0">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs text-text-muted hover:bg-bg-hover rounded-md transition-colors">
+        <button onClick={onClose} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}>
           Cancel
         </button>
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-1.5 text-xs font-medium bg-accent text-white hover:bg-accent-hover rounded-md transition-colors disabled:opacity-50"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "disabled:opacity-50")}
         >
           {saving ? "Saving..." : isCreating ? "Create Schedule" : "Save Changes"}
         </button>
@@ -869,11 +868,9 @@ function SessionRunRow({ session, onSelect }: { session: ScheduleRun; onSelect?:
     <button
       onClick={onSelect}
       disabled={!onSelect}
-      className={`w-full text-left px-3 py-2 rounded-md transition-colors flex items-center gap-2.5 ${
-        onSelect ? "hover:bg-bg-hover" : "cursor-default"
-      } ${session.archived || session.missing ? "opacity-60" : ""}`}
+      className={cx(DS.row.base, DS.row.touch, "gap-2.5 py-2", onSelect ? DS.row.interactive : DS.row.inert, (session.archived || session.missing) && "opacity-60")}
     >
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
+      <span className={cx("w-1.5 h-1.5 rounded-full shrink-0", statusDot)} />
       <div className="flex-1 min-w-0">
         <div className="text-xs text-text-primary truncate flex items-center gap-1.5">
           <MessageSquare size={10} className="text-text-faint shrink-0" />

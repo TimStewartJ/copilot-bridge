@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { DEFAULT_FOCUS_ACTION_LABEL } from "../focus-item-helpers";
 import { GROUP_COLOR_DOT } from "../group-colors";
 import FocusDialog from "./FocusDialog";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 export type FocusActionSubmitMode = "foreground" | "background";
 export interface FocusActionTaskPreview {
@@ -53,7 +54,7 @@ export default function FocusActionDialog({
           : <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
             <span>Session will be linked to</span>
             {taskPreview?.group && <span aria-label={`${taskPreview.group.name} group`} role="img"
-              title={`Group: ${taskPreview.group.name}`} className={`h-2 w-2 shrink-0 rounded-full ${GROUP_COLOR_DOT[taskPreview.group.color] ?? "bg-slate-500"}`} />}
+              title={`Group: ${taskPreview.group.name}`} className={cx("h-2 w-2 shrink-0 rounded-full", GROUP_COLOR_DOT[taskPreview.group.color] ?? "bg-slate-500")} />}
             <span className="break-words font-medium text-text-secondary">{taskPreview?.title ?? taskId}</span>
           </div>}
       </div>
@@ -65,17 +66,17 @@ export default function FocusActionDialog({
       <label className="block space-y-1.5">
         <span className="text-xs font-medium text-text-secondary">{promptLabel}</span>
         <textarea value={prompt} onChange={(event) => onPromptChange(event.target.value)} placeholder={promptPlaceholder} disabled={submitting}
-          className={`${context ? "min-h-32" : "min-h-56"} w-full min-w-0 resize-y rounded-lg border border-border bg-bg-surface px-3 py-2 text-sm text-text-primary focus-visible:outline-accent`} />
+          className={cx(context ? "min-h-32" : "min-h-56", DS.field.input, DS.field.textarea, DS.focus, "min-w-0 resize-y")} />
       </label>
       {error && <div role="alert" className="rounded-lg border border-error/25 p-3 text-sm text-error">
-        {error}{onReload && <button type="button" disabled={submitting} onClick={onReload} className="ml-2 min-h-11 underline">Reload item</button>}
+        {error}{onReload && <button type="button" disabled={submitting} onClick={onReload} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-2 underline")}>Reload item</button>}
       </div>}
       <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4">
-        <button type="button" onClick={onClose} disabled={submitting} className={`${UI.button.secondary} min-h-11`}>Cancel</button>
-        <button type="button" onClick={onStartInBackground} disabled={submitDisabled} className={`${UI.button.secondary} inline-flex min-h-11 items-center gap-1.5`}>
+        <button type="button" onClick={onClose} disabled={submitting} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}>Cancel</button>
+        <button type="button" onClick={onStartInBackground} disabled={submitDisabled} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1.5")}>
           <Send size={14} />{submitMode === "background" ? "Sending..." : "Send in background"}
         </button>
-        <button type="button" onClick={onStart} disabled={submitDisabled} className={`${UI.button.primary} inline-flex min-h-11 items-center gap-1.5`}>
+        <button type="button" onClick={onStart} disabled={submitDisabled} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "gap-1.5")}>
           <MessageSquare size={14} />{submitMode === "foreground" ? "Starting..." : "Start session"}
         </button>
       </div>

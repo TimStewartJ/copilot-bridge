@@ -11,6 +11,7 @@ import {
   type DeviceHibernateStatus,
 } from "../../api";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 const DELAY_LABELS: Record<number, string> = {
   0: "Now",
@@ -180,7 +181,7 @@ export function DeviceManagementSection() {
       title="Device Management"
       description="Shortcuts for managing the device running this Copilot Bridge instance."
     >
-      <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-4">
+      <div className={DS.layout.formGroup}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -199,7 +200,7 @@ export function DeviceManagementSection() {
               onChange={(event) => setDelayMinutes(Number(event.target.value))}
               disabled={hibernating}
               aria-label="Hibernation delay"
-              className="rounded-md border border-border bg-bg-surface px-2 py-1.5 text-xs text-text-primary disabled:cursor-not-allowed disabled:text-text-faint"
+              className={cx(DS.field.input, DS.field.inputSize.md, "disabled:cursor-not-allowed disabled:text-text-faint")}
             >
               {HIBERNATE_DELAY_MINUTES.map((minutes) => (
                 <option key={minutes} value={minutes}>
@@ -211,7 +212,7 @@ export function DeviceManagementSection() {
               type="button"
               onClick={() => void handleHibernate()}
               disabled={hibernating}
-              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-warning px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-warning/90 disabled:cursor-wait disabled:bg-bg-surface disabled:text-text-faint"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1.5")}
             >
               {hibernating ? <Loader2 size={12} className="animate-spin" /> : <Moon size={12} />}
               {delayMinutes > 0 ? "Schedule" : "Hibernate"}
@@ -226,11 +227,9 @@ export function DeviceManagementSection() {
                   ? "Turn off automatic hibernation when all sessions are idle"
                   : "Hibernate automatically once all sessions are idle"
               }
-              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-wait disabled:bg-bg-surface disabled:text-text-faint ${
-                onIdleArmed
-                  ? "bg-accent text-white hover:bg-accent/90"
-                  : "border border-border bg-bg-surface text-text-primary hover:bg-bg-primary"
-              }`}
+              className={cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "gap-1.5 disabled:bg-bg-surface disabled:text-text-faint", onIdleArmed
+                  ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, DS.segmented.selected)
+                  : cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "border border-border bg-bg-surface text-text-primary hover:bg-bg-primary"))}
             >
               {togglingOnIdle ? <Loader2 size={12} className="animate-spin" /> : <Timer size={12} />}
               {onIdleArmed ? "On idle: on" : "On idle"}
@@ -239,7 +238,7 @@ export function DeviceManagementSection() {
         </div>
 
         {onIdleArmed && (
-          <div className="flex flex-col gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between">
+          <div className={cx(DS.notice.surface, DS.choice.selected, DS.row.selected, "flex flex-col gap-2 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between")}>
             <span>
               {idleBlockedReason ? (
                 <>
@@ -267,7 +266,7 @@ export function DeviceManagementSection() {
               type="button"
               onClick={() => void handleToggleOnIdle()}
               disabled={togglingOnIdle}
-              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-bg-surface px-2.5 py-1 text-xs font-medium text-text-primary transition-colors hover:bg-bg-primary disabled:cursor-wait disabled:text-text-faint"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 border border-border bg-bg-surface disabled:text-text-faint")}
             >
               {togglingOnIdle ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
               Turn off
@@ -276,7 +275,7 @@ export function DeviceManagementSection() {
         )}
 
         {isPending && pending?.scheduledAt != null && (
-          <div className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between">
+          <div className={cx(DS.notice.surface, "flex flex-col gap-2 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between")}>
             <span>
               Hibernating in <span className="font-medium">{formatCountdown(remainingMs)}</span> (at{" "}
               {formatClock(pending.scheduledAt)}).
@@ -285,7 +284,7 @@ export function DeviceManagementSection() {
               type="button"
               onClick={() => void handleCancel()}
               disabled={cancelling}
-              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-bg-surface px-2.5 py-1 text-xs font-medium text-text-primary transition-colors hover:bg-bg-primary disabled:cursor-wait disabled:text-text-faint"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 border border-border bg-bg-surface disabled:text-text-faint")}
             >
               {cancelling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
               Cancel
@@ -294,7 +293,7 @@ export function DeviceManagementSection() {
         )}
 
         {message && (
-          <div className="rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-muted">
+          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
             {message}
           </div>
         )}

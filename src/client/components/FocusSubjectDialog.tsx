@@ -5,7 +5,8 @@ import FocusDialog from "./FocusDialog";
 import FocusEpisodeDetails, { FocusTransitionList } from "./FocusEpisodeDetails";
 import FocusItemCard from "./FocusItemCard";
 import type { FocusInteractionProps } from "./FocusInteractions";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+
 
 export default function FocusSubjectDialog({
   target, onClose, onInspectCurrent, ...props
@@ -37,7 +38,7 @@ export default function FocusSubjectDialog({
       <p className="break-all text-xs text-text-muted">Object: {target.objectId}{target.activationId ? ` · Linked episode: ${target.activationId}` : " · Current record lookup"}</p>
       {loading && <p role="status" className="text-sm text-text-muted">Loading the exact Focus subject...</p>}
       {error && <p role="alert" className="text-sm text-error">Could not retrieve this exact subject: {error.message}
-        <button type="button" className={`${UI.button.secondary} ml-2 min-h-11 text-xs`} onClick={() => void (target.activationId ? episodeQuery.refetch() : historyQuery.refetch())}>Retry subject lookup</button>
+        <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "ml-2 text-xs")} onClick={() => void (target.activationId ? episodeQuery.refetch() : historyQuery.refetch())}>Retry subject lookup</button>
       </p>}
       {!loading && !error && !episode && !entry && <p className="text-sm text-text-muted">This record was not found in History. No state was changed.</p>}
       {deleted && <p className="text-sm text-text-muted">This record was deleted. Retained evidence is read-only, not a resolved outcome.</p>}
@@ -45,7 +46,7 @@ export default function FocusSubjectDialog({
       {oldEpisode && <div className="space-y-2 rounded-lg border border-border p-3 text-sm text-text-secondary">
         <p>This link refers to a superseded or earlier episode. Today's content is not substituted for it.</p>
         {current && <><p>Current record: {current.title} — {FOCUS_LIFECYCLE_LABELS[current.lifecycle]}.</p>
-          <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => onInspectCurrent({ objectId: current.id, activationId: current.activationId })}>Inspect current episode</button>
+          <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => onInspectCurrent({ objectId: current.id, activationId: current.activationId })}>Inspect current episode</button>
         </>}
       </div>}
       {showCurrent && !isFocusOpen(current.lifecycle) && <p className="text-sm text-text-secondary">This episode is {FOCUS_LIFECYCLE_LABELS[current.lifecycle].toLowerCase()}. This notification is now read-only; it did not reactivate the concern.</p>}
@@ -54,16 +55,16 @@ export default function FocusSubjectDialog({
       {showCurrent && <FocusItemCard {...props} object={current} readOnly={readOnly} />}
       {!target.activationId && entry?.object && !("objectType" in entry.object) && <div className="space-y-2 text-sm text-text-secondary">
         <p>{entry.object.text}</p><p>{entry.object.done ? "Action completed" : "Action open"}. Source resolution is independent.</p>
-        {entry.object.taskId && <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`}
+        {entry.object.taskId && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")}
           onClick={() => props.onSelectTask(entry.object!.taskId!, { checklistItemId: entry.id })}>Open Action task</button>}
       </div>}
       {transitions.length > 0 && <section className="space-y-2">
         <h3 className="text-sm font-semibold text-text-primary">{target.activationId ? "Linked episode history" : "Retained object history"}</h3>
         <FocusTransitionList transitions={transitions} onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} onInspectHistory={props.onInspectHistory} />
       </section>}
-      {!target.activationId && entry && props.onInspectHistory && (quarantined || deleted || entry.transitionTotal > transitions.length) && <button type="button" className={`${UI.button.secondary} min-h-11 text-xs`}
+      {!target.activationId && entry && props.onInspectHistory && (quarantined || deleted || entry.transitionTotal > transitions.length) && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")}
         onClick={() => props.onInspectHistory!(target.objectId)}>Inspect complete object History</button>}
-      {target.activationId && episodeQuery.hasNextPage && <button type="button" disabled={episodeQuery.isFetchingNextPage} className={`${UI.button.secondary} min-h-11 text-xs`} onClick={() => void episodeQuery.fetchNextPage()}>
+      {target.activationId && episodeQuery.hasNextPage && <button type="button" disabled={episodeQuery.isFetchingNextPage} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "text-xs")} onClick={() => void episodeQuery.fetchNextPage()}>
         {episodeQuery.isFetchingNextPage ? "Loading..." : "Load more episode history"}
       </button>}
     </div>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { X } from "lucide-react";
 import { useModalDialog } from "./shared/useModalDialog";
+import { IconButton } from "../design/primitives";
+import { DS, cx } from "../design/tokens";
 
 interface FocusDialogProps {
   title: string;
@@ -9,6 +11,8 @@ interface FocusDialogProps {
   pending: boolean;
   onClose: () => void;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  size?: "default" | "wide";
+  contained?: boolean;
   children: ReactNode;
 }
 
@@ -28,7 +32,7 @@ function focusTargets(root: HTMLElement): HTMLElement[] {
   });
 }
 
-export default function FocusDialog({ title, description, closeLabel = "Close dialog", pending, onClose, initialFocusRef, children }: FocusDialogProps) {
+export default function FocusDialog({ title, description, closeLabel = "Close dialog", pending, onClose, initialFocusRef, size = "default", contained = false, children }: FocusDialogProps) {
   const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose, dismissible: !pending });
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -43,7 +47,7 @@ export default function FocusDialog({ title, description, closeLabel = "Close di
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-3 py-4 sm:px-4"
+      className={DS.surface.scrim}
       onMouseDown={(event) => { if (!pending && event.target === event.currentTarget) onClose(); }}
     >
       <div
@@ -52,7 +56,12 @@ export default function FocusDialog({ title, description, closeLabel = "Close di
         tabIndex={-1}
         aria-describedby={description ? `${titleId}-description` : undefined}
         aria-busy={pending || undefined}
-        className="max-h-[90dvh] w-full min-w-0 max-w-2xl overflow-y-auto rounded-2xl border border-border bg-bg-primary p-4 shadow-2xl sm:p-5"
+        className={cx(
+          DS.surface.dialog,
+          "w-full min-w-0",
+          size === "wide" ? "max-w-3xl" : "max-w-2xl",
+          contained ? "mt-[min(6dvh,3rem)] flex max-h-[min(82dvh,52rem)] flex-col self-start overflow-hidden" : "max-h-[90dvh] overflow-y-auto p-4 sm:p-5",
+        )}
         onKeyDown={(event) => {
           if (event.key !== "Tab") return;
           const controls = ref.current ? focusTargets(ref.current) : [];
@@ -66,18 +75,14 @@ export default function FocusDialog({ title, description, closeLabel = "Close di
           }
         }}
       >
-        <div className="mb-4 flex items-start justify-between gap-3">
+        <div className={cx("flex shrink-0 items-start justify-between gap-3", contained ? "px-4 pb-2 pt-4 sm:px-5" : "mb-4")}>
           <div className="min-w-0">
             <h2 id={titleId} className="break-words text-lg font-semibold text-text-primary">{title}</h2>
             {description && <p id={`${titleId}-description`} className="mt-2 text-sm text-text-muted">{description}</p>}
           </div>
-          <button
-            type="button"
-            aria-label={closeLabel}
-            disabled={pending}
-            onClick={onClose}
-            className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-text-muted hover:bg-bg-hover focus-visible:ring-2 focus-visible:ring-accent"
-          ><X size={18} /></button>
+          <IconButton label={closeLabel} disabled={pending} onClick={onClose}>
+            <X size={18} />
+          </IconButton>
         </div>
         {children}
       </div>

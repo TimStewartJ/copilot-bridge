@@ -22,6 +22,7 @@ import { loadWorkMapFilters } from "../work-map-filter-state";
 import { queryKeys } from "../queryClient";
 import { readFocusSubjectLink, setFocusSubjectLink } from "../lib/focus-subject-links";
 import { focusDueHandoffCount } from "../focus-view-model";
+import { DS, cx } from "../design/tokens";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
@@ -137,7 +138,7 @@ export default function Dashboard({
     : focusCount > 0
       ? "due-today"
       : "none";
-  const dashboardWidthClass = activeTab === "work-map" ? "max-w-6xl" : "max-w-[1440px]";
+  const dashboardWidthClass = activeTab === "work-map" ? "max-w-6xl" : "max-w-5xl";
 
   const refreshFocus = async () => {
     await Promise.all([
@@ -179,7 +180,7 @@ export default function Dashboard({
         className="absolute inset-0"
         scrollRestoration={scrollRestoration}
       >
-        <div className={`${dashboardWidthClass} mx-auto space-y-3 px-4 py-6 md:px-6 xl:px-8`}>
+        <div className={cx(DS.layout.pageColumn, dashboardWidthClass, "space-y-3")}>
           <DashboardTabs
             activeTab={activeTab}
             onTabChange={(tab) => navigate(getDashboardTabPath(tab))}

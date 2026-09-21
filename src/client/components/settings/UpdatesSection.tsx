@@ -11,6 +11,7 @@ import {
   type UpdateInstallStatus,
 } from "../../update-api";
 import { SettingsSection } from "./SettingsSection";
+import { DS, cx } from "../../design/tokens";
 
 const STATUS_LABELS: Record<UpdateCheckStatus, string> = {
   disabled: "Disabled",
@@ -139,10 +140,10 @@ export function UpdatesSection() {
   const installTone = !installStatus
     ? "border-border bg-bg-primary text-text-muted"
     : installStatus.phase === "succeeded"
-    ? "border-success/30 bg-success/10 text-success"
+    ? cx(DS.notice.surface, "text-success")
     : FAILED_INSTALL_PHASES.has(installStatus.phase)
-      ? "border-error/30 bg-error/10 text-error"
-      : "border-accent/30 bg-accent/10 text-accent";
+      ? cx(DS.notice.surface, "text-error")
+      : cx(DS.notice.surface, DS.choice.selected, DS.row.selected, "text-accent");
 
   const statusTone = status?.status === "update_available"
     ? "text-accent"
@@ -162,14 +163,14 @@ export function UpdatesSection() {
           type="button"
           onClick={() => refresh(selectedChannel)}
           disabled={loading}
-          className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors inline-flex items-center gap-1.5"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface gap-1.5")}
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
         </button>
       )}
     >
-      <div className="rounded-md border border-border bg-bg-elevated p-4 space-y-4">
+      <div className={DS.layout.formGroup}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-accent">
@@ -181,7 +182,7 @@ export function UpdatesSection() {
             </p>
           </div>
 
-          <label className={`flex items-center gap-2 text-xs ${channelSelectionDisabled ? "cursor-not-allowed text-text-faint" : "text-text-muted"}`}>
+          <label className={cx("flex items-center gap-2 text-xs", channelSelectionDisabled ? "cursor-not-allowed text-text-faint" : "text-text-muted")}>
             Channel
             <select
               value={selectedChannel}
@@ -191,7 +192,7 @@ export function UpdatesSection() {
                 setChannel(next);
                 refresh(next);
               }}
-              className="rounded-md border border-border bg-bg-primary px-2 py-1 text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              className={cx(DS.field.input, DS.field.inputSize.md, "disabled:cursor-not-allowed")}
             >
               <option value="stable">stable</option>
               <option value="preview">preview</option>
@@ -199,9 +200,9 @@ export function UpdatesSection() {
           </label>
         </div>
 
-        <div className="rounded-md border border-border bg-bg-primary px-3 py-2">
+        <div className={DS.layout.formGroup}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className={`text-sm font-medium ${statusTone}`}>
+            <div className={cx("text-sm font-medium", statusTone)}>
               {loading ? "Checking..." : status ? STATUS_LABELS[status.status] : "Unknown"}
             </div>
             {status?.checkedAt && (
@@ -216,7 +217,7 @@ export function UpdatesSection() {
         </div>
 
         {status?.update && (
-          <div className="rounded-md border border-accent/30 bg-accent/10 p-3">
+          <div className={cx(DS.notice.surface, DS.choice.selected, DS.row.selected, "p-3")}>
             <div className="text-sm font-medium text-accent">
               {status.update.version} is available
             </div>
@@ -228,7 +229,7 @@ export function UpdatesSection() {
                 type="button"
                 onClick={handleInstall}
                 disabled={installing || activeInstall}
-                className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent px-2.5 py-1 text-xs font-medium text-bg-primary hover:opacity-90 disabled:opacity-60"
+                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.choice.selected, "gap-1 border text-bg-primary hover:opacity-90 disabled:opacity-60")}
               >
                 {installing || activeInstall ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
                 {activeInstall ? "Install in progress" : "Install and restart"}
@@ -258,7 +259,7 @@ export function UpdatesSection() {
         )}
 
         {installStatus && (
-          <div className={`rounded-md border px-3 py-3 text-xs ${installTone}`}>
+          <div className={cx("rounded-md border px-3 py-3 text-xs", installTone)}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 font-medium">
                 {activeInstall && <Loader2 size={13} className="animate-spin" />}

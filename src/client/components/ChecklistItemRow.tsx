@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   X,
 } from "lucide-react";
+import { DS, cx } from "../design/tokens";
 
 // ── Variant-specific props ──────────────────────────────────────
 
@@ -197,14 +198,14 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
   const isCard = variant === "card";
 
   const rowClass = isPanel
-    ? `flex items-start gap-1.5 px-3 py-1 group select-none hover:bg-bg-hover rounded-md transition-colors ${highlight ? "animate-checklist-highlight" : ""} ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
+    ? cx("flex items-start gap-1.5 px-3 py-1 group select-none hover:bg-bg-hover rounded-md transition-colors", highlight ? "animate-checklist-highlight" : "", pressing ? "bg-bg-hover scale-[0.98]" : "")
     : isDashboard
-      ? `flex items-center gap-2 px-3 py-1 select-none hover:bg-bg-hover transition-all first:rounded-t-lg last:rounded-b-lg group ${pressing ? "bg-bg-hover scale-[0.98]" : ""}`
-      : `flex items-start gap-2 px-3 py-2 select-none rounded-md bg-bg-surface group ${highlight ? "animate-checklist-highlight" : ""} ${pressing ? "scale-[0.98]" : ""}`;
+      ? cx("flex items-center gap-2 px-3 py-1 select-none hover:bg-bg-hover transition-all first:rounded-t-lg last:rounded-b-lg group", pressing ? "bg-bg-hover scale-[0.98]" : "")
+      : cx("flex items-start gap-2 px-3 py-2 select-none rounded-md bg-bg-surface group", highlight ? "animate-checklist-highlight" : "", pressing ? "scale-[0.98]" : "");
 
   const textClass = isPanel
-    ? `text-xs break-words ${checklistItem.done ? "text-text-faint line-through" : "text-text-secondary"}`
-    : `text-sm break-words ${checklistItem.done ? "text-text-faint line-through" : "text-text-primary"}`;
+    ? cx("text-xs break-words", checklistItem.done ? "text-text-faint line-through" : "text-text-secondary")
+    : cx("text-sm break-words", checklistItem.done ? "text-text-faint line-through" : "text-text-primary");
 
   const checkboxSize = isPanel ? "w-3.5 h-3.5" : "w-3.5 h-3.5";
   const checkIconSize = 9;
@@ -228,25 +229,21 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
             e.stopPropagation();
             await handleToggle();
           }}
-          className={`shrink-0 flex items-center justify-center ${
-            isDashboard
-              ? "w-11 h-11 rounded-lg active:bg-bg-hover"
-              : "mt-0.5"
-          }`}
+          className={cx("shrink-0 flex items-center justify-center", isDashboard
+              ? cx(DS.button.base, DS.button.size.sm, "w-11 h-11 active:bg-bg-hover")
+              : "mt-0.5")}
            aria-label={checklistItem.done ? "Mark incomplete" : "Mark complete"}
         >
-          <span className={`${checkboxSize} rounded border flex items-center justify-center transition-colors ${
-            checklistItem.done
-              ? "bg-success/80 border-success/80 text-white hover:bg-success/60"
-              : CHECKBOX_URGENCY[urgency]
-          }`}>
+          <span className={cx(checkboxSize, "rounded border flex items-center justify-center transition-colors", checklistItem.done
+              ? DS.checkbox.checked
+              : CHECKBOX_URGENCY[urgency])}>
             {checklistItem.done && <Check size={checkIconSize} strokeWidth={3} />}
           </span>
         </button>
 
         {/* Content */}
         <div
-          className={`flex-1 min-w-0 ${isDashboard && onSelectTask ? "cursor-pointer" : ""}`}
+          className={cx("flex-1 min-w-0", isDashboard && onSelectTask ? "cursor-pointer" : "")}
           role={isDashboard && onSelectTask ? "button" : undefined}
         >
           {editing ? (
@@ -260,9 +257,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
                 if (e.key === "Enter") commitEdit();
                 if (e.key === "Escape") { setEditText(checklistItem.text); setEditing(false); }
               }}
-              className={`w-full bg-transparent border-b border-accent outline-none py-0 ${
-                isPanel ? "text-xs text-text-secondary" : "text-sm text-text-primary"
-              }`}
+              className={cx(DS.field.input, DS.field.inputSize.sm)}
             />
           ) : (
             <span
@@ -272,7 +267,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
                   startEdit();
                 }
               }}
-              className={`${textClass} ${!isDashboard && !checklistItem.done ? "cursor-text" : ""}`}
+              className={cx(textClass, !isDashboard && !checklistItem.done ? "cursor-text" : "")}
             >
               {checklistItem.text}
             </span>
@@ -280,16 +275,14 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
 
           {/* Sub-line: deadline + task pill (dashboard) */}
           {!editing && (
-            <div className={`flex items-center gap-2 ${isDashboard ? "text-xs mt-0.5" : isPanel ? "" : "mt-0.5"}`}>
+            <div className={cx("flex items-center gap-2", isDashboard ? "text-xs mt-0.5" : isPanel ? "" : "mt-0.5")}>
               {/* Task pill (dashboard only) */}
               {isDashboard && dashboardChecklistItem?.taskTitle && !hideTaskPill && (
-                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] truncate max-w-[150px] ${
-                  dashboardChecklistItem.taskGroupColor
-                    ? `${GROUP_COLOR_BG[dashboardChecklistItem.taskGroupColor] ?? ""} text-text-secondary`
-                    : "bg-bg-hover text-text-faint"
-                }`}>
+                <span className={cx(DS.badge.base, "items-center gap-1 truncate max-w-[150px]", dashboardChecklistItem.taskGroupColor
+                    ? cx(GROUP_COLOR_BG[dashboardChecklistItem.taskGroupColor] ?? "", "text-text-secondary")
+                    : "bg-bg-hover text-text-faint")}>
                   {dashboardChecklistItem.taskGroupColor && (
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${GROUP_COLOR_DOT[dashboardChecklistItem.taskGroupColor] ?? ""}`} />
+                    <span className={cx("w-1.5 h-1.5 rounded-full shrink-0", GROUP_COLOR_DOT[dashboardChecklistItem.taskGroupColor] ?? "")} />
                   )}
                   {dashboardChecklistItem.taskTitle}
                 </span>
@@ -299,16 +292,12 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
               {checklistItem.deadline && !checklistItem.done && (
                 isPanel ? (
                   <span
-                    className={`inline-flex items-center gap-0.5 ml-1.5 px-1 py-0.5 -my-0.5 rounded text-[10px] ${DEADLINE_STYLES[urgency]}`}
+                    className={cx("inline-flex items-center gap-0.5 ml-1.5 px-1 py-0.5 -my-0.5 rounded text-[10px]", DEADLINE_STYLES[urgency])}
                   >
                     {urgency === "overdue" && "⚠ "}{deadlineLabel(checklistItem.deadline)}
                   </span>
                 ) : (
-                  <span className={`shrink-0 flex items-center gap-0.5 ${
-                    isCard ? "text-[10px]" : ""
-                  } ${
-                    urgency === "overdue" ? "text-error" : urgency === "soon" ? "text-warning" : "text-text-faint"
-                  }`}>
+                  <span className={cx("shrink-0 flex items-center gap-0.5", isCard ? "text-[10px]" : "", urgency === "overdue" ? "text-error" : urgency === "soon" ? "text-warning" : "text-text-faint")}>
                     {urgency === "overdue" && <AlertTriangle size={10} />}
                     {deadlineLabel(checklistItem.deadline)}
                   </span>
@@ -322,7 +311,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
               {checklistItem.sources.map((source) => (
                 <div key={`${source.sourceId}:${source.activationId}`} className="break-words">
                   <span>Source {source.sourceType}: {source.title} — {FOCUS_LIFECYCLE_LABELS[source.lifecycle]}{isFocusOpen(source.lifecycle) ? " (still open)" : ""}</span>
-                  {props.onInspectFocusObject && <button type="button" className="ml-1 min-h-11 text-accent underline"
+                  {props.onInspectFocusObject && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-1 text-accent underline")}
                     onClick={(event) => { event.stopPropagation(); props.onInspectFocusObject?.(source.sourceId); }}>Inspect source</button>}
                 </div>
               ))}

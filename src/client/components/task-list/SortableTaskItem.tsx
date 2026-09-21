@@ -64,7 +64,7 @@ export default function SortableTaskItem({
   const showUnreadDot = shouldShowTaskRowUnreadDot(task, indicator);
 
   return (
-    <div ref={setNodeRef} style={style} className="group">
+    <div ref={setNodeRef} style={style} className="group border-b border-border-subtle last:border-b-0">
       <button
         {...bindLongPress(task.id, () => onSelectTask(task.id))}
         data-unread-task-id={showUnreadDot ? task.id : undefined}

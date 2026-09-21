@@ -2,6 +2,7 @@ import { useId, useState, type KeyboardEvent } from "react";
 import { X } from "lucide-react";
 import { normalizeTag, tagsMatch } from "./docs-model";
 import { cx } from "./docs-ui";
+import { DS } from "../../design/tokens";
 
 export interface DocsTagsInputProps {
   id?: string;
@@ -40,21 +41,17 @@ export default function DocsTagsInput({ id, tags, suggestions, onChange, disable
 
   return (
     <div
-      className={cx(
-        "flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-border bg-bg-primary px-2 py-1.5 transition-colors",
-        "focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25 hover:border-text-faint/60",
-        disabled && "opacity-60",
-      )}
+      className={cx(DS.field.group, disabled && "opacity-60")}
     >
       {tags.map((tag) => (
-        <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-bg-surface py-0.5 pl-2 pr-1 text-xs font-medium text-text-secondary">
+        <span key={tag} className={cx(DS.tag.base, DS.tag.size.sm, DS.row.selected)}>
           {tag}
           <button
             type="button"
             disabled={disabled}
             aria-label={`Remove tag ${tag}`}
             onClick={() => onChange(tags.filter((candidate) => candidate !== tag))}
-            className="rounded-full p-0.5 text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}
           >
             <X size={11} />
           </button>
@@ -76,7 +73,7 @@ export default function DocsTagsInput({ id, tags, suggestions, onChange, disable
         }}
         onKeyDown={handleKeyDown}
         onBlur={() => text.trim() && commit(text)}
-        className="h-6 min-w-[7rem] flex-1 border-0 bg-transparent px-1 text-sm text-text-primary placeholder:text-text-faint focus:outline-none"
+        className={cx(DS.field.inline, "min-w-[7rem]")}
       />
       <datalist id={listId}>
         {available.map((suggestion) => <option key={suggestion} value={suggestion} />)}

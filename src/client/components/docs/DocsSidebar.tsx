@@ -37,6 +37,7 @@ import {
   type DocsTreeIndex,
   type DocsTreeRow,
 } from "./docs-model";
+import { DS } from "../../design/tokens";
 
 const INDENT_PX = 14;
 
@@ -119,11 +120,7 @@ function SearchResults({
               type="button"
               onClick={() => onOpen(item.path)}
               onMouseEnter={() => onHover(position)}
-              className={cx(
-                "block w-full rounded-md px-2.5 text-left transition-colors",
-                roomy ? "py-3" : "py-2",
-                position === activeIndex ? "bg-bg-hover" : "hover:bg-bg-hover/60",
-              )}
+              className={cx(DS.row.stacked, position === activeIndex && DS.row.selected)}
             >
               <div className={cx("truncate font-medium", roomy ? "text-[15px]" : "text-[13px]", item.path === selectedPath ? "text-accent" : "text-text-primary")}>
                 {item.title}
@@ -243,11 +240,7 @@ function DocsTree({ rows, selectedPath, selectedIsCollection, roomy, onOpen, onT
             aria-level={row.depth + 1}
             aria-expanded={row.hasChildren ? row.expanded : undefined}
             aria-selected={current}
-            className={cx(
-              "group relative flex items-center rounded-md transition-colors",
-              roomy ? "min-h-11" : "min-h-8",
-              current ? "bg-accent-surface" : "hover:bg-bg-hover/70",
-            )}
+            className={cx("group relative flex items-center rounded-md transition-colors", roomy ? "min-h-11" : "min-h-8", current ? DS.row.selected : "hover:bg-bg-hover/70")}
             onContextMenu={(event: MouseEvent) => {
               event.preventDefault();
               onContextMenu(row, { x: event.clientX, y: event.clientY });
@@ -264,7 +257,7 @@ function DocsTree({ rows, selectedPath, selectedIsCollection, roomy, onOpen, onT
                 tabIndex={-1}
                 aria-label={row.expanded ? `Collapse ${label}` : `Expand ${label}`}
                 onClick={() => onToggle(row.node.path, !row.expanded)}
-                className={cx("flex shrink-0 items-center justify-center rounded text-text-faint transition-colors hover:text-text-primary", roomy ? "h-11 w-8" : "h-8 w-7")}
+                className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, roomy && "h-11")}
               >
                 <ChevronRight size={14} className={cx("transition-transform duration-150", row.expanded && "rotate-90")} />
               </button>
@@ -281,11 +274,7 @@ function DocsTree({ rows, selectedPath, selectedIsCollection, roomy, onOpen, onT
               onFocus={() => setFocusKey(row.key)}
               onClick={() => onOpen(row)}
               title={fullTitle}
-              className={cx(
-                "min-w-0 flex-1 truncate rounded-md py-1.5 pr-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
-                roomy ? "text-[15px]" : "text-[13px]",
-                current ? "font-medium text-text-primary" : row.kind === "page" ? "text-text-secondary group-hover:text-text-primary" : "font-medium text-text-secondary group-hover:text-text-primary",
-              )}
+              className={cx(DS.focus, "min-h-10 min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px] group-hover:text-text-primary md:min-h-8", roomy && "text-[15px]", current ? "font-medium text-text-primary" : "text-text-secondary")}
             >
               {label}
             </button>
@@ -297,7 +286,7 @@ function DocsTree({ rows, selectedPath, selectedIsCollection, roomy, onOpen, onT
                 aria-label={row.kind === "collection" ? `New entry in ${label}` : `New page in ${label}`}
                 title={row.kind === "collection" ? "New entry" : "New page here"}
                 onClick={() => onAdd(row)}
-                className="mr-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary group-focus-within:flex group-hover:flex"
+                className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "mr-1 hidden group-focus-within:flex group-hover:flex")}
               >
                 <Plus size={14} />
               </button>
@@ -412,7 +401,7 @@ export default function DocsSidebar({
         <button
           type="button"
           onClick={goHome}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "min-w-0 flex-1 gap-2 text-left")}
         >
           <Library size={16} className="shrink-0 text-accent" aria-hidden="true" />
           <span className={cx("truncate font-semibold text-text-primary", roomy ? "text-[17px]" : "text-sm")}>Docs</span>
@@ -439,11 +428,7 @@ export default function DocsSidebar({
             placeholder="Search docs"
             onChange={(event) => onQueryChange(event.target.value)}
             onKeyDown={handleSearchKeyDown}
-            className={cx(
-              "peer w-full rounded-md border border-border bg-bg-primary pl-8 pr-8 text-text-primary placeholder:text-text-faint transition-colors",
-              "hover:border-text-faint/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25",
-              roomy ? "h-10 text-[15px]" : "h-8 text-[13px]",
-            )}
+            className={cx(DS.field.input, DS.field.inputSize.md, "peer pl-8 pr-8", roomy ? "h-10" : "md:h-8")}
           />
           {query ? (
             <button
@@ -453,7 +438,7 @@ export default function DocsSidebar({
                 onQueryChange("");
                 searchInputRef.current?.focus();
               }}
-              className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary"
+              className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "absolute right-1.5 top-1/2 -translate-y-1/2 text-text-faint")}
             >
               <X size={13} />
             </button>
@@ -500,7 +485,7 @@ export default function DocsSidebar({
                     const folderName = parentPath(page.path).split("/").pop() ?? "";
                     return (
                       <li key={page.path}>
-                        <button type="button" onClick={() => goTo(page.path)} className="flex min-h-12 w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors active:bg-bg-hover">
+                        <button type="button" onClick={() => goTo(page.path)} className={cx(DS.row.base, DS.row.interactive, "min-h-12 w-full gap-3 text-left active:bg-bg-hover", DS.row.touch)}>
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-[15px] text-text-primary">{compactTreeLabel(page.title, [folderName, labels[labels.length - 1] ?? ""])}</span>
                             {labels.length > 0 && <span className="block truncate text-xs text-text-faint">{labels.join(" / ")}</span>}

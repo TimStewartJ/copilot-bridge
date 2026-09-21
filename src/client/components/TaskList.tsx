@@ -142,8 +142,8 @@ export default function TaskList({
   const renderGroup = (label: string, items: Task[]) => {
     if (items.length === 0) return null;
     return (
-      <div key={label}>
-        <div className="px-3 py-1.5 text-xs font-semibold tracking-wide text-text-secondary">
+      <div key={label} className={cx(DS.surface.group, "overflow-hidden")} data-ds-surface="group">
+        <div className={cx(DS.collection.header, "px-3 text-xs font-medium text-text-secondary")}>
           {label} ({items.length})
         </div>
         <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
@@ -178,14 +178,15 @@ export default function TaskList({
             const groupId = group?.id ?? "__ungrouped__";
             return (
               <DroppableGroup key={groupId} id={groupId}>
-                <div>
+                <div className={cx(DS.surface.group, "overflow-hidden")} data-ds-surface="group">
                 {group && (
-                <div className="flex items-center">
+                <div className={DS.collection.header}>
                   <button
                     onClick={() => {
                       if (onUpdateGroup) onUpdateGroup(group.id, { collapsed: !isCollapsed });
                     }}
-                    className="flex min-h-9 flex-1 items-center gap-1.5 px-3 text-xs font-medium text-text-muted"
+                    aria-expanded={!isCollapsed}
+                    className={cx(DS.focus, "flex min-h-10 min-w-0 flex-1 items-center gap-1.5 px-3 text-xs font-medium text-text-secondary md:min-h-8")}
                   >
                     {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                     <span className={cx(DS.dot, GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")} aria-hidden="true" />

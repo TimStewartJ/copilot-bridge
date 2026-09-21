@@ -5,6 +5,7 @@ import VisualArtifactRenderer from "./VisualArtifactRenderer";
 import { hasVisualSource, useVisualSource } from "./useVisualSource";
 import type { VisualViewport } from "./visualDisplay";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx } from "../design/tokens";
 
 interface VisualArtifactModalProps {
   visual: VisualArtifact;
@@ -110,7 +111,7 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
       onClick={handleOverlayClick}
       {...dialogProps}
     >
-      <div className="relative flex h-[92vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden rounded-xl bg-bg-surface shadow-2xl">
+      <div className={cx(DS.surface.dialog, "relative flex h-[92vh] w-[96vw] max-w-[1800px] flex-col overflow-hidden")}>
         <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 sm:px-4">
           <span id={titleId} className="min-w-0 truncate text-sm font-medium text-text-primary">
             {visual.title}
@@ -119,7 +120,7 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
             {hasSource && (
               <button
                 onClick={() => togglePanel("source")}
-                className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs text-text-muted transition-colors hover:bg-bg-primary hover:text-text-primary"
+                className={cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "gap-1.5 text-text-muted hover:bg-bg-primary hover:text-text-primary")}
                 aria-label={sourceOpen ? `Hide ${sourceLabel}` : `View ${sourceLabel}`}
                 aria-pressed={sourceOpen}
               >
@@ -130,7 +131,7 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
             {visual.caption && (
               <button
                 onClick={() => togglePanel("caption")}
-                className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs text-text-muted transition-colors hover:bg-bg-primary hover:text-text-primary"
+                className={cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "gap-1.5 text-text-muted hover:bg-bg-primary hover:text-text-primary")}
                 aria-label={captionOpen ? "Hide caption" : "View caption"}
                 aria-pressed={captionOpen}
               >
@@ -150,7 +151,7 @@ export default function VisualArtifactModal({ visual, onClose }: VisualArtifactM
             <button
               ref={closeButtonRef}
               onClick={onClose}
-              className="rounded p-1 text-text-muted transition-colors hover:bg-bg-primary hover:text-text-primary"
+              className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}
               aria-label="Close"
             >
               <X size={16} />

@@ -337,11 +337,17 @@ call IDs are available on usage events, not cache-break events.
 
 ### Design System
 
-Every client screen is built from `src/client/design/`: `tokens.ts` holds the class recipes, `primitives.tsx` the components, and its `README.md` the rules (content is the only full-contrast text; group with space, hairlines and rails instead of boxes; one line that opens for more; colour only for state; accent is never a fill; one primary action per screen).
+Every client screen is built from `src/client/design/`: `tokens.ts` holds the class recipes, `primitives.tsx` the components, and its `README.md` the rules. Opaque canvas, pane, group, inset, selection and overlay roles make loaded task lists and views distinguishable. Use one neutral group per logical region, divided unboxed rows and values, and insets for controls/raw details; never nest same-level groups or Panels. Layout and type carry hierarchy without illegibly faint text. Shadows stay on overlays, accent is never an action fill, and each screen has one primary action.
 
-- `npm run test:design-audit` runs in `check:fast`, `check:client` and `check:pr`. It fails on the retired patterns in any client file that is not listed in `src/client/design/audit-pending.ts`.
-- That list names the screens written before the system existed. It only shrinks: never add a file to it, and remove a file once it is migrated (the audit fails until you do).
+- `npm run test:design-audit` runs in `check:fast`, `check:client` and `check:pr`. Every runtime client screen is held to it: the migration backlog is empty and the legacy token module is retired.
+- Never add a file to `src/client/design/audit-pending.ts`; the tests require it to remain empty. Surface tests require enabled text/state roles to reach 4.5:1, composed badge tints to remain readable, and input boundaries to reach 3:1 in both themes.
 - `npx tsx src/client/design/audit.ts --explain <file>` lists what a file still breaks.
+
+Search keeps the query/source filters fixed above a single results scroller, with plain document
+excerpts and literal chat excerpts. Settings keeps long instruction fields behind disclosures,
+uses a mobile category selector, and exposes live quota from the mobile header. Drafts save only
+changed fields; theme selection is a reversible preview until Save, and passive model-catalog reads
+do not change saved preferences or create an unsaved-changes warning.
 
 ### Build
 

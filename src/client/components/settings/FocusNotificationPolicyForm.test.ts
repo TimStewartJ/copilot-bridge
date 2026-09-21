@@ -394,7 +394,7 @@ describe("FocusNotificationPolicyForm", () => {
       }
     }
     for (const action of findAllByTag(harness!.dom.container, "BUTTON")) {
-      expect(getReactProps(action)?.className).toContain("min-h-11");
+      expect(getReactProps(action)?.className).toContain("h-10");
     }
   });
 });
