@@ -20,6 +20,8 @@ describe("RestartNotice", () => {
     expect(text).not.toMatch(/paused|imminent|abort/i);
     const root = harness!.dom.container.childNodes[0];
     expect(getReactProps(root)?.className).toContain("py-1");
+    expect(getReactProps(root)?.className).toContain("text-text-secondary");
+    expect(getReactProps(root)?.className).not.toContain("text-text-muted");
     expect(getReactProps(root)?.className).not.toMatch(/warning|error/);
     expect(findAllByTag(harness!.dom.container, "svg").some((node) =>
       String(getReactProps(node)?.className).includes("animate-spin"))).toBe(false);
