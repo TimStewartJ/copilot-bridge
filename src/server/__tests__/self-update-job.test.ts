@@ -10,7 +10,7 @@ const reusableReleaseMock = vi.hoisted(() => ({
   value: null as any,
 }));
 const prepareReleaseSlotMock = vi.hoisted(() => vi.fn());
-const writeRestartSignalFileMock = vi.hoisted(() => vi.fn());
+const requestRestartMock = vi.hoisted(() => vi.fn());
 const removeRollbackCheckpointMock = vi.hoisted(() => vi.fn());
 type ValidationCommandOptions = {
   command: string;
@@ -47,15 +47,9 @@ vi.mock("../release-slots.js", () => ({
   prepareReleaseSlot: prepareReleaseSlotMock,
 }));
 
-vi.mock("../restart-controller.js", () => ({
-  beginRestartPending: () => ({ requestId: "restart-request-test", waitingSessions: 0 }),
-  isRestartPending: () => false,
-  triggerRestartPending: () => 0,
-  clearRestartPending: vi.fn(),
-}));
-
-vi.mock("../restart-signal.js", () => ({
-  writeRestartSignalFile: writeRestartSignalFileMock,
+vi.mock("../restart-signal.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../restart-signal.js")>(),
+  requestRestart: requestRestartMock,
 }));
 
 vi.mock("../pre-deploy-checkpoint.js", () => ({
@@ -89,7 +83,7 @@ describe("runSelfUpdateJob active-release drift", () => {
     activeReleaseMock.value = null;
     reusableReleaseMock.value = null;
     prepareReleaseSlotMock.mockReset();
-    writeRestartSignalFileMock.mockReset();
+    requestRestartMock.mockReset();
     removeRollbackCheckpointMock.mockReset();
     runValidationCommandMock.mockClear();
     vi.unstubAllEnvs();
@@ -127,11 +121,10 @@ describe("runSelfUpdateJob active-release drift", () => {
       shell: false,
     }));
     expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
-    expect(writeRestartSignalFileMock).toHaveBeenCalledWith(
-      expect.stringContaining("restart.signal"),
+    expect(requestRestartMock).toHaveBeenCalledWith(
+      dataDir1,
       expect.objectContaining({
         validationMode: "deploy",
-        requestId: "restart-request-test",
         source: "self_update",
         releaseCandidate: expect.objectContaining({ commitSha: headSha }),
       }),
@@ -142,7 +135,7 @@ describe("runSelfUpdateJob active-release drift", () => {
     activeReleaseMock.value = null;
     reusableReleaseMock.value = null;
     prepareReleaseSlotMock.mockReset();
-    writeRestartSignalFileMock.mockReset();
+    requestRestartMock.mockReset();
     runValidationCommandMock.mockClear();
 
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
@@ -178,7 +171,7 @@ describe("runSelfUpdateJob active-release drift", () => {
 
     expect(result2.resultType).toBe("failure");
     expect(result2.textResultForLlm).toContain("Manual recovery is required");
-    expect(writeRestartSignalFileMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("isolates release-slot validation from the running Bridge environment", async () => {

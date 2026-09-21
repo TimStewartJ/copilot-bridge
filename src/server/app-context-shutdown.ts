@@ -25,6 +25,8 @@ export function shutdownAppContextServices(
   if (existing) return existing;
 
   const operation = (async () => {
+    // Before the first await: POST /api/shutdown checked that the server is idle in this same tick.
+    ctx.sessionManager.stopAdmittingWork();
     ctx.scheduler?.setGlobalPause(true);
     ctx.focusProtectionStore?.stop();
     ctx.sessionOverlayMaintenance?.stop();

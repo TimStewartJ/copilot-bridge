@@ -240,7 +240,8 @@ export function createMockSessionManager() {
     getLifecycleBlockingSessionCount: () => 0,
     getEffectiveSessionCwd: () => undefined,
     getActiveRuns: () => [],
-    abortActiveWork: async () => {},
+    isRuntimeIdle: async () => true,
+    stopAdmittingWork: () => {},
     isSessionWarm: () => false,
     createSession: async (options?: { expectedSessionId?: string; onCreateStarting?: () => void }) => {
       options?.onCreateStarting?.();

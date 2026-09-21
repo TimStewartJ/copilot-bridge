@@ -3,17 +3,16 @@ import { DatabaseSync } from "node:sqlite";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
   createMockSessionManager,
-  createRestartRuntimePaths,
+  createPendingRestartRuntimePaths,
   createTestApp,
   installApiRouteTestHooks,
   join,
   makeTestDir,
   mkdirSync,
-  RESTART_PENDING_MESSAGE,
   request,
   writeFileSync,
-  writeRestartState,
 } from "../test-support/api-routes.js";
+import { BRIDGE_RESTARTING_MESSAGE } from "../server/backend-availability.js";
 import { SessionCapacityError } from "../server/session-manager.js";
 
 let app: ApiRouteTestState["app"];
@@ -558,17 +557,10 @@ describe("Session routes (mocked)", () => {
     });
   });
 
-  it("POST /api/sessions creates a session when restart is active in persisted state", async () => {
+  it("POST /api/sessions creates a session while a restart is pending or cutting over", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-create",
-      phase: "queued",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: null,
-    });
+    const runtimePaths = await createPendingRestartRuntimePaths();
     ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
 
     const res = await request(app).post("/api/sessions");
@@ -718,37 +710,10 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.validateModelSelection).toHaveBeenCalledTimes(2);
   });
 
-  it("POST /api/sessions rejects session creation while launcher restart cutover is in progress", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.createSession = vi.fn();
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-session-create-restarting",
-      phase: "restarting",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
-    });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app).post("/api/sessions");
-
-    expect(res.status).toBe(503);
-    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
-    expect(sessionManager.createSession).not.toHaveBeenCalled();
-  });
-
-  it("POST /api/tasks/:id/session creates a task session when restart is active in persisted state", async () => {
+  it("POST /api/tasks/:id/session creates a task session while a restart is pending or cutting over", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-task-session",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: null,
-    });
+    const runtimePaths = await createPendingRestartRuntimePaths();
     ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
     const task = ctx.taskStore.createTask("Task for restart");
 
@@ -768,17 +733,10 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/chat accepts new work when restart is active in persisted state", async () => {
+  it("POST /api/chat accepts new work while a restart is pending or cutting over", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-chat-gating",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: null,
-    });
+    const runtimePaths = await createPendingRestartRuntimePaths();
     ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
 
     const res = await request(app)
@@ -947,26 +905,19 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("POST /api/chat rejects new work while launcher restart cutover is in progress", async () => {
+  it("POST /api/chat answers 503 only once the server itself is stopping", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.startWork = vi.fn();
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-chat-restarting",
-      phase: "restarting",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 0,
-      launcherHeartbeatAt: "2026-04-24T12:00:05.000Z",
+    sessionManager.startWork = vi.fn(() => {
+      throw new Error(BRIDGE_RESTARTING_MESSAGE);
     });
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
 
     const res = await request(app)
       .post("/api/chat")
       .send({ sessionId: "test-session", prompt: "hello" });
 
     expect(res.status).toBe(503);
-    expect(res.body.error).toBe(RESTART_PENDING_MESSAGE);
-    expect(sessionManager.startWork).not.toHaveBeenCalled();
+    expect(res.body.error).toBe(BRIDGE_RESTARTING_MESSAGE);
   });
 
 

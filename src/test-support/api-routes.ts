@@ -8,8 +8,8 @@ import type { AppContext } from "../server/app-context.js";
 import type { DatabaseSync } from "../server/db.js";
 import type { DeferredPromptRunner } from "../server/deferred-prompt-runner.js";
 import { publishOutboundAttachment } from "../server/outbound-attachments.js";
+import { requestRestart } from "../server/restart-signal.js";
 import { writeRestartState } from "../server/restart-state.js";
-import { forceClearRestartPending, RESTART_PENDING_MESSAGE } from "../server/session-manager.js";
 import * as scheduler from "../server/scheduler.js";
 import * as providers from "../server/providers/index.js";
 import { PendingInteractionError } from "../server/pending-interaction-validation.js";
@@ -17,7 +17,7 @@ import { createMockSessionManager, createMockTranscriptionService, makeTestDir, 
 import { createTestApp } from "../server/__tests__/test-app.js";
 
 export { request, get, mkdirSync, writeFileSync, join };
-export { publishOutboundAttachment, writeRestartState, RESTART_PENDING_MESSAGE, scheduler, providers, PendingInteractionError };
+export { publishOutboundAttachment, writeRestartState, scheduler, providers, PendingInteractionError };
 export { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir };
 export type { DeferredPromptRunner };
 
@@ -34,7 +34,6 @@ const TRANSCRIPTION_ENV_KEYS = [
 
 export function installApiRouteTestHooks(assign: (state: ApiRouteTestState) => void): void {
   beforeEach(() => {
-    forceClearRestartPending();
     for (const key of TRANSCRIPTION_ENV_KEYS) {
       vi.stubEnv(key, undefined);
     }
@@ -43,7 +42,6 @@ export function installApiRouteTestHooks(assign: (state: ApiRouteTestState) => v
 
   afterEach(() => {
     vi.useRealTimers();
-    forceClearRestartPending();
     if (scheduler.isInitialized()) {
       scheduler.shutdown();
     }
@@ -77,6 +75,14 @@ export function writeRawCopilotUsageEvents(copilotHome: string, sessionId: strin
 
 export function createRestartRuntimePaths() {
   return makeTestRuntimePaths("api-restart");
+}
+
+/** A data dir where a restart was asked for and the launcher has begun its cutover. No route may refuse work for it. */
+export async function createPendingRestartRuntimePaths() {
+  const runtimePaths = createRestartRuntimePaths();
+  await requestRestart(runtimePaths.dataDir, { validationMode: "operational", source: "test" });
+  await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
+  return runtimePaths;
 }
 
 export function createWavBuffer(durationSeconds: number, sampleRate = 16_000): Buffer {

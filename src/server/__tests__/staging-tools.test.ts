@@ -98,9 +98,7 @@ const spawnMock = vi.hoisted(() => {
     return child;
   });
 });
-const triggerRestartPendingMock = vi.fn();
-const clearRestartPendingMock = vi.fn();
-const isRestartPendingMock = vi.hoisted(() => vi.fn(() => false));
+const requestRestartMock = vi.hoisted(() => vi.fn());
 const dependencySyncHashMock = vi.fn<(path: string) => string>(() => "same-hash");
 const prepareReleaseSlotMock = vi.hoisted(() => vi.fn(async (options: {
   dataDir: string;
@@ -294,25 +292,18 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-vi.mock("../session-manager.js", () => ({
-  triggerRestartPending: triggerRestartPendingMock,
-  clearRestartPending: clearRestartPendingMock,
-  isRestartPending: isRestartPendingMock,
-}));
-
-// The restart-signal write/rollback pair now lives in restart-inflight.ts, which
-// imports the controller directly rather than through the session-manager
-// re-export, so the mock has to be applied at the source module too.
-vi.mock("../restart-controller.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../restart-controller.js")>(),
-  beginRestartPending: () => {
-    triggerRestartPendingMock();
-    return { requestId: "restart-request-test", waitingSessions: 0 };
-  },
-  triggerRestartPending: triggerRestartPendingMock,
-  clearRestartPending: clearRestartPendingMock,
-  isRestartPending: isRestartPendingMock,
-}));
+vi.mock("../restart-signal.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../restart-signal.js")>();
+  return {
+    ...actual,
+    requestRestart: async (dataDir: string, request: Parameters<typeof actual.requestRestart>[1]) => {
+      requestRestartMock(dataDir, request);
+      const signal = actual.createRestartSignal({ ...request, requestId: "restart-request-test" });
+      writeFileSyncCallMock(join(dataDir, ".restart.signal.test.tmp"), actual.serializeRestartSignal(signal));
+      return signal;
+    },
+  };
+});
 
 vi.mock("../dependency-sync.js", () => ({
   dependencySyncHash: dependencySyncHashMock,
@@ -604,10 +595,7 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
   vi.unstubAllEnvs();
-  triggerRestartPendingMock.mockReset();
-  clearRestartPendingMock.mockReset();
-  isRestartPendingMock.mockReset();
-  isRestartPendingMock.mockReturnValue(false);
+  requestRestartMock.mockReset();
   dependencySyncHashMock.mockReset();
   dependencySyncHashMock.mockReturnValue("same-hash");
   prepareReleaseSlotMock.mockClear();
@@ -931,36 +919,6 @@ describe("staging tools", () => {
       mod.__testing.seedStagingData(stagingDir, { productionDataDir }),
     ).toThrow(/Unable to create safe staging SQLite snapshot/);
     expect(existsSync(join(stagingDir, "data", "bridge.db"))).toBe(false);
-  });
-
-  it("clears restart state if staging restart signal write fails", async () => {
-    const mod = await loadStagingToolsModule();
-    const signalFile = join(createTempDir("bridge-stage-signal-"), "data", "restart.signal");
-
-    writeFileSyncCallMock.mockImplementation((...args: WriteFileSyncArgs) => {
-      if (isRestartSignalTempPath(String(args[0]))) {
-        throw new Error("disk full");
-      }
-    });
-
-    expect(() => mod.__testing.writeRestartSignalOrRollback(signalFile)).toThrow(/disk full/);
-    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
-    expect(clearRestartPendingMock).toHaveBeenCalledTimes(1);
-    expect(
-      rmSyncCallMock.mock.calls.some(([file]) => isRestartSignalTempPath(String(file))),
-    ).toBe(true);
-    expect(
-      unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "restart.signal")),
-    ).toBe(false);
-    expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
-      writeFileSyncCallMock.mock.invocationCallOrder[0],
-    );
-    expect(writeFileSyncCallMock.mock.invocationCallOrder[0]).toBeLessThan(
-      rmSyncCallMock.mock.invocationCallOrder[0],
-    );
-    expect(rmSyncCallMock.mock.invocationCallOrder[0]).toBeLessThan(
-      clearRestartPendingMock.mock.invocationCallOrder[0],
-    );
   });
 
   it("retries startup restore once and returns a non-destructive failure result when the retry still fails", async () => {
@@ -1437,7 +1395,7 @@ describe("staging tools", () => {
       success: true,
       commitSha: "1111111",
     });
-    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(requestRestartMock).toHaveBeenCalledTimes(1);
     expect(preparePatchedPackagesForInstallMock).not.toHaveBeenCalled();
     expect(dependencySyncHashMock).toHaveBeenCalledTimes(2);
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
@@ -1498,7 +1456,7 @@ describe("staging tools", () => {
       restartDeferred: true,
       releaseCandidate: { commitSha: "1111111111111111111111111111111111111111" },
     });
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
 
     // The restarted server warms the newest published preview and then holds its database open,
     // so the preview is withdrawn now. Nothing is deleted before the release is activated.
@@ -1701,7 +1659,7 @@ describe("staging tools", () => {
     expect(removedTrees()).not.toContain(stagingDir);
     expect(commands).not.toContain('git branch -D -- staging/preview-deploy');
     expect(commands).not.toContain("git worktree prune");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
     expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
@@ -1757,7 +1715,7 @@ describe("staging tools", () => {
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).toEqual(["git add -A"]);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => basename(String(file)) === ".commit-msg")).toBe(false);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("fails the deploy when the staging worktree status cannot be read", async () => {
@@ -1809,7 +1767,7 @@ describe("staging tools", () => {
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).toEqual(["git add -A", "git --no-pager status --porcelain"]);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => basename(String(file)) === ".commit-msg")).toBe(false);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("stops the deploy when stashing uncommitted production changes fails", async () => {
@@ -1861,7 +1819,7 @@ describe("staging tools", () => {
     expect(commands).not.toContain("git rebase main");
     expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
     expect(commands).not.toContain("git push origin main");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("warns that production changes are still stashed when the post-deploy stash pop fails", async () => {
@@ -1931,7 +1889,7 @@ describe("staging tools", () => {
     expect(stagingLogMock.mock.calls.map(([msg]) => String(msg))).not.toContain("Restored stashed production changes");
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.filter((cmd) => cmd === "git stash pop")).toHaveLength(1);
-    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(requestRestartMock).toHaveBeenCalledTimes(1);
   });
 
   it("warns about the stranded production stash on deploy failure paths", async () => {
@@ -1989,7 +1947,7 @@ describe("staging tools", () => {
     expect(result.sessionLog).toContain("still saved in git stash");
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.filter((cmd) => cmd === "git stash pop")).toHaveLength(1);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("leaves production changes stashed when the post-push reset also fails", async () => {
@@ -2051,7 +2009,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("restore them only after recovering the checkout");
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("git stash pop");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("leaves the deploy stash in place when another stash entry lands on top", async () => {
@@ -2116,7 +2074,7 @@ describe("staging tools", () => {
     expect(result.content?.[0]?.text).toContain("still saved in git stash");
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("git stash pop");
-    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(requestRestartMock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the deploy stash untouched when the stash list cannot be read after stashing", async () => {
@@ -2174,7 +2132,7 @@ describe("staging tools", () => {
     expect(result.stashRecoveryWarning).toContain("bad object refs/stash");
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("git stash pop");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("reports the stranded stash when the stash list read throws after stashing", async () => {
@@ -2220,7 +2178,7 @@ describe("staging tools", () => {
     expect(stashMarker).not.toBe("");
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).not.toContain("git stash pop");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("surfaces the stranded stash when the deploy throws after stashing production", async () => {
@@ -2273,7 +2231,7 @@ describe("staging tools", () => {
 
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.filter((cmd) => cmd === "git stash pop")).toHaveLength(1);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
   it("keeps a completed deploy successful when restoring the stash throws", async () => {
@@ -2333,7 +2291,7 @@ describe("staging tools", () => {
     expect(result.stashRecoveryWarning).toContain("threw an unexpected error");
     expect(result.stashRecoveryWarning).toContain("spawn exploded");
     expect(result.content?.[0]?.text).toContain("still saved in git stash");
-    expect(triggerRestartPendingMock).toHaveBeenCalledTimes(1);
+    expect(requestRestartMock).toHaveBeenCalledTimes(1);
   });
 
   it("resets production and blocks push when the merged commit differs from the validated candidate", async () => {
@@ -2384,7 +2342,7 @@ describe("staging tools", () => {
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands).toContain(`git reset --hard ${preDeploySha}`);
     expect(commands).not.toContain("git push origin main");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
     expect(hasRestartSignalWriteAttempt()).toBe(false);
   });
 
@@ -2441,7 +2399,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("Pushed production commit does not match the validated release candidate.");
     expect(result.textResultForLlm).toContain("Restart signaling was blocked");
     expect(renameSyncCallMock.mock.calls.some(([, file]) => isDeployValidationStampPath(String(file)))).toBe(false);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
     expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(removedTrees()).not.toContain(stagingDir);
   });
@@ -2505,7 +2463,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("deploy gate exploded");
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(false);
     expect(hasRestartSignalWriteAttempt()).toBe(false);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
     expect(execSyncMock.mock.calls.map(([cmd]) => String(cmd))).not.toContain('git merge "staging/preview-deploy" --no-edit');
   });
 
@@ -2573,7 +2531,7 @@ describe("staging tools", () => {
     expect(result.textResultForLlm).toContain("reset back to 1111111111111111111111111111111111111111");
     expect(result.textResultForLlm).toContain("push rejected 2");
     expect(pushAttempts).toBe(2);
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
     expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
     expect(unlinkSyncCallMock.mock.calls.some(([file]) => isDataFilePath(String(file), "pre-deploy-sha"))).toBe(true);
@@ -2632,7 +2590,7 @@ describe("staging tools", () => {
     ) as any;
 
     expect(result).toMatchObject({ resultType: "failure" });
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
+    expect(requestRestartMock).not.toHaveBeenCalled();
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     const resetIndex = commands.indexOf("git reset --hard 1111111111111111111111111111111111111111");
     expect(pullAttempts).toBe(1);
@@ -2640,48 +2598,6 @@ describe("staging tools", () => {
     expect(commands).not.toContain("git rebase --abort");
     expect(resetIndex).toBeGreaterThan(-1);
     expect(removedTrees()).not.toContain(stagingDir);
-  });
-
-  it("rejects staging_deploy when a restart is already in flight (signal file present)", async () => {
-    mockDataFilePresence({ restartSignal: true });
-
-    const mod = await loadStagingToolsModule();
-    const deployTool = mod.STAGING_TOOLS.find((tool: { name: string }) => tool.name === "staging_deploy") as any;
-    if (!deployTool) throw new Error("staging_deploy tool not found");
-
-    const stagingParent = createTempDir("bridge-stage-parent-");
-    const stagingDir = join(stagingParent, "preview-deploy");
-    mkdirSync(stagingDir, { recursive: true });
-
-    const result = await deployTool.handler(
-      { stagingDir, message: "Should be rejected" },
-      {
-        sessionId: "session-1",
-        toolCallId: "tool-1",
-        toolName: "staging_deploy",
-        arguments: {},
-      } satisfies ToolInvocation,
-    ) as {
-      resultType: string;
-      textResultForLlm: string;
-      terminal?: boolean;
-      toolNextAction?: string;
-      retryable?: boolean;
-      isError?: boolean;
-      content?: Array<{ type: string; text: string }>;
-    };
-
-    expect(result.resultType).toBe("failure");
-    expect(result.textResultForLlm).toContain("A restart is already pending");
-    expect(result.textResultForLlm).not.toContain("Wait for it to complete");
-    expect(result.terminal).toBe(true);
-    expect(result.toolNextAction).toBe("respond");
-    expect(result.retryable).toBe(false);
-    expect(result.isError).toBe(true);
-    expect(result.content?.[0]?.text).toContain('"nextAction":"respond"');
-    expect(result.content?.[0]?.text).toContain("end your turn");
-    expect(triggerRestartPendingMock).not.toHaveBeenCalled();
-    expect(hasRestartSignalWriteAttempt()).toBe(false);
   });
 
   it("preserves an existing rollback checkpoint during deploy", async () => {
@@ -3307,7 +3223,7 @@ describe("staging tools", () => {
     expect(checkpointWriteIndex, "pre-deploy-sha must be written").toBeGreaterThan(-1);
     expect(signalWriteIndex, "restart signal temp must be written").toBeGreaterThan(-1);
     expect(checkpointWriteIndex).toBeLessThan(signalWriteIndex);
-    expect(triggerRestartPendingMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(requestRestartMock.mock.invocationCallOrder[0]).toBeLessThan(
       writeFileSyncCallMock.mock.invocationCallOrder[signalWriteIndex],
     );
   });

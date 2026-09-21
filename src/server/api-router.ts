@@ -20,22 +20,10 @@ import {
 import { validateSupportedCronExpression } from "./cron-next-run.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import {
-  beginRestartPendingForExternalRequest,
-  clearRestartPending,
-  configureRestartStateStore,
-  forceClearRestartPending,
-  forceRestartCutover,
-  isRestartCutoverInProgress,
-  isRestartForced,
-  isRestartPending,
-  isRestartPendingError,
   ModelRefreshBlockedError,
-  RESTART_PENDING_MESSAGE,
-  refreshRestartState,
   SessionBackendDeleteError,
   SessionCapacityError,
   SessionHistoryUndoError,
-  syncRestartWaitingSessions,
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
@@ -211,8 +199,10 @@ import {
   enqueueManagementJob,
 } from "./management-job-enqueue.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
-import { describeLifecycleBusyState, findLifecycleBusyState } from "./restart-inflight.js";
-import { writeRestartSignalFile } from "./restart-signal.js";
+import { isBridgeRestartingError } from "./backend-availability.js";
+import { requestRestart } from "./restart-signal.js";
+import { isRestartPending } from "./restart-state.js";
+import { getRestartBlockers, readRestartStatus } from "./restart-status.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
 import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
@@ -465,6 +455,7 @@ function truncateAgentTaskText(task: SessionAgentTask): SessionAgentTask {
 }
 
 function getChatDeliveryErrorStatus(error: unknown): number {
+  if (isBridgeRestartingError(error)) return 503;
   const message = error instanceof Error ? error.message : String(error);
   if (/stalled|not accepting steering|\breconnecting\b|not busy|ended before steering/i.test(message)) return 409;
   return 500;
@@ -968,45 +959,6 @@ function parseWavDurationSeconds(buffer: Buffer): number {
   return durationSeconds;
 }
 
-type RestartStatusPhase = "idle" | "queued" | "waiting-for-sessions" | "restarting";
-
-interface RestartStatusResponse {
-  pending: boolean;
-  phase: RestartStatusPhase;
-  waitingSessions: number;
-  requestedAt: string | null;
-  serverInstanceId: string;
-  canAcceptNewWork: boolean;
-}
-
-function restartStatusResponseFromState(state: {
-  phase: RestartStatusPhase;
-  waitingSessions: number;
-  requestedAt: string | null;
-}): RestartStatusResponse {
-  return {
-    pending: state.phase !== "idle",
-    phase: state.phase,
-    waitingSessions: Math.max(0, state.waitingSessions),
-    requestedAt: state.requestedAt,
-    serverInstanceId: SERVER_INSTANCE_ID,
-    canAcceptNewWork: !isRestartCutoverInProgress(state),
-  };
-}
-
-function restartStatusEventFromState(state: Parameters<typeof restartStatusResponseFromState>[0]) {
-  const status = restartStatusResponseFromState(state);
-  return status.pending
-    ? {
-        type: "server:restart-pending" as const,
-        waitingSessions: status.waitingSessions,
-        phase: status.phase,
-        canAcceptNewWork: status.canAcceptNewWork,
-        serverInstanceId: status.serverInstanceId,
-      }
-    : { type: "server:restart-cleared" as const, serverInstanceId: status.serverInstanceId };
-}
-
 const MAX_MANAGEMENT_JOB_LOG_TAIL_BYTES = 64 * 1024;
 
 class ManagementJobApiError extends Error {
@@ -1142,7 +1094,6 @@ export function createApiRouter(
   ctx: AppContext,
   options: ApiRouterOptions = {},
 ): express.Router {
-  configureRestartStateStore(ctx.runtimePaths);
   const router = express.Router();
   const schedulerModule = () => getSchedulerModule(ctx);
   // Keep shutdown orchestration on the AppContext even for legacy/test
@@ -1346,10 +1297,6 @@ export function createApiRouter(
         if (error instanceof TaskAgentDefinitionValidationError) {
           return res.status(400).json({ error: error.message });
         }
-        if (isRestartPendingError(error)) {
-          res.set("Retry-After", "5");
-          return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-        }
         return res.status(error instanceof InvalidWavError ? 400 : 500).json({
           error: error instanceof Error ? error.message : String(error),
         });
@@ -1427,7 +1374,6 @@ export function createApiRouter(
       invalidateEnrichedCache("helm:session:archive");
     },
     sendMessage: async (sessionId, prompt) => {
-      if (isRestartCutoverInProgress(await refreshRestartState())) throw new Error(RESTART_PENDING_MESSAGE);
       if (ctx.sessionMetaStore.getMeta(sessionId)?.archived) setSessionArchived(sessionId, false);
       console.log(`[helm] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
       if (ctx.sessionManager.isSessionBusy(sessionId)) {
@@ -1438,7 +1384,6 @@ export function createApiRouter(
       return "started";
     },
     createSession: async ({ taskId, model, reasoningEffort }) => {
-      if (isRestartCutoverInProgress(await refreshRestartState())) throw new Error(RESTART_PENDING_MESSAGE);
       const creation = await resolveSessionCreationOptions({ model, reasoningEffort }, taskId ? { taskId } : {});
       if (creation.error) throw new Error(creation.error);
       if (!taskId) {
@@ -2121,16 +2066,18 @@ export function createApiRouter(
     res.json(await ctx.sessionManager.getExternalSessionUse(sessionIds));
   });
 
+  // GET /busy — what a pending restart is waiting for. The launcher polls it while one is pending.
   router.get("/busy", (_req, res) => {
     const sessions = ctx.sessionManager.getSessionActivity();
-    const lifecycleBlockingCount = ctx.sessionManager.getLifecycleBlockingSessionCount();
+    const blockers = getRestartBlockers(ctx);
     res.json({
-      busy: lifecycleBlockingCount > 0,
-      count: lifecycleBlockingCount,
+      busy: blockers.sessions + blockers.jobs + (blockers.operations ?? 0) > 0,
+      count: blockers.sessions + blockers.jobs + (blockers.operations ?? 0),
+      jobs: blockers.jobs,
+      operations: blockers.operations ?? 0,
       sessionIds: sessions.map((s) => s.id),
       sessions,
-      backgroundOperations: Math.max(0, lifecycleBlockingCount - sessions.length),
-      restartForced: isRestartForced(),
+      backgroundOperations: Math.max(0, blockers.sessions - sessions.length),
       agentBackend: ctx.sessionManager.getBackendStatus(),
     });
   });
@@ -2265,14 +2212,31 @@ export function createApiRouter(
     }
   });
 
-  // POST /shutdown — graceful shutdown: abort active sessions, stop SDK, exit
+  // POST /shutdown — graceful shutdown: abort active sessions, stop SDK, exit.
+  // A restart passes ifIdle, so the server stops only while nothing is in flight. The check and the
+  // refusal of new work happen in this one tick, which is why a restart never cuts off a run.
   router.post("/shutdown", async (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
+    const body = req.body as { deadlineUnixMs?: unknown; ifIdle?: unknown } | undefined;
+    if (body?.ifIdle === true) {
+      const busyResponse = () => res.status(409).json({ ok: false, busy: true, ...getRestartBlockers(ctx) });
+      const hasWork = () => {
+        const blockers = getRestartBlockers(ctx);
+        return blockers.sessions + blockers.jobs + (blockers.operations ?? 0) > 0;
+      };
+      if (hasWork()) return busyResponse();
+      try {
+        if (!await ctx.sessionManager.isRuntimeIdle()) return busyResponse();
+      } catch (error) {
+        console.error("[restart] Could not confirm runtime idle:", error);
+        return res.status(503).json({ error: "Runtime idle could not be confirmed." });
+      }
+      // New work may have arrived while the runtime answered. No await separates this check from shutdown.
+      if (hasWork()) return busyResponse();
+    }
     console.log("[web] Graceful shutdown requested via API");
     res.json({ ok: true, message: "Shutting down..." });
-    const requestedDeadline = Number(
-      (req.body as { deadlineUnixMs?: unknown } | undefined)?.deadlineUnixMs,
-    );
+    const requestedDeadline = Number(body?.deadlineUnixMs);
     void shutdownCoordinator.request(
       "API shutdown requested",
       Number.isFinite(requestedDeadline) && requestedDeadline > 0
@@ -2383,11 +2347,10 @@ export function createApiRouter(
       graceMs: graceMinutes * 60_000,
       getActiveSessionCount: () => ctx.sessionManager.getLifecycleBlockingSessionCount(),
       getBlockingReason: () => {
-        const busy = findLifecycleBusyState({
-          dataDir: ctx.runtimePaths?.dataDir,
-          managementJobStore: ctx.managementJobStore,
-        });
-        return busy ? describeLifecycleBusyState(busy) : null;
+        const job = ctx.managementJobStore?.listActive()[0];
+        if (job) return `A ${job.type} management job is ${job.status}`;
+        const dataDir = ctx.runtimePaths?.dataDir;
+        return dataDir && isRestartPending(dataDir) ? "A restart is pending" : null;
       },
     });
     console.log(
@@ -2410,28 +2373,22 @@ export function createApiRouter(
     res.json({ ok: true, cancelled, ...getHibernateStatus(), onIdle: getHibernateOnIdleStatus() });
   });
 
-  // POST /restart-clear — manual escape hatch to dismiss a stale restart banner
-  router.post("/restart-clear", async (req, res) => {
-    if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
-    const body = req.body as { requestId?: unknown } | undefined;
-    const hasRequestId = body !== undefined && Object.hasOwn(body, "requestId");
-    const requestId = typeof body?.requestId === "string" && body.requestId.trim()
-      ? body.requestId.trim()
-      : undefined;
-    if (hasRequestId && !requestId) {
-      return res.status(400).json({ error: "requestId must be a non-empty string when present." });
-    }
-    const cleared = requestId
-      ? clearRestartPending(requestId)
-      : forceClearRestartPending();
-    if (cleared) {
-      await refreshRestartState();
-    }
-    res.json({ ok: true, cleared });
-  });
-
+  // GET /restart-status — the pending restart and what it is waiting for, for the UI only
   router.get("/restart-status", async (_req, res) => {
-    res.json(restartStatusResponseFromState(await refreshRestartState()));
+    try {
+      const dataDir = ctx.runtimePaths?.dataDir;
+      if (!dataDir) return res.status(503).json({ error: "Bridge runtime paths are not available." });
+      const status = await readRestartStatus(dataDir);
+      res.json({
+        ...status,
+        pending: status.phase !== "idle",
+        waitingOn: { ...getRestartBlockers(ctx), sessionIds: ctx.sessionManager.getActiveSessions() },
+        serverInstanceId: SERVER_INSTANCE_ID,
+      });
+    } catch (error) {
+      console.error("[restart] Failed to read restart status:", error);
+      res.status(500).json({ error: "Restart status could not be read." });
+    }
   });
 
   router.get("/server/runtime-status", (_req, res) => {
@@ -2461,6 +2418,9 @@ export function createApiRouter(
     }
   });
 
+  // POST /server/restart — ask for a restart. It waits in the background until the Bridge is idle
+  // and refuses nothing meanwhile; asking again joins the pending restart. `force` is the user
+  // choosing not to wait: the server stops now, and `resume` continues its runs on the next one.
   router.post("/server/restart", async (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Bridge restart")) return;
     if (ctx.isStaging) return res.status(404).json({ error: "Bridge restart is not available in staging previews." });
@@ -2479,86 +2439,43 @@ export function createApiRouter(
       return res.status(503).json({ error: "Deferred prompt persistence is not available." });
     }
 
-    await refreshRestartState();
-    const restartAlreadyPending = isRestartPending();
-    const busy = findLifecycleBusyState({ dataDir, managementJobStore: ctx.managementJobStore });
-    const escalatingPendingRestart = forced && resume && restartAlreadyPending;
-    if (busy && !escalatingPendingRestart) {
-      if (busy.reason === "management_job") {
-        return res.status(409).json({
-          error: `Cannot restart while a ${busy.job.type} management job is ${busy.job.status}.`,
-          activeJob: toManagementJobSummaryResponse(busy.job, {
-            now: new Date(),
-            staleAfterMs: managementJobStaleAfterMs(),
-          }),
-        });
-      }
-      return res.status(409).json({ error: "A restart is already pending." });
+    try {
+      await requestRestart(dataDir, { validationMode: "operational", source: "settings_ui" });
+    } catch (error) {
+      return res.status(500).json({
+        error: "Restart signal could not be written.",
+        details: error instanceof Error ? error.message : String(error),
+      });
     }
+    ctx.globalBus.emit({ type: "server:restart-changed" });
+    if (!forced) return res.status(202).json({ ok: true, waitingOn: getRestartBlockers(ctx) });
 
-    const interruptedRuns = forced ? ctx.sessionManager.getActiveRuns() : [];
-    const waitingSessions = ctx.sessionManager.getLifecycleBlockingSessionCount();
-    const restartRequest = restartAlreadyPending
-      ? null
-      : beginRestartPendingForExternalRequest(waitingSessions);
-    if (restartAlreadyPending) {
-      syncRestartWaitingSessions(waitingSessions);
-    }
-
+    // Stopping the server is what interrupts its runs. The prompts that resume them are stored first,
+    // and shutdown starts in this same tick, so only the next server can deliver them.
+    const interruptedRuns = ctx.sessionManager.getActiveRuns();
     let resumingRuns = 0;
     try {
       if (resume && deferredPromptStore) {
-        resumingRuns = queueRestartRecoveryPrompts({
-          deferredPromptStore,
-          deferredPromptRunner: ctx.deferredPromptRunner,
-          globalBus: ctx.globalBus,
-        }, interruptedRuns);
+        resumingRuns = queueRestartRecoveryPrompts({ deferredPromptStore, globalBus: ctx.globalBus }, interruptedRuns);
+      } else {
+        // Without this, a run whose abort outlasts shutdown keeps its marker and resumes at the next boot anyway.
+        for (const run of interruptedRuns) ctx.interruptedRunStore?.clear(run.sessionId);
       }
     } catch (error) {
-      if (restartRequest) clearRestartPending(restartRequest.requestId);
       console.error("[management] Failed to queue restart recovery prompts:", error);
       return res.status(500).json({
         error: "Restart recovery prompts could not be queued.",
         details: error instanceof Error ? error.message : String(error),
       });
     }
-
-    if (restartRequest) {
-      mkdirSync(dataDir, { recursive: true });
-      const signalFile = join(dataDir, "restart.signal");
-      try {
-        writeRestartSignalFile(signalFile, {
-          validationMode: "operational",
-          requestId: restartRequest.requestId,
-          source: "settings_ui",
-        });
-      } catch (error) {
-        clearRestartPending(restartRequest.requestId);
-        return res.status(500).json({
-          error: "Restart signal could not be written.",
-          details: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (forced) {
-      if (!resume) {
-        // The user chose not to resume these runs. If the launcher cuts over before an abort
-        // finishes, the run's marker would survive to the next boot and resume it anyway.
-        for (const run of interruptedRuns) ctx.interruptedRunStore?.clear(run.sessionId);
-      }
-      // Resume prompts are queued first so a launcher that cuts over mid-abort cannot lose them.
-      forceRestartCutover();
-      await ctx.sessionManager.abortActiveWork();
-      console.warn(`[management] Forced bridge restart aborted ${interruptedRuns.length} active run(s).`);
-    }
-
+    console.warn(`[management] Restart now: stopping with ${interruptedRuns.length} active run(s).`);
     res.status(202).json({
       ok: true,
-      waitingSessions,
-      ...(forced ? { forced: true, abortedRuns: interruptedRuns.length } : {}),
+      forced: true,
+      abortedRuns: interruptedRuns.length,
       ...(resume ? { resumingRuns } : {}),
     });
+    void shutdownCoordinator.request("Restart now requested");
   });
 
   // GET /status-stream — global SSE for session lifecycle events
@@ -2587,24 +2504,11 @@ export function createApiRouter(
 
     const unsub = ctx.globalBus.subscribe((event) => {
       if (closed || res.writableEnded) return;
-      const clientEvent = event.type === "server:restart-pending" || event.type === "server:restart-cleared"
-        ? { ...event, serverInstanceId: SERVER_INSTANCE_ID }
-        : event;
-      try { res.write(`data: ${JSON.stringify(clientEvent)}\n\n`); } catch { close(); }
+      try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { close(); }
     });
 
     try { res.write(`: connected\n\n`); }
     catch { close(); }
-
-    void refreshRestartState()
-      .then((restartState) => {
-        if (closed || res.writableEnded) return;
-        try { res.write(`data: ${JSON.stringify(restartStatusEventFromState(restartState))}\n\n`); }
-        catch { close(); }
-      })
-      .catch(() => {
-        close();
-      });
 
     res.on("error", () => { close(); });
     req.on("close", () => { close(); });
@@ -3324,10 +3228,6 @@ export function createApiRouter(
   const focusSessionLaunchRoutes = registerFocusSessionLaunchRoutes(router, ctx, resolveSessionCreationOptions);
 
   router.post("/sessions", async (req, res) => {
-    if (isRestartCutoverInProgress(await refreshRestartState())) {
-      res.set("Retry-After", "5");
-      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-    }
     if (isRecord(req.body) && "focusLaunch" in req.body) {
       return focusSessionLaunchRoutes.startSessionRequest(req.body, null, res);
     }
@@ -3461,10 +3361,6 @@ export function createApiRouter(
   router.post("/sessions/:id/fork", async (req, res) => {
     const sourceId = req.params.id;
     try {
-      if (isRestartCutoverInProgress(await refreshRestartState())) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
       if (ctx.sessionManager.isSessionBusy(sourceId)) {
         return res.status(409).json({ error: "Cannot fork a busy session" });
       }
@@ -3501,10 +3397,6 @@ export function createApiRouter(
     if (!eventId) {
       return res.status(400).json({ error: "eventId must be a non-empty string" });
     }
-    if (isRestartCutoverInProgress(await refreshRestartState())) {
-      res.set("Retry-After", "5");
-      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-    }
     try {
       const result = await ctx.sessionManager.undoSessionTurn(sessionId, eventId);
       return res.json(result);
@@ -3515,10 +3407,6 @@ export function createApiRouter(
           return res.status(501).json({ error: error.message, code: error.code });
         }
         return res.status(409).json({ error: error.message, code: error.code });
-      }
-      if (isRestartPendingError(error)) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
       }
       const message = error instanceof Error ? error.message : String(error);
       if (/session .*not found|session not found/i.test(message)) {
@@ -3550,11 +3438,6 @@ export function createApiRouter(
       )
     ) {
       return res.status(400).json({ error: "clientMessageId must be a non-empty string of at most 200 characters" });
-    }
-
-    if (isRestartCutoverInProgress(await refreshRestartState())) {
-      res.set("Retry-After", "5");
-      return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
     }
 
     // Auto-unarchive if user sends a message to an archived session
@@ -3616,10 +3499,6 @@ export function createApiRouter(
       }
       res.status(202).json({ status: "accepted" });
     } catch (err) {
-      if (isRestartPendingError(err)) {
-        res.set("Retry-After", "5");
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
       res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -4747,9 +4626,6 @@ export function createApiRouter(
     }
 
     try {
-      if (isRestartCutoverInProgress(await refreshRestartState())) {
-        return res.status(503).json({ error: RESTART_PENDING_MESSAGE });
-      }
       const creationResult = await resolveSessionCreationOptions(req.body, { taskId: task.id });
       if (creationResult.error) {
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });

@@ -6,7 +6,6 @@ import { parseFocusLaunchRequest } from "./focus-session-launch-service.js";
 import {
   FocusLaunchConflictError, publicFocusSessionLaunch, type FocusSessionCreationOptions, type FocusSessionLaunch,
 } from "./focus-session-launch-store.js";
-import { isRestartCutoverInProgress, refreshRestartState, RESTART_PENDING_MESSAGE } from "./restart-controller.js";
 
 type ResolveCreationOptions = (body: unknown, scope?: { taskId?: string }) => Promise<{
   options?: FocusSessionCreationOptions; error?: string; status?: number;
@@ -38,9 +37,6 @@ export function registerFocusSessionLaunchRoutes(router: Router, ctx: AppContext
       ...(receipt.error ? { error: receipt.error } : {}),
     });
   }
-  async function assertCanStart() {
-    if (isRestartCutoverInProgress(await refreshRestartState())) throw new FocusLaunchRequestError(RESTART_PENDING_MESSAGE, 503);
-  }
   async function prepareRequest(body: unknown, routeTaskId?: string | null) {
     const raw = focusRecord(body, ["objectId", "activationId", "source", "taskId", "prompt", ...OPTION_FIELDS]);
     const optionInput: Record<string, unknown> = {};
@@ -60,7 +56,6 @@ export function registerFocusSessionLaunchRoutes(router: Router, ctx: AppContext
       const raw = focusRecord(body, ["focusLaunch", "prompt", ...OPTION_FIELDS]);
       const identity = focusRecord(raw.focusLaunch, ["objectId", "activationId", "source"]);
       const { focusLaunch: _identity, ...rest } = raw;
-      await assertCanStart();
       const prepared = await prepareRequest({ ...identity, ...rest }, routeTaskId);
       sendReceipt(res, await service().start(prepared.receipt.id), prepared.created);
     } catch (error) { sendError(res, error); }
@@ -94,7 +89,6 @@ export function registerFocusSessionLaunchRoutes(router: Router, ctx: AppContext
   });
   router.post("/focus/session-launches", async (req, res) => {
     try {
-      await assertCanStart();
       const prepared = await prepareRequest(req.body);
       sendReceipt(res, await service().start(prepared.receipt.id), prepared.created);
     } catch (error) { sendError(res, error); }
@@ -102,7 +96,6 @@ export function registerFocusSessionLaunchRoutes(router: Router, ctx: AppContext
   router.post("/focus/session-launches/:id/start", async (req, res) => {
     try {
       focusRecord(req.body ?? {}, []);
-      await assertCanStart();
       sendReceipt(res, await service().start(String(req.params.id)));
     } catch (error) { sendError(res, error); }
   });

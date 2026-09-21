@@ -23,6 +23,7 @@ export interface TranscriptionRequest {
 
 export interface TranscriptionService {
   getStatus(): TranscriptionStatus;
+  getActiveCount?(): number;
   transcribe(request: TranscriptionRequest): Promise<TranscriptionResult>;
 }
 
@@ -63,6 +64,7 @@ export function describeTranscriptionUnavailable(install: VoiceInstallStatus): s
 export function createTranscriptionService({ installer, engine, env = process.env, logger }: TranscriptionServiceDeps): TranscriptionService {
   const maxDurationSeconds = parsePositiveInt(env.BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS, DEFAULT_MAX_DURATION_SECONDS);
   const timeoutMs = Math.max(MIN_TIMEOUT_MS, maxDurationSeconds * 5_000);
+  let activeTranscriptions = 0;
 
   const getStatus = (): TranscriptionStatus => {
     const reason = describeTranscriptionUnavailable(installer.getStatus());
@@ -73,10 +75,12 @@ export function createTranscriptionService({ installer, engine, env = process.en
 
   return {
     getStatus,
+    getActiveCount: () => activeTranscriptions,
     async transcribe({ filePath }) {
       const status = getStatus();
       if (!status.available) throw new Error(status.reason ?? "Voice input is unavailable.");
       const release = engine.retain();
+      activeTranscriptions++;
       try {
         const result = await engine.transcribeFile(filePath, { timeoutMs });
         logger?.log(`[transcription] ${result.audioSeconds}s clip (${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms`);
@@ -84,6 +88,7 @@ export function createTranscriptionService({ installer, engine, env = process.en
         if (!text) throw new Error("No speech was detected in the recording.");
         return { text, provider: TRANSCRIPTION_PROVIDER };
       } finally {
+        activeTranscriptions--;
         release();
       }
     },

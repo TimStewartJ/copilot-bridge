@@ -14,11 +14,10 @@ import {
   type ManagementJobDispatchOptions,
 } from "../management-job-dispatch.js";
 import {
-  MANAGEMENT_DEPLOY_BATCH_MAX_JOBS,
   runClaimedManagementJob,
   runManagementJobRunnerLoop,
 } from "../../management-job-runner.js";
-import * as restartState from "../restart-state.js";
+import { requestRestart, readPendingRestartSignal } from "../restart-signal.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { createStagingToolDefinitions } from "../staging-tools.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
@@ -374,6 +373,132 @@ describe("management job store", () => {
 });
 
 describe("management job runner", () => {
+  function release(dataDir: string, index: number) {
+    return { id: `release-${index}`, root: join(dataDir, `release-${index}`), commitSha: `commit-${index}`,
+      source: "staging_deploy", dependencyHash: `deps-${index}` };
+  }
+
+  it("keeps running every kind of job while a restart is pending", async () => {
+    const { db, store, dataDir } = createStore("runner-nonblocking");
+    try {
+      const update = store.enqueue("self_update", {});
+      const preview = store.enqueue("staging_preview", { stagingDir: "preview" });
+      await requestRestart(dataDir, { validationMode: "operational", source: "test" });
+      const processed: string[] = [];
+      const prune = vi.spyOn(store, "pruneRetention");
+      await runManagementJobRunnerLoop({
+        store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {},
+        shouldStop: () => processed.length === 2,
+        dispatch: async (job) => { processed.push(job.id); return { success: true }; },
+      });
+      expect(processed).toEqual([update.id, preview.id]);
+      expect(store.get(update.id)?.status).toBe("succeeded");
+      expect(store.get(preview.id)?.status).toBe("succeeded");
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it("recognizes an activated self-update that includes the pending deploy", async () => {
+    const { db, store, dataDir } = createStore("superseding-self-update");
+    try {
+      const deploy = store.enqueue("staging_deploy", { stagingDir: "worktree" });
+      store.succeed(deploy.id, { restartQueued: true, releaseCandidate: release(dataDir, 1) });
+      const included = vi.fn(async () => true);
+      let stopping = false;
+      await runManagementJobRunnerLoop({
+        store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {},
+        shouldStop: () => stopping, isCommitIncluded: included, cleanupDeploy: async () => {},
+        getActiveRelease: () => { stopping = true; return release(dataDir, 2); },
+      });
+      expect(included).toHaveBeenCalledWith("commit-1", "commit-2");
+      expect(store.get(deploy.id)?.result).toMatchObject({ restartActivated: true });
+    } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it("keeps FIFO job admission and joins deployments to the same pending restart", async () => {
+    const { db, store, dataDir } = createStore("runner-fifo-deploys");
+    try {
+      const first = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "first") });
+      const preview = store.enqueue("staging_preview", { stagingDir: "preview" });
+      const second = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "second") });
+      const initial = await requestRestart(dataDir, { validationMode: "operational", source: "self_restart" });
+      const processed: string[] = [];
+      await runManagementJobRunnerLoop({
+        store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {},
+        shouldStop: () => processed.length === 3,
+        dispatch: async (job, options) => {
+          processed.push(job.id);
+          if (job.type !== "staging_deploy") return { success: true };
+          expect(options.deferDeployRestart).toBe(true);
+          return { restartDeferred: true, releaseCandidate: release(dataDir, job.id === first.id ? 1 : 2) };
+        },
+        getActiveRelease: () => null,
+      });
+      expect(processed).toEqual([first.id, preview.id, second.id]);
+      await expect(readPendingRestartSignal(dataDir)).resolves.toMatchObject({ requestId: initial.requestId,
+        requestedAt: initial.requestedAt, releaseCandidate: release(dataDir, 2) });
+      expect(store.get(second.id)?.result).toMatchObject({ restartQueued: true, deployBatchSize: 2 });
+    } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it("does not cap a pending deployment batch and confirms all jobs after activation", async () => {
+    const { db, store, dataDir } = createStore("runner-unbounded-batch");
+    try {
+      const jobs = Array.from({ length: 12 }, (_, index) => store.enqueue("staging_deploy", {
+        stagingDir: join(dataDir, `deploy-${index}`), message: `deploy ${index}`,
+      }));
+      let processed = 0;
+      await runManagementJobRunnerLoop({
+        store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {},
+        shouldStop: () => processed === jobs.length,
+        dispatch: async () => ({ restartDeferred: true, releaseCandidate: release(dataDir, ++processed) }),
+        getActiveRelease: () => null,
+      });
+      expect(processed).toBe(12);
+      expect(store.listActive()).toEqual([]);
+      expect(store.listDeploysAwaitingActivation()).toHaveLength(12);
+      const newest = release(dataDir, 12);
+      await expect(readPendingRestartSignal(dataDir)).resolves.toMatchObject({ releaseCandidate: newest });
+      let confirmed = false;
+      const cleanupDeploy = vi.fn(async () => {});
+      await runManagementJobRunnerLoop({
+        store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {}, cleanupDeploy,
+        shouldStop: () => confirmed,
+        getActiveRelease: () => { confirmed = true; return newest; },
+      });
+      expect(cleanupDeploy).toHaveBeenCalledTimes(12);
+      expect(store.listDeploysAwaitingActivation()).toEqual([]);
+      for (const job of jobs) expect(store.get(job.id)?.result).toMatchObject({ restartActivated: true });
+    } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it("waits between idle reconciliation checks rather than spinning while activation is pending", async () => {
+    const { db, store, dataDir } = createStore("runner-pending-poll");
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const deploy = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "deploy") });
+      store.succeed(deploy.id, { restartQueued: true, releaseCandidate: release(dataDir, 1) });
+      await requestRestart(dataDir, { validationMode: "deploy", source: "staging_deploy_batch", releaseCandidate: release(dataDir, 1) });
+      let checks = 0;
+      await runManagementJobRunnerLoop({
+        store, deployBatchDataDir: dataDir, pollIntervalMs: 7, log: () => {},
+        shouldStop: () => checks === 3,
+        getActiveRelease: () => { checks++; return null; },
+      });
+      expect(store.get(deploy.id)?.result).toMatchObject({ restartQueued: true });
+      expect(timers.mock.calls.filter(([, delay]) => delay === 7)).toHaveLength(3);
+    } finally { timers.mockRestore(); db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it("finds pending deploys behind more than 200 terminal jobs", () => {
+    const { db, store, dataDir } = createStore("pending-deploy-query");
+    try {
+      for (let index = 0; index < 205; index++) store.succeed(store.enqueue("staging_preview", {}).id);
+      const deploy = store.enqueue("staging_deploy", { stagingDir: "latest" });
+      store.succeed(deploy.id, { restartDeferred: true, releaseCandidate: release(dataDir, 1) });
+      expect(store.listDeploysAwaitingActivation().map((job) => job.id)).toEqual([deploy.id]);
+    } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
   it("dispatches a claimed job and stores success or failure", async () => {
     const success = createStore("runner-success");
     try {
@@ -418,396 +543,6 @@ describe("management job runner", () => {
     }
   });
 
-  it("runs preview jobs while restart-capable jobs are held", async () => {
-    const { db, store, dataDir } = createStore("runner-preview-during-restart");
-    try {
-      const update = store.enqueue("self_update", {});
-      const preview = store.enqueue("staging_preview", { stagingDir: "preview" });
-      let stopping = false;
-
-      await runManagementJobRunnerLoop({
-        store,
-        heartbeatIntervalMs: 10,
-        pollIntervalMs: 1,
-        getHoldReason: () => "a restart is in flight",
-        shouldStop: () => stopping,
-        log: () => {},
-        dispatch: async (job) => {
-          expect(job.id).toBe(preview.id);
-          stopping = true;
-          return { success: true };
-        },
-      });
-
-      expect(store.get(preview.id)?.status).toBe("succeeded");
-      expect(store.get(update.id)?.status).toBe("queued");
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("exits the loop after a job when shouldStopAfterJob returns true", async () => {
-    const { db, store, dataDir } = createStore("runner-stop-after-job");
-    try {
-      store.enqueue("staging_deploy", { stagingDir: "/x", message: "deploy" });
-      store.enqueue("staging_preview", {});
-
-      const stoppedAfter: string[] = [];
-      await runManagementJobRunnerLoop({
-        store,
-        heartbeatIntervalMs: 10,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch: async () => ({ success: true }),
-        shouldStopAfterJob: (job) => {
-          stoppedAfter.push(job.type);
-          return job.type === "staging_deploy";
-        },
-      });
-
-      // Loop stopped right after the deploy job; the queued preview was never claimed.
-      expect(stoppedAfter).toEqual(["staging_deploy"]);
-      const remaining = store.list().filter((j) => j.type === "staging_preview");
-      expect(remaining).toHaveLength(1);
-      expect(remaining[0]?.status).toBe("queued");
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps running when shouldStopAfterJob returns false", async () => {
-    const { db, store, dataDir } = createStore("runner-continue-after-job");
-    try {
-      store.enqueue("staging_preview", { index: 1 });
-      store.enqueue("staging_preview", { index: 2 });
-
-      let processed = 0;
-      let stopping = false;
-      await runManagementJobRunnerLoop({
-        store,
-        heartbeatIntervalMs: 10,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch: async () => {
-          processed += 1;
-          if (processed >= 2) stopping = true;
-          return { success: true };
-        },
-        shouldStopAfterJob: () => false,
-        shouldStop: () => stopping,
-      });
-
-      expect(processed).toBe(2);
-      expect(store.list().every((j) => j.status === "succeeded")).toBe(true);
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("drains deploys into one restart and finalizes them after activation", async () => {
-    const { db, store, dataDir } = createStore("runner-deploy-batch");
-    try {
-      const jobs = [1, 2, 3].map((index) => store.enqueue("staging_deploy", {
-        stagingDir: join(dataDir, `deploy-${index}`),
-        message: `deploy ${index}`,
-      }));
-      let stopping = false;
-      const queueRestart = vi.fn(() => {
-        stopping = true;
-      });
-      const cleanupDeploy = vi.fn(async () => {});
-      const dispatch = vi.fn(async (job: ManagementJob, options: ManagementJobDispatchOptions) => {
-        expect(options.deferDeployRestart).toBe(true);
-        const index = jobs.findIndex((candidate) => candidate.id === job.id) + 1;
-        return {
-          restartDeferred: true,
-          releaseCandidate: {
-            id: `release-${index}`,
-            root: join(dataDir, `release-${index}`),
-            commitSha: `commit-${index}`,
-            source: "staging_deploy",
-            dependencyHash: `deps-${index}`,
-          },
-        };
-      });
-
-      await runManagementJobRunnerLoop({
-        store,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch,
-        deployBatchDataDir: dataDir,
-        queueDeployRestart: queueRestart,
-        shouldStop: () => stopping,
-        getActiveRelease: () => null,
-      });
-
-      expect(dispatch).toHaveBeenCalledTimes(3);
-      expect(queueRestart).toHaveBeenCalledOnce();
-      expect(queueRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-3" }));
-      expect(store.get(jobs[0].id)?.result).toMatchObject({ restartQueued: true, deployBatchSize: 3 });
-
-      stopping = false;
-      await runManagementJobRunnerLoop({
-        store,
-        pollIntervalMs: 1,
-        log: () => {},
-        shouldStop: () => stopping,
-        deployBatchDataDir: dataDir,
-        cleanupDeploy,
-        getActiveRelease: () => {
-          stopping = true;
-          return {
-            id: "release-3",
-            root: join(dataDir, "release-3"),
-            commitSha: "commit-3",
-            source: "staging_deploy",
-            dependencyHash: "deps-3",
-          };
-        },
-      });
-
-      expect(cleanupDeploy).toHaveBeenCalledTimes(3);
-      expect(store.get(jobs[0].id)?.result).toMatchObject({ restartActivated: true });
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("retargets a waiting restart when another deploy arrives", async () => {
-    const { db, store, dataDir } = createStore("runner-deploy-retarget");
-    try {
-      const first = store.enqueue("staging_deploy", {
-        stagingDir: join(dataDir, "deploy-1"),
-        message: "deploy 1",
-      });
-      let stopping = false;
-      let second: ManagementJob | undefined;
-      const queueRestart = vi.fn(() => {
-        second = store.enqueue("staging_deploy", {
-          stagingDir: join(dataDir, "deploy-2"),
-          message: "deploy 2",
-        });
-      });
-      const retargetRestart = vi.fn((_dataDir: string, _candidate: unknown) => {
-        stopping = true;
-      });
-      const dispatch = vi.fn(async (job: ManagementJob) => {
-        const index = job.id === first.id ? 1 : 2;
-        return {
-          restartDeferred: true,
-          releaseCandidate: {
-            id: `release-${index}`,
-            root: join(dataDir, `release-${index}`),
-            commitSha: `commit-${index}`,
-            source: "staging_deploy",
-            dependencyHash: `deps-${index}`,
-          },
-        };
-      });
-
-      await runManagementJobRunnerLoop({
-        store,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch,
-        deployBatchDataDir: dataDir,
-        queueDeployRestart: queueRestart,
-        retargetDeployRestart: retargetRestart,
-        shouldStop: () => stopping,
-        getActiveRelease: () => null,
-      });
-
-      expect(queueRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-1" }));
-      expect(retargetRestart).toHaveBeenCalledWith(dataDir, expect.objectContaining({ id: "release-2" }));
-      expect(second).toBeDefined();
-      expect(store.get(first.id)?.result).toMatchObject({
-        restartQueued: true,
-        restartActivated: false,
-        deployBatchSize: 2,
-      });
-      expect(store.get(second!.id)?.result).toMatchObject({
-        restartQueued: true,
-        restartActivated: false,
-        deployBatchSize: 2,
-      });
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("runs previews and idles between polls while a batched deploy waits for its restart", async () => {
-    const { db, store, dataDir } = createStore("runner-deploy-waiting");
-    const timers = vi.spyOn(globalThis, "setTimeout");
-    try {
-      const deploy = store.enqueue("staging_deploy", { stagingDir: join(dataDir, "deploy-1"), message: "deploy" });
-      let preview: ManagementJob | undefined;
-      let stopping = false;
-      let reconciles = 0;
-      const dispatched: string[] = [];
-
-      await runManagementJobRunnerLoop({
-        store,
-        pollIntervalMs: 7,
-        log: () => {},
-        deployBatchDataDir: dataDir,
-        shouldStop: () => stopping,
-        // A restart that waits for busy sessions is in flight, but its batch window is still open,
-        // so nothing is held. The deploy stays pending for as long as the sessions stay busy.
-        getHoldReason: () => null,
-        queueDeployRestart: () => writeFileSync(join(dataDir, "restart.signal"), "{}", "utf8"),
-        // Read once per reconcile, so this counts passes through the pending-deploy branch.
-        getActiveRelease: () => {
-          reconciles++;
-          if (reconciles === 4) preview = store.enqueue("staging_preview", { stagingDir: "preview" });
-          if (reconciles > 200) stopping = true; // a loop that starves the preview must still end
-          return null;
-        },
-        dispatch: async (job) => {
-          dispatched.push(job.type);
-          if (job.type === "staging_preview") {
-            stopping = true;
-            return { success: true };
-          }
-          return {
-            restartDeferred: true,
-            releaseCandidate: { id: "release-1", root: join(dataDir, "release-1"), commitSha: "commit-1", source: "staging_deploy", dependencyHash: "deps-1" },
-          };
-        },
-      });
-
-      expect(dispatched).toEqual(["staging_deploy", "staging_preview"]);
-      expect(store.get(preview!.id)?.status).toBe("succeeded");
-      expect(store.get(deploy.id)?.result).toMatchObject({ restartQueued: true, restartActivated: false });
-      // Each pass with nothing to do waits one poll interval instead of looping straight away.
-      expect(timers.mock.calls.filter(([, delay]) => delay === 7).length).toBeGreaterThanOrEqual(2);
-      expect(reconciles).toBe(4);
-    } finally {
-      timers.mockRestore();
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("caps each deploy batch and leaves later jobs queued", async () => {
-    const { db, store, dataDir } = createStore("runner-deploy-cap");
-    try {
-      const jobs = Array.from({ length: MANAGEMENT_DEPLOY_BATCH_MAX_JOBS + 1 }, (_, index) =>
-        store.enqueue("staging_deploy", {
-          stagingDir: join(dataDir, `deploy-${index}`),
-          message: `deploy ${index}`,
-        }));
-      let stopping = false;
-      const queueRestart = vi.fn(() => {
-        stopping = true;
-      });
-
-      await runManagementJobRunnerLoop({
-        store,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch: async (_job, options) => ({
-          restartDeferred: options.deferDeployRestart,
-          releaseCandidate: {
-            id: "release",
-            root: join(dataDir, "release"),
-            commitSha: "commit",
-            source: "staging_deploy",
-            dependencyHash: "deps",
-          },
-        }),
-        deployBatchDataDir: dataDir,
-        queueDeployRestart: queueRestart,
-        shouldStop: () => stopping,
-        getActiveRelease: () => null,
-      });
-
-      expect(queueRestart).toHaveBeenCalledOnce();
-      expect(store.get(jobs.at(-1)!.id)?.status).toBe("queued");
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("prunes retention after a job but skips it when stepping aside for a restart", async () => {
-    const continued = createStore("runner-retention");
-    try {
-      const prune = vi.spyOn(continued.store, "pruneRetention");
-      continued.store.enqueue("staging_preview", { index: 1 });
-      let stopping = false;
-      await runManagementJobRunnerLoop({
-        store: continued.store,
-        heartbeatIntervalMs: 10,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch: async () => {
-          stopping = true;
-          return { success: true };
-        },
-        shouldStop: () => stopping,
-      });
-
-      expect(prune).toHaveBeenCalledTimes(1);
-    } finally {
-      continued.db.close();
-      rmSync(continued.dataDir, { recursive: true, force: true });
-    }
-
-    const stopped = createStore("runner-retention-stop");
-    try {
-      const prune = vi.spyOn(stopped.store, "pruneRetention");
-      stopped.store.enqueue("staging_deploy", { stagingDir: "/x", message: "deploy" });
-      await runManagementJobRunnerLoop({
-        store: stopped.store,
-        heartbeatIntervalMs: 10,
-        pollIntervalMs: 1,
-        log: () => {},
-        dispatch: async () => ({ success: true }),
-        shouldStopAfterJob: () => true,
-      });
-
-      expect(prune).not.toHaveBeenCalled();
-    } finally {
-      stopped.db.close();
-      rmSync(stopped.dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("exits via the real isRestartAlreadyInFlight wiring when a deploy queues a restart", async () => {
-    const { db, store, dataDir } = createStore("runner-restart-wiring");
-    try {
-      store.enqueue("staging_deploy", { stagingDir: "/x", message: "deploy" });
-      store.enqueue("staging_preview", {});
-
-      await runManagementJobRunnerLoop({
-        store,
-        heartbeatIntervalMs: 10,
-        pollIntervalMs: 1,
-        log: () => {},
-        // Mirror the production closure: the deploy job "queues a restart" by
-        // writing the signal file, then the loop consults the real disk gate.
-        dispatch: async (job) => {
-          if (job.type === "staging_deploy") {
-            writeFileSync(join(dataDir, "restart.signal"), "{}", "utf8");
-          }
-          return { success: true };
-        },
-        shouldStopAfterJob: () => restartState.isRestartAlreadyInFlight(dataDir),
-      });
-
-      const preview = store.list().find((j) => j.type === "staging_preview");
-      expect(preview?.status).toBe("queued");
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("management job status tool", () => {
@@ -904,7 +639,6 @@ describe("staging management tool enqueue", () => {
     const { db, store, dataDir } = createStore("staging-tools");
     const stagingDir = join(dataDir, "worktree");
     mkdirSync(stagingDir, { recursive: true });
-    const restartSpy = vi.spyOn(restartState, "isRestartAlreadyInFlight").mockReturnValue(false);
     try {
       const ctx = { managementJobStore: store } as any;
       const tools = createStagingToolDefinitions(ctx);
@@ -914,11 +648,11 @@ describe("staging management tool enqueue", () => {
 
       const previewResult = await preview.handler({ stagingDir, validate: false }, {} as any) as any;
       expect(previewResult).toMatchObject({ success: true, status: "queued" });
-      expect(previewResult).toMatchObject({ terminal: true, toolNextAction: "respond_or_defer" });
+      expect(previewResult).toMatchObject({ terminal: false, toolNextAction: "proceed" });
       expect(previewResult.message).toContain("same-session defer");
       expect(previewResult.message).not.toContain("intervalSeconds");
       expect(previewResult.message).not.toContain("management_job_status");
-      expect(previewResult.content[0].text).toContain('"nextAction":"respond_or_defer"');
+      expect(previewResult.content[0].text).toContain('"nextAction":"proceed"');
       expect(store.get(previewResult.jobId)).toMatchObject({
         type: "staging_preview",
         input: { stagingDir, validate: false },
@@ -926,7 +660,7 @@ describe("staging management tool enqueue", () => {
 
       const deployResult = await deploy.handler({ stagingDir, message: "Ship it" }, {} as any) as any;
       expect(deployResult).toMatchObject({ success: true, status: "queued" });
-      expect(deployResult).toMatchObject({ terminal: true, toolNextAction: "respond_or_defer" });
+      expect(deployResult).toMatchObject({ terminal: false, toolNextAction: "proceed" });
       expect(deployResult.message).toContain("same-session defer");
       expect(deployResult.message).not.toContain("intervalSeconds");
       expect(deployResult.message).not.toContain("management_job_status");
@@ -937,7 +671,6 @@ describe("staging management tool enqueue", () => {
         input: { stagingDir, message: "Ship it" },
       });
     } finally {
-      restartSpy.mockRestore();
       db.close();
       rmSync(dataDir, { recursive: true, force: true });
     }

@@ -10,14 +10,6 @@ import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
 import type { DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { DeferLoopStore } from "./defer-loop-store.js";
-import {
-  isRestartCutoverInProgress,
-  isRestartPending,
-  isRestartPendingError,
-  RESTART_PENDING_MESSAGE,
-  refreshRestartState,
-  refreshRestartStateSync,
-} from "./session-manager.js";
 import { createMissedRunCatchUpController, protectedScheduleDisposition } from "./scheduler-missed-runs.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 import { computeNextRunAt, validateSupportedCronExpression } from "./cron-next-run.js";
@@ -73,9 +65,6 @@ const missedRunCatchUp = createMissedRunCatchUpController({
   computeNextRunAt,
   unregisterSchedule,
   triggerSchedule,
-  isRestartPending,
-  refreshRestartState,
-  getRestartPendingMessage: () => RESTART_PENDING_MESSAGE,
   focusProtectionStore: () => focusProtectionStore,
   hasAutomaticRetry,
 });
@@ -107,8 +96,7 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
       clearProtectedRetryTimers(event.protectionWindowId);
       missedRunCatchUp.check();
     } else if (
-      event.type === "server:restart-cleared"
-      || event.type === "focus:protection-changed"
+      event.type === "focus:protection-changed"
       || (event.type === "schedule:changed" && focusProtectionStore)
     ) {
       missedRunCatchUp.check();
@@ -162,8 +150,8 @@ export function shutdown(): void {
  *
  * Focused one-shot timer tests use this after {@link initialize} so advancing
  * fake timers across long ranges exercises only the timer under test. The
- * watchdog is a dense recurring fake-timer source (a 60s `setInterval` that
- * also performs real restart-state I/O); under Vitest's async fake-timer
+ * watchdog is a dense recurring fake-timer source (a 60s `setInterval`);
+ * under Vitest's async fake-timer
  * advancement it competes with the timer under test, ballooning very long
  * advances into tens of thousands of interval iterations and, under full
  * parallel load, perturbing `vi.advanceTimersByTimeAsync` so it runs past the
@@ -464,10 +452,6 @@ export async function triggerSchedule(
   // Check global pause
   if (_globalPause) return retryWithoutClaim("Scheduling is globally paused", triggerSource === "once");
 
-  if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-    return retryWithoutClaim(RESTART_PENDING_MESSAGE, triggerSource === "once");
-  }
-
   if (triggerSource !== "manual" && !schedule.enabled) {
     missedRunCatchUp.settle(scheduleId, "cancelled");
     return { skipped: "Schedule is disabled" };
@@ -711,9 +695,6 @@ export async function triggerSchedule(
           `[scheduler] Failed to roll back session ${sessionId.slice(0, 8)} after launch rejection: ${cleanupErrors.join("; ")}`,
         );
       }
-      if (isRestartPendingError(err)) {
-        return { skipped: RESTART_PENDING_MESSAGE };
-      }
       throw err;
     }
 
@@ -900,9 +881,7 @@ function clearMissedRunWatchdog(): void {
 function startMissedRunWatchdog(): void {
   clearMissedRunWatchdog();
   missedRunWatchdogTimer = setInterval(() => {
-    if (!isRestartPending()) {
-      reconcileCronNextRunAt();
-    }
+    reconcileCronNextRunAt();
     missedRunCatchUp.check();
   }, MISSED_RUN_WATCHDOG_INTERVAL_MS);
 }

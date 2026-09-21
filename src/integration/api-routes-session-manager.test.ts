@@ -58,7 +58,8 @@ describe("Session manager routes", () => {
       sessionIds: [],
       sessions: [],
       backgroundOperations: 1,
-      restartForced: false,
+      jobs: 0,
+      operations: 0,
       agentBackend: expect.objectContaining({ state: "ready", connection: "connected" }),
     });
   });

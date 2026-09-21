@@ -1,11 +1,6 @@
-import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
-import {
-  findLifecycleBusyState,
-  lifecycleBusyToolFailure,
-  writeRestartSignalOrRollback,
-} from "../restart-inflight.js";
+import { requestRestart, RESTART_WHEN_IDLE_NOTE } from "../restart-signal.js";
 import { bridgeToolResult, toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { queuedManagementJobResult } from "../management-job-tool-results.js";
@@ -19,10 +14,6 @@ import { ActiveManagementJobError } from "../management-job-store.js";
 
 function getDataDir(ctx: AppContext): string {
   return ctx.runtimePaths?.dataDir ?? join(BRIDGE_TOOLS_REPO_ROOT, "data");
-}
-
-function getSignalFile(ctx: AppContext): string {
-  return join(getDataDir(ctx), "restart.signal");
 }
 
 function isSourceManagementUnavailable(ctx: AppContext): boolean {
@@ -44,13 +35,6 @@ function getActiveManagementJob(error: unknown) {
   return undefined;
 }
 
-function findBusyLifecycle(ctx: AppContext) {
-  return findLifecycleBusyState({
-    dataDir: getDataDir(ctx),
-    managementJobStore: ctx.managementJobStore,
-  });
-}
-
 export interface RegisterSelfAdminToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
@@ -58,42 +42,23 @@ export interface RegisterSelfAdminToolsOptions {
 export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
   defineBridgeTool("self_restart", {
-    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes, emergency restart). For deploying code changes, use staging_init → make changes → staging_deploy instead. The launcher will run operational restart checks, sync dependencies if needed, and swap processes without the full deploy validation gate unless source files changed. IMPORTANT: This session counts as active — after a successful restart signal, do not make further tool calls or you will block the restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
+    description: "Restart the Copilot Bridge server WITHOUT code changes (config reload, env changes). For deploying code changes, use staging_init → make changes → staging_deploy instead. The restart is a background request: the launcher swaps the server the next time every session and management job is idle, this session included, and nothing is blocked while it waits. Asking again while a restart is pending joins that restart. RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      const signalFile = getSignalFile(ctx);
-      const busy = findBusyLifecycle(ctx);
-      if (busy) {
-        return lifecycleBusyToolFailure({
-          busy,
-          retryTarget: "the restart",
-          toolTelemetry: { signalFile },
-        });
-      }
-      const dataDir = getDataDir(ctx);
-      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-
-      let otherBusy = 0;
       try {
-        otherBusy = writeRestartSignalOrRollback(signalFile, "operational", "self_restart");
+        await requestRestart(getDataDir(ctx), { validationMode: "operational", source: "self_restart" });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return toolFailure("Restart signal could not be written.", {
-          detail: `The bridge did not queue a restart because ${signalFile} could not be written.\n\n${message}`,
-          sessionLog: `Failed to write restart signal ${signalFile}: ${message}`,
-          toolTelemetry: { signalFile },
+        return toolFailure("Restart could not be requested.", {
+          detail: `The restart signal could not be written in ${getDataDir(ctx)}.\n\n${message}`,
+          sessionLog: `Failed to write the restart signal in ${getDataDir(ctx)}: ${message}`,
         });
       }
-
-      const waitNote = otherBusy > 0
-        ? ` ${otherBusy} other session(s) are active — the launcher will wait for them to finish (up to 60 min per busy-session check; sessions with no activity for 5 min are treated as stuck).`
-        : "";
+      ctx.globalBus.emit({ type: "server:restart-changed" });
       return bridgeToolResult({
         success: true,
-        terminal: true,
-        toolNextAction: "respond",
-        retryable: false,
-        summary: `Restart signal sent.${waitNote} Stop issuing tools so the current session can become idle and the launcher can restart.`,
+        toolNextAction: "proceed",
+        summary: `Restart requested. ${RESTART_WHEN_IDLE_NOTE}`,
       });
     },
   }),
@@ -110,32 +75,17 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
         return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
       }
 
-      const signalFile = getSignalFile(ctx);
-      const busy = findBusyLifecycle(ctx);
-      if (busy) {
-        return lifecycleBusyToolFailure({
-          busy,
-          retryTarget: "the update",
-          toolTelemetry: { signalFile },
-        });
-      }
-
-      const dataDir = getDataDir(ctx);
-      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-
       try {
         const job = requireManagementJobStore(ctx).enqueue("self_update", {});
         return queuedManagementJobResult(job, "Self-update");
       } catch (error) {
         const activeJob = getActiveManagementJob(error);
         if (activeJob) {
-          // Race backstop: another caller enqueued between the gate above and
-          // store.enqueue. Same contract as the gate so the agent still ends
-          // its turn instead of polling.
-          return lifecycleBusyToolFailure({
-            busy: { reason: "management_job", job: activeJob },
-            retryTarget: "the update",
-            toolTelemetry: { signalFile },
+          return toolFailure(`A ${activeJob.type} management job is ${activeJob.status}.`, {
+            detail:
+              `Job ${activeJob.id} changes the same checkout as a self-update. `
+              + "Ask for the update again once that job has finished.",
+            toolTelemetry: { activeJobId: activeJob.id, activeJobType: activeJob.type },
           });
         }
         return toolFailure("Self-update could not be queued.", {

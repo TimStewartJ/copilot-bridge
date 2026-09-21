@@ -18,7 +18,6 @@ import {
   type DeferRunnerCoreContext,
   type ProcessOneResult,
 } from "./defer-runner-core.js";
-import { isRestartPending } from "./restart-controller.js";
 import {
   createFailedDeferDelivery,
   createReturnedDeferDelivery,
@@ -40,9 +39,7 @@ export {
 
 // ── Runner ────────────────────────────────────────────────────────
 
-export interface DeferredPromptRunnerOptions extends DeferRunnerOptions {
-  isRestartPending?: () => boolean;
-}
+export type DeferredPromptRunnerOptions = DeferRunnerOptions;
 
 function toDueItem(item: DeferredPrompt): DeferRunnerDueItem {
   return {
@@ -61,9 +58,8 @@ export function createDeferredPromptRunner(
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
   summarySources: DeferSummarySources = { deferredPromptStore: store },
-  options: DeferredPromptRunnerOptions = {},
+  options: DeferRunnerOptions = {},
 ) {
-  const restartPending = options.isRestartPending ?? isRestartPending;
   const runWorker = async (input: DeferWorkerInput): Promise<DeferWorkerResult | undefined> => {
     const worker = (sessionManager as SessionManager & {
       runDeferWorker?: (workerInput: DeferWorkerInput) => Promise<DeferWorkerResult>;
@@ -339,14 +335,6 @@ export function createDeferredPromptRunner(
     summarySources,
     labels: { tag: "deferred-runner", noun: "deferral", kind: "once" },
     ...options,
-    additionalReadiness: (item) => {
-      const readiness = options.additionalReadiness?.(item) ?? { ready: true };
-      if (!readiness.ready) return readiness;
-      const restartRecoveryDue = store.listDue().some((item) => isRestartRecoveryPrompt(item.prompt));
-      return restartPending() && restartRecoveryDue
-        ? { ready: false, reason: "restart recovery prompts wait for reconnect" }
-        : readiness;
-    },
     createProcessOne,
   });
 }

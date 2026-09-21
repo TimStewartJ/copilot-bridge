@@ -124,17 +124,7 @@ import {
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
-  RESTART_PENDING_MESSAGE,
-  configureRestartEventBus,
-  configureRestartActiveSessionCountProvider,
-  configureRestartStateStore,
-  isRestartCutoverInProgress,
-  isRestartPending,
-  refreshRestartState,
-  refreshRestartStateSync,
-  syncRestartWaitingSessions,
-  triggerRestartPending,
-} from "./restart-controller.js";
+} from "./prompt-delivery-errors.js";
 import {
   ABORT_CONFIRMATION_TIMEOUT_MS,
   SessionRunStateController,
@@ -178,6 +168,7 @@ import {
   BACKEND_RECOVERY_BLOCKED_MESSAGE,
   BACKEND_RECOVERY_CONTINUE_PROMPT,
   BACKEND_REFRESH_IN_PROGRESS_MESSAGE,
+  BRIDGE_RESTARTING_MESSAGE,
   isTransientBackendError,
 } from "./backend-availability.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
@@ -229,27 +220,8 @@ export type { DerivedModelState } from "./session-events-model.js";
 export {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
-  RESTART_PENDING_MESSAGE,
-  beginRestartPending,
-  beginRestartPendingForExternalRequest,
-  clearRestartPending,
-  configureRestartEventBus,
-  configureRestartStateStore,
-  forceClearRestartPending,
-  forceRestartCutover,
-  getRestartWaitingCount,
   isPromptDeliveryInterruptedError,
-  isRestartCutoverInProgress,
-  isRestartForced,
-  isRestartImminent,
-  isRestartPending,
-  isRestartPendingError,
-  refreshRestartState,
-  refreshRestartStateSync,
-  syncRestartWaitingSessions,
-  triggerRestartPending,
-  triggerRestartPendingForExternalRequest,
-} from "./restart-controller.js";
+} from "./prompt-delivery-errors.js";
 export type {
   PromptDeliveryResult,
   SessionActivity,
@@ -960,9 +932,6 @@ export class SessionManager {
     });
     this.runStateController = new SessionRunStateController({
       globalBus: deps.globalBus,
-      isRestartPending,
-      syncRestartWaitingSessions,
-      getActiveSessionCount: () => this.getLifecycleBlockingSessionCount(),
       cancelPendingInteractions: (sessionId) => this.cancelPendingInteractions(sessionId),
       onRunIdle: (sessionId, at) => this.touchSessionTree(sessionId, at),
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -1023,9 +992,6 @@ export class SessionManager {
       getParentWorkingDirectory: (sessionId) => this.getEffectiveSessionCwd(sessionId),
       beginLifecycle: () => {
         if (this.shuttingDown) throw new Error(PROMPT_DELIVERY_SHUTDOWN_MESSAGE);
-        if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-          throw new Error(RESTART_PENDING_MESSAGE);
-        }
         return this.beginSessionCreationLifetime();
       },
       reserveCapacity: async (sessionConfig) => {
@@ -1104,9 +1070,6 @@ export class SessionManager {
         this.applyTurnReasoningEffort(sessionId, session, reasoningEffort),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
     });
-    configureRestartStateStore(deps.runtimePaths);
-    configureRestartEventBus(deps.globalBus);
-    void refreshRestartState();
     this.startSessionCacheSweep();
   }
 
@@ -1530,13 +1493,11 @@ export class SessionManager {
       resolveLifetime = resolve;
     });
     this.inFlightSessionCreations.add(lifetime);
-    this.syncRestartWaitingIfPending();
     return () => {
       if (completed) return;
       completed = true;
       this.inFlightSessionCreations.delete(lifetime);
       resolveLifetime();
-      this.syncRestartWaitingIfPending();
     };
   }
 
@@ -1578,7 +1539,6 @@ export class SessionManager {
       if (this.pendingSessionCreations.get(sessionId) === tracked) {
         this.pendingSessionCreations.delete(sessionId);
       }
-      this.syncRestartWaitingIfPending();
     });
     this.pendingSessionCreations.set(sessionId, tracked);
     void tracked.catch((error) => {
@@ -2312,12 +2272,6 @@ export class SessionManager {
     }
   }
 
-  private syncRestartWaitingIfPending(): void {
-    if (isRestartPending()) {
-      syncRestartWaitingSessions(this.getLifecycleBlockingSessionCount());
-    }
-  }
-
   private async awaitSessionCleanup(sessionId: string): Promise<void> {
     while (true) {
       const cleanups = await this.enqueueCache("await-cleanup", sessionId, () => {
@@ -2355,7 +2309,6 @@ export class SessionManager {
     if (this.sessionObjects.has(sessionId) && !options.reserveCachedSession) {
       this.touchSessionTree(sessionId);
       this.resumingSessions.set(sessionId, (this.resumingSessions.get(sessionId) ?? 0) + 1);
-      this.syncRestartWaitingIfPending();
       return lease;
     }
     if (
@@ -2372,7 +2325,6 @@ export class SessionManager {
           this.resumingCapacityReservations.set(lease.token, reservation);
           this.touchSessionTree(sessionId);
           this.resumingSessions.set(sessionId, 1);
-          this.syncRestartWaitingIfPending();
         },
       });
       await this.awaitSessionCleanup(sessionId);
@@ -2394,7 +2346,6 @@ export class SessionManager {
     } else {
       this.resumingSessions.set(sessionId, count - 1);
     }
-    this.syncRestartWaitingIfPending();
     this.notifySessionCapacityChanged();
     this.scheduleCacheOperation(
       this.trimSessionCache("session resume ended"),
@@ -3413,6 +3364,7 @@ export class SessionManager {
 
   /** Why new work cannot reach the backend right now, or undefined when it can. */
   getBackendUnavailableReason(): string | undefined {
+    if (this.shuttingDown) return BRIDGE_RESTARTING_MESSAGE;
     if (this.backendTransition?.phase === "blocked") return BACKEND_RECOVERY_BLOCKED_MESSAGE;
     if (
       this.backendTransition
@@ -3549,13 +3501,6 @@ export class SessionManager {
           attentionMode: record?.attentionMode === "quiet" ? "quiet" : "normal",
         };
       });
-  }
-
-  /** Abort every in-flight run and defer worker check so a forced restart can cut over now. */
-  async abortActiveWork(): Promise<void> {
-    this.deferWorker.abortAll();
-    const deadline = createDeadline(SESSION_ABORT_TIMEOUT_MS);
-    await Promise.allSettled(this.getActiveSessions().map((sessionId) => this.abortSession(sessionId, deadline)));
   }
 
   /**
@@ -3889,7 +3834,6 @@ export class SessionManager {
 
   async initialize(): Promise<void> {
     console.log("[sdk] Initializing agent backend...");
-    configureRestartActiveSessionCountProvider(() => this.getLifecycleBlockingSessionCount());
     const backend = this.createBackend();
     this.backend = backend;
     try {
@@ -4531,9 +4475,6 @@ export class SessionManager {
     let backgroundOwnsLifetime = false;
     try {
       const client = this.getBackend();
-      if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-        throw new Error(RESTART_PENDING_MESSAGE);
-      }
 
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
@@ -4580,9 +4521,6 @@ export class SessionManager {
     options: { toEventId?: string } = {},
   ): Promise<{ sessionId: string }> {
     const backend = this.getBackend();
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
-    }
 
     const sourceTask = this.findLinkedTask(sourceSessionId);
     const sourceCwd = this.resolveEffectiveSessionCwd({ sessionId: sourceSessionId, task: sourceTask });
@@ -4653,9 +4591,6 @@ export class SessionManager {
     sessionId: string,
     eventId: string,
   ): Promise<{ eventsRemoved: number; lastVisibleActivityAt?: string }> {
-    if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-      throw new Error(RESTART_PENDING_MESSAGE);
-    }
     if (this.isSessionBusy(sessionId)) {
       throw new SessionHistoryUndoError("busy", "Cannot undo history on a busy session");
     }
@@ -4668,7 +4603,6 @@ export class SessionManager {
     const backend = this.getBackend();
     const startedAt = Date.now();
     this.sessionOverlayBusyReasons.set(sessionId, "history-undo");
-    this.syncRestartWaitingIfPending();
 
     try {
       let session = this.sessionObjects.get(sessionId);
@@ -4825,7 +4759,6 @@ export class SessionManager {
       throw error;
     } finally {
       this.sessionOverlayBusyReasons.delete(sessionId);
-      this.syncRestartWaitingIfPending();
       this.flushPendingSessionEviction(sessionId);
     }
   }
@@ -4859,9 +4792,6 @@ export class SessionManager {
     let backgroundOwnsLifetime = false;
     try {
       const client = this.getBackend();
-      if (isRestartCutoverInProgress(refreshRestartStateSync())) {
-        throw new Error(RESTART_PENDING_MESSAGE);
-      }
 
       const isPlaceholder = taskTitle === "New Task";
 
@@ -5549,7 +5479,7 @@ export class SessionManager {
    * creation does not appear as user-visible agent activity.
    */
   getLifecycleBlockingSessionCount(): number {
-    return this.getActiveSessions().length + this.inFlightSessionCreations.size;
+    return this.getProtectedSessionTreeIds().size + this.inFlightSessionCreations.size;
   }
 
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
@@ -5632,7 +5562,6 @@ export class SessionManager {
 
     const sid = sessionId.slice(0, 8);
     this.sessionOverlayBusyReasons.set(sessionId, "model-switching");
-    this.syncRestartWaitingIfPending();
 
     try {
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
@@ -5752,7 +5681,6 @@ export class SessionManager {
       };
     } finally {
       this.sessionOverlayBusyReasons.delete(sessionId);
-      this.syncRestartWaitingIfPending();
       this.flushPendingSessionEviction(sessionId);
       this.scheduleCacheOperation(
         this.trimSessionCache("model switch ended"),
@@ -5825,10 +5753,26 @@ export class SessionManager {
     return this.runStateController.getSessionActivity();
   }
 
+  async isRuntimeIdle(): Promise<boolean> {
+    const activity = await Promise.all([...this.sessionObjects.values()].map((session) => session.getActivity()));
+    // A shell can wake a cached session after its visible run ended. Unknown activity is not idle.
+    return activity.every((state) => state?.processing === false);
+  }
+
+  /**
+   * Refuse new work from this tick on. A restart stops the server only while it is idle, so the
+   * idle check and this refusal have to land together; the rest of shutdown runs behind awaits.
+   */
+  stopAdmittingWork(): void {
+    this.shuttingDown = true;
+  }
+
   async gracefulShutdown(
     deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
   ): Promise<void> {
     this.shuttingDown = true;
+    // A check that fails as "Bridge is restarting" is requeued without costing its defer an attempt.
+    this.deferWorker.abortAll();
     this.stopSessionCacheSweep();
     this.backendDisconnectUnsubscribe?.();
     this.backendDisconnectUnsubscribe = null;

@@ -16,13 +16,11 @@ import {
   providers,
   PendingInteractionError,
   publishOutboundAttachment,
-  RESTART_PENDING_MESSAGE,
   request,
   scheduler,
   writeCopilotUsageEvents,
   writeRawCopilotUsageEvents,
   writeFileSync,
-  writeRestartState,
 } from "../test-support/api-routes.js";
 
 let app: ApiRouteTestState["app"];
@@ -509,16 +507,8 @@ describe("Status stream", () => {
     }
   });
 
-  it("GET /api/status-stream seeds restart-pending from persisted restart state", async () => {
-    const runtimePaths = createRestartRuntimePaths();
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), {
-      requestId: "req-status-stream",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: null,
-    });
-    ({ app, ctx } = createTestApp({ runtimePaths }));
+  it("GET /api/status-stream signals a restart status change without an admission lock", async () => {
+    ({ app, ctx } = createTestApp());
 
     const server = app.listen(0);
     try {
@@ -531,15 +521,11 @@ describe("Status stream", () => {
           res.setEncoding("utf8");
           res.on("data", (chunk) => {
             text += chunk;
-            if (
-              text.includes('"type":"server:restart-pending"')
-              && text.includes('"waitingSessions":2')
-              && text.includes('"phase":"waiting-for-sessions"')
-              && text.includes('"canAcceptNewWork":true')
-              && text.includes('"serverInstanceId"')
-            ) {
+            if (text.includes('"type":"server:restart-changed"')) {
               req.destroy();
               resolve(text);
+            } else if (text.includes(": connected")) {
+              ctx.globalBus.emit({ type: "server:restart-changed" });
             }
           });
           res.on("error", reject);
@@ -550,11 +536,8 @@ describe("Status stream", () => {
         });
       });
 
-      expect(body).toContain('"type":"server:restart-pending"');
-      expect(body).toContain('"waitingSessions":2');
-      expect(body).toContain('"phase":"waiting-for-sessions"');
-      expect(body).toContain('"canAcceptNewWork":true');
-      expect(body).toContain('"serverInstanceId"');
+      expect(body).toContain('"type":"server:restart-changed"');
+      expect(body).not.toContain("canAcceptNewWork");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
@@ -562,24 +545,20 @@ describe("Status stream", () => {
 
   it("GET /api/restart-status reports persisted restart state and falls back to idle", async () => {
     const pendingPaths = createRestartRuntimePaths();
-    await writeRestartState(join(pendingPaths.dataDir, "restart-state.json"), {
-      requestId: "req-restart-status",
-      phase: "waiting-for-sessions",
-      requestedAt: "2026-04-24T12:00:00.000Z",
-      waitingSessions: 2,
-      launcherHeartbeatAt: null,
-    });
+    writeFileSync(join(pendingPaths.dataDir, "restart.signal"), JSON.stringify({
+      requestId: "req-restart-status", validationMode: "operational", requestedAt: "2026-04-24T12:00:00.000Z",
+    }));
     ({ app, ctx } = createTestApp({ runtimePaths: pendingPaths }));
+    ctx.sessionManager.getLifecycleBlockingSessionCount = () => 2;
 
     const pending = await request(app).get("/api/restart-status");
     expect(pending.status).toBe(200);
     expect(pending.body).toEqual({
       pending: true,
-      phase: "waiting-for-sessions",
+      phase: "waiting",
       requestedAt: "2026-04-24T12:00:00.000Z",
       serverInstanceId: expect.any(String),
-      waitingSessions: 2,
-      canAcceptNewWork: true,
+      waitingOn: { sessions: 2, jobs: 0, sessionIds: [] },
     });
 
     // A fresh runtime with no persisted state reports idle.
@@ -592,8 +571,7 @@ describe("Status stream", () => {
       phase: "idle",
       requestedAt: null,
       serverInstanceId: expect.any(String),
-      waitingSessions: 0,
-      canAcceptNewWork: true,
+      waitingOn: { sessions: 0, jobs: 0, sessionIds: [] },
     });
   });
 });

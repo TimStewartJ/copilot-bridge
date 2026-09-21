@@ -179,7 +179,7 @@ describe.each(["defer", "defer-loop"] as const)("%s focus protection", (kind) =>
     protection.reconcile();
     for (let n = 0; n < 12; n++) {
       h.runner.poke();
-      bus.emit({ type: "server:restart-cleared" });
+      bus.emit({ type: "server:restart-changed" });
       bus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
       await vi.advanceTimersByTimeAsync(0);
     }
@@ -309,7 +309,7 @@ describe.each(["defer", "defer-loop"] as const)("%s focus protection", (kind) =>
     expect(protection.impacts(window.id)).toMatchObject({ postponed: 1, pending: 1 });
 
     bus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
-    bus.emit({ type: "server:restart-cleared" });
+    bus.emit({ type: "server:restart-changed" });
     restarted.runner.poke();
     await vi.advanceTimersByTimeAsync(retryAt - Date.now() - 1);
     expect(restarted.store.get(item.id)).toEqual(item);
@@ -363,7 +363,7 @@ describe.each(["defer", "defer-loop"] as const)("%s focus protection", (kind) =>
       ready = true;
       h.sm.getDeferDeliveryReadiness.mockReturnValue({ ready: true });
       if (maskedBy === "offline") h.runner.start();
-      else bus.emit({ type: "server:restart-cleared" });
+      else h.runner.poke();
       await vi.advanceTimersByTimeAsync(0);
       expect(h.store.get(item.id)).toEqual(item);
       expect(protection.outstanding(kind)).toEqual([
@@ -653,7 +653,7 @@ describe("mixed defer protection release", () => {
     protection.reconcile();
     for (let n = 0; n < 5; n++) {
       bus.emit({ type: "focus:protection-cleared", protectionWindowId: window.id });
-      bus.emit({ type: "server:restart-cleared" });
+      bus.emit({ type: "server:restart-changed" });
       for (const h of harnesses) h.runner.poke();
       await vi.advanceTimersByTimeAsync(0);
     }
@@ -715,8 +715,8 @@ describe("protected defer continuation and expiry", () => {
   });
 
   it.each(["active", "jitter"] as const)("exempts restart recovery from %s holds before FIFO dedup but still waits for readiness", async (phase) => {
-    let restartPending = true;
-    const h = harness("defer", { isRestartPending: () => restartPending });
+    const h = harness("defer");
+    h.sm.getDeferDeliveryReadiness.mockReturnValue({ ready: false });
     const ordinary = h.createItem({ wakeAt: at(-2_000) });
     const recovery = h.promptStore.create("session-1", RESTART_RECOVERY_CONTINUE_PROMPT, at(-1_000));
     protect(10_000);
@@ -725,12 +725,11 @@ describe("protected defer continuation and expiry", () => {
     expect(h.claimStore).not.toHaveBeenCalled();
 
     h.sm.getDeferDeliveryReadiness.mockReturnValue({ ready: false });
-    restartPending = false;
     if (phase === "jitter") {
       await vi.advanceTimersByTimeAsync(10_000);
       protection.reconcile();
     }
-    bus.emit({ type: "server:restart-cleared" });
+    bus.emit({ type: "server:restart-changed" });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.claimStore).not.toHaveBeenCalled();
 

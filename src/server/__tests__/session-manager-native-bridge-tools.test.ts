@@ -2,15 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import {
-  forceClearRestartPending,
-  configureRestartStateStore,
-  getRestartWaitingCount,
-  isRestartImminent,
-  refreshRestartState,
-  SessionManager,
-  triggerRestartPendingForExternalRequest,
-} from "../session-manager.js";
+import { SessionManager } from "../session-manager.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { defineBridgeTool } from "../agent-tools-mcp/adapter.js";
 import { createTestBus, makeAgentSessionStub, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
@@ -745,9 +737,7 @@ describe("SessionManager native Bridge tools", () => {
     const creationGate = createDeferred<void>();
     const activeSession = createControlledFakeSession("active-session");
     try {
-      configureRestartStateStore(runtimePaths);
-      forceClearRestartPending();
-      await refreshRestartState();
+
       await manager.initialize();
       backend.createSession.mockImplementationOnce(async (config: any) => {
         await creationGate.promise;
@@ -764,9 +754,9 @@ describe("SessionManager native Bridge tools", () => {
       expect(manager.isSessionWarm(sessionId)).toBe(false);
       expect(manager.getRuntimeActivity().sessions.active).toBe(1);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(2);
-      expect(triggerRestartPendingForExternalRequest(manager.getLifecycleBlockingSessionCount())).toBe(2);
-      expect(getRestartWaitingCount()).toBe(2);
-      expect(isRestartImminent()).toBe(false);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(2);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(2);
+      expect((manager.getLifecycleBlockingSessionCount() === 0)).toBe(false);
 
       activeSession.releaseSend();
       await flushMicrotasks();
@@ -776,27 +766,26 @@ describe("SessionManager native Bridge tools", () => {
         timestamp: new Date().toISOString(),
       });
       await flushMicrotasks();
-      await vi.waitFor(() => expect(getRestartWaitingCount()).toBe(1));
+      await vi.waitFor(() => expect(manager.getLifecycleBlockingSessionCount()).toBe(1));
 
       expect(manager.getActiveSessions()).toEqual([]);
       expect(manager.getRuntimeActivity().sessions.active).toBe(0);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
-      expect(isRestartImminent()).toBe(false);
+      expect((manager.getLifecycleBlockingSessionCount() === 0)).toBe(false);
 
       creationGate.resolve();
       await flushMicrotasks();
-      await vi.waitFor(() => expect(getRestartWaitingCount()).toBe(0));
+      await vi.waitFor(() => expect(manager.getLifecycleBlockingSessionCount()).toBe(0));
 
       expect(manager.isSessionWarm(sessionId)).toBe(true);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-      expect(isRestartImminent()).toBe(true);
+      expect((manager.getLifecycleBlockingSessionCount() === 0)).toBe(true);
     } finally {
       activeSession.releaseSend();
       creationGate.resolve();
-      forceClearRestartPending();
-      await refreshRestartState();
+
       await manager.gracefulShutdown();
-      configureRestartStateStore(undefined);
+
       db.close();
     }
   });
@@ -807,9 +796,7 @@ describe("SessionManager native Bridge tools", () => {
     const creationError = new Error("Task MCP initialization failed");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      configureRestartStateStore(runtimePaths);
-      forceClearRestartPending();
-      await refreshRestartState();
+
       await manager.initialize();
       backend.createSession.mockImplementationOnce(async (config: any) => {
         await creationGate.promise;
@@ -832,29 +819,28 @@ describe("SessionManager native Bridge tools", () => {
       expect(manager.getActiveSessions()).toEqual([]);
       expect(manager.getRuntimeActivity().sessions.active).toBe(0);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
-      expect(triggerRestartPendingForExternalRequest(manager.getLifecycleBlockingSessionCount())).toBe(1);
-      expect(getRestartWaitingCount()).toBe(1);
-      expect(isRestartImminent()).toBe(false);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+      expect((manager.getLifecycleBlockingSessionCount() === 0)).toBe(false);
 
       creationGate.reject(creationError);
       await flushMicrotasks();
       await vi.waitFor(() => expect(manager.getLifecycleBlockingSessionCount()).toBe(0));
-      await vi.waitFor(() => expect(getRestartWaitingCount()).toBe(0));
+      await vi.waitFor(() => expect(manager.getLifecycleBlockingSessionCount()).toBe(0));
       await vi.waitFor(() => expect(taskStore.unlinkSession).toHaveBeenCalledWith("task-1", sessionId));
 
       expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
       expect(manager.isSessionWarm(sessionId)).toBe(false);
-      expect(isRestartImminent()).toBe(true);
+      expect((manager.getLifecycleBlockingSessionCount() === 0)).toBe(true);
       expect(consoleError).toHaveBeenCalledWith(
         `[sdk] Session ${sessionId} creation failed:`,
         creationError.message,
       );
     } finally {
       creationGate.reject(creationError);
-      forceClearRestartPending();
-      await refreshRestartState();
+
       await manager.gracefulShutdown();
-      configureRestartStateStore(undefined);
+
       db.close();
     }
   });

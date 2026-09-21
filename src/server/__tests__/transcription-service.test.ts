@@ -86,6 +86,19 @@ describe("transcription service", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it("reports in-flight transcription until it settles, including a failure", async () => {
+    const { engine } = createEngine();
+    let reject!: (error: Error) => void;
+    engine.transcribeFile.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
+    expect(service.getActiveCount?.()).toBe(0);
+    const transcription = service.transcribe({ filePath: "clip.wav" });
+    expect(service.getActiveCount?.()).toBe(1);
+    reject(new Error("failed"));
+    await expect(transcription).rejects.toThrow("failed");
+    expect(service.getActiveCount?.()).toBe(0);
+  });
+
   it("releases the engine when transcription fails", async () => {
     const { engine, release } = createEngine();
     engine.transcribeFile.mockRejectedValueOnce(new Error("Speech engine exited (1)"));

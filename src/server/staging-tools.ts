@@ -12,8 +12,7 @@ import {
   preparePatchedPackagesForInstall,
 } from "./dependency-sync.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
-import { isRestartAlreadyInFlight } from "./restart-state.js";
-import { lifecycleBusyToolFailure, writeRestartSignalOrRollback } from "./restart-inflight.js";
+import { DEPLOY_RESTART_SOURCE, requestRestart, RESTART_WHEN_IDLE_NOTE } from "./restart-signal.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -577,22 +576,6 @@ function stagingFailure(
   });
 }
 
-/**
- * Restart-pending failure with a protocol-level Bridge tool contract.
- *
- * Thin wrapper over the shared lifecycle-busy envelope so the staging tools
- * keep their stagingDir/signalFile telemetry.
- */
-function stagingRestartPendingFailure(
-  stagingDir: string,
-) {
-  return lifecycleBusyToolFailure({
-    busy: { reason: "restart_in_flight" },
-    retryTarget: "the deploy",
-    toolTelemetry: { stagingDir, signalFile: SIGNAL_FILE },
-  });
-}
-
 function commandFailure(
   summary: string,
   detail: string,
@@ -978,7 +961,6 @@ export const __testing = {
   createStagingProxyHandler,
   buildStagingBackendSpawnConfig,
   restoreStagingBackendWithRetry,
-  writeRestartSignalOrRollback,
   listStagingBranchPrefixes,
   pruneOrphanedWorktreesImpl,
   getStagingPreviewParent: () => STAGING_PREVIEW_PARENT,
@@ -1388,10 +1370,6 @@ async function runStagingDeployJobImpl(
         toolTelemetry: { stagingDir },
       },
     );
-  }
-
-  if (!options.deferDeployRestart && isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
-    return stagingRestartPendingFailure(stagingDir);
   }
 
   const prefix = basename(stagingDir);
@@ -1889,9 +1867,12 @@ async function runStagingDeployJobImpl(
 
   const restartDeferred = options.deferDeployRestart === true;
   if (!restartDeferred) {
-    if (!existsSync(PRODUCTION_DATA_DIR)) mkdirSync(PRODUCTION_DATA_DIR, { recursive: true });
     try {
-      writeRestartSignalOrRollback(SIGNAL_FILE, "deploy", "staging_deploy", releaseCandidate);
+      await requestRestart(PRODUCTION_DATA_DIR, {
+        validationMode: "deploy",
+        source: DEPLOY_RESTART_SOURCE,
+        releaseCandidate,
+      });
     } catch (err) {
       const failureMessage = err instanceof Error ? err.message : String(err);
       writeLog(`Restart signal failed after deploy: ${failureMessage}`);
@@ -1938,8 +1919,8 @@ async function runStagingDeployJobImpl(
     toolNextAction: "respond",
     retryable: false,
     summary: restartDeferred
-      ? `Deployed ${commitSha}; restart is deferred until the current deploy batch finishes.`
-      : `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. Restart signal sent; stop issuing tools so cutover can proceed.`,
+      ? `Deployed ${commitSha}; the runner asks for one restart for every deploy that has finished.`
+      : `Deployed ${commitSha} to production in ${formatCommandDuration(deployElapsedMs)}. ${RESTART_WHEN_IDLE_NOTE}`,
   });
 }
 
@@ -2076,11 +2057,12 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
     description:
       "Deploy validated changes from a staging worktree to production. " +
       "Commits changes in staging (if uncommitted changes exist), rebases the staging branch onto the latest production HEAD, " +
-      "merges to main, signals the launcher to restart, and auto-cleans the worktree from a queued management job. " +
+      "merges to main, asks the launcher for a restart, and auto-cleans the worktree from a queued management job. " +
       "Supports retries: if a previous deploy failed due to rebase conflicts, resolve them in the staging worktree " +
       "(git rebase <prodBranch>, fix conflicts, git add + git rebase --continue) then call staging_deploy again — " +
       "it will skip the commit step and proceed to merge. " +
-      "The runner combines up to 10 queued deploys into one restart. " +
+      "The restart waits in the background until every session and management job is idle and blocks nothing meanwhile; " +
+      "deploys that finish before then share that one restart, and deploying again while it is pending is fine. " +
       "Returns immediately with a management job id and Bridge-monitored background status. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
@@ -2108,9 +2090,6 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
         );
       }
 
-      if (isRestartAlreadyInFlight(PRODUCTION_DATA_DIR)) {
-        return stagingRestartPendingFailure(stagingDir);
-      }
       return await runStagingDeployJob({ stagingDir, message });
     },
   }),

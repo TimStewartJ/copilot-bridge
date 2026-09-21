@@ -50,14 +50,6 @@
 
   /* Syntax */
   --color-syntax-string: #5eead4;
-
-  /* Restart banner */
-  --color-restart-waiting-bg: rgba(245, 158, 11, 0.15);
-  --color-restart-waiting-border: rgba(245, 158, 11, 0.30);
-  --color-restart-waiting-text: #fde68a;
-  --color-restart-imminent-bg: rgba(239, 68, 68, 0.15);
-  --color-restart-imminent-border: rgba(248, 113, 113, 0.32);
-  --color-restart-imminent-text: #fecaca;
 }
 
 /* ── Light theme overrides ────────────────────────────────────────── */
@@ -98,13 +90,6 @@
   --color-copy-success: #16a34a;
 
   --color-syntax-string: #0f766e;
-
-  --color-restart-waiting-bg: rgba(245, 158, 11, 0.10);
-  --color-restart-waiting-border: rgba(245, 158, 11, 0.25);
-  --color-restart-waiting-text: #92400e;
-  --color-restart-imminent-bg: rgba(239, 68, 68, 0.10);
-  --color-restart-imminent-border: rgba(239, 68, 68, 0.22);
-  --color-restart-imminent-text: #b91c1c;
 }
 
 /* ── Prose typography theme adaptation ────────────────────────────── */

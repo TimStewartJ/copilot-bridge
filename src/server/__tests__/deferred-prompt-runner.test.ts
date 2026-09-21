@@ -1,3 +1,4 @@
+import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
@@ -18,12 +19,7 @@ import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
 } from "../backend-availability.js";
-import {
-  PROMPT_DELIVERY_ABORTED_MESSAGE,
-  PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
-  RESTART_PENDING_MESSAGE,
-} from "../session-manager.js";
-import { RESTART_RECOVERY_CONTINUE_PROMPT } from "../restart-resume.js";
+import { PROMPT_DELIVERY_ABORTED_MESSAGE, PROMPT_DELIVERY_SHUTDOWN_MESSAGE } from "../session-manager.js";
 import type { DatabaseSync } from "../db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -278,39 +274,6 @@ describe("deferred-prompt-runner", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(store.get(prompt.id)?.status).toBe("pending");
-      runner.shutdown();
-    });
-
-    it("holds restart recovery prompts until the restart clears", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const past = new Date(Date.now() - 1000).toISOString();
-      store.create("session-1", RESTART_RECOVERY_CONTINUE_PROMPT, past);
-      let restartPending = true;
-
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
-      const runner = createDeferredPromptRunner(
-        store,
-        sm as any,
-        bus,
-        undefined,
-        undefined,
-        { isRestartPending: () => restartPending },
-      );
-
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(sm._started).toEqual([]);
-      expect(store.listForSession("session-1")[0]?.status).toBe("pending");
-
-      restartPending = false;
-      bus.emit({ type: "server:restart-cleared" });
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm._started).toEqual([
-        { sessionId: "session-1", prompt: RESTART_RECOVERY_CONTINUE_PROMPT },
-      ]);
-      expect(store.listForSession("session-1")[0]?.status).toBe("completed");
       runner.shutdown();
     });
 
@@ -771,7 +734,7 @@ describe("deferred-prompt-runner", () => {
         listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: async (sessionId: string, prompt: string) => {
-          if (restartPending) throw new Error(RESTART_PENDING_MESSAGE);
+          if (restartPending) throw new Error(BRIDGE_RESTARTING_MESSAGE);
           started.push({ sessionId, prompt });
         },
       };
@@ -790,7 +753,7 @@ describe("deferred-prompt-runner", () => {
       expect(dp.attempts).toBe(0);
 
       restartPending = false;
-      bus.emit({ type: "server:restart-cleared" });
+      runner.poke();
       await vi.advanceTimersByTimeAsync(0);
 
       expect(started).toEqual([{ sessionId: "session-1", prompt: "Prompt" }]);

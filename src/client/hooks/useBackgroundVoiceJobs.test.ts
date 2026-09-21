@@ -5,7 +5,7 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../test-react-harness";
-import { whenNoVoiceCapture } from "../lib/voice-capture-guard";
+import { whenPageReloadSafe } from "../lib/voice-capture-guard";
 import {
   __resetVoiceRecordingStoreForTests,
   getPendingVoiceRecording,
@@ -319,7 +319,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       await result?.startBackgroundVoiceJob({ composerKey: "session-1", audio, submitMode: "autosend" });
     });
     const reloadAfterAutosend = vi.fn();
-    whenNoVoiceCapture(reloadAfterAutosend);
+    whenPageReloadSafe(reloadAfterAutosend);
     await getHarness().act(async () => {
       autosendUpload?.onUploadProgress(0.429);
     });
@@ -346,7 +346,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       await result?.startBackgroundVoiceJob({ composerKey: "session-2", audio, submitMode: "insert" });
     });
     const reloadAfterInsert = vi.fn();
-    whenNoVoiceCapture(reloadAfterInsert);
+    whenPageReloadSafe(reloadAfterInsert);
     await getHarness().act(async () => {
       insertUpload?.onUploadProgress(0.5);
     });
