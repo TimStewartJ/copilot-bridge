@@ -33,6 +33,16 @@ async function waitForForkJob(jobId: string) {
 // ── Session manager routes (mock-based) ──────────────────────────
 
 describe("Session manager routes", () => {
+  it("POST /api/sessions/:id/warm identifies passive chat navigation", async () => {
+    const warm = vi.spyOn(ctx.sessionManager, "warmSession").mockResolvedValue(undefined);
+
+    const res = await request(app).post("/api/sessions/test-id/warm");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ready: true });
+    expect(warm).toHaveBeenCalledExactlyOnceWith("test-id", { source: "chat-open" });
+  });
+
   it("GET /api/sessions/:id/messages-fast returns runState for stalled sessions", async () => {
     ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);

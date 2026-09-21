@@ -286,6 +286,20 @@ fencing). Fast resumes emit nothing; payloads and raw errors are excluded.
 Ping success does not prove resume progress, nor timeout a deadlock. These
 diagnostics cannot identify the native lock owner or guarantee a root cause.
 
+`BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS=true` enables a temporary workaround for
+Copilot's native resume/MCP callback deadlock. It suppresses `session.resume` only
+when the chat navigation warmup endpoint reconnects an idle session. Warming and
+cache reuse still run; the next send uses that handle without a second resume.
+The skipped event is a lifecycle/settings snapshot, not conversation history:
+native resume-related side effects and metrics are omitted for that attachment.
+Fork warmups, cold sends, reloads, model switches, and interrupted-run recovery
+remain unchanged. This is containment, not a correction to the native locks.
+The switch defaults to false; invalid values warn and leave it disabled. It is
+read from the manager's runtime environment at startup. Set false/unset and
+restart the server to restore normal events on subsequent warmups. Successful
+`session.warm.coldResume`/`session.warm` spans include `source` and
+`resumeEventSuppressed` so the selected path can be verified without payloads.
+
 Copilot `assistant.usage` and shutdown metrics count cache reads/writes within
 input tokens and reasoning within output tokens. Context occupancy uses explicit
 context counts, not those per-call or cumulative usage totals. Other normalized

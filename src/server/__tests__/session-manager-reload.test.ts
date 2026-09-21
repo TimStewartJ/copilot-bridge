@@ -3,6 +3,7 @@ import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import type { AgentSessionEventHandler } from "../agent-backend/index.js";
 
 function spyOnResumeCleanup(manager: any) {
   return {
@@ -684,7 +685,7 @@ describe("SessionManager reloadSession", () => {
 });
 
 describe("SessionManager warmSession", () => {
-  function createManager() {
+  function createManager(env: Record<string, string | undefined> = {}) {
     const db = setupTestDb();
     return new SessionManager({
       globalBus: createTestBus(),
@@ -698,9 +699,165 @@ describe("SessionManager warmSession", () => {
         getSettings: () => ({ model: "claude-opus-4.7" }),
       } as any,
       config: { sessionMcpServers: {} },
-      clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
+      clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "", ...env },
     }) as any;
   }
+
+  it.each([undefined, "", "false", " FALSE "])("keeps passive resume events when the switch is %s", async (setting) => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: setting });
+    const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
+    manager.backend = { id: "copilot", resumeSession: resume };
+
+    await manager.warmSession("passive-default", { source: "chat-open" });
+
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
+  });
+
+  it.each(["true", " TRUE "])("suppresses only the passive Copilot resume event when the switch is %s", async (setting) => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: setting });
+    const session = makeAgentSessionStub({ setModel: vi.fn() });
+    const resume = vi.fn().mockResolvedValue(session);
+    const record = vi.spyOn(manager, "recordSpan");
+    manager.backend = { id: "copilot", resumeSession: resume };
+
+    await manager.warmSession("passive-enabled", { source: "chat-open" });
+
+    expect(resume.mock.calls[0][1]).toMatchObject({
+      suppressResumeEvent: true,
+      pendingInteractionEvents: true,
+      streaming: true,
+      memory: { enabled: false },
+    });
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("model");
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("reasoningEffort");
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("continuePendingWork");
+    expect(session.setModel).not.toHaveBeenCalled();
+    expect(manager.isSessionWarm("passive-enabled")).toBe(true);
+    expect(record).toHaveBeenCalledWith("session.warm.coldResume", expect.any(Number), "passive-enabled", {
+      source: "chat-open", resumeEventSuppressed: true,
+    });
+  });
+
+  it.each(["yes", "1", "typo"])("warns and leaves suppression disabled for invalid switch %s", async (setting) => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: setting });
+    const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
+    manager.backend = { id: "copilot", resumeSession: resume };
+
+    await manager.warmSession("passive-invalid", { source: "chat-open" });
+
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS must be true or false"));
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
+  });
+
+  it("uses the injected environment rather than another deployment's process switch", async () => {
+    vi.stubEnv("BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS", "true");
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "false" });
+    const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
+    manager.backend = { id: "copilot", resumeSession: resume };
+
+    await manager.warmSession("passive-isolated", { source: "chat-open" });
+
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
+  });
+
+  it("leaves lifecycle and fork warmups unchanged with the switch enabled", async () => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
+    const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
+    manager.backend = { id: "copilot", resumeSession: resume };
+
+    await manager.warmSession("fork-warmup");
+
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
+  });
+
+  it("does not apply the Copilot workaround to another backend", async () => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
+    const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
+    manager.backend = { id: "other", resumeSession: resume };
+
+    await manager.warmSession("passive-other", { source: "chat-open" });
+
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
+  });
+
+  it("restores normal resume events on explicit reload after a suppressed warmup", async () => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
+    const session = makeAgentSessionStub({ disconnect: vi.fn(), listMcpServers: vi.fn().mockResolvedValue({ servers: [] }) });
+    const reloaded = makeAgentSessionStub({ listMcpServers: vi.fn().mockResolvedValue({ servers: [] }) });
+    const resume = vi.fn().mockResolvedValueOnce(session).mockResolvedValueOnce(reloaded);
+    manager.backend = { id: "copilot", resumeSession: resume };
+
+    await manager.warmSession("passive-reload", { source: "chat-open" });
+    await manager.reloadSession("passive-reload");
+
+    expect(resume.mock.calls[0][1]).toHaveProperty("suppressResumeEvent", true);
+    expect(resume.mock.calls[1][1]).not.toHaveProperty("suppressResumeEvent");
+    expect(session.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])("keeps cached sends and cold-send resumes distinct after passive warming=%s", async (warmFirst) => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
+    const handlers = new Set<AgentSessionEventHandler>();
+    const session = makeAgentSessionStub({
+      on: vi.fn((handler: AgentSessionEventHandler) => {
+        handlers.add(handler);
+        return () => { handlers.delete(handler); };
+      }),
+      send: vi.fn(async () => {
+        queueMicrotask(() => {
+          for (const handler of handlers) {
+            handler({ type: "assistant.message", data: { content: "Warm-cache reply" } });
+            handler({ type: "session.idle", data: {} });
+          }
+        });
+      }),
+    });
+    const resume = vi.fn().mockResolvedValue(session);
+    manager.backend = { id: "copilot", resumeSession: resume };
+    if (warmFirst) await manager.warmSession("passive-send", { source: "chat-open" });
+
+    await manager._doWork("passive-send", "hello", manager.deps.eventBusRegistry.getOrCreateBus("passive-send"));
+
+    expect(resume).toHaveBeenCalledOnce();
+    if (warmFirst) expect(resume.mock.calls[0][1]).toHaveProperty("suppressResumeEvent", true);
+    else expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
+    expect(session.send).toHaveBeenCalledWith(expect.objectContaining({ prompt: "hello" }));
+    expect(manager.isSessionBusy("passive-send")).toBe(false);
+  });
+
+  it("does not resume active work through the passive suppression path", async () => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
+    const resume = vi.fn();
+    manager.backend = { id: "copilot", resumeSession: resume };
+    manager.sessionRuns.set("passive-running", { state: "busy", startedAt: Date.now(), lastEventAt: Date.now() });
+
+    await manager.warmSession("passive-running", { source: "chat-open" });
+
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("keeps the 60-second recovery deadline for suppressed passive resumes", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
+      const resume = vi.fn((_sessionId: string, _config: unknown) => new Promise<never>(() => {}));
+      manager.backend = { id: "copilot", resumeSession: resume };
+      const disconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+      const warming = manager.warmSession("passive-timeout", { source: "chat-open" });
+      const rejected = expect(warming).rejects.toThrow("warmSession timed out after 60s");
+
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(disconnect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+
+      expect(disconnect).toHaveBeenCalledWith(manager.backend, expect.objectContaining({ reason: "rpc-timeout" }));
+      expect(resume.mock.calls[0][1]).toHaveProperty("suppressResumeEvent", true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("rechecks deletion after waiting for session creation", async () => {
     const manager = createManager();
