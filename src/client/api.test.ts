@@ -136,6 +136,19 @@ describe("external session use client API", () => {
 });
 
 describe("serializeSettingsPatch", () => {
+  it("serializes response-style preferences without changing other instructions", () => {
+    const updates = {
+      responseStyle: { detail: "detailed" as const, guidance: "Use plain prose.\nKeep useful examples." },
+      customInstructions: "Prefer TypeScript.",
+    };
+    expect(serializeSettingsPatch(updates)).toBe(JSON.stringify(updates));
+  });
+
+  it("sends an explicit response-style reset instead of omitting the field", () => {
+    expect(serializeSettingsPatch({ responseStyle: undefined })).toBe(JSON.stringify({ responseStyle: {} }));
+    expect(serializeSettingsPatch({ theme: "dark" })).toBe(JSON.stringify({ theme: "dark" }));
+  });
+
   it("preserves explicit model clears", () => {
     expect(serializeSettingsPatch({ model: undefined })).toBe(
       JSON.stringify({ model: "" }),

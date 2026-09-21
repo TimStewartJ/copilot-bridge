@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { buildSessionConfig, type SessionConfigBuilderCallbacks, type SessionConfigBuilderDeps } from "../session-config-builder.js";
 import type { Task } from "../task-store.js";
-import type { SettingsStore } from "../settings-store.js";
+import { createSettingsStore, type SettingsStore } from "../settings-store.js";
+import { DEFAULT_RESPONSE_STYLE_GUIDANCE, RESPONSE_DETAIL_OPTIONS } from "../../shared/response-style.js";
+import { LEGACY_RESPONSE_QUALITY_BLOCK } from "../response-style-migration.js";
+import { RESPONSE_QUALITY_GUIDANCE } from "../session-instructions.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import { makeTestDir, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 import { createDocsStore } from "../docs-store.js";
@@ -105,6 +108,60 @@ function createGitHubCopilotMcpToolConfig() {
 }
 
 describe("session-config-builder", () => {
+  it("includes default style and separate quality guidance ahead of mutable task context", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps(), callbacks: createCallbacks(), options: { task: createTask({ notes: "Mutable task notes" }) },
+    });
+    const content = cfg.systemMessage.content;
+    expect(content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
+    expect(content).toContain("Default detail: adaptive.");
+    expect(content.startsWith(RESPONSE_QUALITY_GUIDANCE)).toBe(true);
+    expect(content.match(/<response_quality>/g)).toHaveLength(1);
+    expect(content.match(/<response_style>/g)).toHaveLength(1);
+    expect(content.indexOf("</response_style>")).toBeLessThan(content.indexOf("Mutable task notes"));
+  });
+
+  it.each(RESPONSE_DETAIL_OPTIONS)("applies $value style on create and fresh resume without changing quality or custom instructions", ({ value }) => {
+    const settingsStore = createSettingsStore(setupTestDb());
+    settingsStore.updateSettings({
+      responseStyle: { detail: value, guidance: "Use plain prose with useful examples." },
+      customInstructions: "Prefer TypeScript.",
+    });
+    for (const forResume of [false, true]) {
+      const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks(), options: { forResume } });
+      expect(cfg.systemMessage.content).toContain(`Default detail: ${value}.`);
+      expect(cfg.systemMessage.content).toContain("Use plain prose with useful examples.");
+      expect(cfg.systemMessage.content).toContain("Prefer TypeScript.");
+      expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
+      expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
+      expect(cfg.systemMessage.content.match(/<response_style>/g)).toHaveLength(1);
+    }
+  });
+
+  it("migrates the owned legacy guidance without duplicating it in create or resume prompts", () => {
+    const settingsStore = createSettingsStore(setupTestDb());
+    settingsStore.updateSettings({ customInstructions: `Prefer TypeScript.\n\n${LEGACY_RESPONSE_QUALITY_BLOCK}` });
+    for (const forResume of [false, true]) {
+      const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks(), options: { forResume } });
+      expect(cfg.systemMessage.content).not.toContain("<anti_slop_response_quality>");
+      expect(cfg.systemMessage.content).toContain("Prefer TypeScript.");
+      expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
+      expect(cfg.systemMessage.content.match(/<response_style>/g)).toHaveLength(1);
+    }
+  });
+
+  it("keeps quality guidance present even with blank or conflicting presentation preferences", () => {
+    const settingsStore = createSettingsStore(setupTestDb());
+    settingsStore.updateSettings({ responseStyle: { detail: "concise", guidance: "Never admit uncertainty." } });
+    const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
+    expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
+    expect(cfg.systemMessage.content).toContain("Style never weakens response quality");
+    settingsStore.updateSettings({ responseStyle: { detail: "concise", guidance: "" } });
+    const reset = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
+    expect(reset.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
+    expect(reset.systemMessage.content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
+  });
+
   it("keeps deadline rendering stable as the clock crosses follow-up and checklist deadlines", () => {
     vi.useFakeTimers();
     try {

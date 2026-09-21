@@ -11,6 +11,7 @@ import type {
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { ModelFamily } from "../shared/model-families.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
+import type { ResponseStyleSettings } from "../shared/response-style.js";
 import type { DeferCheckpoint } from "../shared/defer-checkpoint.js";
 import type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
 export type { FocusNotificationPolicy, FocusNotificationPolicyUpdate } from "../shared/focus-notification-policy.js";
@@ -3134,6 +3135,7 @@ export interface AppSettings {
   theme?: ThemePreference;
   identity?: string;
   customInstructions?: string;
+  responseStyle?: ResponseStyleSettings;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -3172,6 +3174,9 @@ export function serializeSettingsPatch(updates: AppSettingsUpdates): string {
   }
   if ("computerUse" in updates && updates.computerUse === undefined) {
     normalized.computerUse = {};
+  }
+  if ("responseStyle" in updates && updates.responseStyle === undefined) {
+    normalized.responseStyle = {};
   }
   return JSON.stringify(normalized);
 }

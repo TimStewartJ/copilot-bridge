@@ -229,6 +229,16 @@ If you are opening the bridge for the first time, keep it simple:
 
 You can get a lot of value on first run without any external work-tracking provider setup: tasks, notes, tags, docs, schedules, and local Copilot sessions all work locally.
 
+### Response Style and Prompt Settings
+
+**Settings > General > System Prompt** separates identity, response style, and additional custom instructions. Response Style starts with **Natural and direct** guidance and **Adaptive** detail. Choose **Concise** or **Detailed** as a default, edit the guidance (up to 4,000 characters), or use **Reset to default**. Blank guidance uses the default. Edits and resets remain in the draft until **Save**.
+
+Each new conversational session and fresh resume receives one stable `<response_style>` block and a separate, always-included `<response_quality>` block. Explicit requests for tone, detail, or output format override style defaults. Quality guidance covers supported claims, material uncertainty, independent judgment, and accurate reporting of research, changes, and tests; it is not disabled by style settings. Specialized machine-output workers keep their own prompts. Saving does not interrupt active or cached sessions; a cached chat picks up changes when its runtime handle is freshly resumed.
+
+The unmodified `<anti_slop_response_quality>` block previously added to Custom Instructions is normalized into the new defaults without duplicating it in the prompt. Saving settings persists the migrated fields. Other custom instructions and explicitly configured response styles are preserved. Edited or incomplete legacy blocks remain untouched and show a review notice in settings.
+
+The settings API accepts `responseStyle: { detail: "adaptive" | "concise" | "detailed", guidance: string }`. Omitted fields within a supplied object use their defaults; `{}` resets the style. Unsupported keys, invalid types or detail values, and guidance longer than 4,000 characters after trimming are rejected without changing settings.
+
 ### Validate
 
 ```bash
