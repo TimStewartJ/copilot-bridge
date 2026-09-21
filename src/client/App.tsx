@@ -1991,7 +1991,10 @@ function AppShell() {
           <MobileDetailHeader
             onBack={handleMobileUp}
             upLabel={mobileRouteMeta.upTarget?.label}
-            title={mobileRouteMeta.detailHeader?.title}
+            title={mobileRouteMeta.detailHeader?.title
+              ?? (mobileRouteMeta.route === "task-session" || mobileRouteMeta.route === "quick-chat"
+                ? mobileRouteMeta.isDraft ? "New chat" : activeSessionForTitle?.summary || activeSessionForTitle?.intentText || "Chat"
+                : undefined)}
             metadata={mobileRouteMeta.detailHeader?.metadata}
           />
         )}
@@ -2904,6 +2907,7 @@ function SessionRoute({
       hasPlan={hasPlan}
       sessionModelSummary={sessionId ? (
         <SessionModelSummary
+          title={activeSession?.summary || activeSession?.intentText || "Chat"}
           state={sessionModelQuery.data}
           models={modelsQuery.data}
           loading={sessionModelQuery.isLoading || sessionModelQuery.isFetching}

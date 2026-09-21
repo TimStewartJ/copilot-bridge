@@ -6,7 +6,7 @@ import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import type { LongPressBindings } from "../../hooks/useLongPressMenu";
 import TaskKindBadge from "../TaskKindBadge";
-import { UI } from "../shared/design-system";
+import { DS, cx } from "../../design/tokens";
 import {
   getTaskActivityDot,
   getTaskRowSignals,
@@ -28,12 +28,12 @@ interface SortableTaskItemProps {
   variant?: "rail" | "list";
 }
 
-const SIGNAL_TONE_CLASS: Record<TaskRowSignalTone, string> = {
-  info: "border border-info-border bg-info-surface text-info",
-  warning: "bg-warning/15 text-warning",
-  success: "bg-success/15 text-success",
-  danger: "bg-error/15 text-error",
-  faint: "bg-text-faint/15 text-text-faint",
+const SIGNAL_TONE: Record<TaskRowSignalTone, keyof typeof DS.badge.tone> = {
+  info: "info",
+  warning: "warning",
+  success: "success",
+  danger: "danger",
+  faint: "neutral",
 };
 
 export default function SortableTaskItem({
@@ -72,8 +72,8 @@ export default function SortableTaskItem({
           isCtxTarget
             ? "bg-bg-hover ring-1 ring-border"
             : isActive
-              ? UI.surface.selectedRow
-              : "hover:bg-bg-hover"
+              ? DS.row.selected
+              : "hover:bg-bg-hover/60"
         } ${isLongPressTarget ? "scale-[0.97] bg-bg-hover" : ""}`}
       >
         {showUnreadDot && (
@@ -105,7 +105,7 @@ export default function SortableTaskItem({
           <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
           {primarySignal && (
             <span
-              className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${SIGNAL_TONE_CLASS[primarySignal.tone]}`}
+              className={cx(DS.badge.base, DS.badge.tone[SIGNAL_TONE[primarySignal.tone]])}
               title={primarySignal.label}
             >
               {primarySignal.animated && !activityDot && (

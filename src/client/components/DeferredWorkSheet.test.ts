@@ -136,8 +136,8 @@ describe("DeferredWorkSheet", () => {
     expect(harness.dom.container.textContent).toContain("Build monitor · Notified parent and continued");
     expect(harness.dom.container.textContent).toContain("Parent delivery pending");
     expect(harness.dom.container.textContent).toContain("1,234 tokens");
-    expect(harness.dom.container.textContent).toContain("2.5 metered credits");
-    expect(harness.dom.container.textContent).toContain("1.25 est. credits");
+    expect(harness.dom.container.textContent).toContain("2.5 metered AI credits");
+    expect(harness.dom.container.textContent).toContain("1.25 est. AI credits");
     expect(harness.dom.container.textContent).toContain("Build monitor · Pending");
     expect(harness.dom.container.textContent).toContain("One-time defer · Failed");
     expect(buttonWithText(harness.dom.container, "Reactivate")).toBeDefined();

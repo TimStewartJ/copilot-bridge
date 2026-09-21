@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { EnrichedPR, PRRef, ProviderName } from "../../api";
 import { linkResource, unlinkResource } from "../../api";
 import { PR_STATUS_STYLES } from "../../work-item-styles";
+import { Badge } from "../../design/primitives";
 import { GitPullRequest } from "lucide-react";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
@@ -230,13 +231,9 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
                 <span className="text-text-muted truncate">{pr.title}</span>
               )}
               {!isCompact && statusInfo && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  pr.status === "active" ? "bg-info-surface text-info" :
-                  pr.status === "completed" ? "bg-success/15 text-success" :
-                  "bg-text-muted/15 text-text-muted"
-                }`}>
+                <Badge tone={pr.status === "active" ? "info" : pr.status === "completed" ? "success" : "neutral"}>
                   {statusInfo.label}
-                </span>
+                </Badge>
               )}
             </div>
             {isCompact && (

@@ -100,7 +100,7 @@ describe("Context history", () => {
     const props = fixture([null]);
     props.events[0].type = "compaction";
     await harness.render(createElement(SessionContextGraph, props));
-    expect(findAllByTag(harness.dom.container, "SVG")).toHaveLength(0);
+    expect(findAllByTag(harness.dom.container, "SVG").filter((svg) => getReactProps(svg)?.role === "group")).toHaveLength(0);
     expect(harness.dom.container.textContent).toContain("No context history yet");
     expect(harness.dom.container.textContent).toContain("Compaction");
     expect(harness.dom.container.textContent).toContain("unavailable");

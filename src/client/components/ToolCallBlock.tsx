@@ -8,6 +8,7 @@ import { useChatRunActive } from "./chat/chat-run-context";
 import { formatToolArgsDetails, hasToolArgs } from "../lib/tool-args";
 import { getToolCallStatus, getToolCallStatusLabel } from "../lib/tool-call-status";
 import { describeToolCall, formatDuration, getToolDurationMs } from "../lib/tool-presentation";
+import { DS, cx } from "../design/tokens";
 
 const RESULT_PREVIEW_CHARS = 2000;
 
@@ -51,13 +52,13 @@ interface ToolCallBlockProps {
 function DetailSection({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <div className="mb-1 font-sans text-[10px] font-medium uppercase tracking-wider text-text-faint">{label}</div>
+      <div className={cx("mb-1 font-sans", DS.text.eyebrow)}>{label}</div>
       {children}
     </div>
   );
 }
 
-const DETAIL_PRE_CLASS = "chat-scroll overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-text-secondary";
+const DETAIL_PRE_CLASS = "overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-text-secondary";
 
 /** One tool call as a quiet sentence; the raw name, arguments and result open beneath it. */
 export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderChildNodes, defaultExpanded = false, contextOnly = false }: ToolCallBlockProps) {
@@ -97,11 +98,9 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
         onClick={() => hasDetails && setExpanded(!expanded)}
         aria-expanded={hasDetails ? expanded : undefined}
         title={toolCall.name}
-        className={`group/tool -mx-1.5 flex w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ${
-          hasDetails ? "cursor-pointer hover:bg-bg-hover/60" : "cursor-default"
-        }`}
+        className={cx(DS.row.base, hasDetails ? DS.row.interactive : DS.row.inert)}
       >
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+        <span className={DS.row.iconSlot}>
           {running
             ? <Loader2 size={13} className="animate-spin text-text-muted" aria-label={getToolCallStatusLabel("running")} />
             : failed
@@ -109,19 +108,17 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
               : <ToolIcon name={presentation.icon} size={13} className="text-text-faint" />}
         </span>
         {/* The label keeps its width; the target takes whatever is left and truncates first. */}
-        <span className={`min-w-0 shrink truncate ${running ? "shimmer-text" : failed ? "text-error" : "text-text-secondary"}`}>
+        <span className={cx(DS.row.label, running ? DS.motion.live : failed ? DS.tone.danger : "text-text-secondary")}>
           {presentation.verb}
         </span>
         {(presentation.target || (running && progressText)) && (
           <span
-            className={`min-w-0 flex-1 truncate text-text-muted ${
-              presentation.target && presentation.mono ? "font-mono text-[12px]" : ""
-            }`}
+            className={cx(DS.row.detail, "text-text-muted", presentation.target && presentation.mono && "font-mono text-[12px]")}
           >
             {presentation.target ?? progressText}
           </span>
         )}
-        <span className="ml-auto flex shrink-0 items-center gap-2 pl-2 text-[11px] tabular-nums text-text-faint">
+        <span className={DS.row.trailing}>
           {childNodes.length > 0 && (
             <span>{childNodes.length} step{childNodes.length === 1 ? "" : "s"}</span>
           )}
@@ -131,13 +128,13 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
             <ChevronRight
               size={12}
               aria-hidden="true"
-              className={`transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
+              className={cx(DS.row.chevron, expanded && DS.row.chevronOpen)}
             />
           )}
         </span>
       </button>
       {expanded && (
-        <div className="mb-2 ml-6 mt-1 space-y-2.5 rounded-lg border border-border-subtle bg-bg-secondary/70 p-2.5">
+        <div className={cx("mb-2 ml-6 mt-1 space-y-2.5 p-2.5", DS.surface.detail)}>
           <div className="flex flex-wrap items-center gap-x-2 font-mono text-[11px] text-text-faint">
             <span className="text-text-muted">{toolCall.name}</span>
             {startTime && <span>{startTime}</span>}

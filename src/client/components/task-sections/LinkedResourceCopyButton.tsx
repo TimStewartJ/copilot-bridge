@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { AlertTriangle, Check, Copy } from "lucide-react";
 import { writeClipboardText } from "../../lib/clipboard";
+import { DS, cx } from "../../design/tokens";
 
 type CopyState = "idle" | "copied" | "failed";
 
@@ -64,7 +65,7 @@ export default function LinkedResourceCopyButton({
       title={label}
       aria-label={label}
       data-copy-state={copyState}
-      className={`linked-resource-copy-button shrink-0 self-start text-text-muted hover:text-text-primary transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${className ?? ""}`}
+      className={cx("linked-resource-copy-button shrink-0 self-start rounded text-text-muted transition-all hover:text-text-primary", DS.focus, className)}
     >
       {copyState === "copied" && <Check size={iconSize} className="text-copy-success" />}
       {copyState === "failed" && <AlertTriangle size={iconSize} className="text-error" />}

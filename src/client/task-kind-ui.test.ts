@@ -428,6 +428,20 @@ describe("TaskDashboard unique overview", () => {
     expect(html).not.toContain("Ready to complete");
   });
 
+  it("reports unavailable task usage instead of rendering fabricated zero totals", () => {
+    const state = useCopilotUsageQuery();
+    vi.mocked(useCopilotUsageQuery).mockReturnValue({
+      ...state, data: undefined, error: new Error("Usage offline"),
+      isError: true, isPending: false, isLoading: false, isLoadingError: true,
+      isRefetchError: false, isSuccess: false, isPlaceholderData: false, status: "error",
+    });
+    const html = renderTaskDashboard(createTask());
+    expect(html).toContain("Could not refresh task usage: Usage offline");
+    expect(html).toContain("No usage totals are available");
+    expect(html).not.toContain("Metered cost");
+    expect(html).not.toContain("Tokens by day");
+  });
+
   it("refreshes usage analytics when the overview is refreshed", async () => {
     const workspaceRefresh = vi.fn(async () => {});
     const usageRefresh = vi.fn(async () => createUsageSummary());
@@ -723,7 +737,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("claude-opus-4.7");
     expect(html).toContain("Est. cost");
     expect(html).toContain("$0.20");
-    expect(html).toContain("20 credits");
+    expect(html).toContain("20 AI credits");
     expect(html).toContain("mystery-model");
     expect(html).toContain("Estimated cost excludes");
     expect(html).toContain("500 tokens");

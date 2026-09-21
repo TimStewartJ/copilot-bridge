@@ -8,6 +8,7 @@ import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 import { useToast } from "../../useToast";
 import LinkedResourceCopyButton from "./LinkedResourceCopyButton";
 import LinkedResourceUnlinkButton from "./LinkedResourceUnlinkButton";
+import { DS, cx } from "../../design/tokens";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -207,7 +208,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
               <span className="text-text-muted truncate">{wi.title}</span>
             )}
             {!isCompact && wi.state && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
+              <span className={cx(DS.badge.base, WI_STATE_STYLES[wi.state] ?? DS.badge.tone.neutral)}>
                 {wi.state}
               </span>
             )}
@@ -219,7 +220,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
           <>
             {isCompact && wi.state && (
               <div className="mt-0.5 ml-5">
-                <span className={`text-[9px] px-1 py-0.5 rounded-full ${WI_STATE_STYLES[wi.state] ?? "bg-text-muted/15 text-text-muted"}`}>
+                <span className={cx(DS.badge.base, WI_STATE_STYLES[wi.state] ?? DS.badge.tone.neutral)}>
                   {wi.state}
                 </span>
               </div>

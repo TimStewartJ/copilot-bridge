@@ -78,11 +78,13 @@ import ActivityBlock from "./chat/ActivityBlock";
 import { ChatRunActiveProvider } from "./chat/chat-run-context";
 import LiveStatusLine from "./chat/LiveStatusLine";
 import PromptMarkdown from "./chat/PromptMarkdown";
+import { DS, cx } from "../design/tokens";
+import { Button, ChoiceButton, EmptyHint, Notice, Panel, TextInput } from "../design/primitives";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
-import { ArrowDown, ArrowLeft, Check, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
+import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 
 const INITIAL_PAGE_SIZE = 50;
@@ -118,7 +120,7 @@ const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
 const FOLLOW_SCROLL_EASE = 0.35;
 const FOLLOW_SCROLL_SETTLE_PX = 1.5;
 const LATEST_MESSAGE_TOP_THRESHOLD_PX = 8;
-const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
+const CHAT_RAIL_CLASS = DS.layout.readingColumn;
 const SEARCH_MATCH_PAGE_SIZE = 20;
 
 interface ChatViewProps {
@@ -492,21 +494,14 @@ function RunNoticeCard({ notice }: { notice: RunNotice }) {
   const isError = notice.kind === "error";
   return (
     <div className={CHAT_RAIL_CLASS}>
-      <div
-        className={`max-w-xl rounded-2xl border px-4 py-3 text-sm ${
-          isError
-            ? "border-error/25 bg-error/10 text-error"
-            : "border-border bg-bg-secondary text-text-secondary"
-        }`}
-        role={isError ? "alert" : "status"}
+      <Notice
+        tone={isError ? "danger" : notice.kind === "interrupted" ? "warning" : "neutral"}
+        icon={isError ? <CircleAlert size={14} /> : notice.kind === "command" ? <Terminal size={14} /> : <CircleSlash size={14} />}
+        title={RUN_NOTICE_LABELS[notice.kind]}
+        className="max-w-xl"
       >
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] opacity-80">
-          {RUN_NOTICE_LABELS[notice.kind]}
-        </div>
-        {detail && (
-          <div className="mt-1 whitespace-pre-wrap leading-6">{detail}</div>
-        )}
-      </div>
+        {detail && <div className="mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-text-secondary">{detail}</div>}
+      </Notice>
     </div>
   );
 }
@@ -556,60 +551,50 @@ function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps
 
   return (
     <div className={CHAT_RAIL_CLASS}>
-      <div className="max-w-xl rounded-2xl border border-accent/30 bg-bg-secondary px-4 py-3 shadow-sm">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
-          Question
-        </div>
+      <Panel className="max-w-xl">
+        <div className={DS.text.attention}>Question</div>
         <PromptMarkdown content={request.question} trusted />
 
         {choices.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className={cx(DS.choice.group, "mt-3")}>
             {choices.map((choice, index) => (
-              <button
+              <ChoiceButton
                 key={`${choice}-${index}`}
-                type="button"
                 onClick={() => handleChoiceClick(choice)}
                 disabled={controlsDisabled}
-                className="rounded-full border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-accent/60 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {choice}
-              </button>
+              </ChoiceButton>
             ))}
           </div>
         )}
 
         {request.allowFreeform && (
           <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={handleFreeformSubmit}>
-            <input
+            <TextInput
               value={freeform}
               onChange={(event) => setFreeform(event.target.value)}
               disabled={controlsDisabled}
-              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-faint focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              className="min-w-0 flex-1"
               placeholder={choices.length > 0 ? "Or type a response..." : "Type a response..."}
               aria-label="Answer question"
             />
-            <button
+            <Button
               type="submit"
               disabled={controlsDisabled}
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+              icon={submitting ? <Loader2 size={14} className="animate-spin" /> : undefined}
             >
-              {submitting && <Loader2 size={14} className="animate-spin" />}
               {submitting ? "Submitting..." : submitted ? "Submitted" : "Submit"}
-            </button>
+            </Button>
           </form>
         )}
 
         {choices.length === 0 && !request.allowFreeform && (
-          <div className="mt-3 text-xs text-text-muted">
-            No response options are available for this question.
-          </div>
+          <EmptyHint className="mt-3">No response options are available for this question.</EmptyHint>
         )}
 
         {error && (
-          <div
-            className="mt-3 rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error"
-            role="alert"
-          >
+          <div className="mt-3 text-xs text-error" role="alert">
             {error}
           </div>
         )}
@@ -623,7 +608,7 @@ function UserInputQuestionCard({ request, onSubmit }: UserInputQuestionCardProps
             {submitting ? "Submitting response..." : "Response submitted. Waiting for the run to continue..."}
           </div>
         )}
-      </div>
+      </Panel>
     </div>
   );
 }
@@ -2926,7 +2911,7 @@ export default function ChatView({
           data-message-text-selection={isSelectingText ? "true" : undefined}
           data-source-event-id={messageSourceId}
           className={`${CHAT_RAIL_CLASS} relative ${followsActivity ? "pt-2" : "pt-5"} transition-colors ${
-            isLongPressTarget ? "bg-accent/5" : ""
+            isLongPressTarget ? "bg-bg-hover/50" : ""
           } ${historicalMode && messageSourceId === targetSourceEventId ? "bg-warning/10 ring-1 ring-inset ring-warning/30" : ""}`}
           onClick={menuBindings?.onClick}
           onContextMenu={menuBindings ? (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -2993,6 +2978,12 @@ export default function ChatView({
     messageMenuUndoBoundary && undoingEventId === messageMenuUndoBoundary,
   );
 
+  const planButton = (
+    <Button size="sm" variant="ghost" icon={<ClipboardList size={13} />} onClick={() => planOverlay.open("plan")} title="Open this session's plan">
+      Plan
+    </Button>
+  );
+
   return (
     <div
       ref={setChatRoot}
@@ -3000,24 +2991,23 @@ export default function ChatView({
       data-action-gutter={hasActionGutter ? "true" : undefined}
     >
       {historicalMode && (
-        <div className="shrink-0 border-b border-border bg-bg-secondary px-3 py-2">
-          <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 text-xs">
-            {returnToSearch && <button type="button" onClick={() => navigate(returnToSearch)} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-text-secondary hover:bg-bg-hover"><ArrowLeft size={14} /> Back to results</button>}
-            <span className="text-text-muted">{targetSourceEventId ? "Viewing saved history around an exact message." : "Viewing the latest saved history for this conversation."} This does not resume the chat.{historicalHasNewer ? " Newer messages are available." : ""}</span>
+        <div className="shrink-0 border-b border-border px-3 py-1.5 sm:px-4">
+          <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            {returnToSearch && <Button variant="ghost" className="-ml-2" icon={<ArrowLeft size={14} />} onClick={() => navigate(returnToSearch)}>Back to results</Button>}
+            <span className="min-w-0 text-text-muted">{targetSourceEventId ? "Viewing saved history around an exact message." : "Viewing the latest saved history for this conversation."} This does not resume the chat.{historicalHasNewer ? " Newer messages are available." : ""}</span>
             <div className="ml-auto flex flex-wrap items-center gap-1">
               {navigableMatchTotal > 1 && <>
-                <button type="button" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex <= 0} onClick={() => { void moveHistoricalMatch(-1); }} className="min-h-9 rounded-lg px-2 text-text-secondary hover:bg-bg-hover disabled:opacity-40">Previous match</button>
-                <span className="text-text-muted">{activeSearchMatchPage
+                <Button variant="ghost" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex <= 0} onClick={() => { void moveHistoricalMatch(-1); }}>Previous match</Button>
+                <span className="px-1 tabular-nums text-text-muted">{activeSearchMatchPage
                   ? `${Math.max(1, navigableMatchOffset + historicalMatchIndex + 1)} of ${navigableMatchTotal}${matchCoveragePartial ? " indexed" : ""}`
                   : `${Math.max(1, historicalMatchIndex + 1)} of ${navigableMatchTotal} in loaded context`}</span>
-                <button type="button" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex + 1 >= navigableMatchTotal} onClick={() => { void moveHistoricalMatch(1); }} className="min-h-9 rounded-lg px-2 text-text-secondary hover:bg-bg-hover disabled:opacity-40">Next match</button>
+                <Button variant="ghost" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex + 1 >= navigableMatchTotal} onClick={() => { void moveHistoricalMatch(1); }}>Next match</Button>
               </>}
-              {targetSourceEventId && <button type="button" onClick={handleCopyMessageLink} className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-text-secondary hover:bg-bg-hover">
-                {copiedMessageLink ? <Check size={13} /> : <Copy size={13} />} {copiedMessageLink ? "Copied" : "Copy link"}
-              </button>}
-              <button type="button" onClick={handleExitHistoricalMode} className="min-h-9 rounded-lg bg-accent px-3 font-medium text-white hover:bg-accent-hover">
-                Jump to latest
-              </button>
+              {targetSourceEventId && <Button variant="ghost" icon={copiedMessageLink ? <Check size={13} /> : <Copy size={13} />} onClick={handleCopyMessageLink}>
+                {copiedMessageLink ? "Copied" : "Copy link"}
+              </Button>}
+              {hasPlan && planButton}
+              <Button onClick={handleExitHistoricalMode}>Jump to latest</Button>
             </div>
           </div>
           {messageLinkCopyError && <p role="alert" className="mx-auto mt-1 w-full max-w-4xl text-xs text-error">Could not copy the message link: {messageLinkCopyError}</p>}
@@ -3031,40 +3021,20 @@ export default function ChatView({
           </p>}
         </div>
       )}
-      {/* Plan header bar */}
-      {hasPlan && (
-        <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-bg-secondary">
-          <span className="text-xs text-text-muted flex items-center gap-1.5">
-            <ClipboardList size={12} />
-            Plan available
-          </span>
-          <button
-            onClick={() => planOverlay.open("plan")}
-            className="text-xs text-accent hover:text-accent-hover transition-colors font-medium"
-          >
-            View
-          </button>
-        </div>
-      )}
-      {externallyInUse && (
-        <div
-          className="shrink-0 flex items-center gap-2 border-b border-info/20 bg-info/10 px-4 py-2 text-xs text-info"
-          role="status"
-        >
-          <Terminal size={12} className="shrink-0" aria-hidden="true" />
-          <span>This session is open in another Copilot client. Sending here is still allowed.</span>
-        </div>
-      )}
-      {!historicalMode && sessionModelSummary}
-      {/* MCP server status */}
+      {/* One line of chrome: what this session is, what it runs on, and how it is doing. */}
       {!historicalMode && <McpStatusBar
+        leading={sessionModelSummary}
+        actions={hasPlan ? planButton : undefined}
         chatEntries={displayEntries}
         context={sessionContext}
         contextError={sessionContextError}
         contextLoading={sessionContextLoading}
         liveContextSummary={streamContextSummary}
         sessionCostLoading={sessionCostLoading}
-        sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd ?? undefined}
+        sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd}
+        sessionCostError={sessionUsageMetricsQuery.error instanceof Error
+          ? sessionUsageMetricsQuery.error.message
+          : sessionUsageMetricsQuery.error ? String(sessionUsageMetricsQuery.error) : undefined}
         servers={mcpStatusQuery.data?.servers ?? []}
         toolReadiness={mcpStatusQuery.data?.toolReadiness ?? undefined}
         statusState={!sessionId
@@ -3079,25 +3049,29 @@ export default function ChatView({
         onRefresh={sessionId ? refreshMcpStatus : undefined}
       />}
       {!historicalMode && <SessionAgentsBar sessionId={sessionId} backgroundAgents={backgroundAgents} />}
+      {externallyInUse && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
+          <Terminal size={12} className="shrink-0 text-info" aria-hidden="true" />
+          <span>This session is open in another Copilot client. Sending here is still allowed.</span>
+        </div>
+      )}
       {loading && displayEntries.length === 0 ? (
         <LoadingSkeletonRegion
           isLoading
           label="Loading chat history"
           className="flex-1 flex items-end overflow-hidden pb-6"
         >
-          <div className={`${CHAT_RAIL_CLASS} space-y-4`}>
-            <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
-              <SkeletonText lines={3} widths={["88%", "72%", "46%"]} />
+          {/* The shape of a transcript: a prompt in its bubble, a reply as plain text. */}
+          <div className={`${CHAT_RAIL_CLASS} space-y-6`}>
+            <div className="ml-auto w-2/5 max-w-md rounded-2xl bg-bg-elevated px-4 py-3">
+              <SkeletonText lines={1} widths={["70%"]} />
             </div>
-            <div className="ml-auto max-w-md rounded-2xl border border-accent-border bg-accent-surface px-4 py-3">
-              <SkeletonText lines={2} widths={["78%", "52%"]} />
+            <div className="max-w-2xl">
+              <SkeletonText lines={3} widths={["94%", "82%", "48%"]} />
             </div>
-            <div className="max-w-lg rounded-2xl border border-border bg-bg-secondary px-4 py-3">
-              <div className="mb-3 flex items-center gap-2">
-                <Skeleton shape="circle" width={18} height={18} />
-                <Skeleton height={10} width="32%" shape="pill" />
-              </div>
-              <SkeletonText lines={3} widths={["94%", "80%", "60%"]} />
+            <Skeleton height={10} width={168} shape="pill" />
+            <div className="max-w-2xl">
+              <SkeletonText lines={4} widths={["90%", "96%", "74%", "38%"]} />
             </div>
           </div>
         </LoadingSkeletonRegion>
@@ -3105,18 +3079,20 @@ export default function ChatView({
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <p className="text-base font-medium text-text-primary">This saved message is unavailable.</p>
           <p className="max-w-lg text-sm text-text-muted">It may have been removed or the readable history window could not be retrieved. Bridge did not substitute the latest messages.</p>
-          {returnToSearch && <button type="button" onClick={() => navigate(returnToSearch)} className="min-h-11 rounded-lg border border-border px-4 text-sm">Back to results</button>}
+          {returnToSearch && <Button onClick={() => navigate(returnToSearch)}>Back to results</Button>}
         </div>
       ) : historicalLoadError ? (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <p className="text-base font-medium text-error">{historicalLoadError}</p>
           <p className="max-w-lg text-sm text-text-muted">Bridge did not resume the session or substitute another history window.</p>
-          <button type="button" onClick={() => loadAndReconnectRef.current()} className="min-h-11 rounded-lg border border-border px-4 text-sm">Retry</button>
-          {returnToSearch && <button type="button" onClick={() => navigate(returnToSearch)} className="min-h-11 rounded-lg px-4 text-sm text-accent">Back to results</button>}
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button onClick={() => loadAndReconnectRef.current()}>Retry</Button>
+            {returnToSearch && <Button variant="ghost" onClick={() => navigate(returnToSearch)}>Back to results</Button>}
+          </div>
         </div>
       ) : displayEntries.length === 0 && !runNotice && !isStreaming && !creating && !hasPendingInteractions ? (
         emptyState ?? (
-          <div className="flex-1 flex items-center justify-center text-text-muted text-lg">
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-text-faint">
             Send a message to get started
           </div>
         )
@@ -3132,15 +3108,12 @@ export default function ChatView({
             <div
               role="status"
               aria-live="polite"
-              className="sticky top-0 z-10 bg-bg-secondary/95 shadow-sm backdrop-blur-sm"
+              className="sticky top-0 z-10 border-b border-border bg-bg-primary/90 backdrop-blur-sm"
             >
-              <div className="border-b border-accent-border bg-accent-surface">
-                <div className="history-sync-bar" aria-hidden="true" />
-                <div className="flex items-center justify-center gap-2 px-3 py-1.5 text-xs">
-                  <Loader2 size={13} className="shrink-0 animate-spin text-accent" />
-                  <span className="font-medium text-text-primary">Syncing chat history…</span>
-                  <span className="hidden text-text-muted sm:inline">{historySyncDetail}</span>
-                </div>
+              <div className="history-sync-bar" aria-hidden="true" />
+              <div className="flex items-center justify-center gap-2 px-3 py-1.5 text-xs">
+                <span className={cx("font-medium", DS.motion.live)}>Syncing chat history…</span>
+                <span className="hidden text-text-faint sm:inline">{historySyncDetail}</span>
               </div>
             </div>
           )}
@@ -3150,9 +3123,8 @@ export default function ChatView({
             </div>
           )}
           {loadingMore ? (
-            <div className="text-center py-3 text-accent/60 text-xs">
-              <Loader2 size={14} className="inline animate-spin mr-1" />
-              Loading older messages...
+            <div className="py-3 text-center text-xs" role="status">
+              <span className={DS.motion.live}>Loading older messages...</span>
             </div>
           ) : hasMore && !historicalMode ? (
             <div className="text-center py-2 text-xs">
@@ -3184,7 +3156,7 @@ export default function ChatView({
                 aria-label="Jump to latest"
                 title="Jump to latest"
                 onClick={historicalMode ? handleExitHistoricalMode : handleJumpToLatest}
-                className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-elevated/95 text-text-secondary shadow-lg backdrop-blur transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                className={cx("pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-elevated/95 text-text-secondary backdrop-blur transition-colors hover:bg-bg-hover hover:text-text-primary", DS.surface.lift, DS.focus)}
               >
                 <ArrowDown size={16} aria-hidden="true" />
                 <span className="sr-only">Jump to latest</span>
@@ -3212,22 +3184,12 @@ export default function ChatView({
       )}
       {forkError && (
         <div className={`${CHAT_RAIL_CLASS} pb-2`}>
-          <div
-            className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error"
-            role="alert"
-          >
-            {forkError}
-          </div>
+          <Notice tone="danger" icon={<CircleAlert size={14} />}>{forkError}</Notice>
         </div>
       )}
       {undoError && (
         <div className={`${CHAT_RAIL_CLASS} pb-2`}>
-          <div
-            className="rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error"
-            role="alert"
-          >
-            {undoError}
-          </div>
+          <Notice tone="danger" icon={<CircleAlert size={14} />}>{undoError}</Notice>
         </div>
       )}
       {!historicalMode && composerAccessory}

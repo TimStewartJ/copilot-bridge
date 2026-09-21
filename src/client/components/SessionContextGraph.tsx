@@ -4,6 +4,8 @@ import type {
   SessionContextTurn,
 } from "../../shared/session-context.js";
 import { useState } from "react";
+import { DS, cx } from "../design/tokens";
+import { Details, EmptyHint, Select } from "../design/primitives";
 import {
   type ChatTurnPreview,
   type ChatTurnPreviews,
@@ -109,18 +111,20 @@ export default function SessionContextGraph({
   ].filter(Boolean).join(" · ");
 
   return (
-    <div className="rounded-lg border border-border px-3 py-2">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted">
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
         <span>Context history</span>
         {points.length > 30 && (
-          <select aria-label="History range" value={showAll ? "all" : "recent"} onChange={(event) => setShowAll(event.target.value === "all")} className="rounded bg-bg-secondary px-1 py-0.5">
-            <option value="recent">Last 30 turns</option>
-            <option value="all">{points.length} loaded turns</option>
-          </select>
+          <div className="min-w-36">
+            <Select inputSize="sm" aria-label="History range" value={showAll ? "all" : "recent"} onChange={(event) => setShowAll(event.target.value === "all")}>
+              <option value="recent">Last 30 turns</option>
+              <option value="all">{points.length} loaded turns</option>
+            </Select>
+          </div>
         )}
       </div>
       {totalTurns !== undefined && totalTurns > points.length && (
-        <p className="mt-1 text-[11px] text-text-muted">
+        <p className="mt-1 text-[11px] text-text-secondary">
           Latest {points.length} of {totalTurns} turns
         </p>
       )}
@@ -129,19 +133,19 @@ export default function SessionContextGraph({
           {[12, 56, 100].map((y, index) => (
             <g key={y}>
               <line x1="48" x2="584" y1={y} y2={y} className="stroke-border" strokeDasharray="3 4" />
-              <text x="42" y={y + 3} textAnchor="end" className="fill-text-muted text-[9px]">
+              <text x="42" y={y + 3} textAnchor="end" className="fill-text-secondary text-[9px]">
                 {useTokens ? new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(maxValue * (1 - index / 2)) : `${100 - index * 50}%`}
               </text>
             </g>
           ))}
-          <path d={path} fill="none" className="stroke-accent" strokeWidth="2" strokeLinejoin="round" />
+          <path d={path} fill="none" className="stroke-text-secondary" strokeWidth="2" strokeLinejoin="round" />
           {plotted.filter((point) => point.y !== undefined).map((point) => (
             <circle
               key={point.turn.bridgeTurnId}
               cx={point.x}
               cy={point.y}
               r={point.turn.bridgeTurnId === selected?.turn.bridgeTurnId ? 5 : 3}
-              className={`cursor-pointer stroke-bg focus:stroke-text-primary ${point.percent !== undefined && point.percent >= 90 ? "fill-error" : point.percent !== undefined && point.percent >= 75 ? "fill-warning" : "fill-accent"}`}
+              className={`cursor-pointer stroke-bg-primary focus:stroke-text-primary ${point.percent !== undefined && point.percent >= 90 ? "fill-error" : point.percent !== undefined && point.percent >= 75 ? "fill-warning" : "fill-text-secondary"}`}
               strokeWidth="2"
               role="button"
               tabIndex={0}
@@ -156,38 +160,39 @@ export default function SessionContextGraph({
               }}
             ><title>{pointTitle(point)}</title></circle>
           ))}
-          <text x="48" y="116" className="fill-text-muted text-[9px]">{visiblePoints[0]?.label}</text>
-          {visiblePoints.length > 1 && <text x="584" y="116" textAnchor="end" className="fill-text-muted text-[9px]">{visiblePoints.at(-1)?.label}</text>}
+          <text x="48" y="116" className="fill-text-secondary text-[9px]">{visiblePoints[0]?.label}</text>
+          {visiblePoints.length > 1 && <text x="584" y="116" textAnchor="end" className="fill-text-secondary text-[9px]">{visiblePoints.at(-1)?.label}</text>}
         </svg>
-      ) : <p className="py-2 text-xs text-text-muted">No context history yet</p>}
+      ) : <EmptyHint className="py-2">No context history yet</EmptyHint>}
       {selected && (
-        <div className="space-y-1 text-[11px]">
+        <div className={cx("space-y-1", DS.text.prose)}>
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label="Inspect turn" value={selected.turn.bridgeTurnId} onChange={(event) => setSelectedTurnId(event.target.value)} className="rounded bg-bg-secondary px-1 py-0.5 text-text-primary">
-              {visiblePoints.map((point) => <option key={point.turn.bridgeTurnId} value={point.turn.bridgeTurnId}>Turn {getTurnNumber(point.index)}</option>)}
-            </select>
-            <span className="text-text-muted">
+            <div className="min-w-24">
+              <Select inputSize="sm" aria-label="Inspect turn" value={selected.turn.bridgeTurnId} onChange={(event) => setSelectedTurnId(event.target.value)}>
+                {visiblePoints.map((point) => <option key={point.turn.bridgeTurnId} value={point.turn.bridgeTurnId}>Turn {getTurnNumber(point.index)}</option>)}
+              </Select>
+            </div>
+            <span className="text-text-secondary">
               {selected.tokens !== undefined ? formatTokenValue(selected.tokens) : "Tokens unavailable"}
               {selected.percent !== undefined && ` · ${formatPercent(selected.percent)}`}
             </span>
             {capabilities?.contextWindow && <ProvenanceChip provenance={selected.event?.provenance?.tokensUsed} />}
           </div>
-          {selected.preview && <p className="truncate text-text-muted" title={selected.preview.preview}>{selected.preview.preview}</p>}
+          {selected.preview && <p className="truncate text-text-secondary" title={selected.preview.preview}>{selected.preview.preview}</p>}
         </div>
       )}
       {markers.length > 0 && (
-        <details className="mt-2 text-[11px] text-text-muted">
-          <summary className="cursor-pointer">Events ({markers.length})</summary>
-          <ul className="mt-1 space-y-1">
+        <Details label={`Events (${markers.length})`} className="mt-2">
+          <ul className="space-y-1 text-xs text-text-secondary">
             {markers.map((event) => (
               <li key={event.id}>
-                <span className="text-warning">{eventTitle(event)}</span>
+                <span className="text-text-secondary">{eventTitle(event)}</span>
                 {event.bridgeTurnId && ` · ${points.find((point) => point.turn.bridgeTurnId === event.bridgeTurnId)?.label ?? "Session"}`}
                 {eventUsageText(event) && ` · ${eventUsageText(event)}`}
               </li>
             ))}
           </ul>
-        </details>
+        </Details>
       )}
       <div className="sr-only">
         <table>

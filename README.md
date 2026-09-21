@@ -250,8 +250,8 @@ The settings API accepts `responseStyle: { detail: "adaptive" | "concise" | "det
 ```bash
 npx vitest run <file> # targeted dev test
 npm test              # full Vitest regression suite
-npm run check:fast    # x-plat audit + client/server type-checking
-npm run check:client  # client type-check + client lane
+npm run check:fast    # x-plat audit + design audit + client/server type-checking
+npm run check:client  # design audit + client type-check + client lane
 npm run check:server  # server type-check + server/shared lane
 npm run check:integration # type-check + API, workflow, persistence/lifecycle, and native process tests
 npm run check:launcher # server type-check + launcher lane
@@ -332,6 +332,14 @@ call IDs are available on usage events, not cache-break events.
 - Tests never see the live Bridge runtime environment: the shared Vitest config strips inherited `BRIDGE_*`, `COPILOT_*`, and GitHub token variables, so stub what a test needs with `vi.stubEnv()` or `withTestEnv()`.
 - Self-update validates in a Git-free release-slot copy. Source-management tests must model checkout metadata explicitly: use `withTestSourceCheckout()` from `test-paths.ts` in a file-local `node:fs` mock. It supplies only this source tree's `.git` marker and delegates other paths; do not restore inherited runtime settings or assume host Git metadata exists.
 - Run `npm run check:pr` before preview/deploy; `staging_preview` also runs validation automatically. `preview:smoke` checks the staged preview/backend without re-running validation by default; use `npm run preview:smoke:full` to validate and smoke in one command.
+
+### Design System
+
+Every client screen is built from `src/client/design/`: `tokens.ts` holds the class recipes, `primitives.tsx` the components, and its `README.md` the rules (content is the only full-contrast text; group with space, hairlines and rails instead of boxes; one line that opens for more; colour only for state; accent is never a fill; one primary action per screen).
+
+- `npm run test:design-audit` runs in `check:fast`, `check:client` and `check:pr`. It fails on the retired patterns in any client file that is not listed in `src/client/design/audit-pending.ts`.
+- That list names the screens written before the system existed. It only shrinks: never add a file to it, and remove a file once it is migrated (the audit fails until you do).
+- `npx tsx src/client/design/audit.ts --explain <file>` lists what a file still breaks.
 
 ### Build
 
@@ -491,6 +499,7 @@ src/
 └── client/
     ├── App.tsx                    # Root app shell + routing
     ├── api.ts                     # Typed client API
+    ├── design/                    # Design system: tokens, primitives, rules (README.md), audit
     ├── components/
     │   ├── Dashboard.tsx          # Home dashboard
     │   ├── TaskRail.tsx           # Task list and grouping UI

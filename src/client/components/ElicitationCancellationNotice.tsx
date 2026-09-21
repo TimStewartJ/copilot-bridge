@@ -1,32 +1,28 @@
 import { CircleAlert } from "lucide-react";
 
-import type { ElicitationCancellationNotice as Notice } from "../useSessionStream";
+import type { ElicitationCancellationNotice as CancellationNotice } from "../useSessionStream";
+import { DS } from "../design/tokens";
+import { Notice } from "../design/primitives";
 
-const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
-
-export default function ElicitationCancellationNotice({ notice }: { notice: Notice }) {
+export default function ElicitationCancellationNotice({ notice }: { notice: CancellationNotice }) {
   return (
-    <div className={CHAT_RAIL_CLASS}>
-      <div
-        className="max-w-xl rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 shadow-sm"
+    <div className={DS.layout.readingColumn}>
+      <Notice
+        tone="warning"
         role="status"
-        aria-live="polite"
+        icon={<CircleAlert size={14} />}
+        title="Question no longer active"
+        className="max-w-xl"
       >
-        <div className="flex items-start gap-3">
-          <CircleAlert size={17} className="mt-0.5 shrink-0 text-warning" />
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-text-primary">Question no longer active</div>
-            {notice.question && (
-              <div className="mt-1 whitespace-pre-wrap text-sm text-text-secondary">
-                {notice.question}
-              </div>
-            )}
-            <div className="mt-2 text-xs text-text-muted">
-              {notice.detail} Send another message if you still want the agent to continue.
-            </div>
+        {notice.question && (
+          <div className="mt-0.5 whitespace-pre-wrap text-[13px] text-text-secondary">
+            {notice.question}
           </div>
+        )}
+        <div className="mt-1 text-text-muted">
+          {notice.detail} Send another message if you still want the agent to continue.
         </div>
-      </div>
+      </Notice>
     </div>
   );
 }

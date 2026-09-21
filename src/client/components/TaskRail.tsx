@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
-import { GROUP_COLORS, GROUP_COLOR_DOT, GROUP_COLOR_BG } from "../group-colors";
+import { GROUP_COLORS, GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel } from "lucide-react";
@@ -24,7 +24,8 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
 import { getTaskActivityDot } from "../task-row-signals";
-import { UI } from "./shared/design-system";
+import { DS, cx } from "../design/tokens";
+import { Button, CountBadge } from "../design/primitives";
 import CopilotQuotaMenu from "./CopilotQuotaMenu";
 
 interface TaskRailProps {
@@ -154,7 +155,7 @@ export default function TaskRail({
   onRailTabChange,
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
-    active ? `${UI.surface.selectedRow} text-accent` : "text-text-muted hover:bg-bg-hover hover:text-text-primary";
+    active ? DS.row.selected : "text-text-muted hover:bg-bg-hover/60 hover:text-text-primary";
   const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
   const homeIndicatorDotClass = homeChecklistIndicator.state === "overdue"
     ? "bg-error"
@@ -287,10 +288,15 @@ export default function TaskRail({
             groupedSections.map((section, si) => {
               const group = section.group;
               const isCollapsed = group?.collapsed ?? false;
-              const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
-
               return (
-                <div key={group?.id ?? "__ungrouped__"} className={`flex flex-col items-center gap-2 w-full ${colorBg ? `${colorBg} rounded-xl py-1.5` : ""}`} title={group?.name}>
+                <div key={group?.id ?? "__ungrouped__"} className="flex w-full flex-col items-center gap-2" title={group?.name}>
+                  {/* With no room for a name, a group is a short bar in its colour above its tasks. */}
+                  {group && (
+                    <span
+                      aria-hidden="true"
+                      className={cx("h-0.5 w-4 rounded-full", si > 0 && "mt-1.5", GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")}
+                    />
+                  )}
                   {!isCollapsed && section.tasks.map((task) => {
                     const isActive = task.id === activeTaskId;
                     const indicator = taskIndicators.get(task.id);
@@ -302,7 +308,7 @@ export default function TaskRail({
                         key={task.id}
                         onClick={() => onSelectTask(task.id)}
                         title={getTaskTitle(task)}
-                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
+                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
                       >
                         {initials}
                         {task.kind === "ongoing" && (
@@ -335,7 +341,7 @@ export default function TaskRail({
                   key={task.id}
                   onClick={() => onSelectTask(task.id)}
                   title={getTaskTitle(task)}
-                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
+                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
                 >
                   {initials}
                   {task.kind === "ongoing" && (
@@ -370,7 +376,7 @@ export default function TaskRail({
                     key={task.id}
                     onClick={() => onSelectTask(task.id)}
                     title={getTaskTitle(task)}
-                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-accent" : ""} text-text-primary hover:brightness-110 opacity-60`}
+                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} text-text-primary hover:brightness-110 opacity-60`}
                   >
                     {initials}
                   </button>
@@ -419,14 +425,11 @@ export default function TaskRail({
           >
             <MessageSquare size={18} />
             {chatTabAttention.count > 0 && (
-              <span
-                aria-hidden="true"
-                className={`absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-semibold flex items-center justify-center ${
-                  chatTabAttention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
-                }`}
-              >
-                {chatTabAttention.count > 99 ? "99+" : chatTabAttention.count}
-              </span>
+              <CountBadge
+                count={chatTabAttention.count}
+                tone={chatTabAttention.needsUserInputCount > 0 ? "warning" : "success"}
+                className="absolute -right-1 -top-1"
+              />
             )}
           </button>
           <button
@@ -523,17 +526,10 @@ export default function TaskRail({
           <ListTodo size={13} />
           Tasks
           {taskTabAttention.count > 0 && (
-            <span
-              aria-hidden="true"
-              className={`min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-semibold flex items-center justify-center ${
-                taskTabAttention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
-              }`}
-            >
-              {taskTabAttention.count}
-            </span>
+            <CountBadge count={taskTabAttention.count} tone={taskTabAttention.needsUserInputCount > 0 ? "warning" : "success"} />
           )}
           {railTab === "tasks" && (
-            <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent rounded-full" />
+            <span className="absolute bottom-0 left-3 right-3 h-px bg-text-primary" />
           )}
         </button>
         <button
@@ -549,17 +545,10 @@ export default function TaskRail({
           <MessageSquare size={13} />
           Chats
           {chatTabAttention.count > 0 && (
-            <span
-              aria-hidden="true"
-              className={`min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-semibold flex items-center justify-center ${
-                chatTabAttention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
-              }`}
-            >
-              {chatTabAttention.count}
-            </span>
+            <CountBadge count={chatTabAttention.count} tone={chatTabAttention.needsUserInputCount > 0 ? "warning" : "success"} />
           )}
           {railTab === "chats" && (
-            <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent rounded-full" />
+            <span className="absolute bottom-0 left-3 right-3 h-px bg-text-primary" />
           )}
         </button>
       </div>
@@ -569,12 +558,9 @@ export default function TaskRail({
         {railTab === "tasks" ? (
           <>
             {/* New Task button */}
-            <button
-              onClick={() => onNewTask()}
-              className={`${UI.button.primary} mb-1 w-full`}
-            >
-              + New Task
-            </button>
+            <Button fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
+              New task
+            </Button>
             <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
 
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
@@ -585,11 +571,10 @@ export default function TaskRail({
                     const group = section.group;
                     const isCollapsed = group?.collapsed ?? false;
                     const groupId = group?.id ?? "__ungrouped__";
-                    const colorBg = group ? GROUP_COLOR_BG[group.color] ?? "bg-slate-500/8" : undefined;
 
                     return (
                       <DroppableGroup key={groupId} id={groupId}>
-                        <div className={`mb-1 ${colorBg ? `${colorBg} rounded-lg` : ""}`}>
+                        <div className="mb-2">
                           {/* Group header (skip for ungrouped tasks) */}
                           {group && (
                           <div className="flex items-center group/header">
@@ -606,6 +591,7 @@ export default function TaskRail({
                             className="flex-1 min-w-0 flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                           >
                             {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} aria-hidden="true" />
                             <span className="font-medium truncate">{group.name}</span>
                           </button>
                             {group.notes && (
