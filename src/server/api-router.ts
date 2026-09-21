@@ -2980,10 +2980,10 @@ export function createApiRouter(
     });
   });
 
-  // Warm a session — triggers background SDK resume, returns when ready
+  // Warm a session for passive chat navigation, returning when ready.
   router.post("/sessions/:id/warm", async (req, res) => {
     try {
-      await ctx.sessionManager.warmSession(req.params.id);
+      await ctx.sessionManager.warmSession(req.params.id, { source: "chat-open" });
       res.json({ ready: true });
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
