@@ -1,13 +1,8 @@
-// Wrap-fidelity tests for CopilotBackend.
-//
-// These do NOT assert behavior. They assert that each AgentBackend /
-// AgentSession method delegates to the underlying CopilotClient /
-// CopilotSession rpc namespaces with the exact arguments the
-// SessionManager and SessionRunner pass today. Behavioral coverage stays
-// in the existing session-manager-*/session-runner-* tests.
+// Copilot adapter delegation and native permission readiness.
 
 import { describe, expect, it, vi } from "vitest";
 import { CopilotBackend } from "../copilot-backend.js";
+import { AGENT_RPC_TIMEOUTS_MS } from "../rpc-timeouts.js";
 
 function createFakeSession(rpc: any = {}) {
   return {
@@ -20,7 +15,10 @@ function createFakeSession(rpc: any = {}) {
     on: vi.fn((_handler: (event: any) => void) => () => undefined),
     getEvents: vi.fn(async () => [{ type: "test" }]),
     registerElicitationHandler: vi.fn(),
-    rpc,
+    rpc: {
+      permissions: { setMode: vi.fn(async () => ({ success: true, mode: "allow-all" })) },
+      ...rpc,
+    },
   };
 }
 
@@ -261,6 +259,166 @@ describe("CopilotBackend wrap fidelity", () => {
   });
 });
 
+describe("CopilotAgentSession native tool approvals", () => {
+  it.each(["create", "resume"] as const)("uses native approval without installing a default callback on %s", async (operation) => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+    const config = { streaming: true };
+    const wrapped = operation === "create"
+      ? await backend.createSession(config)
+      : await backend.resumeSession("existing", config);
+
+    expect(backend.permissionPolicy).toBeUndefined();
+    if (operation === "create") expect(client.createSession).toHaveBeenCalledWith(config);
+    else expect(client.resumeSession).toHaveBeenCalledWith("existing", config);
+    await wrapped.initializeTools();
+    await wrapped.send({ prompt: "first" });
+    await wrapped.sendAndWait({ prompt: "second" }, 1234);
+    expect(client.session.rpc.permissions.setMode).toHaveBeenCalledExactlyOnceWith({ mode: "allow-all" });
+  });
+
+  it("shares one native initialization before discovery, sends, and slash commands", async () => {
+    let releaseMode!: (result: { success: boolean; mode: string }) => void;
+    let modeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { modeStarted = resolve; });
+    const gate = new Promise<{ success: boolean; mode: string }>((resolve) => { releaseMode = resolve; });
+    const setMode = vi.fn(() => { modeStarted(); return gate; });
+    const initializeAndValidate = vi.fn(async () => ({}));
+    const invoke = vi.fn(async () => ({ kind: "text", text: "done" }));
+    const session = createFakeSession({ permissions: { setMode }, tools: { initializeAndValidate }, commands: { invoke } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+
+    const work = Promise.all([
+      wrapped.initializeTools(),
+      wrapped.send({ prompt: "hello" }),
+      wrapped.sendAndWait({ prompt: "wait" }, 1234),
+      wrapped.invokeSlashCommand({ name: "help" }),
+    ]);
+    await started;
+    expect(setMode).toHaveBeenCalledOnce();
+    expect(initializeAndValidate).not.toHaveBeenCalled();
+    expect(session.send).not.toHaveBeenCalled();
+    expect(session.sendAndWait).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+
+    releaseMode({ success: true, mode: "allow-all" });
+    await work;
+    expect(initializeAndValidate).toHaveBeenCalledOnce();
+    expect(session.send).toHaveBeenCalledOnce();
+    expect(session.sendAndWait).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(setMode).toHaveBeenCalledOnce();
+  });
+
+  it("initializes each resumed runtime handle independently", async () => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+    await (await backend.createSession({})).initializeTools();
+    await (await backend.resumeSession("existing", {})).initializeTools();
+    expect(client.session.rpc.permissions.setMode).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { success: false, mode: "manual" },
+    { success: true, mode: "manual" },
+    { success: true },
+    { success: "true", mode: "allow-all" },
+    null,
+    undefined,
+  ])("blocks tool use when native approval is refused or malformed: %j", async (result) => {
+    const setMode = vi.fn(async () => result);
+    const initializeAndValidate = vi.fn();
+    const invoke = vi.fn();
+    const session = createFakeSession({ permissions: { setMode }, tools: { initializeAndValidate }, commands: { invoke } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+
+    await expect(wrapped.initializeTools()).rejects.toThrow("did not enable native tool approvals");
+    await expect(wrapped.send({ prompt: "must not send" })).rejects.toThrow("did not enable native tool approvals");
+    await expect(wrapped.sendAndWait({ prompt: "must not send" }, null)).rejects.toThrow("did not enable native tool approvals");
+    await expect(wrapped.invokeSlashCommand({ name: "help" })).rejects.toThrow("did not enable native tool approvals");
+    expect(setMode).toHaveBeenCalledOnce();
+    expect(initializeAndValidate).not.toHaveBeenCalled();
+    expect(session.send).not.toHaveBeenCalled();
+    expect(session.sendAndWait).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("fails explicitly when the pinned native permission API is missing", async () => {
+    const session = createFakeSession({ permissions: {} });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    await expect(wrapped.send({ prompt: "must not send" })).rejects.toThrow("Native tool permission mode is unavailable");
+    expect(session.send).not.toHaveBeenCalled();
+  });
+
+  it("bounds native initialization and never sends after a late success", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseMode!: (result: { success: boolean; mode: string }) => void;
+      const setMode = vi.fn(() => new Promise<{ success: boolean; mode: string }>((resolve) => { releaseMode = resolve; }));
+      const session = createFakeSession({ permissions: { setMode } });
+      const backend = new CopilotBackend(createFakeClient(session) as any, { logger: { warn: vi.fn(), error: vi.fn() } });
+      const probe = vi.spyOn(backend, "probeHealth").mockResolvedValue(true);
+      const wrapped = await backend.createSession({});
+      const send = wrapped.send({ prompt: "must not send" });
+      const rejection = expect(send).rejects.toMatchObject({ rpc: "session.setPermissionMode" });
+      await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["session.setPermissionMode"]);
+      await rejection;
+      releaseMode({ success: true, mode: "allow-all" });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(wrapped.send({ prompt: "still must not send" })).rejects.toMatchObject({ rpc: "session.setPermissionMode" });
+      expect(session.send).not.toHaveBeenCalled();
+      expect(setMode).toHaveBeenCalledOnce();
+      expect(probe).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start a late prompt when release overtakes native initialization", async () => {
+    let releaseMode!: (result: { success: boolean; mode: string }) => void;
+    let modeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { modeStarted = resolve; });
+    const setMode = vi.fn(() => {
+      modeStarted();
+      return new Promise<{ success: boolean; mode: string }>((resolve) => { releaseMode = resolve; });
+    });
+    const session = createFakeSession({ permissions: { setMode } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    const sending = wrapped.send({ prompt: "must not send late" });
+    const rejection = expect(sending).rejects.toThrow("intake is closed for release");
+    await started;
+    await wrapped.release();
+    releaseMode({ success: true, mode: "allow-all" });
+    await rejection;
+    await expect(wrapped.initializeTools()).rejects.toThrow("intake is closed for release");
+    expect(session.send).not.toHaveBeenCalled();
+    expect(setMode).toHaveBeenCalledOnce();
+  });
+
+  it("checks release after awaiting an already initialized native policy", async () => {
+    const session = createFakeSession();
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    await wrapped.initializeTools();
+    const sending = wrapped.send({ prompt: "must not race release" });
+    const rejection = expect(sending).rejects.toThrow("intake is closed for release");
+    await wrapped.release();
+    await rejection;
+    expect(session.send).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicitly supplied permission handler instead of overriding its policy", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ kind: "user-not-available" }));
+    const session = createFakeSession();
+    const client = createFakeClient(session);
+    const wrapped = await new CopilotBackend(client as any).createSession({ onPermissionRequest });
+    await wrapped.initializeTools();
+    await wrapped.send({ prompt: "custom policy" });
+    expect(client.createSession).toHaveBeenCalledWith({ onPermissionRequest });
+    expect(session.rpc.permissions.setMode).not.toHaveBeenCalled();
+    expect(session.send).toHaveBeenCalledOnce();
+  });
+});
+
 describe("CopilotAgentSession wrap fidelity", () => {
   it("delegates bounded waits and provides an unbounded natural-completion mode", async () => {
     const session = createFakeSession();
@@ -299,8 +457,11 @@ describe("CopilotAgentSession wrap fidelity", () => {
       handler = nextHandler;
       return () => undefined;
     });
+    let sendStarted!: () => void;
+    const started = new Promise<void>((resolve) => { sendStarted = resolve; });
     session.send.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
       resolveSend = () => resolve(undefined);
+      sendStarted();
     }));
 
     let settled = false;
@@ -308,6 +469,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
     void wait.then(() => {
       settled = true;
     });
+    await started;
     handler?.({ type: "assistant.message", data: { content: "done" } });
     handler?.({ type: "session.idle", data: {} });
     await Promise.resolve();

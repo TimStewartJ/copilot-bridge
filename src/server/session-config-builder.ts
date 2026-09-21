@@ -261,7 +261,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // Explicitly disable Copilot's cloud-backed agentic memory. The feature stores
   // and recalls facts via the remote Memory API (`/v1/memory_stores/.../memories`)
   // with user- or repository-scoped visibility, and is designed around a per-store
-  // human confirmation prompt. The Bridge auto-approves permissions (`approveAll`),
+  // human confirmation prompt. The Bridge uses native automatic tool approvals,
   // which would let sessions silently persist memories server-side — and repository
   // scope shares them with repo collaborators. Forwarded on both create and resume
   // so memory stays off even when resuming older sessions.
