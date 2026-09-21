@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { Bot, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import {
   cancelSessionAgent,
   fetchSessionAgents,
@@ -8,6 +8,8 @@ import {
   type SessionAgentTask,
 } from "../api";
 import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
+import { DS, cx } from "../design/tokens";
+import { Badge, Button, EmptyHint } from "../design/primitives";
 
 interface SessionAgentsBarProps {
   sessionId: string | null;
@@ -23,12 +25,12 @@ const STATUS_LABEL: Record<AgentTaskStatus, string> = {
   cancelled: "Cancelled",
 };
 
-const STATUS_CLASS: Record<AgentTaskStatus, string> = {
-  running: "bg-info/15 text-info",
-  idle: "bg-warning/15 text-warning",
-  completed: "bg-success/15 text-success",
-  failed: "bg-error/15 text-error",
-  cancelled: "bg-text-faint/15 text-text-muted",
+const STATUS_TONE: Record<AgentTaskStatus, "info" | "warning" | "success" | "danger" | "neutral"> = {
+  running: "info",
+  idle: "warning",
+  completed: "success",
+  failed: "danger",
+  cancelled: "neutral",
 };
 
 const NON_TERMINAL: ReadonlySet<AgentTaskStatus> = new Set<AgentTaskStatus>(["running", "idle"]);
@@ -123,84 +125,71 @@ export default function SessionAgentsBar({ sessionId, backgroundAgents }: Sessio
   const liveLabel = source === "live" ? null : source === "lastSeen" ? "last seen" : "status unknown";
 
   return (
-    <div className="shrink-0 border-b border-border bg-agent-muted/40">
+    <div className="shrink-0 border-b border-border">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-xs hover:bg-bg-hover/50 transition-colors"
+        aria-expanded={expanded}
+        className={cx("flex min-h-9 w-full items-center gap-2 px-3 text-left text-xs transition-colors hover:bg-bg-hover/60 sm:px-4", DS.focus)}
         title="Background agents working in this session"
       >
-        <Bot size={13} className={`text-agent shrink-0${running > 0 ? " animate-pulse" : ""}`} />
-        <span className="font-medium text-agent">
+        <Bot size={13} className="shrink-0 text-agent" aria-hidden="true" />
+        <span className={cx("font-medium", running > 0 ? DS.motion.live : "text-text-secondary")}>
           {active} background agent{active === 1 ? "" : "s"}
         </span>
-        <span className="text-text-muted truncate">
+        <span className="truncate tabular-nums text-text-muted">
           {running > 0 && `${running} running`}
           {running > 0 && idle > 0 && " · "}
           {idle > 0 && `${idle} idle`}
         </span>
-        <span className="ml-auto shrink-0 text-text-faint">
-          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        </span>
+        <ChevronRight size={12} aria-hidden="true" className={cx("ml-auto", DS.row.chevron, expanded && DS.row.chevronOpen)} />
       </button>
       {expanded && (
-        <div className="border-t border-border/60 px-4 py-2">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[11px] uppercase tracking-wide text-text-faint">
+        <div className={cx("px-3 pb-2 sm:px-4", DS.motion.reveal)}>
+          <div className="flex min-h-7 items-center justify-between">
+            <span className={DS.text.sectionLabel}>
               Agents{liveLabel ? ` · ${liveLabel}` : ""}
             </span>
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={() => void load()}
               disabled={loading}
-              className="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-text-primary transition-colors disabled:opacity-50"
+              icon={<RefreshCw size={11} className={loading ? "animate-spin" : ""} />}
             >
-              <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
               Refresh
-            </button>
+            </Button>
           </div>
           {error && (
-            <div className="mb-2 text-[11px] text-error">{error}</div>
+            <div className="mb-2 text-xs text-error" role="alert">{error}</div>
           )}
           {agentTasks.length === 0 && !loading && !error && (
-            <div className="py-1 text-[11px] text-text-muted">
-              No background agents are currently tracked for this session.
-            </div>
+            <EmptyHint className="py-1">No background agents are currently tracked for this session.</EmptyHint>
           )}
-          <ul className="space-y-1">
+          <ul className={DS.surface.divided}>
             {agentTasks.map((task) => {
               const duration = formatDuration(task);
               const isCancelling = cancelling.has(task.id);
               const canCancel = NON_TERMINAL.has(task.status);
               return (
-                <li
-                  key={task.id}
-                  className="flex items-center gap-2 rounded-md border border-border/60 bg-bg-secondary/60 px-2.5 py-1.5 text-xs"
-                >
-                  <Bot size={12} className="shrink-0 text-agent" />
-                  <span className="shrink-0 font-mono text-[11px] text-text-secondary">
-                    {task.agentType ?? "agent"}
-                  </span>
-                  <span className="truncate text-text-muted">
+                <li key={task.id} className="flex min-h-9 items-center gap-2 py-1 text-[13px]">
+                  <span className="shrink-0 text-text-secondary">{task.agentType ?? "agent"}</span>
+                  <span className="min-w-0 flex-1 truncate text-text-muted">
                     {task.description || task.id}
                   </span>
-                  <span
-                    className={`ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${STATUS_CLASS[task.status]}`}
-                  >
-                    {STATUS_LABEL[task.status]}
-                  </span>
                   {duration && (
-                    <span className="shrink-0 text-[10px] text-text-faint">{duration}</span>
+                    <span className={cx("shrink-0", DS.text.meta)}>{duration}</span>
                   )}
+                  <Badge tone={STATUS_TONE[task.status]}>{STATUS_LABEL[task.status]}</Badge>
                   {canCancel && (
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
+                      variant="ghost"
                       onClick={() => void handleCancel(task.id)}
                       disabled={isCancelling}
-                      className="shrink-0 text-[10px] text-text-faint hover:text-error transition-colors disabled:opacity-50"
                     >
                       {isCancelling ? <Loader2 size={11} className="animate-spin" /> : "Cancel"}
-                    </button>
+                    </Button>
                   )}
                 </li>
               );

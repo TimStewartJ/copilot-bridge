@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2 } from "lucide-react";
+import { ExternalLink, Loader2, ShieldAlert } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import type {
@@ -9,8 +9,10 @@ import type {
   PendingElicitationRequestView,
 } from "../api";
 import PromptMarkdown from "./chat/PromptMarkdown";
+import { DS, cx } from "../design/tokens";
+import { Button, ChoiceButton, Panel, TextArea, TextInput } from "../design/primitives";
 
-const CHAT_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8";
+const CHAT_RAIL_CLASS = DS.layout.readingColumn;
 
 type FieldDraft = string | boolean | string[] | undefined;
 
@@ -254,17 +256,16 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
     const host = getUrlHost(request.url);
     return (
       <div className={CHAT_RAIL_CLASS}>
-        <div className="max-w-xl rounded-2xl border border-accent/30 bg-bg-secondary px-4 py-3 shadow-sm">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
-            Secure interaction
-          </div>
+        <Panel className="max-w-xl">
+          <div className={DS.text.attention}>Secure interaction</div>
           <div className="mt-1 whitespace-pre-wrap text-sm font-medium leading-6 text-text-primary">
             {request.message}
           </div>
           <div className="mt-2"><SourceLabel source={request.elicitationSource} /></div>
-          <div className="mt-3 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-            This opens <span className="font-medium">{host}</span>. Review the destination before continuing.
-          </div>
+          <p className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-text-secondary">
+            <ShieldAlert size={13} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>This opens <span className="font-medium text-text-primary">{host}</span>. Review the destination before continuing.</span>
+          </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <a
               href={request.url}
@@ -278,220 +279,161 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
                 }
                 void submit({ action: "accept" });
               }}
-              className={`inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover ${
-                controlsDisabled ? "pointer-events-none cursor-not-allowed opacity-60" : ""
-              }`}
+              className={cx(
+                DS.button.base,
+                DS.button.size.md,
+                DS.button.variant.secondary,
+                controlsDisabled && "pointer-events-none cursor-not-allowed opacity-60",
+              )}
             >
               <ExternalLink size={14} />
               Open secure page
             </a>
-            <button
-              type="button"
-              onClick={() => void submit({ action: "decline" })}
-              disabled={controlsDisabled}
-              className="rounded-md border border-border bg-bg-primary px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Decline
-            </button>
-            <button
-              type="button"
-              onClick={() => void submit({ action: "cancel" })}
-              disabled={controlsDisabled}
-              className="rounded-md px-3 py-2 text-sm text-text-muted hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Cancel
-            </button>
+            <Button onClick={() => void submit({ action: "decline" })} disabled={controlsDisabled}>Decline</Button>
+            <Button variant="ghost" onClick={() => void submit({ action: "cancel" })} disabled={controlsDisabled}>Cancel</Button>
           </div>
           {error && <div className="mt-3 text-xs text-error" role="alert">{error}</div>}
           {status}
-        </div>
+        </Panel>
       </div>
     );
   }
 
   return (
     <div className={CHAT_RAIL_CLASS}>
-      <form
-        className="max-w-xl rounded-2xl border border-accent/30 bg-bg-secondary px-4 py-3 shadow-sm"
-        onSubmit={handleFormSubmit}
-      >
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
-          Questions
-        </div>
-        <PromptMarkdown content={request.message} trusted={!request.elicitationSource} />
-        <div className="mt-1"><SourceLabel source={request.elicitationSource} /></div>
-        {request.elicitationSource && (
-          <div className="mt-3 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-            Do not enter passwords, API keys, access tokens, or payment details into this form.
-          </div>
-        )}
+      <Panel className="max-w-xl">
+        <form onSubmit={handleFormSubmit}>
+          <div className={DS.text.attention}>Questions</div>
+          <PromptMarkdown content={request.message} trusted={!request.elicitationSource} />
+          <div className="mt-1"><SourceLabel source={request.elicitationSource} /></div>
+          {request.elicitationSource && (
+            <p className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-text-secondary">
+              <ShieldAlert size={13} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+              <span>Do not enter passwords, API keys, access tokens, or payment details into this form.</span>
+            </p>
+          )}
 
-        <div className="mt-4 space-y-4">
-          {schemaEntries.map(([name, field]) => {
-            const label = field.title || name;
-            const required = requiredFields.has(name);
-            const options = getFieldOptions(field);
-            const draft = drafts[name];
-            return (
-              <fieldset
-                key={name}
-                className="rounded-xl border border-border/70 bg-bg-primary/40 px-3 py-3"
-                disabled={controlsDisabled}
-              >
-                <legend className="px-1 text-sm font-medium text-text-primary">
-                  {label}{required ? " *" : ""}
-                </legend>
-                {field.description && (
-                  <div className="mb-2 text-xs text-text-muted">{field.description}</div>
-                )}
+          <div className="mt-4 space-y-5">
+            {schemaEntries.map(([name, field]) => {
+              const label = field.title || name;
+              const required = requiredFields.has(name);
+              const options = getFieldOptions(field);
+              const draft = drafts[name];
+              return (
+                <fieldset key={name} className="min-w-0" disabled={controlsDisabled}>
+                  <legend className="mb-1.5 text-[13px] font-medium text-text-primary">
+                    {label}{required ? " *" : ""}
+                  </legend>
+                  {field.description && (
+                    <div className={cx(DS.field.help, "mb-2")}>{field.description}</div>
+                  )}
 
-                {options.length > 0 && field.type === "string" && (
-                  <div className="flex flex-wrap gap-2">
-                    {options.map((option) => {
-                      const selected = draft === option.value;
-                      return (
-                        <button
+                  {options.length > 0 && field.type === "string" && (
+                    <div className={DS.choice.group}>
+                      {options.map((option) => (
+                        <ChoiceButton
                           key={option.value}
-                          type="button"
-                          aria-pressed={selected}
+                          selected={draft === option.value}
                           onClick={() => updateDraft(name, option.value)}
-                          className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                            selected
-                              ? "border-accent bg-accent/10 text-text-primary"
-                              : "border-border bg-bg-primary text-text-secondary hover:border-accent/60 hover:text-text-primary"
-                          }`}
                         >
                           {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                        </ChoiceButton>
+                      ))}
+                    </div>
+                  )}
 
-                {options.length > 0 && field.type === "array" && (
-                  <div className="flex flex-wrap gap-2">
-                    {options.map((option) => {
-                      const selected = Array.isArray(draft) && draft.includes(option.value);
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          aria-pressed={selected}
-                          onClick={() => {
-                            const values = Array.isArray(draft) ? draft : [];
-                            updateDraft(
-                              name,
-                              selected
-                                ? values.filter((value) => value !== option.value)
-                                : [...values, option.value],
-                            );
-                          }}
-                          className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                            selected
-                              ? "border-accent bg-accent/10 text-text-primary"
-                              : "border-border bg-bg-primary text-text-secondary hover:border-accent/60 hover:text-text-primary"
-                          }`}
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                  {options.length > 0 && field.type === "array" && (
+                    <div className={DS.choice.group}>
+                      {options.map((option) => {
+                        const selected = Array.isArray(draft) && draft.includes(option.value);
+                        return (
+                          <ChoiceButton
+                            key={option.value}
+                            selected={selected}
+                            onClick={() => {
+                              const values = Array.isArray(draft) ? draft : [];
+                              updateDraft(
+                                name,
+                                selected
+                                  ? values.filter((value) => value !== option.value)
+                                  : [...values, option.value],
+                              );
+                            }}
+                          >
+                            {option.label}
+                          </ChoiceButton>
+                        );
+                      })}
+                    </div>
+                  )}
 
-                {field.type === "boolean" && (
-                  <div className="flex gap-2">
-                    {[true, false].map((value) => (
-                      <button
-                        key={String(value)}
-                        type="button"
-                        aria-pressed={draft === value}
-                        onClick={() => updateDraft(name, value)}
-                        className={`rounded-full border px-3 py-1.5 text-sm ${
-                          draft === value
-                            ? "border-accent bg-accent/10 text-text-primary"
-                            : "border-border bg-bg-primary text-text-secondary"
-                        }`}
-                      >
-                        {value ? "Yes" : "No"}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                  {field.type === "boolean" && (
+                    <div className={DS.choice.group}>
+                      {[true, false].map((value) => (
+                        <ChoiceButton key={String(value)} selected={draft === value} onClick={() => updateDraft(name, value)}>
+                          {value ? "Yes" : "No"}
+                        </ChoiceButton>
+                      ))}
+                    </div>
+                  )}
 
-                {(field.type === "number" || field.type === "integer") && (
-                  <input
-                    type="number"
-                    step={field.type === "integer" ? "1" : "any"}
-                    min={field.minimum}
-                    max={field.maximum}
-                    value={typeof draft === "string" ? draft : ""}
-                    onChange={(event) => updateDraft(name, event.target.value)}
-                    aria-label={label}
-                    className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
-                  />
-                )}
-
-                {isTextField(field) && (
-                  field.format ? (
-                    <input
-                      type={field.format === "email"
-                        ? "email"
-                        : field.format === "uri"
-                          ? "url"
-                          : field.format === "date"
-                            ? "date"
-                            : "text"}
-                      placeholder={field.format === "date-time" ? "2026-07-13T14:30:00Z" : undefined}
+                  {(field.type === "number" || field.type === "integer") && (
+                    <TextInput
+                      type="number"
+                      step={field.type === "integer" ? "1" : "any"}
+                      min={field.minimum}
+                      max={field.maximum}
                       value={typeof draft === "string" ? draft : ""}
                       onChange={(event) => updateDraft(name, event.target.value)}
                       aria-label={label}
-                      className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
                     />
-                  ) : (
-                    <textarea
-                      rows={3}
-                      value={typeof draft === "string" ? draft : ""}
-                      onChange={(event) => updateDraft(name, event.target.value)}
-                      aria-label={label}
-                      className="w-full resize-y rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
-                    />
-                  )
-                )}
-              </fieldset>
-            );
-          })}
-        </div>
+                  )}
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="submit"
-            disabled={controlsDisabled}
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {submitting && <Loader2 size={14} className="animate-spin" />}
-            {submitting ? "Submitting..." : submitted ? "Submitted" : "Submit answers"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit({ action: "decline" })}
-            disabled={controlsDisabled}
-            className="rounded-md border border-border bg-bg-primary px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Decline
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit({ action: "cancel" })}
-            disabled={controlsDisabled}
-            className="rounded-md px-3 py-2 text-sm text-text-muted hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Cancel
-          </button>
-        </div>
-        {error && <div className="mt-3 text-xs text-error" role="alert">{error}</div>}
-        {status}
-      </form>
+                  {isTextField(field) && (
+                    field.format ? (
+                      <TextInput
+                        type={field.format === "email"
+                          ? "email"
+                          : field.format === "uri"
+                            ? "url"
+                            : field.format === "date"
+                              ? "date"
+                              : "text"}
+                        placeholder={field.format === "date-time" ? "2026-07-13T14:30:00Z" : undefined}
+                        value={typeof draft === "string" ? draft : ""}
+                        onChange={(event) => updateDraft(name, event.target.value)}
+                        aria-label={label}
+                      />
+                    ) : (
+                      <TextArea
+                        rows={3}
+                        value={typeof draft === "string" ? draft : ""}
+                        onChange={(event) => updateDraft(name, event.target.value)}
+                        aria-label={label}
+                        className="resize-y"
+                      />
+                    )
+                  )}
+                </fieldset>
+              );
+            })}
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Button
+              type="submit"
+              disabled={controlsDisabled}
+              icon={submitting ? <Loader2 size={14} className="animate-spin" /> : undefined}
+            >
+              {submitting ? "Submitting..." : submitted ? "Submitted" : "Submit answers"}
+            </Button>
+            <Button onClick={() => void submit({ action: "decline" })} disabled={controlsDisabled}>Decline</Button>
+            <Button variant="ghost" onClick={() => void submit({ action: "cancel" })} disabled={controlsDisabled}>Cancel</Button>
+          </div>
+          {error && <div className="mt-3 text-xs text-error" role="alert">{error}</div>}
+          {status}
+        </form>
+      </Panel>
     </div>
   );
 }

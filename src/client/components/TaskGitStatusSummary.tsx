@@ -1,11 +1,14 @@
 import type { TaskGitStatus } from "../api";
 import { describeTaskGitStatusSummary } from "../lib/task-git-status-summary";
+import { cx } from "../design/tokens";
+import { Badge } from "../design/primitives";
 
 interface TaskGitStatusSummaryProps {
   gitStatus?: TaskGitStatus | null;
   className?: string;
 }
 
+/** Where a workspace stands in git, on one quiet line: repository, branch, and what has changed. */
 export default function TaskGitStatusSummary({
   gitStatus,
   className,
@@ -14,27 +17,16 @@ export default function TaskGitStatusSummary({
   if (!summary) return null;
 
   return (
-    <div className={`flex min-w-0 items-center gap-1.5 flex-wrap text-[10px] text-text-faint ${className ?? ""}`}>
-      {summary.workspaceKind === "linked" && (
-        <span
-          className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-medium text-accent"
-          title="Linked worktree"
-        >
-          worktree
-        </span>
-      )}
+    <div className={cx("flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-text-muted", className)}>
+      {summary.workspaceKind === "linked" && <Badge title="Linked worktree">worktree</Badge>}
       <span className="min-w-0 truncate" title={summary.summaryText}>
         {summary.summaryText}
       </span>
       {summary.counts.map((count) => (
-        <span
-          key={count.key}
-          className="shrink-0 rounded-full bg-bg-hover px-1.5 py-0.5 text-[9px] text-text-muted"
-          title={`${count.label}: ${count.value}`}
-        >
+        <Badge key={count.key} title={`${count.label}: ${count.value}`} className="tabular-nums">
           {count.shortLabel}
           {count.value}
-        </span>
+        </Badge>
       ))}
     </div>
   );

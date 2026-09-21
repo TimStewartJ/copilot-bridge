@@ -11,6 +11,7 @@ import {
   computeMenuPlacement,
   type MenuPlacement,
 } from "../../lib/menu-placement";
+import { DS, cx } from "../../design/tokens";
 
 function readViewport(): { width: number; height: number } {
   if (typeof window === "undefined") return { width: 0, height: 0 };
@@ -89,9 +90,11 @@ function PresetRefineMenu({
       ref={menuRef}
       role="listbox"
       aria-label={`${tile.label} models`}
-      className={`z-50 min-w-52 overflow-y-auto overscroll-contain rounded-md border border-border bg-bg-elevated p-1 shadow-xl ${
-        placement ? "fixed" : "absolute left-0 top-full mt-1 max-h-64"
-      }`}
+      className={cx(
+        "z-50 min-w-52 overflow-y-auto overscroll-contain p-1",
+        DS.surface.floating,
+        placement ? "fixed" : "absolute left-0 top-full mt-1 max-h-64",
+      )}
       style={placement
         ? {
           top: placement.top,
@@ -111,13 +114,13 @@ function PresetRefineMenu({
             role="option"
             aria-selected={selected}
             onClick={() => onSelect(model.id)}
-            className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${
-              selected
-                ? "bg-accent/10 font-semibold text-text-primary"
-                : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-            }`}
+            className={cx(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
+              DS.focus,
+              selected ? DS.row.selected : "text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary",
+            )}
           >
-            <Check className={`h-3 w-3 shrink-0 ${selected ? "text-accent" : "opacity-0"}`} />
+            <Check className={cx("h-3 w-3 shrink-0", selected ? "text-text-secondary" : "opacity-0")} aria-hidden="true" />
             <span className="truncate">
               {model.name}{formatModelMultiplier(model.billing?.multiplier)}
             </span>
@@ -188,69 +191,78 @@ export default function ModelPresetPicker({
       ref={containerRef}
       role="group"
       aria-label="Model presets"
-      className="-mx-1 flex snap-x gap-2 overflow-x-auto px-1 pb-1"
+      className="@container/presets w-full"
     >
-      {state.tiles.map((tile) => {
-        const unavailable = !tile.model;
-        const bodyDisabled = disabled || unavailable;
-        const menuDisabled = disabled || state.availableModels.length === 0;
-        const open = openSlot === tile.slot;
-        const live = tile.isLive && (!allowUnselected || hasResolvedSelection);
-        return (
-          <div
-            key={tile.slot}
-            ref={(node) => {
-              tileRefs.current[tile.slot] = node;
-            }}
-            className={`relative min-w-32 flex-1 shrink-0 snap-start rounded-md border transition-colors ${
-              live ? "border-accent bg-accent/10" : "border-border bg-bg-surface"
-            } ${menuDisabled ? "opacity-60" : ""}`}
-          >
-            <div className="flex items-stretch">
-              <button
-                type="button"
-                id={`${idPrefix}-${tile.slot}`}
-                aria-label={`${tile.label}: ${tile.model?.name ?? "no model selected"}`}
-                aria-pressed={live}
-                disabled={bodyDisabled}
-                onClick={() => {
-                  setOpenSlot(null);
-                  onSelectPreset(tile.slot);
-                }}
-                className={`min-w-0 flex-1 truncate rounded-l-md px-2.5 py-1.5 text-left text-sm enabled:hover:bg-bg-hover/40 disabled:cursor-not-allowed ${
-                  live ? "font-semibold text-text-primary" : "text-text-secondary"
-                }`}
-              >
-                {tile.model?.name ?? "None"}
-              </button>
-              <button
-                type="button"
-                aria-label={`Choose ${tile.label} model`}
-                aria-expanded={open}
-                aria-haspopup="listbox"
-                disabled={menuDisabled}
-                onClick={() => setOpenSlot(open ? null : tile.slot)}
-                className="flex w-6 shrink-0 items-center justify-center rounded-r-md border-l border-border text-text-faint enabled:hover:bg-bg-hover enabled:hover:text-text-primary disabled:cursor-not-allowed"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </button>
+      <div className={cx(DS.segmented.groupFull, "flex-col items-stretch @[28rem]/presets:flex-row @[28rem]/presets:items-center")}>
+        {state.tiles.map((tile) => {
+          const unavailable = !tile.model;
+          const bodyDisabled = disabled || unavailable;
+          const menuDisabled = disabled || state.availableModels.length === 0;
+          const open = openSlot === tile.slot;
+          const live = tile.isLive && (!allowUnselected || hasResolvedSelection);
+          return (
+            <div
+              key={tile.slot}
+              ref={(node) => {
+                tileRefs.current[tile.slot] = node;
+              }}
+              className={cx(
+                "relative min-w-0 flex-1 rounded-md transition-colors",
+                live ? DS.segmented.selected : "text-text-muted",
+                menuDisabled && "opacity-60",
+              )}
+            >
+              <div className="flex items-stretch">
+                <button
+                  type="button"
+                  id={`${idPrefix}-${tile.slot}`}
+                  aria-label={`${tile.label}: ${tile.model?.name ?? "no model selected"}`}
+                  aria-pressed={live}
+                  title={tile.model?.name ?? "No model selected"}
+                  disabled={bodyDisabled}
+                  onClick={() => {
+                    setOpenSlot(null);
+                    onSelectPreset(tile.slot);
+                  }}
+                  className={cx(
+                    "h-10 min-w-0 flex-1 truncate rounded-l-md pl-2 pr-0.5 text-left text-[13px] font-medium transition-colors enabled:hover:text-text-primary disabled:cursor-not-allowed sm:pl-2.5 sm:pr-1 md:h-8",
+                    DS.focus,
+                  )}
+                >
+                  {tile.model?.name ?? "None"}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Choose ${tile.label} model`}
+                  aria-expanded={open}
+                  aria-haspopup="listbox"
+                  disabled={menuDisabled}
+                  onClick={() => setOpenSlot(open ? null : tile.slot)}
+                  className={cx(
+                    "flex w-6 shrink-0 items-center justify-center rounded-r-md text-text-faint transition-colors enabled:hover:text-text-primary disabled:cursor-not-allowed sm:w-7",
+                    DS.focus,
+                  )}
+                >
+                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
+              {open && !menuDisabled && (
+                <PresetRefineMenu
+                  tile={tile}
+                  models={state.availableModels}
+                  globalDefaultModelId={globalDefaultModelId}
+                  tileRefs={tileRefs}
+                  onSelect={(modelId) => {
+                    setOpenSlot(null);
+                    onSelectModel(tile.slot, modelId);
+                  }}
+                  onClose={() => setOpenSlot(null)}
+                />
+              )}
             </div>
-            {open && !menuDisabled && (
-              <PresetRefineMenu
-                tile={tile}
-                models={state.availableModels}
-                globalDefaultModelId={globalDefaultModelId}
-                tileRefs={tileRefs}
-                onSelect={(modelId) => {
-                  setOpenSlot(null);
-                  onSelectModel(tile.slot, modelId);
-                }}
-                onClose={() => setOpenSlot(null)}
-              />
-            )}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

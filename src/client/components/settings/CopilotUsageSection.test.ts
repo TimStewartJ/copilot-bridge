@@ -282,10 +282,10 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("Metered cost");
     expect(text).toContain("No GitHub metering in this range");
     expect(text).toContain("Unknown pricing excluded from cost totals");
-    expect(text).toContain("GitHub public pricing did not include 1 observed model");
+    expect(text).toContain("No usable price card is available for 1 observed model");
     expect(text).toContain("Unpriced tokens");
     expect(text).toContain("unknown-model");
-    expect(text).toContain("Exact public price");
+    expect(text).toContain("Price card matched");
     expect(text).toContain("Unpriced");
   });
 
@@ -383,12 +383,35 @@ describe("CopilotUsageSection", () => {
     expect(text).not.toContain("Unknown pricing excluded from cost totals");
   });
 
+  it("labels partial metering and keeps a recorded zero separate from no recording", () => {
+    const partial = renderSection(createUsageSummary({ totals: {
+      ...createUsageSummary().totals, totalTokens: 1000, meteredTokens: 250, meteredAiCredits: 12.5,
+    } })).replace(/<!-- -->/g, "");
+    expect(partial).toContain("covers 25% of tokens in range");
+    expect(partial).toContain("SDK-reported");
+    expect(partial).not.toContain("Billed by GitHub");
+    const free = renderSection(createUsageSummary({ totals: {
+      ...createUsageSummary().totals, totalTokens: 1000, meteredTokens: 1000, meteredAiCredits: 0,
+    } }));
+    expect(free).not.toContain("No GitHub metering in this range");
+    expect(free).toContain("$0.00");
+  });
+
+  it("does not require a token count to display unattributed SDK credits", () => {
+    const html = renderSection(createUsageSummary({ totals: {
+      ...createUsageSummary().totals, totalTokens: 0, meteredTokens: 0, meteredAiCredits: 223.45,
+    } }));
+    expect(html).toContain("$2.23");
+    expect(html).toContain("Token coverage not recorded");
+    expect(html).not.toContain("No GitHub metering in this range");
+  });
+
   it("renders every range button with all time selected by default", () => {
     const html = renderSection(createUsageSummary());
 
-    for (const label of ["7 days", "28 days", "MTD", "YTD", "All time"]) {
-      expect(html).toContain(`>${label}</button>`);
-    }
+    const buttons = [...html.matchAll(/<button\b[^>]*aria-pressed="(true|false)"[^>]*>([\s\S]*?)<\/button>/g)];
+    expect(buttons.map((match) => match[2].replace(/<[^>]+>/g, ""))).toEqual(["7 days", "28 days", "MTD", "YTD", "All time"]);
+    expect(buttons.map((match) => match[1])).toEqual(["false", "false", "false", "false", "true"]);
     expect(html).toContain("All local history");
   });
 
@@ -425,7 +448,7 @@ describe("CopilotUsageSection", () => {
   it("keeps the live account quota out of local usage settings", () => {
     const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
 
-    expect(text).toContain("Local Copilot Usage");
+    expect(text).toContain("Local Copilot usage");
     expect(text).not.toContain("Live account quota");
   });
 });
@@ -452,6 +475,25 @@ describe("CopilotUsageSection range buttons", () => {
   afterEach(async () => {
     await harness?.cleanup();
     harness = null;
+  });
+
+  it("reports a failed refresh while keeping the last successful summary", async () => {
+    const refresh = vi.fn().mockRejectedValue(new Error("Usage service offline"));
+    await getHarness().render(createElement(CopilotUsageSection));
+    const previous = vi.mocked(useCopilotUsageQuery).mock.results.at(-1);
+    if (!previous || previous.type !== "return") throw new Error("Initial usage query was not rendered");
+    vi.mocked(useCopilotUsageQuery).mockReturnValue({
+      ...previous.value,
+      data: createUsageSummary(), error: null, refresh,
+      isError: false, isPending: false, isLoading: false, isLoadingError: false,
+      isRefetchError: false, isSuccess: true, isPlaceholderData: false, status: "success",
+    });
+    await getHarness().render(createElement(CopilotUsageSection));
+    const button = findAllByTag(getHarness().dom.container, "BUTTON").find((candidate) => candidate.textContent === "Refresh");
+    await getHarness().act(async () => getReactProps(button)?.onClick?.());
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(getHarness().dom.container.textContent).toContain("Last refresh failed: Usage service offline");
+    expect(getHarness().dom.container.textContent).toContain("Total tokens");
   });
 
   it("requeries usage for the picked window", async () => {

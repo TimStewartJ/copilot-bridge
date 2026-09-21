@@ -60,6 +60,33 @@ describe("NewSessionLaunchPanel", () => {
     expect(getReactProps(panel)?.className).toContain("md:items-center");
   });
 
+  it("hides selector labels but preserves accessible names and the actual choices", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      agentDefinitions: [],
+      models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
+      selectedModelId: "gpt-5.6",
+      reasoningEffortOptions: [{ value: "high", label: "High" }],
+      selectedReasoningEffort: "high",
+      contextOptions: [{ value: "default", label: "Standard context" }],
+      selectedContextTier: "default",
+    }));
+    const container = harness!.dom.container;
+    const hiddenLabels = [...findAllByTag(container, "LABEL"), ...findAllByTag(container, "DIV")]
+      .filter((element) => getReactProps(element)?.className === "sr-only")
+      .map((element) => element.textContent);
+    expect(hiddenLabels).toEqual(["Agent", "Model", "Effort", "Context", "Mode"]);
+    const agentLabel = findAllByTag(container, "LABEL")[0];
+    expect(getReactProps(agentLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
+    const groupLabels = findAllByTag(container, "DIV")
+      .filter((element) => getReactProps(element)?.role === "group")
+      .map((element) => getReactProps(element)?.["aria-label"]);
+    expect(groupLabels).toEqual(["Model presets", "Effort for new session", "Context for new session", "Run mode for new session"]);
+    for (const choice of ["Default Copilot agent", "GPT-5.6", "High", "Standard context", "Interactive", "Autopilot"]) {
+      expect(container.textContent).toContain(choice);
+    }
+  });
+
   it("starts the three presets with GPT, Claude, and Other defaults", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),

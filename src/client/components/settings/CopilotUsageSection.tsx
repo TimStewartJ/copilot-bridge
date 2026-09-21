@@ -1,12 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BarChart3, Loader2, RotateCw } from "lucide-react";
-import type {
-  CopilotUsageCoverage,
-  CopilotUsageModelRow,
-  CopilotUsageSkipReason,
-  CopilotUsageTotals,
-  CopilotUsageUnpricedModelRow,
-} from "../../api";
+import { AlertTriangle, Loader2, RotateCw } from "lucide-react";
+import type { CopilotUsageCoverage, CopilotUsageSkipReason } from "../../api";
 import {
   COPILOT_USAGE_RANGE_DESCRIPTIONS,
   COPILOT_USAGE_RANGE_KEYS,
@@ -14,32 +8,13 @@ import {
   DEFAULT_COPILOT_USAGE_RANGE,
   type CopilotUsageRangeKey,
 } from "../../../shared/copilot-usage-range";
-import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../../shared/copilot-usage";
-import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing";
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
-import EmptyState from "../shared/EmptyState";
+import { DS, cx } from "../../design/tokens";
+import { Badge, Button, Details, EmptyHint, Notice, Section, SegmentedControl, StatRow } from "../../design/primitives";
+import { describeMeteredCoverage, formatUsageCredits, formatUsageNumber as formatNumber, formatUsageUsd, hasMeteredUsage, meteredCostUsd } from "../../lib/usage-presentation";
+import UsageModelList from "../usage/UsageModelList";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
-import { SettingsSection } from "./SettingsSection";
 
-const NUMBER_FORMATTER = new Intl.NumberFormat();
-const USD_FORMATTER = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-const SMALL_USD_FORMATTER = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 4,
-  maximumFractionDigits: 6,
-});
-const AI_CREDIT_FORMATTER = new Intl.NumberFormat(undefined, {
-  maximumFractionDigits: 2,
-});
-const SMALL_AI_CREDIT_FORMATTER = new Intl.NumberFormat(undefined, {
-  maximumFractionDigits: 4,
-});
 const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   month: "short",
@@ -58,12 +33,6 @@ const SKIP_REASON_LABELS: Record<CopilotUsageSkipReason, string> = {
   no_shutdown: "no shutdown summary",
   empty_model_metrics: "empty model metrics",
   parse_error: "parse errors",
-};
-
-const PRICING_STATUS_LABELS: Record<CopilotUsageModelRow["pricingStatus"], string> = {
-  exact: "Exact public price",
-  "sdk-name": "Matched SDK name",
-  unpriced: "Unpriced",
 };
 
 export function CopilotUsageSection() {
@@ -94,445 +63,206 @@ export function CopilotUsageSection() {
   const busy = refreshing || indexing || (isLoading && !data);
   const isEmpty = Boolean(data && data.models.length === 0 && data.coverage.sessionsIncluded === 0);
   const isRanged = Boolean(data?.range.startAt);
-  // GitHub's own session metering. Older session logs predate the field, so a
-  // range can be partially metered; the estimate stays the headline and the
-  // metered figure carries its own coverage so it is never read as complete.
-  const meteredAiCredits = data?.totals.meteredAiCredits ?? 0;
-  const meteredTokens = data?.totals.meteredTokens ?? 0;
-  const totalTokens = data?.totals.totalTokens ?? 0;
-  const meteredCoverage = totalTokens > 0 ? meteredTokens / totalTokens : 0;
-  const hasMeteredCost = meteredTokens > 0;
-  const meteredCostUsd = meteredAiCredits * COPILOT_AI_CREDIT_USD;
+  const meteredCost = data ? meteredCostUsd(data.totals) : null;
   const reasonSummary = useMemo(
     () => (data ? formatSkipReasonSummary(data.coverage) : "Skipped session details will appear after the first successful scan."),
     [data],
   );
 
   return (
-    <SettingsSection
-      title="Local Copilot Usage"
-      description="Local session and retained defer-worker usage with GitHub Copilot public pricing assumptions. Not official billing."
+    <Section
+      level="page"
+      label="Local Copilot usage"
       action={(
-        <button
+        <Button
+          size="sm"
+          variant="ghost"
           onClick={() => void handleRefresh()}
           disabled={busy}
-          className="px-3 py-1.5 text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover rounded-md transition-colors inline-flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-70"
+          icon={busy ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
         >
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
-        </button>
+        </Button>
       )}
     >
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div
-            role="group"
-            aria-label="Usage time range"
-            className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-bg-elevated p-1"
-          >
-            {COPILOT_USAGE_RANGE_KEYS.map((key) => {
-              const selected = key === range;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setRange(key)}
-                  aria-pressed={selected}
-                  title={COPILOT_USAGE_RANGE_DESCRIPTIONS[key]}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                    selected
-                      ? "bg-accent text-white"
-                      : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                  }`}
-                >
-                  {COPILOT_USAGE_RANGE_LABELS[key]}
-                </button>
-              );
-            })}
-          </div>
-          <div className="text-[11px] text-text-faint">
+      <p className={cx(DS.usage.prose, "mb-5")}>
+        Saved usage on this device, including retained deferred workers. Estimates and SDK-reported metering are not official billing.
+      </p>
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SegmentedControl
+            ariaLabel="Usage time range"
+            size="sm"
+            value={range}
+            onChange={setRange}
+            className="max-w-full flex-wrap"
+            options={COPILOT_USAGE_RANGE_KEYS.map((key) => ({
+              value: key,
+              label: COPILOT_USAGE_RANGE_LABELS[key],
+              title: COPILOT_USAGE_RANGE_DESCRIPTIONS[key],
+            }))}
+          />
+          <span className={DS.usage.meta}>
             {data ? formatRangeWindow(data.range.startAt) : COPILOT_USAGE_RANGE_DESCRIPTIONS[range]}
-          </div>
-        </div>
-
-        <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-          Metered cost is what GitHub actually billed, read from session shutdown data, and only covers work recent enough to carry that field. Disposable defer-worker usage is retained before its temporary session is deleted. Cost that GitHub did not assign to a named model appears as Unattributed. Estimated cost is reconstructed from GitHub's public model pricing: uncached input, cache reads, cache writes, and output are priced separately, reasoning tokens are already counted inside output, and cache writes bill at 1.25x the input rate. Active work before shutdown, other unpersisted sessions, and other devices are excluded.
+          </span>
         </div>
 
         {data && indexing && (
-          <div className="rounded-md border border-accent/30 bg-accent/10 px-3 py-3 text-xs text-text-secondary">
-            <div className="flex items-center gap-2 font-medium text-accent">
-              <Loader2 size={13} className="animate-spin" />
-              Indexing local usage in the background
-            </div>
-            <p className="mt-1 text-text-muted">
-              Checked {formatNumber(data.index.sessionsProcessed)} of {formatNumber(data.index.sessionsTotal)} sessions.
-              Cached totals update progressively without keeping this request open.
+          <div role="status" className="text-xs leading-relaxed text-text-muted">
+            <span className={DS.motion.live}>Indexing local usage in the background</span>
+            <p className="mt-1 tabular-nums">
+              Checked {formatNumber(data.index.sessionsProcessed)} of {formatNumber(data.index.sessionsTotal)} sessions. Totals update as the scan progresses.
             </p>
           </div>
         )}
-
         {data?.index.state === "error" && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-3 text-xs text-error">
+          <Notice tone="danger" icon={<AlertTriangle size={14} />}>
             {data.index.error ?? "Local usage indexing failed. Previously cached totals are still shown."}
-          </div>
+          </Notice>
         )}
-
         {data?.index.warning && (
-          <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-3 text-xs text-text-secondary">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
-            <span>{data.index.warning}</span>
-          </div>
+          <Notice tone="warning" icon={<AlertTriangle size={14} />}>{data.index.warning}</Notice>
         )}
-
         {isLoading && !data && (
-          <LoadingSkeletonRegion
-            isLoading
-            label="Scanning local Copilot session history"
-            className="rounded-md border border-border bg-bg-elevated p-4 space-y-3"
-          >
-            <div>
-              <p className="text-sm font-medium text-text-secondary">Scanning local Copilot session history…</p>
-              <p className="mt-1 text-xs text-text-muted">
-                Usage totals will appear after local shutdown summaries are scanned.
-              </p>
-            </div>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
-              {["Estimated cost", "AI credits", "Total tokens", "Requests", "Included sessions", "Coverage window"].map((label) => (
-                <div key={label} className="rounded-md border border-border bg-bg-primary px-4 py-3">
-                  <Skeleton height={10} width="54%" shape="pill" />
-                  <Skeleton height={16} width="72%" shape="pill" className="mt-2" />
+          <LoadingSkeletonRegion isLoading label="Scanning local Copilot session history" className="space-y-5">
+            <p className={DS.usage.prose}>Scanning local Copilot session history…</p>
+            <div className="flex flex-wrap gap-x-8 gap-y-4">
+              {Array.from({ length: 5 }, (_, index) => (
+                <div key={index} className="space-y-2">
+                  <Skeleton height={18} width={84} shape="pill" />
+                  <Skeleton height={10} width={64} shape="pill" />
                 </div>
               ))}
             </div>
-            <div className="rounded-md border border-warning/20 bg-bg-primary p-3">
-              <SkeletonText lines={2} widths={["64%", "86%"]} />
-            </div>
+            <SkeletonText lines={3} widths={["100%", "82%", "64%"]} />
           </LoadingSkeletonRegion>
         )}
-
         {!isLoading && !data && error && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-3 text-sm text-error">
+          <Notice tone="danger" icon={<AlertTriangle size={14} />}>
             Failed to load local Copilot usage: {formatError(error)}
-          </div>
+          </Notice>
         )}
 
         {data && (
           <>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
-              <SummaryCard
-                label="Estimated cost"
-                value={formatCurrencyUsd(data.totals.estimatedCostUsd)}
-                sub={`${formatAiCredits(data.totals.estimatedAiCredits)} credits${data.totals.unpricedModelCount > 0 ? " · excludes unpriced" : ""}`}
-              />
-              <SummaryCard
-                label="Metered cost"
-                value={hasMeteredCost ? formatCurrencyUsd(meteredCostUsd) : "Not recorded"}
-                sub={hasMeteredCost
-                  ? `Billed by GitHub · ${formatMeteredCoverage(meteredCoverage)}`
-                  : "No GitHub metering in this range"}
-              />
-              <SummaryCard label="Total tokens" value={formatNumber(data.totals.totalTokens)} />
-              <SummaryCard label="Requests" value={formatNumber(data.totals.requests)} />
-              <SummaryCard label="Included sessions" value={formatNumber(data.coverage.sessionsIncluded)} />
-              <SummaryCard label="Coverage window" value={formatCoverageWindow(data.coverage)} />
+            <div className="space-y-4">
+              <StatRow stats={[
+                {
+                  label: "Estimated cost",
+                  value: formatUsageUsd(data.totals.estimatedCostUsd),
+                  detail: `${formatUsageCredits(data.totals.estimatedAiCredits)} AI credits${data.totals.unpricedModelCount > 0 ? " · excludes unpriced" : ""}`,
+                },
+                {
+                  label: "Metered cost",
+                  value: formatUsageUsd(meteredCost),
+                  detail: meteredCost !== null ? `SDK-reported · ${describeMeteredCoverage(data.totals)}` : "No GitHub metering in this range",
+                },
+              ]} />
+              <StatRow stats={[
+                { label: "Total tokens", value: formatNumber(data.totals.totalTokens) },
+                { label: "Requests", value: formatNumber(data.totals.requests) },
+                { label: "Included sessions", value: formatNumber(data.coverage.sessionsIncluded) },
+              ]} />
             </div>
-
-            {data.deferWorkers.capturedRuns > 0 && (
-              <div className="rounded-md border border-accent/30 bg-accent/5 p-4 space-y-3">
-                <div>
-                  <div className="text-sm font-medium text-accent">Deferred workers</div>
-                  <p className="mt-1 text-xs text-text-muted">
-                    Captured at worker shutdown and retained for {formatNumber(data.deferWorkers.retentionDays)} days after disposable session cleanup.
-                  </p>
-                </div>
-                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-                  <CoverageStat label="Captured runs" value={formatNumber(data.deferWorkers.capturedRuns)} />
-                  <CoverageStat label="Parent sessions" value={formatNumber(data.deferWorkers.parentSessions)} />
-                  <CoverageStat
-                    label="Metered cost"
-                    value={formatCurrencyUsd(data.deferWorkers.meteredAiCredits * COPILOT_AI_CREDIT_USD)}
-                  />
-                  <CoverageStat label="Metered credits" value={formatAiCredits(data.deferWorkers.meteredAiCredits)} />
-                  <CoverageStat label="Total tokens" value={formatNumber(data.deferWorkers.totalTokens)} />
-                </div>
-              </div>
-            )}
+            <p className={DS.usage.meta}>Coverage window: {formatCoverageWindow(data.coverage)}</p>
 
             {data.totals.unpricedModelCount > 0 && (
-              <UnpricedModelsWarning
-                count={data.totals.unpricedModelCount}
-                models={data.unpricedModels}
-                unpricedTokens={data.totals.unpricedTokens}
-              />
+              <Notice tone="warning" icon={<AlertTriangle size={14} />} title="Unknown pricing excluded from cost totals">
+                No usable price card is available for {formatNumber(data.totals.unpricedModelCount)} observed model{data.totals.unpricedModelCount === 1 ? "" : "s"}.
+                Their tokens remain in the totals; their cost is not included in the estimate. Expand a model below for its pricing and metering.
+              </Notice>
             )}
 
-            <div className="rounded-md border border-warning/30 bg-warning/10 p-4 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-medium text-warning">
-                    <AlertTriangle size={15} />
-                    Coverage and exclusions
-                  </div>
-                  <p className="mt-1 text-xs text-text-muted">
-                    Included sessions come from shutdown summaries still present on disk plus retained disposable defer-worker summaries. Resumed sessions keep their earlier persisted shutdown usage, but active work after the latest shutdown is still excluded.
-                    {isRanged && " Counts are limited to sessions with recorded usage inside the selected window."}
-                  </p>
-                </div>
-                <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] font-medium text-text-secondary">
-                  {formatNumber(data.coverage.sessionsSkipped)} skipped
-                </span>
-              </div>
-
-              <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2 xl:grid-cols-4">
-                <CoverageStat label="Sessions seen" value={formatNumber(data.coverage.sessionsSeen)} />
-                <CoverageStat label="Events files found" value={formatNumber(data.coverage.sessionsWithEvents)} />
-                <CoverageStat label="Included" value={formatNumber(data.coverage.sessionsIncluded)} />
-                <CoverageStat label="Skipped" value={formatNumber(data.coverage.sessionsSkipped)} />
-              </div>
-
-              <div className="rounded-md border border-warning/20 bg-bg-primary px-3 py-2 text-xs text-text-muted">
-                {reasonSummary}
-              </div>
-            </div>
-
-            <div className="rounded-md border border-border bg-bg-elevated">
-              <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-medium text-accent">
-                    <BarChart3 size={15} />
-                    Per-model totals
-                  </div>
-                  <p className="mt-1 text-xs text-text-muted">
-                    Session counts are per model and can add up to more than the included session total.
-                  </p>
-                </div>
-                <div className="shrink-0 text-right text-[11px] text-text-faint">
-                  Updated {formatDateTime(data.index.completedAt ?? data.generatedAt)}
-                </div>
-              </div>
-
+            <Section
+              label="Per-model totals"
+              action={<span className={DS.usage.meta}>Updated {formatDateTime(data.index.completedAt ?? data.generatedAt)}</span>}
+            >
+              <p className={cx(DS.usage.prose, "mb-2")}>
+                Open a model for token and pricing details. Session counts are per model and may overlap.
+              </p>
               {isEmpty ? (
-                <div className="p-4">
-                  <EmptyState
-                    message={isRanged ? "No local usage in this window" : "No persisted local usage yet"}
-                    sub={isRanged
-                      ? "Pick a wider range, or wait for sessions in this window to write a shutdown summary."
-                      : "This view only includes completed sessions with shutdown summaries and model metrics still available on disk."}
-                  />
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-max w-full text-xs">
-                    <thead className="bg-bg-secondary text-text-muted">
-                      <tr className="border-b border-border">
-                        <th className="px-4 py-3 text-left font-medium">Model</th>
-                        <th className="px-4 py-3 text-right font-medium">Sessions</th>
-                        <th className="px-4 py-3 text-right font-medium">Requests</th>
-                        <th className="px-4 py-3 text-right font-medium">Est. cost</th>
-                        <th className="px-4 py-3 text-right font-medium">Est. credits</th>
-                        <th className="px-4 py-3 text-right font-medium">Metered credits</th>
-                        <th className="px-4 py-3 text-right font-medium">Pricing</th>
-                        <th className="px-4 py-3 text-right font-medium">Total tokens</th>
-                        <th className="px-4 py-3 text-right font-medium">Input</th>
-                        <th className="px-4 py-3 text-right font-medium">Output</th>
-                        <th className="px-4 py-3 text-right font-medium">Cache read</th>
-                        <th className="px-4 py-3 text-right font-medium">Cache write</th>
-                        <th className="px-4 py-3 text-right font-medium">Reasoning</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.models.map((row) => (
-                        <ModelRow key={`${row.model}:${row.contextTier ?? "default"}`} row={row} />
+                <EmptyHint>
+                  {isRanged ? "No local usage in this window. Pick a wider range, or wait for a shutdown summary."
+                    : "No persisted local usage yet. Completed sessions with shutdown summaries appear here."}
+                </EmptyHint>
+              ) : <UsageModelList models={data.models} />}
+            </Section>
+
+            <div className="space-y-2">
+              <Details label="Coverage and exclusions" detail={`${formatNumber(data.coverage.sessionsSkipped)} skipped`}>
+                <p className={cx(DS.usage.prose, "mb-3")}>
+                  Included sessions come from shutdown summaries still present on disk plus retained disposable defer-worker summaries. Resumed sessions keep their earlier persisted shutdown usage, but active work after the latest shutdown is still excluded.
+                  {isRanged && " Counts are limited to sessions with recorded usage inside the selected window."}
+                </p>
+                <StatRow stats={[
+                  { label: "Sessions seen", value: formatNumber(data.coverage.sessionsSeen) },
+                  { label: "Events files found", value: formatNumber(data.coverage.sessionsWithEvents) },
+                  { label: "Included", value: formatNumber(data.coverage.sessionsIncluded) },
+                  { label: "Skipped", value: formatNumber(data.coverage.sessionsSkipped) },
+                ]} />
+                <p className={cx(DS.usage.prose, "mt-3")}>{reasonSummary}</p>
+                {data.totals.unpricedModelCount > 0 && (
+                  <div className="mt-4 space-y-2">
+                    <StatRow stats={[
+                      { label: "Unpriced tokens", value: formatNumber(data.totals.unpricedTokens.totalTokens) },
+                      { label: "Unpriced requests", value: formatNumber(data.totals.unpricedTokens.requests) },
+                      { label: "Unpriced models", value: formatNumber(data.totals.unpricedModelCount) },
+                      { label: "Excluded metered cost", value: formatUsageUsd(meteredCostUsd(data.totals.unpricedTokens)) },
+                    ]} />
+                    <div className="flex flex-wrap gap-1">
+                      {data.unpricedModels.map((row) => (
+                        <Badge key={`${row.model}:${row.contextTier ?? "default"}`} tone="neutral">
+                          {row.model}{row.contextTierLabel ? ` · ${row.contextTierLabel}` : ""}
+                        </Badge>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
+                    </div>
+                  </div>
+                )}
+              </Details>
+
+              {data.deferWorkers.capturedRuns > 0 && (
+                <Details label="Deferred workers" detail={`${formatNumber(data.deferWorkers.capturedRuns)} captured runs`}>
+                  <p className={cx(DS.usage.prose, "mb-3")}>
+                    Captured at worker shutdown and retained for {formatNumber(data.deferWorkers.retentionDays)} days after disposable session cleanup. These readings are included in the totals above.
+                  </p>
+                  <StatRow stats={[
+                    { label: "Captured runs", value: formatNumber(data.deferWorkers.capturedRuns) },
+                    { label: "Parent sessions", value: formatNumber(data.deferWorkers.parentSessions) },
+                    { label: "Metered cost", value: formatUsageUsd(meteredCostUsd(data.deferWorkers)) },
+                    { label: "Metered credits", value: hasMeteredUsage(data.deferWorkers) ? formatUsageCredits(data.deferWorkers.meteredAiCredits) : "Not recorded" },
+                    { label: "Total tokens", value: formatNumber(data.deferWorkers.totalTokens) },
+                  ]} />
+                </Details>
               )}
+              <Details label="How this is counted">
+                <p className={DS.usage.prose}>
+                  Metered cost is SDK-reported usage saved at shutdown, not an invoice, and only covers logs that carry metering. Cost not assigned to a named model appears as Unattributed.
+                  Estimated cost uses the configured Copilot price card: uncached input, cache reads, cache writes and output are priced separately. Cache writes use 1.25x the input rate; reasoning tokens are already included in output.
+                  Active work before shutdown, unpersisted sessions and other devices are excluded.
+                </p>
+              </Details>
             </div>
           </>
         )}
 
         {data && (refreshError || error) && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
-            Last refresh failed: {refreshError ?? formatError(error)}
-          </div>
+          <Notice tone="danger" icon={<AlertTriangle size={14} />}>
+            Last refresh failed: {refreshError ?? formatError(error)}. The previous reading is still shown.
+          </Notice>
         )}
       </div>
-    </SettingsSection>
+    </Section>
   );
-}
-
-function SummaryCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-md border border-border bg-bg-elevated px-4 py-3">
-      <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
-      <div className="mt-1 text-sm font-medium text-text-primary">{value}</div>
-      {sub && <div className="mt-1 text-[11px] text-text-faint">{sub}</div>}
-    </div>
-  );
-}
-
-function CoverageStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-warning/20 bg-bg-primary px-3 py-2">
-      <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
-      <div className="mt-1 text-sm font-medium text-text-primary">{value}</div>
-    </div>
-  );
-}
-
-function UnpricedModelsWarning({
-  count,
-  models,
-  unpricedTokens,
-}: {
-  count: number;
-  models: CopilotUsageUnpricedModelRow[];
-  unpricedTokens: CopilotUsageTotals;
-}) {
-  return (
-    <div className="rounded-md border border-warning/30 bg-warning/10 p-4 space-y-3">
-      <div className="flex items-start gap-2">
-        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-warning">Unknown pricing excluded from cost totals</div>
-          <p className="mt-1 text-xs text-text-muted">
-            GitHub public pricing did not include {formatNumber(count)} observed model{count === 1 ? "" : "s"}. These models remain visible below with token totals, and their estimated cost is excluded from summary totals. Excluded cost below is what GitHub actually metered for them, which is genuinely zero for free internal and alpha models.
-          </p>
-        </div>
-      </div>
-
-      <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2 xl:grid-cols-4">
-        <CoverageStat label="Unpriced tokens" value={formatNumber(unpricedTokens.totalTokens)} />
-        <CoverageStat label="Unpriced requests" value={formatNumber(unpricedTokens.requests)} />
-        <CoverageStat label="Unpriced models" value={formatNumber(count)} />
-        <CoverageStat
-          label="Excluded cost"
-          value={formatCurrencyUsd(unpricedTokens.meteredAiCredits * COPILOT_AI_CREDIT_USD)}
-        />
-      </div>
-
-      {models.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {models.map((row) => (
-            <span
-              key={`${row.model}:${row.contextTier ?? "default"}`}
-              className="rounded-full border border-warning/20 bg-bg-primary px-2 py-0.5 text-[11px] font-medium text-text-secondary"
-            >
-              {row.model}
-              {row.contextTierLabel && (
-                <span className="text-text-faint"> · {row.contextTierLabel}</span>
-              )}
-              {row.normalizedPricingModel && row.normalizedPricingModel !== row.model && (
-                <span className="text-text-faint"> · normalized {row.normalizedPricingModel}</span>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ModelRow({ row }: { row: CopilotUsageModelRow }) {
-  return (
-    <tr className="border-b border-border last:border-b-0">
-      <td className="px-4 py-3 font-medium text-text-primary">
-        <div>{row.model}</div>
-        {row.contextTierLabel && (
-          <div className="text-[11px] font-normal text-text-faint">{row.contextTierLabel}</div>
-        )}
-      </td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.sessions)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.requests)}</td>
-      <td className="px-4 py-3 text-right font-medium text-text-primary">{formatCurrencyUsd(row.estimatedCostUsd)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatAiCredits(row.estimatedAiCredits)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">
-        {row.meteredAiCredits > 0 || row.meteredTokens > 0 ? formatAiCredits(row.meteredAiCredits) : "—"}
-      </td>
-      <PricingStatusCell row={row} />
-      <td className="px-4 py-3 text-right font-medium text-text-primary">{formatNumber(row.totalTokens)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.inputTokens)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.outputTokens)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.cacheReadTokens)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.cacheWriteTokens)}</td>
-      <td className="px-4 py-3 text-right text-text-muted">{formatNumber(row.reasoningTokens)}</td>
-    </tr>
-  );
-}
-
-function PricingStatusCell({ row }: { row: CopilotUsageModelRow }) {
-  if (row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL) {
-    return (
-      <td className="px-4 py-3 text-right text-text-muted">
-        <div className="flex flex-col items-end gap-1">
-          <span className="rounded-full bg-bg-primary px-2 py-0.5 text-[11px] font-medium text-text-secondary">
-            Not model-attributed
-          </span>
-          <span className="text-[11px] text-text-faint">metered total only</span>
-        </div>
-      </td>
-    );
-  }
-
-  const pricedAs = row.pricedAs ?? row.pricingKey;
-  const showPricedAs = Boolean(pricedAs && pricedAs !== row.model);
-
-  return (
-    <td className="px-4 py-3 text-right text-text-muted">
-      <div className="flex flex-col items-end gap-1">
-        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${row.pricingStatus === "unpriced" ? "bg-warning/10 text-warning" : "bg-bg-primary text-text-secondary"}`}>
-          {PRICING_STATUS_LABELS[row.pricingStatus] ?? row.pricingStatus}
-        </span>
-        {showPricedAs && (
-          <span className="text-[11px] text-text-faint">priced as {pricedAs}</span>
-        )}
-        {row.pricingStatus === "unpriced" && (
-          <span className="text-[11px] text-text-faint">excluded from cost</span>
-        )}
-      </div>
-    </td>
-  );
-}
-
-function formatNumber(value: number): string {
-  return NUMBER_FORMATTER.format(value);
-}
-
-function formatCurrencyUsd(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
-    return USD_FORMATTER.format(0);
-  }
-  if (value < 0.000001) {
-    return "<$0.000001";
-  }
-  if (value < 0.01) {
-    return SMALL_USD_FORMATTER.format(value);
-  }
-  return USD_FORMATTER.format(value);
-}
-
-function formatAiCredits(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "0";
-  }
-  if (value < 0.0001) {
-    return "<0.0001";
-  }
-  if (value < 1) {
-    return SMALL_AI_CREDIT_FORMATTER.format(value);
-  }
-  return AI_CREDIT_FORMATTER.format(value);
 }
 
 function formatRangeWindow(startAt: string | null): string {
   if (!startAt) return "All local history";
   const start = formatDate(startAt);
-  return start ? `Since ${start}` : "All local history";
+  return start ? `Since ${start}` : "Range date unavailable";
 }
 
-function formatCoverageWindow(coverage: CopilotUsageCoverage): string {  if (!coverage.earliestIncludedAt || !coverage.latestIncludedAt) {
+function formatCoverageWindow(coverage: CopilotUsageCoverage): string {
+  if (!coverage.earliestIncludedAt || !coverage.latestIncludedAt) {
     return "No completed sessions";
   }
 
@@ -563,15 +293,6 @@ function formatSkipReasonSummary(coverage: CopilotUsageCoverage): string {
 
 function formatDate(value: string): string | null {
   return formatTimestamp(value, DATE_FORMATTER);
-}
-
-/**
- * Describes how much of the range GitHub actually metered. Anything short of
- * full coverage has to say so, otherwise a partial figure reads as a total.
- */
-function formatMeteredCoverage(coverage: number): string {
-  if (coverage >= 0.999) return "covers all tokens in range";
-  return `covers ${Math.round(coverage * 100)}% of tokens in range`;
 }
 
 function formatDateTime(value: string): string {

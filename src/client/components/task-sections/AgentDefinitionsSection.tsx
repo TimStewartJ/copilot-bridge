@@ -1,7 +1,6 @@
 import { Bot } from "lucide-react";
 import type { TaskAgentDefinitionSummary } from "../../api";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
-import { UI } from "../shared/design-system";
 
 export interface AgentDefinitionsSectionProps {
   taskId: string;
@@ -31,7 +30,7 @@ export default function AgentDefinitionsSection({
       chips={[
         {
           label: `${definitions.filter((definition) => definition.userInvocable).length} selectable`,
-          className: UI.chip.muted,
+          tone: "neutral",
         },
       ]}
       itemCount={definitions.length}

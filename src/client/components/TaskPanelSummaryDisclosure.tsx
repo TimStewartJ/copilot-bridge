@@ -5,6 +5,7 @@ import {
   type TaskPanelDisclosureId,
 } from "../task-panel-disclosure-state";
 import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "./TaskPanelSummaryRow";
+import { DS, cx } from "../design/tokens";
 
 export interface TaskPanelSummaryDisclosureProps {
   // Row display props
@@ -88,7 +89,7 @@ export default function TaskPanelSummaryDisclosure({
     : onOpenSingle;
 
   return (
-    <div className="space-y-1">
+    <div>
       <TaskPanelSummaryRow
         label={label}
         icon={icon}
@@ -98,11 +99,11 @@ export default function TaskPanelSummaryDisclosure({
         trailing={trailing}
         titleClassName={titleClassName}
         subtitleClassName={subtitleClassName}
-        expanded={canExpand && expanded}
+        expanded={canExpand ? expanded : undefined}
         onClick={handleClick}
       />
       {canExpand && expanded && (
-        <div className="space-y-0.5 rounded-md bg-bg-surface px-1.5 py-1">
+        <div className={cx(DS.rail, DS.motion.reveal, "mb-1 space-y-0.5")}>
           {children}
         </div>
       )}

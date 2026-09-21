@@ -157,7 +157,7 @@ describe("SessionList defer summary indicator", () => {
         (button) => getReactProps(button)?.title?.includes("Defer running"),
       );
       expect(getReactProps(badge)?.className).toContain("text-info");
-      expect(getReactProps(badge)?.className).toContain("bg-info/10");
+      expect(getReactProps(badge)?.className).toContain("bg-info-surface");
     } finally {
       await cleanup();
     }

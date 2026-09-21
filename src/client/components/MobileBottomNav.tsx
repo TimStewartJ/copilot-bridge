@@ -6,6 +6,8 @@ import {
   type TabAttentionSummary,
 } from "../hooks/useTaskIndicators";
 import type { MobileNavTab } from "../lib/mobile-route-meta";
+import { DS, cx } from "../design/tokens";
+import { CountBadge } from "../design/primitives";
 
 interface MobileBottomNavProps {
   activeTab: MobileNavTab;
@@ -72,20 +74,17 @@ export function MobileBottomNav({
               onClick={() => onSelectTab(id)}
               aria-current={active ? "page" : undefined}
               aria-label={description ? `${label}, ${description}` : label}
-              className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 transition-colors ${active ? "text-accent" : "text-text-muted active:text-text-secondary"}`}
+              className={cx("flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg transition-colors", DS.focus, active ? "text-text-primary" : "text-text-muted active:text-text-secondary")}
             >
-              <span className={`flex h-7 w-14 items-center justify-center rounded-full transition-colors ${active ? "bg-accent-surface" : ""}`}>
+              <span className={cx("flex h-7 w-14 items-center justify-center rounded-lg transition-colors", active && DS.row.selected)}>
                 <span className="relative flex">
-                  <Icon size={20} strokeWidth={active ? 2.2 : 1.8} />
+                  <Icon size={20} strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
                   {attention.count > 0 && (
-                    <span
-                      aria-hidden="true"
-                      className={`absolute -top-1.5 -right-3.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full text-white text-[10px] font-semibold leading-none ring-2 ring-bg-secondary ${
-                        attention.needsUserInputCount > 0 ? "bg-warning" : "bg-success"
-                      }`}
-                    >
-                      {attention.count > 99 ? "99+" : attention.count}
-                    </span>
+                    <CountBadge
+                      count={attention.count}
+                      tone={attention.needsUserInputCount > 0 ? "warning" : "success"}
+                      className="absolute -right-3.5 -top-1.5 ring-2 ring-bg-secondary"
+                    />
                   )}
                   {id === "home" && homeChecklistIndicator.state !== "none" && (
                     <span

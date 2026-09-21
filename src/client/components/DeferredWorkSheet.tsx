@@ -27,9 +27,11 @@ import {
 } from "../hooks/queries/useSessionDefers";
 import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
-import EmptyState from "./shared/EmptyState";
 import JsonTree from "./shared/JsonTree";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS, cx, type DsTone } from "../design/tokens";
+import { Badge, Button, EmptyHint, Notice, Section } from "../design/primitives";
+import { formatUsageCredits as formatCredits, formatUsageNumber as formatNumber } from "../lib/usage-presentation";
 
 interface DeferredWorkSheetProps {
   session: Pick<Session, "sessionId" | "summary">;
@@ -59,12 +61,11 @@ function formatBytes(bytes: number): string {
   return `${kilobytes < 10 ? kilobytes.toFixed(1) : Math.round(kilobytes)} KB`;
 }
 
-function statusTone(status: DeferredWorkStatus): string {
-  if (status === "active" || status === "pending") return "border-accent/25 bg-accent/10 text-accent";
-  if (status === "running") return "border-info/25 bg-info/10 text-info";
-  if (status === "completed") return "border-success/25 bg-success/10 text-success";
-  if (status === "failed") return "border-error/25 bg-error/10 text-error";
-  return "border-border bg-bg-secondary text-text-muted";
+function statusTone(status: DeferredWorkStatus): DsTone {
+  if (status === "running") return "info";
+  if (status === "completed") return "success";
+  if (status === "failed") return "danger";
+  return "neutral";
 }
 
 function statusLabel(status: DeferredWorkStatus): string {
@@ -145,7 +146,7 @@ function CopyCheckpointButton({ checkpoint }: { checkpoint: DeferCheckpoint }) {
       onClick={copy}
       aria-label={COPY_LABELS[copyState]}
       title={COPY_LABELS[copyState]}
-      className="grid size-6 place-items-center rounded-md text-text-muted hover:bg-bg-hover hover:text-text-primary"
+      className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}
     >
       {copyState === "copied" && <Check size={13} className="text-copy-success" />}
       {copyState === "failed" && <AlertTriangle size={13} className="text-error" />}
@@ -170,7 +171,7 @@ function DeferCheckpointPreview({ item }: { item: DeferredWorkItem }) {
     && summary.bytes >= DEFER_CHECKPOINT_MAX_BYTES * CHECKPOINT_NEAR_LIMIT_RATIO;
 
   return (
-    <div className="mt-3 overflow-hidden rounded-lg border border-border-subtle bg-bg-primary shadow-sm">
+    <div className={cx(DS.surface.detail, "mt-3 overflow-hidden")}>
       <div className="flex items-center justify-between gap-2 py-1.5 pl-2.5 pr-1.5">
         <div
           className="flex min-w-0 items-center gap-2 text-[11px]"
@@ -196,7 +197,7 @@ function DeferCheckpointPreview({ item }: { item: DeferredWorkItem }) {
               type="button"
               onClick={() => setOpen((current) => !current)}
               aria-expanded={open}
-              className="rounded px-1.5 py-0.5 text-[11px] text-text-muted hover:bg-bg-hover hover:text-text-primary"
+              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
             >
               {open ? "Hide" : "Show"}
             </button>
@@ -229,16 +230,14 @@ function DeferCard({
   onReactivate: (deferId: string) => void;
 }) {
   return (
-    <div className="rounded-lg border border-border bg-bg-elevated p-3">
+    <div className="py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-text-primary">
             {item.name || (item.kind === "interval" ? "Recurring defer" : "One-time defer")}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
-            <span className={`rounded-full border px-1.5 py-0.5 font-medium ${statusTone(item.status)}`}>
-              {statusLabel(item.status)}
-            </span>
+            <Badge tone={statusTone(item.status)}>{statusLabel(item.status)}</Badge>
             <span>{item.kind === "interval" ? "Recurring" : "One time"}</span>
             {ACTIVE_STATUSES.has(item.status) && (
               <span title={new Date(item.nextRunAt).toLocaleString()}>
@@ -248,25 +247,12 @@ function DeferCard({
           </div>
         </div>
         {item.canCancel && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onCancel(item.deferId)}
-            className="shrink-0 rounded-md border border-error/25 px-2 py-1 text-xs text-error hover:bg-error/10 disabled:opacity-50"
-          >
-            Cancel
-          </button>
+          <Button size="sm" variant="danger" disabled={busy} onClick={() => onCancel(item.deferId)}>Cancel</Button>
         )}
         {item.canReactivate && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onReactivate(item.deferId)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
-          >
-            <RotateCcw size={11} />
+          <Button size="sm" disabled={busy} onClick={() => onReactivate(item.deferId)} icon={<RotateCcw size={11} />}>
             {item.failedDelivery ? "Retry delivery" : "Reactivate"}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -289,10 +275,7 @@ function DeferCard({
       </div>
 
       {item.lastError && (
-        <div className="mt-2 flex items-start gap-1.5 rounded-md border border-error/20 bg-error/10 px-2 py-1.5 text-xs text-error">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-          <span className="break-words">{item.lastError}</span>
-        </div>
+        <Notice tone="danger" icon={<AlertTriangle size={12} />} className="mt-2">{item.lastError}</Notice>
       )}
     </div>
   );
@@ -377,7 +360,7 @@ export default function DeferredWorkSheet({
         {...dialogProps}
         ref={dialogRef}
         onKeyDown={handleDialogKeyDown}
-        className="relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-border bg-bg-primary shadow-2xl md:mb-16 md:mt-16 md:max-h-[80vh] md:max-w-2xl md:rounded-xl"
+        className={DS.surface.sheet}
       >
         <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">
@@ -391,7 +374,8 @@ export default function DeferredWorkSheet({
               type="button"
               onClick={() => { void query.refetch(); }}
               disabled={query.isFetching}
-              className="rounded-md p-2 text-text-muted hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+              className={cx(DS.button.base, DS.button.icon.md, DS.button.variant.ghost)}
+              aria-label="Refresh deferred work"
               title="Refresh deferred work"
             >
               <RefreshCw size={15} className={query.isFetching ? "animate-spin" : ""} />
@@ -400,7 +384,8 @@ export default function DeferredWorkSheet({
               ref={closeButtonRef}
               type="button"
               onClick={onClose}
-              className="rounded-md p-2 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+              className={cx(DS.button.base, DS.button.icon.md, DS.button.variant.ghost)}
+              aria-label="Close deferred work"
               title="Close"
             >
               <X size={16} />
@@ -410,9 +395,9 @@ export default function DeferredWorkSheet({
 
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
           {(actionError || query.error) && (
-            <div className="rounded-md border border-error/25 bg-error/10 px-3 py-2 text-xs text-error" role="alert">
+            <Notice tone="danger" icon={<AlertTriangle size={14} />}>
               {actionError || (query.error instanceof Error ? query.error.message : "Failed to load deferred work.")}
-            </div>
+            </Notice>
           )}
 
           {query.isLoading ? (
@@ -421,19 +406,12 @@ export default function DeferredWorkSheet({
               Loading deferred work
             </div>
           ) : defers.length === 0 && runs.length === 0 && deliveries.length === 0 ? (
-            <EmptyState
-              message="No deferred work"
-              sub="Defers created by this session will appear here."
-            />
+            <EmptyHint>No deferred work. Defers created by this session will appear here.</EmptyHint>
           ) : (
             <>
-              <section>
-                <div className="mb-2 flex items-center gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Active</h3>
-                  <span className="rounded-full bg-bg-secondary px-1.5 py-0.5 text-[10px] text-text-faint">{active.length}</span>
-                </div>
+              <Section label="Active" count={active.length}>
                 {active.length > 0 ? (
-                  <div className="space-y-2">
+                  <div className={DS.surface.divided}>
                     {active.map((item) => (
                       <DeferCard
                         key={item.deferId}
@@ -445,19 +423,13 @@ export default function DeferredWorkSheet({
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
-                    No active defers.
-                  </div>
+                  <EmptyHint>No active defers.</EmptyHint>
                 )}
-              </section>
+              </Section>
 
               {inactive.length > 0 && (
-                <section>
-                  <div className="mb-2 flex items-center gap-2">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Recent defers</h3>
-                    <span className="rounded-full bg-bg-secondary px-1.5 py-0.5 text-[10px] text-text-faint">{inactive.length}</span>
-                  </div>
-                  <div className="space-y-2">
+                <Section label="Recent defers" count={inactive.length}>
+                  <div className={DS.surface.divided}>
                     {inactive.map((item) => (
                       <DeferCard
                         key={item.deferId}
@@ -468,16 +440,15 @@ export default function DeferredWorkSheet({
                       />
                     ))}
                   </div>
-                </section>
+                </Section>
               )}
 
-              <section>
-                <div className="mb-2 flex items-center gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Recent checks</h3>
-                  <span className="rounded-full bg-bg-secondary px-1.5 py-0.5 text-[10px] text-text-faint">{runs.length}</span>
-                </div>
+              <Section label="Recent checks" count={runs.length}>
+                <p className={cx(DS.usage.prose, "mb-2")}>
+                  Tokens and SDK-reported metered AI credits are captured at worker shutdown. Estimates use the local Copilot price card.
+                </p>
                 {runs.length > 0 ? (
-                  <div className="divide-y divide-border rounded-lg border border-border bg-bg-elevated">
+                  <div className={DS.surface.divided}>
                     {runs.map((run) => (
                       <div key={run.id} className="flex items-start gap-2.5 px-3 py-2.5">
                         <RunIcon run={run} />
@@ -490,7 +461,7 @@ export default function DeferredWorkSheet({
                               {timeAgo(run.completedAt)}
                             </span>
                           </div>
-                          <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-text-muted">
+                          <div className={cx("mt-0.5 flex flex-wrap gap-x-2", DS.usage.meta)}>
                             {run.runCount !== undefined && <span>Run {run.runCount}</span>}
                             {run.model && <span>{run.model}</span>}
                             {run.reasoningEffort && <span>{run.reasoningEffort} effort</span>}
@@ -500,12 +471,12 @@ export default function DeferredWorkSheet({
                               <span>{formatNumber(run.totalTokens)} tokens</span>
                             )}
                             {run.usageCaptured && run.meteredAiCredits !== undefined && (
-                              <span>{formatCredits(run.meteredAiCredits)} metered credits</span>
+                              <span className="tabular-nums" title="SDK-reported at worker shutdown">{formatCredits(run.meteredAiCredits)} metered AI credits</span>
                             )}
                             {run.usageCaptured && run.estimatedAiCredits !== undefined && (
-                              <span>{formatCredits(run.estimatedAiCredits)} est. credits</span>
+                              <span className="tabular-nums" title="Estimated from the Copilot price card">{formatCredits(run.estimatedAiCredits)} est. AI credits</span>
                             )}
-                            {run.usageCaptured === false && <span>Usage unavailable</span>}
+                            {!run.usageCaptured && <span>Usage unavailable</span>}
                             {run.deliveryStatus && <span>Parent delivery {run.deliveryStatus}</span>}
                           </div>
                           {run.error && <p className="mt-1 break-words text-xs text-error">{run.error}</p>}
@@ -517,21 +488,13 @@ export default function DeferredWorkSheet({
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
-                    No worker checks recorded in the last seven days.
-                  </div>
+                  <EmptyHint>No worker checks recorded in the last seven days.</EmptyHint>
                 )}
-              </section>
+              </Section>
 
-              <section>
-                <div className="mb-2 flex items-center gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Parent deliveries</h3>
-                  <span className="rounded-full bg-bg-secondary px-1.5 py-0.5 text-[10px] text-text-faint">
-                    {deliveries.length}
-                  </span>
-                </div>
+              <Section label="Parent deliveries" count={deliveries.length}>
                 {deliveries.length > 0 ? (
-                  <div className="divide-y divide-border rounded-lg border border-border bg-bg-elevated">
+                  <div className={DS.surface.divided}>
                     {deliveries.map((delivery) => (
                       <div key={delivery.id} className="flex items-start gap-2.5 px-3 py-2.5">
                         <DeliveryIcon delivery={delivery} />
@@ -555,23 +518,13 @@ export default function DeferredWorkSheet({
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
-                    No parent deliveries recorded in the last seven days.
-                  </div>
+                  <EmptyHint>No parent deliveries recorded in the last seven days.</EmptyHint>
                 )}
-              </section>
+              </Section>
             </>
           )}
         </div>
       </div>
     </div>
   );
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value);
-}
-
-function formatCredits(value: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(value);
 }

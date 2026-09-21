@@ -19,7 +19,8 @@ import {
 import { queryClient, queryKeys } from "../queryClient";
 import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Square, SquareCheckBig, RotateCw, Bot, Terminal } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Plus, Square, SquareCheckBig, RotateCw, Bot, Terminal } from "lucide-react";
+import { DS } from "../design/tokens";
 import TaskPickerDialog from "./TaskPickerDialog";
 import { useModalDialog } from "./shared/useModalDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -124,8 +125,7 @@ export function canKeepCurrentReasoningEffortForModel({
 const styles = {
   global: {
     wrapper: "flex-1 overflow-y-auto overflow-x-hidden min-w-0 p-2 space-y-1",
-    newButton:
-      "w-full px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors",
+    newButton: `${DS.button.base} ${DS.button.size.md} ${DS.button.variant.secondary} w-full`,
     itemPadding: "py-2.5",
     titleClass: "font-medium truncate",
     metaClass: "text-xs text-text-muted mt-0.5",
@@ -134,8 +134,7 @@ const styles = {
   },
   compact: {
     wrapper: "min-w-0 overflow-x-hidden",
-    newButton:
-      "w-full mb-1.5 px-3 py-1.5 bg-accent/10 text-accent border border-accent/20 rounded-md text-xs hover:bg-accent/20 transition-colors",
+    newButton: `${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.secondary} mb-1.5 w-full`,
     itemPadding: "py-2",
     titleClass: "font-medium truncate text-xs",
     metaClass: "text-[10px] text-text-muted mt-0.5",
@@ -143,6 +142,17 @@ const styles = {
     listGap: "space-y-0.5",
   },
 } as const;
+
+/** A "+ New chat" label with the plus drawn as an icon, so the button matches every other create action. */
+function NewLabel({ label }: { label: string }) {
+  const text = label.replace(/^\+\s*/, "");
+  return (
+    <>
+      {text !== label && <Plus size={14} aria-hidden="true" />}
+      {text}
+    </>
+  );
+}
 
 // ── Bulk action bar for multi-select mode ────────────────────────
 function BulkActionBar({
@@ -759,7 +769,7 @@ export default function SessionList({
           title={session.summary || id}
           className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
             selectMode && isSelected
-              ? "bg-accent/10 ring-1 ring-accent/30"
+              ? "bg-bg-hover ring-1 ring-border"
               : ctxMenu?.id === id
                 ? "bg-bg-hover ring-1 ring-border"
                 : isActive
@@ -803,7 +813,7 @@ export default function SessionList({
               <>
                 {" · "}
                 <span
-                  className="inline-flex items-center gap-0.5 rounded-full border border-info/20 bg-info/10 px-1.5 py-0.5 align-middle text-[10px] font-medium text-info"
+                  className="inline-flex items-center gap-0.5 align-middle font-medium text-info"
                   title="This session is open in another Copilot client"
                 >
                   <Terminal size={9} className="shrink-0" aria-hidden="true" />
@@ -841,10 +851,10 @@ export default function SessionList({
               );
               setDeferredWorkSessionId(id);
             }}
-            className={`absolute bottom-1.5 left-3 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-0.5 truncate rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+            className={`absolute bottom-1.5 left-3 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
               deferRunning
-                ? "border-info/30 bg-info/10 text-info hover:border-info/50 hover:bg-info/15"
-                : "border-accent/15 bg-accent/5 text-accent hover:border-accent/35 hover:bg-accent/10"
+                ? "bg-info-surface text-info hover:bg-info/20"
+                : "bg-bg-hover text-text-secondary hover:text-text-primary"
             } ${
               isArch || isArchiving ? "opacity-50" : ""
             }`}
@@ -865,8 +875,9 @@ export default function SessionList({
       {selectMode ? (
         <div className="flex items-center gap-1 mb-1">
           <button
+            type="button"
             onClick={exitSelectMode}
-            className="text-xs px-2 py-0.5 rounded text-accent bg-accent/10 transition-colors"
+            className={`${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.secondary}`}
           >
             Done
           </button>
@@ -875,16 +886,18 @@ export default function SessionList({
         <div className="flex items-center gap-1 mb-1">
           {showNewButton && (
             <button
+              type="button"
               onClick={onNewSession}
-              className="flex-1 px-3 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors"
+              className={`${DS.button.base} ${DS.button.size.md} ${DS.button.variant.secondary} flex-1`}
             >
-              {newButtonLabel}
+              <NewLabel label={newButtonLabel} />
             </button>
           )}
           {unreadCount > 0 && (
             <button
               onClick={onMarkAllRead}
-              className="p-2 rounded-md text-text-muted hover:text-accent hover:bg-bg-hover transition-colors"
+              className={`${DS.button.base} ${DS.button.icon.md} ${DS.button.variant.ghost}`}
+              aria-label="Mark all as read"
               title="Mark all as read"
             >
               <CheckCheck size={14} />
@@ -892,8 +905,8 @@ export default function SessionList({
           )}
         </div>
       ) : showNewButton ? (
-        <button onClick={onNewSession} className={s.newButton}>
-          {newButtonLabel}
+        <button type="button" onClick={onNewSession} className={s.newButton}>
+          <NewLabel label={newButtonLabel} />
         </button>
       ) : null}
       {selectMode && onBulkAction && (
@@ -1064,7 +1077,7 @@ export default function SessionList({
             />
           )}
           {menuError && (
-            <div className="mx-3 my-2 rounded-md border border-error/20 bg-error/10 px-2 py-1.5 text-xs text-error" role="alert">
+            <div className="mx-3 my-2 text-xs text-error" role="alert">
               {menuError}
             </div>
           )}
@@ -1159,39 +1172,39 @@ export default function SessionList({
 
       {modelDialogSessionId && !modelSwitchConfirmation && (
         <div
-          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          className={DS.surface.scrim}
           {...modelDialogProps}
           onClick={closeModelDialog}
         >
           <div
-            className="w-full max-w-md bg-bg-secondary border border-border rounded-lg shadow-xl p-4 space-y-4"
+            className={`${DS.surface.dialog} w-full max-w-md space-y-4 p-5`}
             onClick={(event) => event.stopPropagation()}
           >
             <div>
-              <div className="text-base font-semibold text-text-primary">Change session model</div>
-              <p className="mt-1 text-sm text-text-muted">
+              <div className={DS.text.title}>Change session model</div>
+              <p className={`mt-1 ${DS.text.prose}`}>
                 Changes apply only to this session.
                 {modelDialogSession?.summary ? ` ${modelDialogSession.summary}` : ""}
               </p>
             </div>
 
-            <div className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs">
-              <div className="text-text-faint">Current model</div>
-              <div className="mt-0.5 text-text-secondary truncate">
+            <div className="text-[13px]">
+              <span className="text-text-muted">Current model</span>
+              <span className="ml-2 text-text-primary">
                 {modelDialogQuery.error
                   ? "Unable to load current model"
                   : formatSessionModelLabel(modelDialogQuery.data, modelOptions)}
-              </div>
+              </span>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div className="space-y-1.5">
                 {modelOptionsError ? (
-                  <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                  <div className="text-xs text-error" role="alert">
                     <div>Failed to load models: {modelOptionsError}</div>
                     <button
                       type="button"
-                      className="mt-2 text-xs text-error underline"
+                      className={`${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.danger} -ml-2.5 mt-1`}
                       onClick={() => {
                         void loadModelOptions();
                       }}
@@ -1200,7 +1213,7 @@ export default function SessionList({
                     </button>
                   </div>
                 ) : modelOptionsLoading ? (
-                  <div className="rounded-md border border-border bg-bg-surface px-3 py-2 text-xs text-text-faint">
+                  <div className={`flex h-10 items-center text-[13px] md:h-9 ${DS.motion.live}`} role="status">
                     Loading models...
                   </div>
                 ) : (
@@ -1221,9 +1234,9 @@ export default function SessionList({
                     type="button"
                     onClick={() => { void loadModelOptions(true); }}
                     disabled={modelOptionsLoading || modelSwitchSaving}
-                    className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-primary disabled:opacity-50"
+                    className={`${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.ghost} -ml-2.5`}
                   >
-                    <RotateCw className={`h-3.5 w-3.5 ${modelOptionsLoading ? "animate-spin" : ""}`} />
+                    <RotateCw className={`h-3 w-3 ${modelOptionsLoading ? "animate-spin" : ""}`} aria-hidden="true" />
                     Refresh model list
                   </button>
                 )}
@@ -1265,7 +1278,7 @@ export default function SessionList({
             </div>
 
             {modelSwitchError && (
-              <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+              <div className="text-xs text-error" role="alert">
                 {modelSwitchError}
               </div>
             )}
@@ -1273,7 +1286,7 @@ export default function SessionList({
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                className="rounded-md border border-border px-3 py-2 text-sm font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+                className={`${DS.button.base} ${DS.button.size.md} ${DS.button.variant.ghost}`}
                 onClick={closeModelDialog}
                 disabled={modelSwitchSaving}
               >
@@ -1281,7 +1294,7 @@ export default function SessionList({
               </button>
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                className={`${DS.button.base} ${DS.button.size.md} ${DS.button.variant.primary}`}
                 onClick={() => {
                   void handleSaveModelSwitch();
                 }}

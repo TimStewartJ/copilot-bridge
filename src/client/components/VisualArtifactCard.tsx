@@ -3,6 +3,7 @@ import type { VisualArtifact } from "../api";
 import VisualArtifactModal from "./VisualArtifactModal";
 import VisualArtifactRenderer from "./VisualArtifactRenderer";
 import { Download, ZoomIn } from "lucide-react";
+import { DS } from "../design/tokens";
 
 interface VisualArtifactCardProps {
   visual: VisualArtifact;
@@ -40,7 +41,7 @@ export default function VisualArtifactCard({ visual }: VisualArtifactCardProps) 
         {visual.kind === "image" ? (
           <button
             onClick={() => setModalOpen(true)}
-            className="flex w-full cursor-zoom-in justify-center rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className={`flex w-full cursor-zoom-in justify-center rounded-lg ${DS.focus}`}
             aria-label={`View full size: ${visual.title}`}
           >
             <VisualArtifactRenderer visual={visual} mode="inline" />

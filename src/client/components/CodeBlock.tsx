@@ -66,7 +66,8 @@ function trimSingleTrailingNewline(text: string): string {
 
 function getDiffLineClass(line: string): string {
   if (line.startsWith("@@ ")) {
-    return "border-accent/40 bg-accent-surface text-accent";
+    // design-audit-ignore-next-line: a diff is content, and a hunk header is marked the way every diff viewer marks it
+    return "border-info/40 bg-info-surface text-info";
   }
   if (
     line.startsWith("diff --git ")
@@ -82,9 +83,11 @@ function getDiffLineClass(line: string): string {
     return "border-text-faint/40 bg-bg-secondary text-text-muted";
   }
   if (line.startsWith("+")) {
+    // design-audit-ignore-next-line: a diff is content, and added lines are green by convention
     return "border-success/50 bg-success/10 text-success";
   }
   if (line.startsWith("-")) {
+    // design-audit-ignore-next-line: a diff is content, and removed lines are red by convention
     return "border-error/50 bg-error/10 text-error";
   }
   return "border-transparent text-text-secondary";

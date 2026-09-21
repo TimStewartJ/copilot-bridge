@@ -12,6 +12,7 @@ import CodeBlock from "./CodeBlock";
 import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
 import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChatBridgeLink } from "./BridgeReference";
 import { APP_PROSE } from "./shared/prose-classes";
+import { DS, cx } from "../design/tokens";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -40,7 +41,7 @@ function BubbleActions({ side, children }: { side: "left" | "right"; children?: 
         side === "right" ? "right-full top-1 mr-1" : "chat-reply-actions -top-3 right-0"
       }`}
     >
-      <div className="pointer-events-auto inline-flex gap-0.5 rounded-lg border border-border bg-bg-elevated p-0.5 text-text-muted shadow-sm">
+      <div className={cx("pointer-events-auto inline-flex gap-0.5 rounded-lg border border-border bg-bg-elevated p-0.5 text-text-muted", DS.surface.lift)}>
         {children}
       </div>
     </div>
@@ -68,7 +69,7 @@ function TextSelectionControls({
       <button
         type="button"
         onClick={onDone}
-        className="rounded-full border border-border bg-bg-secondary px-2 py-1 font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}
         aria-label="Finish selecting message text"
       >
         Done
@@ -179,7 +180,7 @@ export default memo(function MessageBubble({
           )}
           <BubbleActions side="right">{actionSlot}</BubbleActions>
           <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap break-words ${
-            isFailed ? "border border-error/40 bg-error/10" : "bg-bg-elevated"
+            isFailed ? "border border-error/40 bg-bg-elevated" : "bg-bg-elevated"
           }`}>
             {hasAttachments && (
               <div className="flex gap-2 flex-wrap mb-2">
@@ -219,7 +220,7 @@ export default memo(function MessageBubble({
               {onRetry && (
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 rounded-full border border-error/30 bg-error/10 px-2 py-1 font-medium transition-colors hover:bg-error/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/40"
+                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger)}
                   aria-label="Retry sending message"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -261,7 +262,7 @@ export default memo(function MessageBubble({
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
           <div
-            className={`chat-prose max-w-none py-0.5 text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
+            className={`ds-prose max-w-none py-0.5 text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>

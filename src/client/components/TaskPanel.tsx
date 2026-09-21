@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Plus,
   RotateCcw,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
@@ -34,8 +35,9 @@ import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import { getTaskKindUpdate } from "../task-kind";
-import { LoadingSkeletonRegion, Skeleton, SkeletonCard, SkeletonRow, SkeletonText } from "./shared/Skeleton";
-import { UI } from "./shared/design-system";
+import { LoadingSkeletonRegion, Skeleton, SkeletonRow, SkeletonText } from "./shared/Skeleton";
+import { DS, cx } from "../design/tokens";
+import { Badge, Button, Section } from "../design/primitives";
 import {
   AgentDefinitionsSection,
   WorkItemList,
@@ -48,19 +50,6 @@ import {
 import AgentDefinitionPreviewSheet from "./AgentDefinitionPreviewSheet";
 import type { TaskAgentDefinitionSummary } from "../api";
 
-function SectionLabel({ label, count, progress }: { label: string; count?: number; progress?: string }) {
-  return (
-    <div className={UI.text.sectionLabel}>
-      {label}
-      {progress !== undefined && (
-        <span className="ml-1 text-text-faint">({progress})</span>
-      )}
-      {progress === undefined && count !== undefined && (
-        <span className="ml-1 text-text-faint">({count})</span>
-      )}
-    </div>
-  );
-}
 
 function getPathTail(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");
@@ -114,49 +103,40 @@ export function TaskPanelRouteSkeleton() {
       className="flex-1 min-w-0 min-h-0 relative"
     >
       <div className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-bg-secondary">
-          <div className="space-y-2.5 border-b border-border bg-bg-secondary p-3">
-            <div className="flex items-center justify-between gap-2">
-              <Skeleton width={56} height={10} shape="pill" />
-              <Skeleton width={76} height={20} shape="pill" />
-            </div>
-            <div className="space-y-2">
-              <Skeleton width="82%" height={18} shape="pill" />
-              <div className="flex flex-wrap gap-1.5">
-                <Skeleton width={72} height={18} shape="pill" />
-                <Skeleton width={48} height={18} shape="pill" />
-                <Skeleton width={54} height={18} shape="pill" />
-              </div>
-              <SkeletonCard className="space-y-2 p-3">
-                <Skeleton width="42%" height={10} shape="pill" />
-                <SkeletonText lines={2} widths={["100%", "68%"]} />
-              </SkeletonCard>
-              <Skeleton width="100%" height={32} shape="rounded" />
-            </div>
+        <div className="space-y-3 px-4 pb-1 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <Skeleton width={64} height={10} shape="pill" />
+            <Skeleton width={96} height={22} shape="rounded" />
           </div>
-
-          <div className="space-y-4 p-2">
-            <section className="space-y-1">
-              <Skeleton width={88} height={10} shape="pill" className="mx-3 my-2" />
-              <SkeletonRow />
-              <SkeletonRow />
-            </section>
-            <section className="space-y-1">
-              <Skeleton width={96} height={10} shape="pill" className="mx-3 my-2" />
-              <SkeletonCard className="space-y-3 p-3">
-                <SkeletonText lines={3} widths={["100%", "94%", "72%"]} />
-              </SkeletonCard>
-            </section>
-            <section className="space-y-1">
-              <Skeleton width={72} height={10} shape="pill" className="mx-3 my-2" />
-              <SkeletonRow leading="square" />
-              <SkeletonRow leading="square" />
-            </section>
+          <Skeleton width="82%" height={18} shape="pill" />
+          <div className="flex flex-wrap gap-1.5">
+            <Skeleton width={72} height={14} shape="pill" />
+            <Skeleton width={48} height={14} shape="pill" />
           </div>
+          <Skeleton width="100%" height={36} shape="rounded" />
         </div>
+
+        <div className="space-y-5 px-4 pb-6 pt-3">
+          <section className="space-y-2">
+            <Skeleton width={72} height={10} shape="pill" />
+            <SkeletonText lines={2} widths={["100%", "68%"]} />
+          </section>
+          <section className="space-y-1">
+            <Skeleton width={64} height={10} shape="pill" className="mb-2" />
+            <SkeletonRow leading={false} className="px-0" />
+            <SkeletonRow leading={false} className="px-0" />
+            <SkeletonRow leading={false} className="px-0" />
+          </section>
+          <section className="space-y-1">
+            <Skeleton width={72} height={10} shape="pill" className="mb-2" />
+            <SkeletonRow leading="square" className="px-0" />
+            <SkeletonRow leading="square" className="px-0" />
+          </section>
+        </div>
+      </div>
     </LoadingSkeletonRegion>
   );
 }
-
 export default function TaskPanel({
   task,
   taskGroups = [],
@@ -352,7 +332,7 @@ export default function TaskPanel({
   if (!task || !currentTask || !completionState) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center border-r border-border bg-bg-secondary md:w-64">
-        <span className="text-xs text-text-faint">Select a task</span>
+        <span className={DS.text.empty}>Select a task</span>
       </div>
     );
   }
@@ -371,12 +351,12 @@ export default function TaskPanel({
     ?? "Attach a project folder to this task";
   const workspaceChips = [
     workspaceOverridesTask
-      ? { label: "override", className: "bg-warning/15 text-warning" }
+      ? { label: "override", tone: "warning" as const }
       : null,
     sessionWorkspace?.pathState === "missing"
-      ? { label: "missing", className: "bg-error/15 text-error" }
+      ? { label: "missing", tone: "danger" as const }
       : null,
-  ].filter((item): item is { label: string; className: string } => item !== null);
+  ].filter((item): item is { label: string; tone: "warning" | "danger" } => item !== null);
   const showWorkspaceDefault = Boolean(
     task.cwd && activeWorkspacePath && !areWorkspacePathsEqual(activeWorkspacePath, task.cwd),
   );
@@ -403,7 +383,15 @@ export default function TaskPanel({
     : completionState.ctaDescription;
   const showCompletionDetails = completionState.ctaState !== "archived";
   const showMomentumFields = completionState.ctaState !== "archived";
-  const showCompletionArea = showCompletionButton || showCompletionDetails || showMomentumFields;
+  // The finish line is a Momentum field just below, so the note does not repeat it.
+  const doneWhenShownBelow = showMomentumFields && currentTask.kind !== "ongoing" && Boolean(currentTask.doneWhen);
+  const completionNote = !doneWhenShownBelow
+    ? completionDescription
+    : completionState.ctaState === "ready"
+      ? "No open checklist items, busy sessions, or unresolved PRs"
+      : completionState.ctaState === "completed"
+        ? "Task already completed"
+        : completionDescription;
   const handleCompletionAction = async () => {
     if (completionDisabled) return;
     const requestedTaskId = task.id;
@@ -427,23 +415,25 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="flex-1 min-w-0 min-h-0 relative bg-bg-secondary">
+    <div className="relative min-h-0 min-w-0 flex-1 md:bg-bg-secondary">
       <PullToRefresh
         onRefresh={async () => { await Promise.all([refresh(), onRefresh?.()]); }}
         className="absolute inset-0 overflow-x-hidden"
         scrollRestoration={scrollRestoration}
       >
-        <div className="space-y-3 border-b border-border/80 bg-bg-secondary/95 p-4 shadow-sm md:sticky md:top-0 md:z-20">
+        <div className="space-y-3 px-4 pb-1 pt-3">
         <div className="flex items-center justify-between gap-2">
           {onViewDashboard ? (
-            <button
+            <Button
+              size="sm"
+              variant="ghost"
+              className="-ml-2.5"
+              icon={<LayoutDashboard size={13} aria-hidden="true" />}
               onClick={() => openTaskOverview()}
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-text-muted transition-colors hover:text-accent"
               title="Open task overview"
             >
-              <LayoutDashboard size={12} />
-              <span>Overview</span>
-            </button>
+              Overview
+            </Button>
           ) : <span />}
           <div className="flex shrink-0 items-center gap-1.5">
             <TaskKindSwitcher kind={currentTask.kind} onChange={handleKindChange} />
@@ -451,11 +441,11 @@ export default function TaskPanel({
         </div>
 
         <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="min-w-0 flex-1 space-y-2">
             {editingTitle ? (
               <input
                 autoFocus
-                className="w-full rounded-md border border-border bg-bg-surface px-2 py-1 text-base font-semibold leading-tight text-text-primary outline-none focus:border-accent md:text-lg"
+                className={cx(DS.text.title, "-mx-2 w-[calc(100%+1rem)] rounded-lg border border-border bg-bg-hover/30 px-2 py-1 outline-none focus:border-text-faint")}
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onBlur={commitTitle}
@@ -470,18 +460,18 @@ export default function TaskPanel({
                   setTitleDraft(task.title);
                   setEditingTitle(true);
                 }}
-                className="w-full text-left text-base font-semibold leading-tight text-text-primary transition-colors hover:text-accent md:text-lg"
+                className={cx(DS.text.title, "w-full rounded text-left", DS.focus)}
                 title="Click to edit title"
               >
-                <span className="line-clamp-2">{task.title}</span>
+                <span className="line-clamp-3">{task.title}</span>
               </button>
             )}
 
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {group && (
-                <div className="flex shrink-0 items-center gap-1 rounded bg-bg-hover px-2 py-0.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
-                  <span className={`h-2 w-2 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
-                  <span className="max-w-[88px] truncate">{group.name}</span>
+                <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
+                  <span className="max-w-[112px] truncate">{group.name}</span>
                 </div>
               )}
               {(effectiveTags.length > 0 || onSetTaskTags) && (
@@ -513,54 +503,66 @@ export default function TaskPanel({
         {alertChips.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {alertChips.map((chip) => (
-              <span
-                key={chip.kind}
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${ALERT_TONE_CLASS[chip.tone]}`}
-                title={chip.title}
-              >
+              <Badge key={chip.kind} tone={ALERT_BADGE_TONE[chip.tone]} title={chip.title}>
                 {chip.label}
-              </span>
+              </Badge>
             ))}
           </div>
         )}
 
-        {showCompletionArea && (
+        {(showCompletionButton || showCompletionDetails) && (
           <div className="space-y-2">
             {showCompletionButton && (
-              <button
+              <Button
+                fullWidth
                 onClick={() => { void handleCompletionAction(); }}
                 disabled={completionDisabled}
                 title={completionDescription}
-                className={`${UI.button.primary} flex w-full items-center justify-center gap-1.5 text-xs`}
+                icon={completionState.ctaState === "completed"
+                  ? <RotateCcw size={13} aria-hidden="true" />
+                  : <CheckCircle2 size={13} aria-hidden="true" />}
               >
-                {completionState.ctaState === "completed" ? <RotateCcw size={12} /> : <CheckCircle2 size={12} />}
                 {completionState.ctaLabel}
-              </button>
+              </Button>
             )}
             {showCompletionDetails && (
               <p className="text-xs leading-relaxed text-text-muted">
-                {completionDescription}
+                {completionNote}
               </p>
-            )}
-            {showMomentumFields && (
-              <TaskMomentumFields
-                task={currentTask}
-                onPatched={setMomentumTask}
-                onSaved={() => {
-                  void onTasksChanged?.();
-                }}
-              />
             )}
           </div>
         )}
       </div>
 
-        <div className="space-y-3 p-2">
-          <div>
-            <SectionLabel label="Sessions" count={task.sessionIds.length} />
+        <div className="space-y-5 px-4 pb-6 pt-3">
+          {showMomentumFields && (
+            <TaskMomentumFields
+              task={currentTask}
+              onPatched={setMomentumTask}
+              onSaved={() => {
+                void onTasksChanged?.();
+              }}
+            />
+          )}
+
+          <Section
+            label="Sessions"
+            count={task.sessionIds.length}
+            action={(
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-mr-2"
+                icon={<Plus size={13} aria-hidden="true" />}
+                onClick={() => onNewSession(task.id)}
+              >
+                New chat
+              </Button>
+            )}
+          >
             {linkedSessions.some((session) => session.deferSummary.count > 0) && (
-              <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-accent/15 bg-accent/5 px-2.5 py-1.5 text-[11px] text-accent">
-                <Clock size={11} className="shrink-0" />
+              <div className="mb-1 flex items-center gap-1.5 text-xs text-text-muted">
+                <Clock size={11} className="shrink-0 text-text-faint" aria-hidden="true" />
                 <span>
                   {linkedSessions.reduce((count, session) => count + session.deferSummary.count, 0)} active deferred check{
                     linkedSessions.reduce((count, session) => count + session.deferSummary.count, 0) === 1 ? "" : "s"
@@ -594,15 +596,17 @@ export default function TaskPanel({
               onRequestArchived={onRequestArchived}
               archivedLoaded={archivedLoaded}
               archivedLoading={archivedLoading}
+              showNewButton={false}
+              className="-mx-3 min-w-0 overflow-x-hidden"
             />
-          </div>
+          </Section>
 
-          <div>
-            <SectionLabel
-              label="Checklist"
-              count={checklistItems.length > 0 ? undefined : 0}
-              progress={checklistItems.length > 0 ? `${checklistItems.filter((item) => item.done).length}/${checklistItems.length}` : undefined}
-            />
+          <Section
+            label="Checklist"
+            count={checklistItems.length > 0
+              ? `${checklistItems.filter((item) => item.done).length}/${checklistItems.length}`
+              : 0}
+          >
             <TaskChecklistSection
               taskId={task.id}
               checklistItems={checklistItems}
@@ -615,12 +619,11 @@ export default function TaskPanel({
               highlightId={highlightChecklistItemId}
               isReadyToComplete={currentTask.kind !== "ongoing" && completionState.isReadyToComplete}
             />
-          </div>
+          </Section>
 
           {showSecondarySummaries && (
-            <div>
-              <SectionLabel label="Details" />
-              <div className="space-y-1">
+            <Section label="Details">
+              <div className="space-y-0.5">
                 {task.workItems.length > 0 && (
                   <WorkItemList
                     enrichedWIs={enrichedWIs}
@@ -675,7 +678,7 @@ export default function TaskPanel({
                     onDelete={(id) => sched.remove(id)}
                   />
                 )}
-                <div className="space-y-1">
+                <div>
                   <TaskPanelSummaryRow
                     label="Workspace"
                     icon={workspaceWarning || sessionWorkspace?.pathState === "missing"
@@ -688,9 +691,9 @@ export default function TaskPanel({
                     onClick={openWorkspaceSheet}
                   />
                   {!workspaceWarning && (showWorkspaceDefault || workspaceStatus) && (
-                    <div className="rounded-md bg-bg-surface px-2.5 pb-2 pl-8">
+                    <div className="pb-1 pl-[22px]">
                       {showWorkspaceDefault && (
-                        <div className="mb-1 truncate text-[10px] text-text-faint">
+                        <div className="mb-1 truncate text-[11px] text-text-faint">
                           Task default: <span className="font-mono">{task.cwd}</span>
                         </div>
                       )}
@@ -699,7 +702,7 @@ export default function TaskPanel({
                   )}
                 </div>
               </div>
-            </div>
+            </Section>
           )}
 
           {schedDetail.isOpen && (
@@ -762,10 +765,10 @@ export default function TaskPanel({
   );
 }
 
-const ALERT_TONE_CLASS: Record<TaskAlertTone, string> = {
-  accent: "bg-accent-surface text-accent",
-  info: "bg-info-surface text-info",
-  success: "bg-success/15 text-success",
-  warning: "bg-warning/15 text-warning",
-  danger: "bg-error/15 text-error",
+const ALERT_BADGE_TONE: Record<TaskAlertTone, "accent" | "info" | "success" | "warning" | "danger"> = {
+  accent: "accent",
+  info: "info",
+  success: "success",
+  warning: "warning",
+  danger: "danger",
 };

@@ -1,3 +1,8 @@
+/**
+ * Legacy class tokens, kept only for the screens listed in src/client/design/audit-pending.ts.
+ * New and migrated screens use src/client/design instead, and the design audit rejects this
+ * import anywhere else. Delete this file when its last importer has been migrated.
+ */
 export const UI = {
   text: {
     pageKicker: "inline-flex items-center gap-2 text-xs font-medium text-text-secondary",

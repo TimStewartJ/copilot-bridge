@@ -5,6 +5,7 @@ import remarkBreaks from "remark-breaks";
 import { FileText, X } from "lucide-react";
 import { APP_PROSE } from "./shared/prose-classes";
 import { useModalDialog } from "./shared/useModalDialog";
+import { DS } from "../design/tokens";
 
 interface ToolResultModalProps {
   title: string;
@@ -22,7 +23,7 @@ export default memo(function ToolResultModal({ title, content, format = "plain",
 
       <div
         {...dialogProps}
-        className="relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] bg-bg-primary rounded-t-2xl md:rounded-xl border border-border flex flex-col shadow-2xl"
+        className={DS.surface.sheet}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
@@ -42,7 +43,7 @@ export default memo(function ToolResultModal({ title, content, format = "plain",
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {format === "markdown" ? (
-            <div className={`chat-prose max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}>
+            <div className={`ds-prose max-w-none ${APP_PROSE} prose-pre:bg-bg-secondary prose-th:bg-bg-secondary`}>
               <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
             </div>
           ) : (

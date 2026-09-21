@@ -221,6 +221,39 @@ describe("CopilotQuotaMenu", () => {
     expect(harness.dom.container.textContent).toContain("Account quota lookup is not available in this Copilot SDK build");
   });
 
+  it("preserves precision qualifiers and shows refresh errors beside cached quota", async () => {
+    const refresh = vi.fn().mockRejectedValue(new Error("Quota service offline"));
+    useCopilotQuotaQueryMock.mockReturnValue({
+      data: createQuotaStatus({ primary: { ...createQuotaStatus().primary!, usedIsPrecise: false } }),
+      error: new Error("Cached quota read"), isLoading: false, refresh,
+    });
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaMenu));
+    const trigger = findButtonByLabel(harness.dom.container, "Cached Copilot quota, ~79,393.9 AI credits used");
+    expect(getReactProps(trigger)?.["aria-haspopup"]).toBe("dialog");
+    await harness.act(async () => getReactProps(trigger)?.onClick?.());
+    expect(harness.dom.container.textContent).toContain("Refresh failed: Cached quota read");
+    const refreshButton = findAllByTag(harness.dom.container, "BUTTON").find((button) => button.textContent === "Refresh");
+    await harness.act(async () => getReactProps(refreshButton)?.onClick?.());
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(harness.dom.container.textContent).toContain("Quota service offline");
+    expect(harness.dom.container.textContent).toContain("~79,393.9");
+  });
+
+  it("keeps unlimited and unknown quota separate from a finite entitlement", async () => {
+    useCopilotQuotaQueryMock.mockReturnValue({
+      data: createQuotaStatus({ primary: { ...createQuotaStatus().primary!, unit: "premium_requests", isUnlimitedEntitlement: true, entitlement: null, remainingPercentage: 100, remaining: null, used: null } }),
+      error: null, isLoading: false, refresh: vi.fn(),
+    });
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaMenu));
+    const trigger = findButtonByLabel(harness.dom.container, "Live Copilot quota, Unknown premium requests used");
+    expect(paceFill(harness.dom.container, "usage")).toBeUndefined();
+    await harness.act(async () => getReactProps(trigger)?.onClick?.());
+    expect(harness.dom.container.textContent).toContain("Unlimited allowance");
+    expect(harness.dom.container.textContent).not.toContain("Unknown of");
+  });
+
   it("draws quota used over month progress in the rail's mini bar", async () => {
     freezeAtHalfMonth();
     mockQuotaUsage(100);
@@ -230,9 +263,9 @@ describe("CopilotQuotaMenu", () => {
     const month = paceFill(harness.dom.container, "month");
     const usage = paceFill(harness.dom.container, "usage");
     expect(getReactProps(month)?.style).toMatchObject({ width: "50%" });
-    expect(getReactProps(month)?.className).toContain("bg-info");
+    expect(getReactProps(month)?.className).toContain("bg-text-faint/25");
     expect(getReactProps(usage)?.style).toMatchObject({ width: "10%" });
-    expect(getReactProps(usage)?.className).toContain("bg-accent");
+    expect(getReactProps(usage)?.className).toContain("bg-text-secondary");
     expect(paceFill(harness.dom.container, "month-marker")).toBeUndefined();
 
     await harness.act(async () => {

@@ -210,7 +210,7 @@ export default function TaskContextMenu({
       {onMoveTaskToGroup && taskGroups.length > 0 && (
         <>
           <CtxDivider />
-          <div className="px-3 py-1 text-[10px] font-semibold text-text-faint uppercase tracking-wider">Move to Group</div>
+          <div className="px-3 py-1 text-xs font-medium text-text-muted">Move to group</div>
           {taskGroups.map((g) => (
             <CtxItem
               key={g.id}

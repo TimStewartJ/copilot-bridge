@@ -21,7 +21,7 @@ export default function PromptMarkdown({ content, trusted }: PromptMarkdownProps
     );
   }
   return (
-    <div className={`chat-prose mt-1 max-w-none text-sm leading-6 text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}>
+    <div className={`ds-prose mt-1 max-w-none text-sm leading-6 text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}>
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
         {content}
       </ReactMarkdown>
