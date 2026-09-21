@@ -12,11 +12,9 @@
 // `forkSession`, `truncateHistory`, `getName`, etc.; this file knows about
 // the underlying SDK rpc namespaces.
 
-import {
-  approveAll,
-  CopilotClient,
-} from "@github/copilot-sdk";
+import { CopilotClient } from "@github/copilot-sdk";
 import { ChildProcess } from "node:child_process";
+import { isRecord } from "../../shared/is-record.js";
 
 import {
   HYDRAFUSION_MODEL_ID,
@@ -57,7 +55,6 @@ import type {
   AgentModelSwitchResult,
   AgentToolMetadata,
   AgentModelInfo,
-  AgentPermissionPolicy,
   AgentSendArgs,
   AgentSlashCommandInfo,
   AgentSlashCommandInvocation,
@@ -229,32 +226,57 @@ interface CopilotRpcGuard {
  * Wraps a CopilotSession so the rest of the Bridge talks to AgentSession.
  * Method signatures intentionally mirror the SDK 1:1 — every typed method
  * delegates to the underlying rpc namespace, returning `undefined` when
- * the namespace is missing on older SDK builds, except task lifecycle RPCs
- * which reject unsupported or malformed results. RPC timeouts bound callers,
- * not task ownership: raw task operations stay serialized until settlement.
+ * the namespace is missing on older SDK builds, except native approval setup
+ * and task lifecycle RPCs, which reject unsupported or malformed results.
+ * RPC timeouts bound callers, not task ownership: raw task operations stay serialized until settlement.
  * Release deliberately has no timeout and joins one SDK detach forever. Its
  * acknowledgement does not prove that background processes have exited.
  */
 class CopilotAgentSession implements AgentSession {
   private taskTail: Promise<void> = Promise.resolve();
   private releasePromise: Promise<AgentSessionRelease> | undefined;
+  private toolPermissionsReady: Promise<void> | undefined;
   constructor(
     private readonly session: any,
     private readonly rpc: CopilotRpcGuard,
     private readonly onBackendDisconnect: (
       handler: (info: AgentBackendDisconnect) => void,
     ) => () => void,
+    private readonly useNativeToolPermissions: boolean,
   ) {}
 
   get sessionId(): string {
     return this.session.sessionId;
   }
 
+  private async withToolPermissions<T>(work: () => Promise<T>): Promise<T> {
+    if (this.releasePromise) throw new Error("Session tool intake is closed for release");
+    if (this.useNativeToolPermissions) {
+      // Configure the existing auto-approval policy once, instead of answering every prompt over RPC.
+      await (this.toolPermissionsReady ??= this.rpc("session.setPermissionMode", async () => {
+        const permissions = this.session?.rpc?.permissions;
+        if (typeof permissions?.setMode !== "function") {
+          throw new Error("Native tool permission mode is unavailable in this Copilot SDK build");
+        }
+        const result: unknown = await permissions.setMode({ mode: "allow-all" });
+        if (!isRecord(result) || result.success !== true || result.mode !== "allow-all") {
+          throw new Error("Copilot runtime did not enable native tool approvals; check its managed permission policy");
+        }
+      }));
+    }
+    if (this.releasePromise) throw new Error("Session tool intake is closed for release");
+    return work();
+  }
+
   send(args: AgentSendArgs): Promise<unknown> {
-    return this.rpc("session.send", () => this.session.send(args));
+    return this.withToolPermissions(() => this.rpc("session.send", () => this.session.send(args)));
   }
 
   sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown> {
+    return this.withToolPermissions(() => this.sendAndWaitReady(args, timeoutMs));
+  }
+
+  private sendAndWaitReady(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown> {
     if (timeoutMs !== null) {
       // Waits for the whole turn; callers own the timeout.
       return this.session.sendAndWait(args, timeoutMs);
@@ -380,16 +402,18 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.setSendMode", () => setMode.call(this.session.rpc.mode, opts));
   }
 
-  async invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult> {
-    const invoke = this.session?.rpc?.commands?.invoke;
-    if (typeof invoke !== "function") {
-      throw new Error("Slash command invocation is not available in this agent backend");
-    }
-    const result = await this.rpc("session.invokeSlashCommand", () => invoke.call(this.session.rpc.commands, {
-      name: command.name,
-      ...(command.input ? { input: command.input } : {}),
-    }));
-    return normalizeCopilotSlashCommandResult(result);
+  invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult> {
+    return this.withToolPermissions(async () => {
+      const invoke = this.session?.rpc?.commands?.invoke;
+      if (typeof invoke !== "function") {
+        throw new Error("Slash command invocation is not available in this agent backend");
+      }
+      const result = await this.rpc("session.invokeSlashCommand", () => invoke.call(this.session.rpc.commands, {
+        name: command.name,
+        ...(command.input ? { input: command.input } : {}),
+      }));
+      return normalizeCopilotSlashCommandResult(result);
+    });
   }
 
   async listSlashCommands(): Promise<AgentSlashCommandList | undefined> {
@@ -450,10 +474,12 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.listMcpServers", () => list.call(this.session.rpc.mcp));
   }
 
-  async initializeTools(): Promise<unknown> {
-    const initialize = this.session?.rpc?.tools?.initializeAndValidate;
-    if (typeof initialize !== "function") return undefined;
-    return this.rpc("session.initializeTools", () => initialize.call(this.session.rpc.tools));
+  initializeTools(): Promise<unknown> {
+    return this.withToolPermissions(async () => {
+      const initialize = this.session?.rpc?.tools?.initializeAndValidate;
+      if (typeof initialize !== "function") return undefined;
+      return this.rpc("session.initializeTools", () => initialize.call(this.session.rpc.tools));
+    });
   }
 
   async getCurrentToolMetadata(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined> {
@@ -526,6 +552,7 @@ const PENDING_INTERACTION_ASK_USER_VARIANT = "elicitation";
 function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   sdkConfig: Record<string, unknown>;
   pendingInteractionEvents: boolean;
+  useNativeToolPermissions: boolean;
 } {
   const {
     pendingInteractionEvents = false,
@@ -541,7 +568,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
     sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
     sdkConfig.askUserVariant = PENDING_INTERACTION_ASK_USER_VARIANT;
   }
-  return { sdkConfig, pendingInteractionEvents };
+  return { sdkConfig, pendingInteractionEvents, useNativeToolPermissions: !sdkConfig.onPermissionRequest };
 }
 
 function wrapCopilotSession(
@@ -549,6 +576,7 @@ function wrapCopilotSession(
   pendingInteractionEvents: boolean,
   rpc: CopilotRpcGuard,
   onBackendDisconnect: (handler: (info: AgentBackendDisconnect) => void) => () => void,
+  useNativeToolPermissions: boolean,
 ): AgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
@@ -556,7 +584,7 @@ function wrapCopilotSession(
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session, rpc, onBackendDisconnect);
+  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions);
 }
 
 /** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
@@ -600,7 +628,7 @@ function formatDisconnectDetail(error: unknown): string | undefined {
 export class CopilotBackend implements AgentBackend {
   readonly id = "copilot" as const;
   readonly capabilities: AgentCapabilities = COPILOT_CAPABILITIES;
-  readonly permissionPolicy: AgentPermissionPolicy = approveAll;
+  readonly permissionPolicy = undefined;
 
   private readonly disconnectHandlers = new Set<(info: AgentBackendDisconnect) => void>();
   private lastDisconnect: AgentBackendDisconnect | undefined;
@@ -1072,6 +1100,7 @@ export class CopilotBackend implements AgentBackend {
       prepared.pendingInteractionEvents,
       this.rpc,
       (handler) => this.subscribeSessionDisconnect(handler),
+      prepared.useNativeToolPermissions,
     );
   }
 
@@ -1084,6 +1113,7 @@ export class CopilotBackend implements AgentBackend {
       prepared.pendingInteractionEvents,
       this.rpc,
       (handler) => this.subscribeSessionDisconnect(handler),
+      prepared.useNativeToolPermissions,
     );
   }
 

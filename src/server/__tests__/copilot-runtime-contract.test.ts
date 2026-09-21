@@ -53,6 +53,13 @@ describe("installed Copilot package contract", () => {
     expect(rpcTypes).toMatch(/interface MetadataIsProcessingResult \{[^}]*processing: boolean;/s);
   });
 
+  it("ships native permission mode initialization with an authoritative result", () => {
+    expect(rpcTypesPath, "No installed @github/copilot-sdk generated rpc.d.ts found.").toBeTruthy();
+    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
+    expect(rpcTypes).toContain("setMode: (params: PermissionsSetModeRequest) => Promise<PermissionsSetModeResult>");
+    expect(rpcTypes).toMatch(/interface PermissionsSetModeResult \{[^}]*success: boolean;[^}]*mode: PermissionMode;/s);
+  });
+
   // Verified for win32-x64 only; the other platform packages have not been inspected.
   it.runIf(process.platform === "win32")("ships the Computer Use plugin the Bridge loads per session", () => {
     const status = resolveComputerUsePlugin();

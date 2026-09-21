@@ -106,6 +106,12 @@ loader, so a CLI release can be validated independently of the SDK's bundled run
 wrapper is needed. The SDK natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge
 tool-loading metadata.
 
+Automatic tool approvals are configured once per runtime handle using the CLI's native permission
+mode, before tool initialization or prompt delivery. Bridge no longer answers each approval through
+an SDK callback. Native policy refusal or initialization failure stops delivery explicitly; managed
+restrictions and content exclusions remain runtime-enforced. Agent questions and Computer Use
+confirmations keep their existing flows, and cloud-backed agentic memory stays disabled.
+
 HydraFusion uses the runtime's native orchestration, with its startup feature flags enabled and experimental
 mode supplied on session creation and resume. Sessions select `hydrafusion` directly, without first creating
 a different model's session. Reasoning effort and context tier are chosen by HydraFusion rather than fixed
