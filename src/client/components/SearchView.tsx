@@ -354,7 +354,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
               </div>
               <button type="button" onClick={() => updateParams({ scope: "session", sessionId: hit.sessionId, taskId: null, kind: null, offset: null })} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-h-9 text-accent")}>Search whole chat</button>
             </div>
-            <div className="mt-3 divide-y divide-border/60">
+            <div className="mt-3 divide-y divide-border-subtle">
               {hit.matches.map((match) => {
                 const target = chatPath(
                   hit,

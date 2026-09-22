@@ -183,7 +183,7 @@ function TaskCard({
       </div>
       <div className="mt-1 text-[10px] text-text-faint">{association}</div>
       {(task.nextAction || task.waitingOn) && (
-        <div className="mt-2 border-t border-border/70 pt-2 text-[10px] leading-relaxed text-text-muted">
+        <div className="mt-2 border-t border-border pt-2 text-[10px] leading-relaxed text-text-muted">
           {task.nextAction ? `${task.deferred ? "When resumed" : "Next step"}: ${task.nextAction}` : `Waiting for: ${task.waitingOn}`}
         </div>
       )}

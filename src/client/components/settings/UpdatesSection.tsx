@@ -281,7 +281,7 @@ export function UpdatesSection() {
               <div className="mt-2 break-all text-[11px] text-text-faint">Log: {installStatus.logPath}</div>
             )}
             {installLogTail.length > 0 && (
-              <details className="mt-2 rounded-md border border-border/70 bg-bg-elevated/70 px-2 py-1 text-text-muted">
+              <details className="mt-2 rounded-md border border-border bg-bg-elevated/70 px-2 py-1 text-text-muted">
                 <summary className="cursor-pointer text-[11px] font-medium text-text-secondary">
                   Recent update log
                 </summary>
