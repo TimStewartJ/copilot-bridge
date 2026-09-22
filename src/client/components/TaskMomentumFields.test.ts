@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../api";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../test-react-harness";
 import TaskMomentumFields, { getTaskContextSummary } from "./TaskMomentumFields";
+import { toDateTimeInputValue } from "../lib/task-revisit";
 
 const patchTaskMock = vi.hoisted(() => vi.fn());
 vi.mock("../api", () => ({ patchTask: patchTaskMock }));
@@ -65,6 +66,21 @@ describe("TaskMomentumFields design migration", () => {
     const nextTouchAt = "2030-05-02T10:30:00.000Z";
     const date = new Date(nextTouchAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     expect(getTaskContextSummary(createTask({ deferred: true, nextTouchAt }))).toBe(`Deferred · Revisit ${date}`);
+  });
+
+  it("updates the revisit summary after saving without requiring a parent rerender", async () => {
+    const task = createTask({ deferred: true });
+    const nextTouchAt = "2030-05-02T10:30:00.000Z";
+    patchTaskMock.mockResolvedValue({ ...task, nextTouchAt });
+    const container = await render(task);
+    const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Set revisit date");
+    await harness!.act(async () => getReactProps(add)!.onClick());
+    const input = findAllByTag(container, "INPUT")[0];
+    expect(getReactProps(input)?.["aria-describedby"]).toBe(`revisit-help-${task.id}`);
+    await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: toDateTimeInputValue(nextTouchAt) } }));
+    await harness!.act(async () => getReactProps(input)!.onBlur());
+    expect(disclosure(container)?.textContent).toBe(getTaskContextSummary({ ...task, nextTouchAt }));
+    expect(container.textContent).toContain("No automatic resume, start or notification");
   });
 
   it("stays open after saves and same-task updates, but closes when switching tasks", async () => {
@@ -141,6 +157,7 @@ describe("TaskMomentumFields design migration", () => {
       const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Add a wait");
       await harness!.act(async () => getReactProps(add)!.onClick());
       const input = findAllByTag(container, "INPUT")[0];
+      expect(getReactProps(input)?.["aria-describedby"]).toBe("wait-help-task-1");
       await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: "Delivery confirmation" } }));
       await harness!.act(async () => getReactProps(input)!.onBlur());
       expect(container.textContent).toContain("The change was not saved");
