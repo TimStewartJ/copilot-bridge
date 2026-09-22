@@ -9,7 +9,7 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
-import { installFocusDialogDom } from "../test-focus-harness";
+import { installDialogDom } from "../test-dialog-harness";
 import {
   createKeyEventDom,
   findDialogElements,
@@ -18,10 +18,6 @@ import {
 import type { Schedule, Task, VisualArtifact } from "../api";
 import DocPreviewSheet from "./DocPreviewSheet";
 import DeferredWorkSheet from "./DeferredWorkSheet";
-import FocusActionDialog from "./FocusActionDialog";
-import FocusLifecycleDialog from "./FocusLifecycleDialog";
-import FocusPromotionDialog from "./FocusPromotionDialog";
-import { focusDecision, focusTask } from "../test-focus-fixtures";
 import NotesSheet from "./NotesSheet";
 import PlanSheet from "./PlanSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
@@ -37,6 +33,7 @@ function makeTask(): Task {
     title: "Workspace task",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     cwd: "/repo",
     notes: "",
@@ -86,22 +83,6 @@ interface OverlayCase {
 }
 
 const overlayCases: OverlayCase[] = [
-  {
-    name: "FocusLifecycleDialog",
-    accessibleName: "Accept risk",
-    element: (onClose) => createElement(FocusLifecycleDialog, {
-      object: focusDecision(), intent: "accepted_risk", pending: false, error: null,
-      onClose, onReload: vi.fn(), onSubmit: vi.fn(),
-    }),
-  },
-  {
-    name: "FocusPromotionDialog",
-    accessibleName: "Hand off / Create Action",
-    element: (onClose) => createElement(FocusPromotionDialog, {
-      object: focusDecision(), tasks: [focusTask()], pending: false, error: null, result: null,
-      onClose, onReload: vi.fn(), onSubmit: vi.fn(), onSelectTask: vi.fn(), onInspectAction: vi.fn(),
-    }),
-  },
   {
     name: "PlanSheet",
     accessibleName: "Session Plan",
@@ -180,24 +161,6 @@ const overlayCases: OverlayCase[] = [
     }),
   },
   {
-    name: "FocusActionDialog",
-    accessibleName: "Run the audit",
-    element: (onClose) => createElement(FocusActionDialog, {
-      cardTitle: "Platform audit",
-      actionLabel: "Run the audit",
-      taskId: null,
-      taskPreview: null,
-      prompt: "Do the thing",
-      error: null,
-      submitting: false,
-      submitMode: null,
-      onPromptChange: vi.fn(),
-      onClose,
-      onStart: vi.fn(),
-      onStartInBackground: vi.fn(),
-    }),
-  },
-  {
     name: "VisualArtifactModal",
     accessibleName: "Diagram screenshot",
     element: (onClose) => createElement(VisualArtifactModal, { visual: makeVisual(), onClose }),
@@ -216,7 +179,7 @@ function withProviders(children: ReactNode): ReactElement {
 }
 
 async function renderOverlay(element: ReactElement) {
-  const keyEventDom = createKeyEventDom({ baseInstall: installFocusDialogDom });
+  const keyEventDom = createKeyEventDom({ baseInstall: installDialogDom });
   const harness = await createReactDomHarness({ installDom: keyEventDom.installDom });
   await harness.render(withProviders(element));
   return {
@@ -334,32 +297,6 @@ describe("ScheduleDetailSheet dismiss target", () => {
       await pressEscape();
       expect(onClose).toHaveBeenCalledTimes(1);
       expect(onSwitchToView).toHaveBeenCalledTimes(1);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-});
-
-describe("FocusActionDialog dismissal guard", () => {
-  it("ignores Escape while the prompt is submitting", async () => {
-    const onClose = vi.fn();
-    const { harness, pressEscape } = await renderOverlay(createElement(FocusActionDialog, {
-      cardTitle: "Platform audit",
-      actionLabel: "Run the audit",
-      taskId: null,
-      taskPreview: null,
-      prompt: "Do the thing",
-      error: null,
-      submitting: true,
-      submitMode: "foreground",
-      onPromptChange: vi.fn(),
-      onClose,
-      onStart: vi.fn(),
-      onStartInBackground: vi.fn(),
-    }));
-    try {
-      await pressEscape();
-      expect(onClose).not.toHaveBeenCalled();
     } finally {
       await harness.cleanup();
     }

@@ -8,7 +8,7 @@ import type {
   SearchScope,
 } from "../../shared/search.js";
 import { searchBridge, type Task, type Session } from "../api";
-import FocusDialog from "./FocusDialog";
+import FocusDialog from "../design/Dialog";
 import SearchQueryInput, { getSearchFilterToken } from "./SearchQueryInput";
 import { writeClipboardText } from "../lib/clipboard";
 import { getAppAbsoluteUrl } from "../lib/app-url";

@@ -13,7 +13,7 @@ import {
 } from "../test-react-harness";
 import SearchView from "./SearchView";
 import { getSearchHighlightTerms } from "../lib/search-text";
-import { installFocusDialogDom } from "../test-focus-harness";
+import { installDialogDom } from "../test-dialog-harness";
 
 const searchBridgeMock = vi.hoisted(() => vi.fn());
 
@@ -66,7 +66,7 @@ describe("SearchView", () => {
   });
 
   async function render(entry: string) {
-    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
+    harness = await createReactDomHarness({ installDom: installDialogDom });
     await harness.render(createElement(
       MemoryRouter,
       { initialEntries: [entry] },
@@ -257,7 +257,7 @@ describe("SearchView", () => {
         items: [{ taskId: "task-1", title: "Result task", snippet: "match", archived: false }],
       },
     }));
-    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
+    harness = await createReactDomHarness({ installDom: installDialogDom });
     await harness.render(createElement(
       MemoryRouter,
       { initialEntries: ["/search?q=match"] },
@@ -299,7 +299,7 @@ describe("SearchView", () => {
       },
     });
     searchBridgeMock.mockResolvedValue(searchResponse);
-    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
+    harness = await createReactDomHarness({ installDom: installDialogDom });
     await harness.render(createElement(
       MemoryRouter,
       { initialEntries: ["/search?q=match"] },

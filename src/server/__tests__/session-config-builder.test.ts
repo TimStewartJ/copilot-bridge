@@ -36,6 +36,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     title: "Config task",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     notes: "",
     priority: 0,

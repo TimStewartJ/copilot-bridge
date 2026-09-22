@@ -14,6 +14,7 @@ import {
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 import { isOngoingTask } from "../../task-kind";
+import TaskDeferralDialog from "../TaskDeferralDialog";
 
 type TaskMenuUpdates = {
   title?: TaskPatch["title"];
@@ -57,6 +58,7 @@ export default function TaskContextMenu({
   const checklistItemsQuery = useTaskChecklistItemsQuery(task.id);
 
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [deferralOpen, setDeferralOpen] = useState(false);
   const copyRequestRef = useRef(0);
   useEffect(() => () => { copyRequestRef.current += 1; }, []);
   const closeMenu = useCallback(() => {
@@ -89,6 +91,8 @@ export default function TaskContextMenu({
     });
   }, [checklistItemsQuery.data, queryClient, sessionMap, task]);
   const showArchiveToggle = shouldShowTaskArchiveToggle(task, completionState);
+
+  if (deferralOpen) return <TaskDeferralDialog task={task} onClose={closeMenu} />;
 
   return (
     <ContextMenu position={position} onClose={closeMenu}>
@@ -189,17 +193,22 @@ export default function TaskContextMenu({
           <CtxDivider />
           <CtxItem
             icon={<CalendarDays size={14} />}
-            label="Follow up tomorrow"
+            label={task.deferred ? "Resume task…" : "Defer task…"}
+            onClick={() => setDeferralOpen(true)}
+          />
+          <CtxItem
+            icon={<CalendarDays size={14} />}
+            label="Revisit tomorrow"
             onClick={() => { onUpdateTask(task.id, { nextTouchAt: toRelativeFollowUpAt(1) }); closeMenu(); }}
           />
           <CtxItem
             icon={<CalendarDays size={14} />}
-            label="Follow up next week"
+            label="Revisit next week"
             onClick={() => { onUpdateTask(task.id, { nextTouchAt: toRelativeFollowUpAt(7) }); closeMenu(); }}
           />
           <CtxItem
             icon={<X size={14} />}
-            label="Clear follow-up"
+            label="Clear revisit date"
             disabled={!task.nextTouchAt}
             onClick={() => { onUpdateTask(task.id, { nextTouchAt: null }); closeMenu(); }}
           />

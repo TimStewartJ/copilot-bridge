@@ -178,13 +178,13 @@ function TaskCard({
           {task.title}
         </span>
         <span className={cx(DS.badge.base, "text-[9px]", taskTone(task))}>
-          {task.status === "archived" ? "Archived" : task.kind === "ongoing" ? "Ongoing" : "Task"}
+          {task.status === "archived" ? "Archived" : task.deferred ? "Deferred" : task.kind === "ongoing" ? "Ongoing" : "Task"}
         </span>
       </div>
       <div className="mt-1 text-[10px] text-text-faint">{association}</div>
       {(task.nextAction || task.waitingOn) && (
         <div className="mt-2 border-t border-border/70 pt-2 text-[10px] leading-relaxed text-text-muted">
-          {task.waitingOn ? `Waiting on: ${task.waitingOn}` : `Next: ${task.nextAction}`}
+          {task.nextAction ? `${task.deferred ? "When resumed" : "Next step"}: ${task.nextAction}` : `Waiting for: ${task.waitingOn}`}
         </div>
       )}
     </button>

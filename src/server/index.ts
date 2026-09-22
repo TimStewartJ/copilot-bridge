@@ -2,6 +2,7 @@
 
 import "./log-timestamps.js";
 import "./load-bridge-env.js";
+import { prepareDashboardRetirement } from "./dashboard-retirement.js";
 import express from "express";
 import { existsSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
@@ -66,6 +67,7 @@ registerExpressApp(app);
 app.use(createResponseCompressionMiddleware());
 
 const runtimePaths = resolveRuntimePaths(process.env);
+await prepareDashboardRetirement(runtimePaths.dataDir);
 const { ctx: defaultContext } = createAppContext({
   runtimePaths,
   apiBasePath: "/api",

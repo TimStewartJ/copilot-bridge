@@ -21,6 +21,7 @@ function createTask(id: string, sessionId: string, cwd?: string): Task {
     title: id,
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     cwd,
     notes: "",
@@ -259,4 +260,3 @@ describe("session workspace yaml parsing", () => {
     expect(isSessionStatePathSegment("nested\\session")).toBe(false);
   });
 });
-

@@ -88,9 +88,6 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
     voiceGateway: { shutdown: spies.voiceGatewayShutdown },
     voiceJobManager: { shutdown: spies.voiceShutdown },
     stopPushEventNotifications: spies.pushUnsubscribe,
-    focusNotifications: { dispose: spies.focusDispose },
-    focusSessionLaunchService: { stop: spies.launchStop, drain: spies.launchDrain },
-    focusProtectionStore: { stop: spies.protectionStop },
   } as unknown as AppContext;
 }
 
@@ -214,13 +211,10 @@ describe("shutdownAppContextServices", () => {
     expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
     expect(spies.schedulerShutdown).toHaveBeenCalledTimes(1);
     expect(spies.pushUnsubscribe).toHaveBeenCalledTimes(1);
-    expect(spies.focusDispose).toHaveBeenCalledTimes(1);
-    expect(spies.launchStop).toHaveBeenCalledTimes(1);
-    expect(spies.protectionStop).toHaveBeenCalledTimes(1);
-    expect(spies.protectionStop.mock.invocationCallOrder[0]).toBeLessThan(spies.sessionManagerShutdown.mock.invocationCallOrder[0]!);
-    expect(spies.launchDrain).toHaveBeenCalledTimes(1);
-    expect(spies.launchStop.mock.invocationCallOrder[0]).toBeLessThan(spies.sessionManagerShutdown.mock.invocationCallOrder[0]!);
-    expect(spies.launchDrain.mock.invocationCallOrder[0]).toBeGreaterThan(spies.sessionManagerShutdown.mock.invocationCallOrder[0]!);
+    expect(spies.focusDispose).not.toHaveBeenCalled();
+    expect(spies.launchStop).not.toHaveBeenCalled();
+    expect(spies.protectionStop).not.toHaveBeenCalled();
+    expect(spies.launchDrain).not.toHaveBeenCalled();
   });
 
   it("defaults to the server shutdown budget when no deadline is supplied", async () => {

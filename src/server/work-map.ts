@@ -13,6 +13,7 @@ export interface WorkMapTask {
   title: string;
   kind: Task["kind"];
   status: Task["status"];
+  deferred: boolean;
   priority: number;
   nextAction: string | null;
   waitingOn: string | null;
@@ -223,6 +224,7 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     title: task.title,
     kind: task.kind,
     status: task.status,
+    deferred: task.deferred,
     priority: task.priority,
     nextAction: task.nextAction ?? null,
     waitingOn: task.waitingOn ?? null,

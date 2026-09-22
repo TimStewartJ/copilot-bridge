@@ -15,12 +15,8 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
+import { createDashboardArchiveStore } from "./dashboard-archive.js";
 import { createChecklistStore } from "./checklist-store.js";
-import { createFocusDataLayer } from "./focus-data-layer.js";
-import { createFocusProjectionService } from "./focus-dashboard-projection.js";
-import { initFocusNotificationService } from "./focus-notification-service.js";
-import { createFocusSessionLaunchService } from "./focus-session-launch-service.js";
-import { createFocusProtectionService } from "./focus-protection-service.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
 import { createSearchIndex } from "./search-index.js";
@@ -50,7 +46,7 @@ import { createInterruptedRunStore } from "./interrupted-run-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createSessionManager } from "./session-manager.js";
-import { deleteVisualArtifactForOwner, feedCardVisualOwner } from "./visual-artifacts.js";
+
 import { createManagementJobStore } from "./management-job-store.js";
 import { createEventLogStatsFoldStore } from "./event-log-stats-fold-store.js";
 import { setEventLogStatsPersistence } from "./session-disk-reader.js";
@@ -98,33 +94,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
-  const focusData = createFocusDataLayer(db, globalBus, checklistStore, {
-    onVisualUnreferenced: (visual, card) => {
-      const result = deleteVisualArtifactForOwner(
-        runtimePaths.copilotHome ?? join(homedir(), ".copilot"),
-        feedCardVisualOwner(card.id),
-        visual.artifactId,
-      );
-      if (!result.ok) {
-        console.warn(`[feed] Failed to delete unreferenced visual ${visual.artifactId}: ${result.error}`);
-      }
-    },
-  });
-  if (focusData.reconciliation.quarantined > 0) {
-    console.warn(
-      `[focus] Quarantined ${focusData.reconciliation.quarantined} malformed legacy feed row(s) during reconciliation.`,
-    );
-  }
   const telemetryStore = createTelemetryStore(db);
-  const focusProjection = createFocusProjectionService({
-    db,
-    taskStore,
-    decisionStore: focusData.decisionStore,
-    alertStore: focusData.alertStore,
-    eventStore: focusData.eventStore,
-    compatibilityErrorCount: focusData.reconciliationErrorStore.countErrors,
-    telemetryStore,
-  });
   const tagStore = createTagStore(db);
   const mcpServerStore = createMcpServerStore(db);
   const copilotModelPriceStore = createCopilotModelPriceStore(db);
@@ -195,23 +165,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     cliSessionCatalog,
     readStateStore,
     checklistStore,
-    feedStore: focusData.feedStore,
-    decisionStore: focusData.decisionStore,
-    alertStore: focusData.alertStore,
-    focusEventStore: focusData.eventStore,
-    focusMutationCoordinator: focusData.mutations,
-    focusProjection,
-    focusReconciliationErrorStore: focusData.reconciliationErrorStore,
-    focusDetailsStore: focusData.detailsStore,
-    focusTransitionStore: focusData.transitionStore,
-    focusAttentionStore: focusData.attentionStore,
-    focusAuditStore: focusData.auditStore,
-    focusDigestViewStore: focusData.digestViewStore,
-    focusAuthorityStore: focusData.authorityStore,
-    focusCoverageStore: focusData.coverageStore,
-    focusNotificationDeliveryStore: focusData.notificationDeliveryStore,
-    focusSessionLaunchStore: focusData.sessionLaunchStore,
-    focusProtectionStore: focusData.protectionStore,
+    dashboardArchive: createDashboardArchiveStore(db),
     docsStore,
     docsIndex,
     docsSnapshotStore,
@@ -306,9 +260,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       }
     },
   });
-  ctx.focusSessionLaunchService = createFocusSessionLaunchService(ctx, focusData.sessionLaunchStore);
-  const protectionService = createFocusProtectionService(db, focusData.protectionStore, ctx);
-  ctx.focusProtectionService = protectionService;
   ctx.voiceJobManager = createVoiceJobManager({
     dataDir,
     store: voiceJobStore,
@@ -322,15 +273,10 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     env: runtimePaths.env,
   });
   ctx.stopPushEventNotifications = initPushEventNotifications(ctx, ctx.pushNotificationService, {
-    protectionStore: focusData.protectionStore, getSessions: protectionService.getSessions,
-    deliveryStore: focusData.notificationDeliveryStore, settingsStore,
+    getSessions: () => sessionManager.getPendingInputSessionIds().map(sessionId => ({
+      sessionId, pendingUserInputCount: sessionManager.getPendingUserInputCount(sessionId),
+    })),
     startImmediately: false,
-  });
-  ctx.focusNotifications = initFocusNotificationService({
-    globalBus, alertStore: focusData.alertStore, authorityStore: focusData.authorityStore,
-    deliveryStore: focusData.notificationDeliveryStore, settingsStore,
-    pushService: ctx.pushNotificationService, apiBasePath: options.apiBasePath,
-    protectionStore: focusData.protectionStore,
   });
   ctx.deferredPromptRunner = createDeferredPromptRunner(
     deferredPromptStore,
@@ -338,7 +284,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
-    { telemetryStore, focusProtectionStore: focusData.protectionStore },
+    { telemetryStore },
   );
   ctx.deferLoopRunner = createDeferLoopRunner(
     deferLoopStore,
@@ -348,7 +294,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     { deferredPromptStore, deferLoopStore },
     {
       telemetryStore,
-      focusProtectionStore: focusData.protectionStore,
       onParentMessageQueued: () => ctx.deferredPromptRunner?.poke(),
     },
   );
@@ -357,19 +302,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 }
 
 export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
-  ctx.focusProtectionStore.start();
   void ctx.stopPushEventNotifications?.flush();
-  ctx.scheduler?.initialize(ctx.sessionManager, {
-    scheduleStore: ctx.scheduleStore,
-    taskStore: ctx.taskStore,
-    sessionMetaStore: ctx.sessionMetaStore,
-    globalBus: ctx.globalBus,
-    deferredPromptStore: ctx.deferredPromptStore,
-    deferLoopStore: ctx.deferLoopStore,
-    focusProtectionStore: ctx.focusProtectionStore,
-  });
   ctx.deferredPromptRunner?.start();
   ctx.deferLoopRunner?.start();
-  // Shared production/staged SDK-ready hook; prompt delivery must not hold HTTP startup.
-  void ctx.focusSessionLaunchService?.reconcileStartup();
 }

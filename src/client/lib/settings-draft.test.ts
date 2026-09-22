@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { serializeSettingsPatch, type AppSettings } from "../api";
 import { getSettingsDraftUpdates } from "./settings-draft";
-import { DEFAULT_FOCUS_NOTIFICATION_POLICY } from "../../shared/focus-notification-policy.js";
 
 describe("settings draft updates", () => {
   const saved: AppSettings = { model: "saved-model", contextTier: "long_context", theme: "dark", mcpServers: {} };
@@ -30,7 +29,6 @@ describe("settings draft updates", () => {
     expect(getSettingsDraftUpdates(saved, {
       ...saved,
       mcpServers: { local: { command: "node", args: [] } },
-      focusNotifications: DEFAULT_FOCUS_NOTIFICATION_POLICY,
     })).toEqual({});
   });
 });

@@ -149,8 +149,8 @@ export function resolveBridgeReference(
         title: task.title.trim() || label || "Untitled task",
         found: true,
         tone,
-        detail: task.nextAction?.trim() ? `Next: ${task.nextAction.trim()}` : task.waitingOn?.trim() ? `Waiting on: ${task.waitingOn.trim()}` : undefined,
-        meta: counts || (task.completedAt ? "Completed" : undefined),
+        detail: task.nextAction?.trim() ? `${task.deferred ? "When resumed" : "Next step"}: ${task.nextAction.trim()}` : task.waitingOn?.trim() ? `Waiting for: ${task.waitingOn.trim()}` : undefined,
+        meta: [task.deferred ? "Deferred" : "", counts || (task.completedAt ? "Completed" : "")].filter(Boolean).join(" · ") || undefined,
       };
     }
     case "doc": {

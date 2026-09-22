@@ -62,6 +62,7 @@ import {
 } from "./staging-command-utils.js";
 import { log } from "./staging-log.js";
 import { parseJsonc } from "./jsonc.js";
+import { isolateStagingRuntimeState } from "./staging-seed-state.js";
 
 export interface ActiveStagingBackend {
   child: HostChild;
@@ -441,13 +442,13 @@ function applyStagingSeedOverrides(dbPath: string): void {
 
     db.exec("BEGIN");
     try {
-      db.exec("UPDATE schedules SET enabled = 0");
-      if (hasTable("push_subscriptions")) db.exec("DELETE FROM push_subscriptions");
+      const isolated = isolateStagingRuntimeState(db);
       db.exec("COMMIT");
+      log(`Isolated copied automatic work: ${JSON.stringify(isolated)}`);
     } catch (err) {
       try { db.exec("ROLLBACK"); } catch {}
       throw new Error(
-        `Unable to isolate staging runtime state (schedules/push subscriptions): ${err instanceof Error ? err.message : String(err)}`,
+        `Unable to isolate staging runtime state (schedules, defers, recovery, voice, push): ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
     }

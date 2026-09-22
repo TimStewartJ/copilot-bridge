@@ -18,6 +18,7 @@ function createTask(): Task {
     title: "Clipboard task",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     cwd: "/repo",
     notes: "",

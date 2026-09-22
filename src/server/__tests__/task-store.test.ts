@@ -26,6 +26,7 @@ describe("task-store", () => {
       expect(task.title).toBe("My Task");
       expect(task.kind).toBe("task");
       expect(task.muted).toBe(false);
+      expect(task.deferred).toBe(false);
       expect(task.status).toBe("active");
       expect(task.notes).toBe("");
       expect(task.doneWhen).toBeUndefined();
@@ -35,6 +36,33 @@ describe("task-store", () => {
       expect(task.sessionIds).toEqual([]);
       expect(task.workItems).toEqual([]);
       expect(task.pullRequests).toEqual([]);
+    });
+
+    it("defers and resumes task visibility without clearing context or muting sessions", () => {
+      const task = store.createTask("Set aside");
+      store.linkSession(task.id, "conversation");
+      const context = { notes: "Keep this", nextAction: "Review", waitingOn: "A reply", nextTouchAt: "2000-01-01T00:00:00Z" };
+      const deferred = store.updateTask(task.id, { ...context, deferred: true });
+      expect(deferred).toMatchObject({ ...context, nextTouchAt: "2000-01-01T00:00:00.000Z", deferred: true, muted: false, status: "active", sessionIds: ["conversation"] });
+      expect(areSessionUnreadBubblesMuted([deferred])).toBe(false);
+      expect(store.listTasks()).toContainEqual(deferred);
+      expect(store.updateTask(task.id, { nextAction: "A different step" }).deferred).toBe(true);
+      const resumed = store.updateTask(task.id, { deferred: false });
+      expect(resumed).toMatchObject({ deferred: false, waitingOn: "A reply", nextAction: "A different step", nextTouchAt: "2000-01-01T00:00:00.000Z" });
+      expect(() => store.updateTask(task.id, JSON.parse('{"deferred":"true"}'))).toThrow("deferred must be a boolean");
+      expect(() => store.updateTask(task.id, JSON.parse('{"deferred":null}'))).toThrow("deferred must be a boolean");
+    });
+
+    it("allows undated deferral, clears it on archive/completion, and rejects deferring archived work", () => {
+      for (const completion of [false, true]) {
+        const task = store.createTask("Set aside");
+        expect(store.updateTask(task.id, { deferred: true, nextTouchAt: null })).toMatchObject({ deferred: true, nextTouchAt: undefined });
+        expect(store.updateTask(task.id, completion ? { completionAction: "complete-and-archive" } : { status: "archived" }))
+          .toMatchObject({ status: "archived", deferred: false, nextTouchAt: undefined });
+        expect(() => store.updateTask(task.id, { deferred: true })).toThrow("Only active tasks can be deferred");
+        expect(store.updateTask(task.id, { deferred: false }).deferred).toBe(false);
+        expect(store.updateTask(task.id, { status: "active" }).deferred).toBe(false);
+      }
     });
 
     it("createTask accepts ongoing kind and rejects invalid kinds", () => {

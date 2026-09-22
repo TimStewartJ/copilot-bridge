@@ -71,6 +71,7 @@ describe("fresh database schema", () => {
     const columnNames = (table: string) =>
       (fresh.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((row) => row.name);
     expect(columnNames("tasks")).toContain("completedAt");
+    expect(columnNames("tasks")).toContain("deferred");
     expect(columnNames("schedules")).toEqual(expect.arrayContaining(["reasoningEffort", "contextTier"]));
     expect(columnNames("bridge_session_state")).toEqual(
       expect.arrayContaining(["pendingAutoName", "pendingAutoNameReplaceTitle"]),
@@ -78,6 +79,26 @@ describe("fresh database schema", () => {
     expect(columnNames("defer_loops")).toContain("checkpoint");
 
     fresh.close();
+  });
+
+  it("adds task deferral without changing old task context, and preserves it on reopen", () => {
+    const dataDir = makeTestDir("task-deferral-migration");
+    const legacy = openDatabase(dataDir);
+    legacy.exec(`
+      ALTER TABLE tasks DROP COLUMN deferred;
+      INSERT INTO tasks(id,title,kind,status,notes,nextAction,waitingOn,nextTouchAt,createdAt,updatedAt)
+      VALUES('old-task','Keep context','ongoing','active','Original notes','Read reply','External reply','2030-01-01T00:00:00Z','2026-01-01','2026-01-01');
+    `);
+    const before = legacy.prepare("SELECT * FROM tasks").get();
+    legacy.close();
+    const migrated = openDatabase(dataDir);
+    expect(migrated.prepare("SELECT * FROM tasks").get()).toEqual({ ...before, deferred: 0 });
+    migrated.prepare("UPDATE tasks SET deferred=1 WHERE id=?").run("old-task");
+    migrated.close();
+    const reopened = openDatabase(dataDir);
+    expect(reopened.prepare("SELECT * FROM tasks").get()).toEqual({ ...before, deferred: 1 });
+    expect(reopened.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    reopened.close();
   });
 
   it("adds the checkpoint column to an existing defer loop table", () => {

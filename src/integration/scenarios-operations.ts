@@ -268,11 +268,11 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-24", title: "keeps the server healthy after task, docs, feed, and settings mutations",
+    id: "OPS-24", title: "keeps the server healthy after task, docs, checklist, and settings mutations",
     async run(world) {
       const task = await world.createTask("Health workflow");
       await world.createChecklistItem(task.id, "Health item");
-      await world.createFeedCard("Health card", { taskId: task.id });
+      await world.updateTask(task.id, { nextAction: "Review the health check" });
       await world.writePage("health/workflow", "# Healthy Workflow");
       await request(world.app).patch("/api/settings").send({ theme: "dark" });
       const health = await request(world.app).get("/api/health");
@@ -281,21 +281,21 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-25", title: "coordinates a task, specialist, schedule, knowledge page, and attention card",
+    id: "OPS-25", title: "coordinates a task, specialist, schedule, knowledge page, and native Home",
     async run(world) {
       const task = await world.createTask("Cross-boundary launch", { notes: "Coordinate all systems" });
       world.ctx.taskAgentDefinitionStore!.createTaskAgentDefinition({ taskId: task.id, name: "launch-reviewer", description: "Reviews launch", prompt: "Review launch readiness." });
       world.initializeScheduler();
       const schedule = await world.createSchedule(task.id, "Daily launch review");
       await world.writePage("launch/readiness", "# Launch Readiness\n\nReview daily.");
-      const card = await world.createFeedCard("Launch review pending", { taskId: task.id, kind: "todo", action: { prompt: "Run the launch review.", taskId: task.id } });
+      await world.updateTask(task.id, { nextAction: "Run the launch review" });
       const agents = await request(world.app).get(`/api/tasks/${task.id}/agent-definitions`);
       const schedules = await request(world.app).get(`/api/schedules?taskId=${task.id}`);
       const search = await request(world.app).get("/api/docs/search?q=readiness");
       expect(agents.body.agentDefinitions[0].name).toBe("launch-reviewer");
       expect(schedules.body[0].id).toBe(schedule.id);
       expect(search.body.results[0].path).toBe("launch/readiness");
-      expect((await request(world.app).get(`/api/feed?taskId=${task.id}`)).body.cards[0].id).toBe(card.id);
+      expect((await request(world.app).get("/api/home")).body.tasks.items[0]).toMatchObject({ id: task.id, nextAction: "Run the launch review" });
     },
   },
 ];
