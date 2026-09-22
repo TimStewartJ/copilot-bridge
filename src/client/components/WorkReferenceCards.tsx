@@ -1,6 +1,7 @@
 import { ClipboardList, GitPullRequest } from "lucide-react";
 import type { EnrichedPR, EnrichedWorkItem } from "../api";
 import { PR_STATUS_STYLES, WI_STATE_STYLES, WI_TYPE_ICONS } from "../work-item-styles";
+import { StatusIcon } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 
 
@@ -50,7 +51,7 @@ export function PullRequestPreviewCard({ pullRequest }: { pullRequest: EnrichedP
     >
       <span className="flex items-center gap-2">
         {statusInfo
-          ? <span className={cx("h-2 w-2 shrink-0 rounded-full", statusInfo.dot)} />
+          ? <StatusIcon kind={statusInfo.status} size="md" decorative />
           : <GitPullRequest size={13} className="text-text-muted" />}
         <span className="text-xs font-semibold text-accent">PR #{pullRequest.prId}</span>
         {statusInfo && (

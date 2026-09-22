@@ -282,7 +282,7 @@ export default function VegaLiteVisual({ visual, mode = "inline", viewport }: Ve
       >
         <div ref={measureRef} className="relative flex min-h-full w-full min-w-0 justify-center">
           {renderError ? (
-            <div className="text-sm text-red-500 font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
+            <div className="text-sm text-error font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
               Vega-Lite render error: {renderError}
             </div>
           ) : (

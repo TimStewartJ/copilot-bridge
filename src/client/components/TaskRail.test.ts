@@ -99,7 +99,7 @@ describe("TaskRail navigation attention", () => {
       harness!.dom.container,
       "Chats, 1 chat needs attention; 1 needs an answer",
     );
-    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-warning");
+    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-accent");
     await harness!.act(async () => {
       getReactProps(chatsButton)?.onClick?.();
     });
@@ -117,7 +117,7 @@ describe("TaskRail navigation attention", () => {
       harness!.dom.container,
       "Chats, 1 chat needs attention",
     );
-    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-success");
+    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-text-primary");
 
     await renderRail({
       expanded: true,
@@ -133,6 +133,6 @@ describe("TaskRail navigation attention", () => {
       harness!.dom.container,
       "Chats, 1 chat needs attention; 1 needs an answer",
     );
-    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-warning");
+    expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-accent");
   });
 });

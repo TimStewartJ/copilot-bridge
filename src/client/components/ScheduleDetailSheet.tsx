@@ -29,6 +29,7 @@ import {
 import EmptyState from "./shared/EmptyState";
 import { useModalDialog } from "./shared/useModalDialog";
 import { DS, cx } from "../design/tokens";
+import { StatusIcon } from "../design/primitives";
 
 const CRON_PRESETS = [
   { label: "Every weekday at 8 AM", cron: "0 8 * * 1-5" },
@@ -248,8 +249,8 @@ function ViewMode({
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div>
               <span className="text-text-faint block mb-0.5">Status</span>
-              <span className={cx("inline-flex items-center gap-1 font-medium", schedule.enabled ? "text-success" : "text-text-muted")}>
-                <span className={cx("w-1.5 h-1.5 rounded-full", schedule.enabled ? "bg-success" : "bg-text-faint")} />
+              <span className={cx("inline-flex items-center gap-1 font-medium", schedule.enabled ? "text-text-primary" : "text-text-muted")}>
+                <StatusIcon kind={schedule.enabled ? "on" : "paused"} decorative />
                 {schedule.enabled ? "Active" : "Paused"}
               </span>
             </div>
@@ -854,15 +855,15 @@ function EditMode({
 
 function SessionRunRow({ session, onSelect }: { session: ScheduleRun; onSelect?: () => void }) {
   const runState = getSessionRunState(session);
-  const statusDot = session.missing
-    ? "bg-text-faint"
+  const status = session.missing
+    ? { kind: "closed" as const, label: "Unavailable" }
     : runState === "stalled"
-      ? "bg-warning animate-pulse"
+      ? { kind: "warning" as const, label: "Stalled" }
       : runState === "busy"
-        ? "bg-info animate-pulse"
+        ? { kind: "working" as const, label: "Working" }
         : session.archived
-          ? "bg-text-faint"
-          : "bg-success";
+          ? { kind: "closed" as const, label: "Archived" }
+          : { kind: "done" as const, label: "Finished" };
 
   return (
     <button
@@ -870,7 +871,7 @@ function SessionRunRow({ session, onSelect }: { session: ScheduleRun; onSelect?:
       disabled={!onSelect}
       className={cx(DS.row.base, DS.row.touch, "gap-2.5 py-2", onSelect ? DS.row.interactive : DS.row.inert, (session.archived || session.missing) && "opacity-60")}
     >
-      <span className={cx("w-1.5 h-1.5 rounded-full shrink-0", statusDot)} />
+      <StatusIcon kind={status.kind} label={status.label} />
       <div className="flex-1 min-w-0">
         <div className="text-xs text-text-primary truncate flex items-center gap-1.5">
           <MessageSquare size={10} className="text-text-faint shrink-0" />

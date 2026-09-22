@@ -16,7 +16,8 @@ import { useSessionsQuery } from "../hooks/queries/useSessions";
 import { useTasksQuery } from "../hooks/queries/useTasks";
 import { getSessionPath } from "../lib/session-path";
 import { timeAgo } from "../time";
-import { DS, cx } from "../design/tokens";
+import { DS, cx, type DsStatusKind } from "../design/tokens";
+import { StatusIcon } from "../design/primitives";
 
 
 export interface BridgeReferenceContextValue {
@@ -40,14 +41,14 @@ export function parseChatBridgeLink(href: string | null | undefined): BridgeLink
 
 type ReferenceTone = "waiting" | "running" | "stalled" | "unread" | "idle" | "archived" | "unknown";
 
-const TONE_DOT: Record<ReferenceTone, string> = {
-  waiting: "bg-warning",
-  running: "bg-info animate-pulse",
-  stalled: "bg-error",
-  unread: "bg-success",
-  idle: "bg-text-faint/60",
-  archived: "bg-text-faint/40",
-  unknown: "bg-text-faint/40",
+const TONE_STATUS: Record<ReferenceTone, DsStatusKind | null> = {
+  waiting: "needs-input",
+  running: "working",
+  stalled: "warning",
+  unread: "unread",
+  idle: null,
+  archived: "closed",
+  unknown: null,
 };
 
 const TONE_LABEL: Record<ReferenceTone, string> = {
@@ -217,8 +218,8 @@ export function BridgeReferenceChip({ target, label }: { target: BridgeLinkTarge
     >
       <Icon size={12} aria-hidden="true" className="shrink-0 text-text-muted" />
       <span className="truncate">{reference.title}</span>
-      {reference.tone && reference.tone !== "idle" && reference.tone !== "unknown" && (
-        <span aria-hidden="true" className={cx("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[reference.tone])} />
+      {reference.tone && TONE_STATUS[reference.tone] && (
+        <StatusIcon kind={TONE_STATUS[reference.tone]!} decorative />
       )}
     </a>
   );
@@ -244,7 +245,7 @@ export function BridgeReferenceCard({ target, label }: { target: BridgeLinkTarge
           <span className={cx(DS.text.sectionLabel, "font-semibold text-text-muted")}>{KIND_NAME[reference.kind]}</span>
           {reference.tone && (
             <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-              <span aria-hidden="true" className={cx("h-1.5 w-1.5 rounded-full", TONE_DOT[reference.tone])} />
+              {TONE_STATUS[reference.tone] && <StatusIcon kind={TONE_STATUS[reference.tone]!} decorative />}
               {TONE_LABEL[reference.tone]}
             </span>
           )}

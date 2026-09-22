@@ -22,9 +22,12 @@ quiet, dense with information, and calm until something needs attention.
 3. **One line that says what it is, which opens for more.** Closed by default: the reader chooses
    what to open (`DisclosureRow`, `Details`). Rows read as sentences ("Searched for …", "Worked for
    2m · 14 steps") and the raw details are one click away.
-4. **Colour carries state, and only on the words or icon that carry it.** A warning does not turn
-   its section yellow (`Notice`, `Badge`, `DS.tone`). Something healthy or ordinary has no colour. A
-   user's own colours (groups, tags) mark identity with a dot or a tag, never a tinted box.
+4. **Shape carries state; colour confirms it, and only on the words or glyph that carry it.** A
+   warning does not turn its section yellow (`Notice`, `Badge`, `DS.tone`). A state shown without
+   words is a `StatusIcon` glyph, never a bare coloured dot, so states stay apart for colour-blind
+   readers and at small sizes. Something healthy or ordinary has no colour. A user's own colours
+   (groups, tags) mark identity with an `IdentitySwatch` square or a tag, never a tinted box and
+   never a circle, which is kept for status.
 5. **Accent is never a fill.** It marks what is waiting on the reader (`DS.text.attention`), links,
    and keyboard focus (`DS.focus`). Selection is a neutral fill (`DS.row.selected`,
    `DS.segmented.selected`, `DS.choice.selected`).
@@ -53,6 +56,26 @@ surface (`*-surface`) and a brighter glyph value (`icon-*`) that only needs 3:1 
 graphic. Group and tag colours are `identity-*` swatches and are never used for state.
 `surface-contrast.test.ts` holds the numbers: 4.5:1 for text and badges, 3:1 for glyphs and input
 edges, minimum steps between text levels and between surfaces, and an APCA floor for dark text.
+
+## Status
+
+One vocabulary everywhere. Each kind has one meaning, and a row shows at most one of them.
+
+| Kind | Glyph | Colour | Means |
+| --- | --- | --- | --- |
+| `needs-input` | filled `?` | accent | A question or approval waits on the reader |
+| `working` | spinning ring | neutral | Work in flight; the motion is the signal, and it stops under reduced motion |
+| `unread` | solid dot, with a bold title | primary text | New results since the reader last looked |
+| `warning` | triangle | warning | Stalled, due today, needs a decision |
+| `danger` | filled `!` | error | Overdue, failed, disconnected |
+| `done` | check in a ring | faint | Finished; it steps back |
+| `open` / `closed` | ring / cross in a ring | neutral / faint | A pull request or similar object's state |
+| `paused` / `on` | bars in a ring / solid dot | faint / success | A schedule or switch, always beside its word |
+| idle | nothing | none | An absent state is not drawn |
+
+A `StatusIcon` names itself to assistive technology; pass `decorative` when adjacent text already
+says the state. Counts on navigation use `CountBadge` with `accent` when something needs an answer
+and `unread` otherwise, matching the glyphs.
 
 ## Surface hierarchy
 
@@ -90,7 +113,9 @@ hover/selected rows and constrained panes.
 | Something that opens to show more | `DisclosureRow`; `Details` when no state is needed |
 | Labelled values | `FieldList` + `Field`, not one box per value |
 | Headline figures | `StatRow`, not tiles |
-| A state in a word or two | `Badge` |
+| A state in a word or two | `Badge` (put the matching `StatusIcon decorative` inside it) |
+| A state with no room for words: a row, a tile corner, a nav icon | `StatusIcon` (`DS.status.corner` on a tile) |
+| A group's or tag's colour beside its name | `IdentitySwatch`; tag names use `IDENTITY_TINT` + `IDENTITY_TEXT` |
 | How many things want attention | `CountBadge` |
 | Facts on one quiet line | `MetaLine` |
 | Something the reader should know | `Notice` (neutral surface, toned icon and title) |

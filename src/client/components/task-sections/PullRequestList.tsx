@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { EnrichedPR, PRRef, ProviderName } from "../../api";
 import { linkResource, unlinkResource } from "../../api";
 import { PR_STATUS_STYLES } from "../../work-item-styles";
-import { Badge } from "../../design/primitives";
+import { Badge, StatusIcon } from "../../design/primitives";
 import { GitPullRequest } from "lucide-react";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
@@ -212,7 +212,7 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
               {isCompact ? (
                 <>
                   {pr.status ? (
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusInfo?.dot ?? "bg-text-muted"}`} />
+                    <StatusIcon kind={statusInfo?.status ?? "open"} label={statusInfo?.label ?? pr.status} />
                   ) : (
                     <GitPullRequest size={12} className="text-text-muted" />
                   )}
@@ -220,7 +220,7 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
               ) : (
                 <>
                   {statusInfo ? (
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${statusInfo.dot}`} />
+                    <StatusIcon kind={statusInfo.status} size="md" decorative />
                   ) : (
                     <GitPullRequest size={14} className="text-text-muted" />
                   )}

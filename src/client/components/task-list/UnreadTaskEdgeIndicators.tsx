@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { DS, cx } from "../../design/tokens";
+import { StatusIcon } from "../../design/primitives";
 
 const UNREAD_TASK_ROW_SELECTOR = "[data-unread-task-id]";
 const SCROLL_EPSILON = 1;
@@ -249,7 +250,7 @@ export function UnreadTaskEdgePill({ edge, direction, onJump }: UnreadTaskEdgePi
         onClick={() => onJump(edge.targetTaskId!)}
         className={cx("pointer-events-auto", DS.surface.floatingPill, DS.focus, isAbove ? "-translate-y-1/2" : "-translate-y-full")}
       >
-        <span aria-hidden="true" className={cx(DS.dot, "bg-success")} />
+        <StatusIcon kind="unread" decorative />
         {label}
       </button>
     </div>

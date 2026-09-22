@@ -21,6 +21,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Plus, Square, SquareCheckBig, RotateCw, Bot, Terminal } from "lucide-react";
 import { DS } from "../design/tokens";
+import { StatusIcon } from "../design/primitives";
 import TaskPickerDialog from "./TaskPickerDialog";
 import { useModalDialog } from "./shared/useModalDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -129,7 +130,7 @@ const styles = {
     itemPadding: "py-2.5",
     titleClass: "font-medium truncate",
     metaClass: "text-xs text-text-muted mt-0.5",
-    dotSize: "w-1.5 h-1.5 mr-1.5",
+    dotSize: "size-3 mr-1.5",
     listGap: "space-y-1",
   },
   compact: {
@@ -138,7 +139,7 @@ const styles = {
     itemPadding: "py-2",
     titleClass: "font-medium truncate text-xs",
     metaClass: "text-[10px] text-text-muted mt-0.5",
-    dotSize: "w-1.5 h-1.5 mr-1",
+    dotSize: "size-3 mr-1",
     listGap: "space-y-0.5",
   },
 } as const;
@@ -683,19 +684,16 @@ export default function SessionList({
           backgroundAgents!.idle ? ` · ${backgroundAgents!.idle} idle` : ""
         }`
       : undefined;
-    const dotColor = isArchiving
-      ? ""
-      : needsUserInput
-        ? "bg-warning animate-pulse"
-        : getSessionRunState(session) === "stalled"
-        ? "bg-warning animate-pulse"
-        : getSessionRunState(session) === "busy"
-          ? "bg-info animate-pulse"
+    const runState = getSessionRunState(session);
+    const status = needsUserInput
+      ? { kind: "needs-input" as const, label: "Needs your input" }
+      : runState === "stalled"
+        ? { kind: "warning" as const, label: "Stalled" }
+        : runState === "busy"
+          ? { kind: "working" as const, label: "Working" }
           : unread
-            ? "bg-success"
-            : isArch
-              ? "bg-text-faint"
-              : "bg-text-faint";
+            ? { kind: "unread" as const, label: "New results" }
+            : null;
     const { onClick: guardedClick, ...longPressBindings } = bindLongPress(id, () => onSelectSession(id));
 
     const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -794,9 +792,9 @@ export default function SessionList({
                 />
               </span>
             ) : (
-              <span
-                className={`inline-block ${s.dotSize} ${dotColor} rounded-full shrink-0`}
-              />
+              <span className={`inline-flex ${s.dotSize} shrink-0 items-center justify-center`}>
+                {status && <StatusIcon kind={status.kind} label={status.label} />}
+              </span>
             )}
             {session.triggeredBy === "schedule" && session.scheduleEnabled && (
               <span title={`Scheduled: ${session.scheduleName ?? ""}`} className="inline-flex shrink-0 mr-0.5">

@@ -7,7 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import { ChevronRight } from "lucide-react";
-import { DS, cx, type DsButtonSize, type DsButtonVariant, type DsTone } from "./tokens";
+import { DS, cx, type DsButtonSize, type DsButtonVariant, type DsStatusKind, type DsTone } from "./tokens";
+import { IDENTITY_FILL, identityColor } from "./identity";
 
 /**
  * Bridge design system: the components screens are assembled from. README.md in this folder holds
@@ -450,6 +451,146 @@ export function CountBadge({
     <span aria-hidden="true" className={cx(DS.count.base, DS.count.pad, DS.count.tone[tone], className)}>
       {count > 99 ? "99+" : count}
     </span>
+  );
+}
+
+/** What each StatusIcon kind says when nothing more specific is given. */
+export const STATUS_LABEL: Record<DsStatusKind, string> = {
+  "needs-input": "Needs your input",
+  working: "Working",
+  unread: "New results",
+  warning: "Needs attention",
+  danger: "Problem",
+  done: "Done",
+  open: "Open",
+  closed: "Closed",
+  paused: "Paused",
+  on: "On",
+};
+
+function StatusGlyph({ kind }: { kind: DsStatusKind }) {
+  const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+  switch (kind) {
+    case "needs-input":
+      return (
+        <>
+          <circle cx="8" cy="8" r="7" fill="currentColor" />
+          <path d="M6.1 6.1a1.95 1.95 0 1 1 2.7 1.8c-.5.2-.8.65-.8 1.15v.35" fill="none" stroke="var(--color-bg-primary)" strokeWidth="1.7" strokeLinecap="round" />
+          <circle cx="8" cy="11.7" r="0.95" fill="var(--color-bg-primary)" />
+        </>
+      );
+    case "working":
+      return (
+        <>
+          <circle cx="8" cy="8" r="6" {...stroke} strokeOpacity="0.3" />
+          <path d="M8 2a6 6 0 0 1 6 6" {...stroke} strokeWidth={2} />
+        </>
+      );
+    case "unread":
+      return <circle cx="8" cy="8" r="4" fill="currentColor" />;
+    case "warning":
+      return (
+        <>
+          <path d="M8 1.9 14.9 13.9H1.1Z" {...stroke} />
+          <path d="M8 6.3v3.4" {...stroke} />
+          <circle cx="8" cy="11.75" r="0.95" fill="currentColor" />
+        </>
+      );
+    case "danger":
+      return (
+        <>
+          <circle cx="8" cy="8" r="7" fill="currentColor" />
+          <path d="M8 4.4v4.4" fill="none" stroke="var(--color-bg-primary)" strokeWidth="1.8" strokeLinecap="round" />
+          <circle cx="8" cy="11.4" r="1" fill="var(--color-bg-primary)" />
+        </>
+      );
+    case "done":
+      return (
+        <>
+          <circle cx="8" cy="8" r="6.4" {...stroke} />
+          <path d="m5.3 8.2 1.9 1.9 3.6-3.8" {...stroke} />
+        </>
+      );
+    case "open":
+      return <circle cx="8" cy="8" r="5.6" {...stroke} strokeWidth={2} />;
+    case "closed":
+      return (
+        <>
+          <circle cx="8" cy="8" r="6.4" {...stroke} />
+          <path d="m5.8 5.8 4.4 4.4m0-4.4-4.4 4.4" {...stroke} />
+        </>
+      );
+    case "paused":
+      return (
+        <>
+          <circle cx="8" cy="8" r="6.4" {...stroke} />
+          <path d="M6.6 5.9v4.2M9.4 5.9v4.2" {...stroke} />
+        </>
+      );
+    case "on":
+      return <circle cx="8" cy="8" r="4.5" fill="currentColor" />;
+  }
+}
+
+/**
+ * A state as a glyph: needs input, working, unread, warning, danger, done, open, closed, paused, on.
+ * The shape says which state it is, so the glyphs stay distinguishable without colour. It names
+ * itself to assistive technology unless `decorative` is set because adjacent text already says it.
+ */
+export function StatusIcon({
+  kind,
+  label,
+  size = "sm",
+  decorative = false,
+  className,
+}: {
+  kind: DsStatusKind;
+  label?: string;
+  size?: keyof typeof DS.status.size;
+  decorative?: boolean;
+  className?: string;
+}) {
+  const name = label ?? STATUS_LABEL[kind];
+  return (
+    <span
+      role={decorative ? undefined : "img"}
+      aria-label={decorative ? undefined : name}
+      aria-hidden={decorative ? true : undefined}
+      title={decorative ? undefined : name}
+      data-status={kind}
+      className={cx(DS.status.base, DS.status.size[size], DS.status.tone[kind], className)}
+    >
+      <svg
+        viewBox="0 0 16 16"
+        className={cx("size-full overflow-visible", kind === "working" && "animate-spin motion-reduce:animate-none")}
+        aria-hidden="true"
+        focusable="false"
+      >
+        <StatusGlyph kind={kind} />
+      </svg>
+    </span>
+  );
+}
+
+/** A group's or tag's colour beside its name. Decorative: the name next to it is what identifies it. */
+export function IdentitySwatch({
+  color,
+  size = "sm",
+  className,
+  title,
+}: {
+  color: string | undefined | null;
+  size?: keyof typeof DS.swatch.size;
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      title={title}
+      data-identity={identityColor(color)}
+      className={cx(DS.swatch.base, DS.swatch.size[size], IDENTITY_FILL[identityColor(color)], className)}
+    />
   );
 }
 

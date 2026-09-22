@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { ChecklistItem, DashboardChecklistItem } from "../api";
 import { patchChecklistItem, deleteChecklistItem } from "../api";
 import { deadlineUrgency, deadlineLabel, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../checklist-helpers";
-import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
+import { GROUP_COLOR_BG } from "../group-colors";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import {
@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { DS, cx } from "../design/tokens";
+import { IdentitySwatch } from "../design/primitives";
 
 // ── Variant-specific props ──────────────────────────────────────
 
@@ -281,7 +282,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
                     ? cx(GROUP_COLOR_BG[dashboardChecklistItem.taskGroupColor] ?? "", "text-text-secondary")
                     : "bg-bg-hover text-text-faint")}>
                   {dashboardChecklistItem.taskGroupColor && (
-                    <span className={cx("w-1.5 h-1.5 rounded-full shrink-0", GROUP_COLOR_DOT[dashboardChecklistItem.taskGroupColor] ?? "")} />
+                    <IdentitySwatch color={dashboardChecklistItem.taskGroupColor} />
                   )}
                   {dashboardChecklistItem.taskTitle}
                 </span>

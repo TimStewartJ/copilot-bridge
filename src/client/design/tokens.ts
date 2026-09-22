@@ -216,6 +216,10 @@ export const DS = {
     /** Horizontal room for two digits, kept apart from `base` so a single digit stays round. */
     pad: "px-[5px]",
     tone: {
+      /** Things waiting on the reader: questions and approvals. */
+      accent: "bg-accent",
+      /** New results. The same high-contrast neutral as the unread StatusIcon. */
+      unread: "bg-text-primary",
       success: "bg-success",
       warning: "bg-warning",
       danger: "bg-error",
@@ -223,8 +227,43 @@ export const DS = {
     },
   },
 
-  /** A small dot that stands for a state or an identity beside a name. Pair it with a colour class. */
+  /** A neutral dot: a separator or a series marker in a legend. States use StatusIcon, identity a swatch. */
   dot: "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+
+  /**
+   * A state drawn as a glyph (StatusIcon). Shape carries the state so the glyphs stay apart without
+   * colour; colour confirms it. Each kind has one meaning everywhere in the app.
+   */
+  status: {
+    base: "inline-flex shrink-0 items-center justify-center",
+    size: {
+      sm: "size-3",
+      md: "size-3.5",
+    },
+    tone: {
+      "needs-input": "text-icon-accent",
+      working: "text-text-secondary",
+      unread: "text-text-primary",
+      warning: "text-icon-warning",
+      danger: "text-icon-error",
+      done: "text-text-faint",
+      open: "text-text-secondary",
+      closed: "text-text-faint",
+      paused: "text-text-faint",
+      on: "text-icon-success",
+    },
+    /** A glyph pinned to the corner of an icon or tile, on a disc so it reads over anything. */
+    corner: "absolute -right-1 -top-1 flex items-center justify-center rounded-full bg-surface-pane p-px",
+  },
+
+  /** A user's group or tag colour beside its name: a small square, so it never reads as a state. */
+  swatch: {
+    base: "inline-block shrink-0 rounded-[2px]",
+    size: {
+      sm: "size-2",
+      md: "size-2.5",
+    },
+  },
 
   /** A band names a loaded collection without turning each row into another surface. */
   collection: {
@@ -326,6 +365,7 @@ export const DS = {
 export type DsTone = keyof typeof DS.tone;
 export type DsButtonVariant = keyof typeof DS.button.variant;
 export type DsButtonSize = keyof typeof DS.button.size;
+export type DsStatusKind = keyof typeof DS.status.tone;
 
 /** Join class fragments, dropping the ones a condition switched off. */
 export function cx(...values: Array<string | false | null | undefined>): string {

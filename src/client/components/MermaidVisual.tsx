@@ -104,7 +104,7 @@ export default function MermaidVisual({ visual, mode = "inline", viewport }: Mer
         style={focusMode && viewport?.height ? { maxHeight: viewport.height } : undefined}
       >
         {renderError ? (
-          <div className="text-sm text-red-500 font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
+          <div className="text-sm text-error font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
             Mermaid render error: {renderError}
           </div>
         ) : svg ? (
