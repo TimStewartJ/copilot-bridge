@@ -43,9 +43,9 @@ function findByTestId(root: HTMLElement, testId: string): HTMLElement {
   return candidate as HTMLElement;
 }
 
-function findButtonByText(root: HTMLElement, text: string): HTMLElement {
-  const button = findAllByTag(root, "BUTTON").find((element) => element.textContent === text);
-  if (!button) throw new Error(`Button not found: ${text}`);
+function findButtonByLabel(root: HTMLElement, label: string): HTMLElement {
+  const button = findAllByTag(root, "BUTTON").find((element) => element.getAttribute?.("aria-label") === label);
+  if (!button) throw new Error(`Button not found: ${label}`);
   return button as HTMLElement;
 }
 
@@ -165,10 +165,11 @@ describe("UnreadTaskEdgeIndicators", () => {
       },
     );
 
-    expect(harness.dom.container.textContent).toContain("↑ 2 unread above");
-    expect(harness.dom.container.textContent).toContain("2 unread below ↓");
+    const root = harness.dom.container as unknown as HTMLElement;
+    expect(findByTestId(root, "unread-tasks-above").textContent).toBe("2 new");
+    expect(findByTestId(root, "unread-tasks-below").textContent).toBe("2 new");
 
-    const jumpBelow = findButtonByText(harness.dom.container as unknown as HTMLElement, "2 unread below ↓");
+    const jumpBelow = findButtonByLabel(root, "Jump to 2 unread below");
     await harness.act(async () => {
       getReactProps(jumpBelow)?.onClick();
     });
@@ -213,7 +214,7 @@ describe("UnreadTaskEdgeIndicators", () => {
       { disabled: true },
     );
 
-    expect(harness.dom.container.textContent).not.toContain("1 unread below ↓");
+    expect(queryByTestId(harness.dom.container as unknown as HTMLElement, "unread-tasks-below")).toBeNull();
   });
 
   it("finds a scrollable ancestor when the task-list scope is not the scroll container", async () => {
@@ -223,7 +224,7 @@ describe("UnreadTaskEdgeIndicators", () => {
       { nested: true },
     );
 
-    expect(harness.dom.container.textContent).toContain("1 unread below ↓");
+    expect(findByTestId(harness.dom.container as unknown as HTMLElement, "unread-tasks-below").textContent).toBe("1 new");
   });
 
   it("uses an explicit scroll container ref when provided", async () => {
@@ -233,6 +234,6 @@ describe("UnreadTaskEdgeIndicators", () => {
       { explicitScrollRef: true, nested: true },
     );
 
-    expect(harness.dom.container.textContent).toContain("↑ 1 unread above");
+    expect(findByTestId(harness.dom.container as unknown as HTMLElement, "unread-tasks-above").textContent).toBe("1 new");
   });
 });
