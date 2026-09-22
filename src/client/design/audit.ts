@@ -63,6 +63,18 @@ export const DESIGN_RULES: ReadonlyArray<DesignRule> = [
     matches: (line) => /(?<![\w-])rounded-full(?![\w-])/.test(line) && /(?<![\w-])px-\d/.test(line),
   },
   {
+    id: "state-dot",
+    message: "A bare coloured dot can only be told apart by its colour. Show a state with <StatusIcon> (shape carries it) and a group or tag colour with <IdentitySwatch>.",
+    matches: (line) => /(?<![\w-])rounded-full(?![\w-])/.test(line)
+      && /(?<![\w-])(?:size|h|w)-(?:1|1\.5|2|2\.5)(?![\w.-])/.test(line)
+      && /(?<![\w-])bg-(?:success|warning|error|info|accent|agent|identity-\w+)(?![\w-])/.test(line),
+  },
+  {
+    id: "raw-palette",
+    message: "Raw Tailwind palette colours do not follow the theme or its contrast checks. Use a role: text-error, DS.tone, a Badge, or identity-* through design/identity.ts.",
+    matches: (line) => /(?<![\w-])(?:bg|text|border|ring|fill|stroke|from|via|to|divide|outline|decoration|shadow)-(?:red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone)-\d{2,3}(?![\w])/.test(line),
+  },
+  {
     id: "dashed-empty",
     message: "Say an absent state once and quietly with <EmptyHint>, not with a dashed empty box.",
     matches: (line) => /(?<![\w-])border-dashed(?![\w-])/.test(line),

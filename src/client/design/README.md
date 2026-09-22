@@ -140,8 +140,8 @@ pieces (`"bg-" + tone`) is never generated.
 
 `npm run test:design-audit` runs in `check:fast`, `check:client` and `check:pr`. It reads every
 client source file outside this folder and fails on the retired patterns: accent fills and outlines,
-white-on-colour fills, tinted boxes, `rounded-full` state pills, dashed empty boxes, shadows on
-in-page surfaces, uppercase labels, imports of the legacy `shared/design-system` tokens, and nested
+white-on-colour fills, tinted boxes, `rounded-full` state pills, bare state- or identity-coloured
+dots, raw Tailwind palette colours, dashed empty boxes, shadows on in-page surfaces, uppercase labels, imports of the legacy `shared/design-system` tokens, and nested
 `Panel` components. It parses literals and JSX, so multiline recipes and aliased panels are checked,
 not just class strings on one line. Each failure names the rule and what to use instead. The audit
 also runs in the CI, preview-package and release-package workflows.
