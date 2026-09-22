@@ -592,6 +592,13 @@ export interface AgentBackend {
    * passthrough. Optional for the same reason as `getAccountQuota`.
    */
   getAccountAuth?(): Promise<unknown>;
+
+  /**
+   * The raw Copilot user response fetched from GitHub now, for the current
+   * account. The backend's own copy is only fetched at startup, so this is
+   * what makes a quota refresh return fresh numbers.
+   */
+  fetchAccountCopilotUser?(): Promise<unknown>;
 }
 
 /**

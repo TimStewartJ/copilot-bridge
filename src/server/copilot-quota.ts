@@ -9,6 +9,9 @@
  *  - `account.getCurrentAuth` carries the raw Copilot user response, which has
  *    the exact `quota_remaining` and the real `quota_reset_date`.
  *
+ * Both are the backend's copy from when it started, so the reader can also take
+ * a freshly fetched Copilot user response (`getLiveUser`) that replaces it.
+ *
  * The typed shapes are marked @experimental in the SDK, so everything is parsed
  * defensively and a bad payload degrades to "unavailable" instead of throwing.
  * Note the bucket named `premium_interactions` is billed in AI credits, not
@@ -57,6 +60,12 @@ export interface CreateCopilotQuotaReaderOptions {
   getQuota: () => Promise<unknown>;
   /** Optional: supplies the exact remaining balance and the real reset date. */
   getAuth?: () => Promise<unknown>;
+  /**
+   * Optional: the raw Copilot user response fetched from GitHub now. The
+   * backend's `getAuth`/`getQuota` copies are only fetched when it starts, so
+   * without this a refresh keeps returning the same numbers.
+   */
+  getLiveUser?: () => Promise<unknown>;
   now?: () => number;
   cacheTtlMs?: number;
 }
@@ -64,12 +73,13 @@ export interface CreateCopilotQuotaReaderOptions {
 /** Bucket carrying real numbers on token-billed accounts. */
 export const PRIMARY_QUOTA_BUCKET = "premium_interactions";
 
-const DEFAULT_QUOTA_CACHE_TTL_MS = 60_000;
+const DEFAULT_QUOTA_CACHE_TTL_MS = 30_000;
 const QUOTA_UNAVAILABLE_MESSAGE = "Live quota is unavailable from the Copilot backend.";
 
 export function createCopilotQuotaReader({
   getQuota,
   getAuth,
+  getLiveUser,
   now = Date.now,
   cacheTtlMs = DEFAULT_QUOTA_CACHE_TTL_MS,
 }: CreateCopilotQuotaReaderOptions): CopilotQuotaReader {
@@ -81,12 +91,13 @@ export function createCopilotQuotaReader({
     const fetchedAt = new Date(fetchedAtMs).toISOString();
     let status: CopilotQuotaStatus;
     try {
-      // The auth call only enriches the counter, so it must never fail the read.
-      const [quota, auth] = await Promise.all([
+      // The auth and live-user calls only enrich the counter, so they must never fail the read.
+      const [quota, auth, liveUser] = await Promise.all([
         getQuota(),
         getAuth ? getAuth().catch(() => undefined) : Promise.resolve(undefined),
+        getLiveUser ? Promise.resolve().then(getLiveUser).catch(() => undefined) : Promise.resolve(undefined),
       ]);
-      status = buildCopilotQuotaStatus(quota, auth, fetchedAt);
+      status = buildCopilotQuotaStatus(quota, withLiveUser(auth, liveUser), fetchedAt);
     } catch (error) {
       status = {
         available: false,
@@ -159,6 +170,14 @@ export function buildCopilotQuotaStatus(
   };
 }
 
+/** Swaps the backend's startup copy of the Copilot user for a freshly fetched one. */
+function withLiveUser(auth: unknown, liveUser: unknown): unknown {
+  if (!isRecord(liveUser) || !isRecord(liveUser.quota_snapshots)) return auth;
+  const authRecord = asRecord(auth) ?? {};
+  const authInfo = asRecord(authRecord.authInfo) ?? {};
+  return { ...authRecord, authInfo: { ...authInfo, copilotUser: liveUser } };
+}
+
 function parseIdentity(
   authRecord: Record<string, unknown> | null,
   copilotUser: Record<string, unknown> | null,
@@ -188,18 +207,20 @@ function parseCopilotQuotaSnapshot(
   if (!record) return null;
   const rawUser = context.rawUserSnapshot;
 
-  const tokenBasedBilling = readBoolean(record.tokenBasedBilling)
-    ?? readBoolean(rawUser?.token_based_billing)
+  // The raw user response wins: it may be freshly fetched, while the typed
+  // snapshot is always the backend's copy from startup.
+  const tokenBasedBilling = readBoolean(rawUser?.token_based_billing)
+    ?? readBoolean(record.tokenBasedBilling)
     ?? false;
-  const isUnlimitedEntitlement = readBoolean(record.isUnlimitedEntitlement)
-    ?? readBoolean(rawUser?.unlimited)
+  const isUnlimitedEntitlement = readBoolean(rawUser?.unlimited)
+    ?? readBoolean(record.isUnlimitedEntitlement)
     ?? false;
-  const rawEntitlement = readFiniteNumber(record.entitlementRequests)
-    ?? readFiniteNumber(rawUser?.entitlement);
+  const rawEntitlement = readFiniteNumber(rawUser?.entitlement)
+    ?? readFiniteNumber(record.entitlementRequests);
   const entitlement = rawEntitlement !== null && rawEntitlement < 0 ? null : rawEntitlement;
-  const remaining = readFiniteNumber(record.quota_remaining)
-    ?? readFiniteNumber(rawUser?.quota_remaining)
-    ?? readFiniteNumber(rawUser?.remaining);
+  const remaining = readFiniteNumber(rawUser?.quota_remaining)
+    ?? readFiniteNumber(rawUser?.remaining)
+    ?? readFiniteNumber(record.quota_remaining);
   const roundedUsed = readFiniteNumber(record.usedRequests) ?? readFiniteNumber(record.used);
   const preciseUsed = entitlement !== null && remaining !== null
     ? roundQuotaAmount(entitlement - remaining)
@@ -214,11 +235,11 @@ function parseCopilotQuotaSnapshot(
     used: preciseUsed ?? roundedUsed,
     usedIsPrecise: preciseUsed !== null,
     remaining,
-    remainingPercentage: readFiniteNumber(record.remainingPercentage)
-      ?? readFiniteNumber(rawUser?.percent_remaining),
-    overage: readFiniteNumber(record.overage) ?? readFiniteNumber(rawUser?.overage_count),
-    overagePermitted: readBoolean(record.overageAllowedWithExhaustedQuota)
-      ?? readBoolean(rawUser?.overage_permitted)
+    remainingPercentage: readFiniteNumber(rawUser?.percent_remaining)
+      ?? readFiniteNumber(record.remainingPercentage),
+    overage: readFiniteNumber(rawUser?.overage_count) ?? readFiniteNumber(record.overage),
+    overagePermitted: readBoolean(rawUser?.overage_permitted)
+      ?? readBoolean(record.overageAllowedWithExhaustedQuota)
       ?? null,
     resetAt: context.resetAt ?? futureResetDate(record.resetDate, context.fetchedAt),
   };
