@@ -107,6 +107,43 @@ describe("SessionManager stale cached session recovery", () => {
     expect(servers).toEqual([expect.objectContaining({ name: "demo", status: "connected", provenance: "probe", sessionId: "session-1" })]);
   });
 
+  it("probes fresh pending loaded events rather than caching them as settled for 30 seconds", async () => {
+    const { manager } = createManager();
+    manager.mcpStatus.set("session-1", {
+      servers: [{ name: "demo", status: "pending" }], complete: true,
+      observedAt: Date.now(), provenance: "live-event",
+    });
+    const session = makeAgentSessionStub({
+      listMcpServers: vi.fn().mockResolvedValue({ servers: [{ name: "demo", status: "connected" }] }),
+    });
+    manager.sessionObjects.set("session-1", session);
+    expect(await manager.getMcpStatus("session-1")).toEqual([
+      expect.objectContaining({ name: "demo", status: "connected", provenance: "probe" }),
+    ]);
+    expect(session.listMcpServers).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a concurrent pending loaded snapshot discard a live probe or newer auth failure", async () => {
+    freezeLifecycleDeadlines();
+    const { manager } = createManager();
+    let resolveProbe!: (value: { servers: Array<{ name: string; status: string }> }) => void;
+    const session = makeAgentSessionStub({
+      listMcpServers: vi.fn(() => new Promise((resolve) => { resolveProbe = resolve; })),
+    });
+    manager.sessionObjects.set("session-1", session);
+    const request = manager.getMcpStatus("session-1");
+    await vi.waitFor(() => expect(session.listMcpServers).toHaveBeenCalledOnce());
+    manager.mcpStatus.set("session-1", {
+      servers: [{ name: "demo", status: "pending" }, { name: "auth", status: "needs-auth" }],
+      complete: true, observedAt: Date.now(), provenance: "live-event",
+    });
+    resolveProbe({ servers: [{ name: "demo", status: "connected" }, { name: "auth", status: "connected" }] });
+    expect(await request).toEqual([
+      expect.objectContaining({ name: "demo", status: "connected", provenance: "probe" }),
+      expect.objectContaining({ name: "auth", status: "needs-auth" }),
+    ]);
+  });
+
   it("recognizes only namespaced MCP session-not-found failures", () => {
     const failure = "MCP server 'demo': McpError: MCP error -32001: Session not found";
 

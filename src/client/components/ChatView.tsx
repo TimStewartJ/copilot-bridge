@@ -31,8 +31,6 @@ import {
   type ChatMessageAcceptedResponse,
   type ChatMessageDelivery,
   type ChatVisualEntry,
-  type McpServerStatus,
-  type McpStatusResponse,
   type ElicitationResponseEndpointPayload,
   type PendingElicitationRequestView,
   type PendingUserInputRequestView,
@@ -914,11 +912,13 @@ export default function ChatView({
     onMessageSent();
     loadAndReconnectRef.current({ background: true, replace: true, silent: true });
   }, [onMessageSent]);
-  const updateMcpStatus = useCallback((servers: McpServerStatus[]) => {
+  const refreshMcpObservation = useCallback(() => {
     if (!sessionId) return;
-    const queryKey = queryKeys.mcpStatus(sessionId);
-    void queryClient.cancelQueries({ queryKey, exact: true });
-    queryClient.setQueryData<McpStatusResponse>(queryKey, (current) => ({ ...current, servers, toolReadiness: current?.toolReadiness ?? undefined }));
+    // Runtime events are refresh hints, not a second writer of connection/readiness state.
+    void queryClient.invalidateQueries(
+      { queryKey: queryKeys.mcpStatus(sessionId), exact: true },
+      { cancelRefetch: false },
+    );
   }, [queryClient, sessionId]);
 
   const {
@@ -947,7 +947,7 @@ export default function ChatView({
     ensureConnected,
     activeTurnId,
     activeTurnInstanceId,
-  } = useSessionStream(historicalMode ? null : sessionId, handleStreamSettled, onMessageSent, updateMcpStatus);
+  } = useSessionStream(historicalMode ? null : sessionId, handleStreamSettled, onMessageSent, refreshMcpObservation);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
   // disappears from the overlay the moment its persisted entry is present in the loaded window.
@@ -1098,9 +1098,9 @@ export default function ChatView({
   ) => {
     if (!sessionId) throw new Error("Open a session before signing in to an MCP server.");
     const result = await loginMcpServer(sessionId, serverName, options);
-    updateMcpStatus(result.servers);
+    refreshMcpObservation();
     return result;
-  }, [sessionId, updateMcpStatus]);
+  }, [sessionId, refreshMcpObservation]);
 
   const refreshSessionContext = useCallback(async (
     targetSessionId: string,

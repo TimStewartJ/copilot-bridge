@@ -26,6 +26,15 @@ describe("MCP status observations", () => {
     expect(isMcpStatusFresh(snapshot(100, "demo", "replay-event"), 101)).toBe(false);
   });
 
+  it.each(["pending", "unknown"] as const)("requires a probe for %s events and bounds repeated probe reads", (status) => {
+    const observation: McpStatusSnapshot = { servers: [{ name: "demo", status }], complete: true };
+    expect(isMcpStatusFresh(stampMcpStatusSnapshot(observation, "session", "live-event", 100), 101)).toBe(false);
+    expect(isMcpStatusFresh(stampMcpStatusSnapshot(observation, "session", "replay-event", 100), 101)).toBe(false);
+    const probed = stampMcpStatusSnapshot(observation, "session", "probe", 100);
+    expect(isMcpStatusFresh(probed, 2_099)).toBe(true);
+    expect(isMcpStatusFresh(probed, 2_100)).toBe(false);
+  });
+
   it("includes provenance without replacing the SDK source", () => {
     const stamped = stampMcpStatusSnapshot({ servers: [{ name: "demo", status: "connected", source: "sdk" }], complete: true }, "session", "probe", 100);
     expect(stamped.servers[0]).toMatchObject({ source: "sdk", sessionId: "session", provenance: "probe", observedAt: new Date(100).toISOString() });

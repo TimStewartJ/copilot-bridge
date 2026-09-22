@@ -1,13 +1,17 @@
 import type { ChatEntry, McpServerStatus, ToolCall } from "../api";
 import { classifyToolFailure } from "../../shared/tool-failure";
 
-export const MCP_CONNECTION_GUIDANCE = "Connected means the MCP transport is available, not that every tool is authorized or every request is valid.";
+export const MCP_CONNECTION_GUIDANCE = "Tool permissions are separate from connection status.";
+
+export function mcpObservationTitle(server: McpServerStatus): string {
+  return `${server.observedAt ?? "Unknown time"}; ${server.provenance ?? "unknown source"}; session ${server.sessionId ?? "unknown"}`;
+}
 
 export function mcpObservationLabel(server: McpServerStatus, now = Date.now()): string {
   const observedAt = server.observedAt ? Date.parse(server.observedAt) : NaN;
   if (!Number.isFinite(observedAt)) return "Observation time unavailable";
   const stale = now - observedAt >= 30_000 || server.provenance === "replay-event";
-  return `${stale ? "Last observed (may be stale)" : "Observed"}: ${server.observedAt}${server.provenance ? ` (${server.provenance})` : ""}${server.sessionId ? `, session ${server.sessionId.slice(0, 8)}` : ""}`;
+  return `${stale ? "Last checked (may be stale)" : "Checked"}: ${new Date(observedAt).toLocaleTimeString()}`;
 }
 
 export function recentToolFailures(entries: ChatEntry[] = []) {

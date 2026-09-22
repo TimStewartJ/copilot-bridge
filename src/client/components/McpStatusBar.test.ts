@@ -23,12 +23,33 @@ describe("McpStatusBar status ownership", () => {
       expect(harness.dom.container.textContent).toContain("1/1 connected");
       expect(harness.dom.container.textContent).toContain("permission");
       expect(harness.dom.container.textContent).toContain("403 is not evidence of expired authentication");
-      expect(harness.dom.container.textContent).toContain("Connected means the MCP transport");
-      expect(harness.dom.container.textContent).toContain("(probe)");
+      expect(harness.dom.container.textContent).toContain("Tool permissions are separate");
+      expect(findAllByTag(harness.dom.container, "SPAN").some((element) =>
+        getReactProps(element)?.title?.includes("; probe;"))).toBe(true);
       expect(harness.dom.container.textContent).not.toContain("Start sign-in");
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("keeps pending connections visible and refreshable after tools are loaded", async () => {
+    const harness = await createReactDomHarness();
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    try {
+      await harness.render(createElement(McpStatusBar, {
+        servers: [{ name: "demo", status: "pending" }],
+        toolReadiness: { state: "ready", startedAt: "2026-09-22T18:17:27Z", completedAt: "2026-09-22T18:17:28Z" },
+        statusState: "ready", onRefresh,
+      }));
+      await harness.act(async () => getReactProps(findAllByTag(harness.dom.container, "BUTTON")[0])?.onClick?.());
+      expect(harness.dom.container.textContent).toContain("Tool definitions loaded");
+      expect(harness.dom.container.textContent).toContain("Connecting...");
+      expect(harness.dom.container.textContent).not.toContain("2026-09-22");
+      expect(getReactProps(findAllByTag(harness.dom.container, "DETAILS")[0])?.open).toBe(true);
+      const refresh = findAllByTag(harness.dom.container, "BUTTON").find((button) => button.textContent === "Refresh");
+      await harness.act(async () => getReactProps(refresh)?.onClick?.());
+      expect(onRefresh).toHaveBeenCalledOnce();
+    } finally { await harness.cleanup(); }
   });
 
   it("stays hidden for a confirmed empty configuration with no context signal", async () => {

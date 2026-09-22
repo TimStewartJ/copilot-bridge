@@ -12,6 +12,13 @@ function readSdkClientSource(format: "esm" | "cjs"): string {
 }
 
 describe("Copilot SDK native session contracts", () => {
+  it("forwards the session-wide tool-search policy on create and resume", () => {
+    for (const format of ["esm", "cjs"] as const) {
+      const source = readSdkClientSource(format);
+      expect(source.match(/toolSearch: config\.toolSearch/g)?.length ?? 0, format).toBeGreaterThanOrEqual(2);
+    }
+  });
+
   it("forwards Bridge eager-loading metadata on create and resume", () => {
     for (const format of ["esm", "cjs"] as const) {
       const source = readSdkClientSource(format);

@@ -8,8 +8,9 @@ export function getMcpStatusQueryOptions(sessionId: string | null) {
     queryFn: ({ signal }) => fetchMcpStatusSnapshot(sessionId!, { signal }),
     enabled: Boolean(sessionId),
     staleTime: 30_000,
-    refetchInterval: (query) => query.state.data && (query.state.data.toolReadiness === undefined || query.state.data.toolReadiness?.state === "initializing") ? 2_000 : false,
-    refetchOnWindowFocus: false,
+    // Connections can change after tool initialization. Keep observing both independently.
+    refetchInterval: (query) => query.state.data?.toolReadiness?.state === "initializing" ? 2_000 : 30_000,
+    refetchOnWindowFocus: true,
   });
 }
 
