@@ -58,6 +58,7 @@ export default function SortableTaskItem({
   const signals = getTaskRowSignals(task, indicator);
   const primarySignal = signals[0];
   const supportingSignal = signals
+    .find((candidate) => candidate.kind === "deferred" && candidate !== primarySignal) ?? signals
     .slice(1)
     .find((candidate) => candidate.kind !== "unread");
   const activityDot = getTaskActivityDot(indicator);
@@ -79,7 +80,7 @@ export default function SortableTaskItem({
         {showUnreadDot && (
           <>
             <span aria-hidden="true" className="absolute left-1 top-3.5 h-1.5 w-1.5 rounded-full bg-success" />
-            <span className="sr-only">New results</span>
+            <span className="sr-only">Unread conversations</span>
           </>
         )}
         <div className="flex items-center gap-1.5">
@@ -115,6 +116,10 @@ export default function SortableTaskItem({
             </span>
           )}
         </div>
+        {(task.nextAction || task.waitingOn) && <p className={cx(DS.text.meta, isRail ? "pl-[18px]" : "pl-[22px]", "mt-1 truncate")}
+          title={task.nextAction || task.waitingOn}>
+          {task.nextAction ? `${task.deferred ? "When resumed" : "Next step"}: ${task.nextAction}` : `Waiting for: ${task.waitingOn}`}
+        </p>}
         <div className={`${isRail ? "pl-[18px]" : "pl-[22px]"} mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-text-muted`}>
           {task.muted && <span className="font-medium">muted</span>}
           {task.muted && <span className="text-text-faint">•</span>}

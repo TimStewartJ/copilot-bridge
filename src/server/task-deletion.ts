@@ -58,9 +58,6 @@ function finishTaskDeletion(
     ctx.scheduler?.unregisterSchedule(scheduleId);
     ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId });
   }
-  // `feed_cards.taskId` is ON DELETE SET NULL, so cards silently lose their task
-  // without any event. Tell clients to refetch or they render a stale task chip.
-  ctx.globalBus.emit({ type: "feed:changed" });
 }
 
 export async function deleteTaskWithOwnedState(

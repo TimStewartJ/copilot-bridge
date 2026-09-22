@@ -28,13 +28,11 @@ export function shutdownAppContextServices(
     // Before the first await: POST /api/shutdown checked that the server is idle in this same tick.
     ctx.sessionManager.stopAdmittingWork();
     ctx.scheduler?.setGlobalPause(true);
-    ctx.focusProtectionStore?.stop();
     ctx.sessionOverlayMaintenance?.stop();
     ctx.stagingPreviewDiscovery?.stop();
     const stagingShutdown = stopAllStagingBackends(deadline);
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
-    ctx.focusSessionLaunchService?.stop();
     ctx.helm?.dispose();
     const handsFreeOutcome = await settleByDeadline(async () => {
       await ctx.voiceGateway?.shutdown();
@@ -48,7 +46,7 @@ export function shutdownAppContextServices(
       console.error("[web] Search index shutdown failed:", error);
     }
     const notificationsOutcome = await settleByDeadline(async () => {
-      await Promise.all([ctx.stopPushEventNotifications?.(), ctx.focusNotifications?.dispose()]);
+      await ctx.stopPushEventNotifications?.();
     }, deadline);
     if (notificationsOutcome.status !== "fulfilled") {
       console.error(`[web] Notification shutdown ${notificationsOutcome.status}`);
@@ -65,9 +63,6 @@ export function shutdownAppContextServices(
     } catch (error) {
       console.error("[web] Session manager shutdown failed:", error);
     }
-    const launchesOutcome = await settleByDeadline(() => ctx.focusSessionLaunchService?.drain(), deadline);
-    if (launchesOutcome.status !== "fulfilled") console.error(`[web] Focus launch shutdown ${launchesOutcome.status}`);
-
     const voiceOutcome = await settleByDeadline(
       () => ctx.voiceJobManager.shutdown(),
       deadline,

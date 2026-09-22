@@ -9,12 +9,12 @@ import {
 } from "./dashboard-routes";
 
 describe("dashboard focus routes", () => {
-  it("uses Focus as the canonical dashboard surface", () => {
-    expect(getDashboardTabPath("focus")).toBe("/dashboard/focus");
+  it("uses native Home as the canonical dashboard surface", () => {
+    expect(getDashboardTabPath("focus")).toBe("/dashboard/home");
     expect(getDashboardTabFromPathname("/dashboard/focus")).toBe("focus");
     expect(getDashboardTabId("focus")).toBe("dashboard-focus-tab");
     expect(getDashboardPanelId("focus")).toBe("dashboard-focus-panel");
-    expect(getRememberedDashboardPath()).toBe("/dashboard/focus");
+    expect(getRememberedDashboardPath()).toBe("/dashboard/home");
   });
 
   it.each([

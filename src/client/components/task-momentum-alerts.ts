@@ -1,8 +1,8 @@
 import type { EnrichedPR, Session, Task } from "../api";
 import { getSessionActivityTime, getSessionRunState } from "../api";
-import { getFollowUpState } from "./TaskMomentumFields";
+import { getRevisitState } from "../lib/task-revisit";
 
-export type TaskAlertTone = "accent" | "info" | "success" | "warning" | "danger";
+export type TaskAlertTone = "accent" | "info" | "success" | "warning" | "danger" | "neutral";
 
 export interface TaskAlertChip {
   kind:
@@ -12,8 +12,7 @@ export interface TaskAlertChip {
     | "session-stalled"
     | "session-busy"
     | "session-unread"
-    | "active-pr"
-    | "needs-decision";
+    | "active-pr";
   label: string;
   title?: string;
   tone: TaskAlertTone;
@@ -40,23 +39,23 @@ export function getTaskAlertChips({
 }: GetTaskAlertChipsOptions): TaskAlertChip[] {
   const chips: TaskAlertChip[] = [];
   const activeSessions = sessions.filter((session) => !session.archived);
-  const followUpState = getFollowUpState(task.nextTouchAt);
+  const followUpState = getRevisitState(task.nextTouchAt);
 
-  if (followUpState === "overdue") {
+  if (followUpState === "ready") {
     chips.push({
       kind: "follow-up-overdue",
-      label: "Follow up overdue",
-      title: task.nextTouchAt ? formatFollowUpTitle(task.nextTouchAt) : "This task is overdue for follow-up",
-      tone: "danger",
+      label: "Ready to revisit",
+      title: task.nextTouchAt ? formatFollowUpTitle(task.nextTouchAt) : "Ready to revisit this task",
+      tone: "neutral",
       priority: 10,
       recency: toTimestamp(task.nextTouchAt),
     });
-  } else if (followUpState === "due") {
+  } else if (followUpState === "today") {
     chips.push({
       kind: "follow-up-due",
-      label: "Follow up now",
+      label: "Revisit today",
       title: task.nextTouchAt ? formatFollowUpTitle(task.nextTouchAt) : "This task should be revisited now",
-      tone: "warning",
+      tone: "neutral",
       priority: 11,
       recency: toTimestamp(task.nextTouchAt),
     });
@@ -65,9 +64,9 @@ export function getTaskAlertChips({
   if (task.waitingOn?.trim()) {
     chips.push({
       kind: "waiting",
-      label: "Waiting",
+      label: "Waiting for",
       title: task.waitingOn.trim(),
-      tone: "info",
+      tone: "neutral",
       priority: 20,
       recency: toTimestamp(task.updatedAt),
     });
@@ -128,17 +127,6 @@ export function getTaskAlertChips({
     });
   }
 
-  if (task.status === "active" && !task.nextAction && !task.waitingOn && !task.nextTouchAt) {
-    chips.push({
-      kind: "needs-decision",
-      label: "Needs decision",
-      title: "No next action, waiting reason, or follow-up is set",
-      tone: "warning",
-      priority: 60,
-      recency: toTimestamp(task.updatedAt),
-    });
-  }
-
   return chips
     .sort((left, right) => left.priority - right.priority || right.recency - left.recency)
     .slice(0, limit);
@@ -164,8 +152,8 @@ function describeSessions(sessions: Session[], state: "busy" | "stalled" | "unre
 
 function formatFollowUpTitle(value: string): string {
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "This task needs follow-up";
-  return `Due ${parsed.toLocaleString(undefined, {
+  if (Number.isNaN(parsed.getTime())) return "Revisit date unavailable";
+  return `Revisit ${parsed.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",

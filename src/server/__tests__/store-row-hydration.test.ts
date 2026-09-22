@@ -3,7 +3,6 @@ import { setupTestDb, createTestBus } from "./helpers.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
-import { createFocusDataLayer } from "../focus-data-layer.js";
 import type { DatabaseSync } from "../db.js";
 
 let db: DatabaseSync;
@@ -108,56 +107,6 @@ describe("store row hydration resilience", () => {
       expect(states["bad-session"]!.archived).toBe(true);
       expect(states["bad-session"]!.terminalOverlay).toBeUndefined();
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("bad-session"));
-    });
-  });
-
-  describe("feed-store", () => {
-    it("skips a card whose stored visual JSON is invalid and returns the rest", () => {
-      const bus = createTestBus();
-      const store = createFocusDataLayer(db, bus, createChecklistStore(db, bus)).feedStore;
-      store.saveCard({ title: "First" });
-      const broken = store.saveCard({ title: "Broken" });
-      store.saveCard({ title: "Third" });
-      db.prepare("UPDATE feed_cards SET visualJson = ? WHERE id = ?")
-        .run(JSON.stringify({ kind: "image" }), broken.card.id);
-
-      const page = store.listCardPage();
-      expect(page.cards.map((card) => card.title).sort()).toEqual(["First", "Third"]);
-      expect(page.returnedCount).toBe(2);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining(broken.card.id));
-    });
-
-    it("keeps cursor paging correct across a skipped row", () => {
-      const bus = createTestBus();
-      const store = createFocusDataLayer(db, bus, createChecklistStore(db, bus)).feedStore;
-      for (let i = 0; i < 4; i++) store.saveCard({ title: `Card ${i}` });
-      const rows = db.prepare("SELECT id FROM feed_cards ORDER BY updatedAt DESC, id DESC").all() as Array<{ id: string }>;
-      db.prepare("UPDATE feed_cards SET actionJson = ? WHERE id = ?")
-        .run(JSON.stringify({ label: "no prompt" }), rows[1]!.id);
-
-      const first = store.listCardPage({ limit: 2 });
-      // The bad row is inside the first page window, so the page returns one card
-      // but the cursor must still advance past it.
-      expect(first.cards).toHaveLength(1);
-      expect(first.returnedCount).toBe(1);
-      expect(first.hasMore).toBe(true);
-
-      const second = store.listCardPage({ limit: 2, cursor: first.nextCursor! });
-      const seen = [...first.cards, ...second.cards].map((card) => card.id);
-      expect(new Set(seen).size).toBe(seen.length);
-      expect(seen).not.toContain(rows[1]!.id);
-      expect(seen).toContain(rows[2]!.id);
-      expect(seen).toContain(rows[3]!.id);
-    });
-
-    it("still surfaces an unreadable card on a direct single-card read", () => {
-      const bus = createTestBus();
-      const store = createFocusDataLayer(db, bus, createChecklistStore(db, bus)).feedStore;
-      const broken = store.saveCard({ title: "Broken" });
-      db.prepare("UPDATE feed_cards SET visualJson = ? WHERE id = ?")
-        .run(JSON.stringify({ kind: "image" }), broken.card.id);
-
-      expect(() => store.getCard(broken.card.id)).toThrow();
     });
   });
 });

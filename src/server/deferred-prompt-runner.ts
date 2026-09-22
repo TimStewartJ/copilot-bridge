@@ -13,7 +13,6 @@ import {
   createDeferRunnerCore,
   LEASE_MS,
   MAX_ATTEMPTS,
-  type DeferRunnerDueItem,
   type DeferRunnerOptions,
   type DeferRunnerCoreContext,
   type ProcessOneResult,
@@ -21,7 +20,6 @@ import {
 import {
   createFailedDeferDelivery,
   createReturnedDeferDelivery,
-  parseReturnedDeferPrompt,
 } from "./defer-result-message.js";
 import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import { isRestartRecoveryPrompt } from "./restart-resume.js";
@@ -40,17 +38,6 @@ export {
 // ── Runner ────────────────────────────────────────────────────────
 
 export type DeferredPromptRunnerOptions = DeferRunnerOptions;
-
-function toDueItem(item: DeferredPrompt): DeferRunnerDueItem {
-  return {
-    id: item.id,
-    sessionId: item.sessionId,
-    wakeAt: item.runAt,
-    title: "Deferred check",
-    continuation: isRestartRecoveryPrompt(item.prompt) || parseReturnedDeferPrompt(item.prompt) !== undefined,
-    terminal: item.attempts >= MAX_ATTEMPTS,
-  };
-}
 
 export function createDeferredPromptRunner(
   store: DeferredPromptStore,
@@ -72,7 +59,7 @@ export function createDeferredPromptRunner(
       if (!ctx.isStarted()) return "unchanged";
       // Re-fetch prompt for fresh state
       const item = store.get(id);
-      if (!item || item.status !== "pending" || Date.parse(item.runAt) > Date.now()) return "unchanged";
+      if (!item || item.status !== "pending") return "unchanged";
       if (ctx.deliveryGuard.isActive(item.sessionId)) return "blocked";
       const isDelivery = item.purpose === "delivery";
 
@@ -94,17 +81,10 @@ export function createDeferredPromptRunner(
         }
         return changed ? "changed" : "unchanged";
       }
-      if (ctx.holdIfNotReady(toDueItem(item))) return "blocked";
-      if (ctx.deliveryGuard.isActive(item.sessionId)) return "blocked";
 
       // Check session exists
       const sessionList = await sessionManager.listSessionsFromDisk({ includeArchived: isDelivery });
       if (!ctx.isStarted()) return "unchanged";
-      const current = store.get(id);
-      if (!current || current.status !== "pending") return "unchanged";
-      if (current.runAt !== item.runAt || current.prompt !== item.prompt || current.attempts !== item.attempts) {
-        return "changed";
-      }
       if (ctx.deliveryGuard.isActive(item.sessionId)) return "blocked";
       const sessionExists = sessionList.some((s: any) => s.sessionId === item.sessionId);
       if (!sessionExists) {
@@ -142,7 +122,6 @@ export function createDeferredPromptRunner(
         // session:idle is the fast path; the watchdog also retries overdue rows.
         return "blocked";
       }
-      if (ctx.holdIfNotReady(toDueItem(current))) return "blocked";
       if (!ctx.deliveryGuard.tryClaim(item.sessionId)) return "blocked";
 
       let claimToken: string | undefined;
@@ -168,7 +147,6 @@ export function createDeferredPromptRunner(
         }
         claimToken = claimed.claimToken;
         ctx.emitDeferSummary(item.sessionId);
-        ctx.settleProtectionHold(toDueItem(claimed.prompt), "started");
 
         const claimedPrompt = claimed.prompt;
         const renewalTimer = ctx.startRenewal(() => {
@@ -313,21 +291,14 @@ export function createDeferredPromptRunner(
     store: {
       getNextFutureWakeAt: () => store.getNextFuturePending()?.runAt,
       getNextRunningLeaseWakeAt: () => store.getNextRunningLeaseExpiry()?.leaseExpiresAt,
-      listDue: () => store.listDue().map(toDueItem),
+      listDue: () => store.listDue().map((item) => ({
+        id: item.id,
+        sessionId: item.sessionId,
+        wakeAt: item.runAt,
+      })),
       reclaimExpiredRunning: (now) => store.reclaimExpiredRunning(now),
       listExpiredRunningSessionIds: (now) => store.listExpiredRunningSessionIds(now),
       cancelForSession: (sessionId) => store.cancelForSession(sessionId),
-      getProtectionDisposition: (hold) => {
-        const item = store.get(hold.workId);
-        if (!item) return { disposition: "no-longer-needed" };
-        if (item.status === "cancelled" || item.status === "failed") return { disposition: item.status };
-        if (item.status === "completed") return { disposition: "delivered" };
-        if (item.status === "running" || parseReturnedDeferPrompt(item.prompt) !== undefined) {
-          return { disposition: "started" };
-        }
-        if (item.runAt !== hold.scheduledFor) return { disposition: "superseded" };
-        return undefined;
-      },
     },
     sessionManager,
     globalBus,

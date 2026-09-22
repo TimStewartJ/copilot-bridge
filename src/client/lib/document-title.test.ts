@@ -7,8 +7,8 @@ describe("dashboard document titles", () => {
     "/dashboard",
     "/dashboard/checklist",
     "/dashboard/feed",
-  ])("labels dashboard route %s as Focus", (pathname) => {
-    expect(resolveDocumentTitle({ route: "dashboard", pathname })).toBe("Focus - Copilot Bridge");
+  ])("labels dashboard route %s as Home", (pathname) => {
+    expect(resolveDocumentTitle({ route: "dashboard", pathname })).toBe("Home - Copilot Bridge");
   });
 
   it("keeps Work Map labeled separately", () => {

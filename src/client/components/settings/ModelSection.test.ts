@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { describeClientAge, ModelSection, shouldClearUnsupportedContextTier } from "./ModelSection";
 import type { AppSettings } from "../../api";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../../test-react-harness";
-import { installFocusDialogDom } from "../../test-focus-harness";
+import { installDialogDom } from "../../test-dialog-harness";
 
 const modelQuery = vi.hoisted(() => ({ loaded: false }));
 vi.mock("../../hooks/queries/useModels", () => ({
@@ -26,7 +26,7 @@ describe("model settings draft", () => {
   afterEach(async () => { await harness?.cleanup(); harness = undefined; modelQuery.loaded = false; });
 
   it("does not dirty or normalize a saved draft when model metadata arrives", async () => {
-    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
+    harness = await createReactDomHarness({ installDom: installDialogDom });
     const draft: AppSettings = { model: "economy", contextTier: "default", mcpServers: {} };
     const setDraft = vi.fn();
     await harness.render(createElement(ModelSection, { draft, setDraft }));
@@ -37,7 +37,7 @@ describe("model settings draft", () => {
   });
 
   it("normalizes context only after an explicit model choice", async () => {
-    harness = await createReactDomHarness({ installDom: installFocusDialogDom });
+    harness = await createReactDomHarness({ installDom: installDialogDom });
     modelQuery.loaded = true;
     const draft: AppSettings = { model: "economy", contextTier: "long_context", mcpServers: {} };
     const setDraft = vi.fn();

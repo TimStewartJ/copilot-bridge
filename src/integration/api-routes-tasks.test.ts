@@ -51,6 +51,22 @@ function failOnStatement(match: string): () => void {
 }
 
 describe("Task routes", () => {
+  it("PATCH defers/resumes the native task without muting, archiving or clearing context", async () => {
+    const task = ctx.taskStore.createTask("Keep this task");
+    ctx.taskStore.updateTask(task.id, { notes: "Context", nextAction: "Review", waitingOn: "External reply" });
+    const deferred = await request(app).patch(`/api/tasks/${task.id}`).send({ deferred: true, nextTouchAt: null });
+    expect(deferred.status).toBe(200);
+    expect(deferred.body.task).toMatchObject({ deferred: true, muted: false, status: "active", notes: "Context", nextAction: "Review", waitingOn: "External reply" });
+    const home = await request(app).get("/api/home");
+    expect(home.body.tasks.items.some((item: { id: string }) => item.id === task.id)).toBe(false);
+    const all = await request(app).get("/api/home?section=tasks");
+    expect(all.body.tasks.items).toContainEqual(expect.objectContaining({ id: task.id, deferred: true }));
+    const invalid = await request(app).patch(`/api/tasks/${task.id}`).send({ deferred: "true" });
+    expect(invalid.status).toBe(400);
+    const resumed = await request(app).patch(`/api/tasks/${task.id}`).send({ deferred: false });
+    expect(resumed.body.task).toMatchObject({ deferred: false, nextAction: "Review", waitingOn: "External reply" });
+  });
+
   it("GET /api/tasks/:id/session-storage returns recursive size for linked sessions only", async () => {
     const task = ctx.taskStore.createTask("Storage task");
     const linkedSessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";

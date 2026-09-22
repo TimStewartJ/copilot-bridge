@@ -34,6 +34,7 @@ export interface Task {
   title: string;
   kind: TaskKind;
   muted: boolean;
+  deferred: boolean;
   status: TaskStatus;
   groupId?: string;
   cwd?: string;
@@ -72,6 +73,7 @@ export const TASK_UPDATE_FIELDS = [
   "title",
   "kind",
   "muted",
+  "deferred",
   "status",
   "notes",
   "priority",
@@ -88,6 +90,7 @@ type TaskUpdate = {
   title?: string;
   kind?: TaskKind;
   muted?: boolean;
+  deferred?: boolean;
   status?: Task["status"];
   notes?: string;
   priority?: number;
@@ -253,6 +256,7 @@ export function createTaskStore(
       title: row.title,
       kind: normalizeTaskKind(row.kind),
       muted: row.muted === 1 || row.muted === true,
+      deferred: row.deferred === 1 || row.deferred === true,
       status: normalizeStoredTaskStatus(row.status),
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
@@ -376,6 +380,12 @@ export function createTaskStore(
       ?? (switchingToOngoing && oldCompletedAt !== undefined
         ? "active"
         : oldStatus));
+    if (updates.deferred !== undefined && typeof updates.deferred !== "boolean") {
+      throw new InvalidTaskUpdateError("deferred must be a boolean");
+    }
+    if (updates.deferred === true && targetStatus !== "active") {
+      throw new InvalidTaskUpdateError("Only active tasks can be deferred");
+    }
     const shouldPersistStatus = completeAndArchiveRequested
       || requestedStatus !== undefined
       || (switchingToOngoing && oldCompletedAt !== undefined);
@@ -398,6 +408,10 @@ export function createTaskStore(
     if (updates.title !== undefined) { fields.push("title = ?"); values.push(updates.title); }
     if (updates.kind !== undefined) { fields.push("kind = ?"); values.push(nextKind); }
     if (updates.muted !== undefined) { fields.push("muted = ?"); values.push(normalizeTaskMutedUpdate(updates.muted) ? 1 : 0); }
+    if (updates.deferred !== undefined || targetStatus !== "active") {
+      fields.push("deferred = ?");
+      values.push(targetStatus === "active" && updates.deferred ? 1 : 0);
+    }
     if (shouldPersistStatus) { fields.push("status = ?"); values.push(targetStatus); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
     if (priority !== undefined) { fields.push("priority = ?"); values.push(priority); }

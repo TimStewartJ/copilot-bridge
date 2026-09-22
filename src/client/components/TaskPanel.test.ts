@@ -103,6 +103,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     title: "Workspace task",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     notes: "",
     priority: 0,

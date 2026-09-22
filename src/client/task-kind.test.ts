@@ -46,6 +46,7 @@ function createTaskHelper(overrides: Partial<Task> = {}): Task {
     title: "Task",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     notes: "",
     priority: 0,

@@ -57,7 +57,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
-import { invalidateFocusMutationQueries, invalidateFocusProtectionQueries } from "./lib/focus-query-invalidation";
+
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
 import { schedulePageReloadWhenSafe } from "./lib/voice-capture-guard";
 import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
@@ -97,6 +97,7 @@ import ChatView from "./components/ChatView";
 import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
 import SessionModelSummary from "./components/SessionModelSummary";
 import Dashboard from "./components/Dashboard";
+import DashboardArchive from "./components/DashboardArchive";
 import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/docs/DocsView";
@@ -605,16 +606,6 @@ function AppShell() {
         break;
       case "management-job:changed":
         void queryClient.invalidateQueries({ queryKey: queryKeys.managementJobsRoot });
-        break;
-      case "focus:changed":
-        void invalidateFocusMutationQueries(queryClient, true);
-        break;
-      case "focus:protection-changed":
-      case "focus:protection-cleared":
-        void invalidateFocusProtectionQueries(queryClient);
-        break;
-      case "feed:changed":
-        invalidateDashboard();
         break;
       case "docs:changed":
         // An agent (or another tab) wrote docs; refresh whatever the Docs view has open. A bulk
@@ -2017,7 +2008,7 @@ function AppShell() {
               element={<FocusDashboardRedirect />}
             />
             <Route
-              path="dashboard/focus"
+              path="dashboard/home"
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
@@ -2030,6 +2021,8 @@ function AppShell() {
                 />
               }
             />
+            <Route path="dashboard/focus" element={<FocusDashboardRedirect />} />
+            <Route path="dashboard/archive" element={<DashboardArchive />} />
             <Route
               path="dashboard/checklist"
               element={<FocusDashboardRedirect />}

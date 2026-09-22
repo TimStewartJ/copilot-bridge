@@ -14,7 +14,7 @@ import { createDocsStore } from "../server/docs-store.js";
 import { createTagStore } from "../server/tag-store.js";
 import { createTaskStore } from "../server/task-store.js";
 import { createTaskAgentDefinitionStore } from "../server/task-agent-definition-store.js";
-import { FEED_GUIDANCE } from "../server/session-instructions.js";
+import { HOME_GUIDANCE } from "../server/session-instructions.js";
 import { readPersistedSessionModelState } from "../server/session-model-state-sidecar.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, withTestEnv } from "../server/__tests__/helpers.js";
 
@@ -111,16 +111,14 @@ describe("SessionManager session config", () => {
     expect(clientEnv.COPILOT_CLI_ENABLED_FEATURE_FLAGS).toBe("OTHER_FLAG, HYDRAFUSION, ,OTHER_FLAG");
   });
 
-  it("steers agents to first-class Focus objects and keeps legacy tools as adapters", () => {
-    expect(FEED_GUIDANCE).toContain("first-class Actions, Decisions, Alerts, and Events");
-    expect(FEED_GUIDANCE).toContain("Use action_add/action_update");
-    expect(FEED_GUIDANCE).toContain("Use decision_save only for a genuine user choice");
-    expect(FEED_GUIDANCE).toContain("Use alert_save only for a verified condition");
-    expect(FEED_GUIDANCE).toContain("Use event_save for durable observations");
-    expect(FEED_GUIDANCE).toContain("checklist_* tools are rollback-compatible adapters");
-    expect(FEED_GUIDANCE).toContain("feed_save is an Event-only compatibility path");
-    expect(FEED_GUIDANCE).toContain("Dismissal is sticky");
-    expect(FEED_GUIDANCE).toContain("Do not persist routine narration");
+  it("keeps Home native to existing tasks and sessions instead of publishing dashboard objects", () => {
+    expect(HOME_GUIDANCE).toContain("view of existing Tasks");
+    expect(HOME_GUIDANCE).toContain("task_update_momentum");
+    expect(HOME_GUIDANCE).toContain("Use ask_user for a genuine question");
+    expect(HOME_GUIDANCE).toContain("Optional maintenance or improvement suggestions remain optional");
+    expect(HOME_GUIDANCE).toContain("tools were retired");
+    expect(HOME_GUIDANCE).toContain("explicitly disclose");
+    expect(HOME_GUIDANCE).toContain("Home visibility is not push authorization");
   });
 
   it("injects compact task momentum for linked tasks", () => {
@@ -148,11 +146,11 @@ describe("SessionManager session config", () => {
     const content = cfg.systemMessage.content;
 
     expect(content).toContain("Task kind: task.");
-    expect(content).toContain("Task momentum:");
+    expect(content).toContain("Where this task stands:");
     expect(content).toContain("- Done when: Preview approved and deployed");
-    expect(content).toContain("- Next action: Run staging preview");
-    expect(content).toContain("- Waiting on: User approval");
-    expect(content).toContain("- Follow up: 9999-05-03T11:00:00.000Z");
+    expect(content).toContain("- Next step: Run staging preview");
+    expect(content).toContain("- Waiting for: User approval");
+    expect(content).toContain("- Revisit on: 9999-05-03T11:00:00.000Z");
   });
 
   it("omits done-when momentum for ongoing task context", () => {
@@ -181,7 +179,7 @@ describe("SessionManager session config", () => {
     const content = cfg.systemMessage.content;
 
     expect(content).toContain("Task kind: ongoing.");
-    expect(content).toContain("- Next action: Review telemetry");
+    expect(content).toContain("- Next step: Review telemetry");
     expect(content).not.toContain("- Done when:");
     expect(content).not.toContain("Should not be injected");
   });
@@ -205,8 +203,8 @@ describe("SessionManager session config", () => {
     const cfg = manager.buildSessionConfig({ task });
     const content = cfg.systemMessage.content;
 
-    expect(content).toContain("Task momentum:");
-    expect(content).toContain("- Next action / waiting on / follow up: none set.");
+    expect(content).toContain("Where this task stands:");
+    expect(content).toContain("This context is optional; do not invent work to fill it.");
     expect(content).not.toContain("update with the task momentum tool");
   });
 
@@ -348,9 +346,9 @@ describe("SessionManager session config", () => {
     const createSessionConfig = manager.backend.createSession.mock.calls[0][0];
     const content = createSessionConfig.systemMessage.content;
     expect(content).toContain("- Done when: Preview is approved");
-    expect(content).toContain("- Next action: Open the preview");
-    expect(content).toContain("- Waiting on: Design review");
-    expect(content).toContain("- Follow up: 9999-05-04T11:00:00.000Z");
+    expect(content).toContain("- Next step: Open the preview");
+    expect(content).toContain("- Waiting for: Design review");
+    expect(content).toContain("- Revisit on: 9999-05-04T11:00:00.000Z");
   });
 
   it("selects the requested task agent before returning a new session", async () => {
@@ -437,7 +435,7 @@ describe("SessionManager session config", () => {
     const content = createSessionConfig.systemMessage.content;
     expect(content).toContain("Task status: archived.");
     expect(content).toContain("- Done when: Preview shipped");
-    expect(content).not.toContain("- Next action / waiting on / follow up: none set");
+    expect(content).not.toContain("- No next step, wait or revisit recorded.");
   });
 
   it("injects enriched related docs metadata for tagged tasks", () => {

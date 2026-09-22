@@ -13,11 +13,8 @@ export function useSettingsMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (updates: AppSettingsUpdates) => patchSettings(updates),
-    onSuccess: (data, updates) => {
+    onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.settings, data);
-      if ("focusNotifications" in updates) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.focusRoot });
-      }
     },
   });
 }

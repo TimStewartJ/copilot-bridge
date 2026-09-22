@@ -7,7 +7,6 @@ import {
   sendCurrentSubscriptionTestNotification,
   type ClientPushState,
 } from "../../push-notifications";
-import { FocusNotificationPolicyForm } from "./FocusNotificationPolicyForm";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
 
@@ -129,7 +128,7 @@ export function NotificationsSection() {
   return (
     <SettingsSection
       title="Notifications"
-      description="Control Focus delivery policy separately from this browser's push subscription. Routine completions stay in their task and do not interrupt you. On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first."
+      description="Control this browser's push subscription. Routine completions stay in their task and do not interrupt you. On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first."
       action={(
         <button
           type="button"
@@ -151,8 +150,7 @@ export function NotificationsSection() {
             </div>
             <p className="mt-1 text-xs text-text-muted">{descriptor.detail}</p>
             <p className="mt-1 text-xs text-text-muted">
-              Session notifications: needs-input alerts only. Focus alerts follow the delivery policy below.
-              Changing policy does not subscribe or unsubscribe this browser.
+              Session notifications are for conversations requesting your input. Home does not grant additional notification authority.
             </p>
           </div>
           <span className={cx(DS.badge.base, "shrink-0", statusToneClassName(descriptor.tone))}>
@@ -228,7 +226,6 @@ export function NotificationsSection() {
           </div>
         )}
       </div>
-      <FocusNotificationPolicyForm />
     </SettingsSection>
   );
 }

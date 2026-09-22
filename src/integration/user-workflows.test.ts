@@ -14,8 +14,8 @@ const scenarios = [
 ];
 
 const ids = scenarios.map((scenario) => scenario.id);
-if (scenarios.length !== 100) {
-  throw new Error(`Integration scenario catalog must contain exactly 100 scenarios; found ${scenarios.length}`);
+if (scenarios.length !== 83) {
+  throw new Error(`Integration scenario catalog must contain exactly 83 retained scenarios; found ${scenarios.length}`);
 }
 if (new Set(ids).size !== ids.length) {
   throw new Error("Integration scenario catalog contains duplicate IDs");

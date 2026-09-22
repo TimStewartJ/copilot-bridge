@@ -4,9 +4,8 @@ import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
 import { isRecord } from "../shared/is-record.js";
 import { runImmediateTransaction, runTransaction } from "./db-transaction.js";
-import { listActionSources, type FocusActionSource } from "./focus-action-links.js";
-import { createFocusAttentionStore, createFocusTransitionStore } from "./focus-attention-store.js";
-import type { FocusActor } from "./focus-details-store.js";
+import type { ArchivedChecklistSource } from "../shared/checklist-origin.js";
+type ChecklistActor = "user" | "agent" | "system" | "legacy";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -21,7 +20,7 @@ export interface ChecklistItem {
   deadline?: string; // YYYY-MM-DD date string
   stableKey?: string;
   sourceUrl?: string;
-  sources?: FocusActionSource[];
+  sources?: ArchivedChecklistSource[];
   originalTaskId?: string;
   originalTaskTitle?: string;
   orphanedAt?: string;
@@ -122,7 +121,7 @@ export function normalizeChecklistItemUpdate(body: unknown): ChecklistItemUpdate
 
 export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
   function hydrate(row: any): ChecklistItem {
-    const details = db.prepare("SELECT * FROM focus_action_details WHERE actionId = ?").get(row.id);
+    const details = db.prepare("SELECT * FROM checklist_item_details WHERE itemId = ?").get(row.id);
     return {
       id: row.id,
       taskId: row.taskId ?? null,
@@ -132,7 +131,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
       createdAt: row.createdAt,
       completedAt: row.completedAt ?? undefined,
       deadline: row.deadline ?? undefined,
-      sources: listActionSources(db, row.id),
+      sources: details ? JSON.parse(String(details.archivedSourcesJson)) as ArchivedChecklistSource[] : [],
       ...(typeof details?.stableKey === "string" ? { stableKey: details.stableKey } : {}),
       ...(typeof details?.sourceUrl === "string" ? { sourceUrl: details.sourceUrl } : {}),
       ...(typeof details?.originalTaskId === "string" ? { originalTaskId: details.originalTaskId } : {}),
@@ -158,10 +157,9 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
   }
 
   function createChecklistItem(taskId: string | null, text: string, deadline?: string | null, options: {
-    key?: unknown; sourceUrl?: unknown; actor?: FocusActor;
+    key?: unknown; sourceUrl?: unknown; actor?: ChecklistActor;
   } = {}): ChecklistItem {
     const input = normalizeChecklistItemCreate(deadline === undefined ? { text } : { text, deadline });
-    const actor = options.actor ?? "user";
     if (options.key !== undefined && (typeof options.key !== "string" || !options.key.trim() || options.key.length > 512)) {
       throw new ChecklistValidationError("key must be a non-empty string of at most 512 characters");
     }
@@ -172,11 +170,10 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     const sourceUrl = typeof options.sourceUrl === "string" ? options.sourceUrl : null;
     const result = runImmediateTransaction(db, () => {
       if (stableKey) {
-        const keyed = db.prepare("SELECT actionId FROM focus_action_details WHERE stableKey = ?").get(stableKey);
+        const keyed = db.prepare("SELECT itemId FROM checklist_item_details WHERE stableKey = ?").get(stableKey);
         if (keyed) {
-          const existing = getChecklistItem(String(keyed.actionId))!;
+          const existing = getChecklistItem(String(keyed.itemId))!;
           if (existing.taskId !== taskId) throw new ChecklistValidationError("key belongs to an Action in a different task");
-          createFocusAttentionStore(db).record({ eventType: "no_op", objectId: existing.id, objectType: "action", activationId: existing.id, actor });
           return { item: existing, created: false };
         }
       }
@@ -194,20 +191,15 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
         INSERT INTO checklist_items (id, taskId, text, done, "order", createdAt, deadline)
         VALUES (?, ?, ?, 0, ?, ?, ?)
       `).run(id, taskId, input.text, maxOrder + 1, now, input.deadline ?? null);
-      db.prepare(`INSERT INTO focus_action_details (actionId, stableKey, sourceUrl, originalTaskId, originalTaskTitle)
+      db.prepare(`INSERT INTO checklist_item_details (itemId, stableKey, sourceUrl, originalTaskId, originalTaskTitle)
         VALUES (?, ?, ?, ?, (SELECT title FROM tasks WHERE id=?))`).run(id, stableKey, sourceUrl, taskId, taskId);
-      createFocusTransitionStore(db).append({
-        objectId: id, objectType: "action", title: input.text, activationId: id,
-        fromLifecycle: null, toLifecycle: "active", reason: "created", actor, details: { taskId },
-      });
-      createFocusAttentionStore(db).record({ eventType: "create", objectId: id, objectType: "action", activationId: id, actor });
       return { item: getChecklistItem(id)!, created: true };
     });
     if (result.created) emitChange(taskId);
     return result.item;
   }
 
-  function updateChecklistItemInTransaction(id: string, updates: ChecklistItemUpdate, actor: FocusActor): { item: ChecklistItem; changed: boolean } {
+  function updateChecklistItemInTransaction(id: string, updates: ChecklistItemUpdate): { item: ChecklistItem; changed: boolean } {
     const normalizedUpdates = normalizeChecklistItemUpdate(updates);
     const checklistItem = getChecklistItem(id);
     if (!checklistItem) throw new ChecklistNotFoundError(`Checklist item ${id} not found`);
@@ -215,7 +207,6 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
       || (normalizedUpdates.done !== undefined && normalizedUpdates.done !== checklistItem.done)
       || ("deadline" in normalizedUpdates && (normalizedUpdates.deadline ?? undefined) !== checklistItem.deadline);
     if (!changed) {
-      createFocusAttentionStore(db).record({ eventType: "no_op", objectId: id, objectType: "action", activationId: id, actor });
       return { item: checklistItem, changed: false };
     }
 
@@ -245,20 +236,10 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     }
 
     const updated = getChecklistItem(id)!;
-    const transition = createFocusTransitionStore(db).append({
-      objectId: id, objectType: "action", title: updated.text, activationId: id,
-      fromLifecycle: checklistItem.done ? "resolved" : "active", toLifecycle: updated.done ? "resolved" : "active",
-      reason: updated.done !== checklistItem.done ? "action-completion-changed" : "meaningful-update", actor,
-      details: { taskId: updated.taskId },
-    });
-    createFocusAttentionStore(db).record({
-      eventType: updated.done !== checklistItem.done ? "lifecycle_transition" : "meaningful_update",
-      objectId: id, objectType: "action", activationId: id, transitionId: transition.id, actor,
-    });
     return { item: updated, changed: true };
   }
-  function updateChecklistItem(id: string, updates: ChecklistItemUpdate, actor: FocusActor = "user"): ChecklistItem {
-    const result = runImmediateTransaction(db, () => updateChecklistItemInTransaction(id, updates, actor));
+  function updateChecklistItem(id: string, updates: ChecklistItemUpdate, _actor: ChecklistActor = "user"): ChecklistItem {
+    const result = runImmediateTransaction(db, () => updateChecklistItemInTransaction(id, updates));
     if (result.changed) emitChange(result.item.taskId);
     return result.item;
   }
@@ -267,7 +248,6 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     const checklistItem = getChecklistItem(id);
     if (!checklistItem) throw new ChecklistNotFoundError(`Checklist item ${id} not found`);
     runTransaction(db, () => {
-      db.prepare("DELETE FROM feed_card_checklist_promotions WHERE checklistItemId = ?").run(id);
       db.prepare("DELETE FROM checklist_items WHERE id = ?").run(id);
     });
     emitChange(checklistItem.taskId);
@@ -289,7 +269,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     return (db.prepare(`
       SELECT checklist_items.* FROM checklist_items
       LEFT JOIN tasks ON checklist_items.taskId = tasks.id
-      LEFT JOIN focus_action_details details ON details.actionId = checklist_items.id
+      LEFT JOIN checklist_item_details details ON details.itemId = checklist_items.id
       WHERE checklist_items.done = 0 AND (
         (checklist_items.taskId IS NULL AND details.orphanedAt IS NULL)
         OR (tasks.status = 'active' AND tasks.muted = 0))
