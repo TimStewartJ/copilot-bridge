@@ -42,7 +42,9 @@ quiet, dense with information, and calm until something needs attention.
 10. **Capitals are kept for the label inside a detail panel** (`DS.text.eyebrow`). Section labels are
     sentence case (`DS.text.sectionLabel`, `DS.text.sectionTitle`).
 11. **Only what floats has a shadow:** menus, the composer, dialogs, jump controls
-    (`DS.surface.floating`, `.composer`, `.dialog`, `.sheet`, `.floatingPill`, `.lift`).
+    (`DS.surface.floating`, `.composer`, `.dialog`, `.sheet`, `.floatingPill`, `.lift`). A jump control on
+    the edge of a scrolling list sits on a fade band (`.edgeBand` + `.edgeFade`, `.edgeJump`) so rows fade
+    out beneath it instead of being cut by it.
 12. **Touch targets are 40px on a phone** (`DS.button.size.md`, `DS.field.inputSize.md`), and a text
     field is 16px there so iOS does not zoom the page.
 

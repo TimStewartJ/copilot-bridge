@@ -21,7 +21,8 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
-        "/api": `http://localhost:${bridgePort}`,
+        // Only the API itself: a bare "/api" prefix also caught client modules such as /api.ts.
+        "^/api(?:/|$)": `http://localhost:${bridgePort}`,
       },
     },
   };
