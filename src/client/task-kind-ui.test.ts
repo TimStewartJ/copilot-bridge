@@ -297,15 +297,16 @@ afterEach(() => {
 });
 
 describe("kind-aware task UI", () => {
-  it("TaskMomentumFields hides doneWhen for ongoing items", () => {
+  it("TaskMomentumFields starts collapsed and does not summarize an ongoing finish line", () => {
     const html = renderToStaticMarkup(createElement(TaskMomentumFields, {
       task: createTask({ kind: "ongoing", doneWhen: "Ship it" }),
     }));
 
     expect(html).not.toContain("Done when");
-    expect(html).toContain("Add next step");
-    expect(html).toContain("Set waiting for");
-    expect(html).toContain("Set revisit date");
+    expect(html).not.toContain("Ship it");
+    expect(html).not.toContain("Add next step");
+    expect(html).toContain("No next step set");
+    expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("Where things stand");
     expect(html).toContain("Defer task");
   });
@@ -334,7 +335,7 @@ describe("kind-aware task UI", () => {
     const html = renderTaskDashboard(createTask({ kind: "ongoing" }));
 
     expect(html).toContain("Ongoing work");
-    expect(html).toContain("Ongoing items stay active");
+    expect(html).toContain("No fixed finish line.");
     expect(html).not.toContain("Candidate to close");
   });
 
@@ -396,7 +397,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Work items");
     expect(html).toContain("Schedules");
     expect(html).not.toContain("Set revisit date");
-    expect(html).not.toContain("Set waiting for");
+    expect(html).not.toContain("Add a wait");
     expect(html).not.toContain("Add notes");
   });
 
@@ -429,7 +430,8 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Waiting for");
     expect(html).toContain("Design feedback");
     expect(html).toContain("Completion checks clear");
-    expect(html).toContain("Review the outcome before completing");
+    expect(html).toContain("Confirm the outcome before completing");
+    expect(html).toMatch(/Waiting for<\/div><span[^>]*>Context<\/span>/);
   });
 
   it("reports unavailable task usage instead of rendering fabricated zero totals", () => {
