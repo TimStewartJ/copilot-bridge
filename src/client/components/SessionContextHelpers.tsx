@@ -1,10 +1,6 @@
-import type { ChatEntry } from "../api";
 import type {
   SessionContextCapabilities,
-  SessionContextEvent,
-  SessionContextFieldProvenance,
   SessionContextSummary,
-  SessionContextTurn,
 } from "../../shared/session-context.js";
 import { DS } from "../design/tokens";
 import { Badge } from "../design/primitives";
@@ -14,17 +10,6 @@ export type SummaryMetrics = {
   percent?: number;
   remaining?: number;
   used?: number;
-};
-
-export type ChatTurnPreview = {
-  preview: string;
-  role: "user" | "assistant";
-  turnId?: string;
-};
-
-export type ChatTurnPreviews = {
-  byTurnId: Map<string, ChatTurnPreview>;
-  ordered: ChatTurnPreview[];
 };
 
 const NUMBER_FORMATTER = new Intl.NumberFormat();
@@ -82,101 +67,6 @@ export function summarizeContext(
   return "pending";
 }
 
-function trimPreview(content: string): string {
-  const compact = content.replace(/\s+/g, " ").trim();
-  if (compact.length <= 120) return compact;
-  return `${compact.slice(0, 117)}…`;
-}
-
-function isTextEntry(entry: ChatEntry): entry is Extract<ChatEntry, { role: "user" | "assistant" }> {
-  return entry.type !== "tool"
-    && entry.type !== "visual"
-    && entry.type !== "completion"
-    && entry.type !== "skill"
-    && entry.type !== "reasoning";
-}
-
-export function buildChatTurnPreviews(entries: ChatEntry[] | undefined): ChatTurnPreviews {
-  const groups = new Map<string, { assistant?: string; user?: string }>();
-  const orderedIds: string[] = [];
-  const loose: ChatTurnPreview[] = [];
-
-  for (const entry of entries ?? []) {
-    if (!isTextEntry(entry)) continue;
-    const preview = trimPreview(entry.content);
-    if (!preview) continue;
-    if (!entry.turnId) {
-      loose.push({ preview, role: entry.role });
-      continue;
-    }
-    if (!groups.has(entry.turnId)) {
-      groups.set(entry.turnId, {});
-      orderedIds.push(entry.turnId);
-    }
-    const group = groups.get(entry.turnId)!;
-    if (entry.role === "user" && !group.user) group.user = preview;
-    if (entry.role === "assistant" && !group.assistant) group.assistant = preview;
-  }
-
-  const byTurnId = new Map<string, ChatTurnPreview>();
-  const ordered: ChatTurnPreview[] = [];
-  for (const turnId of orderedIds) {
-    const group = groups.get(turnId)!;
-    const role = group.user ? "user" : "assistant";
-    const preview = group.user ?? group.assistant;
-    if (!preview) continue;
-    const item = { preview, role, turnId } satisfies ChatTurnPreview;
-    byTurnId.set(turnId, item);
-    ordered.push(item);
-  }
-
-  return { byTurnId, ordered: [...ordered, ...loose] };
-}
-
-export function getTurnId(turn: SessionContextTurn): string | undefined {
-  return turn.bridgeTurnId;
-}
-
-export function getTurnPreview(
-  turn: SessionContextTurn,
-  index: number,
-  previews: ChatTurnPreviews,
-): ChatTurnPreview | undefined {
-  const turnId = getTurnId(turn);
-  if (turnId) {
-    const mapped = previews.byTurnId.get(turnId);
-    if (mapped) return mapped;
-  }
-  return previews.ordered[index];
-}
-
-export function getTurnNumber(index: number): number {
-  return index + 1;
-}
-
-export function eventTitle(event: SessionContextEvent): string {
-  return event.type
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function formatUsagePair(used: number | null | undefined, limit: number | null | undefined): string | undefined {
-  const normalizedUsed = optionalNumber(used);
-  const normalizedLimit = optionalNumber(limit);
-  if (normalizedUsed !== undefined && normalizedLimit !== undefined) {
-    return `${formatNumber(normalizedUsed)}/${formatNumber(normalizedLimit)} tokens`;
-  }
-  if (normalizedUsed !== undefined) return formatTokenValue(normalizedUsed);
-  return undefined;
-}
-
-export function eventUsageText(event: SessionContextEvent): string | undefined {
-  const percent = normalizePercent(event.usageRatio);
-  const usage = formatUsagePair(event.tokensUsed, event.contextWindow);
-  if (percent !== undefined && usage) return `${formatPercent(percent)} · ${usage}`;
-  return usage;
-}
-
 export function capabilityLabel(value: SessionContextCapabilities[keyof SessionContextCapabilities]): string {
   switch (value) {
     case "exact": return "exact";
@@ -196,23 +86,6 @@ export function CapabilityPill({ label, value }: { label: string; value?: Sessio
       {label}: {capabilityLabel(value)}
     </Badge>
   );
-}
-
-export function provenanceLabel(provenance: SessionContextFieldProvenance | null | undefined): string | undefined {
-  if (!provenance) return undefined;
-  const source = provenance.source === "live"
-    ? "provider"
-    : provenance.source;
-  return provenance.confidence === "exact"
-    ? source
-    : `${source} ${provenance.confidence}`;
-}
-
-export function ProvenanceChip({ provenance }: { provenance?: SessionContextFieldProvenance | null }) {
-  const label = provenanceLabel(provenance);
-  if (!label) return null;
-  const tone = provenance?.source === "estimated" ? "warning" : provenance?.source === "backfill" ? "info" : "neutral";
-  return <Badge tone={tone}>{label}</Badge>;
 }
 
 export function ContextMeter({ metrics }: { metrics: SummaryMetrics }) {

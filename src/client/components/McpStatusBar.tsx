@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import type { ChatEntry, McpLoginResponse, McpServerStatus, SessionToolReadinessSnapshot } from "../api";
 import type { SessionContextResponse, SessionContextSummary } from "../../shared/session-context.js";
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Loader2, Plug, XCircle } from "lucide-react";
-import { buildChatTurnPreviews, summarizeContext } from "./SessionContextHelpers";
+import { summarizeContext } from "./SessionContextHelpers";
 import SessionContextPanel from "./SessionContextPanel";
 import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, recentToolFailures } from "./mcp-status-display";
 import { DS, cx } from "../design/tokens";
@@ -82,14 +82,13 @@ export default function McpStatusBar({
   const [authLinks, setAuthLinks] = useState<Record<string, string>>({});
   const [authErrors, setAuthErrors] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState(false);
-  const previews = useMemo(() => buildChatTurnPreviews(chatEntries), [chatEntries]);
   const toolFailures = useMemo(() => recentToolFailures(chatEntries), [chatEntries]);
 
   const summary = context?.summary || liveContextSummary
     ? ({ ...(context?.summary ?? {}), ...(liveContextSummary ?? {}) } as SessionContextSummary)
     : null;
   const capabilities = context?.capabilities;
-  const hasContextSignal = Boolean(contextLoading || contextError || summary || (context?.turns?.length ?? 0) > 0 || (context?.events?.length ?? 0) > 0);
+  const hasContextSignal = Boolean(contextLoading || contextError || summary);
   const hasMcpSignal = statusState !== "ready" || servers.length > 0 || Boolean(toolReadiness);
   const hasSessionCostSignal = Boolean(sessionCostLoading || sessionCostError || sessionCostUsd !== undefined);
   const hasSignals = hasMcpSignal || hasContextSignal || hasSessionCostSignal || toolFailures.length > 0;
@@ -204,7 +203,7 @@ export default function McpStatusBar({
       </div>
 
       {expanded && hasSignals && (
-        <div className={cx("w-full max-w-3xl max-h-[min(50vh,440px)] overflow-y-auto px-3 pb-3 pt-1 space-y-3 sm:px-4", DS.motion.reveal)}>
+        <div data-session-details="" className={cx("w-full min-w-0 max-h-[min(50vh,440px)] overflow-y-auto px-3 pb-3 pt-1 space-y-3 sm:px-4", DS.motion.reveal)}>
           {hasSessionCostSignal && (
             <div>
               <div className="flex items-center justify-between gap-3 text-xs text-text-muted">
@@ -222,10 +221,9 @@ export default function McpStatusBar({
           {hasContextSignal && (
             <SessionContextPanel
               capabilities={capabilities}
-              context={context}
+              provider={context?.provider}
               error={contextError}
               loading={contextLoading}
-              previews={previews}
               summary={summary}
             />
           )}
