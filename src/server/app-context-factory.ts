@@ -303,6 +303,14 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 
 export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
   void ctx.stopPushEventNotifications?.flush();
+  ctx.scheduler?.initialize(ctx.sessionManager, {
+    scheduleStore: ctx.scheduleStore,
+    taskStore: ctx.taskStore,
+    sessionMetaStore: ctx.sessionMetaStore,
+    globalBus: ctx.globalBus,
+    deferredPromptStore: ctx.deferredPromptStore,
+    deferLoopStore: ctx.deferLoopStore,
+  });
   ctx.deferredPromptRunner?.start();
   ctx.deferLoopRunner?.start();
 }
