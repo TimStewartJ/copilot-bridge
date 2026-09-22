@@ -5,7 +5,8 @@ import { AlertTriangle, AudioLines, Download, Loader2, Mic, MicOff, Moon, PhoneO
 import type { VoiceModeController } from "./useVoiceMode";
 import { VoiceOrb } from "./VoiceOrb";
 import { formatBytes, VOICE_STATE_LABELS, type VoiceTurnMetrics } from "./voice-view-model";
-import { DS, cx } from "../design/tokens";
+import { DS, cx, type DsStatusKind } from "../design/tokens";
+import { StatusIcon } from "../design/primitives";
 
 function resolveOrbState(controller: VoiceModeController) {
   const { phase, view } = controller;
@@ -23,10 +24,10 @@ export function describeHandsFreeState(controller: VoiceModeController): string 
   return VOICE_STATE_LABELS[resolveOrbState(controller)];
 }
 
-function CountPill({ label, value, tone }: { label: string; value: number; tone: string }) {
+function CountPill({ label, value, kind }: { label: string; value: number; kind: DsStatusKind }) {
   return (
     <span className={cx(DS.badge.base, "items-center gap-1.5 border-border bg-bg-surface text-text-secondary", value === 0 ? "opacity-50" : "")}>
-      <span aria-hidden="true" className={cx("h-1.5 w-1.5 rounded-full", tone)} />
+      <StatusIcon kind={kind === "working" && value === 0 ? "open" : kind} decorative />
       {value} {label}
     </span>
   );
@@ -132,9 +133,9 @@ export function HandsFreeDock({ controller, onEnd }: { controller: VoiceModeCont
       <div className="mx-auto mt-1.5 flex w-full max-w-4xl flex-wrap items-center gap-1.5">
         {view.counts && (
           <>
-            <CountPill label="waiting" value={view.counts.waiting} tone="bg-warning" />
-            <CountPill label="running" value={view.counts.running} tone="bg-info" />
-            <CountPill label="unread" value={view.counts.unread} tone="bg-success" />
+            <CountPill label="waiting" value={view.counts.waiting} kind="needs-input" />
+            <CountPill label="running" value={view.counts.running} kind="working" />
+            <CountPill label="unread" value={view.counts.unread} kind="unread" />
           </>
         )}
         {view.metrics && (

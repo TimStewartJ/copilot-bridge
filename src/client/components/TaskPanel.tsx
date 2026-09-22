@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Task, TaskGroup, Session } from "../api";
 import { fetchTaskGitStatus, patchTask } from "../api";
-import { GROUP_COLOR_DOT } from "../group-colors";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
 import { queryKeys } from "../queryClient";
@@ -37,7 +36,7 @@ import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import { getTaskKindUpdate } from "../task-kind";
 import { LoadingSkeletonRegion, Skeleton, SkeletonRow, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
-import { Badge, Button, Section } from "../design/primitives";
+import { Badge, Button, Section, IdentitySwatch } from "../design/primitives";
 import {
   AgentDefinitionsSection,
   WorkItemList,
@@ -462,7 +461,7 @@ export default function TaskPanel({
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {group && (
                 <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} />
+                  <IdentitySwatch color={group.color} />
                   <span className="max-w-[112px] truncate">{group.name}</span>
                 </div>
               )}

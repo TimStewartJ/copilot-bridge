@@ -7,8 +7,8 @@ import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import type { LongPressBindings } from "../../hooks/useLongPressMenu";
 import TaskKindBadge from "../TaskKindBadge";
 import { DS, cx } from "../../design/tokens";
+import { StatusIcon } from "../../design/primitives";
 import {
-  getTaskActivityDot,
   getTaskRowSignals,
   shouldShowTaskRowUnreadDot,
   type TaskRowSignalTone,
@@ -29,6 +29,7 @@ interface SortableTaskItemProps {
 }
 
 const SIGNAL_TONE: Record<TaskRowSignalTone, keyof typeof DS.badge.tone> = {
+  accent: "accent",
   info: "info",
   warning: "warning",
   success: "success",
@@ -61,7 +62,6 @@ export default function SortableTaskItem({
     .find((candidate) => candidate.kind === "deferred" && candidate !== primarySignal) ?? signals
     .slice(1)
     .find((candidate) => candidate.kind !== "unread");
-  const activityDot = getTaskActivityDot(indicator);
   const showUnreadDot = shouldShowTaskRowUnreadDot(task, indicator);
 
   return (
@@ -79,7 +79,7 @@ export default function SortableTaskItem({
       >
         {showUnreadDot && (
           <>
-            <span aria-hidden="true" className="absolute left-1 top-3.5 h-1.5 w-1.5 rounded-full bg-success" />
+            <StatusIcon kind="unread" decorative className="absolute left-px top-[11px]" />
             <span className="sr-only">Unread conversations</span>
           </>
         )}
@@ -92,15 +92,7 @@ export default function SortableTaskItem({
           >
             <GripVertical size={12} />
           </span>
-          {activityDot && (
-            <span
-              aria-hidden="true"
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityDot.animated ? "animate-pulse" : ""} ${
-                activityDot.tone === "warning" ? "bg-warning" : "bg-info"
-              }`}
-            />
-          )}
-          <span className={`truncate flex-1 font-medium ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
+          <span className={`truncate flex-1 ${showUnreadDot ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
             {task.title}
           </span>
           <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
@@ -109,9 +101,7 @@ export default function SortableTaskItem({
               className={cx(DS.badge.base, DS.badge.tone[SIGNAL_TONE[primarySignal.tone]])}
               title={primarySignal.label}
             >
-              {primarySignal.animated && !activityDot && (
-                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
-              )}
+              {primarySignal.status !== "unread" && <StatusIcon kind={primarySignal.status} decorative />}
               {isRail ? primarySignal.shortLabel : primarySignal.label}
             </span>
           )}

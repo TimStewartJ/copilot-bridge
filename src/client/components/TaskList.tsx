@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
-import { GROUP_COLOR_DOT } from "../group-colors";
 import { ChevronDown, ChevronRight, ArrowUp, ArrowDown, Plus, FileText } from "lucide-react";
 import NotesSheet from "./NotesSheet";
 import EmptyState from "./shared/EmptyState";
@@ -10,7 +9,7 @@ import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections } from "../task-helpers";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
 import { DS, cx } from "../design/tokens";
-import { Button } from "../design/primitives";
+import { Button, IdentitySwatch } from "../design/primitives";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
@@ -189,7 +188,7 @@ export default function TaskList({
                     className={cx(DS.focus, "flex min-h-10 min-w-0 flex-1 items-center gap-1.5 px-3 text-xs font-medium text-text-secondary md:min-h-8")}
                   >
                     {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                    <span className={cx(DS.dot, GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")} aria-hidden="true" />
+                    <IdentitySwatch color={group.color} />
                     {group.name}
                   </button>
                   <button

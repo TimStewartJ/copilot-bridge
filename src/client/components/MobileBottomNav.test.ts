@@ -49,7 +49,7 @@ describe("MobileBottomNav", () => {
     });
   });
 
-  it("adds task and chat attention into one Work badge that stays green until something needs an answer", async () => {
+  it("adds task and chat attention into one Work badge that stays neutral until something needs an answer", async () => {
     harness = await createReactDomHarness();
     await harness.render(
       createElement(MobileBottomNav, {
@@ -66,7 +66,7 @@ describe("MobileBottomNav", () => {
     );
     expect(getReactProps(unreadOnly)?.["aria-current"]).toBe("page");
     expect(attentionBadge(unreadOnly).textContent).toBe("3");
-    expect(getReactProps(attentionBadge(unreadOnly))?.className).toContain("bg-success");
+    expect(getReactProps(attentionBadge(unreadOnly))?.className).toContain("bg-text-primary");
 
     await harness.render(
       createElement(MobileBottomNav, {
@@ -82,7 +82,7 @@ describe("MobileBottomNav", () => {
       "Work, 2 tasks need attention. 1 chat needs attention; 1 needs an answer",
     );
     expect(attentionBadge(needsAnswer).textContent).toBe("3");
-    expect(getReactProps(attentionBadge(needsAnswer))?.className).toContain("bg-warning");
+    expect(getReactProps(attentionBadge(needsAnswer))?.className).toContain("bg-accent");
   });
 
   it("offers Helm as a tab that stays inside the app shell", async () => {

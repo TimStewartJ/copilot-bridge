@@ -1,5 +1,6 @@
 import type { Task } from "./api";
 import { getRevisitState } from "./lib/task-revisit";
+import type { DsStatusKind } from "./design/tokens";
 import type { TaskIndicator } from "./hooks/useTaskIndicators";
 import { getTaskLifecycleDisplayState } from "./task-completion-helpers";
 
@@ -14,20 +15,35 @@ export type TaskRowSignalKind =
   | "deferred"
   | "archived";
 
-export type TaskRowSignalTone = "info" | "warning" | "success" | "danger" | "faint";
+export type TaskRowSignalTone = "accent" | "info" | "warning" | "success" | "danger" | "faint";
 
 export interface TaskRowSignal {
   kind: TaskRowSignalKind;
   label: string;
   shortLabel: string;
   tone: TaskRowSignalTone;
+  /** The glyph drawn beside the label; shape carries the state (see StatusIcon). */
+  status: DsStatusKind;
   animated?: boolean;
 }
 
-export interface TaskActivityDot {
-  tone: "info" | "warning";
-  animated: boolean;
+/** The one state a compact task tile shows, when it has no room for words. */
+export interface TaskStatus {
+  kind: DsStatusKind;
+  label: string;
 }
+
+const SIGNAL_STATUS: Record<TaskRowSignalKind, DsStatusKind> = {
+  "needs-input": "needs-input",
+  stalled: "warning",
+  busy: "working",
+  "follow-up-overdue": "open",
+  "follow-up-due": "open",
+  unread: "unread",
+  completed: "done",
+  deferred: "paused",
+  archived: "closed",
+};
 
 function signal(
   kind: TaskRowSignalKind,
@@ -36,7 +52,7 @@ function signal(
   tone: TaskRowSignalTone,
   animated = false,
 ): TaskRowSignal {
-  return { kind, label, shortLabel, tone, animated };
+  return { kind, label, shortLabel, tone, status: SIGNAL_STATUS[kind], animated };
 }
 
 /**
@@ -53,7 +69,7 @@ export function getTaskRowSignals(
     return [signal("archived", "Archived", "Archived", "faint")];
   }
   if (lifecycleState === "completed") {
-    return [signal("completed", "Completed", "Done", "success")];
+    return [signal("completed", "Completed", "Done", "faint")];
   }
   const deferred = task.deferred ? [signal("deferred", "Deferred", "Deferred", "faint")] : [];
   if (task.muted) return deferred;
@@ -68,7 +84,7 @@ export function getTaskRowSignals(
       "needs-input",
       needsUserInputCount === 1 ? "Answer needed" : `${needsUserInputCount} answers needed`,
       needsUserInputCount === 1 ? "Answer" : `${needsUserInputCount} answers`,
-      "warning",
+      "accent",
     ));
   }
   if (indicator?.stalled) {
@@ -78,7 +94,7 @@ export function getTaskRowSignals(
       "busy",
       busyCount > 1 ? `${busyCount} sessions working` : "Agent working",
       busyCount > 1 ? `${busyCount} working` : "Agent working",
-      "info",
+      "faint",
       true,
     ));
   }
@@ -96,23 +112,22 @@ export function getTaskRowSignals(
       "unread",
       unreadCount === 1 ? "Unread conversation" : `${unreadCount} unread conversations`,
       unreadCount === 1 ? "New" : `${unreadCount} new`,
-      "success",
+      "faint",
     ));
   }
 
   return signals;
 }
 
-export function getTaskActivityDot(indicator?: TaskIndicator): TaskActivityDot | null {
-  if ((indicator?.needsUserInputCount ?? 0) > 0) {
-    return { tone: "warning", animated: false };
+/** The single highest-priority live state of a task, for tiles and rows with no room for words. */
+export function getTaskStatus(indicator?: TaskIndicator): TaskStatus | null {
+  const needsUserInputCount = indicator?.needsUserInputCount ?? 0;
+  if (needsUserInputCount > 0) {
+    return { kind: "needs-input", label: needsUserInputCount === 1 ? "Answer needed" : `${needsUserInputCount} answers needed` };
   }
-  if (indicator?.stalled) {
-    return { tone: "warning", animated: true };
-  }
-  if (indicator?.busy) {
-    return { tone: "info", animated: true };
-  }
+  if (indicator?.stalled) return { kind: "warning", label: "Stalled" };
+  if (indicator?.busy) return { kind: "working", label: "Agent working" };
+  if ((indicator?.unreadCount ?? 0) > 0 || indicator?.unread) return { kind: "unread", label: "Unread conversations" };
   return null;
 }
 

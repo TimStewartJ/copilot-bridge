@@ -7,7 +7,7 @@ import {
 } from "../hooks/useTaskIndicators";
 import type { MobileNavTab } from "../lib/mobile-route-meta";
 import { DS, cx } from "../design/tokens";
-import { CountBadge } from "../design/primitives";
+import { CountBadge, StatusIcon } from "../design/primitives";
 
 interface MobileBottomNavProps {
   activeTab: MobileNavTab;
@@ -46,11 +46,7 @@ export function MobileBottomNav({
     describeTabAttention(chatAttention, "chat", "chats"),
   ].filter((part): part is string => part !== null).join(". ") || null;
   const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
-  const homeIndicatorDotClass = homeChecklistIndicator.state === "overdue"
-    ? "bg-error"
-    : homeChecklistIndicator.state === "due-today"
-      ? "bg-warning"
-      : "";
+  const homeIndicatorStatus = homeChecklistIndicator.state === "overdue" ? "danger" : "warning";
 
   return (
     <nav
@@ -82,15 +78,14 @@ export function MobileBottomNav({
                   {attention.count > 0 && (
                     <CountBadge
                       count={attention.count}
-                      tone={attention.needsUserInputCount > 0 ? "warning" : "success"}
+                      tone={attention.needsUserInputCount > 0 ? "accent" : "unread"}
                       className="absolute -right-3.5 -top-1.5 ring-2 ring-bg-secondary"
                     />
                   )}
                   {id === "home" && homeChecklistIndicator.state !== "none" && (
-                    <span
-                      aria-hidden="true"
-                      className={`absolute -top-1 -right-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary ${homeIndicatorDotClass}`}
-                    />
+                    <span className={DS.status.corner}>
+                      <StatusIcon kind={homeIndicatorStatus} decorative />
+                    </span>
                   )}
                 </span>
               </span>

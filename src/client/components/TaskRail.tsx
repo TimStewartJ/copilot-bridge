@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api";
-import { GROUP_COLORS, GROUP_COLOR_DOT } from "../group-colors";
+import { GROUP_COLORS } from "../group-colors";
+import { IDENTITY_FILL, identityColor } from "../design/identity";
 import { timeAgo } from "../time";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel } from "lucide-react";
@@ -23,9 +24,9 @@ import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
-import { getTaskActivityDot } from "../task-row-signals";
+import { getTaskStatus } from "../task-row-signals";
 import { DS, cx } from "../design/tokens";
-import { Button, CountBadge } from "../design/primitives";
+import { Button, CountBadge, IdentitySwatch, StatusIcon } from "../design/primitives";
 import CopilotQuotaMenu from "./CopilotQuotaMenu";
 
 interface TaskRailProps {
@@ -157,11 +158,7 @@ export default function TaskRail({
   const navBtn = (active: boolean) =>
     active ? DS.row.selected : "text-text-muted hover:bg-bg-hover/60 hover:text-text-primary";
   const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
-  const homeIndicatorDotClass = homeChecklistIndicator.state === "overdue"
-    ? "bg-error"
-    : homeChecklistIndicator.state === "due-today"
-      ? "bg-warning"
-      : "";
+  const homeIndicatorStatus = homeChecklistIndicator.state === "overdue" ? "danger" : "warning";
 
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -294,13 +291,13 @@ export default function TaskRail({
                   {group && (
                     <span
                       aria-hidden="true"
-                      className={cx("h-0.5 w-4 rounded-full", si > 0 && "mt-1.5", GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")}
+                      className={cx("h-0.5 w-4 rounded-full", si > 0 && "mt-1.5", IDENTITY_FILL[identityColor(group.color)])}
                     />
                   )}
                   {!isCollapsed && section.tasks.map((task) => {
                     const isActive = task.id === activeTaskId;
                     const indicator = taskIndicators.get(task.id);
-                    const activityDot = getTaskActivityDot(indicator);
+                    const status = getTaskStatus(indicator);
                     const initials = task.title.slice(0, 2).toUpperCase();
 
                     return (
@@ -308,19 +305,16 @@ export default function TaskRail({
                         key={task.id}
                         onClick={() => onSelectTask(task.id)}
                         title={getTaskTitle(task)}
-                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
+                        className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} text-text-primary hover:brightness-110`}
                       >
                         {initials}
                         {task.kind === "ongoing" && (
                           <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                         )}
-                        {activityDot && (
-                          <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-bg-secondary ${
-                            activityDot.animated ? "animate-pulse" : ""
-                          } ${activityDot.tone === "warning" ? "bg-warning" : "bg-info"}`} />
-                        )}
-                        {indicator?.unread && !activityDot && (
-                          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
+                        {status && (
+                          <span className={DS.status.corner}>
+                            <StatusIcon kind={status.kind} label={status.label} />
+                          </span>
                         )}
                       </button>
                     );
@@ -333,7 +327,7 @@ export default function TaskRail({
             sortedTasks.map((task) => {
               const isActive = task.id === activeTaskId;
               const indicator = taskIndicators.get(task.id);
-              const activityDot = getTaskActivityDot(indicator);
+              const status = getTaskStatus(indicator);
               const initials = task.title.slice(0, 2).toUpperCase();
 
               return (
@@ -341,19 +335,16 @@ export default function TaskRail({
                   key={task.id}
                   onClick={() => onSelectTask(task.id)}
                   title={getTaskTitle(task)}
-                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} ${indicator?.unread && indicator?.busy ? "ring-2 ring-success/50" : ""} text-text-primary hover:brightness-110`}
+                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} text-text-primary hover:brightness-110`}
                 >
                   {initials}
                   {task.kind === "ongoing" && (
                     <Pin size={7} className="absolute bottom-0.5 left-0.5 text-accent rotate-45" />
                   )}
-                  {activityDot && (
-                    <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-bg-secondary ${
-                      activityDot.animated ? "animate-pulse" : ""
-                    } ${activityDot.tone === "warning" ? "bg-warning" : "bg-info"}`} />
-                  )}
-                  {indicator?.unread && !activityDot && (
-                    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success ring-2 ring-bg-secondary" />
+                  {status && (
+                    <span className={DS.status.corner}>
+                      <StatusIcon kind={status.kind} label={status.label} />
+                    </span>
                   )}
                 </button>
               );
@@ -407,10 +398,9 @@ export default function TaskRail({
           >
             <LayoutDashboard size={18} />
             {homeChecklistIndicator.state !== "none" && (
-              <span
-                aria-hidden="true"
-                className={`absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary ${homeIndicatorDotClass}`}
-              />
+              <span className={DS.status.corner}>
+                <StatusIcon kind={homeIndicatorStatus} decorative />
+              </span>
             )}
           </button>
           <button
@@ -427,7 +417,7 @@ export default function TaskRail({
             {chatTabAttention.count > 0 && (
               <CountBadge
                 count={chatTabAttention.count}
-                tone={chatTabAttention.needsUserInputCount > 0 ? "warning" : "success"}
+                tone={chatTabAttention.needsUserInputCount > 0 ? "accent" : "unread"}
                 className="absolute -right-1 -top-1"
               />
             )}
@@ -526,7 +516,7 @@ export default function TaskRail({
           <ListTodo size={13} />
           Tasks
           {taskTabAttention.count > 0 && (
-            <CountBadge count={taskTabAttention.count} tone={taskTabAttention.needsUserInputCount > 0 ? "warning" : "success"} />
+            <CountBadge count={taskTabAttention.count} tone={taskTabAttention.needsUserInputCount > 0 ? "accent" : "unread"} />
           )}
           {railTab === "tasks" && (
             <span className="absolute bottom-0 left-3 right-3 h-px bg-text-primary" />
@@ -545,7 +535,7 @@ export default function TaskRail({
           <MessageSquare size={13} />
           Chats
           {chatTabAttention.count > 0 && (
-            <CountBadge count={chatTabAttention.count} tone={chatTabAttention.needsUserInputCount > 0 ? "warning" : "success"} />
+            <CountBadge count={chatTabAttention.count} tone={chatTabAttention.needsUserInputCount > 0 ? "accent" : "unread"} />
           )}
           {railTab === "chats" && (
             <span className="absolute bottom-0 left-3 right-3 h-px bg-text-primary" />
@@ -592,7 +582,7 @@ export default function TaskRail({
                             className={cx(DS.focus, "flex min-h-10 min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-3 text-xs text-text-secondary transition-colors hover:text-text-primary md:min-h-8")}
                           >
                             {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${GROUP_COLOR_DOT[group.color] ?? "bg-slate-500"}`} aria-hidden="true" />
+                            <IdentitySwatch color={group.color} />
                             <span className="font-medium truncate">{group.name}</span>
                           </button>
                             {group.notes && (
@@ -765,10 +755,7 @@ export default function TaskRail({
           <LayoutDashboard size={14} />
           Dashboard
           {homeChecklistIndicator.state !== "none" && (
-            <span
-              aria-hidden="true"
-              className={`ml-auto h-2.5 w-2.5 rounded-full ${homeIndicatorDotClass}`}
-            />
+            <StatusIcon kind={homeIndicatorStatus} decorative size="md" className="ml-auto" />
           )}
         </button>
       </div>
@@ -867,7 +854,10 @@ export default function TaskRail({
                       if (onUpdateGroup && c !== group.color) onUpdateGroup(group.id, { color: c });
                       setGroupCtx(null);
                     }}
-                    className={`w-4 h-4 rounded-full ${GROUP_COLOR_DOT[c]} transition-all ${c === group.color ? "ring-2 ring-white ring-offset-1 ring-offset-bg-elevated scale-110" : "hover:scale-110"}`}
+                    aria-label={`Colour ${c}`}
+                    aria-pressed={c === group.color}
+                    title={c}
+                    className={cx("size-4 rounded-[4px] transition-all", DS.focus, IDENTITY_FILL[c], c === group.color ? "ring-2 ring-text-primary ring-offset-1 ring-offset-bg-elevated scale-110" : "hover:scale-110")}
                   />
                 ))}
               </div>

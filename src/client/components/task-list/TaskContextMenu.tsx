@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSessionActivityTime, type EnrichedTaskData, type Task, type TaskGroup, type Session, type TaskPatch } from "../../api";
-import { GROUP_COLOR_DOT } from "../../group-colors";
 import { AlertTriangle, Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
 import { queryKeys } from "../../queryClient";
 import { writeClipboardText } from "../../lib/clipboard";
@@ -15,6 +14,7 @@ import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 import { isOngoingTask } from "../../task-kind";
 import TaskDeferralDialog from "../TaskDeferralDialog";
+import { IdentitySwatch } from "../../design/primitives";
 
 type TaskMenuUpdates = {
   title?: TaskPatch["title"];
@@ -223,7 +223,7 @@ export default function TaskContextMenu({
           {taskGroups.map((g) => (
             <CtxItem
               key={g.id}
-              icon={<span className={`w-2.5 h-2.5 rounded-full ${GROUP_COLOR_DOT[g.color] ?? "bg-slate-500"}`} />}
+              icon={<IdentitySwatch color={g.color} size="md" />}
               label={g.name}
               className={task.groupId === g.id ? "text-accent font-medium" : ""}
               onClick={() => {

@@ -11,8 +11,8 @@ interface TagPillProps {
 }
 
 export default function TagPill({ tag, size = "xs", inherited, onRemove }: TagPillProps) {
-  const bg = TAG_COLOR_BG[tag.color] ?? "bg-slate-500/15";
-  const text = TAG_COLOR_TEXT[tag.color] ?? "text-slate-400";
+  const bg = TAG_COLOR_BG[tag.color] ?? TAG_COLOR_BG.slate;
+  const text = TAG_COLOR_TEXT[tag.color] ?? TAG_COLOR_TEXT.slate;
 
   return (
     <span

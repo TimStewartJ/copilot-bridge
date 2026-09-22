@@ -1,4 +1,5 @@
 import React from "react";
+import type { DsStatusKind } from "./design/tokens";
 import {
   Bug,
   CheckSquare,
@@ -41,10 +42,11 @@ export const WI_STATE_STYLES: Record<string, string> = {
 };
 
 /** CSS dot class + label for PR statuses */
-export const PR_STATUS_STYLES: Record<string, { dot: string; label: string }> = {
-  active: { dot: "bg-info", label: "Active" },
-  completed: { dot: "bg-success", label: "Completed" },
-  abandoned: { dot: "bg-text-muted", label: "Abandoned" },
+/** Pull request states, drawn with StatusIcon: open ring, done check, closed cross. */
+export const PR_STATUS_STYLES: Record<string, { status: DsStatusKind; label: string }> = {
+  active: { status: "open", label: "Active" },
+  completed: { status: "done", label: "Completed" },
+  abandoned: { status: "closed", label: "Abandoned" },
 };
 
 /** Map a work item state string to a Tailwind color class (for Dashboard cards) */
