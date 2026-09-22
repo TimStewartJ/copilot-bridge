@@ -7,6 +7,7 @@ import { createReadStateStore } from "../read-state-store.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import type { DatabaseSync } from "../db.js";
 import type { SessionManager } from "../session-manager.js";
+import { formatTaskMomentumContext } from "../session-task-momentum.js";
 
 describe("native Home composition", () => {
   let db: DatabaseSync;
@@ -58,6 +59,10 @@ describe("native Home composition", () => {
     expect(home.actions.items[0].id).toBe(action.id);
     expect((await app.snapshot("tasks")).tasks.items[0]).toMatchObject({ id: task.id, deferred: true });
     expect(app.taskStore.getTask(task.id)?.deferred).toBe(true);
+    const context = formatTaskMomentumContext(app.taskStore.getTask(task.id)!);
+    expect(context).toContain("- Deferred:");
+    expect(context).toContain("Running sessions, schedules and session defers are not paused");
+    expect(context).toContain("- Next step: Read comparison");
     app.taskStore.updateTask(task.id, { deferred: false });
     expect((await app.snapshot()).tasks.items[0].id).toBe(task.id);
   });
