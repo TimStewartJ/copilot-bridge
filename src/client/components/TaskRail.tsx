@@ -92,8 +92,8 @@ interface TaskRailProps {
 }
 
 const STATUS_BG: Record<Task["status"], string> = {
-  active: "bg-info-surface",
-  archived: "bg-text-faint/10",
+  active: "bg-surface-selected",
+  archived: "bg-surface-inset",
 };
 
 function getTaskTitle(task: Task): string {
