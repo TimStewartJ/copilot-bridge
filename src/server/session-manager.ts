@@ -3935,6 +3935,18 @@ export class SessionManager {
     return quota;
   }
 
+  /** The current account's Copilot user response, fetched from GitHub now. */
+  async fetchAccountCopilotUser(): Promise<unknown> {
+    const client = await this.getBackendAfterRotation();
+    if (typeof client.fetchAccountCopilotUser !== "function") {
+      throw new Error("Account user lookup is not supported by the active agent backend");
+    }
+    const t0 = Date.now();
+    const user = await client.fetchAccountCopilotUser();
+    this.recordSpan("session.fetchAccountCopilotUser", Date.now() - t0);
+    return user;
+  }
+
   /** Current backend auth state, used to enrich the quota counter. */
   async getAccountAuth(): Promise<unknown> {
     const client = await this.getBackendAfterRotation();

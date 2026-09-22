@@ -1135,6 +1135,7 @@ export function createApiRouter(
   const copilotQuotaReader = options.copilotQuotaReader ?? createCopilotQuotaReader({
     getQuota: () => ctx.sessionManager.getAccountQuota(),
     getAuth: () => ctx.sessionManager.getAccountAuth(),
+    getLiveUser: () => ctx.sessionManager.fetchAccountCopilotUser(),
   });
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
