@@ -39,7 +39,7 @@ describe("native task deferral dialog", () => {
     expect(saved).toHaveBeenCalledExactlyOnceWith({ ...task, deferred: true });
     expect(close).toHaveBeenCalledOnce();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["dashboard"] });
-    expect(harness.dom.container.textContent).toContain("Schedules, running sessions and session defer jobs are not paused");
+    expect(harness.dom.container.textContent).toContain("Sessions, schedules and deferred jobs keep running");
   });
   it("records an optional local revisit time as an absolute instant", async () => {
     await render();
@@ -62,7 +62,7 @@ describe("native task deferral dialog", () => {
   });
   it("explains an already-arrived revisit rather than silently changing it", async () => {
     await render({ ...task, nextTouchAt: "2000-01-01T00:00:00Z" });
-    expect(harness.dom.container.textContent).toContain("will remain in Home's revisit list");
+    expect(harness.dom.container.textContent).toContain("will still appear in Ready to revisit");
     await submit();
     expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: true });
   });
@@ -85,6 +85,7 @@ describe("native task deferral dialog", () => {
     await render({ ...task, deferred: true });
     expect(getReactProps(input())!.value).toBe("2030-05-02T10:30");
     expect(harness.dom.container.textContent).toContain("Task changed");
+    expect(harness.dom.container.textContent).toContain("Closing discards this draft");
     await submit();
     expect(patch).not.toHaveBeenCalled();
   });

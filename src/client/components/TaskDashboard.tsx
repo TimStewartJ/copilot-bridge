@@ -314,7 +314,7 @@ export default function TaskDashboard({
               {task.title}
             </h1>
             <p className={cx(DS.text.prose, "max-w-3xl")}>
-              A read-only overview of readiness, context, and recent activity. Use the task cockpit for edits and actions.
+              Task context, completion checks and activity.
             </p>
           </header>
 
@@ -323,24 +323,24 @@ export default function TaskDashboard({
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.05fr_0.95fr]">
             <Section level="page" label="Task brief" surface>
               <FieldList>
-                <Field icon={<StickyNote size={13} />} label="Summary" empty="No notes captured yet.">
+                <Field icon={<StickyNote size={13} />} label="Summary" empty="No notes yet.">
                   {notesExcerpt}
                 </Field>
                 <Field
                   icon={<Milestone size={13} />}
                   label="Done when"
-                  empty={task.kind === "ongoing" ? "Ongoing item; no finish line required." : "No finish line defined."}
+                  empty={task.kind === "ongoing" ? "No fixed finish line." : "Not set."}
                 >
                   {task.kind === "ongoing" ? undefined : task.doneWhen}
                 </Field>
-                {task.deferred && <Field label="Deferred">Set aside from Continue working until explicitly resumed. Schedules and running sessions are not paused.</Field>}
-                <Field icon={<ClipboardCheck size={13} />} label="Next step" empty="No next step recorded.">
+                {task.deferred && <Field label="Deferred">Set aside until resumed. Automation is unchanged.</Field>}
+                <Field icon={<ClipboardCheck size={13} />} label="Next step" empty="Not set.">
                   {task.nextAction}
                 </Field>
-                <Field label="Waiting for" empty="Nothing recorded here yet.">
+                <Field label="Waiting for" empty="Not set.">
                   {task.waitingOn}
                 </Field>
-                <Field icon={<TimerReset size={13} />} label="Revisit on" empty="No revisit date set.">
+                <Field icon={<TimerReset size={13} />} label="Revisit on" empty="Not set.">
                   {task.nextTouchAt ? formatFollowUp(task.nextTouchAt) : undefined}
                 </Field>
                 <Field icon={<FolderOpen size={13} />} label="Workspace" empty="No workspace set." mono>
@@ -377,7 +377,7 @@ export default function TaskDashboard({
                         {signal.label}
                       </div>
                       <Badge tone={signal.tone === "danger" ? "danger" : signal.tone === "warning" ? "warning" : "neutral"}>
-                        {signal.tone === "danger" ? "Blocking" : signal.tone === "warning" ? "Attention" : "Clear"}
+                        {signal.tone === "danger" ? "Blocking" : signal.tone === "warning" ? "Check" : signal.tone === "success" ? "Clear" : "Context"}
                       </Badge>
                     </div>
                     <div className="mt-0.5 text-xs leading-relaxed text-text-muted">
@@ -636,12 +636,12 @@ function buildReadinessInsight({
   if (lifecycle === "archived") {
     signals.push({
       label: "Lifecycle",
-      detail: "This task is manually archived, so completion readiness is not active.",
+      detail: "Archived without marking complete.",
       tone: "muted",
     });
     return {
       title: "Archived",
-      description: "Archived tasks are hidden from active work until reopened from the cockpit or task list.",
+      description: "Reopen from the task list to continue.",
       tone: "muted",
       signals,
     };
@@ -649,20 +649,20 @@ function buildReadinessInsight({
 
   if (task.kind === "ongoing") {
     signals.push({
-      label: "Ongoing item",
-      detail: "Ongoing items stay active and do not use the one-off completion flow.",
+      label: "Ongoing",
+      detail: "No fixed finish line.",
       tone: "info",
     });
     signals.push({
       label: "Where things stand",
       detail: task.nextAction || task.waitingOn || task.nextTouchAt
-        ? "Next steps, waits and revisit dates are recorded in the brief."
-        : "Next steps, waits and revisit dates are optional. Ongoing work need not always have a next step.",
+        ? "See next steps and waits in the task brief."
+        : "No next step needed until there is work to do.",
       tone: "muted",
     });
     return {
       title: "Ongoing work",
-      description: "This dashboard tracks context and recent activity, but ongoing items are not completed.",
+      description: "Keep the context; add next steps as needed.",
       tone: "info",
       signals,
     };
@@ -671,7 +671,7 @@ function buildReadinessInsight({
   if (checklistLoaded === false) {
     signals.push({
       label: "Checklist loading",
-      detail: "Checklist items have not finished loading, so readiness may change.",
+      detail: "Checks are incomplete until the checklist loads.",
       tone: "warning",
     });
   }
@@ -719,7 +719,7 @@ function buildReadinessInsight({
     });
     return {
       title: "Completion checks clear",
-      description: "Checklist, session and PR checks are clear. Review the outcome before completing; these checks do not establish that the work is done.",
+      description: "No open checklist, session or PR checks. Confirm the outcome before completing.",
       tone: "success",
       signals,
     };
@@ -729,7 +729,7 @@ function buildReadinessInsight({
     title: "Not ready",
     description: completionState.blockers.length > 0
       ? completionState.blockers.join(" • ")
-      : "One or more readiness signals need attention.",
+      : "Review the checks below.",
     tone: signals.some((signal) => signal.tone === "danger") ? "danger" : "warning",
     signals,
   };

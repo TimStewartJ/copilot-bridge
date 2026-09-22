@@ -86,8 +86,8 @@ describe("TaskContextMenu copy task id", () => {
     try {
       await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Defer task")); });
       expect(harness.dom.container.textContent).toContain("Revisit on (optional)");
-      expect(harness.dom.container.textContent).toContain("without archiving or muting");
-      expect(harness.dom.container.textContent).toContain("session defer jobs are not paused");
+      expect(harness.dom.container.textContent).toContain("Nothing is archived or muted");
+      expect(harness.dom.container.textContent).toContain("Sessions, schedules and deferred jobs keep running");
       expect(update).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
       await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Cancel")); });

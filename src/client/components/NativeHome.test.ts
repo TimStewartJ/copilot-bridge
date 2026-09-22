@@ -61,8 +61,8 @@ describe("Home within native Bridge", () => {
   it("does not turn a failed initial read into a reassuring empty state", async () => {
     api.fetchHome.mockRejectedValue(new Error("Offline"));
     await render();
-    expect(harness.dom.container.textContent).toContain("Source data is unavailable, not empty");
-    expect(harness.dom.container.textContent).not.toContain("No live questions");
+    expect(harness.dom.container.textContent).toContain("Home is unavailable. Try refreshing.");
+    expect(harness.dom.container.textContent).not.toContain("No questions on this page");
   });
   it("completes the original checklist item through its existing endpoint", async () => {
     const snapshot = empty();
@@ -89,7 +89,7 @@ describe("Home within native Bridge", () => {
     api.fetchHome.mockResolvedValue(snapshot);
     await render();
     const text = harness.dom.container.textContent;
-    expect(text).toContain("2 deferred tasks are available in View all tasks");
+    expect(text).toContain("2 deferred tasks in View all tasks");
     expect(text).toContain("View all tasks");
     expect(text).toContain("Ready to revisit");
     expect(text).toContain("Waiting for: A reply");
