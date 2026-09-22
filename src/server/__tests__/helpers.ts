@@ -79,12 +79,14 @@ export function makeTestDir(prefix: string): string {
 }
 
 export function registerTestAppCleanup(cleanup: () => Promise<void>): () => Promise<void> {
-  let cleanedUp = false;
-  const trackedCleanup = async () => {
-    if (cleanedUp) return;
-    cleanedUp = true;
-    testAppCleanups.delete(trackedCleanup);
-    await cleanup();
+  let completion: Promise<void> | undefined;
+  const trackedCleanup = () => {
+    // A timed-out test's finally block can overlap afterEach. Both must join
+    // cleanup before the shared hook removes files still owned by that work.
+    completion ??= Promise.resolve().then(cleanup).finally(() => {
+      testAppCleanups.delete(trackedCleanup);
+    });
+    return completion;
   };
   testAppCleanups.add(trackedCleanup);
   return trackedCleanup;
