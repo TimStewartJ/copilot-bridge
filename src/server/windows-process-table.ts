@@ -20,6 +20,16 @@ interface PendingSnapshot {
   timer: ReturnType<typeof setTimeout>;
 }
 
+// koffi aborts the whole process when the thread loading it is stopped mid-load (koffi
+// 3.2.1 through 3.3.1). The worker reports ready once its load settles; before that the
+// reader never terminates it: it waits for ready, then stops it.
+interface WorkerState {
+  worker: WindowsSnapshotWorker;
+  ready: boolean;
+  loaded: Promise<void>;
+  markLoaded: () => void;
+}
+
 function startWorker(): WindowsSnapshotWorker {
   const { entry, execArgv } = resolveWorkerEntry("windows-process-table-worker");
   return new Worker(entry, { workerData: { [WORKER_FLAG]: true }, ...(execArgv ? { execArgv } : {}) });
@@ -43,7 +53,7 @@ function snapshotEntries(value: unknown): WindowsProcessTableEntry[] {
 }
 
 export class WindowsProcessTableReader {
-  private worker: WindowsSnapshotWorker | undefined;
+  private current: WorkerState | undefined;
   private nextId = 0;
   private readonly pending = new Map<number, PendingSnapshot>();
 
@@ -52,17 +62,26 @@ export class WindowsProcessTableReader {
   read(timeoutMs: number): Promise<WindowsProcessTableEntry[]> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.reject(new Error("Windows process snapshot deadline exceeded"));
     return new Promise((resolve, reject) => {
-      let worker: WindowsSnapshotWorker;
+      let state: WorkerState;
       try {
-        worker = this.connect();
+        state = this.connect();
       } catch (error) {
         reject(error);
         return;
       }
+      const { worker } = state;
       const id = ++this.nextId;
       const timer = setTimeout(() => {
-        this.lose(worker, new Error(`Native Windows process snapshot timed out after ${timeoutMs}ms`));
-        void worker.terminate().catch((error: unknown) => console.warn(`[windows-process-table] Worker termination failed: ${error instanceof Error ? error.message : String(error)}`));
+        const error = new Error(`Native Windows process snapshot timed out after ${timeoutMs}ms`);
+        if (!state.ready) {
+          // Still loading koffi: fail this read but keep the worker for the next one.
+          this.pending.delete(id);
+          if (this.pending.size === 0) worker.unref();
+          reject(error);
+          return;
+        }
+        this.lose(state, error);
+        void this.retire(state);
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       worker.ref();
@@ -78,22 +97,30 @@ export class WindowsProcessTableReader {
   }
 
   async shutdown(): Promise<void> {
-    const worker = this.worker;
-    if (!worker) return;
-    this.lose(worker, new Error("Windows process snapshot reader shut down"));
-    await worker.terminate();
+    const state = this.current;
+    if (!state) return;
+    this.lose(state, new Error("Windows process snapshot reader shut down"));
+    await this.retire(state);
   }
 
-  private connect(): WindowsSnapshotWorker {
-    if (this.worker) return this.worker;
+  private connect(): WorkerState {
+    if (this.current) return this.current;
     const worker = (this.options.createWorker ?? startWorker)();
-    this.worker = worker;
+    let markLoaded = () => {};
+    const loaded = new Promise<void>((resolve) => { markLoaded = resolve; });
+    const state: WorkerState = { worker, ready: false, loaded, markLoaded };
+    this.current = state;
     worker.unref();
     worker.on("message", (reply: unknown) => {
-      if (this.worker !== worker) return;
+      if (isRecord(reply) && reply.ready === true) {
+        state.ready = true;
+        state.markLoaded();
+        return;
+      }
+      if (this.current !== state) return;
       if (!isRecord(reply) || typeof reply.id !== "number" || !Number.isSafeInteger(reply.id) || reply.id <= 0) {
-        this.lose(worker, new Error("Windows process snapshot worker sent a malformed reply"));
-        void worker.terminate().catch((error: unknown) => console.warn(`[windows-process-table] Worker termination failed: ${String(error)}`));
+        this.lose(state, new Error("Windows process snapshot worker sent a malformed reply"));
+        void this.retire(state);
         return;
       }
       const pending = this.pending.get(reply.id);
@@ -108,15 +135,28 @@ export class WindowsProcessTableReader {
         pending.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
-    worker.on("error", (error: Error) => this.lose(worker, error));
-    worker.on("exit", (code: number) => this.lose(worker, new Error(`Windows process snapshot worker exited with code ${code}`)));
-    return worker;
+    worker.on("error", (error: Error) => this.lose(state, error));
+    worker.on("exit", (code: number) => {
+      state.markLoaded();
+      this.lose(state, new Error(`Windows process snapshot worker exited with code ${code}`));
+    });
+    return state;
   }
 
-  private lose(worker: WindowsSnapshotWorker, error: Error): void {
-    if (this.worker !== worker) return;
-    this.worker = undefined;
-    worker.unref();
+  /** Stops a worker that is no longer current, waiting for koffi to finish loading first. */
+  private async retire(state: WorkerState): Promise<void> {
+    await state.loaded;
+    try {
+      await state.worker.terminate();
+    } catch (error) {
+      console.warn(`[windows-process-table] Worker termination failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private lose(state: WorkerState, error: Error): void {
+    if (this.current !== state) return;
+    this.current = undefined;
+    state.worker.unref();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);

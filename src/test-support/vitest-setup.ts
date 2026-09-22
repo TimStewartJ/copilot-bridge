@@ -21,3 +21,16 @@ const waitFor = vi.waitFor;
 const waitUntil = vi.waitUntil;
 vi.waitFor = ((callback, options) => waitFor(callback, withDefaultTimeout(options))) as typeof vi.waitFor;
 vi.waitUntil = ((callback, options) => waitUntil(callback, withDefaultTimeout(options))) as typeof vi.waitUntil;
+
+// Vitest stops a parallel test file's thread when the file ends, and that also stops any
+// process-snapshot worker the file started in the background. koffi aborts the whole test
+// process if that lands while it is still loading (see src/server/windows-process-table.ts),
+// so real Windows snapshots run only in the native project, which opts in.
+if (process.env.BRIDGE_TEST_REAL_PROCESS_SNAPSHOTS !== "1") {
+  vi.doMock("../server/windows-process-table.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../server/windows-process-table.js")>(),
+    readNativeWindowsProcessTable: async () => {
+      throw new Error("Native Windows process snapshots run only in the native test project");
+    },
+  }));
+}
