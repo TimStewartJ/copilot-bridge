@@ -22,24 +22,10 @@ import {
   createDeferRunnerCore,
   LEASE_MS,
   MAX_ATTEMPTS,
-  type DeferRunnerDueItem,
   type DeferRunnerOptions,
   type DeferRunnerCoreContext,
   type ProcessOneResult,
 } from "./defer-runner-core.js";
-
-function toDueItem(loop: DeferLoop): DeferRunnerDueItem {
-  return {
-    id: loop.id,
-    sessionId: loop.sessionId,
-    wakeAt: loop.nextRunAt,
-    title: loop.name ?? "Recurring check",
-    expiresAt: loop.expiresAt,
-    terminal: (loop.maxRuns !== undefined && loop.runCount >= loop.maxRuns)
-      || (loop.expiresAt !== undefined && Date.parse(loop.expiresAt) <= Date.now())
-      || loop.attempts >= MAX_ATTEMPTS,
-  };
-}
 
 function formatLoopPrompt(loop: DeferLoop): string {
   const lines = [
@@ -133,8 +119,12 @@ export function createDeferLoopRunner(
   }
 
   function createProcessOne(ctx: DeferRunnerCoreContext) {
-    function settleTerminalLoop(loop: DeferLoop): ProcessOneResult | undefined {
-      const { id } = loop;
+    async function processOne(id: string): Promise<ProcessOneResult> {
+      if (!ctx.isStarted()) return "unchanged";
+      const loop = store.get(id);
+      if (!loop || loop.status !== "active") return "unchanged";
+      if (ctx.deliveryGuard.isActive(loop.sessionId)) return "blocked";
+
       const now = new Date();
       if (loop.maxRuns !== undefined && loop.runCount >= loop.maxRuns) {
         const completed = queuePreflightTerminalReturn(loop, "completed");
@@ -152,26 +142,8 @@ export function createDeferLoopRunner(
         }
         return expired ? "changed" : "unchanged";
       }
-      return undefined;
-    }
-
-    async function processOne(id: string): Promise<ProcessOneResult> {
-      if (!ctx.isStarted()) return "unchanged";
-      const loop = store.get(id);
-      if (!loop || loop.status !== "active") return "unchanged";
-      const terminal = settleTerminalLoop(loop);
-      if (terminal) return terminal;
-      if (Date.parse(loop.nextRunAt) > Date.now()) return "unchanged";
-      if (ctx.holdIfNotReady(toDueItem(loop))) return "blocked";
-      if (ctx.deliveryGuard.isActive(loop.sessionId)) return "blocked";
-
       const sessionList = await sessionManager.listSessionsFromDisk({ includeArchived: false });
       if (!ctx.isStarted()) return "unchanged";
-      const current = store.get(id);
-      if (!current || current.status !== "active") return "unchanged";
-      if (current.nextRunAt !== loop.nextRunAt || current.updatedAt !== loop.updatedAt) return "changed";
-      const terminalAfterLookup = settleTerminalLoop(current);
-      if (terminalAfterLookup) return terminalAfterLookup;
       if (ctx.deliveryGuard.isActive(loop.sessionId)) return "blocked";
       const sessionExists = sessionList.some((s: any) => s.sessionId === loop.sessionId);
       if (!sessionExists) {
@@ -201,7 +173,6 @@ export function createDeferLoopRunner(
       }
 
       if (sessionManager.isSessionBusy(loop.sessionId)) return "blocked";
-      if (ctx.holdIfNotReady(toDueItem(current))) return "blocked";
       if (!ctx.deliveryGuard.tryClaim(loop.sessionId)) return "blocked";
 
       let claimToken: string | undefined;
@@ -225,7 +196,6 @@ export function createDeferLoopRunner(
         }
         claimToken = claimed.claimToken;
         ctx.emitDeferSummary(loop.sessionId);
-        ctx.settleProtectionHold(toDueItem(claimed.loop), "started");
 
         const claimedLoop = claimed.loop;
         const renewalTimer = ctx.startRenewal(() => {
@@ -396,22 +366,16 @@ export function createDeferLoopRunner(
 
   return createDeferRunnerCore({
     store: {
-      getNextFutureWakeAt: () => store.getNextFutureWakeAt(),
+      getNextFutureWakeAt: () => store.getNextFutureActive()?.nextRunAt,
       getNextRunningLeaseWakeAt: () => store.getNextRunningLeaseExpiry()?.leaseExpiresAt,
-      listDue: () => store.listDue().map(toDueItem),
+      listDue: () => store.listDue().map((loop) => ({
+        id: loop.id,
+        sessionId: loop.sessionId,
+        wakeAt: loop.nextRunAt,
+      })),
       reclaimExpiredRunning: (now) => store.reclaimExpiredRunning(now),
       listExpiredRunningSessionIds: (now) => store.listExpiredRunningSessionIds(now),
       cancelForSession: (sessionId) => store.cancelForSession(sessionId),
-      getProtectionDisposition: (hold) => {
-        const loop = store.get(hold.workId);
-        if (!loop) return { disposition: "no-longer-needed" };
-        if (loop.status === "expired") return { disposition: "expired", details: { expiresAt: loop.expiresAt } };
-        if (loop.status === "cancelled" || loop.status === "failed") return { disposition: loop.status };
-        if (loop.status === "completed") return { disposition: loop.runCount > 0 ? "delivered" : "no-longer-needed" };
-        if (loop.status === "running") return { disposition: "started" };
-        if (loop.nextRunAt !== hold.scheduledFor) return { disposition: "superseded" };
-        return undefined;
-      },
     },
     sessionManager,
     globalBus,

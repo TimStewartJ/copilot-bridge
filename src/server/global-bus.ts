@@ -5,25 +5,13 @@ import type { DeferSummary } from "./defer-summary.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-store.js";
 import type { BackgroundAgentsSummary } from "../shared/session-agents.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
-import type { FocusObjectType } from "./focus-domain-store.js";
-import type { FocusLifecycle } from "./focus-details-store.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-changed" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "focus:changed" | "focus:protection-changed" | "focus:protection-cleared" | "feed:changed" | "management-job:changed" | "backend:status" | "docs:changed";
-  protectionWindowId?: string;
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-changed" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "management-job:changed" | "backend:status" | "docs:changed";
   sessionId?: string;
   /** Page or collection path a `docs:changed` event is about; absent when many pages changed. */
   docPath?: string;
-  cardId?: string;
-  focusObjectId?: string;
-  focusObjectType?: FocusObjectType;
-  activationId?: string;
-  transitionId?: string;
-  lifecycle?: FocusLifecycle;
-  previousLifecycle?: FocusLifecycle;
   reason?: string;
-  meaningful?: boolean;
-  dedupeKey?: string;
   jobId?: string;
   jobType?: ManagementJobType;
   status?: ManagementJobStatus;

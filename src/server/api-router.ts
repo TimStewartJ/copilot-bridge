@@ -1,3 +1,4 @@
+import { registerDashboardArchiveRoutes } from "./dashboard-archive.js";
 // API route handlers — extracted from index.ts for modularity
 
 import express from "express";
@@ -9,6 +10,8 @@ import { stat as statAsync, readFile, rm } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
+import { registerHomeRoutes } from "./home.js";
+import { maxIsoTime } from "../shared/session-activity.js";
 import {
   SettingsValidationError,
   type AppSettings,
@@ -109,17 +112,6 @@ import {
 import { deleteTaskWithOwnedState } from "./task-deletion.js";
 import { InvalidTagColorError } from "./tag-store.js";
 import { TaskGroupValidationError } from "./task-group-store.js";
-import {
-  FeedCardNotFoundError,
-  FeedCardPromotionError,
-  FeedCardValidationError,
-  type FeedCardStatus,
-} from "./feed-store.js";
-import type { FocusObject, FocusObjectType } from "./focus-domain-store.js";
-import { focusEnum, focusRecord, focusText, FOCUS_LIFECYCLES } from "./focus-details-store.js";
-import { registerFocusGovernanceRoutes } from "./focus-governance-routes.js";
-import { registerFocusProtectionRoutes } from "./focus-protection-routes.js";
-import { registerFocusSessionLaunchRoutes } from "./focus-session-launch-routes.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { PendingInteractionError } from "./pending-interaction-validation.js";
 import { emitSessionDeferSummary, createDeferSummaryLookup, type DeferSummary } from "./defer-summary.js";
@@ -772,17 +764,6 @@ function createSessionListTaskLookup(ctx: AppContext, tasks?: Task[]) {
   };
 
   return { tasks: allTasks, resolveTask, getLinkedTasks };
-}
-
-function maxIsoTime(...values: Array<string | null | undefined>): string | undefined {
-  let latest: { value: string; time: number } | undefined;
-  for (const value of values) {
-    if (!value) continue;
-    const time = Date.parse(value);
-    if (!Number.isFinite(time)) continue;
-    if (!latest || time > latest.time) latest = { value, time };
-  }
-  return latest?.value;
 }
 
 function shouldIncludeMaterializedSession(opts: {
@@ -2043,6 +2024,8 @@ export function createApiRouter(
 
   // ── Session routes ──────────────────────────────────────────────
 
+  registerHomeRoutes(router, ctx, async () => materializeSessionList(await getEnrichedSessionList(false), false));
+
   router.get("/sessions", async (req, res) => {
     try {
       const includeArchived = req.query.includeArchived === "true";
@@ -3236,11 +3219,11 @@ export function createApiRouter(
     }
   });
 
-  const focusSessionLaunchRoutes = registerFocusSessionLaunchRoutes(router, ctx, resolveSessionCreationOptions);
+
 
   router.post("/sessions", async (req, res) => {
     if (isRecord(req.body) && "focusLaunch" in req.body) {
-      return focusSessionLaunchRoutes.startSessionRequest(req.body, null, res);
+      return res.status(410).json({ error: "Focus launch records are retired. Start a normal task session instead." });
     }
     const creationResult = await resolveSessionCreationOptions(req.body);
     if (creationResult.error) {
@@ -4453,6 +4436,7 @@ export function createApiRouter(
         title: req.body?.title,
         kind: req.body?.kind,
         muted: req.body?.muted,
+        deferred: req.body?.deferred,
         status: req.body?.status,
         completionAction: req.body?.completionAction,
         notes: req.body?.notes,
@@ -4502,7 +4486,6 @@ export function createApiRouter(
           ctx.scheduler?.unregisterSchedule(scheduleId);
           ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId });
         }
-        ctx.globalBus.emit({ type: "feed:changed" });
         return res.json({ ok: true, taskDeleted: true, preview });
       }
       return res.status(409).json({
@@ -4633,7 +4616,7 @@ export function createApiRouter(
     const task = ctx.taskStore.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
     if (isRecord(req.body) && "focusLaunch" in req.body) {
-      return focusSessionLaunchRoutes.startSessionRequest(req.body, task.id, res);
+      return res.status(410).json({ error: "Focus launch records are retired. Start a normal task session instead." });
     }
 
     try {
@@ -4747,7 +4730,7 @@ export function createApiRouter(
     try {
       const taskId = req.query.taskId === undefined
         ? null
-        : parseFeedQueryString("taskId", req.query.taskId) ?? null;
+        : (typeof req.query.taskId === "string" ? req.query.taskId : null);
       res.json({ actions: ctx.checklistStore.listChecklistItems(taskId) });
     } catch (error) {
       sendChecklistError(res, error);
@@ -4813,518 +4796,7 @@ export function createApiRouter(
     }
   });
 
-  // ── Feed card routes ──────────────────────────────────────────────
-
-  function parseFeedBody(body: unknown): Record<string, unknown> {
-    if (!isRecord(body)) throw new FeedCardValidationError("Request body must be an object");
-    return body;
-  }
-
-  function parseFocusBody(body: unknown): Record<string, unknown> {
-    const input = { ...parseFeedBody(body) };
-    if ("kind" in input || "objectType" in input) {
-      throw new FeedCardValidationError("Focus object type is determined by the route");
-    }
-    if ("launchPrompt" in input) {
-      input.action = input.launchPrompt;
-      delete input.launchPrompt;
-    }
-    return input;
-  }
-
-  function parseFeedQueryString(field: string, value: unknown): string | undefined {
-    if (value === undefined || value === null || value === "") return undefined;
-    if (typeof value !== "string") throw new FeedCardValidationError(`${field} must be a string`);
-    return value;
-  }
-
-  function parseFeedStatus(value: unknown): FeedCardStatus | undefined {
-    const status = parseFeedQueryString("status", value);
-    if (status === undefined) return undefined;
-    if (status === "active" || status === "done" || status === "dismissed") return status;
-    throw new FeedCardValidationError("status must be one of: active, done, dismissed");
-  }
-
-  function parseFeedLimit(value: unknown): number | undefined {
-    if (value === undefined || value === null || value === "") return undefined;
-    if (typeof value !== "string") throw new FeedCardValidationError("limit must be a positive integer");
-    const limit = Number(value);
-    if (!Number.isInteger(limit) || limit < 1) throw new FeedCardValidationError("limit must be a positive integer");
-    return limit;
-  }
-
-  function parseFeedCursor(value: unknown): string | undefined {
-    if (value === undefined || value === null || value === "") return undefined;
-    if (typeof value !== "string") throw new FeedCardValidationError("cursor must be a string");
-    return value;
-  }
-
-  function parseFeedBoolean(field: string, value: unknown): boolean | undefined {
-    if (value === undefined || value === null || value === "") return undefined;
-    if (value === "true") return true;
-    if (value === "false") return false;
-    throw new FeedCardValidationError(`${field} must be true or false`);
-  }
-
-  function sendFeedError(res: express.Response, error: unknown): void {
-    if (error instanceof FeedCardValidationError) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    if (error instanceof FeedCardNotFoundError) {
-      res.status(404).json({ error: error.message });
-      return;
-    }
-    if (error instanceof FeedCardPromotionError) {
-      res.status(409).json({ error: error.message });
-      return;
-    }
-    console.error("[feed] Error:", error);
-    res.status(500).json({ error: String(error) });
-  }
-
-  function parseFeedStatsInt(field: string, value: unknown): number | undefined {
-    if (value === undefined || value === null || value === "") return undefined;
-    if (typeof value !== "string") throw new FeedCardValidationError(`${field} must be a positive integer`);
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < 1) throw new FeedCardValidationError(`${field} must be a positive integer`);
-    return parsed;
-  }
-
-  function parseFocusPageValue(field: "offset" | "limit", value: unknown): number | undefined {
-    if (value === undefined || value === null || value === "") return undefined;
-    if (typeof value !== "string") {
-      throw new FeedCardValidationError(`${field} must be a non-negative integer`);
-    }
-    const parsed = Number(value);
-    const minimum = field === "limit" ? 1 : 0;
-    if (!Number.isInteger(parsed) || parsed < minimum || (field === "limit" && parsed > 100)) {
-      throw new FeedCardValidationError(
-        field === "limit"
-          ? "limit must be an integer from 1 to 100"
-          : "offset must be a non-negative integer",
-      );
-    }
-    return parsed;
-  }
-
-  function requireFocusObjectType(id: string, objectType: FocusObjectType) {
-    const object = ctx.focusMutationCoordinator.getAny(id);
-    if (!object || object.objectType !== objectType) {
-      throw new FeedCardNotFoundError(`${objectType} ${id} not found`);
-    }
-    return object;
-  }
-
-  function serializeFocusObject(object: FocusObject) {
-    const { action, kind: _legacyKind, ...rest } = object;
-    return {
-      ...rest,
-      launchPrompt: action,
-    };
-  }
-
-  function serializeFocusPage<T extends FocusObject>(page: {
-    objects: T[];
-    total: number;
-    nextOffset: number | null;
-  }) {
-    return {
-      ...page,
-      objects: page.objects.map(serializeFocusObject),
-    };
-  }
-
-  router.get("/feed", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const page = ctx.feedStore.listCardPage({
-        status: parseFeedStatus(req.query.status),
-        kind: parseFeedQueryString("kind", req.query.kind),
-        taskId: parseFeedQueryString("taskId", req.query.taskId),
-        sessionId: parseFeedQueryString("sessionId", req.query.sessionId),
-        keyPrefix: parseFeedQueryString("keyPrefix", req.query.keyPrefix),
-        limit: parseFeedLimit(req.query.limit),
-        includeDismissed: parseFeedBoolean("includeDismissed", req.query.includeDismissed),
-        cursor: parseFeedCursor(req.query.cursor),
-      });
-      res.json(page);
-      ctx.telemetryStore?.recordSpan({ name: "feed.list", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/feed/kind-stats", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const stats = ctx.feedStore.getKindStats({
-        days: parseFeedStatsInt("days", req.query.days),
-        buckets: parseFeedStatsInt("buckets", req.query.buckets),
-        keyPrefix: parseFeedQueryString("keyPrefix", req.query.keyPrefix),
-      });
-      res.json(stats);
-      ctx.telemetryStore?.recordSpan({ name: "feed.kindStats", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  registerFocusGovernanceRoutes(router, ctx);
-  registerFocusProtectionRoutes(router, ctx);
-
-  router.get("/focus", (_req, res) => {
-    try {
-      res.json(ctx.focusProjection.getSnapshot());
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/focus/decisions", (req, res) => {
-    try {
-      const options = {
-        status: parseFeedStatus(req.query.status),
-        offset: parseFocusPageValue("offset", req.query.offset),
-        limit: parseFocusPageValue("limit", req.query.limit),
-        ...(req.query.lifecycle === undefined ? {} : { lifecycle: focusEnum(req.query.lifecycle, "lifecycle", FOCUS_LIFECYCLES) }),
-        ...(req.query.taskId === undefined ? {} : { taskId: parseFeedQueryString("taskId", req.query.taskId) }),
-      };
-      const all = parseFeedBoolean("all", req.query.all);
-      res.json(serializeFocusPage(all || options.lifecycle || options.taskId !== undefined
-        ? ctx.decisionStore.listPage(options) : ctx.focusProjection.listDecisions(options)));
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/focus/alerts", (req, res) => {
-    try {
-      const options = {
-        status: parseFeedStatus(req.query.status),
-        offset: parseFocusPageValue("offset", req.query.offset),
-        limit: parseFocusPageValue("limit", req.query.limit),
-        ...(req.query.lifecycle === undefined ? {} : { lifecycle: focusEnum(req.query.lifecycle, "lifecycle", FOCUS_LIFECYCLES) }),
-        ...(req.query.taskId === undefined ? {} : { taskId: parseFeedQueryString("taskId", req.query.taskId) }),
-      };
-      const all = parseFeedBoolean("all", req.query.all);
-      res.json(serializeFocusPage(all || options.lifecycle || options.taskId !== undefined
-        ? ctx.alertStore.listPage(options) : ctx.focusProjection.listAlerts(options)));
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/focus/events/digest-items", (req, res) => {
-    try {
-      res.json(serializeFocusPage(ctx.focusProjection.listEventDigest({
-        taskId: parseFeedQueryString("taskId", req.query.taskId) ?? null,
-        keyPrefix: parseFeedQueryString("keyPrefix", req.query.keyPrefix),
-        category: parseFeedQueryString("category", req.query.category),
-        sourceFamily: parseFeedQueryString("sourceFamily", req.query.sourceFamily),
-        orphanedTaskId: parseFeedQueryString("orphanedTaskId", req.query.orphanedTaskId),
-        offset: parseFocusPageValue("offset", req.query.offset),
-        limit: parseFocusPageValue("limit", req.query.limit),
-      })));
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/focus/events", (req, res) => {
-    try {
-      res.json(serializeFocusPage(ctx.focusEventStore.listPage({
-        status: parseFeedStatus(req.query.status),
-        offset: parseFocusPageValue("offset", req.query.offset),
-        limit: parseFocusPageValue("limit", req.query.limit),
-        ...(req.query.lifecycle === undefined ? {} : { lifecycle: focusEnum(req.query.lifecycle, "lifecycle", FOCUS_LIFECYCLES) }),
-        ...(req.query.taskId === undefined ? {} : { taskId: parseFeedQueryString("taskId", req.query.taskId) }),
-      })));
-    } catch (error) { sendFeedError(res, error); }
-  });
-
-  router.get("/focus/cleared", (req, res) => {
-    try {
-      res.json(serializeFocusPage(ctx.focusProjection.listCleared({
-        offset: parseFocusPageValue("offset", req.query.offset),
-        limit: parseFocusPageValue("limit", req.query.limit),
-      })));
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.post("/focus/decisions", (req, res) => {
-    try {
-      const result = ctx.focusMutationCoordinator.saveDecision(parseFocusBody(req.body), { actor: "user" });
-      res.status(result.created ? 201 : 200).json({
-        created: result.created,
-        decision: serializeFocusObject(result.decision),
-      });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.patch("/focus/decisions/:id", (req, res) => {
-    try {
-      requireFocusObjectType(req.params.id, "decision");
-      res.json({
-        decision: serializeFocusObject(
-          ctx.focusMutationCoordinator.updateDecision(req.params.id, parseFocusBody(req.body), { actor: "user" }),
-        ),
-      });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.post("/focus/alerts", (req, res) => {
-    try {
-      const result = ctx.focusMutationCoordinator.saveAlert(parseFocusBody(req.body), { actor: "user" });
-      res.status(result.created ? 201 : 200).json({
-        created: result.created,
-        alert: serializeFocusObject(result.alert),
-      });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.patch("/focus/alerts/:id", (req, res) => {
-    try {
-      requireFocusObjectType(req.params.id, "alert");
-      res.json({
-        alert: serializeFocusObject(
-          ctx.focusMutationCoordinator.updateAlert(req.params.id, parseFocusBody(req.body), { actor: "user" }),
-        ),
-      });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.post("/focus/events", (req, res) => {
-    try {
-      const body = parseFocusBody(req.body);
-      const category = body.category;
-      if (typeof category !== "string" || !category.trim()) {
-        throw new FeedCardValidationError("category is required");
-      }
-      const input = { ...body };
-      delete input.category;
-      const result = ctx.focusMutationCoordinator.saveEvent(category.trim(), input, { actor: "user" });
-      res.status(result.created ? 201 : 200).json({
-        created: result.created,
-        event: serializeFocusObject(result.event),
-      });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.patch("/focus/events/:id", (req, res) => {
-    try {
-      const existing = requireFocusObjectType(req.params.id, "event");
-      const body = parseFocusBody(req.body);
-      if ("category" in body && (typeof body.category !== "string" || !body.category.trim())) {
-        throw new FeedCardValidationError("category must be a non-empty string");
-      }
-      const category = typeof body.category === "string" && body.category.trim()
-        ? body.category.trim()
-        : existing.objectType === "event"
-          ? existing.category
-          : "";
-      const input = { ...body };
-      delete input.category;
-      res.json({
-        event: serializeFocusObject(
-          ctx.focusMutationCoordinator.updateEvent(req.params.id, category, input, { actor: "user" }),
-        ),
-      });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  for (const objectType of ["decision", "alert", "event"] as const) {
-    const plural = `${objectType}s`;
-    router.get(`/focus/${plural}/:id`, (req, res) => {
-      try {
-        res.json({ [objectType]: serializeFocusObject(requireFocusObjectType(req.params.id, objectType)) });
-      } catch (error) {
-        sendFeedError(res, error);
-      }
-    });
-    router.delete(`/focus/${plural}/:id`, (req, res) => {
-      try {
-        requireFocusObjectType(req.params.id, objectType);
-        ctx.focusMutationCoordinator.deleteById(req.params.id);
-        res.json({ ok: true });
-      } catch (error) {
-        sendFeedError(res, error);
-      }
-    });
-    router.post(`/focus/${plural}/:id/make-action`, (req, res) => {
-      try {
-        requireFocusObjectType(req.params.id, objectType);
-        const result = ctx.focusMutationCoordinator.promoteToAction(req.params.id, ctx.checklistStore, focusRecord(req.body, ["text", "taskId", "expectedActivationId"]), "user");
-        res.status(result.created ? 201 : 200).json({
-          created: result.created,
-          object: serializeFocusObject(result.object),
-          action: result.action,
-        });
-      } catch (error) {
-        sendFeedError(res, error);
-      }
-    });
-    router.post(`/focus/${plural}/:id/link-session`, (req, res) => {
-      try {
-        requireFocusObjectType(req.params.id, objectType);
-        const input = focusRecord(req.body, ["sessionId", "expectedActivationId"]);
-        const object = ctx.focusMutationCoordinator.linkLaunchedSession(
-          req.params.id, focusText(input.sessionId, "sessionId")!,
-          input.expectedActivationId === undefined ? undefined : focusText(input.expectedActivationId, "expectedActivationId")!, "user",
-        );
-        res.json({ object: serializeFocusObject(object) });
-      } catch (error) { sendFeedError(res, error); }
-    });
-  }
-
-  router.get("/focus/reconciliation-errors", (_req, res) => {
-    res.json({ errors: ctx.focusReconciliationErrorStore.listErrors() });
-  });
-
-  router.post("/focus/reconciliation-errors/:id/retry", (req, res) => {
-    try {
-      res.json({ object: serializeFocusObject(ctx.focusMutationCoordinator.retryQuarantined(req.params.id)) });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.delete("/focus/reconciliation-errors/:id", (req, res) => {
-    try {
-      const deleted = ctx.focusMutationCoordinator.deleteQuarantined(req.params.id);
-      if (!deleted) throw new FeedCardNotFoundError(`Reconciliation error ${req.params.id} not found`);
-      res.json({ ok: true });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/dashboard/attention", (_req, res) => {
-    try {
-      const t0 = Date.now();
-      res.json(ctx.feedStore.getDashboardAttention());
-      ctx.telemetryStore?.recordSpan({ name: "dashboard.attention", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/dashboard/attention/inbox", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const offsetValue = parseFeedQueryString("offset", req.query.offset);
-      const offset = offsetValue === undefined ? undefined : Number(offsetValue);
-      if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) {
-        throw new FeedCardValidationError("offset must be a non-negative integer");
-      }
-      const page = ctx.feedStore.listDashboardInbox({
-        offset,
-        limit: parseFeedLimit(req.query.limit),
-      });
-      res.json(page);
-      ctx.telemetryStore?.recordSpan({ name: "dashboard.inbox", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/dashboard/attention/digest-items", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const offsetValue = parseFeedQueryString("offset", req.query.offset);
-      const offset = offsetValue === undefined ? undefined : Number(offsetValue);
-      if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) {
-        throw new FeedCardValidationError("offset must be a non-negative integer");
-      }
-      const page = ctx.feedStore.listDashboardDigestItems({
-        taskId: parseFeedQueryString("taskId", req.query.taskId) ?? null,
-        keyPrefix: parseFeedQueryString("keyPrefix", req.query.keyPrefix),
-        kind: parseFeedQueryString("kind", req.query.kind),
-        offset,
-        limit: parseFeedLimit(req.query.limit),
-      });
-      res.json(page);
-      ctx.telemetryStore?.recordSpan({ name: "dashboard.digestItems", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/dashboard/attention/cleared", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const offsetValue = parseFeedQueryString("offset", req.query.offset);
-      const offset = offsetValue === undefined ? undefined : Number(offsetValue);
-      if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) {
-        throw new FeedCardValidationError("offset must be a non-negative integer");
-      }
-      const page = ctx.feedStore.listDashboardCleared({
-        offset,
-        limit: parseFeedLimit(req.query.limit),
-      });
-      res.json(page);
-      ctx.telemetryStore?.recordSpan({ name: "dashboard.cleared", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.post("/feed", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const result = ctx.feedStore.saveCard(parseFeedBody(req.body));
-      res.status(result.created ? 201 : 200).json(result);
-      ctx.telemetryStore?.recordSpan({ name: "feed.save", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.patch("/feed/:id", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const card = ctx.feedStore.updateCardById(req.params.id, parseFeedBody(req.body));
-      res.json({ card });
-      ctx.telemetryStore?.recordSpan({ name: "feed.update", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.get("/feed/:id", (req, res) => {
-    try {
-      const card = ctx.feedStore.getCard(req.params.id);
-      if (!card) throw new FeedCardNotFoundError(`Feed card ${req.params.id} not found`);
-      res.json({ card });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
-
-  router.post("/feed/:id/make-action", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const result = ctx.feedStore.promoteCardToChecklist(req.params.id, focusRecord(req.body, ["text", "taskId", "expectedActivationId"]));
-      res.status(result.created ? 201 : 200).json(result);
-      ctx.telemetryStore?.recordSpan({ name: "feed.makeAction", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
-  });
+  registerDashboardArchiveRoutes(router, ctx.dashboardArchive);
 
   function getFeedVisualOwner(req: express.Request, res: express.Response): VisualArtifactOwner | undefined {
     const cardId = String(req.params.id ?? "").trim();
@@ -5337,16 +4809,7 @@ export function createApiRouter(
       res.status(400).json({ error: "artifactId must be a valid UUID" });
       return undefined;
     }
-    const focusObject = ctx.focusMutationCoordinator.getAny(cardId);
-    let legacyCard: ReturnType<AppContext["feedStore"]["getCard"]>;
-    if (!focusObject) {
-      try {
-        legacyCard = ctx.feedStore.getCard(cardId);
-      } catch {
-        legacyCard = undefined;
-      }
-    }
-    const visual = focusObject?.visual ?? legacyCard?.visual ?? null;
+    const visual = ctx.dashboardArchive.visual(cardId);
     if (visual?.artifactId !== artifactId) {
       res.status(404).json({ error: "Feed visual artifact not found" });
       return undefined;
@@ -5372,16 +4835,8 @@ export function createApiRouter(
     return sendVisualMeta(owner, req.params.artifactId, res);
   });
 
-  router.delete("/feed/:id", (req, res) => {
-    try {
-      const t0 = Date.now();
-      const deleted = ctx.feedStore.deleteCardById(req.params.id);
-      if (!deleted) throw new FeedCardNotFoundError(`Feed card ${req.params.id} not found`);
-      res.json({ ok: true });
-      ctx.telemetryStore?.recordSpan({ name: "feed.delete", duration: Date.now() - t0, source: "server" });
-    } catch (error) {
-      sendFeedError(res, error);
-    }
+  router.use(["/focus", "/feed", "/dashboard/attention"], (_req, res) => {
+    res.status(410).json({ error: "The dashboard-only system is retired. Use native Tasks, conversations and checklists. Historical records are read-only.", archive: "/dashboard/archive" });
   });
 
   // ── Read State routes ─────────────────────────────────────────────

@@ -16,7 +16,6 @@ export interface ScenarioWorld {
   assignTaskTags(taskId: string, tagIds: string[]): Promise<any>;
   assignGroupTags(groupId: string, tagIds: string[]): Promise<any>;
   createChecklistItem(taskId: string, text: string, deadline?: string): Promise<any>;
-  createFeedCard(title: string, extra?: Record<string, unknown>): Promise<any>;
   writePage(path: string, content: string): Promise<any>;
   readPage(path: string): Promise<any>;
   createCollection(folder: string, fields?: Array<Record<string, unknown>>): Promise<any>;
@@ -72,10 +71,6 @@ export function createScenarioWorld(): ScenarioWorld {
         .post(`/api/tasks/${taskId}/checklist-items`)
         .send({ text, ...(deadline ? { deadline } : {}) });
       return bodyOrThrow(response, 200, "create checklist item").checklistItem;
-    },
-    async createFeedCard(title, extra = {}) {
-      const response = await request(app).post("/api/feed").send({ title, ...extra });
-      return bodyOrThrow(response, 201, "create feed card").card;
     },
     async writePage(pagePath, content) {
       const response = await request(app).put(`/api/docs/pages/${pagePath}`).send({ content });

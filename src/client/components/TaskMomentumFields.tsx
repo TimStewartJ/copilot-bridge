@@ -3,13 +3,13 @@ import { Plus } from "lucide-react";
 import type { Task } from "../api";
 import { patchTask } from "../api";
 import { DS, cx } from "../design/tokens";
-import { Button, Field, FieldList, Section, TextInput } from "../design/primitives";
+import { Badge, Button, Field, FieldList, Notice, Section, TextInput } from "../design/primitives";
+import { formatRevisit, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
+import TaskDeferralDialog from "./TaskDeferralDialog";
 
 type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
 
 type FieldValues = Record<MomentumFieldKey, string>;
-export type FollowUpState = "overdue" | "due" | "upcoming" | null;
-export type PanelFieldTone = "danger" | "warning" | null;
 
 interface TaskMomentumFieldsProps {
   task: Task;
@@ -26,10 +26,10 @@ interface FieldConfig {
 }
 
 const FIELD_CONFIGS: FieldConfig[] = [
-  { key: "doneWhen", label: "Done when", placeholder: "Define the finish line", type: "text", actionLabel: "Set done when" },
-  { key: "nextAction", label: "Next action", placeholder: "Capture the next concrete step", type: "text", actionLabel: "Add next action" },
-  { key: "waitingOn", label: "Waiting on", placeholder: "Who or what is blocking this", type: "text", actionLabel: "Add blocker" },
-  { key: "nextTouchAt", label: "Follow up on", placeholder: "Pick a follow-up date and time", type: "datetime-local", actionLabel: "Set follow-up" },
+  { key: "doneWhen", label: "Done when", placeholder: "What will be true when this is finished?", type: "text", actionLabel: "Set done when" },
+  { key: "nextAction", label: "Next step", placeholder: "What would move this forward?", type: "text", actionLabel: "Add next step" },
+  { key: "waitingOn", label: "Waiting for", placeholder: "A reply, decision, delivery, or other dependency", type: "text", actionLabel: "Set waiting for" },
+  { key: "nextTouchAt", label: "Revisit on", placeholder: "When would you like to check back?", type: "datetime-local", actionLabel: "Set revisit date" },
 ];
 
 const FIELD_CONFIG_BY_KEY = FIELD_CONFIGS.reduce<Record<MomentumFieldKey, FieldConfig>>((acc, config) => {
@@ -65,6 +65,8 @@ export default function TaskMomentumFields({
   const [editingField, setEditingField] = useState<MomentumFieldKey | null>(null);
   const [savingField, setSavingField] = useState<MomentumFieldKey | null>(null);
   const [expandedFields, setExpandedFields] = useState<Set<MomentumFieldKey>>(() => new Set());
+  const [deferralOpen, setDeferralOpen] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     const next = toFieldValues(task);
@@ -73,6 +75,7 @@ export default function TaskMomentumFields({
     setEditingField(null);
     setSavingField(null);
     setExpandedFields(new Set());
+    setSaveError("");
   }, [task.id, task.kind, task.doneWhen, task.nextAction, task.waitingOn, task.nextTouchAt]);
 
   const visibleFieldKeys = getVisibleMomentumFieldKeys(task.kind);
@@ -91,10 +94,12 @@ export default function TaskMomentumFields({
     }
 
     let patchValue: string | null;
+    setSaveError("");
     try {
       patchValue = serializeFieldValue(field, normalized);
     } catch (error) {
       console.error(`Failed to validate ${field}`, error);
+      setSaveError(error instanceof Error ? error.message : String(error));
       return;
     }
 
@@ -115,8 +120,10 @@ export default function TaskMomentumFields({
       onSaved?.();
     } catch (error) {
       console.error(`Failed to update ${field}`, error);
+      setSaveError(error instanceof Error ? error.message : String(error));
       setValues(previousValues);
-      setDrafts(previousValues);
+      setDrafts({ ...previousValues, [field]: normalized });
+      setEditingField(field);
     } finally {
       setSavingField(null);
     }
@@ -156,14 +163,16 @@ export default function TaskMomentumFields({
   };
 
   return (
-    <Section label="Momentum" surface>
+    <><Section label="Where things stand" surface action={<Button size="sm" variant="ghost"
+      disabled={!!savingField} onClick={() => setDeferralOpen(true)}>{task.deferred ? "Resume task" : "Defer task"}</Button>}>
+      {task.deferred && <div className="mb-3 space-y-2"><Badge>Deferred</Badge><p className={DS.text.prose}>Set aside from Continue working until you resume it. A revisit date brings it back for review only.</p></div>}
+      {saveError && <Notice tone="danger" title="The change was not saved">{saveError}</Notice>}
       {visiblePanelFields.length > 0 && (
         <FieldList>
           {visiblePanelFields.map((field) => {
             const currentValue = values[field.key];
             const isEditing = editingField === field.key;
             const isSaving = savingField === field.key;
-            const tone = getPanelFieldTone(field.key, currentValue);
             const displayValue = formatFieldDisplay(field.key, currentValue);
             const isExpanded = expandedFields.has(field.key);
             const isExpandable = isExpandablePanelValue(displayValue);
@@ -172,7 +181,7 @@ export default function TaskMomentumFields({
               <Field
                 key={field.key}
                 stacked
-                label={<span className={tone ? DS.tone[tone] : undefined}>{field.label}</span>}
+                label={field.label}
                 action={isSaving ? (
                   <span className={DS.text.meta} role="status">Saving…</span>
                 ) : currentValue && !isEditing ? (
@@ -211,6 +220,7 @@ export default function TaskMomentumFields({
                       }
                     }}
                     placeholder={field.placeholder}
+                    aria-describedby={field.key === "nextTouchAt" ? `revisit-help-${task.id}` : undefined}
                   />
                 ) : isExpandable ? (
                   <button
@@ -255,29 +265,10 @@ export default function TaskMomentumFields({
           ))}
         </div>
       )}
-    </Section>
+      <p className={cx(DS.text.meta, "mt-3")}>Optional context for when you return. Waiting does not mean all work is blocked.</p>
+      {(values.nextTouchAt || editingField === "nextTouchAt") && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>A revisit adds this active, unmuted task to Home when the time arrives. It is not a deadline and does not start work or send a notification.</p>}
+    </Section>{deferralOpen && <TaskDeferralDialog task={task} onClose={() => setDeferralOpen(false)} onSaved={updated => { onPatched?.(updated); onSaved?.(); }} />}</>
   );
-}
-
-export function getFollowUpState(nextTouchAt?: string, now = new Date()): FollowUpState {
-  if (!nextTouchAt) return null;
-  const parsed = new Date(nextTouchAt);
-  if (Number.isNaN(parsed.getTime())) return null;
-
-  if (parsed.getTime() > now.getTime()) return "upcoming";
-  return parsed.getTime() < startOfLocalDay(now).getTime() ? "overdue" : "due";
-}
-
-export function getPanelFieldTone(
-  field: MomentumFieldKey,
-  value: string,
-  now = new Date(),
-): PanelFieldTone {
-  if (field !== "nextTouchAt" || !value) return null;
-  const state = getFollowUpState(value, now);
-  if (state === "overdue") return "danger";
-  if (state === "due") return "warning";
-  return null;
 }
 
 function toFieldValues(task: Task): FieldValues {
@@ -293,47 +284,9 @@ function normalizeDraft(field: MomentumFieldKey, value: string): string {
   return field === "nextTouchAt" ? value : value.trim();
 }
 
-export function toDateTimeInputValue(value?: string): string {
-  if (!value) return "";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "";
-  const localValue = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
-  return localValue.toISOString().slice(0, 16);
-}
-
-export function toDateTimeStorageValue(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error("Invalid follow-up date/time");
-  }
-  return parsed.toISOString();
-}
-
-function formatFollowUpDisplay(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  const formatted = parsed.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  const state = getFollowUpState(parsed.toISOString());
-  if (state === "overdue") return `${formatted} · overdue`;
-  if (state === "due") return `${formatted} · due now`;
-  return formatted;
-}
-
 function formatFieldDisplay(field: MomentumFieldKey, value: string): string {
   if (!value) return FIELD_CONFIG_BY_KEY[field].placeholder;
-  return field === "nextTouchAt" ? formatFollowUpDisplay(value) : value;
-}
-
-function startOfLocalDay(value: Date): Date {
-  const next = new Date(value);
-  next.setHours(0, 0, 0, 0);
-  return next;
+  return field === "nextTouchAt" ? formatRevisit(value) : value;
 }
 
 function serializeFieldValue(field: MomentumFieldKey, value: string): string | null {

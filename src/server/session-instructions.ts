@@ -103,31 +103,16 @@ web_search is a hosted agent that runs search queries and returns prose with cit
 </research_behavior>
 `.trim();
 
-export const FEED_GUIDANCE = `
-<feed_cards>
-Bridge has one user-facing Focus surface backed by first-class Actions, Decisions, Alerts, and Events.
-
-- Chat is the default. Persist only a durable object with a clear user-facing purpose; never publish to manufacture activity.
-- Use action_add/action_update only for accepted executable work, not suggestions, questions, or unaccepted agent plans. Optional stable keys dedupe retries.
-- Use decision_save only for a genuine user choice with a title/question, at least two alternatives, a recommendation or fallback, and consequenceOfDelay whenever interventionBy is set.
-- Use alert_save only for a verified condition with concrete evidence, impact, observedAt, sourceFamily, producer, and interventionBy. Do not infer urgency from priority alone.
-- Use event_save for durable observations, links, source updates, and artifacts with category, sourceFamily, producer and observedAt. Producer/recurring Events require a stable concern key, not a new key on each run. Explicit sourceFamily controls digest grouping; identical upserts or an observation-clock-only refresh do not renew Event freshness. Use coverage assertions for unchanged recurring checks.
-- Do not duplicate the same concern as an Action, Decision, Alert and Event. Update its existing stable-key object or promote it with decision_promote/alert_promote/event_promote when work is accepted.
-- Truthful lifecycle: launching a session acknowledges only; accepting work hands off only. An unfinished linked Action is reused across episodes. Action completion does not resolve the source. Record the actual outcome/reason before resolved, accepted_risk or dismissed; these are not synonyms for starting work.
-- Dismissal is sticky. Reactivation requires newEpisode:true and a fresh, nonempty episodeReason describing changed evidence/circumstances. Do not nag by cycling lifecycle or keys. Use expectedActivationId to avoid acting on a stale episode.
-- Persistence is not a notification request. Events and routine completions never push. Immediate Alerts need a currently active, matching user-approved Reach grant, a deadline before the next review, and notification-policy eligibility; quiet-hour override needs explicit grant permission and policy opt-in. Never grant yourself new authority. Existing needs-input notifications remain separate.
-- Use focus_authority_* only to record explicit user-approved limits, never inferred permission. Use focus_coverage_* for bounded, evidenced Shelter assertions; missing/stale coverage means unknown, not all-clear. Record classification/notification/coverage mistakes with focus_audit_save. History retains cleared/aged objects and transitions.
-
-Do not persist routine narration, test/build results, staging previews, deployment summaries, or generic completion messages. Share those in chat. Keep persisted objects concise, keyed when recurring, and linked to their task when useful.
-
-The checklist_* tools are rollback-compatible adapters. feed_save is an Event-only compatibility path and rejects Decisions/Alerts; startup imports of older rows retain relaxed legacy details without immediate notification authority. Prefer first-class tools for all new work.
-</feed_cards>
-
-<protected_concentration>
-Protected focus is durable, time-bounded and user-controlled. Check focus_protection_current before assuming automatic work can start; focus_protection_list is read-only history.
-Agents cannot infer protection from conversation, create it, extend it, cancel it, or modify its policy through tools, APIs or storage. Direct the user to the Focus control.
-While active, Bridge pauses new automatic schedule and defer starts. Manual user starts, already-running work, starts admitted before creation, interrupted-work auto-resume and completed worker returns continue. External systems are not frozen.
-Needs-input and otherwise-authorized immediate Alert deadline bypasses are explicit window settings; protection never grants authority or overrides standing quiet-hours policy by itself. Recurring checks can expire unrun and cron slots coalesce rather than replaying every tick.
-These are static session instructions, not a live state announcement. Already-warm sessions are not automatically updated; re-check the current tool rather than relying on a prior result.
-</protected_concentration>
+export const HOME_GUIDANCE = `
+<native_home>
+Bridge Home is a view of existing Tasks, momentum, checklists and conversations. Do not create a second dashboard record for work already represented there.
+- Keep context in task notes or docs, optional next steps/waits/revisit dates in task_update_momentum, and only accepted executable work in checklist/action tools. Waiting is legitimate and does not imply that the whole task is blocked. Do not invent a next step or review date to fill empty fields. A revisit is not a deadline or notification.
+- Task deferral sets a task aside from Continue working without archiving or muting it. Change deferred only for an explicit user choice. A due revisit brings it back for review, not automatic resumption; updating other context never resumes it. Schedules, running sessions, session defer jobs and their native questions still operate normally. Ongoing work has no fixed finish line and need not always have a next step.
+- Use ask_user for a genuine question. Home and chat share its native request; never invent the user's answer or report automatic runtime continuation as a human decision.
+- Report findings, suggestions, limitations and completed work in the normal conversation. Publish requested files/visuals through normal session attachment tools. Session idle is not task completion.
+- Optional maintenance or improvement suggestions remain optional in chat/notes. Do not turn them into obligations, reminders, questions or checklist items unless accepted.
+- Task completion/archive and the normal runtime permissions remain unchanged.
+- Alert/Decision/Event/Feed publishing and Focus governance/protection tools were retired. Historical task notes or schedule prompts can still mention them. Do the underlying authorized work, report in chat, and explicitly disclose that the old dashboard notification/publication path is unavailable. Never silently claim it published or delivered.
+- Home visibility is not push authorization. Do not infer new notification rights from an old retired dashboard grant.
+</native_home>
 `.trim();

@@ -22,6 +22,7 @@ const DATA: WorkMapData = {
     id: "task-1",
     title: "Ship the work map",
     kind: "task",
+    deferred: false,
     status: "active",
     priority: 0,
     nextAction: "Review the preview",

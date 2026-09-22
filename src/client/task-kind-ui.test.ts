@@ -82,6 +82,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     title: "Kind test",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     notes: "",
     priority: 0,
@@ -302,9 +303,11 @@ describe("kind-aware task UI", () => {
     }));
 
     expect(html).not.toContain("Done when");
-    expect(html).toContain("Add next action");
-    expect(html).toContain("Add blocker");
-    expect(html).toContain("Set follow-up");
+    expect(html).toContain("Add next step");
+    expect(html).toContain("Set waiting for");
+    expect(html).toContain("Set revisit date");
+    expect(html).toContain("Where things stand");
+    expect(html).toContain("Defer task");
   });
 
   it("TaskContextMenu suppresses Mark done for ongoing items", () => {
@@ -312,7 +315,7 @@ describe("kind-aware task UI", () => {
 
     expect(html).not.toContain("Mark done");
     expect(html).not.toContain("Complete task");
-    expect(html).toContain("Follow up tomorrow");
+    expect(html).toContain("Revisit tomorrow");
   });
 
   it("can render ongoing markers as icon-only badges", () => {
@@ -338,9 +341,9 @@ describe("kind-aware task UI", () => {
   it("TaskDashboard surfaces readiness intelligence for one-off tasks", () => {
     const html = renderTaskDashboard(createTask({ kind: "task" }));
 
-    expect(html).toContain("Readiness intelligence");
-    expect(html).toContain("Ready with a missing finish line");
-    expect(html).toContain("Finish line");
+    expect(html).toContain("Completion checks");
+    expect(html).toContain("Completion checks clear");
+    expect(html).not.toContain("Ready with a missing finish line");
     expect(html).not.toContain("Candidate to close");
   });
 });
@@ -350,7 +353,7 @@ describe("TaskDashboard unique overview", () => {
     const html = renderTaskDashboard(createTask({ sessionIds: [] }));
 
     expect(html).toContain("Task brief");
-    expect(html).toContain("Readiness intelligence");
+    expect(html).toContain("Completion checks");
     expect(html).toContain("Session usage");
     expect(html).not.toContain("Start a chat");
     expect(html).not.toContain(" New</button>");
@@ -392,8 +395,8 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Sessions");
     expect(html).toContain("Work items");
     expect(html).toContain("Schedules");
-    expect(html).not.toContain("Set follow-up");
-    expect(html).not.toContain("Add blocker");
+    expect(html).not.toContain("Set revisit date");
+    expect(html).not.toContain("Set waiting for");
     expect(html).not.toContain("Add notes");
   });
 
@@ -413,7 +416,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).not.toContain("Complete task");
   });
 
-  it("treats waiting-on text as an explicit readiness blocker", () => {
+  it("shows waiting as context, not an inferred blocker or completion gate", () => {
     const html = renderTaskDashboard(createTask({
       doneWhen: "Preview approved",
       waitingOn: "Design feedback",
@@ -421,11 +424,12 @@ describe("TaskDashboard unique overview", () => {
       checklistLoaded: true,
     });
 
-    expect(html).toContain("Not ready");
-    expect(html).toContain("Explicit blocker");
+    expect(html).not.toContain("Not ready");
+    expect(html).not.toContain("Explicit blocker");
+    expect(html).toContain("Waiting for");
     expect(html).toContain("Design feedback");
-    expect(html).toContain("Blocking");
-    expect(html).not.toContain("Ready to complete");
+    expect(html).toContain("Completion checks clear");
+    expect(html).toContain("Review the outcome before completing");
   });
 
   it("reports unavailable task usage instead of rendering fabricated zero totals", () => {

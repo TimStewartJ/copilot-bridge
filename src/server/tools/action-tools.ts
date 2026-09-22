@@ -19,7 +19,7 @@ function actionToolFailure(error: unknown) {
 export function createActionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineBridgeTool("action_add", {
-      description: "Create an Action only for accepted executable work: a concrete commitment, not a suggestion, alert, question, narration or routine report. Chat by default. Optional stable key dedupes retries; sourceUrl links evidence. To accept work from a Decision, Alert or Event, prefer its *_promote tool so the source is handed off, not resolved.",
+      description: "Add an existing task or global checklist item only for accepted executable work, not suggestions, questions, narration or routine reports. Chat by default. Optional stable key dedupes retries; sourceUrl links evidence. Home shows this same checklist item, not a second work record.",
       parameters: {
         type: "object",
         properties: {
@@ -61,7 +61,7 @@ export function createActionToolDefinitions(ctx: AppContext): BridgeToolDefiniti
       }),
     }),
     defineBridgeTool("action_update", {
-      description: "Update accepted Action work. Set done only after its executable work is actually complete. Completing an Action never resolves a linked Decision or Alert; explicitly record the source's verified outcome separately.",
+      description: "Update an existing checklist item. Set done only after its executable work is actually complete. This never completes its task or an external condition automatically.",
       parameters: {
         type: "object",
         properties: {

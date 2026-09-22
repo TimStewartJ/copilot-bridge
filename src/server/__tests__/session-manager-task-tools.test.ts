@@ -67,6 +67,10 @@ describe("session manager task tools", () => {
     const date = "2026-05-02T10:00:00.000Z";
     const cases: Array<{ valid: boolean; args: Record<string, unknown> }> = [
       { valid: false, args: { followUp: { mode: "keep" } } },
+      { valid: true, args: { deferred: true, followUp: { mode: "keep" } } },
+      { valid: true, args: { deferred: false, followUp: { mode: "clear" } } },
+      { valid: false, args: { deferred: null, followUp: { mode: "keep" } } },
+      { valid: false, args: { deferred: "true", followUp: { mode: "keep" } } },
       { valid: false, args: { followUp: { mode: "set" } } },
       { valid: false, args: { followUp: { mode: "clear", nextTouchAt: date } } },
       { valid: false, args: { nextAction: "Review", followUp: { mode: "keep", nextTouchAt: date } } },
@@ -321,6 +325,24 @@ describe("session manager task tools", () => {
       priority: 0,
       groupId: undefined,
     }));
+  });
+
+  it("task_update_momentum defers with keep, reports no-ops, and resumes without losing context", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Visibility only");
+    ctx.taskStore.updateTask(task.id, { waitingOn: "A reply", nextTouchAt: "2030-01-01T00:00:00Z" });
+    const tool = getTool(ctx, "task_update_momentum");
+    const input = { taskId: task.id, deferred: true, followUp: { mode: "keep" } };
+    await expect(tool.handler(input, createInvocation(tool.name))).resolves.toMatchObject({
+      success: true, deferred: true, waitingOn: "A reply", nextTouchAt: "2030-01-01T00:00:00.000Z",
+    });
+    await expect(tool.handler(input, createInvocation(tool.name))).resolves.toMatchObject({ success: true, changed: false, deferred: true });
+    expect(ctx.taskStore.getTask(task.id)).toMatchObject({ deferred: true, status: "active", muted: false });
+    await expect(getTool(ctx, "task_list").handler({}, createInvocation("task_list"))).resolves.toMatchObject({
+      tasks: [expect.objectContaining({ id: task.id, deferred: true })],
+    });
+    await expect(tool.handler({ taskId: task.id, deferred: false, followUp: { mode: "clear" } }, createInvocation(tool.name)))
+      .resolves.toMatchObject({ success: true, deferred: false, waitingOn: "A reply", nextTouchAt: null });
   });
 
   it("task_update_momentum sets and clears nullable momentum fields", async () => {

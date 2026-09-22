@@ -1,3 +1,4 @@
+import { createDashboardArchiveStore } from "../server/dashboard-archive.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,8 +21,6 @@ import { createSessionMetaStore } from "../server/session-meta-store.js";
 import { createReadStateStore } from "../server/read-state-store.js";
 import { createBridgeSessionStateStore } from "../server/bridge-session-state-store.js";
 import { createChecklistStore } from "../server/checklist-store.js";
-import { createFocusDataLayer } from "../server/focus-data-layer.js";
-import { createFocusProjectionService } from "../server/focus-dashboard-projection.js";
 import { createCopilotUsageStore } from "../server/copilot-usage-store.js";
 import { toolFailure } from "../server/tool-results.js";
 
@@ -83,15 +82,6 @@ describe("SessionManager workspace resolution", () => {
     const eventBusRegistry = createEventBusRegistry();
     const taskStore = createTaskStore(db, globalBus);
     const checklistStore = createChecklistStore(db, globalBus);
-    const focusData = createFocusDataLayer(db, globalBus, checklistStore);
-    const focusProjection = createFocusProjectionService({
-      db,
-      taskStore,
-      decisionStore: focusData.decisionStore,
-      alertStore: focusData.alertStore,
-      eventStore: focusData.eventStore,
-      compatibilityErrorCount: focusData.reconciliationErrorStore.countErrors,
-    });
     const sessionWorkspaceStore = createSessionWorkspaceStore(db);
     const sessionTitles = createSessionTitlesStore(db);
     const manager = new SessionManager({
@@ -117,23 +107,7 @@ describe("SessionManager workspace resolution", () => {
       bridgeSessionStateStore: createBridgeSessionStateStore(db),
       readStateStore: createReadStateStore(db),
       checklistStore,
-      feedStore: focusData.feedStore,
-      decisionStore: focusData.decisionStore,
-      alertStore: focusData.alertStore,
-      focusEventStore: focusData.eventStore,
-      focusMutationCoordinator: focusData.mutations,
-      focusProjection,
-      focusReconciliationErrorStore: focusData.reconciliationErrorStore,
-      focusDetailsStore: focusData.detailsStore,
-      focusTransitionStore: focusData.transitionStore,
-      focusAttentionStore: focusData.attentionStore,
-      focusAuditStore: focusData.auditStore,
-      focusDigestViewStore: focusData.digestViewStore,
-      focusAuthorityStore: focusData.authorityStore,
-      focusCoverageStore: focusData.coverageStore,
-      focusNotificationDeliveryStore: focusData.notificationDeliveryStore,
-      focusSessionLaunchStore: focusData.sessionLaunchStore,
-      focusProtectionStore: focusData.protectionStore,
+      dashboardArchive: createDashboardArchiveStore(db),
       copilotUsageStore: createCopilotUsageStore(db),
       globalBus,
       eventBusRegistry,

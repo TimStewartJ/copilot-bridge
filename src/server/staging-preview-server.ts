@@ -4,6 +4,7 @@ import express from "express";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { closeHttpServer } from "./http-server-shutdown.js";
+import { prepareDashboardRetirement } from "./dashboard-retirement.js";
 
 const STAGING_EXCLUDED_TOOLS = new Set([
   "self_restart",
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
   ]);
 
   const runtimePaths = resolveRuntimePaths(process.env);
+  await prepareDashboardRetirement(runtimePaths.dataDir);
   const { ctx, db } = createAppContext({
     runtimePaths,
     apiBasePath,

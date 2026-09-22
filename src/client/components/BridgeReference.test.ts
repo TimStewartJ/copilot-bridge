@@ -39,6 +39,7 @@ function task(overrides: Partial<Task>): Task {
     title: "Tellus Expeditions",
     kind: "task",
     muted: false,
+    deferred: false,
     status: "active",
     notes: "",
     priority: 0,
@@ -121,7 +122,7 @@ describe("resolveBridgeReference", () => {
     expect(reference.resolveBridgeReference({ kind: "task", taskId: "task-1" }, { sessions, tasks })).toMatchObject({
       title: "Tellus Expeditions",
       tone: "waiting",
-      detail: "Next: Review biome blend",
+      detail: "Next step: Review biome blend",
       meta: "1 waiting · 1 running",
       path: "/tasks/task-1",
     });
@@ -192,7 +193,7 @@ describe("Bridge references in chat messages", () => {
       expect(props["data-bridge-reference-card"]).toBe("true");
       expect(props["data-bridge-reference"]).toBe("task");
       expect(card.textContent).toContain("Tellus Expeditions");
-      expect(card.textContent).toContain("Next: Review biome blend");
+      expect(card.textContent).toContain("Next step: Review biome blend");
     } finally {
       await harness.cleanup();
     }

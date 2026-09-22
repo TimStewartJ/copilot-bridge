@@ -3,7 +3,6 @@ import type { ChecklistItem, DashboardChecklistItem } from "../api";
 import { patchChecklistItem, deleteChecklistItem } from "../api";
 import { deadlineUrgency, deadlineLabel, DEADLINE_STYLES, CHECKBOX_URGENCY } from "../checklist-helpers";
 import { GROUP_COLOR_BG, GROUP_COLOR_DOT } from "../group-colors";
-import { FOCUS_LIFECYCLE_LABELS, isFocusOpen } from "../focus-view-model";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import {
@@ -310,9 +309,8 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
               {checklistItem.done && <p>Action complete; source outcomes are separate.</p>}
               {checklistItem.sources.map((source) => (
                 <div key={`${source.sourceId}:${source.activationId}`} className="break-words">
-                  <span>Source {source.sourceType}: {source.title} — {FOCUS_LIFECYCLE_LABELS[source.lifecycle]}{isFocusOpen(source.lifecycle) ? " (still open)" : ""}</span>
-                  {props.onInspectFocusObject && <button type="button" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "ml-1 text-accent underline")}
-                    onClick={(event) => { event.stopPropagation(); props.onInspectFocusObject?.(source.sourceId); }}>Inspect source</button>}
+                  <span>Archived {source.sourceType}: {source.title} — {source.lifecycle.replaceAll("_", " ")} at retirement</span>
+                  <a className="ml-1 text-accent underline" href={`${import.meta.env.BASE_URL}dashboard/archive?id=${encodeURIComponent(source.sourceId)}`}>Historical source</a>
                 </div>
               ))}
             </div>

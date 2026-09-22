@@ -28,7 +28,7 @@ import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefr
 import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import { TagPillList } from "./TagPill";
 import TaskKindBadge from "./TaskKindBadge";
-import { getFollowUpState } from "./TaskMomentumFields";
+import { formatRevisit } from "../lib/task-revisit";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
 import { Badge, EmptyHint, Field, FieldList, Notice, Section, StatRow } from "../design/primitives";
@@ -333,13 +333,14 @@ export default function TaskDashboard({
                 >
                   {task.kind === "ongoing" ? undefined : task.doneWhen}
                 </Field>
-                <Field icon={<ClipboardCheck size={13} />} label="Next action" empty="No next action captured.">
+                {task.deferred && <Field label="Deferred">Set aside from Continue working until explicitly resumed. Schedules and running sessions are not paused.</Field>}
+                <Field icon={<ClipboardCheck size={13} />} label="Next step" empty="No next step recorded.">
                   {task.nextAction}
                 </Field>
-                <Field icon={<AlertTriangle size={13} />} label="Waiting on" empty="No blocker captured.">
+                <Field label="Waiting for" empty="Nothing recorded here yet.">
                   {task.waitingOn}
                 </Field>
-                <Field icon={<TimerReset size={13} />} label="Follow-up" empty="No follow-up scheduled.">
+                <Field icon={<TimerReset size={13} />} label="Revisit on" empty="No revisit date set.">
                   {task.nextTouchAt ? formatFollowUp(task.nextTouchAt) : undefined}
                 </Field>
                 <Field icon={<FolderOpen size={13} />} label="Workspace" empty="No workspace set." mono>
@@ -358,7 +359,7 @@ export default function TaskDashboard({
               </FieldList>
             </Section>
 
-            <Section level="page" label="Readiness intelligence" surface>
+            <Section level="page" label="Completion checks" surface>
               <Notice
                 tone={NOTICE_TONE[readiness.tone]}
                 role="status"
@@ -653,11 +654,11 @@ function buildReadinessInsight({
       tone: "info",
     });
     signals.push({
-      label: "Momentum",
+      label: "Where things stand",
       detail: task.nextAction || task.waitingOn || task.nextTouchAt
-        ? "Momentum context is captured in the brief."
-        : "No next action, blocker, or follow-up is captured yet.",
-      tone: task.nextAction || task.waitingOn || task.nextTouchAt ? "success" : "warning",
+        ? "Next steps, waits and revisit dates are recorded in the brief."
+        : "Next steps, waits and revisit dates are optional. Ongoing work need not always have a next step.",
+      tone: "muted",
     });
     return {
       title: "Ongoing work",
@@ -702,42 +703,24 @@ function buildReadinessInsight({
       tone: "warning",
     });
   }
-  if (!task.doneWhen) {
-    signals.push({
-      label: "Finish line",
-      detail: "No Done when definition is captured for this task.",
-      tone: "warning",
-    });
-  }
   if (task.waitingOn) {
     signals.push({
-      label: "Explicit blocker",
+      label: "Waiting for",
       detail: task.waitingOn,
-      tone: "danger",
+      tone: "muted",
     });
   }
 
-  const hasExplicitBlocker = Boolean(task.waitingOn);
-
-  if (completionState.isReadyToComplete && task.doneWhen && !hasExplicitBlocker) {
+  if (completionState.isReadyToComplete) {
     signals.push({
       label: "Completion signals",
       detail: completionState.ctaDescription,
       tone: "success",
     });
     return {
-      title: "Ready to complete",
-      description: "No blocking checklist, session, or PR signals are left.",
+      title: "Completion checks clear",
+      description: "Checklist, session and PR checks are clear. Review the outcome before completing; these checks do not establish that the work is done.",
       tone: "success",
-      signals,
-    };
-  }
-
-  if (completionState.isReadyToComplete && !hasExplicitBlocker) {
-    return {
-      title: "Ready with a missing finish line",
-      description: "Operational blockers are clear, but the task brief has no Done when definition.",
-      tone: "warning",
       signals,
     };
   }
@@ -917,10 +900,7 @@ function summarizeMarkdown(value: string): string {
 }
 
 function formatFollowUp(value?: string): string {
-  if (!value) return "No follow-up scheduled.";
-  const state = getFollowUpState(value);
-  const prefix = state === "overdue" ? "Overdue" : state === "due" ? "Due now" : "Scheduled";
-  return `${prefix}: ${formatDateTime(value)} (${timeAgo(value)})`;
+  return value ? formatRevisit(value) : "No revisit date set.";
 }
 
 function formatDateTime(value: string): string {

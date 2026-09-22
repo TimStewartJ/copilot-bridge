@@ -56,23 +56,17 @@ export const HELM_TOOL_NAMES = [
 
 /**
  * Bridge tools Helm may use besides its own: everything for day-to-day management of tasks,
- * schedules, docs and Focus items. Helm never edits code, browses, or deploys, so tools that
+ * schedules, docs and checklist items. Helm never edits code, browses, or deploys, so tools that
  * do real work stay with worker sessions.
  *
  * Every tool's schema rides along on every turn, and Helm is meant to answer quickly (out loud,
  * in hands-free), so the surface stops at orchestration. Left out on purpose:
- * - Focus governance for monitoring producers (authority grants, coverage assertions, audits,
- *   episode forensics, pilot metrics). Helm is not a producer, and an authority grant needs
- *   the user's exact, explicit scope, which speech-recognized input cannot guarantee.
  * - Docs backup administration and collection schema changes.
  */
-const HELM_BRIDGE_TOOL_PREFIXES = ["task_", "tag_", "action_", "decision_", "alert_", "event_", "focus_", "schedule_", "docs_"];
+const HELM_BRIDGE_TOOL_PREFIXES = ["task_", "tag_", "action_", "schedule_", "docs_"];
 const HELM_BRIDGE_TOOL_NAMES = new Set(["session_rename", "publish_visual"]);
-const HELM_BRIDGE_TOOL_EXCLUDED_PREFIXES = ["focus_authority_", "focus_coverage_", "focus_audit_", "docs_snapshot_"];
+const HELM_BRIDGE_TOOL_EXCLUDED_PREFIXES = ["docs_snapshot_"];
 const HELM_BRIDGE_TOOL_EXCLUSIONS = new Set([
-  "focus_episode_get",
-  "focus_quality_metrics",
-  "focus_digest_mark_viewed",
   "docs_db_create",
   "docs_db_delete",
 ]);

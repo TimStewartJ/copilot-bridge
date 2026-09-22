@@ -261,13 +261,13 @@ describe("Helm tools", () => {
 
   it("reuses Bridge management tools but nothing that does real work", () => {
     for (const name of [
-      "task_list", "task_update", "task_group_create", "task_link_pr", "action_add", "decision_save", "decision_promote", "alert_list", "alert_save",
-      "event_save", "schedule_create", "docs_write", "docs_db_query", "focus_protection_current", "focus_history_list", "focus_quiet_concerns_list",
+      "task_list", "task_update", "task_group_create", "task_link_pr", "action_add",
+      "schedule_create", "docs_write", "docs_db_query",
       "session_rename", "publish_visual", "tag_list",
     ]) {
       expect(isHelmBridgeToolName(name), name).toBe(true);
     }
-    for (const name of ["staging_deploy", "self_restart", "browser_exec", "computer_click", "defer_create", "checklist_add", "feed_save", "report_intent", "git_worktree_release"]) {
+    for (const name of ["staging_deploy", "self_restart", "browser_exec", "computer_click", "defer_create", "checklist_add", "feed_save", "report_intent", "git_worktree_release", "decision_save", "alert_save", "event_save", "focus_protection_current"]) {
       expect(isHelmBridgeToolName(name), name).toBe(false);
     }
   });

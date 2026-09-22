@@ -383,7 +383,7 @@ export default function TaskPanel({
     : completionState.ctaDescription;
   const showCompletionDetails = completionState.ctaState !== "archived";
   const showMomentumFields = completionState.ctaState !== "archived";
-  // The finish line is a Momentum field just below, so the note does not repeat it.
+  // The finish line is shown just below, so the note does not repeat it.
   const doneWhenShownBelow = showMomentumFields && currentTask.kind !== "ongoing" && Boolean(currentTask.doneWhen);
   const completionNote = !doneWhenShownBelow
     ? completionDescription
@@ -767,7 +767,8 @@ export default function TaskPanel({
   );
 }
 
-const ALERT_BADGE_TONE: Record<TaskAlertTone, "accent" | "info" | "success" | "warning" | "danger"> = {
+const ALERT_BADGE_TONE: Record<TaskAlertTone, "accent" | "info" | "success" | "warning" | "danger" | "neutral"> = {
+  neutral: "neutral",
   accent: "accent",
   info: "info",
   success: "success",

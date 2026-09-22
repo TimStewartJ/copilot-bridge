@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import type { DatabaseSync } from "./db.js";
+import { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./db.js";
 import { createDocsStore } from "./docs-store.js";
 import { createGlobalBus } from "./global-bus.js";
@@ -224,6 +224,18 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
     createSettingsStore(db).updateSettings({ theme: "system" });
     const fixtureTask = createTaskStore(db, createGlobalBus()).createTask("Preview Smoke Fixture");
     taskId = fixtureTask.id;
+    const at = new Date().toISOString();
+    for (const status of ["pending", "running"]) {
+      db.prepare("INSERT INTO deferred_prompts(id,sessionId,prompt,runAt,status,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)")
+        .run(`copied-prompt-${status}`, "copied-session", "Isolation fixture. Must not run.", "9999-01-01T00:00:00Z", status, at, at);
+    }
+    for (const status of ["active", "running"]) {
+      db.prepare("INSERT INTO defer_loops(id,sessionId,prompt,intervalSeconds,nextRunAt,status,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?,?)")
+        .run(`copied-loop-${status}`, "copied-session", "Isolation fixture. Must not run.", 300, "9999-01-01T00:00:00Z", status, at, at);
+    }
+    db.prepare("INSERT INTO interrupted_run_markers(sessionId,attentionMode,acceptedAt) VALUES(?,?,?)").run("copied-session", "interactive", at);
+    db.prepare("INSERT INTO voice_jobs(id,composerKey,status,audioPath,createdAt,updatedAt) VALUES(?,?,?,?,?,?)")
+      .run("copied-voice", "copied-session", "accepted", join(rootDir, "not-copied.wav"), at, at);
   } finally {
     db.close();
   }
@@ -301,12 +313,21 @@ async function main(): Promise<void> {
     const result = isQueuedPreviewResult(initialResult)
       ? await resolveQueuedPreviewResult(source, initialResult.jobId)
       : initialResult;
-    stagingTools.registerExistingPreviewsFromDisk({ stagingParent: dirname(stagingDir) });
     assert.equal(result.success, true, result.error ?? "preview failed");
     assert.equal(result.previewPath, `/staging/${prefix}/`);
     if (result.backendError) {
       throw new Error(result.backendError);
     }
+    const target = previewShared.readActivePreviewTarget(prefix);
+    assert(target?.dataDir && isPathAtOrUnder(source.rootDir, target.dataDir), "copied preview data must stay inside the smoke fixture");
+    const isolated = new DatabaseSync(join(target.dataDir, "bridge.db"), { readOnly: true });
+    try {
+      assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM deferred_prompts WHERE status='cancelled' AND id LIKE 'copied-prompt-%'").get()?.n, 2);
+      assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM defer_loops WHERE status='cancelled' AND id LIKE 'copied-loop-%'").get()?.n, 2);
+      assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM interrupted_run_markers").get()?.n, 0);
+      assert.equal(isolated.prepare("SELECT status FROM voice_jobs WHERE id='copied-voice'").get()?.status, "error");
+    } finally { isolated.close(); }
+    stagingTools.registerExistingPreviewsFromDisk({ stagingParent: dirname(stagingDir) });
 
     const previewDist = stagingTools.getActivePreviews().get(prefix);
     assert(previewDist && existsSync(previewDist), "preview dist directory was not registered");
@@ -325,6 +346,10 @@ async function main(): Promise<void> {
     const tasksRes = await requestWithBackendRetry(app, `${result.previewPath}api/tasks`);
     assert.equal(tasksRes.status, 200, "tasks API did not return 200");
     assert(Array.isArray(tasksRes.body.tasks), "tasks response did not include an array");
+    const home = await requestWithBackendRetry(app, `${result.previewPath}api/home`);
+    assert.equal(home.status, 200, "native Home did not return 200");
+    assert(home.body.tasks.items.some((task: { id: string }) => task.id === source.taskId), "Home must reference the original fixture Task");
+    assert.equal((await request(app).get(`${result.previewPath}api/focus`)).status, 410);
 
     const createTaskRes = await request(app)
       .post(`${result.previewPath}api/tasks`)
@@ -360,6 +385,8 @@ async function main(): Promise<void> {
       },
       scheduleNames: schedulesRes.body.map((schedule: any) => schedule.name),
       docsNodeCount: docsTreeRes.body.tree.length,
+      inheritedAutomaticWorkCancelled: true,
+      nativeHomeTaskId: source.taskId,
     }, null, 2));
   } finally {
     if (stagingTools) {

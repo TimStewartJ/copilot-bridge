@@ -191,18 +191,15 @@ describe("registry guards against unvalidated tools", () => {
 });
 
 describe("visual payload schemas", () => {
-  it("declare the same content shapes on publish_visual and feed_save", () => {
+  it("keeps native visual publishing and omits dashboard publishing tools", () => {
     const { ctx } = createTestApp();
     const server = new BridgeToolsMcpServer(ctx);
     registerAllBridgeTools(server, ctx);
     const tools = new Map(server.getToolDefinitions("all").map((tool) => [tool.name, tool]));
 
     const publishContent = (tools.get("publish_visual")!.inputSchema as any).properties.content;
-    const feedVisual = (tools.get("feed_save")!.inputSchema as any).properties.visual;
-    const feedContent = feedVisual.anyOf[0].properties.content;
-
-    expect(feedContent.anyOf).toEqual(publishContent.anyOf);
-    expect(feedVisual.anyOf[0].properties.kind.enum)
-      .toEqual((tools.get("publish_visual")!.inputSchema as any).properties.kind.enum);
+    expect(publishContent.anyOf).toEqual(expect.any(Array));
+    for (const retired of ["feed_save", "decision_save", "alert_save", "event_save", "focus_protection_current"]) expect(tools.has(retired)).toBe(false);
+    for (const native of ["task_update_momentum", "action_add", "schedule_create", "docs_read", "send_attachment"]) expect(tools.has(native)).toBe(true);
   });
 });

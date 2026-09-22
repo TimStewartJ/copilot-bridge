@@ -48,7 +48,8 @@ export function humanizeDocPath(docPath: string | null | undefined): string | nu
 
 function getDashboardSegment(pathname: string | undefined): string {
   const tab = pathname ? getExplicitDashboardTabFromPathname(pathname) : null;
-  if (tab === "focus") return "Focus";
+  if (pathname === "/dashboard/archive") return "Dashboard archive";
+  if (tab === "focus") return "Home";
   if (tab === "work-map") return "Work map";
   return "Home";
 }

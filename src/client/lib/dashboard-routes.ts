@@ -1,7 +1,7 @@
 export type DashboardTab = "focus" | "work-map";
 
 const DASHBOARD_TAB_PATHS: Record<DashboardTab, string> = {
-  focus: "/dashboard/focus",
+  focus: "/dashboard/home",
   "work-map": "/dashboard/work-map",
 };
 
@@ -16,6 +16,7 @@ const DASHBOARD_PANEL_IDS: Record<DashboardTab, string> = {
 };
 
 const LEGACY_FOCUS_PATHS = new Set([
+  "/dashboard/focus",
   "/dashboard",
   "/dashboard/checklist",
   "/dashboard/feed",
@@ -61,6 +62,7 @@ export function getRememberedDashboardPath(): string {
 export function isDashboardRoutePath(pathname: string): boolean {
   const normalized = normalizePathname(pathname);
   return normalized === DASHBOARD_TAB_PATHS.focus
+    || normalized === "/dashboard/archive"
     || normalized === DASHBOARD_TAB_PATHS["work-map"]
     || LEGACY_FOCUS_PATHS.has(normalized);
 }

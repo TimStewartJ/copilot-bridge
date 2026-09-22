@@ -1929,7 +1929,9 @@ describe("SessionManager run state", () => {
 
   it("auto-answers questions that waited an hour instead of aborting the turn", async () => {
     const sessionId = "session-auto-answer";
-    const { manager, telemetryStore } = createManager({ telemetry: true });
+    const { manager, telemetryStore, globalBus } = createManager({ telemetry: true });
+    const inputStatus = vi.fn();
+    const unsubscribe = globalBus.subscribe(inputStatus);
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
     // Like the runtime, a responder completes the request with a live event before it returns.
@@ -2008,6 +2010,8 @@ describe("SessionManager run state", () => {
       ["el-mcp", { action: "cancel" }],
     ]);
     expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+    expect(await manager.hydratePendingInteractions(sessionId)).toEqual({ pendingUserInputs: [], pendingElicitations: [] });
+    expect(inputStatus).toHaveBeenCalledWith(expect.objectContaining({ type: "session:user-input", sessionId, needsUserInput: false }));
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
     expect(session.abort).not.toHaveBeenCalled();
     expect(telemetryStore!.querySpans({ name: "session.run.no_progress", sessionId })).toEqual([]);
@@ -2019,6 +2023,7 @@ describe("SessionManager run state", () => {
     getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
     await flushMicrotasks();
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    unsubscribe();
   });
 
   it("drops an overdue question the runtime no longer holds and lets the watchdog end the dead turn", async () => {

@@ -15,7 +15,7 @@ function comparableValue(value: unknown): unknown {
 export function getSettingsDraftUpdates(saved: AppSettings, draft: AppSettings): AppSettingsUpdates {
   const updates: Partial<AppSettings> = {};
   const copyChanged = <K extends keyof AppSettings>(key: K) => {
-    if (key === "mcpServers" || key === "focusNotifications") return;
+    if (key === "mcpServers") return;
     if (JSON.stringify(comparableValue(saved[key])) !== JSON.stringify(comparableValue(draft[key]))) updates[key] = draft[key];
   };
   for (const key of Object.keys({ ...saved, ...draft }) as Array<keyof AppSettings>) copyChanged(key);

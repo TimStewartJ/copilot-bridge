@@ -93,14 +93,13 @@ describe("NotificationsSection", () => {
     await waitUntilAct(harness!.act, () => !getReactProps(button("Refresh"))!.disabled);
   }
 
-  it("distinguishes saved state, authorized Focus policy, and browser subscription", async () => {
+  it("describes native question notifications without retaining dashboard policy", async () => {
     await render();
 
     expect(harness!.dom.container.textContent).toContain("Routine completions stay in their task and do not interrupt you.");
-    expect(harness!.dom.container.textContent).toContain("Session notifications: needs-input alerts only.");
-    expect(harness!.dom.container.textContent).toContain("Persistence is not permission to interrupt.");
-    expect(harness!.dom.container.textContent).toContain("Changing policy does not subscribe or unsubscribe this browser.");
-    expect(harness!.dom.container.textContent).toContain("not an unconditional bypass");
+    expect(harness!.dom.container.textContent).toContain("Session notifications are for conversations requesting your input.");
+    expect(harness!.dom.container.textContent).toContain("Home does not grant additional notification authority.");
+    expect(harness!.dom.container.textContent).not.toContain("Focus");
   });
 
   it("retains enable, disable, test and refresh controls without mutating policy", async () => {
@@ -120,7 +119,7 @@ describe("NotificationsSection", () => {
     }
   });
 
-  it("shows settings query errors with retry while browser push remains usable", async () => {
+  it("does not depend on a dashboard-policy query for native push controls", async () => {
     settingsMocks.useSettingsQuery.mockReturnValue({
       data: undefined,
       error: new Error("Policy service unavailable"),
@@ -129,11 +128,10 @@ describe("NotificationsSection", () => {
     });
     await render();
 
-    expect(harness!.dom.container.textContent).toContain("Could not load Focus delivery policy: Policy service unavailable");
+    expect(harness!.dom.container.textContent).not.toContain("Policy service unavailable");
     expect(findAllByTag(harness!.dom.container, "INPUT")).toHaveLength(0);
     expect(getReactProps(button("Send test"))!.disabled).toBe(false);
-    await click("Retry policy loading");
-    expect(settingsMocks.refetch).toHaveBeenCalledOnce();
+    expect(settingsMocks.refetch).not.toHaveBeenCalled();
     await click("Send test");
     await click("Disable");
     await click("Enable");
@@ -154,60 +152,18 @@ describe("NotificationsSection", () => {
     expect(getReactProps(button("Enable"))!.disabled).toBe(true);
     expect(getReactProps(button("Disable"))!.disabled).toBe(true);
     expect(getReactProps(button("Send test"))!.disabled).toBe(true);
-    expect(findAllByTag(harness!.dom.container, "FORM")).toHaveLength(1);
-    expect(getReactProps(findAllByTag(harness!.dom.container, "FIELDSET")[0])!.disabled).toBe(false);
+    expect(findAllByTag(harness!.dom.container, "FORM")).toHaveLength(0);
   });
 
-  it("preserves dirty policy edits during browser push refreshes", async () => {
-    await render();
-    const timezone = findAllByTag(harness!.dom.container, "INPUT")
-      .find((node) => getReactProps(node)?.name === "timezone");
-    await harness!.act(async () => {
-      getReactProps(timezone)!.onChange({ target: { value: "Europe/Paris" } });
-    });
-    await click("Refresh");
-    await click("Send test");
-    expect(getReactProps(timezone)!.value).toBe("Europe/Paris");
-    expect(harness!.dom.container.textContent).toContain("Unsaved policy changes");
-    expect(settingsMocks.mutateAsync).not.toHaveBeenCalled();
-  });
-
-  it("keeps browser controls usable during policy saves and failures without changing subscription", async () => {
-    let rejectSave!: (error: Error) => void;
-    settingsMocks.mutateAsync.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectSave = reject; }));
-    await render();
-    const timezone = findAllByTag(harness!.dom.container, "INPUT")
-      .find((node) => getReactProps(node)?.name === "timezone");
-    await harness!.act(async () => {
-      getReactProps(timezone)!.onChange({ target: { value: "Europe/Paris" } });
-    });
-    await harness!.act(async () => {
-      getReactProps(findAllByTag(harness!.dom.container, "FORM")[0])!.onSubmit({ preventDefault() {} });
-    });
-
-    expect(getReactProps(button("Send test"))!.disabled).toBe(false);
-    expect(getReactProps(button("Enable"))!.disabled).toBe(false);
-    expect(getReactProps(button("Disable"))!.disabled).toBe(false);
-    expect(pushMocks.enablePushNotifications).not.toHaveBeenCalled();
-    expect(pushMocks.disablePushNotifications).not.toHaveBeenCalled();
-    await click("Send test");
-    await harness!.act(async () => { rejectSave(new Error("Save unavailable")); });
-    expect(harness!.dom.container.textContent).toContain("Could not save Focus delivery policy: Save unavailable");
-    await click("Send test");
-    expect(pushMocks.sendCurrentSubscriptionTestNotification).toHaveBeenCalledTimes(2);
-    expect(pushMocks.enablePushNotifications).not.toHaveBeenCalled();
-    expect(pushMocks.disablePushNotifications).not.toHaveBeenCalled();
-  });
-
-  it("shows browser failures without hiding the policy form", async () => {
+  it("shows browser failures and permits a retry without changing subscription", async () => {
     pushMocks.getClientPushState.mockRejectedValueOnce(new Error("Push status offline"));
     await render();
     expect(harness!.dom.container.textContent).toContain("Status check failed: Push status offline");
-    expect(findAllByTag(harness!.dom.container, "FORM")).toHaveLength(1);
+    expect(findAllByTag(harness!.dom.container, "FORM")).toHaveLength(0);
     await click("Refresh");
     pushMocks.sendCurrentSubscriptionTestNotification.mockRejectedValueOnce(new Error("Test delivery failed"));
     await click("Send test");
     expect(harness!.dom.container.textContent).toContain("Test delivery failed");
-    expect(findAllByTag(harness!.dom.container, "FORM")).toHaveLength(1);
+    expect(pushMocks.enablePushNotifications).not.toHaveBeenCalled();
   });
 });

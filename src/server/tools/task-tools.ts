@@ -32,11 +32,12 @@ function normalizeFollowUpMode(value: unknown): "set" | "keep" | "clear" | undef
 
 function isTaskMomentumAlreadyCurrent(
   task: Task,
-  target: { nextAction?: string; waitingOn?: string; nextTouchAt?: string },
+  target: { nextAction?: string; waitingOn?: string; nextTouchAt?: string; deferred: boolean },
 ): boolean {
   return (task.nextAction ?? undefined) === target.nextAction
     && (task.waitingOn ?? undefined) === target.waitingOn
-    && (task.nextTouchAt ?? undefined) === target.nextTouchAt;
+    && (task.nextTouchAt ?? undefined) === target.nextTouchAt
+    && task.deferred === target.deferred;
 }
 
 const TASK_INFO_SESSION_ID_PREVIEW_LIMIT = 10;
@@ -177,16 +178,17 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_update_momentum", {
-    description: "Update a task's momentum: next action, waiting on, and follow-up. Always provide an explicit followUp decision so stale follow-up dates are not left behind.",
+    description: "Update where a task stands: next step, waiting for, revisit date, and task deferral. These are optional context, not required activity. Always decide followUp explicitly. Task deferral only removes it from Home's Continue working; it does not pause schedules, sessions, notifications or session defer jobs. Change deferred only when the user requests setting the task aside or resuming it; changing other fields never resumes it.",
     parameters: {
       type: "object",
       properties: {
         taskId: { type: "string", description: "The task ID" },
-        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The next concrete action for this task. Null clears it." },
-        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "What this task is waiting on. Null clears it." },
+        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The next useful step, not a running activity log. Leave empty when there is no useful step yet. Null clears it." },
+        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "A person, response, event or prerequisite. Waiting does not mean the whole task is blocked. Null clears it." },
+        deferred: { type: "boolean", description: "True sets the task aside without archiving or muting it; false explicitly resumes it. Due revisits, live questions, replies and checklist deadlines remain visible under their usual rules." },
         followUp: {
           type: "object",
-          description: "Explicit follow-up decision. Use set to set nextTouchAt, keep to preserve it while changing nextAction or waitingOn, or clear to clear it.",
+          description: "Explicit revisit-date decision: set nextTouchAt, keep it while changing nextAction/waitingOn/deferred, or clear it. A revisit is not a deadline, notification, scheduled run or automatic resumption. Deferred tasks may have no revisit date.",
           properties: {
             mode: { type: "string", enum: ["set", "keep", "clear"], description: "Follow-up decision for nextTouchAt" },
             nextTouchAt: { type: "string", description: "ISO timestamp with timezone. Required for set; forbidden for keep or clear." },
@@ -214,7 +216,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
           },
           then: {
             properties: { followUp: { not: { required: ["nextTouchAt"] } } },
-            anyOf: [{ required: ["nextAction"] }, { required: ["waitingOn"] }],
+            anyOf: [{ required: ["nextAction"] }, { required: ["waitingOn"] }, { required: ["deferred"] }],
           },
         },
         {
@@ -239,10 +241,12 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
 
       const hasNextActionUpdate = hasOwn(args, "nextAction");
       const hasWaitingOnUpdate = hasOwn(args, "waitingOn");
+      const hasDeferredUpdate = hasOwn(args, "deferred");
       const hasNextTouchAtInput = hasOwn(followUp, "nextTouchAt");
-      if (mode === "keep" && !hasNextActionUpdate && !hasWaitingOnUpdate) {
-        return toolFailure("followUp.mode 'keep' must be paired with nextAction or waitingOn. Use mode 'set' or 'clear' to update only the follow-up date.");
+      if (mode === "keep" && !hasNextActionUpdate && !hasWaitingOnUpdate && !hasDeferredUpdate) {
+        return toolFailure("followUp.mode 'keep' must be paired with nextAction, waitingOn or deferred. Use mode 'set' or 'clear' to update only the revisit date.");
       }
+      if (hasDeferredUpdate && typeof args.deferred !== "boolean") return toolFailure("deferred must be a boolean");
       if (mode === "set" && !hasNextTouchAtInput) {
         return toolFailure("followUp.nextTouchAt is required when followUp.mode is 'set'");
       }
@@ -273,6 +277,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         nextAction: targetNextAction,
         waitingOn: targetWaitingOn,
         nextTouchAt: targetNextTouchAt,
+        deferred: hasDeferredUpdate ? args.deferred : task.value.deferred,
       })) {
         return bridgeToolResult({
           success: true,
@@ -285,6 +290,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
           nextAction: task.value.nextAction ?? null,
           waitingOn: task.value.waitingOn ?? null,
           nextTouchAt: task.value.nextTouchAt ?? null,
+          deferred: task.value.deferred,
           kind: task.value.kind,
         });
       }
@@ -292,6 +298,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       const updates: Record<string, unknown> = {};
       if (hasNextActionUpdate) updates.nextAction = args.nextAction;
       if (hasWaitingOnUpdate) updates.waitingOn = args.waitingOn;
+      if (hasDeferredUpdate) updates.deferred = args.deferred;
       if (mode === "set") updates.nextTouchAt = followUp.nextTouchAt;
       if (mode === "clear") updates.nextTouchAt = null;
 
@@ -306,6 +313,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       const fields = [
         ...(hasNextActionUpdate ? ["nextAction"] : []),
         ...(hasWaitingOnUpdate ? ["waitingOn"] : []),
+        ...(hasDeferredUpdate ? ["deferred"] : []),
         ...(mode === "set" || mode === "clear" ? ["nextTouchAt"] : ["nextTouchAt kept"]),
       ].join(", ");
       return {
@@ -315,6 +323,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         nextAction: updatedTask.nextAction ?? null,
         waitingOn: updatedTask.waitingOn ?? null,
         nextTouchAt: updatedTask.nextTouchAt ?? null,
+        deferred: updatedTask.deferred,
         kind: updatedTask.kind,
       };
     },
@@ -349,10 +358,10 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_list", {
-    description: "List all tasks with their IDs, titles, kinds, muted states, statuses, and group IDs",
+    description: "List all tasks with their IDs, titles, kinds, muted and deferred states, statuses, and group IDs",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, kind: t.kind, muted: t.muted, status: t.status, groupId: t.groupId })) };
+      return { tasks: ctx.taskStore.listTasks().map((t) => ({ id: t.id, title: t.title, kind: t.kind, muted: t.muted, deferred: t.deferred, status: t.status, groupId: t.groupId })) };
     },
   }),
   defineBridgeTool("task_create", {

@@ -1,23 +1,21 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createFocusTestHarness, type FocusTestHarness } from "../test-focus-harness";
+import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
 import { findAllByTag, getReactProps } from "../test-react-harness";
-import FocusActionDialog from "./FocusActionDialog";
-import FocusDialog from "./FocusDialog";
+
+import FocusDialog from "../design/Dialog";
 
 describe("Focus session modal keyboard containment", () => {
-  let harness: FocusTestHarness;
-  beforeEach(async () => { harness = await createFocusTestHarness(); });
+  let harness: DialogTestHarness;
+  beforeEach(async () => { harness = await createDialogTestHarness(); });
   afterEach(async () => { await harness.cleanup(); });
 
   it("focuses its prompt, contains Tab in both directions, and restores prior focus on close", async () => {
     const trigger = document.createElement("button");
     document.body.appendChild(trigger);
     trigger.focus();
-    await harness.render(createElement(FocusActionDialog, {
-      cardTitle: "Discuss the concern", taskId: null, taskPreview: null, prompt: "Inspect the evidence",
-      error: null, submitting: false, submitMode: null, onPromptChange: vi.fn(), onClose: vi.fn(), onStart: vi.fn(), onStartInBackground: vi.fn(),
-    }));
+    await harness.render(createElement(FocusDialog, { title: "Native question", pending: false, onClose: vi.fn(), children: createElement("div", null,
+      createElement("textarea", { defaultValue: "Inspect the source" }), createElement("button", { type: "button" }, "Submit")) }));
     const dialog = findAllByTag(harness.dom.container, "DIV").find((node) => getReactProps(node)?.role === "dialog");
     const buttons = findAllByTag(dialog, "BUTTON");
     const first = buttons[0];
@@ -56,6 +54,18 @@ describe("Focus session modal keyboard containment", () => {
     });
     expect(document.activeElement).toBe(summary);
     await harness.act(async () => {
+      getReactProps(dialog)?.onKeyDown?.({ key: "Tab", shiftKey: false, preventDefault: vi.fn() });
+    });
+    expect(document.activeElement).toBe(close);
+  });
+  it("does not trap focus inside a disabled native-question fieldset", async () => {
+    await harness.render(createElement(FocusDialog, { title: "Unavailable source", pending: false, onClose: vi.fn(),
+      children: createElement("fieldset", { disabled: true }, createElement("input", { defaultValue: "Retained draft" }), createElement("button", null, "Disabled submit")),
+    }));
+    const dialog = findAllByTag(harness.dom.container, "DIV").find(node => getReactProps(node)?.role === "dialog");
+    const close = findAllByTag(dialog, "BUTTON")[0];
+    await harness.act(async () => {
+      close.focus();
       getReactProps(dialog)?.onKeyDown?.({ key: "Tab", shiftKey: false, preventDefault: vi.fn() });
     });
     expect(document.activeElement).toBe(close);
