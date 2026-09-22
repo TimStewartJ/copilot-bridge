@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
 import McpStatusBar from "./McpStatusBar";
+import type { SessionContextResponse } from "../../shared/session-context";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -102,8 +103,10 @@ describe("McpStatusBar status ownership", () => {
         .find((element) => getReactProps(element)?.role === "status");
       expect(status?.textContent).toContain("Loading servers");
       const panel = findAllByTag(harness.dom.container, "DIV")
-        .find((element) => getReactProps(element)?.className?.includes("w-full max-w-3xl"));
+        .find((element) => getReactProps(element)?.["data-session-details"] === "");
       expect(panel).toBeDefined();
+      expect(getReactProps(panel)?.className).toContain("w-full");
+      expect(getReactProps(panel)?.className).not.toMatch(/max-w-/);
     } finally {
       await harness.cleanup();
     }
@@ -214,5 +217,53 @@ describe("McpStatusBar status ownership", () => {
     await harness.act(async () => getReactProps(signIn)?.onClick());
     expect(onAuthenticate).toHaveBeenCalledWith("demo", { forceReauth: false });
     expect(getReactProps(findAllByTag(harness.dom.container, "A")[0])?.href).toBe("https://example.com/login");
+  });
+
+  it("keeps live context and usage details without a graph, turn inspector or event list", async () => {
+    const harness = await createReactDomHarness();
+    const context: SessionContextResponse = {
+      provider: "copilot",
+      summary: null,
+      capabilities: { contextWindow: "exact", modelUsage: "exact", compaction: "marker", truncation: "unavailable" },
+      turns: [{
+        sessionId: "session", bridgeTurnId: "turn", provider: "copilot", providerSessionId: null,
+        providerTurnId: null, attribution: "turn", startedAt: null, endedAt: null, latestEventAt: null, model: null,
+      }],
+      events: [{
+        id: 1, sessionId: "session", bridgeTurnId: "turn", provider: "copilot", providerSessionId: null,
+        providerTurnId: null, providerEventId: null, attribution: "turn", type: "compaction",
+        occurredAt: "2026-09-22T00:00:00Z", model: null, contextWindow: 1000, tokensUsed: 400,
+        tokensRemaining: 600, usageRatio: 0.4, modelUsage: null, metadata: null,
+      }],
+    };
+    const summary = {
+      sessionId: "session", provider: "copilot", providerSessionId: null, updatedAt: "2026-09-22T00:00:00Z",
+      currentModel: "test-model", latestBridgeTurnId: "turn", latestSnapshotAt: null,
+      contextWindow: 1000, tokensUsed: 400, tokensRemaining: 600, usageRatio: 0.4,
+      modelUsage: { inputTokens: 800, outputTokens: 120, reasoningTokens: 20, cacheReadTokens: 200, requests: 2 },
+      snapshotCount: 1, compactionCount: 1, truncationCount: 0, shutdownCount: 0,
+    };
+    await harness.render(createElement(McpStatusBar, {
+      servers: [{ name: "demo", status: "connected" }], statusState: "ready", sessionCostUsd: 0.02,
+      context: { ...context, summary }, liveContextSummary: { ...summary, tokensUsed: 500, tokensRemaining: 500, usageRatio: 0.5 },
+    }));
+    const toggle = findAllByTag(harness.dom.container, "BUTTON")[0];
+    expect(toggle.textContent).toContain("Context 50%");
+    await harness.act(async () => getReactProps(toggle)?.onClick?.());
+    const text = harness.dom.container.textContent;
+    expect(text).toContain("500 / 1,000 tokens");
+    expect(text).toContain("500 tokens left");
+    expect(text).toContain("Usage details");
+    expect(text).toContain("included in output");
+    expect(text).toContain("Session cost");
+    expect(text).toContain("MCP servers");
+    expect(text).not.toContain("Context history");
+    expect(text).not.toContain("Inspect turn");
+    expect(text).not.toContain("Events (");
+    expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(0);
+    expect(findAllByTag(harness.dom.container, "TABLE")).toHaveLength(0);
+    expect(findAllByTag(harness.dom.container, "SVG").some(node => getReactProps(node)?.role === "group")).toBe(false);
+    await harness.act(async () => getReactProps(toggle)?.onClick?.());
+    expect(harness.dom.container.textContent).not.toContain("Usage details");
   });
 });
