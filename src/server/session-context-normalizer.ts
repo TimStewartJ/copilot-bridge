@@ -53,10 +53,14 @@ const USAGE_EVENT_TYPES = new Set([
 const COMPACTION_EVENT_TYPES = new Set([
   "session.compaction",
   "session.compacted",
+  "session.compaction_complete",
   "session.context_compacted",
   "context.compaction",
   "context.compacted",
 ]);
+
+/** How the runtime split the window at a reading; `session.usage_info` reports it. */
+const CONTEXT_BREAKDOWN_KEYS = ["systemTokens", "toolDefinitionsTokens", "conversationTokens"] as const;
 
 const TRUNCATION_EVENT_TYPES = new Set([
   "history_truncated",
@@ -347,6 +351,10 @@ export function normalizeLiveSessionContextEvent(
       ? data.cacheExpiresAt : undefined;
     if (!modelUsage && contextUsage.capability === "unavailable" && !cacheExpiresAt) return null;
     const metadata = metadataFromKeys(data, ["requestId", "toolCallId", "parentToolCallId"]) ?? {};
+    for (const key of CONTEXT_BREAKDOWN_KEYS) {
+      const value = toNonNegativeNumber(data?.[key]);
+      if (value !== undefined) metadata[key] = value;
+    }
     if (inclusive) {
       // These are exposed by AssistantUsageData, not PromptCacheBreakData.
       for (const key of ["apiCallId", "providerCallId"] as const) {
@@ -426,18 +434,25 @@ function normalizeSessionContextMarker(
   }
 
   if (COMPACTION_EVENT_TYPES.has(eventType)) {
+    // A failed run did not shrink the window, so it is not a compaction the reader should count.
+    if (data?.success === false) return null;
+    // A sub-agent compacts its own window; it stays out of the parent's history and count.
+    const isSubagent = options.attribution === "subagent_turn" || typeof eventRecord.agentId === "string";
     return {
       sessionId: options.sessionId,
       provider: options.provider,
       providerSessionId: options.providerSessionId,
       providerEventId: options.providerEventId,
       providerTurnId: options.providerTurnId,
-      bridgeTurnId: null,
-      attribution: "session_overhead",
+      bridgeTurnId: isSubagent ? options.bridgeTurnId ?? null : null,
+      attribution: isSubagent ? "subagent_turn" : "session_overhead",
       type: "compaction",
       occurredAt: options.occurredAt,
       model: getModel(data) ?? null,
-      metadata: metadataFromKeys(data, ["reason", "strategy", "eventsRemoved"]),
+      metadata: metadataFromKeys(data, [
+        "reason", "strategy", "eventsRemoved", "trigger",
+        "preCompactionTokens", "postCompactionTokens", "tokensRemoved", "messagesRemoved",
+      ]),
     };
   }
 

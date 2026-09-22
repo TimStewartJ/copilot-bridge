@@ -2921,6 +2921,7 @@ export default function ChatView({
         liveContextSummary={streamContextSummary}
         sessionCostLoading={sessionCostLoading}
         sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd}
+        sessionUsage={sessionUsageMetricsQuery.data}
         sessionCostError={sessionUsageMetricsQuery.error instanceof Error
           ? sessionUsageMetricsQuery.error.message
           : sessionUsageMetricsQuery.error ? String(sessionUsageMetricsQuery.error) : undefined}

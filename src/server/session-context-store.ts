@@ -8,6 +8,7 @@ import {
   type SessionContextCapabilities,
   type SessionContextCapability,
   type SessionContextEvent,
+  type SessionContextInsights,
   type SessionContextProvenance,
   type SessionContextResponse,
   type SessionContextSummary,
@@ -21,6 +22,11 @@ import {
 
 const DEFAULT_CONTEXT_EVENT_LIMIT = 200;
 const MAX_CONTEXT_EVENT_LIMIT = 500;
+/**
+ * Bump when the persisted-event normalizer starts reading something new, so every session log is
+ * read once more. Version 1 records `session.compaction_complete`, which older reads skipped.
+ */
+const BACKFILL_NORMALIZER_VERSION = 1;
 const ZERO_CAPABILITIES: SessionContextCapabilities = {
   contextWindow: "unavailable",
   modelUsage: "unavailable",
@@ -185,6 +191,11 @@ function parseJsonObject(value: string | null): Record<string, unknown> | null {
 
 function parseTokenUsage(value: string | null): SessionContextTokenUsage | null {
   return parseJsonObject(value) as SessionContextTokenUsage | null;
+}
+
+function metadataNumber(metadata: Record<string, unknown> | null, key: string): number | null {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function parseProvenance(value: string | null): SessionContextProvenance | null {
@@ -452,15 +463,43 @@ export function createSessionContextStore(db: DatabaseSync) {
   const deleteEventsForSession = db.prepare("DELETE FROM session_context_events WHERE sessionId = ?");
   const deleteBackfillsForSession = db.prepare("DELETE FROM session_context_backfills WHERE sessionId = ?");
   const upsertBackfill = db.prepare(`
-    INSERT INTO session_context_backfills (sessionId, provider, providerSessionId, eventsPath, fileSize, mtimeMs, backfilledAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO session_context_backfills (sessionId, provider, providerSessionId, eventsPath, fileSize, mtimeMs, backfilledAt, normalizerVersion)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(sessionId) DO UPDATE SET
       provider = excluded.provider,
       providerSessionId = excluded.providerSessionId,
       eventsPath = excluded.eventsPath,
       fileSize = excluded.fileSize,
       mtimeMs = excluded.mtimeMs,
-      backfilledAt = excluded.backfilledAt
+      backfilledAt = excluded.backfilledAt,
+      normalizerVersion = excluded.normalizerVersion
+  `);
+  const selectLatestBreakdown = db.prepare(`
+    SELECT occurredAt, tokensUsed, metadataJson
+    FROM session_context_events
+    WHERE sessionId = ?
+      AND type = 'context_snapshot'
+      AND attribution != 'subagent_turn'
+      AND json_extract(metadataJson, '$.systemTokens') IS NOT NULL
+    ORDER BY occurredAt DESC, id DESC
+    LIMIT 1
+  `);
+  const selectLatestCompaction = db.prepare(`
+    SELECT occurredAt, metadataJson
+    FROM session_context_events
+    WHERE sessionId = ? AND type = 'compaction' AND attribution != 'subagent_turn'
+    ORDER BY occurredAt DESC, id DESC
+    LIMIT 1
+  `);
+  const selectLatestCacheExpiry = db.prepare(`
+    SELECT json_extract(metadataJson, '$.cacheExpiresAt') AS cacheExpiresAt
+    FROM session_context_events
+    WHERE sessionId = ?
+      AND type = 'context_snapshot'
+      AND attribution != 'subagent_turn'
+      AND json_extract(metadataJson, '$.cacheExpiresAt') IS NOT NULL
+    ORDER BY occurredAt DESC, id DESC
+    LIMIT 1
   `);
 
   function getSummaryInternal(sessionId: string) {
@@ -537,7 +576,7 @@ export function createSessionContextStore(db: DatabaseSync) {
       ...summary,
       provider: normalizeProvider(event.provider),
       providerSessionId: event.providerSessionId ?? summary.providerSessionId,
-      updatedAt: event.occurredAt,
+      updatedAt: event.occurredAt > summary.updatedAt ? event.occurredAt : summary.updatedAt,
       currentModel: event.model ?? summary.currentModel,
       latestBridgeTurnId: event.bridgeTurnId ?? summary.latestBridgeTurnId,
       latestSnapshotAt: isSnapshot ? event.occurredAt : summary.latestSnapshotAt,
@@ -680,6 +719,33 @@ export function createSessionContextStore(db: DatabaseSync) {
       turnMeasurements,
       totalTurns,
       capabilities: deriveCapabilities(summaryInternal),
+      insights: readInsights(sessionId),
+    };
+  }
+
+  function readInsights(sessionId: string): SessionContextInsights {
+    const breakdownRow = selectLatestBreakdown.get(sessionId) as
+      { occurredAt: string; tokensUsed: number | null; metadataJson: string | null } | undefined;
+    const breakdownMetadata = parseJsonObject(breakdownRow?.metadataJson ?? null);
+    const compactionRow = selectLatestCompaction.get(sessionId) as
+      { occurredAt: string; metadataJson: string | null } | undefined;
+    const compactionMetadata = parseJsonObject(compactionRow?.metadataJson ?? null);
+    const cacheRow = selectLatestCacheExpiry.get(sessionId) as { cacheExpiresAt: unknown } | undefined;
+    return {
+      breakdown: breakdownRow ? {
+        observedAt: breakdownRow.occurredAt,
+        tokensUsed: breakdownRow.tokensUsed,
+        systemTokens: metadataNumber(breakdownMetadata, "systemTokens"),
+        toolDefinitionsTokens: metadataNumber(breakdownMetadata, "toolDefinitionsTokens"),
+        conversationTokens: metadataNumber(breakdownMetadata, "conversationTokens"),
+      } : null,
+      lastCompaction: compactionRow ? {
+        occurredAt: compactionRow.occurredAt,
+        preCompactionTokens: metadataNumber(compactionMetadata, "preCompactionTokens"),
+        postCompactionTokens: metadataNumber(compactionMetadata, "postCompactionTokens"),
+        trigger: typeof compactionMetadata?.trigger === "string" ? compactionMetadata.trigger : null,
+      } : null,
+      cacheExpiresAt: typeof cacheRow?.cacheExpiresAt === "string" ? cacheRow.cacheExpiresAt : null,
     };
   }
 
@@ -747,11 +813,13 @@ export function createSessionContextStore(db: DatabaseSync) {
       eventsPath: string;
       fileSize: number;
       mtimeMs: number;
+      normalizerVersion?: number;
     } | undefined;
     if (
       previous?.eventsPath === eventsPath
       && previous.fileSize === stats.size
       && previous.mtimeMs === stats.mtimeMs
+      && previous.normalizerVersion === BACKFILL_NORMALIZER_VERSION
     ) {
       return;
     }
@@ -782,6 +850,7 @@ export function createSessionContextStore(db: DatabaseSync) {
       stats.size,
       stats.mtimeMs,
       nowIso(),
+      BACKFILL_NORMALIZER_VERSION,
     );
   }
 

@@ -1,10 +1,10 @@
 import { useMemo, useState, type ReactNode } from "react";
-import type { ChatEntry, McpLoginResponse, McpServerStatus, SessionToolReadinessSnapshot } from "../api";
+import type { ChatEntry, McpLoginResponse, McpServerStatus, SessionToolReadinessSnapshot, SessionUsageMetrics } from "../api";
 import type { SessionContextResponse, SessionContextSummary } from "../../shared/session-context.js";
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Loader2, Plug, XCircle } from "lucide-react";
-import { summarizeContext } from "./SessionContextHelpers";
+import { getContextPressure, getSummaryMetrics, summarizeContext } from "./SessionContextHelpers";
 import SessionContextPanel from "./SessionContextPanel";
-import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, mcpObservationTitle, recentToolFailures } from "./mcp-status-display";
+import { mcpObservationLabel, mcpObservationTitle, recentToolFailures } from "./mcp-status-display";
 import { DS, cx } from "../design/tokens";
 import { Button, Details, Notice } from "../design/primitives";
 import { formatUsageUsd } from "../lib/usage-presentation";
@@ -18,6 +18,8 @@ interface McpStatusBarProps {
   sessionCostLoading?: boolean;
   sessionCostUsd?: number | null;
   sessionCostError?: string;
+  /** Live SDK counters for the loaded session: messages, model calls, tokens, code changes. */
+  sessionUsage?: SessionUsageMetrics | null;
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
   servers: McpServerStatus[];
@@ -49,6 +51,7 @@ export default function McpStatusBar({
   sessionCostLoading,
   sessionCostUsd,
   sessionCostError,
+  sessionUsage,
   onAuthenticate,
   onRefresh,
   servers,
@@ -81,6 +84,8 @@ export default function McpStatusBar({
   const unknown = servers.filter((s) => s.status === "unknown").length;
   const hasProblem = failed > 0 || needsAuth > 0;
   const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError);
+  const contextMetrics = getSummaryMetrics(summary);
+  const contextPressure = contextError ? "room" : getContextPressure(contextMetrics.percent);
   const sessionCostLabel = sessionCostUsd != null ? formatUsageUsd(sessionCostUsd)
     : sessionCostError ? "unavailable" : sessionCostLoading ? "..." : "Not recorded";
   const statusSummary = statusState === "loading"
@@ -165,9 +170,26 @@ export default function McpStatusBar({
                 </span>
               )}
               {/* Phone-width chrome makes room for problems first; the figures remain in details. */}
-              {hasContextSignal && <span className={cx(metricClass, "items-center gap-1 text-text-secondary")} title="Context window in use">
-                <Activity size={12} className="text-text-faint" />
-                <span className={leading ? "hidden sm:inline" : undefined}>Context </span>{contextSummary}
+              {hasContextSignal && <span
+                className={cx(
+                  metricClass,
+                  "items-center gap-1.5",
+                  contextPressure === "blocking" ? DS.tone.danger : contextPressure === "compacting" ? DS.tone.warning : "text-text-secondary",
+                )}
+                title={contextPressure === "room" ? "Context window in use" : "Context window is past the automatic compaction point"}
+              >
+                {contextMetrics.percent !== undefined && !contextError ? (
+                  <span aria-hidden="true" className="h-1.5 w-6 overflow-hidden rounded-full bg-bg-hover">
+                    <span
+                      className={cx(
+                        "block h-full",
+                        contextPressure === "blocking" ? "bg-error" : contextPressure === "compacting" ? "bg-warning" : "bg-text-secondary",
+                      )}
+                      style={{ width: `${contextMetrics.percent}%` }}
+                    />
+                  </span>
+                ) : <Activity size={12} className="text-text-faint" />}
+                <span><span className={leading ? "hidden sm:inline" : undefined}>Context </span>{contextSummary}</span>
               </span>}
               {hasSessionCostSignal && (
                 <span
@@ -185,28 +207,19 @@ export default function McpStatusBar({
       </div>
 
       {expanded && hasSignals && (
-        <div data-session-details="" className={cx("w-full min-w-0 max-h-[min(50vh,440px)] overflow-y-auto px-3 pb-3 pt-1 space-y-3 sm:px-4", DS.motion.reveal)}>
-          {hasSessionCostSignal && (
-            <div>
-              <div className="flex items-center justify-between gap-3 text-xs text-text-muted">
-                <span title="Cumulative cost reported by the Copilot SDK, not an invoice">Session cost</span>
-                <span className={DS.usage.value}>{sessionCostLabel}</span>
-              </div>
-              <p className={cx(DS.usage.prose, "mt-1")}>SDK-reported for this session; separate from account quota and local price estimates.</p>
-              {sessionCostError && (
-                <Notice tone="warning" role="alert" icon={<AlertTriangle size={14} />} className="mt-2">
-                  Cost refresh failed: {sessionCostError}{sessionCostUsd != null ? ". Showing the previous reading." : ""}
-                </Notice>
-              )}
-            </div>
-          )}
-          {hasContextSignal && (
+        <div data-session-details="" className={cx("w-full min-w-0 max-h-[min(70vh,640px)] overflow-y-auto px-3 pb-3 pt-1 space-y-3 sm:px-4", DS.motion.reveal)}>
+          {(hasContextSignal || hasSessionCostSignal) && (
             <SessionContextPanel
               capabilities={capabilities}
               provider={context?.provider}
               error={contextError}
               loading={contextLoading}
               summary={summary}
+              insights={context?.insights}
+              usage={sessionUsage}
+              cost={hasSessionCostSignal
+                ? { label: sessionCostLabel, error: sessionCostError, hasPrevious: sessionCostUsd != null }
+                : undefined}
             />
           )}
           {toolFailures.length > 0 && (
@@ -224,11 +237,13 @@ export default function McpStatusBar({
             label="MCP servers"
             detail={`${connected}/${servers.length} connected`}
           >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-xs text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>
-              {onRefresh && <Button size="sm" variant="ghost" onClick={() => void onRefresh()}>Refresh</Button>}
-            </div>
-            {toolReadiness && (
+            {onRefresh && (
+              <div className="mb-2 flex justify-end">
+                <Button size="sm" variant="ghost" onClick={() => void onRefresh()}>Refresh</Button>
+              </div>
+            )}
+            {/* Loaded tool definitions are the normal case and go unsaid; only loading or failure is news. */}
+            {toolReadiness && toolReadiness.state !== "ready" && (
               <div
                 className="mb-2 text-xs text-text-muted"
                 role={toolReadiness.state === "failed" ? "alert" : "status"}
@@ -236,9 +251,7 @@ export default function McpStatusBar({
               >
                 <p>{toolReadiness.state === "initializing"
                   ? "Loading tool definitions..."
-                  : toolReadiness.state === "failed"
-                    ? "Tool initialization failed. Reload this session to retry."
-                    : "Tool definitions loaded"}</p>
+                  : "Tool initialization failed. Reload this session to retry."}</p>
                 {toolReadiness.error && <p className="break-words text-error">{toolReadiness.error}</p>}
               </div>
             )}
