@@ -163,8 +163,8 @@ export default function TaskMomentumFields({
   };
 
   return (
-    <><Section label="Where things stand" surface action={<Button size="sm" variant="ghost"
-      disabled={!!savingField} onClick={() => setDeferralOpen(true)}>{task.deferred ? "Resume task" : "Defer task"}</Button>}>
+    <><Section label="Where things stand" surface action={task.status === "active" ? <Button size="sm" variant="ghost"
+      disabled={!!savingField} onClick={() => setDeferralOpen(true)}>{task.deferred ? "Resume task" : "Defer task"}</Button> : undefined}>
       {task.deferred && <div className="mb-3 space-y-2"><Badge>Deferred</Badge><p className={DS.text.prose}>Set aside from Continue working until you resume it. A revisit date brings it back for review only.</p></div>}
       {saveError && <Notice tone="danger" title="The change was not saved">{saveError}</Notice>}
       {visiblePanelFields.length > 0 && (

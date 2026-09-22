@@ -108,7 +108,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   </Section>;
   const tasks = data && <Section label={section === "tasks" ? "Your tasks" : "Continue working"} level="page" surface action={more(data.tasks, "tasks")}>
     <p className={DS.text.prose}>{section === "tasks" ? "All active, unmuted tasks, including those you set aside." : "Tasks you have not deferred, with any next step you recorded."}</p>
-    {data.deferredTaskTotal > 0 && <p className={cx(DS.text.meta, "mt-2")}>{data.deferredTaskTotal} deferred {data.deferredTaskTotal === 1 ? "task stays" : "tasks stay"} in your task list and View all tasks.</p>}
+    {data.deferredTaskTotal > 0 && <p className={cx(DS.text.meta, "mt-2")}>{data.deferredTaskTotal} deferred {data.deferredTaskTotal === 1 ? "task is" : "tasks are"} available in View all tasks. Muted tasks remain in the task list.</p>}
     {data.tasks.items.map(task => <div key={task.id} className={ROW}>
       <div className="flex items-start justify-between gap-3"><div className="min-w-0">
         <div className="flex items-center gap-2">{task.groupColor && <span className={cx("h-2 w-2 shrink-0 rounded-sm", GROUP_COLOR_DOT[task.groupColor] ?? GROUP_COLOR_DOT.slate)} />}
