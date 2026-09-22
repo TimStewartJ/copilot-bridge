@@ -16,12 +16,12 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
 }) {
   const client = useQueryClient();
   const dateId = useId();
-  const [initial] = useState(() => ({ deferred: task.deferred, date: toDateTimeInputValue(task.nextTouchAt) }));
+  const [initial] = useState(() => ({ id: task.id, deferred: task.deferred, date: toDateTimeInputValue(task.nextTouchAt) }));
   const [date, setDate] = useState(initial.date);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const revisitsNow = !!date && new Date(date).getTime() <= Date.now();
-  const stale = task.deferred !== initial.deferred || toDateTimeInputValue(task.nextTouchAt) !== initial.date;
+  const stale = task.id !== initial.id || task.deferred !== initial.deferred || toDateTimeInputValue(task.nextTouchAt) !== initial.date;
 
   async function save() {
     if (pending || stale) return;

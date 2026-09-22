@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Session, Task } from "../../api";
@@ -11,6 +11,7 @@ import {
   waitUntilAct,
 } from "../../test-react-harness";
 import TaskContextMenu from "./TaskContextMenu";
+import { installDialogDom } from "../../test-dialog-harness";
 
 function createTask(): Task {
   return {
@@ -55,8 +56,8 @@ function setClipboard(clipboard: unknown) {
   (globalThis.navigator as unknown as { clipboard?: unknown }).clipboard = clipboard;
 }
 
-async function renderTaskContextMenu(onClose: () => void) {
-  const harness = await createReactDomHarness();
+async function renderTaskContextMenu(onClose: () => void, actions: ComponentProps<typeof TaskContextMenu>["actions"] = {}) {
+  const harness = await createReactDomHarness({ installDom: installDialogDom });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnMount: false } },
   });
@@ -70,7 +71,7 @@ async function renderTaskContextMenu(onClose: () => void) {
       position: { x: 10, y: 10 },
       taskGroups: [],
       sessionMap: new Map<string, Session>(),
-      actions: {},
+      actions,
       onClose,
     }),
   ));
@@ -79,6 +80,21 @@ async function renderTaskContextMenu(onClose: () => void) {
 }
 
 describe("TaskContextMenu copy task id", () => {
+  it("opens the shared deferral dialog without changing task state merely by opening it", async () => {
+    const update = vi.fn(), onClose = vi.fn();
+    const harness = await renderTaskContextMenu(onClose, { onUpdateTask: update });
+    try {
+      await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Defer task")); });
+      expect(harness.dom.container.textContent).toContain("Revisit on (optional)");
+      expect(harness.dom.container.textContent).toContain("without archiving or muting");
+      expect(harness.dom.container.textContent).toContain("session defer jobs are not paused");
+      expect(update).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Cancel")); });
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally { await harness.cleanup(); }
+  });
+
   it("shows an inline failure and keeps the menu open when the clipboard write rejects", async () => {
     vi.useFakeTimers();
     const onClose = vi.fn();
