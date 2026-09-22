@@ -6,7 +6,7 @@ import {
   isLocalMcpServerConfig,
 } from "../../../mcp-config";
 import { ConfigCard } from "./ConfigCard";
-import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel } from "../mcp-status-display";
+import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, mcpObservationTitle } from "../mcp-status-display";
 import {
   summarizeMcpServerConfig,
   summarizeMcpServerExecution,
@@ -85,7 +85,7 @@ export function ServerCard({
       onRemove={onRemove}
       removeTitle="Remove"
     >
-      {status && <p className="mt-1 text-[11px] text-text-muted">{mcpObservationLabel(status)}</p>}
+      {status && <p className="mt-1 text-[11px] text-text-muted" title={mcpObservationTitle(status)}>{mcpObservationLabel(status)}</p>}
       {st === "connected" && <p className="mt-1 text-[11px] text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>}
       {st === "failed" && status?.error && (
         <div className="mt-1 text-[11px] text-error bg-error/5 px-2 py-1 rounded">

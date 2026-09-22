@@ -16,9 +16,10 @@ describe("session details tool readiness", () => {
       await harness.act(async () => getReactProps(button)?.onClick?.());
       const text = harness.dom.container.textContent;
       expect(text).toContain("1/1 connected");
-      if (state === "initializing") expect(text).toContain("Discovery can take several minutes");
+      if (state === "initializing") expect(text).toContain("Loading tool definitions");
       if (state === "failed") expect(text).toContain("metadata validation failed");
-      if (state === "ready") expect(text).toContain("does not prove every capability");
+      if (state === "ready") expect(text).toContain("Tool definitions loaded");
+      expect(text).toContain("Tool permissions are separate from connection status");
       expect(text).not.toContain("MCP status unavailable");
       expect(text).not.toContain("Start sign-in");
     } finally {
@@ -34,8 +35,8 @@ describe("session details tool readiness", () => {
         toolReadiness: { state: "ready", startedAt: "2026-09-15T17:00:00Z" },
       }));
       await harness.act(async () => getReactProps(findAllByTag(harness.dom.container, "BUTTON")[0])?.onClick?.());
-      expect(harness.dom.container.textContent).toContain("No MCP connection observations");
-      expect(harness.dom.container.textContent).toContain("does not establish tool capability readiness");
+      expect(harness.dom.container.textContent).toContain("No MCP servers reported for this session");
+      expect(harness.dom.container.textContent).toContain("Tool permissions are separate from connection status");
     } finally {
       await harness.cleanup();
     }

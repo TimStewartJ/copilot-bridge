@@ -1641,11 +1641,8 @@ function AppShell() {
 
   const handleReloadSession = async (sessionId: string) => {
     try {
-      const result = await reloadSession(sessionId);
-      const mcpStatusQueryKey = queryKeys.mcpStatus(sessionId);
-      await queryClient.cancelQueries({ queryKey: mcpStatusQueryKey, exact: true });
-      queryClient.setQueryData(mcpStatusQueryKey, { servers: result.servers });
-      void queryClient.invalidateQueries({ queryKey: mcpStatusQueryKey, exact: true });
+      await reloadSession(sessionId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mcpStatus(sessionId), exact: true });
       setSessionReloadSignals((prev) => ({
         ...prev,
         [sessionId]: (prev[sessionId] ?? 0) + 1,

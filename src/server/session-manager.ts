@@ -3191,6 +3191,11 @@ export class SessionManager {
       const deferred = tools
         .filter((tool) => expectedTools.includes(tool.name) && tool.deferLoading === true)
         .map((tool) => tool.name);
+      const deferredExternal = tools.filter((tool) => !expectedTools.includes(tool.name) && tool.deferLoading === true);
+      if (deferredExternal.length > 0) {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Runtime deferred ${deferredExternal.length} tools despite eager-tool configuration: ${deferredExternal.slice(0, 10).map((tool) => tool.name).join(", ")}`);
+        this.recordSpan("session.tools.unexpectedDeferral", 0, sessionId, { count: deferredExternal.length });
+      }
       const sid = sessionId.slice(0, 8);
       if (missing.length > 0 || deferred.length > 0) {
         throw new Error(
@@ -4198,7 +4203,7 @@ export class SessionManager {
     };
   }
 
-  /** Get the latest complete MCP snapshot, probing only until one is available. */
+  /** Refresh expired or provisional MCP observations without resuming a cold session. */
   async getMcpStatus(sessionId: string): Promise<McpServerStatus[]> {
     const cached = this.mcpStatus.get(sessionId);
     if (cached?.complete && isMcpStatusFresh(cached)) return cached.servers;
@@ -4232,12 +4237,17 @@ export class SessionManager {
       const result = listOutcome.value;
       if (Array.isArray(result?.servers) && this.sessionObjects.get(sessionId) === session) {
         const current = this.mcpStatus.get(sessionId);
-        if (current?.complete && current !== startingSnapshot) return current.servers;
+        const concurrentUpdates = current && current !== startingSnapshot ? current : undefined;
+        const isPending = (server: McpServerStatus) => server.status === "pending" || server.status === "unknown";
+        if (concurrentUpdates?.complete && !concurrentUpdates.servers.some(isPending)) return concurrentUpdates.servers;
         const probed = stampMcpStatusSnapshot({ servers: normalizeMcpServerStatuses(result.servers), complete: true }, sessionId, "probe");
         const snapshot = {
           ...probed,
-          servers: current && current !== startingSnapshot
-            ? mergeMcpServerStatuses(probed.servers, current.servers)
+          // Preserve newer resolved changes, but do not let a repeated startup
+          // placeholder discard a live connection probe.
+          servers: concurrentUpdates
+            ? mergeMcpServerStatuses(probed.servers, concurrentUpdates.servers.filter((server) =>
+              !isPending(server) || !probed.servers.some((observed) => observed.name === server.name)))
             : probed.servers,
         };
         this.mcpStatus.set(sessionId, snapshot);

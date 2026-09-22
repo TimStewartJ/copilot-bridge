@@ -585,6 +585,27 @@ describe("SessionManager native Bridge tools", () => {
     },
   );
 
+  it("reports unexpected external deferral without permanently blocking the session", async () => {
+    const { manager, backend, db } = createManager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await manager.initialize();
+      const session = createInteractiveFakeSession("external-deferral");
+      const metadata = await session.getCurrentToolMetadata();
+      session.getCurrentToolMetadata.mockResolvedValueOnce({
+        tools: [...metadata.tools, { name: "demo-read", description: "", input_schema: {}, deferLoading: true }],
+      });
+      backend.resumeSession.mockResolvedValueOnce(session);
+      await manager.startWorkAndWaitForDelivery(session.sessionId, "hello");
+      expect(session.send).toHaveBeenCalled();
+      expect(manager.getSessionToolReadiness(session.sessionId)?.state).toBe("ready");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Runtime deferred 1 tools despite eager-tool configuration: demo-read"));
+    } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
   it("waits for resumed-session initialization before starting MCP OAuth", async () => {
     const { manager, backend, db } = createManager();
     const initializationGate = createDeferred<void>();

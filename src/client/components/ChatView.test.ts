@@ -891,7 +891,7 @@ describe("ChatView cached resume loading state", () => {
     } finally { await cleanup(); }
   });
 
-  it("routes streamed MCP status into the query-owned status bar data", async () => {
+  it("uses MCP stream events to refresh the endpoint instead of overwriting it with pending placeholders", async () => {
     const { act, cleanup } = await renderChatView({
       streamOverrides: { isStreaming: false, pendingOrigin: null },
     });
@@ -900,10 +900,16 @@ describe("ChatView cached resume loading state", () => {
       const onMcpStatus = useSessionStreamMock.mock.calls.at(-1)?.[3] as
         | ((servers: Array<{ name: string; status: string }>) => void)
         | undefined;
-      await act(async () => onMcpStatus?.([{ name: "demo", status: "connected" }]));
+      fetchMcpStatusMock.mockResolvedValue([{ name: "demo", status: "connected" }]);
+      const fetchCount = fetchMcpStatusMock.mock.calls.length;
+      await act(async () => onMcpStatus?.([{ name: "demo", status: "pending" }]));
       await waitUntilAct(act, () => mcpStatusBarMock.mock.calls.some((call) => (
         (call[0] as { servers?: Array<{ name: string; status: string }> }).servers?.[0]?.name === "demo"
       )));
+      expect(fetchMcpStatusMock.mock.calls.length).toBeGreaterThan(fetchCount);
+      expect(mcpStatusBarMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        servers: [{ name: "demo", status: "connected" }],
+      });
       expect(useSessionUsageMetricsQueryMock.mock.calls.at(-1)?.[0]).toBe("session-1");
     } finally {
       await cleanup();

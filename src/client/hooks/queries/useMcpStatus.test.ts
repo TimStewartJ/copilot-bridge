@@ -15,20 +15,24 @@ describe("MCP observation and readiness queries", () => {
     expect(intervalFor({ servers: [], toolReadiness: readiness("initializing") })).toBe(2_000);
   });
 
-  it("stops readiness polling when the outcome is known", () => {
+  it("keeps connection observations fresh after initialization finishes or fails", () => {
     for (const state of ["ready", "failed"] as const) {
-      expect(intervalFor({ servers: [], toolReadiness: readiness(state) })).toBe(false);
+      expect(intervalFor({ servers: [], toolReadiness: readiness(state) })).toBe(30_000);
     }
-    expect(intervalFor({ servers: [], toolReadiness: null })).toBe(false);
-    expect(intervalFor(undefined)).toBe(false);
+    expect(intervalFor({ servers: [], toolReadiness: null })).toBe(30_000);
+    expect(intervalFor(undefined)).toBe(30_000);
   });
 
-  it("refreshes readiness missing from a connection-only stream cache update", () => {
-    expect(intervalFor({ servers: [{ name: "demo", status: "connected" }] })).toBe(2_000);
+  it("refreshes pending connections independently of ready tools, without permanent fast polling", () => {
+    for (const status of ["pending", "unknown", "connected", "needs-auth"] as const) {
+      expect(intervalFor({ servers: [{ name: "demo", status }], toolReadiness: readiness("ready") })).toBe(30_000);
+    }
+    expect(intervalFor({ servers: [{ name: "demo", status: "connected" }] })).toBe(30_000);
   });
 
   it("never starts an endpoint query without a session", () => {
     expect(getMcpStatusQueryOptions(null).enabled).toBe(false);
     expect(getMcpStatusQueryOptions("demo").staleTime).toBe(30_000);
+    expect(getMcpStatusQueryOptions("demo").refetchOnWindowFocus).toBe(true);
   });
 });
