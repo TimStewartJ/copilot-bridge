@@ -4,10 +4,9 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, Check, ChevronLeft, ChevronRight, Clock3, MessageCircle, RefreshCw } from "lucide-react";
 import { fetchHome, fetchHomeInput, patchChecklistItem, submitElicitationResponse, submitUserInputResponse } from "../api";
 import type { HomeInputSummary, HomePage, HomeSection } from "../../shared/home";
-import { Badge, Button, EmptyHint, Notice, Section } from "../design/primitives";
+import { Badge, Button, EmptyHint, IdentitySwatch, Notice, Section } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import Dialog from "../design/Dialog";
-import { GROUP_COLOR_DOT } from "../group-colors";
 import { getSessionPath } from "../lib/session-path";
 import { formatSearchExcerpt } from "../lib/search-text";
 import ElicitationCard from "./ElicitationCard";
@@ -111,7 +110,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     {data.deferredTaskTotal > 0 && <p className={cx(DS.text.meta, "mt-2")}>{data.deferredTaskTotal} deferred {data.deferredTaskTotal === 1 ? "task" : "tasks"}{section === "overview" ? " in View all tasks" : ""}.</p>}
     {data.tasks.items.map(task => <div key={task.id} className={ROW}>
       <div className="flex items-start justify-between gap-3"><div className="min-w-0">
-        <div className="flex items-center gap-2">{task.groupColor && <span className={cx("h-2 w-2 shrink-0 rounded-sm", GROUP_COLOR_DOT[task.groupColor] ?? GROUP_COLOR_DOT.slate)} />}
+        <div className="flex items-center gap-2">{task.groupColor && <IdentitySwatch color={task.groupColor} />}
           <button className={cx(DS.text.content, DS.focus, "text-left text-base font-semibold")} onClick={() => onSelectTask(task.id)}>{task.title}</button></div>
         {(task.groupName || task.kind === "ongoing") && <p className={cx(DS.text.meta, "mt-1")}>{[task.groupName, task.kind === "ongoing" ? "Ongoing" : undefined].filter(Boolean).join(" · ")}</p>}
       </div>{task.inputCount ? <Badge tone="warning">Needs answer</Badge> : task.stalledCount ? <Badge tone="warning">{task.stalledCount} stalled</Badge>
