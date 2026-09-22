@@ -141,12 +141,31 @@ describe("CopilotBackend wrap fidelity", () => {
     const backend = new CopilotBackend(client as any);
     const config = { workingDirectory: "/x", mcpServers: {} };
     const created = await backend.createSession(config);
-    expect(client.createSession).toHaveBeenCalledWith(config);
+    expect(client.createSession).toHaveBeenCalledWith({ ...config, toolSearch: { enabled: false } });
     expect(created.sessionId).toBe("fake-session-id");
 
     const resumed = await backend.resumeSession("abc", config);
-    expect(client.resumeSession).toHaveBeenCalledWith("abc", config);
+    expect(client.resumeSession).toHaveBeenCalledWith("abc", { ...config, toolSearch: { enabled: false } });
     expect(resumed.sessionId).toBe("fake-session-id");
+  });
+
+  it.each(["create", "resume"] as const)("disables discovery on %s without changing tool restrictions or caller config", async (operation) => {
+    const client = createFakeClient();
+    const backend = new CopilotBackend(client as any);
+    const config = {
+      model: "gpt-5-mini",
+      toolSearch: { enabled: true, deferThreshold: 1 },
+      availableTools: ["view", "demo-read"],
+      excludedTools: ["edit"],
+      customAgents: [{ name: "reader", tools: ["view"], prompt: "Read only." }],
+      mcpServers: { demo: { type: "http", url: "http://localhost/mcp", tools: ["read"] } },
+    };
+    if (operation === "create") await backend.createSession(config);
+    else await backend.resumeSession("existing", config);
+    const expected = { ...config, toolSearch: { enabled: false } };
+    if (operation === "create") expect(client.createSession).toHaveBeenCalledWith(expected);
+    else expect(client.resumeSession).toHaveBeenCalledWith("existing", expected);
+    expect(config.toolSearch).toEqual({ enabled: true, deferThreshold: 1 });
   });
 
   it("creates HydraFusion directly without fixed-model overrides or a fallback session", async () => {
@@ -165,6 +184,7 @@ describe("CopilotBackend wrap fidelity", () => {
 
     expect(client.createSession).toHaveBeenCalledWith({
       model: "hydrafusion",
+      toolSearch: { enabled: false },
       enableExperimentalMode: true,
       workingDirectory: "/x",
     });
@@ -184,6 +204,7 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(client.createSession).toHaveBeenCalledOnce();
     expect(client.createSession).toHaveBeenCalledWith({
       model: "hydrafusion",
+      toolSearch: { enabled: false },
       enableExperimentalMode: true,
     });
     expect(client.session.setModel).not.toHaveBeenCalled();
@@ -203,6 +224,7 @@ describe("CopilotBackend wrap fidelity", () => {
 
     expect(client.resumeSession).toHaveBeenCalledWith("hydra-session", {
       model: "hydrafusion",
+      toolSearch: { enabled: false },
       enableExperimentalMode: true,
     });
   });
@@ -216,6 +238,7 @@ describe("CopilotBackend wrap fidelity", () => {
 
     expect(client.createSession).toHaveBeenCalledWith({
       streaming: true,
+      toolSearch: { enabled: false },
       onElicitationRequest: expect.any(Function),
       askUserVariant: "elicitation",
     });
@@ -228,7 +251,7 @@ describe("CopilotBackend wrap fidelity", () => {
 
     await backend.createSession({ streaming: true });
 
-    expect(client.createSession).toHaveBeenCalledWith({ streaming: true });
+    expect(client.createSession).toHaveBeenCalledWith({ streaming: true, toolSearch: { enabled: false } });
   });
 
   it("delegates deleteSession and getSessionMetadata", async () => {
@@ -269,8 +292,8 @@ describe("CopilotAgentSession native tool approvals", () => {
       : await backend.resumeSession("existing", config);
 
     expect(backend.permissionPolicy).toBeUndefined();
-    if (operation === "create") expect(client.createSession).toHaveBeenCalledWith(config);
-    else expect(client.resumeSession).toHaveBeenCalledWith("existing", config);
+    if (operation === "create") expect(client.createSession).toHaveBeenCalledWith({ ...config, toolSearch: { enabled: false } });
+    else expect(client.resumeSession).toHaveBeenCalledWith("existing", { ...config, toolSearch: { enabled: false } });
     await wrapped.initializeTools();
     await wrapped.send({ prompt: "first" });
     await wrapped.sendAndWait({ prompt: "second" }, 1234);
@@ -413,7 +436,7 @@ describe("CopilotAgentSession native tool approvals", () => {
     const wrapped = await new CopilotBackend(client as any).createSession({ onPermissionRequest });
     await wrapped.initializeTools();
     await wrapped.send({ prompt: "custom policy" });
-    expect(client.createSession).toHaveBeenCalledWith({ onPermissionRequest });
+    expect(client.createSession).toHaveBeenCalledWith({ onPermissionRequest, toolSearch: { enabled: false } });
     expect(session.rpc.permissions.setMode).not.toHaveBeenCalled();
     expect(session.send).toHaveBeenCalledOnce();
   });

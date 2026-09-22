@@ -4,7 +4,7 @@ import type { SessionContextResponse, SessionContextSummary } from "../../shared
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Loader2, Plug, XCircle } from "lucide-react";
 import { summarizeContext } from "./SessionContextHelpers";
 import SessionContextPanel from "./SessionContextPanel";
-import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, recentToolFailures } from "./mcp-status-display";
+import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, mcpObservationTitle, recentToolFailures } from "./mcp-status-display";
 import { DS, cx } from "../design/tokens";
 import { Button, Details, Notice } from "../design/primitives";
 import { formatUsageUsd } from "../lib/usage-presentation";
@@ -30,35 +30,15 @@ interface McpStatusBarProps {
   actions?: ReactNode;
 }
 
-function StatusIcon({ status }: { status: McpServerStatus["status"] }) {
-  switch (status) {
-    case "connected":
-      return <CheckCircle2 size={12} className="text-success" />;
-    case "failed":
-      return <XCircle size={12} className="text-error" />;
-    case "needs-auth":
-      return <AlertTriangle size={12} className="text-warning" />;
-    case "pending":
-      return <Loader2 size={12} className="text-warning animate-spin" />;
-    case "disabled":
-    case "not_configured":
-      return <XCircle size={12} className="text-text-muted" />;
-    default:
-      return <AlertTriangle size={12} className="text-warning" />;
-  }
-}
-
-function statusLabel(status: McpServerStatus["status"]): string {
-  switch (status) {
-    case "connected": return "Connected";
-    case "needs-auth": return "Needs auth";
-    case "failed": return "Failed";
-    case "pending": return "Connecting...";
-    case "disabled": return "Disabled";
-    case "not_configured": return "Not configured";
-    default: return "Unknown";
-  }
-}
+const MCP_STATUS_DISPLAY = {
+  connected: { label: "Connected", icon: CheckCircle2, className: "text-success" },
+  failed: { label: "Failed", icon: XCircle, className: "text-error" },
+  "needs-auth": { label: "Needs sign-in", icon: AlertTriangle, className: "text-warning" },
+  pending: { label: "Connecting...", icon: Loader2, className: "text-warning animate-spin" },
+  disabled: { label: "Disabled", icon: XCircle, className: "text-text-muted" },
+  not_configured: { label: "Not configured", icon: XCircle, className: "text-text-muted" },
+  unknown: { label: "Unknown", icon: AlertTriangle, className: "text-warning" },
+} satisfies Record<McpServerStatus["status"], { label: string; icon: typeof CheckCircle2; className: string }>;
 
 export default function McpStatusBar({
   chatEntries,
@@ -98,6 +78,7 @@ export default function McpStatusBar({
   const needsAuth = servers.filter((s) => s.status === "needs-auth").length;
   const failed = servers.filter((s) => s.status === "failed").length;
   const pending = servers.filter((s) => s.status === "pending").length;
+  const unknown = servers.filter((s) => s.status === "unknown").length;
   const hasProblem = failed > 0 || needsAuth > 0;
   const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError);
   const sessionCostLabel = sessionCostUsd != null ? formatUsageUsd(sessionCostUsd)
@@ -136,7 +117,8 @@ export default function McpStatusBar({
     }
   };
 
-  const mcpNeedsAttention = hasProblem || statusState !== "ready" || pending > 0;
+  const mcpNeedsAttention = hasProblem || statusState !== "ready" || pending > 0 || unknown > 0;
+  const toolsNeedAttention = Boolean(toolReadiness && toolReadiness.state !== "ready");
   const hasHeaderAttention = mcpNeedsAttention || toolFailures.length > 0
     || toolReadiness?.state === "initializing" || toolReadiness?.state === "failed";
   const metricClass = leading && hasHeaderAttention ? "hidden sm:flex" : "flex";
@@ -237,20 +219,26 @@ export default function McpStatusBar({
             </Details>
           )}
           {hasMcpSignal && <Details
-            key={hasProblem || statusState !== "ready" || (toolReadiness && toolReadiness.state !== "ready") ? "attention" : "healthy"}
-            open={hasProblem || statusState !== "ready" || Boolean(toolReadiness && toolReadiness.state !== "ready")}
+            key={mcpNeedsAttention || toolsNeedAttention ? "attention" : "healthy"}
+            open={mcpNeedsAttention || toolsNeedAttention}
             label="MCP servers"
             detail={`${connected}/${servers.length} connected`}
           >
-            <p className="mb-2 text-xs leading-relaxed text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>
+              {onRefresh && <Button size="sm" variant="ghost" onClick={() => void onRefresh()}>Refresh</Button>}
+            </div>
             {toolReadiness && (
-              <div className="mb-2 text-xs text-text-muted" role={toolReadiness.state === "failed" ? "alert" : "status"}>
+              <div
+                className="mb-2 text-xs text-text-muted"
+                role={toolReadiness.state === "failed" ? "alert" : "status"}
+                title={`Started: ${toolReadiness.startedAt}${toolReadiness.completedAt ? `; completed: ${toolReadiness.completedAt}` : ""}`}
+              >
                 <p>{toolReadiness.state === "initializing"
-                  ? "Tool initialization is in progress. Discovery can take several minutes."
+                  ? "Loading tool definitions..."
                   : toolReadiness.state === "failed"
-                    ? "Tool initialization failed. Check the initialization error before retrying."
-                    : "Tool initialization completed. This does not prove every capability or resource permission is available."}</p>
-                <p>Started: {toolReadiness.startedAt}{toolReadiness.completedAt ? `, completed: ${toolReadiness.completedAt}` : ""}</p>
+                    ? "Tool initialization failed. Reload this session to retry."
+                    : "Tool definitions loaded"}</p>
                 {toolReadiness.error && <p className="break-words text-error">{toolReadiness.error}</p>}
               </div>
             )}
@@ -268,12 +256,17 @@ export default function McpStatusBar({
             ) : null}
             {servers.length > 0 ? (
               <div className="space-y-1">
-                {servers.map((server) => (
+                {servers.map((server) => {
+                  const { icon: Icon, label, className } = MCP_STATUS_DISPLAY[server.status] ?? MCP_STATUS_DISPLAY.unknown;
+                  return (
                   <div key={server.name} className="flex flex-wrap items-center gap-2 text-xs py-0.5">
-                    <StatusIcon status={server.status} />
+                    <Icon size={12} className={className} />
                     <span className="font-medium text-text-primary">{server.name}</span>
-                    <span className="text-text-muted" title={MCP_CONNECTION_GUIDANCE}>{statusLabel(server.status)}</span>
-                    <span className="basis-full pl-5 text-text-faint">{mcpObservationLabel(server)}</span>
+                    <span className="text-text-muted">{label}</span>
+                    <span
+                      className="basis-full pl-5 text-text-faint"
+                      title={mcpObservationTitle(server)}
+                    >{mcpObservationLabel(server)}</span>
                     {server.status === "needs-auth" && onAuthenticate && (
                       <>
                         <Button
@@ -310,10 +303,11 @@ export default function McpStatusBar({
                       </span>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ) : statusState === "ready" ? (
-              <p className="text-xs text-text-muted">No MCP connection observations. This does not establish tool capability readiness.</p>
+              <p className="text-xs text-text-muted">No MCP servers reported for this session.</p>
             ) : null}
           </Details>}
         </div>

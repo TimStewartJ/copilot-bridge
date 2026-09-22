@@ -558,6 +558,8 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
     pendingInteractionEvents = false,
     ...sdkConfig
   } = config;
+  // Apply on every create/resume, including helpers and sessions with a different model.
+  sdkConfig.toolSearch = { enabled: false };
   if (isHydraFusionModel(sdkConfig.model)) {
     delete sdkConfig.reasoningEffort;
     delete sdkConfig.contextTier;
