@@ -74,7 +74,7 @@ export default function AgentDefinitionPreviewSheet({
           </button>
         </div>
 
-        <div className="shrink-0 border-b border-border/50 px-5 py-3">
+        <div className="shrink-0 border-b border-border-subtle px-5 py-3">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>
               {definition.name}

@@ -5,58 +5,100 @@
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
 
-  /* ── Design tokens (dark defaults, overridden by [data-theme] selectors) ── */
+  /* ── Design tokens (dark defaults, overridden by [data-theme] selectors) ──
+   * Neutral greys with no tint. Text has three readable levels: primary for content, secondary for
+   * labels and detail (muted is kept as an alias of secondary), faint for metadata.
+   */
 
-  /* Backgrounds */
-  --color-bg-primary: #0b0b0f;
-  --color-bg-secondary: #131319;
-  --color-bg-surface: #1b1b23;
-  --color-bg-elevated: #24242e;
-  --color-bg-hover: #30303b;
+  /* Backgrounds (legacy roles, kept in step with the surface levels below) */
+  --color-bg-primary: #0e0e0e;
+  --color-bg-secondary: #171717;
+  --color-bg-surface: #212121;
+  --color-bg-elevated: #2a2a2a;
+  --color-bg-hover: #343434;
 
   /* Surface levels are opaque so their separation does not depend on what is behind them. */
-  --color-surface-canvas: #0b0b0f;
-  --color-surface-pane: #131319;
-  --color-surface-group: #1b1b23;
-  --color-surface-inset: #0f0f14;
-  --color-surface-overlay: #24242e;
-  --color-surface-selected: #30303b;
-  --color-surface-edge: #383842;
-  --color-control-edge: #62626e;
+  --color-surface-canvas: #0e0e0e;
+  --color-surface-pane: #171717;
+  --color-surface-group: #212121;
+  --color-surface-inset: #191919;
+  --color-surface-overlay: #2a2a2a;
+  --color-surface-selected: #343434;
+  --color-surface-edge: #404040;
+  --color-control-edge: #707070;
 
   /* Text */
-  --color-text-primary: #fafafa;
-  --color-text-secondary: #c4c4cf;
-  --color-text-muted: #aaaab7;
-  --color-text-faint: #9c9caa;
+  --color-text-primary: #f3f3f3;
+  --color-text-secondary: #cacaca;
+  --color-text-muted: #cacaca;
+  --color-text-faint: #9e9e9e;
 
   /* Accent */
-  --color-accent: #93c5fd;
-  --color-accent-hover: #bfdbfe;
-  --color-accent-muted: #3b82f6/15%;
-  --color-accent-surface: rgba(59, 130, 246, 0.12);
-  --color-accent-border: rgba(96, 165, 250, 0.30);
+  --color-accent: #7cb4fc;
+  --color-accent-hover: #a9cdfd;
+  --color-accent-muted: rgba(124, 180, 252, 0.15);
+  --color-accent-surface: rgba(124, 180, 252, 0.12);
+  --color-accent-border: rgba(124, 180, 252, 0.30);
 
   /* Borders */
-  --color-border: #27272a;
-  --color-border-subtle: #1e1e22;
+  --color-border: #383838;
+  --color-border-subtle: #2c2c2c;
 
-  /* Semantic */
-  --color-success: #22c55e;
-  --color-warning: #eab308;
-  --color-error: #fca5a5;
-  --color-error-hover: #fecaca;
-  --color-info: #38bdf8;
-  --color-info-surface: rgba(56, 189, 248, 0.13);
-  --color-info-border: rgba(125, 211, 252, 0.30);
+  /* Semantic text. Each has a surface for its badge, composed over any surface level. */
+  --color-success: #47c76e;
+  --color-success-surface: rgba(71, 199, 110, 0.12);
+  --color-warning: #eda107;
+  --color-warning-surface: rgba(237, 161, 7, 0.12);
+  --color-error: #fd928a;
+  --color-error-hover: #ffb4ad;
+  --color-error-surface: rgba(253, 146, 138, 0.12);
+  --color-info: #31bdea;
+  --color-info-surface: rgba(49, 189, 234, 0.12);
+  --color-info-border: rgba(49, 189, 234, 0.30);
 
   /* Agent / sub-agent */
-  --color-agent: #a78bfa;
-  --color-agent-muted: rgba(167, 139, 250, 0.15);
-  --color-agent-border: rgba(167, 139, 250, 0.30);
+  --color-agent: #baa3fe;
+  --color-agent-muted: rgba(186, 163, 254, 0.12);
+  --color-agent-border: rgba(186, 163, 254, 0.30);
+
+  /*
+   * State glyphs (StatusIcon). A glyph is a graphic, so it needs 3:1 rather than the 4.5:1 text
+   * needs; light mode uses brighter values than its text colours so the states stay distinct.
+   */
+  --color-icon-accent: #7cb4fc;
+  --color-icon-info: #31bdea;
+  --color-icon-success: #47c76e;
+  --color-icon-warning: #eda107;
+  --color-icon-error: #ff7a70;
+  --color-icon-agent: #baa3fe;
+
+  /*
+   * Identity colours a user picks for a group or a tag. Swatches mark identity beside a name; the
+   * text value is for a tag's name on its own tint. Never used for state.
+   */
+  --color-identity-blue: #59a0f9;
+  --color-identity-blue-text: #8cbaf7;
+  --color-identity-cyan: #17bac8;
+  --color-identity-cyan-text: #5ecad6;
+  --color-identity-emerald: #3db87c;
+  --color-identity-emerald-text: #7ecb9f;
+  --color-identity-amber: #e3ae28;
+  --color-identity-amber-text: #d5b36a;
+  --color-identity-orange: #ea7d2e;
+  --color-identity-orange-text: #eba57b;
+  --color-identity-rose: #ee6570;
+  --color-identity-rose-text: #f19d9f;
+  --color-identity-pink: #f080b8;
+  --color-identity-pink-text: #e89dc0;
+  --color-identity-purple: #b883e6;
+  --color-identity-purple-text: #c9a6e9;
+  --color-identity-indigo: #8189ef;
+  --color-identity-indigo-text: #a8b1f7;
+  --color-identity-slate: #94a0ae;
+  --color-identity-slate-text: #adb9c8;
 
   /* Feedback */
-  --color-copy-success: #4ade80;
+  --color-copy-success: #47c76e;
 
   /* Syntax */
   --color-syntax-string: #5eead4;
@@ -66,47 +108,78 @@
 
 [data-theme="light"] {
   --color-bg-primary: #ffffff;
-  --color-bg-secondary: #e5e7ec;
+  --color-bg-secondary: #e9e9e9;
   --color-bg-surface: #ffffff;
   --color-bg-elevated: #ffffff;
-  --color-bg-hover: #d7d7df;
+  --color-bg-hover: #e0e0e0;
 
-  --color-surface-canvas: #f1f2f5;
-  --color-surface-pane: #e5e7ec;
+  --color-surface-canvas: #f3f3f3;
+  --color-surface-pane: #e9e9e9;
   --color-surface-group: #ffffff;
-  --color-surface-inset: #f3f4f7;
+  --color-surface-inset: #f7f7f7;
   --color-surface-overlay: #ffffff;
-  --color-surface-selected: #d7d7df;
-  --color-surface-edge: #c8cad3;
-  --color-control-edge: #898993;
+  --color-surface-selected: #e0e0e0;
+  --color-surface-edge: #d0d0d0;
+  --color-control-edge: #8a8a8a;
 
-  --color-text-primary: #111113;
-  --color-text-secondary: #3f3f4b;
-  --color-text-muted: #50505d;
-  --color-text-faint: #5b5b68;
+  --color-text-primary: #0d0d0d;
+  --color-text-secondary: #454545;
+  --color-text-muted: #454545;
+  --color-text-faint: #626262;
 
-  --color-accent: #1e40af;
-  --color-accent-hover: #1e3a8a;
-  --color-accent-muted: rgba(37, 99, 235, 0.10);
-  --color-accent-surface: rgba(37, 99, 235, 0.08);
-  --color-accent-border: rgba(37, 99, 235, 0.22);
+  --color-accent: #035ab1;
+  --color-accent-hover: #02478c;
+  --color-accent-muted: rgba(3, 90, 177, 0.10);
+  --color-accent-surface: rgba(3, 90, 177, 0.08);
+  --color-accent-border: rgba(3, 90, 177, 0.22);
 
-  --color-border: #d4d4d8;
-  --color-border-subtle: #e4e4e7;
+  --color-border: #dadada;
+  --color-border-subtle: #e5e5e5;
 
-  --color-success: #14532d;
-  --color-warning: #78350f;
-  --color-error: #991b1b;
-  --color-error-hover: #7f1d1d;
-  --color-info: #075985;
-  --color-info-surface: rgba(2, 132, 199, 0.08);
-  --color-info-border: rgba(2, 132, 199, 0.20);
+  --color-success: #046a2f;
+  --color-success-surface: rgba(4, 106, 47, 0.08);
+  --color-warning: #7d5302;
+  --color-warning-surface: rgba(125, 83, 2, 0.08);
+  --color-error: #b60a1f;
+  --color-error-hover: #8f0818;
+  --color-error-surface: rgba(182, 10, 31, 0.08);
+  --color-info: #0b637d;
+  --color-info-surface: rgba(11, 99, 125, 0.08);
+  --color-info-border: rgba(11, 99, 125, 0.22);
 
-  --color-agent: #7c3aed;
-  --color-agent-muted: rgba(124, 58, 237, 0.10);
-  --color-agent-border: rgba(124, 58, 237, 0.20);
+  --color-agent: #6f3cc5;
+  --color-agent-muted: rgba(111, 60, 197, 0.08);
+  --color-agent-border: rgba(111, 60, 197, 0.22);
 
-  --color-copy-success: #16a34a;
+  --color-icon-accent: #057df0;
+  --color-icon-info: #0889ae;
+  --color-icon-success: #0f9244;
+  --color-icon-warning: #ab7306;
+  --color-icon-error: #ee353b;
+  --color-icon-agent: #9063ed;
+
+  --color-identity-blue: #3a81d7;
+  --color-identity-blue-text: #1e5ba1;
+  --color-identity-cyan: #13868f;
+  --color-identity-cyan-text: #0f6068;
+  --color-identity-emerald: #028a56;
+  --color-identity-emerald-text: #04683f;
+  --color-identity-amber: #a07908;
+  --color-identity-amber-text: #755706;
+  --color-identity-orange: #c3610d;
+  --color-identity-orange-text: #904607;
+  --color-identity-rose: #ce4755;
+  --color-identity-rose-text: #993841;
+  --color-identity-pink: #b9508a;
+  --color-identity-pink-text: #923a69;
+  --color-identity-purple: #9964c4;
+  --color-identity-purple-text: #734797;
+  --color-identity-indigo: #686ed1;
+  --color-identity-indigo-text: #4d51a3;
+  --color-identity-slate: #76818f;
+  --color-identity-slate-text: #525c69;
+
+  --color-copy-success: #0f9244;
 
   --color-syntax-string: #0f766e;
 }

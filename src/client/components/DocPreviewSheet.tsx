@@ -70,7 +70,7 @@ export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetPro
         </div>
 
         {/* Path */}
-        <div className="px-5 py-1.5 border-b border-border/50 shrink-0">
+        <div className="px-5 py-1.5 border-b border-border-subtle shrink-0">
           <span className="text-[10px] font-mono text-text-faint">{docPath}</span>
         </div>
 

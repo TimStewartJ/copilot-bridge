@@ -54,7 +54,7 @@ export function Skeleton({
       {...props}
       aria-hidden="true"
       className={classes(
-        "bg-bg-hover/80 border border-border/50 opacity-80 animate-pulse motion-reduce:animate-none motion-reduce:opacity-100",
+        "bg-bg-hover/80 border border-border-subtle opacity-80 animate-pulse motion-reduce:animate-none motion-reduce:opacity-100",
         shapeClasses[shape],
         className,
       )}

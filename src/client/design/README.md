@@ -46,6 +46,14 @@ quiet, dense with information, and calm until something needs attention.
 Colours are theme variables from `index.css`, used by role, never by value. Scrollbars and native
 controls follow the theme globally.
 
+The palette is neutral grey with no tint. Text has three levels: `text-primary` for content,
+`text-secondary` for labels and detail, `text-faint` for metadata. `text-muted` is an alias of
+secondary, kept so existing screens stay readable. Each state colour has a text value, a badge
+surface (`*-surface`) and a brighter glyph value (`icon-*`) that only needs 3:1 because it is a
+graphic. Group and tag colours are `identity-*` swatches and are never used for state.
+`surface-contrast.test.ts` holds the numbers: 4.5:1 for text and badges, 3:1 for glyphs and input
+edges, minimum steps between text levels and between surfaces, and an APCA floor for dark text.
+
 ## Surface hierarchy
 
 | Level | Purpose | Recipe |

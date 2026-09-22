@@ -186,9 +186,9 @@ export const DS = {
       neutral: "bg-bg-hover text-text-secondary",
       accent: "bg-accent-surface text-accent",
       info: "bg-info-surface text-info",
-      success: "bg-success/12 text-success",
-      warning: "bg-warning/12 text-warning",
-      danger: "bg-error/12 text-error",
+      success: "bg-success-surface text-success",
+      warning: "bg-warning-surface text-warning",
+      danger: "bg-error-surface text-error",
     },
   },
 
