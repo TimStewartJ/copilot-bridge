@@ -89,7 +89,7 @@ describe("Home within native Bridge", () => {
     api.fetchHome.mockResolvedValue(snapshot);
     await render();
     const text = harness.dom.container.textContent;
-    expect(text).toContain("2 deferred tasks stay");
+    expect(text).toContain("2 deferred tasks are available in View all tasks");
     expect(text).toContain("View all tasks");
     expect(text).toContain("Ready to revisit");
     expect(text).toContain("Waiting for: A reply");

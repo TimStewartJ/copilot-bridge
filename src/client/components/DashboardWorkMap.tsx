@@ -178,7 +178,7 @@ function TaskCard({
           {task.title}
         </span>
         <span className={cx(DS.badge.base, "text-[9px]", taskTone(task))}>
-          {task.status === "archived" ? "Archived" : task.deferred ? "Deferred" : task.kind === "ongoing" ? "Ongoing" : "Task"}
+          {task.status === "archived" ? "Archived" : `${task.kind === "ongoing" ? "Ongoing" : "Task"}${task.deferred ? " · Deferred" : ""}`}
         </span>
       </div>
       <div className="mt-1 text-[10px] text-text-faint">{association}</div>
