@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, Check, ChevronLeft, ChevronRight, Clock3, MessageCircle, RefreshCw } from "lucide-react";
-import { fetchHome, fetchHomeInput, patchChecklistItem, submitElicitationResponse, submitUserInputResponse } from "../api";
+import { ArrowRight, ChevronLeft, ChevronRight, Clock3, MessageCircle, RefreshCw } from "lucide-react";
+import { fetchHome, fetchHomeInput, submitElicitationResponse, submitUserInputResponse } from "../api";
 import type { HomeInputSummary, HomePage, HomeSection } from "../../shared/home";
 import { Badge, Button, EmptyHint, IdentitySwatch, Notice, Section } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
@@ -10,6 +10,7 @@ import Dialog from "../design/Dialog";
 import { getSessionPath } from "../lib/session-path";
 import { formatSearchExcerpt } from "../lib/search-text";
 import ElicitationCard from "./ElicitationCard";
+import HomeChecklist from "./HomeChecklist";
 import UserInputQuestionCard from "./UserInputQuestionCard";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import TaskDeferralDialog, { type DeferralTask } from "./TaskDeferralDialog";
@@ -17,6 +18,10 @@ import TaskDeferralDialog, { type DeferralTask } from "./TaskDeferralDialog";
 const SECTIONS: HomeSection[] = ["overview", "tasks", "inputs", "follow-ups", "actions", "replies"];
 const LABELS: Record<HomeSection, string> = { overview: "Home", tasks: "Your tasks", inputs: "Needs your answer", "follow-ups": "Ready to revisit", actions: "Checklist", replies: "New replies" };
 const ROW = "min-w-0 border-t border-border py-4";
+// A server from before checklist counts omits `today`; the browser's date is the closest stand-in.
+function localDate(now = new Date()): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
 interface Props {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
   onSelectSession: (id: string, taskId?: string) => void;
@@ -55,13 +60,6 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     await Promise.all([client.invalidateQueries({ queryKey: ["dashboard"] }), client.invalidateQueries({ queryKey: ["tasks"] }),
       client.invalidateQueries({ queryKey: ["task"] }), client.invalidateQueries({ queryKey: ["checklist-items", "open"] })]);
   }
-  async function completeAction(id: string) {
-    if (pending) return;
-    setPending(true); setMutationError("");
-    try { await patchChecklistItem(id, { done: true }); await changed(); }
-    catch (error) { setMutationError(error instanceof Error ? error.message : String(error)); }
-    finally { setPending(false); }
-  }
   function more<T>(page: HomePage<T>, target: HomeSection) {
     return section === "overview" ? <Button variant="ghost" size="sm" onClick={() => visit(target)}>{target === "tasks" ? "View all tasks" : "View all"} <ArrowRight size={14} /></Button>
       : <div className="flex items-center gap-2">
@@ -93,18 +91,12 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     </div>)}
     {!data.followUps.items.length && <EmptyHint>Nothing to revisit on this page.</EmptyHint>}
   </Section>;
-  const actions = data && <Section label={section === "actions" ? "Your checklist" : "Checklist deadlines"} surface action={more(data.actions, "actions")}>
-    {section === "overview" && <p className={DS.text.prose}>{data.openActionTotal} open items · Showing due items</p>}
-    {data.actions.items.map(item => <div key={item.id} className={cx(ROW, "flex gap-3")}>
-      {section !== "actions" && (item.text.length > 160 || item.text.includes("\n"))
-        ? <Button size="sm" aria-label={`Read checklist item: ${item.text.slice(0, 80)}`} onClick={() => item.taskId ? onSelectTask(item.taskId, { checklistItemId: item.id }) : visit("actions")}>Read</Button>
-        : <Button size="sm" aria-label={`Complete ${item.text}`} disabled={pending} onClick={() => void completeAction(item.id)}><Check size={15} /></Button>}
-      <div className="min-w-0 flex-1"><p className={cx(DS.text.content, section === "actions" ? "whitespace-pre-wrap" : "line-clamp-3")}>{item.text}</p>
-        <p className={cx(DS.text.meta, "mt-1")}>{item.taskTitle ?? "Global checklist"}{item.deadline ? ` · Due ${item.deadline}` : ""}</p>
-        {item.taskId && <Button size="sm" variant="ghost" onClick={() => onSelectTask(item.taskId!, { checklistItemId: item.id })}>Open task</Button>}</div>
-    </div>)}
-    {!data.actions.items.length && <EmptyHint>{section === "actions" ? "No open items on this page." : "No deadlines due. View all for other items."}</EmptyHint>}
-  </Section>;
+  const checklistUrgent = !!data?.actionCounts && data.actionCounts.overdue + data.actionCounts.dueToday > 0;
+  const actions = data && <HomeChecklist mode={section === "actions" ? "full" : "overview"} items={data.actions.items}
+    counts={data.actionCounts ?? { open: data.actions.total ?? data.actions.items.length, overdue: 0, dueToday: 0 }} today={data.today ?? localDate()}
+    action={section === "actions" ? more(data.actions, "actions") : (data.actionCounts?.open ?? 0) > data.actions.items.length
+      ? <Button variant="ghost" size="sm" onClick={() => visit("actions")}>View all {data.actionCounts.open} <ArrowRight size={14} /></Button> : undefined}
+    onSelectTask={onSelectTask} onChanged={changed} onError={setMutationError} />;
   const tasks = data && <Section label={section === "tasks" ? "Your tasks" : "Continue working"} level="page" surface action={more(data.tasks, "tasks")}>
     {section === "tasks" && <p className={DS.text.prose}>Includes deferred tasks. Muted tasks stay in your task list.</p>}
     {data.deferredTaskTotal > 0 && <p className={cx(DS.text.meta, "mt-2")}>{data.deferredTaskTotal} deferred {data.deferredTaskTotal === 1 ? "task" : "tasks"}{section === "overview" ? " in View all tasks" : ""}.</p>}
@@ -149,8 +141,10 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
       {data?.sourceErrors.map(error => <Notice key={error} tone="warning" title="Some information is unavailable">{error}</Notice>)}
       {!data ? <EmptyHint>{query.error ? "Home is unavailable. Try refreshing." : "Loading Home…"}</EmptyHint> : section === "overview"
         ? <div className="grid items-start gap-7 xl:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
-          <div className="min-w-0 space-y-7">{(data.inputs.items.length > 0 || data.inputErrors.length > 0) && <div className="xl:hidden">{questions}</div>}{tasks}{replies}</div>
-          <div className="min-w-0 space-y-7"><div className={data.inputs.items.length > 0 || data.inputErrors.length > 0 ? "hidden xl:block" : undefined}>{questions}</div>{followUps}{actions}</div>
+          {/* On one column the two stacks dissolve into the grid, so urgent regions can move above the task list. */}
+          <div className="contents xl:block xl:min-w-0 xl:space-y-7">{(data.inputs.items.length > 0 || data.inputErrors.length > 0) && <div className="order-first min-w-0 xl:hidden">{questions}</div>}{tasks}{replies}</div>
+          <div className="contents xl:block xl:min-w-0 xl:space-y-7"><div className={data.inputs.items.length > 0 || data.inputErrors.length > 0 ? "hidden xl:block" : "min-w-0"}>{questions}</div>
+            <div className={cx("min-w-0", checklistUrgent && "-order-1 xl:order-none")}>{actions}</div>{followUps}</div>
         </div>
         : <div className="space-y-7">{section === "tasks" ? tasks : section === "inputs" ? questions : section === "follow-ups" ? followUps : section === "actions" ? actions : replies}</div>}
       <footer className={cx(DS.text.meta, "flex flex-wrap items-center gap-2")}><Clock3 size={13} />{data && `Dates: ${data.timezone}`}

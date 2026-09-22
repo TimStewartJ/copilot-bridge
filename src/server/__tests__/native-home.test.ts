@@ -100,11 +100,31 @@ describe("native Home composition", () => {
     const app = setup(), task = app.taskStore.createTask("Waiting");
     app.taskStore.updateTask(task.id, { waitingOn: "External reply" });
     const global = app.checklistStore.createChecklistItem(null, "Accepted global action");
-    app.checklistStore.createChecklistItem(task.id, "Due action", "2000-01-01");
+    const due = app.checklistStore.createChecklistItem(task.id, "Due action", "2000-01-01");
     const home = await app.snapshot();
     expect(home.followUps.total).toBe(0);
-    expect(home.actions.total).toBe(1);
+    expect(home.actions.items.map(item => item.id)).toEqual([due.id, global.id]);
+    expect(home.actionCounts).toEqual({ open: 2, overdue: 1, dueToday: 0 });
     expect((await app.snapshot("actions")).actions.items.some(item => item.id === global.id)).toBe(true);
+  });
+  it("shows the soonest checklist items on the overview with their task's group colour and live deadline counts", async () => {
+    const app = setup();
+    const group = createTaskGroupStore(db, createTestBus()).createGroup("Group", "rose");
+    const task = app.taskStore.createTask("Grouped", group.id);
+    const today = (await app.snapshot()).today;
+    const items = [
+      app.checklistStore.createChecklistItem(task.id, "Undated"),
+      app.checklistStore.createChecklistItem(task.id, "Later", "9999-01-01"),
+      app.checklistStore.createChecklistItem(task.id, "Today", today),
+      app.checklistStore.createChecklistItem(null, "Overdue", "2000-01-01"),
+    ];
+    for (let index = 0; index < 4; index++) app.checklistStore.createChecklistItem(task.id, `Extra ${index}`);
+    const home = await app.snapshot();
+    expect(home.actions.items.map(item => item.text).slice(0, 4)).toEqual(["Overdue", "Today", "Later", "Undated"]);
+    expect(home.actions.items).toHaveLength(5);
+    expect(home.actions.hasMore).toBe(true);
+    expect(home.actions.items.find(item => item.id === items[2].id)).toMatchObject({ taskTitle: "Grouped", groupColor: "rose" });
+    expect(home.actionCounts).toEqual({ open: 8, overdue: 1, dueToday: 1 });
   });
   it("bounds response bodies and transcript reads, caches replies, and never lets busy activity masquerade as a return", async () => {
     const sessions = Array.from({ length: 35 }, (_, index) => ({ sessionId: String(index), lastActivityAt: "2026-09-21T12:00:00Z" }));
