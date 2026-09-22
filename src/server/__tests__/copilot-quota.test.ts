@@ -229,6 +229,48 @@ describe("createCopilotQuotaReader", () => {
     expect(status.snapshots).toEqual([]);
   });
 
+  it("uses the freshly fetched Copilot user over the backend's startup copy", async () => {
+    const live = authResult().authInfo.copilotUser;
+    const getLiveUser = vi.fn(async () => ({
+      ...live,
+      quota_snapshots: {
+        premium_interactions: {
+          ...live.quota_snapshots.premium_interactions,
+          quota_remaining: 9_000_000.5,
+          percent_remaining: 90,
+        },
+      },
+    }));
+    const reader = createCopilotQuotaReader({
+      getQuota: async () => quotaResult(),
+      getAuth: async () => authResult(),
+      getLiveUser,
+    });
+
+    const status = await reader.read();
+
+    expect(getLiveUser).toHaveBeenCalledTimes(1);
+    expect(status.primary?.remaining).toBe(9_000_000.5);
+    expect(status.primary?.used).toBe(999_999.5);
+    expect(status.primary?.remainingPercentage).toBe(90);
+    expect(status.identity?.login).toBe("timstewart_microsoft");
+  });
+
+  it("falls back to the backend copy when the live fetch fails", async () => {
+    const reader = createCopilotQuotaReader({
+      getQuota: async () => quotaResult(),
+      getAuth: async () => authResult(),
+      getLiveUser: async () => {
+        throw new Error("HTTP 502");
+      },
+    });
+
+    const status = await reader.read();
+
+    expect(status.available).toBe(true);
+    expect(status.primary?.remaining).toBe(9_920_606.1);
+  });
+
   it("collapses concurrent reads into a single backend call", async () => {
     let resolveQuota: (value: unknown) => void = () => {};
     const getQuota = vi.fn(() => new Promise((resolve) => {

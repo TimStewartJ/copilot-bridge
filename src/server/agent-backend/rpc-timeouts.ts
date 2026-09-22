@@ -39,6 +39,7 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   "backend.forkSession": 120_000,
   "backend.getAccountQuota": 30_000,
   "backend.getAccountAuth": 30_000,
+  "backend.getAccountUsers": 30_000,
   "backend.ping": 5_000,
 } as const;
 

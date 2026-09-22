@@ -1158,4 +1158,35 @@ export class CopilotBackend implements AgentBackend {
     }
     return this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account));
   }
+
+  async fetchAccountCopilotUser(): Promise<unknown> {
+    const account = (this.client as any).rpc?.account;
+    const getCurrentAuth = account?.getCurrentAuth;
+    const getAllUsers = account?.getAllUsers;
+    if (typeof getCurrentAuth !== "function" || typeof getAllUsers !== "function") {
+      throw new Error("Account user lookup is not available in this Copilot SDK build");
+    }
+    const [auth, users] = await Promise.all([
+      this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account)),
+      this.rpc("backend.getAccountUsers", () => getAllUsers.call(account)),
+    ]) as [any, unknown];
+    const login = auth?.authInfo?.login;
+    const host = auth?.authInfo?.host;
+    const current = Array.isArray(users)
+      ? users.find((user: any) => user?.authInfo?.login === login && user?.authInfo?.host === host)
+      : undefined;
+    const token = typeof current?.token === "string" ? current.token : null;
+    if (!login || !token) throw new Error("No token for the current Copilot account");
+    const response = await fetch(`${githubApiBase(host)}/copilot_internal/user`, {
+      headers: { Authorization: `token ${token}`, Accept: "application/json", "User-Agent": "copilot-bridge" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`Copilot user lookup failed with HTTP ${response.status}`);
+    return response.json();
+  }
+}
+
+function githubApiBase(host: unknown): string {
+  const origin = typeof host === "string" && host.trim() ? host.trim().replace(/\/+$/, "") : "https://github.com";
+  return origin === "https://github.com" ? "https://api.github.com" : `${origin}/api/v3`;
 }

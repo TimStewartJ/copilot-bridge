@@ -908,3 +908,41 @@ describe("CopilotAgentSession wrap fidelity", () => {
     await expect(wrapped2.setName!({ name: "new" })).rejects.toThrow(/Session name RPC is not available/);
   });
 });
+
+describe("CopilotBackend fetchAccountCopilotUser", () => {
+  it("fetches the Copilot user from GitHub with the current account's token", async () => {
+    const client: any = createFakeClient();
+    client.rpc.account = {
+      getCurrentAuth: vi.fn(async () => ({ authInfo: { login: "me", host: "https://github.com" } })),
+      getAllUsers: vi.fn(async () => [
+        { authInfo: { login: "other", host: "https://github.com" }, token: "other-token" },
+        { authInfo: { login: "me", host: "https://github.com" }, token: "my-token" },
+      ]),
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ login: "me", quota_snapshots: {} }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const user = await new CopilotBackend(client).fetchAccountCopilotUser();
+      expect(user).toEqual({ login: "me", quota_snapshots: {} });
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://api.github.com/copilot_internal/user");
+      expect((init.headers as Record<string, string>).Authorization).toBe("token my-token");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects when GitHub refuses the request", async () => {
+    const client: any = createFakeClient();
+    client.rpc.account = {
+      getCurrentAuth: vi.fn(async () => ({ authInfo: { login: "me", host: "https://github.com" } })),
+      getAllUsers: vi.fn(async () => [{ authInfo: { login: "me", host: "https://github.com" }, token: "t" }]),
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
+    try {
+      await expect(new CopilotBackend(client).fetchAccountCopilotUser()).rejects.toThrow("HTTP 401");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
