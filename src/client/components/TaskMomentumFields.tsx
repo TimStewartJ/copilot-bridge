@@ -86,7 +86,8 @@ function TaskMomentumEditor({
   const [deferralOpen, setDeferralOpen] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [expanded, setExpanded] = useState(false);
-  const summary = getTaskContextSummary({ ...task, ...values, nextTouchAt: task.nextTouchAt });
+  const summary = getTaskContextSummary({ ...task, ...values,
+    nextTouchAt: values.nextTouchAt ? toDateTimeStorageValue(values.nextTouchAt) : undefined });
 
   useEffect(() => {
     const next = toFieldValues(task);
@@ -245,7 +246,7 @@ function TaskMomentumEditor({
                       }
                     }}
                     placeholder={field.placeholder}
-                    aria-describedby={field.key === "nextTouchAt" ? `revisit-help-${task.id}` : undefined}
+                    aria-describedby={field.key === "nextTouchAt" ? `revisit-help-${task.id}` : field.key === "waitingOn" ? `wait-help-${task.id}` : undefined}
                   />
                 ) : isExpandable ? (
                   <button
@@ -269,6 +270,8 @@ function TaskMomentumEditor({
                     {displayValue}
                   </div>
                 )}
+                {isEditing && field.key === "waitingOn" && <p id={`wait-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>A wait need not block other work.</p>}
+                {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows on Home unless muted. No automatic resume, start or notification.</p>}
               </Field>
             );
           })}
@@ -290,8 +293,6 @@ function TaskMomentumEditor({
           ))}
         </div>
       )}
-      {editingField === "waitingOn" && <p className={cx(DS.text.meta, "mt-2")}>A wait need not block other work.</p>}
-      {editingField === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows on Home when due, unless muted. No notification or automatic start.</p>}
       </DisclosureRow>
     </Section>{deferralOpen && <TaskDeferralDialog task={task} onClose={() => setDeferralOpen(false)} onSaved={updated => { onPatched?.(updated); onSaved?.(); }} />}</>
   );
