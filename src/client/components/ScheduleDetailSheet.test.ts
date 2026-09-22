@@ -550,8 +550,9 @@ describe("ScheduleDetailSheet run history pagination", () => {
       const newestButton = findAllByTag(harness.dom.container, "BUTTON").find(
         (button) => button.textContent?.includes("Newest run"),
       );
-      const statusDot = findAllByTag(newestButton, "SPAN")[0];
-      expect(getReactProps(statusDot)?.className).toContain("bg-warning animate-pulse");
+      const status = findAllByTag(newestButton, "SPAN")[0];
+      expect(status?.getAttribute("data-status")).toBe("warning");
+      expect(status?.getAttribute("aria-label")).toBe("Stalled");
     } finally {
       await harness.cleanup();
     }

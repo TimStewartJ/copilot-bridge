@@ -26,6 +26,7 @@ import EmptyState from "../shared/EmptyState";
 import { summarizeMcpServerConfig } from "./mcp-display";
 import { DS, cx } from "../../design/tokens";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "../ContextMenu";
+import { IdentitySwatch } from "../../design/primitives";
 
 const iconButtonClass =
   cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "disabled:opacity-30");
@@ -51,14 +52,13 @@ function TagPillPreview({
   name: string;
   color: string;
 }) {
-  const bg = TAG_COLOR_BG[color] ?? "bg-slate-500/15";
-  const border = TAG_COLOR_BORDER[color] ?? "border-slate-500/30";
-  const dot = TAG_COLOR_DOT[color] ?? "bg-slate-500";
-  const text = TAG_COLOR_TEXT[color] ?? "text-slate-400";
+  const bg = TAG_COLOR_BG[color] ?? TAG_COLOR_BG.slate;
+  const border = TAG_COLOR_BORDER[color] ?? TAG_COLOR_BORDER.slate;
+  const text = TAG_COLOR_TEXT[color] ?? TAG_COLOR_TEXT.slate;
 
   return (
     <span className={cx(DS.badge.base, "max-w-full items-center gap-1.5 text-xs font-semibold", bg, border, text)}>
-      <span className={cx("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
+      <IdentitySwatch color={color} />
       <span className="truncate">{name || "Untitled tag"}</span>
     </span>
   );
@@ -89,7 +89,7 @@ function TagColorPicker({
               className={cx(DS.button.base, DS.button.icon.md, DS.button.variant.ghost, selected && DS.row.selected)}
               title={color}
             >
-              <span aria-hidden="true" className={cx("size-4 rounded-full", TAG_COLOR_DOT[color])} />
+              <span aria-hidden="true" className={cx("size-4 rounded-[4px]", TAG_COLOR_DOT[color])} />
               {selected && <Check size={12} className="ml-0.5 text-text-primary" />}
             </button>
           );

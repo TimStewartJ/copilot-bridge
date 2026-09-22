@@ -21,7 +21,7 @@ export default function HtmlSandboxVisual({ visual, mode = "inline" }: HtmlSandb
 
   if (!hasFrameContent) {
     return (
-      <div className="rounded-lg border border-border bg-bg-primary p-4 text-sm text-red-500" role="alert">
+      <div className="rounded-lg border border-border bg-bg-primary p-4 text-sm text-error" role="alert">
         HTML sandbox: content unavailable
       </div>
     );

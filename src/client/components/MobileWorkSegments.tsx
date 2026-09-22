@@ -49,7 +49,7 @@ export function MobileWorkSegments({
             <Icon size={14} aria-hidden="true" />
             <span>{label}</span>
             {attention.count > 0 && (
-              <CountBadge count={attention.count} tone={attention.needsUserInputCount > 0 ? "warning" : "success"} />
+              <CountBadge count={attention.count} tone={attention.needsUserInputCount > 0 ? "accent" : "unread"} />
             )}
           </button>
         );

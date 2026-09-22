@@ -62,11 +62,11 @@ describe("MobileWorkSegments", () => {
 
     const tasks = findTabByLabel(harness.dom.container, "Tasks, 2 tasks need attention");
     expect(badge(tasks).textContent).toBe("2");
-    expect(getReactProps(badge(tasks))?.className).toContain("bg-success");
+    expect(getReactProps(badge(tasks))?.className).toContain("bg-text-primary");
 
     const chats = findTabByLabel(harness.dom.container, "Chats, 1 chat needs attention; 1 needs an answer");
     expect(getReactProps(chats)?.["aria-selected"]).toBe(true);
     expect(badge(chats).textContent).toBe("1");
-    expect(getReactProps(badge(chats))?.className).toContain("bg-warning");
+    expect(getReactProps(badge(chats))?.className).toContain("bg-accent");
   });
 });

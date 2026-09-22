@@ -13,7 +13,6 @@ import type {
 } from "../api";
 import { getSessionActivityTime, isSessionActive } from "../api";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../../shared/copilot-usage";
-import { GROUP_COLOR_DOT } from "../group-colors";
 import { timeAgo } from "../time";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useCopilotUsageQuery } from "../hooks/queries/useCopilotUsage";
@@ -31,7 +30,7 @@ import TaskKindBadge from "./TaskKindBadge";
 import { formatRevisit } from "../lib/task-revisit";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
-import { Badge, EmptyHint, Field, FieldList, Notice, Section, StatRow } from "../design/primitives";
+import { Badge, EmptyHint, Field, FieldList, Notice, Section, StatRow, IdentitySwatch } from "../design/primitives";
 import { describeMeteredCoverage, formatUsageCredits as formatAiCredits, formatUsageNumber as formatNumber, formatUsageUsd as formatUsd, meteredCostUsd } from "../lib/usage-presentation";
 import UsageModelList from "./usage/UsageModelList";
 import {
@@ -302,7 +301,7 @@ export default function TaskDashboard({
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
               {group && (
                 <span className="inline-flex items-center gap-1.5">
-                  <span className={cx(DS.dot, GROUP_COLOR_DOT[group.color] ?? "bg-slate-500")} aria-hidden="true" />
+                  <IdentitySwatch color={group.color} />
                   {group.name}
                 </span>
               )}

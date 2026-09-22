@@ -5,15 +5,16 @@ import { dbFieldLabel, formatDocDate, visibleDbFields, type DbField, type EntryF
 import { cx, DocsField, DocsInput, DocsSelect } from "./docs-ui";
 import { DS } from "../../design/tokens";
 
+/** Select options are labels the user defined, so they use identity colours, never state colours. */
 const SELECT_TONES = [
-  "bg-blue-500/15 text-blue-400",
-  "bg-emerald-500/15 text-emerald-400",
-  "bg-amber-500/15 text-amber-400",
-  "bg-purple-500/15 text-purple-400",
-  "bg-rose-500/15 text-rose-400",
-  "bg-cyan-500/15 text-cyan-400",
-  "bg-orange-500/15 text-orange-400",
-  "bg-indigo-500/15 text-indigo-400",
+  "bg-identity-blue/12 text-identity-blue-text",
+  "bg-identity-emerald/12 text-identity-emerald-text",
+  "bg-identity-amber/12 text-identity-amber-text",
+  "bg-identity-purple/12 text-identity-purple-text",
+  "bg-identity-rose/12 text-identity-rose-text",
+  "bg-identity-cyan/12 text-identity-cyan-text",
+  "bg-identity-orange/12 text-identity-orange-text",
+  "bg-identity-indigo/12 text-identity-indigo-text",
 ];
 
 function hashString(value: string): number {

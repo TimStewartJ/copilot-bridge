@@ -17,11 +17,14 @@ import {
   FieldList,
   FormRow,
   IconButton,
+  IdentitySwatch,
   MetaLine,
   Notice,
   Panel,
   Section,
   SegmentedControl,
+  STATUS_LABEL,
+  StatusIcon,
 } from "./primitives";
 import { DS } from "./tokens";
 
@@ -296,5 +299,47 @@ describe("design primitives", () => {
     expect(large.textContent).toBe("99+");
     expect(getReactProps(large)?.className).toContain("bg-warning");
     expect(getReactProps(small)?.["aria-hidden"]).toBe("true");
+  });
+
+  it("draws a distinct glyph for every status and names it to assistive technology", async () => {
+    const kinds = Object.keys(DS.status.tone) as Array<keyof typeof DS.status.tone>;
+    const container = await render(createElement("div", null,
+      ...kinds.map((kind) => createElement(StatusIcon, { key: kind, kind })),
+    ));
+    const icons = findAllByTag(container, "SPAN").filter((element) => element.getAttribute("data-status"));
+    expect(icons.map((icon) => icon.getAttribute("data-status"))).toEqual(kinds);
+    for (const icon of icons) {
+      const kind = icon.getAttribute("data-status") as keyof typeof DS.status.tone;
+      expect(icon.getAttribute("role")).toBe("img");
+      expect(icon.getAttribute("aria-label")).toBe(STATUS_LABEL[kind]);
+      expect(getReactProps(icon)?.className).toContain(DS.status.tone[kind]);
+    }
+    const shapes = icons.map((icon) => JSON.stringify(
+      [...findAllByTag(icon, "circle"), ...findAllByTag(icon, "path")].map((shape) => {
+        const { d, r, cx, cy, fill } = getReactProps(shape) ?? {};
+        return { d, r, cx, cy, fill };
+      }),
+    ));
+    expect(new Set(shapes).size).toBe(kinds.length);
+  });
+
+  it("hides a decorative status and stops the working spinner under reduced motion", async () => {
+    const container = await render(createElement(StatusIcon, { kind: "working", decorative: true, label: "Ignored" }));
+    const icon = findAllByTag(container, "SPAN")[0];
+    expect(icon.getAttribute("aria-hidden")).toBe("true");
+    expect(icon.getAttribute("aria-label")).toBeNull();
+    expect(getReactProps(findAllByTag(icon, "svg")[0])?.className).toContain("motion-reduce:animate-none");
+  });
+
+  it("draws identity as a square swatch and falls back to slate", async () => {
+    const container = await render(createElement("div", null,
+      createElement(IdentitySwatch, { color: "rose" }),
+      createElement(IdentitySwatch, { color: "not-a-colour" }),
+    ));
+    const [rose, unknown] = findAllByTag(container, "SPAN");
+    expect(getReactProps(rose)?.className).toContain("bg-identity-rose");
+    expect(getReactProps(rose)?.className).not.toContain("rounded-full");
+    expect(unknown.getAttribute("data-identity")).toBe("slate");
+    expect(rose.getAttribute("aria-hidden")).toBe("true");
   });
 });
