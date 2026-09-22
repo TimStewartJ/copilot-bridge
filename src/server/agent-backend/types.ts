@@ -274,6 +274,38 @@ export interface AgentUsageMetrics {
   totalNanoAiu?: number;
   totalPremiumRequestCost: number;
   totalUserRequests: number;
+  /** Model API calls across every model and agent in the session. */
+  modelRequests?: number;
+  /** Session-wide token counts summed over every model; input includes cache traffic. */
+  tokens?: AgentUsageTokenTotals;
+  apiDurationMs?: number;
+  codeChanges?: AgentUsageCodeChanges;
+}
+
+export interface AgentUsageTokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+}
+
+export interface AgentUsageCodeChanges {
+  linesAdded: number;
+  linesRemoved: number;
+  filesModified: number;
+}
+
+export interface AgentContextInfo {
+  systemTokens: number;
+  conversationTokens: number;
+  toolDefinitionsTokens: number;
+  /** The MCP share of the tool definitions. */
+  mcpToolsTokens?: number;
+  totalTokens: number;
+  promptTokenLimit?: number;
+  /** Token count at which background compaction starts. */
+  compactionThreshold?: number;
 }
 
 export interface AgentSessionRelease {
@@ -368,6 +400,12 @@ export interface AgentSession {
    * will start another turn. Resolves `undefined` when unsupported.
    */
   getActivity(): Promise<AgentSessionActivity | undefined>;
+
+  /**
+   * The runtime's current split of the context window. Resolves `undefined` when unsupported or
+   * before the session has built its system prompt and tool list.
+   */
+  getContextInfo?(opts: { promptTokenLimit: number }): Promise<AgentContextInfo | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;

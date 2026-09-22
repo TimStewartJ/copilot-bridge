@@ -68,6 +68,9 @@ import type {
   AgentSessionSummary,
   AgentSetModelOptions,
   AgentUsageMetrics,
+  AgentContextInfo,
+  AgentUsageCodeChanges,
+  AgentUsageTokenTotals,
   AgentUserInputResponse,
 } from "./types.js";
 
@@ -115,6 +118,36 @@ function normalizeStringArray(value: unknown): string[] | undefined {
 
 function normalizeNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** Sum the SDK's per-model request and token counters into session-wide totals. */
+function sumModelMetrics(value: unknown): { requests: number; tokens: AgentUsageTokenTotals } | undefined {
+  if (!isRecord(value)) return undefined;
+  const tokens: AgentUsageTokenTotals = {
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
+  };
+  let requests = 0;
+  let models = 0;
+  for (const metric of Object.values(value)) {
+    if (!isRecord(metric)) continue;
+    models += 1;
+    const requestCounts = isRecord(metric.requests) ? metric.requests : undefined;
+    requests += normalizeNonNegativeNumber(requestCounts?.count) ?? 0;
+    const usage = isRecord(metric.usage) ? metric.usage : undefined;
+    for (const key of Object.keys(tokens) as Array<keyof AgentUsageTokenTotals>) {
+      tokens[key] += normalizeNonNegativeNumber(usage?.[key]) ?? 0;
+    }
+  }
+  return models > 0 ? { requests, tokens } : undefined;
+}
+
+function readCodeChanges(value: unknown): AgentUsageCodeChanges | undefined {
+  if (!isRecord(value)) return undefined;
+  const linesAdded = normalizeNonNegativeNumber(value.linesAdded);
+  const linesRemoved = normalizeNonNegativeNumber(value.linesRemoved);
+  const filesModified = normalizeNonNegativeNumber(value.filesModifiedCount);
+  if (linesAdded === undefined && linesRemoved === undefined && filesModified === undefined) return undefined;
+  return { linesAdded: linesAdded ?? 0, linesRemoved: linesRemoved ?? 0, filesModified: filesModified ?? 0 };
 }
 
 /**
@@ -443,12 +476,25 @@ class CopilotAgentSession implements AgentSession {
       totalNanoAiu?: unknown;
       totalPremiumRequestCost?: unknown;
       totalUserRequests?: unknown;
+      totalApiDurationMs?: unknown;
+      modelMetrics?: unknown;
+      codeChanges?: unknown;
     };
-    return {
+    const metrics: AgentUsageMetrics = {
       totalNanoAiu: normalizeNonNegativeNumber(result?.totalNanoAiu),
       totalPremiumRequestCost: normalizeNonNegativeNumber(result?.totalPremiumRequestCost) ?? 0,
       totalUserRequests: normalizeNonNegativeNumber(result?.totalUserRequests) ?? 0,
     };
+    const apiDurationMs = normalizeNonNegativeNumber(result?.totalApiDurationMs);
+    if (apiDurationMs !== undefined) metrics.apiDurationMs = apiDurationMs;
+    const modelTotals = sumModelMetrics(result?.modelMetrics);
+    if (modelTotals) {
+      metrics.modelRequests = modelTotals.requests;
+      metrics.tokens = modelTotals.tokens;
+    }
+    const codeChanges = readCodeChanges(result?.codeChanges);
+    if (codeChanges) metrics.codeChanges = codeChanges;
+    return metrics;
   }
 
   async getActivity(): Promise<AgentSessionActivity | undefined> {
@@ -460,6 +506,34 @@ class CopilotAgentSession implements AgentSession {
     ) as { processing?: unknown };
     if (typeof result?.processing !== "boolean") throw new Error("Malformed Copilot session activity response");
     return { processing: result.processing };
+  }
+
+  async getContextInfo(opts: { promptTokenLimit: number }): Promise<AgentContextInfo | undefined> {
+    const contextInfo = this.session?.rpc?.metadata?.contextInfo;
+    if (typeof contextInfo !== "function") return undefined;
+    const result = await this.rpc(
+      "session.getContextInfo",
+      () => contextInfo.call(this.session.rpc.metadata, {
+        promptTokenLimit: Math.max(0, Math.floor(opts.promptTokenLimit)),
+        outputTokenLimit: 0,
+      }),
+    ) as { contextInfo?: unknown };
+    const info = isRecord(result?.contextInfo) ? result.contextInfo : undefined;
+    if (!info) return undefined;
+    const read = (key: string) => normalizeNonNegativeNumber(info[key]);
+    const systemTokens = read("systemTokens");
+    const conversationTokens = read("conversationTokens");
+    const toolDefinitionsTokens = read("toolDefinitionsTokens");
+    if (systemTokens === undefined || conversationTokens === undefined || toolDefinitionsTokens === undefined) return undefined;
+    return {
+      systemTokens,
+      conversationTokens,
+      toolDefinitionsTokens,
+      mcpToolsTokens: read("mcpToolsTokens"),
+      totalTokens: read("totalTokens") ?? systemTokens + conversationTokens + toolDefinitionsTokens,
+      promptTokenLimit: read("promptTokenLimit"),
+      compactionThreshold: read("compactionThreshold"),
+    };
   }
 
   async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {

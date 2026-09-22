@@ -1173,6 +1173,28 @@ export interface SessionUsageMetrics {
   costUsd: number | null;
   totalPremiumRequestCost: number | null;
   totalUserRequests: number | null;
+  /** Model API calls across every model and agent in the session. */
+  modelRequests?: number;
+  /** Session-wide token totals summed over models; input includes cache reads and writes. */
+  tokens?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    reasoningTokens: number;
+  };
+  apiDurationMs?: number;
+  codeChanges?: { linesAdded: number; linesRemoved: number; filesModified: number };
+  /** The runtime's current split of the context window, for a loaded session. */
+  contextInfo?: {
+    systemTokens: number;
+    conversationTokens: number;
+    toolDefinitionsTokens: number;
+    mcpToolsTokens?: number;
+    totalTokens: number;
+    promptTokenLimit?: number;
+    compactionThreshold?: number;
+  };
 }
 
 export async function fetchSessionUsageMetrics(

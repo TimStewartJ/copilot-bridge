@@ -23,7 +23,6 @@ describe("McpStatusBar status ownership", () => {
       expect(harness.dom.container.textContent).toContain("1/1 connected");
       expect(harness.dom.container.textContent).toContain("permission");
       expect(harness.dom.container.textContent).toContain("403 is not evidence of expired authentication");
-      expect(harness.dom.container.textContent).toContain("Tool permissions are separate");
       expect(findAllByTag(harness.dom.container, "SPAN").some((element) =>
         getReactProps(element)?.title?.includes("; probe;"))).toBe(true);
       expect(harness.dom.container.textContent).not.toContain("Start sign-in");
@@ -42,7 +41,7 @@ describe("McpStatusBar status ownership", () => {
         statusState: "ready", onRefresh,
       }));
       await harness.act(async () => getReactProps(findAllByTag(harness.dom.container, "BUTTON")[0])?.onClick?.());
-      expect(harness.dom.container.textContent).toContain("Tool definitions loaded");
+      expect(harness.dom.container.textContent).not.toContain("Tool definitions loaded");
       expect(harness.dom.container.textContent).toContain("Connecting...");
       expect(harness.dom.container.textContent).not.toContain("2026-09-22");
       expect(getReactProps(findAllByTag(harness.dom.container, "DETAILS")[0])?.open).toBe(true);
@@ -103,7 +102,7 @@ describe("McpStatusBar status ownership", () => {
       expect(toggle?.textContent).not.toContain("Plan");
       await harness.act(async () => getReactProps(toggle)?.onClick?.());
       expect(getReactProps(toggle)?.["aria-expanded"]).toBe(true);
-      expect(harness.dom.container.textContent).toContain("Session cost");
+      expect(harness.dom.container.textContent).toContain("This sessionCost$0.03");
       expect(onPlan).not.toHaveBeenCalled();
     } finally {
       await harness.cleanup();
@@ -272,11 +271,13 @@ describe("McpStatusBar status ownership", () => {
     expect(toggle.textContent).toContain("Context 50%");
     await harness.act(async () => getReactProps(toggle)?.onClick?.());
     const text = harness.dom.container.textContent;
-    expect(text).toContain("500 / 1,000 tokens");
-    expect(text).toContain("500 tokens left");
-    expect(text).toContain("Usage details");
+    expect(text).toContain("500 of 1k");
+    expect(text).toContain("50% full");
+    expect(text).toContain("Compacts automatically at 80%, in about 300 tokens.");
+    expect(text).toContain("Token totals");
+    expect(text).toContain("last model call");
     expect(text).toContain("included in output");
-    expect(text).toContain("Session cost");
+    expect(text).toContain("This session");
     expect(text).toContain("MCP servers");
     expect(text).not.toContain("Context history");
     expect(text).not.toContain("Inspect turn");
@@ -285,6 +286,6 @@ describe("McpStatusBar status ownership", () => {
     expect(findAllByTag(harness.dom.container, "TABLE")).toHaveLength(0);
     expect(findAllByTag(harness.dom.container, "SVG").some(node => getReactProps(node)?.role === "group")).toBe(false);
     await harness.act(async () => getReactProps(toggle)?.onClick?.());
-    expect(harness.dom.container.textContent).not.toContain("Usage details");
+    expect(harness.dom.container.textContent).not.toContain("Token totals");
   });
 });

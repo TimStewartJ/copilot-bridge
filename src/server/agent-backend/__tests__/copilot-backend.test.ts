@@ -777,8 +777,43 @@ describe("CopilotAgentSession wrap fidelity", () => {
     });
     expect(getMetrics).toHaveBeenCalledOnce();
 
+    const detailed = await new CopilotBackend(createFakeClient(createFakeSession({ usage: { getMetrics: async () => ({
+      totalPremiumRequestCost: 0,
+      totalUserRequests: 3,
+      totalApiDurationMs: 42_000,
+      modelMetrics: {
+        "model-a": { requests: { count: 5, cost: 0 }, usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 5, reasoningTokens: 2 } },
+        "model-b": { requests: { count: 2, cost: 0 }, usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 40, cacheWriteTokens: 1 } },
+      },
+      codeChanges: { linesAdded: 12, linesRemoved: 3, filesModifiedCount: 2, filesModified: ["a.ts", "b.ts"] },
+    }) } })) as any).createSession({} as any);
+    await expect(detailed.getUsageMetrics!()).resolves.toEqual({
+      totalPremiumRequestCost: 0,
+      totalUserRequests: 3,
+      apiDurationMs: 42_000,
+      modelRequests: 7,
+      tokens: { inputTokens: 150, outputTokens: 15, cacheReadTokens: 120, cacheWriteTokens: 6, reasoningTokens: 2 },
+      codeChanges: { linesAdded: 12, linesRemoved: 3, filesModified: 2 },
+    });
+
     const olderSdk = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(olderSdk.getUsageMetrics!()).resolves.toBeUndefined();
+    await expect(olderSdk.getContextInfo!({ promptTokenLimit: 1000 })).resolves.toBeUndefined();
+  });
+
+  it("asks the runtime for the current context split with the model's prompt limit", async () => {
+    const contextInfo = vi.fn(async (): Promise<unknown> => ({ contextInfo: {
+      modelName: "m", systemTokens: 21_000, conversationTokens: 380_000, toolDefinitionsTokens: 30_000, mcpToolsTokens: 12_000,
+      totalTokens: 431_000, promptTokenLimit: 872_000, compactionThreshold: 697_600, limit: 1_000_000, bufferTokens: 1,
+    } }));
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({ metadata: { contextInfo } })) as any).createSession({} as any);
+    await expect(wrapped.getContextInfo!({ promptTokenLimit: 872_000.4 })).resolves.toEqual({
+      systemTokens: 21_000, conversationTokens: 380_000, toolDefinitionsTokens: 30_000, mcpToolsTokens: 12_000,
+      totalTokens: 431_000, promptTokenLimit: 872_000, compactionThreshold: 697_600,
+    });
+    expect(contextInfo).toHaveBeenCalledWith({ promptTokenLimit: 872_000, outputTokenLimit: 0 });
+    contextInfo.mockResolvedValueOnce({ contextInfo: null });
+    await expect(wrapped.getContextInfo!({ promptTokenLimit: 0 })).resolves.toBeUndefined();
   });
 
   it("getActivity asks rpc.metadata.isProcessing and rejects an answer it cannot read", async () => {

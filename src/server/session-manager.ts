@@ -172,7 +172,7 @@ import {
   isTransientBackendError,
 } from "./backend-availability.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
-import type { AgentBackendDisconnect } from "./agent-backend/types.js";
+import type { AgentBackendDisconnect, AgentContextInfo, AgentUsageCodeChanges, AgentUsageTokenTotals } from "./agent-backend/types.js";
 import {
   getModelCapabilitiesOverride,
   modelSupportsLongContext,
@@ -637,6 +637,13 @@ export interface SessionUsageMetrics {
   costUsd: number | null;
   totalPremiumRequestCost: number | null;
   totalUserRequests: number | null;
+  /** Model API calls across every model and agent, when the runtime reports per-model counters. */
+  modelRequests?: number;
+  tokens?: AgentUsageTokenTotals;
+  apiDurationMs?: number;
+  codeChanges?: AgentUsageCodeChanges;
+  /** The runtime's current split of the window, asked for alongside the counters. */
+  contextInfo?: AgentContextInfo;
 }
 
 export interface SessionWarmOptions {
@@ -4191,10 +4198,15 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (!session) return unavailable;
 
-    const outcome = await settleByDeadline(
-      () => session.getUsageMetrics(),
-      createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
-    );
+    const deadline = createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS);
+    const promptTokenLimit = this.deps.sessionContextStore?.getSummary(sessionId)?.contextWindow ?? 0;
+    const [outcome, contextOutcome] = await Promise.all([
+      settleByDeadline(() => session.getUsageMetrics(), deadline),
+      // The split is a nicety beside the counters: a failure or a slow answer only leaves it out.
+      session.getContextInfo
+        ? settleByDeadline(() => session.getContextInfo!({ promptTokenLimit }), deadline)
+        : Promise.resolve(undefined),
+    ]);
     if (outcome.status === "rejected") throw outcome.error;
     if (outcome.status === "timed-out") {
       this.recordSpan("session.detail.rpcTimeout", SESSION_DETAIL_RPC_TIMEOUT_MS, sessionId, { rpc: "getUsageMetrics" });
@@ -4202,6 +4214,7 @@ export class SessionManager {
     }
     const metrics = outcome.value;
     if (!metrics) return unavailable;
+    const contextInfo = contextOutcome?.status === "fulfilled" ? contextOutcome.value : undefined;
     const aiCredits = metrics.totalNanoAiu === undefined
       ? null
       : metrics.totalNanoAiu / 1_000_000_000;
@@ -4212,6 +4225,11 @@ export class SessionManager {
       costUsd: aiCredits === null ? null : aiCredits * COPILOT_AI_CREDIT_USD,
       totalPremiumRequestCost: metrics.totalPremiumRequestCost,
       totalUserRequests: metrics.totalUserRequests,
+      ...(metrics.modelRequests !== undefined ? { modelRequests: metrics.modelRequests } : {}),
+      ...(metrics.tokens ? { tokens: metrics.tokens } : {}),
+      ...(metrics.apiDurationMs !== undefined ? { apiDurationMs: metrics.apiDurationMs } : {}),
+      ...(metrics.codeChanges ? { codeChanges: metrics.codeChanges } : {}),
+      ...(contextInfo ? { contextInfo } : {}),
     };
   }
 

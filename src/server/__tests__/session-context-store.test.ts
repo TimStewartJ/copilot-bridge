@@ -445,6 +445,73 @@ describe("session context telemetry store", () => {
     });
   });
 
+  it("records real SDK compactions for the main agent and reads the latest insights", () => {
+    const store = createSessionContextStore(setupTestDb());
+    store.backfillSessionContextEvents({
+      sessionId: "session-compact",
+      events: [
+        {
+          type: "session.compaction_complete", id: "compact-main", timestamp: "2026-09-21T14:30:45.000Z",
+          data: {
+            success: true, preCompactionTokens: 699_561, postCompactionTokens: 75_814, tokensRemoved: 623_750,
+            trigger: "threshold", checkpointPath: "C:\\private\\checkpoint.md", summaryContent: "private summary",
+          },
+        },
+        { type: "session.compaction_complete", id: "compact-failed", timestamp: "2026-09-21T15:00:00.000Z", data: { success: false } },
+        {
+          type: "session.compaction_complete", id: "compact-child", agentId: "child-agent", timestamp: "2026-09-21T16:00:00.000Z",
+          data: { success: true, preCompactionTokens: 200_000, postCompactionTokens: 60_000 },
+        },
+      ],
+    });
+    const usageInfo = normalizeLiveSessionContextEvent(copilotUsageInfoFixture, {
+      sessionId: "session-compact", provider: "copilot", bridgeTurnId: "turn-1",
+    })!;
+    expect(usageInfo.metadata).toMatchObject({ systemTokens: 20_000, toolDefinitionsTokens: 4000, conversationTokens: 18_000 });
+    store.recordContextEvent({ ...usageInfo, occurredAt: "2026-09-21T17:00:00.000Z" });
+    store.recordContextEvent({
+      sessionId: "session-compact", provider: "copilot", providerEventId: "usage-call", bridgeTurnId: "turn-1",
+      attribution: "turn", type: "context_snapshot", occurredAt: "2026-09-21T17:00:01.000Z",
+      modelUsage: { inputTokens: 10 }, metadata: { cacheExpiresAt: "2026-09-21T17:05:00.000Z" },
+    });
+
+    const context = store.getSessionContext("session-compact");
+    expect(context.summary).toMatchObject({ compactionCount: 1, updatedAt: "2026-09-21T17:00:01.000Z" });
+    expect(context.insights).toEqual({
+      breakdown: {
+        observedAt: "2026-09-21T17:00:00.000Z", tokensUsed: 42_000,
+        systemTokens: 20_000, toolDefinitionsTokens: 4000, conversationTokens: 18_000,
+      },
+      lastCompaction: {
+        occurredAt: "2026-09-21T14:30:45.000Z", preCompactionTokens: 699_561, postCompactionTokens: 75_814, trigger: "threshold",
+      },
+      cacheExpiresAt: "2026-09-21T17:05:00.000Z",
+    });
+    const stored = context.events.find((event) => event.providerEventId === "compact-main");
+    expect(stored?.metadata).not.toHaveProperty("checkpointPath");
+    expect(stored?.metadata).not.toHaveProperty("summaryContent");
+  });
+
+  it("reads a session log again once the normalizer learns a new event type", async () => {
+    const db = setupTestDb();
+    const store = createSessionContextStore(db);
+    const scratchDir = createProjectScratchDir();
+    const eventsPath = join(scratchDir, "events.jsonl");
+    writeFileSync(eventsPath, `${JSON.stringify({
+      type: "session.compaction_complete", id: "compact-old-log", timestamp: "2026-09-20T10:00:00.000Z",
+      data: { success: true, preCompactionTokens: 700, postCompactionTokens: 70 },
+    })}\n`);
+    await store.backfillSessionContextFromEventsFile({ sessionId: "session-old", eventsPath });
+    // Simulate a log read by an older normalizer: same file, no compaction row, version 0.
+    db.prepare("DELETE FROM session_context_events WHERE sessionId = ?").run("session-old");
+    db.prepare("UPDATE session_context_summary SET compactionCount = 0 WHERE sessionId = ?").run("session-old");
+    await store.backfillSessionContextFromEventsFile({ sessionId: "session-old", eventsPath });
+    expect(store.getSessionContext("session-old").summary?.compactionCount).toBe(0);
+    db.prepare("UPDATE session_context_backfills SET normalizerVersion = 0 WHERE sessionId = ?").run("session-old");
+    await store.backfillSessionContextFromEventsFile({ sessionId: "session-old", eventsPath });
+    expect(store.getSessionContext("session-old").summary?.compactionCount).toBe(1);
+  });
+
   it("async file backfill is idempotent and leaves cached context on file errors", async () => {
     const store = createSessionContextStore(setupTestDb());
     const scratchDir = createProjectScratchDir();

@@ -649,7 +649,8 @@ function initSchema(db: DatabaseSync): void {
       eventsPath TEXT NOT NULL,
       fileSize INTEGER NOT NULL,
       mtimeMs REAL NOT NULL,
-      backfilledAt TEXT NOT NULL
+      backfilledAt TEXT NOT NULL,
+      normalizerVersion INTEGER NOT NULL DEFAULT 0
     );
 
     -- Canonical MCP server registry
@@ -840,6 +841,14 @@ function initSchema(db: DatabaseSync): void {
   );
   if (!deferLoopColumns.has("checkpoint")) {
     db.exec("ALTER TABLE defer_loops ADD COLUMN checkpoint TEXT");
+  }
+
+  const contextBackfillColumns = new Set(
+    (db.prepare("PRAGMA table_info(session_context_backfills)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  if (!contextBackfillColumns.has("normalizerVersion")) {
+    db.exec("ALTER TABLE session_context_backfills ADD COLUMN normalizerVersion INTEGER NOT NULL DEFAULT 0");
   }
 
   const deferredPromptColumns = new Set(
