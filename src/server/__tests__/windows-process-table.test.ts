@@ -2,13 +2,17 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WindowsProcessTableReader } from "../windows-process-table.js";
 
-function fixture() {
+function fixture({ autoReady = true }: { autoReady?: boolean } = {}) {
   const worker = Object.assign(new EventEmitter(), {
     postMessage: vi.fn(), ref: vi.fn(), unref: vi.fn(), terminate: vi.fn(async () => 0),
   });
-  const createWorker = vi.fn(() => worker);
+  // The reader subscribes right after createWorker returns, so a queued ready arrives after it listens.
+  const createWorker = vi.fn(() => {
+    if (autoReady) queueMicrotask(() => worker.emit("message", { ready: true }));
+    return worker;
+  });
   const reader = new WindowsProcessTableReader({ createWorker });
-  return { worker, reader, createWorker };
+  return { worker, reader, createWorker, ready: () => worker.emit("message", { ready: true }) };
 }
 const entries = [{ pid: 100, ppid: 1, startMarker: "1000" }];
 afterEach(() => { vi.useRealTimers(); });
@@ -53,7 +57,7 @@ describe("bounded Windows snapshot worker", () => {
     expect(f.worker.terminate).toHaveBeenCalledOnce();
 
     const fresh = fixture();
-    f.createWorker.mockReturnValue(fresh.worker);
+    f.createWorker.mockImplementation(fresh.createWorker);
     const resumed = f.reader.read(20_000);
     f.worker.emit("message", { id: 3, entries });
     fresh.worker.emit("message", { id: 3, entries: [] });
@@ -112,8 +116,42 @@ describe("bounded Windows snapshot worker", () => {
     const read = f.reader.read(20_000);
     f.worker.emit("message", reply);
     await expect(read).rejects.toThrow("malformed reply");
-    expect(f.worker.terminate).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(f.worker.terminate).toHaveBeenCalledOnce());
     await f.reader.shutdown();
+  });
+
+  it("never stops a worker that is still loading koffi and stops it once loaded", async () => {
+    vi.useFakeTimers();
+    const f = fixture({ autoReady: false });
+    const first = f.reader.read(1_000);
+    const timedOut = expect(first).rejects.toThrow("timed out after 1000ms");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await timedOut;
+    expect(f.worker.terminate).not.toHaveBeenCalled();
+
+    const second = f.reader.read(20_000);
+    expect(f.createWorker).toHaveBeenCalledOnce();
+    f.worker.emit("message", { id: 2, entries });
+    await expect(second).resolves.toEqual(entries);
+
+    f.worker.emit("message", {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.worker.terminate).not.toHaveBeenCalled();
+    f.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.worker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("waits for a loading worker before shutting it down", async () => {
+    const f = fixture({ autoReady: false });
+    const read = f.reader.read(20_000);
+    const rejection = expect(read).rejects.toThrow("reader shut down");
+    const shutdown = f.reader.shutdown();
+    await rejection;
+    expect(f.worker.terminate).not.toHaveBeenCalled();
+    f.ready();
+    await shutdown;
+    expect(f.worker.terminate).toHaveBeenCalledOnce();
   });
 
   it("propagates message delivery failure without leaving a pending deadline", async () => {
