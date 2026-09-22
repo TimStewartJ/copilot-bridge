@@ -14,6 +14,7 @@ interface Session {
 const SECTIONS: HomeSection[] = ["overview", "tasks", "inputs", "follow-ups", "actions", "replies"];
 const PAGE_SIZE = 20;
 const OVERVIEW_SIZE = 3;
+const OVERVIEW_ACTIONS = 5;
 type HomeContext = Pick<AppContext, "taskStore" | "taskGroupStore" | "checklistStore" | "readStateStore"> & {
   // SessionManager's public count includes both native asks and elicitations.
   sessionManager: Pick<AppContext["sessionManager"], "getSessionRunState" | "getPendingUserInputCount" | "hydratePendingInteractions" | "readMessagesFromDisk">;
@@ -82,9 +83,9 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
       return [session.sessionId, ref];
     }));
     const sessionById = new Map(visible.map(session => [session.sessionId, session]));
-    function page<T>(items: T[], target: HomeSection): HomePage<T> {
+    function page<T>(items: T[], target: HomeSection, overviewSize = OVERVIEW_SIZE): HomePage<T> {
       const start = target === section ? offset : 0;
-      const limit = target === section ? PAGE_SIZE : OVERVIEW_SIZE;
+      const limit = target === section ? PAGE_SIZE : overviewSize;
       return { items: items.slice(start, start + limit), total: items.length, offset: start, hasMore: items.length > start + limit };
     }
     const taskRows: HomeTask[] = tasks.map(task => {
@@ -125,9 +126,18 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
       .map(task => ({ taskId: task.id, title: task.title, at: task.nextTouchAt!, deferred: task.deferred, nextAction: clip(task.nextAction), waitingOn: clip(task.waitingOn) }));
     const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const allActions = ctx.checklistStore.listAllOpenChecklistItems();
-    const actionRows: HomeAction[] = allActions.filter(item => section === "actions" || (item.deadline && item.deadline <= date))
-      .sort((a, b) => (a.deadline ?? "9999").localeCompare(b.deadline ?? "9999") || a.order - b.order || a.id.localeCompare(b.id))
-      .map(item => ({ id: item.id, taskId: item.taskId, taskTitle: item.taskId ? taskById.get(item.taskId)?.title : undefined, text: section === "actions" ? item.text : clip(item.text, 500)!, deadline: item.deadline }));
+    const actionCounts = { open: allActions.length, overdue: allActions.filter(item => item.deadline && item.deadline < date).length,
+      dueToday: allActions.filter(item => item.deadline === date).length };
+    // Dated items first, soonest first; undated items keep their task's checklist order.
+    const actionRows: HomeAction[] = [...allActions]
+      .sort((a, b) => Number(!a.deadline) - Number(!b.deadline) || (a.deadline ?? "").localeCompare(b.deadline ?? "")
+        || (taskRank.get(a.taskId ?? "") ?? -1) - (taskRank.get(b.taskId ?? "") ?? -1) || a.order - b.order || a.id.localeCompare(b.id))
+      .map(item => {
+        const task = item.taskId ? taskById.get(item.taskId) : undefined;
+        const groupColor = task?.groupId ? groupById.get(task.groupId)?.color : undefined;
+        return { id: item.id, taskId: item.taskId, taskTitle: task?.title, ...(groupColor ? { groupColor } : {}),
+          text: section === "actions" ? item.text : clip(item.text, 500)!, deadline: item.deadline };
+      });
     const readState = ctx.readStateStore.getReadState();
     const seenTasks = new Set<string>();
     const returnSessions = visible.filter(session => ctx.sessionManager.getSessionRunState(session.sessionId) === "idle"
@@ -165,8 +175,8 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
     return { section, tasks: page(section === "tasks" ? taskRows : taskRows.filter(task => !task.deferred), "tasks"),
       deferredTaskTotal: tasks.filter(task => task.deferred).length,
       inputs: { ...inputPage, items: inputRows, total: sourceErrors.length ? null : pending.length - ended },
-      followUps: page(followUps, "follow-ups"), openActionTotal: allActions.length,
-      actions: page(actionRows, "actions"), replies: { ...replyPage, items: replies, total: sourceErrors.length ? null : replyPage.total }, inputErrors, sourceErrors,
+      followUps: page(followUps, "follow-ups"), actionCounts, today: date,
+      actions: page(actionRows, "actions", OVERVIEW_ACTIONS), replies: { ...replyPage, items: replies, total: sourceErrors.length ? null : replyPage.total }, inputErrors, sourceErrors,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }
   return { snapshot };

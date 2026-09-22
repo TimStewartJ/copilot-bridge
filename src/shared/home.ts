@@ -19,7 +19,9 @@ export interface HomeInputSummary extends HomeSessionRef {
   kind: HomeInput["kind"]; requestId: string; question: string; pendingCount: number; requestedAt?: string;
 }
 export interface HomeFollowUp { taskId: string; title: string; at: string; deferred: boolean; nextAction?: string; waitingOn?: string }
-export interface HomeAction { id: string; taskId: string | null; taskTitle?: string; text: string; deadline?: string }
+export interface HomeAction { id: string; taskId: string | null; taskTitle?: string; groupColor?: string; text: string; deadline?: string }
+/** Open checklist counts across every page, measured against the server's local date. */
+export interface HomeActionCounts { open: number; overdue: number; dueToday: number }
 export interface HomeReply extends HomeSessionRef {
   sourceEventId?: string; timestamp?: string; excerpt?: string; error?: string;
 }
@@ -33,6 +35,8 @@ export interface HomeSnapshot {
   replies: HomePage<HomeReply>;
   inputErrors: Array<HomeSessionRef & { error: string }>;
   sourceErrors: string[];
-  openActionTotal: number;
+  actionCounts: HomeActionCounts;
+  /** The server's local date (YYYY-MM-DD) that the deadline counts were measured against. */
+  today: string;
   timezone: string;
 }
