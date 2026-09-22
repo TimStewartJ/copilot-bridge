@@ -1,7 +1,5 @@
 import type {
   SessionContextCapabilities,
-  SessionContextEvent,
-  SessionContextResponse,
   SessionContextSummary,
 } from "../../shared/session-context.js";
 import { AlertTriangle, Gauge } from "lucide-react";
@@ -9,29 +7,24 @@ import { Details, Notice } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import TokenBreakdown from "./usage/TokenBreakdown";
 import {
-  type ChatTurnPreviews,
   CapabilityPill,
   ContextMeter,
   formatTokenValue,
   getSummaryMetrics,
-  getTurnId,
   optionalNumber,
 } from "./SessionContextHelpers";
-import SessionContextGraph from "./SessionContextGraph";
 
 export default function SessionContextPanel({
   capabilities,
-  context,
+  provider,
   error,
   loading,
-  previews,
   summary,
 }: {
   capabilities?: SessionContextCapabilities;
-  context?: SessionContextResponse | null;
+  provider?: string;
   error?: string | null;
   loading?: boolean;
-  previews: ChatTurnPreviews;
   summary?: SessionContextSummary | null;
 }) {
   const metrics = getSummaryMetrics(summary);
@@ -42,18 +35,6 @@ export default function SessionContextPanel({
   const reasoningTokens = optionalNumber(summary?.modelUsage?.reasoningTokens);
   const requests = optionalNumber(summary?.modelUsage?.requests);
   const model = summary?.currentModel;
-  const provider = context?.provider;
-  const turns = context?.turns ?? [];
-  const events = context?.events ?? [];
-  const eventsByTurnId = new Map<string, SessionContextEvent[]>();
-  const knownTurnIds = new Set(turns.map((turn) => getTurnId(turn)).filter((turnId): turnId is string => Boolean(turnId)));
-  for (const event of [...events, ...(context?.turnMeasurements ?? [])]) {
-    const turnId = event.bridgeTurnId ?? undefined;
-    if (!turnId || !knownTurnIds.has(turnId)) continue;
-    const existing = eventsByTurnId.get(turnId) ?? [];
-    existing.push(event);
-    eventsByTurnId.set(turnId, existing);
-  }
 
   return (
     <section className="space-y-2">
@@ -77,14 +58,6 @@ export default function SessionContextPanel({
               {metrics.used !== undefined ? `${formatTokenValue(metrics.used)} used · Window size unavailable` : loading ? "Loading usage..." : "Context usage unavailable"}
             </p>
           )}
-          <SessionContextGraph
-            capabilities={capabilities}
-            events={events}
-            eventsByTurnId={eventsByTurnId}
-            previews={previews}
-            turns={turns}
-            totalTurns={context?.totalTurns}
-          />
           <Details label="Usage details">
             <TokenBreakdown totals={{ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, requests }} />
             <p className={cx(DS.usage.prose, "mt-2")}>
