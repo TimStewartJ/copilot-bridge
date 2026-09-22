@@ -3,8 +3,9 @@ import { Plus } from "lucide-react";
 import type { Task } from "../api";
 import { patchTask } from "../api";
 import { DS, cx } from "../design/tokens";
-import { Badge, Button, Field, FieldList, Notice, Section, TextInput } from "../design/primitives";
+import { Button, DisclosureRow, Field, FieldList, Notice, Section, TextInput } from "../design/primitives";
 import { formatRevisit, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
+import { getTaskLifecycleDisplayState, getTaskStatusLabel } from "../task-completion-helpers";
 import TaskDeferralDialog from "./TaskDeferralDialog";
 
 type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
@@ -26,9 +27,9 @@ interface FieldConfig {
 }
 
 const FIELD_CONFIGS: FieldConfig[] = [
-  { key: "doneWhen", label: "Done when", placeholder: "What will be true when this is finished?", type: "text", actionLabel: "Set done when" },
+  { key: "doneWhen", label: "Done when", placeholder: "What does finished look like?", type: "text", actionLabel: "Set finish line" },
   { key: "nextAction", label: "Next step", placeholder: "What would move this forward?", type: "text", actionLabel: "Add next step" },
-  { key: "waitingOn", label: "Waiting for", placeholder: "A reply, decision, delivery, or other dependency", type: "text", actionLabel: "Set waiting for" },
+  { key: "waitingOn", label: "Waiting for", placeholder: "A reply, delivery, or prerequisite", type: "text", actionLabel: "Add a wait" },
   { key: "nextTouchAt", label: "Revisit on", placeholder: "When would you like to check back?", type: "datetime-local", actionLabel: "Set revisit date" },
 ];
 
@@ -55,7 +56,24 @@ export function isExpandablePanelValue(value: string): boolean {
   return value.length > PANEL_EXPAND_THRESHOLD || /\r?\n/.test(value);
 }
 
-export default function TaskMomentumFields({
+export function getTaskContextSummary(task: Task): string {
+  if (getTaskLifecycleDisplayState(task) !== "active") return getTaskStatusLabel(task);
+  const revisit = task.nextTouchAt ? `Revisit ${new Date(task.nextTouchAt).toLocaleDateString(undefined, {
+    month: "short", day: "numeric", year: "numeric",
+  })}` : undefined;
+  if (task.deferred) return revisit ? `Deferred · ${revisit}` : "Deferred";
+  if (task.nextAction?.trim()) return `Next: ${task.nextAction.trim().replace(/\s+/g, " ")}`;
+  if (task.waitingOn?.trim()) return `Waiting for: ${task.waitingOn.trim().replace(/\s+/g, " ")}`;
+  if (revisit) return revisit;
+  if (task.kind !== "ongoing" && task.doneWhen?.trim()) return `Done when: ${task.doneWhen.trim().replace(/\s+/g, " ")}`;
+  return "No next step set";
+}
+
+export default function TaskMomentumFields(props: TaskMomentumFieldsProps) {
+  return <TaskMomentumEditor key={props.task.id} {...props} />;
+}
+
+function TaskMomentumEditor({
   task,
   onSaved,
   onPatched,
@@ -67,6 +85,8 @@ export default function TaskMomentumFields({
   const [expandedFields, setExpandedFields] = useState<Set<MomentumFieldKey>>(() => new Set());
   const [deferralOpen, setDeferralOpen] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const summary = getTaskContextSummary({ ...task, ...values, nextTouchAt: task.nextTouchAt });
 
   useEffect(() => {
     const next = toFieldValues(task);
@@ -165,8 +185,13 @@ export default function TaskMomentumFields({
   return (
     <><Section label="Where things stand" surface action={task.status === "active" ? <Button size="sm" variant="ghost"
       disabled={!!savingField} onClick={() => setDeferralOpen(true)}>{task.deferred ? "Resume task" : "Defer task"}</Button> : undefined}>
-      {task.deferred && <div className="mb-3 space-y-2"><Badge>Deferred</Badge><p className={DS.text.prose}>Set aside from Continue working until you resume it. A revisit date brings it back for review only.</p></div>}
       {saveError && <Notice tone="danger" title="The change was not saved">{saveError}</Notice>}
+      <DisclosureRow
+        label={<span className={cx(DS.row.touch, "flex items-center")}><span className="truncate">{summary}</span></span>}
+        title={summary}
+        expanded={expanded}
+        onToggle={setExpanded}
+      >
       {visiblePanelFields.length > 0 && (
         <FieldList>
           {visiblePanelFields.map((field) => {
@@ -265,8 +290,9 @@ export default function TaskMomentumFields({
           ))}
         </div>
       )}
-      <p className={cx(DS.text.meta, "mt-3")}>Optional context for when you return. Waiting does not mean all work is blocked.</p>
-      {(values.nextTouchAt || editingField === "nextTouchAt") && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>A revisit adds this active, unmuted task to Home when the time arrives. It is not a deadline and does not start work or send a notification.</p>}
+      {editingField === "waitingOn" && <p className={cx(DS.text.meta, "mt-2")}>A wait need not block other work.</p>}
+      {editingField === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows on Home when due, unless muted. No notification or automatic start.</p>}
+      </DisclosureRow>
     </Section>{deferralOpen && <TaskDeferralDialog task={task} onClose={() => setDeferralOpen(false)} onSaved={updated => { onPatched?.(updated); onSaved?.(); }} />}</>
   );
 }

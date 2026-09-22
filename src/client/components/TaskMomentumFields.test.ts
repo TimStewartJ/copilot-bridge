@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../api";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../test-react-harness";
-import TaskMomentumFields from "./TaskMomentumFields";
+import TaskMomentumFields, { getTaskContextSummary } from "./TaskMomentumFields";
 
 const patchTaskMock = vi.hoisted(() => vi.fn());
 vi.mock("../api", () => ({ patchTask: patchTaskMock }));
@@ -23,11 +23,62 @@ describe("TaskMomentumFields design migration", () => {
     harness = null;
   });
 
-  async function render(task: Task, onPatched = vi.fn()) {
+  function disclosure(container: ReactDomHarness["dom"]["container"]) {
+    return findAllByTag(container, "BUTTON").find(button => typeof getReactProps(button)?.["aria-expanded"] === "boolean");
+  }
+  async function render(task: Task, onPatched = vi.fn(), expand = true) {
     harness ??= await createReactDomHarness();
     await harness.render(createElement(TaskMomentumFields, { task, onPatched }));
+    const toggle = disclosure(harness.dom.container);
+    if (expand && !getReactProps(toggle)?.["aria-expanded"]) {
+      await harness.act(async () => getReactProps(toggle)!.onClick());
+    }
     return harness.dom.container;
   }
+
+  it("starts collapsed with one context summary and keeps Defer reachable", async () => {
+    const container = await render(createTask({ nextAction: "Review the quotes", waitingOn: "The dealer" }), vi.fn(), false);
+    expect(container.textContent).toContain("Where things stand");
+    expect(container.textContent).toContain("Next: Review the quotes");
+    expect(container.textContent).not.toContain("The dealer");
+    expect(container.textContent).toContain("Defer task");
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
+    expect(findAllByTag(container, "DL")).toHaveLength(0);
+    await harness!.act(async () => getReactProps(disclosure(container))!.onClick());
+    expect(container.textContent).toContain("The dealer");
+    expect(findAllByTag(container, "DL")).toHaveLength(1);
+  });
+
+  it.each([
+    [{ deferred: true, nextAction: "Hidden next step" }, "Deferred"],
+    [{ nextAction: "Read\n the reply", waitingOn: "Approval" }, "Next: Read the reply"],
+    [{ waitingOn: "A reply" }, "Waiting for: A reply"],
+    [{ doneWhen: "Changes approved" }, "Done when: Changes approved"],
+    [{ kind: "ongoing" as const, doneWhen: "Never show this" }, "No next step set"],
+    [{ status: "archived" as const }, "Archived"],
+    [{ status: "archived" as const, completedAt: "2026-01-01T00:00:00Z" }, "Completed"],
+  ])("summarizes recorded context without inventing a task state: %j", (overrides, summary) => {
+    expect(getTaskContextSummary(createTask(overrides))).toBe(summary);
+  });
+
+  it("includes the recorded revisit date in a deferred summary", () => {
+    const nextTouchAt = "2030-05-02T10:30:00.000Z";
+    const date = new Date(nextTouchAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    expect(getTaskContextSummary(createTask({ deferred: true, nextTouchAt }))).toBe(`Deferred · Revisit ${date}`);
+  });
+
+  it("stays open after saves and same-task updates, but closes when switching tasks", async () => {
+    const task = createTask({ nextAction: "Read" });
+    const container = await render(task);
+    await render({ ...task, nextAction: "Review" }, vi.fn(), false);
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(true);
+    expect(container.textContent).toContain("Next: Review");
+    await render({ ...task, id: "other-task", nextAction: "Different task" }, vi.fn(), false);
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
+    expect(findAllByTag(container, "DL")).toHaveLength(0);
+    await render(task, vi.fn(), false);
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
+  });
 
   it("keeps add/edit/autosave working in a field list", async () => {
     const task = createTask();
@@ -44,6 +95,8 @@ describe("TaskMomentumFields design migration", () => {
     await harness!.act(async () => getReactProps(input)?.onBlur?.());
     expect(patchTaskMock).toHaveBeenCalledExactlyOnceWith(task.id, { nextAction: "Validate the preview" });
     expect(onPatched).toHaveBeenCalledExactlyOnceWith(updated);
+    await render(updated, onPatched, false);
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(true);
     expect(container.textContent).toContain("Validate the preview");
     expect(findAllByTag(container, "INPUT")).toHaveLength(0);
   });
@@ -85,13 +138,37 @@ describe("TaskMomentumFields design migration", () => {
     try {
       patchTaskMock.mockRejectedValue(new Error("Save failed"));
       const container = await render(createTask());
-      const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Set waiting for");
+      const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Add a wait");
       await harness!.act(async () => getReactProps(add)!.onClick());
       const input = findAllByTag(container, "INPUT")[0];
       await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: "Delivery confirmation" } }));
       await harness!.act(async () => getReactProps(input)!.onBlur());
       expect(container.textContent).toContain("The change was not saved");
       expect(getReactProps(findAllByTag(container, "INPUT")[0])!.value).toBe("Delivery confirmation");
+    } finally { errorLog.mockRestore(); }
+  });
+
+  it("keeps a save failure visible when collapsed and restores its draft on reopening", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    let rejectSave: ((error: Error) => void) | undefined;
+    patchTaskMock.mockReturnValue(new Promise<Task>((_resolve, reject) => { rejectSave = reject; }));
+    try {
+      const container = await render(createTask({ nextAction: "Original step" }));
+      const edit = findAllByTag(container, "BUTTON").find(button => getReactProps(button)?.["aria-label"] === "Edit Next step");
+      await harness!.act(async () => getReactProps(edit)!.onClick());
+      const input = findAllByTag(container, "INPUT")[0];
+      await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: "Unsaved step" } }));
+      await harness!.act(async () => {
+        getReactProps(input)!.onBlur();
+        getReactProps(disclosure(container))!.onClick();
+      });
+      expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
+      await harness!.act(async () => { rejectSave!(new Error("Offline")); });
+      expect(container.textContent).toContain("The change was not saved");
+      expect(container.textContent).toContain("Offline");
+      expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
+      await harness!.act(async () => getReactProps(disclosure(container))!.onClick());
+      expect(getReactProps(findAllByTag(container, "INPUT")[0])!.value).toBe("Unsaved step");
     } finally { errorLog.mockRestore(); }
   });
 

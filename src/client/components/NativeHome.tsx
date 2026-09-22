@@ -16,7 +16,7 @@ import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefr
 import TaskDeferralDialog, { type DeferralTask } from "./TaskDeferralDialog";
 
 const SECTIONS: HomeSection[] = ["overview", "tasks", "inputs", "follow-ups", "actions", "replies"];
-const LABELS: Record<HomeSection, string> = { overview: "Home", tasks: "Your tasks", inputs: "Questions for you", "follow-ups": "Ready to revisit", actions: "Checklist", replies: "New from your conversations" };
+const LABELS: Record<HomeSection, string> = { overview: "Home", tasks: "Your tasks", inputs: "Needs your answer", "follow-ups": "Ready to revisit", actions: "Checklist", replies: "New replies" };
 const ROW = "min-w-0 border-t border-border py-4";
 interface Props {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
@@ -72,7 +72,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
       </div>;
   }
   const questions = data && <Section label="Needs your answer" surface action={more(data.inputs, "inputs")}>
-    <p className={DS.text.prose}>One question per waiting conversation. Open the conversation to see any others.</p>
+    {data.inputs.items.length > 0 && <p className={DS.text.prose}>One question per conversation.</p>}
     {data.inputs.items.map(item => <div key={`${item.sessionId}/${item.kind}/${item.requestId}`} className={ROW}>
       <div className="flex items-start gap-3"><MessageCircle size={17} className={cx(DS.text.attention, "mt-1 shrink-0")} />
         <div className="min-w-0 flex-1"><p className={cx(DS.text.content, "line-clamp-3")}>{item.question}</p>
@@ -80,10 +80,10 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
       <div className="mt-3 flex gap-2"><Button size="sm" onClick={() => setOpenInput(item)}>Answer</Button><Button size="sm" variant="ghost" onClick={() => onSelectSession(item.sessionId, item.taskId)}>Open conversation</Button></div>
     </div>)}
     {data.inputErrors.map(item => <Notice key={item.sessionId} tone="warning" title="Question status unavailable">{item.title}: {item.error}<Button variant="ghost" onClick={() => onSelectSession(item.sessionId, item.taskId)}>Open conversation</Button></Notice>)}
-    {!data.inputs.items.length && !data.inputErrors.length && <EmptyHint>{data.inputs.total === null ? "Question sources could not be fully read." : "No live questions on this page."}</EmptyHint>}
+    {!data.inputs.items.length && !data.inputErrors.length && <EmptyHint>{data.inputs.total === null ? "Question status unavailable." : "No questions on this page."}</EmptyHint>}
   </Section>;
   const followUps = data && <Section label="Ready to revisit" surface action={more(data.followUps, "follow-ups")}>
-    <p className={DS.text.prose}>Dates you chose to check back, not deadlines or automatic restarts.</p>
+    {data.followUps.items.length > 0 && <p className={DS.text.prose}>Revisit dates, not deadlines.</p>}
     {data.followUps.items.map(item => <div key={item.taskId} className={ROW}>
       <button className={cx(DS.text.content, DS.focus, "text-left font-medium")} onClick={() => onSelectTask(item.taskId)}>{item.title}</button>
       <p className={cx(DS.text.meta, "mt-1")}>{new Date(item.at).toLocaleString(undefined, { timeZone: data.timezone })} · {data.timezone}</p>
@@ -92,10 +92,10 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
       <div className="mt-2 flex flex-wrap gap-2"><Button variant="ghost" size="sm" onClick={() => onSelectTask(item.taskId)}>Review task <ArrowRight size={14} /></Button>
         {item.deferred && <Button variant="ghost" size="sm" onClick={() => setDeferralTask({ id: item.taskId, title: item.title, deferred: item.deferred, nextTouchAt: item.at })}>Resume task</Button>}</div>
     </div>)}
-    {!data.followUps.items.length && <EmptyHint>No revisit dates have arrived on this page.</EmptyHint>}
+    {!data.followUps.items.length && <EmptyHint>Nothing to revisit on this page.</EmptyHint>}
   </Section>;
   const actions = data && <Section label={section === "actions" ? "Your checklist" : "Checklist deadlines"} surface action={more(data.actions, "actions")}>
-    {section === "overview" && <p className={DS.text.prose}>{data.openActionTotal} open items across your tasks and global checklist. Only due deadlines appear here.</p>}
+    {section === "overview" && <p className={DS.text.prose}>{data.openActionTotal} open items · Showing due items</p>}
     {data.actions.items.map(item => <div key={item.id} className={cx(ROW, "flex gap-3")}>
       {section !== "actions" && (item.text.length > 160 || item.text.includes("\n"))
         ? <Button size="sm" aria-label={`Read checklist item: ${item.text.slice(0, 80)}`} onClick={() => item.taskId ? onSelectTask(item.taskId, { checklistItemId: item.id }) : visit("actions")}>Read</Button>
@@ -104,11 +104,11 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
         <p className={cx(DS.text.meta, "mt-1")}>{item.taskTitle ?? "Global checklist"}{item.deadline ? ` · Due ${item.deadline}` : ""}</p>
         {item.taskId && <Button size="sm" variant="ghost" onClick={() => onSelectTask(item.taskId!, { checklistItemId: item.id })}>Open task</Button>}</div>
     </div>)}
-    {!data.actions.items.length && <EmptyHint>{section === "actions" ? "No open checklist items on this page." : "No checklist deadlines are due. Undated items remain in your checklist."}</EmptyHint>}
+    {!data.actions.items.length && <EmptyHint>{section === "actions" ? "No open items on this page." : "No deadlines due. View all for other items."}</EmptyHint>}
   </Section>;
   const tasks = data && <Section label={section === "tasks" ? "Your tasks" : "Continue working"} level="page" surface action={more(data.tasks, "tasks")}>
-    <p className={DS.text.prose}>{section === "tasks" ? "All active, unmuted tasks, including those you set aside." : "Tasks you have not deferred, with any next step you recorded."}</p>
-    {data.deferredTaskTotal > 0 && <p className={cx(DS.text.meta, "mt-2")}>{data.deferredTaskTotal} deferred {data.deferredTaskTotal === 1 ? "task is" : "tasks are"} available in View all tasks. Muted tasks remain in the task list.</p>}
+    {section === "tasks" && <p className={DS.text.prose}>Includes deferred tasks. Muted tasks stay in your task list.</p>}
+    {data.deferredTaskTotal > 0 && <p className={cx(DS.text.meta, "mt-2")}>{data.deferredTaskTotal} deferred {data.deferredTaskTotal === 1 ? "task" : "tasks"}{section === "overview" ? " in View all tasks" : ""}.</p>}
     {data.tasks.items.map(task => <div key={task.id} className={ROW}>
       <div className="flex items-start justify-between gap-3"><div className="min-w-0">
         <div className="flex items-center gap-2">{task.groupColor && <span className={cx("h-2 w-2 shrink-0 rounded-sm", GROUP_COLOR_DOT[task.groupColor] ?? GROUP_COLOR_DOT.slate)} />}
@@ -124,10 +124,10 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
         {task.sessionId && <Button size="sm" variant="ghost" onClick={() => onSelectSession(task.sessionId!, task.id)}>Continue conversation <ArrowRight size={14} /></Button>}
         {task.deferred && <Button size="sm" variant="ghost" onClick={() => setDeferralTask(task)}>Resume task</Button>}</div>
     </div>)}
-    {!data.tasks.items.length && <EmptyHint>{section === "tasks" ? "No active, unmuted tasks on this page." : "No tasks to continue on this page. Deferred tasks remain in View all tasks."} Archived work remains in the task list.</EmptyHint>}
+    {!data.tasks.items.length && <EmptyHint>{section === "tasks" ? "No active, unmuted tasks on this page." : "Nothing to continue here. View all tasks to find deferred work."}</EmptyHint>}
   </Section>;
-  const replies = data && <Section label="New from your conversations" level="page" surface action={more(data.replies, "replies")}>
-    <p className={DS.text.prose}>{section === "replies" ? "All unread conversations" : "The latest unread conversation per task"}, not a claim that work is complete.</p>
+  const replies = data && <Section label="New replies" level="page" surface action={more(data.replies, "replies")}>
+    {data.replies.items.length > 0 && <p className={DS.text.prose}>{section === "replies" ? "All unread conversations." : "Latest unread conversation per task."}</p>}
     {data.replies.items.map(reply => <div key={reply.sessionId} className={ROW}>
       <p className={cx(DS.text.content, "font-medium")}>{reply.taskTitle ?? reply.title}</p>
       <p className={cx(reply.excerpt ? DS.text.content : DS.text.prose, "mt-2 line-clamp-3")}>{reply.excerpt ? formatSearchExcerpt(reply.excerpt) : reply.error}</p>
@@ -136,36 +136,36 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
         ? navigate(`${getSessionPath({ sessionId: reply.sessionId, taskId: reply.taskId })}?message=${encodeURIComponent(reply.sourceEventId)}`)
         : onSelectSession(reply.sessionId, reply.taskId)}>Open {reply.sourceEventId ? "reply" : "conversation"} <ArrowRight size={14} /></Button>
     </div>)}
-    {!data.replies.items.length && <EmptyHint>{data.replies.total === null ? "Conversation sources could not be fully read." : "No unread conversation returns on this page."}</EmptyHint>}
+    {!data.replies.items.length && <EmptyHint>{data.replies.total === null ? "Conversation status unavailable." : "No unread replies on this page."}</EmptyHint>}
   </Section>;
   return <div className="flex-1 min-h-0 relative"><PullToRefresh className="absolute inset-0" scrollRestoration={scrollRestoration} onRefresh={async () => { await query.refetch(); }}>
     <div className={cx(DS.layout.pageColumn, "max-w-6xl space-y-7")}>
       <header className="flex items-start justify-between gap-4"><div>
         {section !== "overview" && <Button variant="ghost" size="sm" onClick={() => visit("overview")}><ChevronLeft size={14} />Home</Button>}
         <h1 className="text-2xl font-semibold tracking-tight text-text-primary">{section === "overview" ? "Pick up where you left off." : LABELS[section]}</h1>
-        <p className={cx(DS.text.prose, "mt-2")}>Your tasks, conversations, and next steps. Nothing to manage twice.</p>
+        {section === "overview" && <p className={cx(DS.text.prose, "mt-2")}>Tasks, conversations and next steps.</p>}
       </div><Button variant="ghost" aria-label="Refresh Home" onClick={() => void query.refetch()}><RefreshCw size={16} /></Button></header>
-      {query.error && <Notice tone="warning" title="Home could not refresh">{query.error.message} {data && "Showing the last successful read."}</Notice>}
+      {query.error && <Notice tone="warning" title="Couldn't refresh">{query.error.message} {data && "Showing saved results."}</Notice>}
       {mutationError && <Notice tone="danger" title="The change was not saved">{mutationError}</Notice>}
-      {data?.sourceErrors.map(error => <Notice key={error} tone="warning" title="Partial source information">{error}</Notice>)}
-      {!data ? <EmptyHint>{query.error ? "Source data is unavailable, not empty." : "Loading your tasks and conversations…"}</EmptyHint> : section === "overview"
+      {data?.sourceErrors.map(error => <Notice key={error} tone="warning" title="Some information is unavailable">{error}</Notice>)}
+      {!data ? <EmptyHint>{query.error ? "Home is unavailable. Try refreshing." : "Loading Home…"}</EmptyHint> : section === "overview"
         ? <div className="grid items-start gap-7 xl:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)]">
           <div className="min-w-0 space-y-7">{(data.inputs.items.length > 0 || data.inputErrors.length > 0) && <div className="xl:hidden">{questions}</div>}{tasks}{replies}</div>
           <div className="min-w-0 space-y-7"><div className={data.inputs.items.length > 0 || data.inputErrors.length > 0 ? "hidden xl:block" : undefined}>{questions}</div>{followUps}{actions}</div>
         </div>
         : <div className="space-y-7">{section === "tasks" ? tasks : section === "inputs" ? questions : section === "follow-ups" ? followUps : section === "actions" ? actions : replies}</div>}
-      <footer className={cx(DS.text.meta, "flex flex-wrap items-center gap-2")}><Clock3 size={13} />Home reads the same sources as your tasks and chats.{data && ` Dates assessed in ${data.timezone}.`}
+      <footer className={cx(DS.text.meta, "flex flex-wrap items-center gap-2")}><Clock3 size={13} />{data && `Dates: ${data.timezone}`}
         <Button size="sm" variant="ghost" onClick={() => navigate("/dashboard/archive")}>Previous dashboard records</Button></footer>
     </div>
   </PullToRefresh>{currentDeferralTask && <TaskDeferralDialog task={currentDeferralTask}
     onClose={() => setDeferralTask(undefined)} />}
-  {openInput && <Dialog title="Answer in this conversation"
+  {openInput && <Dialog title="Answer question"
     description={`${openInput.taskTitle ?? "Standalone conversation"} · ${openInput.title}`}
     pending={pending} onClose={() => setOpenInput(undefined)}>
-    {!answerable && !inputQuery.isPending && <Notice title="This question cannot currently be verified as answerable">Open the conversation to check its current state. It may have been answered or ended, or Home may be unable to refresh. Your draft is retained, but no answer is being sent.
+    {!answerable && !inputQuery.isPending && <Notice title="Question unavailable">It may have ended, or Home couldn't refresh. Your draft is retained here; nothing was sent.
       <Button onClick={() => onSelectSession(openInput.sessionId, openInput.taskId)}>Open conversation</Button></Notice>
     }
-    {!input && inputQuery.isPending && <EmptyHint>Loading the native question…</EmptyHint>}
+    {!input && inputQuery.isPending && <EmptyHint>Loading question…</EmptyHint>}
     {input && <fieldset disabled={!answerable} aria-disabled={!answerable}>
       {input.kind === "user_input" ? <UserInputQuestionCard key={input.request.requestId} request={input.request} onSubmit={async (id, value) => {
         if (!answerable) throw new Error("The native question is not currently verified as answerable. Open its conversation.");

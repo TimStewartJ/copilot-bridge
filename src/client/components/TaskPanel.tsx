@@ -379,19 +379,11 @@ export default function TaskPanel({
     && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
   const completionDisabled = !showCompletionButton || isUpdatingCompletion;
   const completionDescription = currentTask.kind === "ongoing"
-    ? "Ongoing tasks stay active and cannot be completed."
+    ? "No fixed finish line."
     : completionState.ctaDescription;
   const showCompletionDetails = completionState.ctaState !== "archived";
   const showMomentumFields = completionState.ctaState !== "archived";
-  // The finish line is shown just below, so the note does not repeat it.
-  const doneWhenShownBelow = showMomentumFields && currentTask.kind !== "ongoing" && Boolean(currentTask.doneWhen);
-  const completionNote = !doneWhenShownBelow
-    ? completionDescription
-    : completionState.ctaState === "ready"
-      ? "No open checklist items, busy sessions, or unresolved PRs"
-      : completionState.ctaState === "completed"
-        ? "Task already completed"
-        : completionDescription;
+  const completionNote = completionDescription;
   const handleCompletionAction = async () => {
     if (completionDisabled) return;
     const requestedTaskId = task.id;

@@ -50,18 +50,18 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
   return <Dialog title={initial.deferred ? "Resume task" : "Defer task"} description={task.title} pending={pending} onClose={onClose}>
     <form className="space-y-4" onSubmit={event => { event.preventDefault(); void save(); }}>
       <p className={DS.text.prose}>{initial.deferred
-        ? "Return this task to Continue working. Keep, change or clear its revisit date."
-        : "Set this task aside from Continue working without archiving or muting it. It stays in your task list."}</p>
+        ? "Return to Continue working."
+        : "Hide from Continue working, not your task list. Nothing is archived or muted."}</p>
       <FormRow label="Revisit on (optional)" htmlFor={dateId}>
         <TextInput id={dateId} type="datetime-local" value={date} disabled={pending}
           aria-describedby={`${dateId}-help`}
           onChange={event => setDate(event.target.value)} />
       </FormRow>
-      <p id={`${dateId}-help`} className={DS.text.prose}>Leave blank for no revisit date. A date brings the task back for review, not automatic resumption or execution.</p>
+      <p id={`${dateId}-help`} className={DS.text.prose}>Optional review date. No automatic resume or start.</p>
       {date && <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => setDate("")}>Clear revisit date</Button>}
-      {revisitsNow && <Notice title="Ready to revisit">This date has already arrived, so the task will remain in Home's revisit list. Change or clear it if you want to set the task aside until later.</Notice>}
-      <p className={DS.text.prose}>Schedules, running sessions and session defer jobs are not paused. Questions, new replies and checklist deadlines keep their usual visibility.</p>
-      {stale && <Notice title="Task changed">The task or its deferral/revisit date changed while this dialog was open. Your draft is still here, but closing discards it. Close and reopen to review the current task before saving.</Notice>}
+      {revisitsNow && <Notice title="Date already reached">This task will still appear in Ready to revisit. Change or clear the date to review it later.</Notice>}
+      <p className={DS.text.prose}>Sessions, schedules and deferred jobs keep running. Questions, replies and deadlines keep their usual visibility.</p>
+      {stale && <Notice title="Task changed">Reopen to review its current state. Closing discards this draft; nothing has been saved.</Notice>}
       {error && <Notice tone="danger" title="The change was not saved">{error}</Notice>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>Cancel</Button>
