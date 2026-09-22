@@ -133,6 +133,9 @@ export function enumerateWindowsProcessTable(api: WindowsProcessTableApi): Windo
 if (parentPort && workerData?.[WINDOWS_PROCESS_TABLE_WORKER_FLAG] === true) {
   const port = parentPort;
   const api = loadWindowsProcessTableApi();
+  // The reader must not stop this thread until koffi has loaded; see windows-process-table.ts.
+  const reportReady = () => port.postMessage({ ready: true });
+  void api.then(reportReady, reportReady);
   port.on("message", ({ id }: { id: number }) => {
     void api.then((loaded) => {
       const entries = enumerateWindowsProcessTable(loaded);
