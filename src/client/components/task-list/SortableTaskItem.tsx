@@ -96,7 +96,10 @@ export default function SortableTaskItem({
             {task.title}
           </span>
           <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
-          {primarySignal && (
+          {primarySignal && isRail && primarySignal.status === "working" ? (
+            // The spinner says "working" by itself, so the narrow rail gives the title its width.
+            <StatusIcon kind="working" label={primarySignal.label} className="mr-0.5" />
+          ) : primarySignal && (
             <span
               className={cx(DS.badge.base, DS.badge.tone[SIGNAL_TONE[primarySignal.tone]])}
               title={primarySignal.label}
