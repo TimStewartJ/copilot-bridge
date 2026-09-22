@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { DS, cx } from "../../design/tokens";
 import { StatusIcon } from "../../design/primitives";
 
@@ -26,6 +27,8 @@ interface UnreadTaskEdgePillProps {
   edge: UnreadTaskEdge;
   direction: "above" | "below";
   onJump: (taskId: string) => void;
+  /** The surface behind the list, so rows fade into it under the control. */
+  fade?: keyof typeof DS.surface.edgeFade;
 }
 
 const EMPTY_EDGE: UnreadTaskEdge = { count: 0, targetTaskId: null };
@@ -231,28 +234,29 @@ function formatUnreadLabel(count: number): string {
   return `${count} unread`;
 }
 
-export function UnreadTaskEdgePill({ edge, direction, onJump }: UnreadTaskEdgePillProps) {
+export function UnreadTaskEdgePill({ edge, direction, onJump, fade = "pane" }: UnreadTaskEdgePillProps) {
   if (edge.count === 0 || !edge.targetTaskId) return null;
   const isAbove = direction === "above";
-  const label = isAbove
-    ? `↑ ${formatUnreadLabel(edge.count)} above`
-    : `${formatUnreadLabel(edge.count)} below ↓`;
-  const directionLabel = isAbove ? "above" : "below";
+  const Arrow = isAbove ? ArrowUp : ArrowDown;
 
   return (
     <div
-      className={`sticky ${isAbove ? "top-1" : "bottom-1"} z-20 flex h-0 justify-center pointer-events-none`}
-      data-testid={`unread-tasks-${directionLabel}`}
+      className={cx("sticky z-20 h-0", isAbove ? "top-0" : "bottom-0")}
+      data-testid={`unread-tasks-${direction}`}
     >
-      <button
-        type="button"
-        aria-label={`Jump to ${formatUnreadLabel(edge.count)} ${directionLabel}`}
-        onClick={() => onJump(edge.targetTaskId!)}
-        className={cx("pointer-events-auto", DS.surface.floatingPill, DS.focus, isAbove ? "-translate-y-1/2" : "-translate-y-full")}
-      >
-        <StatusIcon kind="unread" decorative />
-        {label}
-      </button>
+      <div className={cx(DS.surface.edgeBand, DS.surface.edgeFade[fade][direction])}>
+        <button
+          type="button"
+          aria-label={`Jump to ${formatUnreadLabel(edge.count)} ${direction}`}
+          title={`${formatUnreadLabel(edge.count)} ${direction}`}
+          onClick={() => onJump(edge.targetTaskId!)}
+          className={cx(DS.surface.edgeJump, DS.focus)}
+        >
+          <StatusIcon kind="unread" decorative />
+          {edge.count} new
+          <Arrow size={12} aria-hidden="true" className="text-text-secondary" />
+        </button>
+      </div>
     </div>
   );
 }
