@@ -1,11 +1,63 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { isPathAtOrUnder } from "../path-utils.js";
-import { makeTestDir, makeTestRuntimePaths, withTestEnv } from "./helpers.js";
+import { makeTestDir, makeTestRuntimePaths, registerTestAppCleanup, withTestEnv } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 
 describe("test helper runtime isolation", () => {
+  it("joins cleanup already started by a test instead of acknowledging it early", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const stop = vi.fn(() => gate);
+    const cleanup = registerTestAppCleanup(stop);
+    const first = cleanup();
+    try {
+      const second = cleanup();
+      expect(second).toBe(first);
+      let finished = false;
+      void second.then(() => { finished = true; });
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      finish();
+      await second;
+      expect(finished).toBe(true);
+      expect(cleanup()).toBe(first);
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      finish();
+      await first;
+    }
+  });
+
+  it("keeps in-flight cleanup registered until files can be removed", () => {
+    const dir = makeTestDir("cleanup-in-flight");
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const cleanup = registerTestAppCleanup(async () => {
+      await gate;
+      expect(existsSync(dir)).toBe(true);
+    });
+    const result = cleanup().then(() => undefined, (error: unknown) => error);
+    setImmediate(finish);
+    onTestFinished(async () => {
+      expect(await result).toBeUndefined();
+      expect(existsSync(dir)).toBe(false);
+    });
+  });
+
+  it("shares cleanup failures with every caller", async () => {
+    const failure = new Error("owned runtime did not stop");
+    const stop = vi.fn(async () => { throw failure; });
+    const cleanup = registerTestAppCleanup(stop);
+    const first = cleanup();
+    const second = cleanup();
+    await expect(first).rejects.toBe(failure);
+    await expect(second).rejects.toBe(failure);
+    await expect(cleanup()).rejects.toBe(failure);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("cleans tracked temp directories after each test", () => {
     const dir = makeTestDir("cleanup");
     writeFileSync(join(dir, "marker.txt"), "ok");
