@@ -104,4 +104,10 @@ describe("TaskMomentumFields design migration", () => {
     expect(container.textContent).not.toContain("overdue");
     expect(container.textContent).toContain("Waiting for");
   });
+  it("does not offer deferral on a completed and archived task", async () => {
+    const container = await render(createTask({ status: "archived", completedAt: "2026-01-01T00:00:00Z", doneWhen: "Delivered" }));
+    expect(container.textContent).toContain("Delivered");
+    expect(container.textContent).not.toContain("Defer task");
+    expect(container.textContent).not.toContain("Resume task");
+  });
 });
