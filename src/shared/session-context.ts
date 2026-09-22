@@ -92,6 +92,37 @@ export interface SessionContextEvent {
   metadata: Record<string, unknown> | null;
 }
 
+/**
+ * Copilot SDK infinite-session defaults (InfiniteSessionConfig): background compaction starts at
+ * 80% of the window and the session waits for it at 95%. Bridge does not override them for chats.
+ */
+export const SESSION_CONTEXT_COMPACTION_THRESHOLDS = { background: 0.8, blocking: 0.95 } as const;
+
+/** What the window held at one reading, as the runtime split it. */
+export interface SessionContextBreakdown {
+  observedAt: string;
+  tokensUsed: number | null;
+  systemTokens: number | null;
+  toolDefinitionsTokens: number | null;
+  conversationTokens: number | null;
+}
+
+export interface SessionContextCompactionRecord {
+  occurredAt: string;
+  preCompactionTokens: number | null;
+  postCompactionTokens: number | null;
+  /** `threshold` for the automatic 80% run, `context_limit_retry` when the window overflowed. */
+  trigger: string | null;
+}
+
+/** Derived readings for the context panel, computed from the stored event history. */
+export interface SessionContextInsights {
+  breakdown: SessionContextBreakdown | null;
+  lastCompaction: SessionContextCompactionRecord | null;
+  /** Latest prompt-cache expiry the main agent reported. */
+  cacheExpiresAt: string | null;
+}
+
 export interface SessionContextResponse {
   provider: string;
   summary: SessionContextSummary | null;
@@ -100,4 +131,5 @@ export interface SessionContextResponse {
   turnMeasurements?: SessionContextEvent[];
   totalTurns?: number;
   capabilities: SessionContextCapabilities;
+  insights?: SessionContextInsights;
 }
