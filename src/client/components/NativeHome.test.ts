@@ -8,8 +8,9 @@ const api = vi.hoisted(() => ({ fetchHome: vi.fn(), fetchHomeInput: vi.fn(), pat
 vi.mock("../api", () => api);
 vi.mock("./PullToRefresh", () => ({ default: ({ children }: { children: unknown }) => children }));
 import NativeHome from "./NativeHome";
+import { CHECKLIST_UNDO_MS, describeDeadline } from "./HomeChecklist";
 const emptyPage = () => ({ items: [], total: 0, offset: 0, hasMore: false });
-const empty = (): HomeSnapshot => ({ section: "overview", tasks: emptyPage(), deferredTaskTotal: 0, inputs: emptyPage(), followUps: emptyPage(), actions: emptyPage(), replies: emptyPage(), inputErrors: [], sourceErrors: [], openActionTotal: 0, timezone: "UTC" });
+const empty = (): HomeSnapshot => ({ section: "overview", tasks: emptyPage(), deferredTaskTotal: 0, inputs: emptyPage(), followUps: emptyPage(), actions: emptyPage(), replies: emptyPage(), inputErrors: [], sourceErrors: [], actionCounts: { open: 0, overdue: 0, dueToday: 0 }, today: "2026-09-22", timezone: "UTC" });
 describe("Home within native Bridge", () => {
   let harness: DialogTestHarness;
   const selectTask = vi.fn(), selectSession = vi.fn();
@@ -67,9 +68,52 @@ describe("Home within native Bridge", () => {
   it("completes the original checklist item through its existing endpoint", async () => {
     const snapshot = empty();
     snapshot.actions = { items: [{ id: "original-action", taskId: null, text: "Accepted global item" }], total: 1, offset: 0, hasMore: false };
+    snapshot.actionCounts = { open: 1, overdue: 0, dueToday: 0 };
     api.fetchHome.mockResolvedValue(snapshot); api.patchChecklistItem.mockResolvedValue({});
     await render(); await click("Complete Accepted global item");
     expect(api.patchChecklistItem).toHaveBeenCalledExactlyOnceWith("original-action", { done: true });
+  });
+  it("keeps a completed item in place with an Undo that reopens it, then lets it go", async () => {
+    const snapshot = empty();
+    snapshot.actions = { items: [{ id: "first", taskId: "task", taskTitle: "Shared task", text: "First step", deadline: "2026-09-21" },
+      { id: "second", taskId: "task", taskTitle: "Shared task", text: "Second step" }], total: 2, offset: 0, hasMore: false };
+    snapshot.actionCounts = { open: 2, overdue: 1, dueToday: 0 };
+    api.fetchHome.mockResolvedValue(snapshot); api.patchChecklistItem.mockResolvedValue({});
+    await render();
+    const text = () => harness.dom.container.textContent ?? "";
+    expect(text().match(/Shared task/g)).toHaveLength(1);
+    expect(text()).toContain("Overdue since yesterday");
+    expect(text()).toContain("1 overdue");
+    const without = { ...snapshot, actions: { ...snapshot.actions, items: snapshot.actions.items.slice(1), total: 1 } };
+    api.fetchHome.mockResolvedValue(without);
+    await click("Complete First step");
+    expect(text()).toContain("First step");
+    expect(text()).toContain("Undo");
+    api.fetchHome.mockResolvedValue(snapshot);
+    await click("Undo");
+    expect(api.patchChecklistItem).toHaveBeenLastCalledWith("first", { done: false });
+    api.fetchHome.mockResolvedValue(without);
+    await click("Complete First step");
+    await advanceTimersByTimeAct(harness.act, CHECKLIST_UNDO_MS + 1);
+    expect(text()).not.toContain("First step");
+    expect(text()).toContain("Second step");
+  });
+  it("puts a failed completion back and says the change was not saved", async () => {
+    const snapshot = empty();
+    snapshot.actions = { items: [{ id: "item", taskId: null, text: "Fragile item" }], total: 1, offset: 0, hasMore: false };
+    snapshot.actionCounts = { open: 1, overdue: 0, dueToday: 0 };
+    api.fetchHome.mockResolvedValue(snapshot); api.patchChecklistItem.mockRejectedValue(new Error("Offline"));
+    await render(); await click("Complete Fragile item");
+    expect(harness.dom.container.textContent).toContain("The change was not saved");
+    expect(harness.dom.container.textContent).not.toContain("Undo");
+  });
+  it("says deadlines relative to the server's day", () => {
+    expect(describeDeadline("2026-09-20", "2026-09-22")).toMatchObject({ tone: "danger", label: expect.stringMatching(/^Overdue since /) });
+    expect(describeDeadline("2026-09-21", "2026-09-22")).toEqual({ tone: "danger", label: "Overdue since yesterday" });
+    expect(describeDeadline("2026-09-22", "2026-09-22")).toEqual({ tone: "warning", label: "Due today" });
+    expect(describeDeadline("2026-09-23", "2026-09-22")).toEqual({ tone: "neutral", label: "Due tomorrow" });
+    expect(describeDeadline("2026-09-25", "2026-09-22").label).toMatch(/^Due \D+$/);
+    expect(describeDeadline("2027-01-05", "2026-09-22").label).toContain("2027");
   });
   it("presents readable Markdown excerpts without changing or acknowledging their source", async () => {
     const snapshot = empty();
