@@ -8,8 +8,10 @@ import {
 } from "./server/platform.js";
 import { createDeadline, type Deadline } from "./server/deadline.js";
 import {
+  additionalTunnelRuntimeStateFileName,
   clearTunnelRuntimeState,
   readTunnelRuntimeState,
+  TUNNEL_RUNTIME_STATE_FILE_NAME,
   writeTunnelRuntimeState,
   type TunnelRuntimeState,
 } from "./server/tunnel-runtime-state.js";
@@ -20,8 +22,6 @@ import {
 } from "./launcher-exit.js";
 import { waitForChildExit } from "./launcher-process.js";
 
-const DEFAULT_TUNNEL_NAME = "copilot-bridge";
-const TUNNEL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;
 const RETRY_BASE_MS = 5_000;
 const RETRY_CAP_MS = 60_000;
 const STARTUP_TIMEOUT_MS = 60_000;
@@ -86,8 +86,17 @@ export function isTunnelAuthRedirect(status: number, location: string | null | u
 export type TunnelSupervisorOptions = {
   dataDir: string;
   port: number;
-  env?: NodeJS.ProcessEnv;
   log: (message: string) => void;
+  /**
+   * Tunnel to host. `null` hosts nothing and only cleans up a tunnel host that a
+   * previous launcher recorded in this supervisor's state file.
+   */
+  tunnelName: string | null;
+  /**
+   * Set for every supervisor except the primary one: gives it its own state file
+   * and log label. Only the primary file feeds the server's public URL.
+   */
+  additionalName?: string;
   onReady?: (url: string) => void | Promise<void>;
   retryBaseMs?: number;
   retryCapMs?: number;
@@ -110,9 +119,9 @@ export type TunnelSupervisorDependencies = {
   waitForChildExit: typeof waitForChildExit;
   fetch: typeof fetch;
   inspectTunnelHost: (name: string, timeoutMs: number) => Promise<TunnelHostStatus>;
-  readState: (dataDir: string) => TunnelRuntimeState | null;
-  writeState: (dataDir: string, state: TunnelRuntimeState) => void;
-  clearState: (dataDir: string) => void;
+  readState: (dataDir: string, fileName: string) => TunnelRuntimeState | null;
+  writeState: (dataDir: string, state: TunnelRuntimeState, fileName: string) => void;
+  clearState: (dataDir: string, fileName: string) => void;
 };
 
 const defaultDependencies: TunnelSupervisorDependencies = {
@@ -166,24 +175,33 @@ export function parseTunnelHostConnections(stdout: string): number {
   return hostConnections;
 }
 
-function enabled(env: NodeJS.ProcessEnv): boolean {
-  return !/^(0|false|no|off)$/i.test(env.BRIDGE_ENABLE_TUNNEL || "");
-}
-
 export function buildTunnelHostArgs(name: string, _port: number): string[] {
   return ["host", name];
 }
 
-export function resolveTunnelName(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.BRIDGE_TUNNEL_NAME?.trim();
-  if (!configured) return DEFAULT_TUNNEL_NAME;
-  const normalized = configured.toLowerCase();
-  if (!TUNNEL_NAME_RE.test(normalized)) {
-    throw new Error(
-      `Invalid BRIDGE_TUNNEL_NAME "${configured}". Use 3-60 letters, numbers, and hyphens, starting and ending with a letter or number.`,
-    );
-  }
-  return normalized;
+export type TunnelSupervisorPlan = {
+  tunnelName: string | null;
+  additionalName?: string;
+};
+
+/**
+ * One supervisor per configured tunnel; the first name is the primary and owns
+ * `tunnel-runtime.json`. The primary slot exists even with no tunnel configured, and
+ * every additional tunnel that still has a state file keeps a slot after it leaves
+ * the list, so a tunnel host a previous launcher left running is still cleaned up.
+ */
+export function planTunnelSupervisors(
+  names: readonly string[],
+  staleAdditionalNames: readonly string[] = [],
+): TunnelSupervisorPlan[] {
+  const [primary = null, ...additional] = names;
+  return [
+    { tunnelName: primary },
+    ...additional.map((name) => ({ tunnelName: name, additionalName: name })),
+    ...staleAdditionalNames
+      .filter((name) => !additional.includes(name))
+      .map((name) => ({ tunnelName: null, additionalName: name })),
+  ];
 }
 
 async function probe(
@@ -220,7 +238,6 @@ async function probe(
 
 export class TunnelSupervisor {
   private readonly dataDir: string;
-  private readonly env: NodeJS.ProcessEnv;
   private readonly log: (message: string) => void;
   private readonly onReady?: (url: string) => void | Promise<void>;
   private readonly retryBaseMs: number;
@@ -233,8 +250,9 @@ export class TunnelSupervisor {
   private readonly healthSlowMs: number;
   private readonly hostRecoveryGraceMs: number;
   private readonly deps: TunnelSupervisorDependencies;
-  private readonly tunnelEnabled: boolean;
-  private readonly name: string;
+  private readonly name: string | null;
+  private readonly stateFileName: string;
+  private readonly childLabel: string;
   private readonly plannedStops = new WeakSet<ChildProcess>();
 
   private port: number;
@@ -263,8 +281,16 @@ export class TunnelSupervisor {
   ) {
     this.dataDir = options.dataDir;
     this.port = options.port;
-    this.env = options.env ?? process.env;
-    this.log = options.log;
+    this.name = options.tunnelName;
+    const additionalName = options.additionalName;
+    const baseLog = options.log;
+    this.log = additionalName
+      ? (message) => baseLog(message.replace(/^\[tunnel\]/, `[tunnel ${additionalName}]`))
+      : baseLog;
+    this.stateFileName = additionalName
+      ? additionalTunnelRuntimeStateFileName(additionalName)
+      : TUNNEL_RUNTIME_STATE_FILE_NAME;
+    this.childLabel = additionalName ? `tunnel ${additionalName}` : "tunnel";
     this.onReady = options.onReady;
     this.retryBaseMs = options.retryBaseMs ?? RETRY_BASE_MS;
     this.retryCapMs = options.retryCapMs ?? RETRY_CAP_MS;
@@ -280,15 +306,10 @@ export class TunnelSupervisor {
     this.hostRecoveryGraceMs = options.hostRecoveryGraceMs ?? HOST_RECOVERY_GRACE_MS;
     this.retryDelayMs = this.retryBaseMs;
     this.deps = dependencies;
-    this.tunnelEnabled = enabled(this.env);
-    this.name = this.tunnelEnabled ? resolveTunnelName(this.env) : DEFAULT_TUNNEL_NAME;
   }
 
   async start(): Promise<void> {
     if (this.desired || this.stopping) return;
-    if (!this.tunnelEnabled) {
-      this.log("[tunnel] Disabled by BRIDGE_ENABLE_TUNNEL");
-    }
     this.desired = true;
     this.requestReconcile(0);
   }
@@ -299,7 +320,7 @@ export class TunnelSupervisor {
     }
     if (this.port === port) return;
     this.port = port;
-    if (this.desired && this.tunnelEnabled) {
+    if (this.desired && this.name !== null) {
       this.restartRequested = "port change";
       this.requestReconcile(0);
     }
@@ -370,7 +391,7 @@ export class TunnelSupervisor {
 
   private async reconcile(): Promise<void> {
     await this.cleanupOrphan();
-    if (!this.desired || !this.tunnelEnabled) return;
+    if (!this.desired || this.name === null) return;
 
     if (this.restartRequested && this.child) {
       const reason = this.restartRequested;
@@ -500,7 +521,7 @@ export class TunnelSupervisor {
   private async cleanupOrphan(): Promise<void> {
     if (this.orphanChecked) return;
     this.orphanChecked = true;
-    const state = this.deps.readState(this.dataDir);
+    const state = this.deps.readState(this.dataDir, this.stateFileName);
     if (!state?.process) {
       this.clearState();
       return;
@@ -519,7 +540,7 @@ export class TunnelSupervisor {
   }
 
   private async launch(): Promise<void> {
-    if (!this.desired) return;
+    if (!this.desired || this.name === null) return;
     const generation = ++this.generation;
     const child = this.deps.spawnTunnel(this.name, this.port);
     this.resetHostConnectionState();
@@ -548,7 +569,7 @@ export class TunnelSupervisor {
           port: this.port,
           process: startingIdentity,
           updatedAt: new Date().toISOString(),
-        });
+        }, this.stateFileName);
       } catch (error) {
         void urlPromise.catch(() => undefined);
         await this.stopChild(child, "runtime state publication failure");
@@ -594,7 +615,7 @@ export class TunnelSupervisor {
       port,
       process: identity,
       updatedAt: new Date().toISOString(),
-    });
+    }, this.stateFileName);
     this.published = true;
     this.retryDelayMs = this.retryBaseMs;
     this.healthWindow = [];
@@ -729,7 +750,7 @@ export class TunnelSupervisor {
 
   private asLauncherChild(child: ChildProcess | null): LauncherChild {
     return {
-      label: "tunnel",
+      label: this.childLabel,
       process: child,
       identity: child === this.child ? this.identity : null,
     };
@@ -749,7 +770,7 @@ export class TunnelSupervisor {
 
   private clearState(): void {
     try {
-      this.deps.clearState(this.dataDir);
+      this.deps.clearState(this.dataDir, this.stateFileName);
     } catch (error) {
       this.log(`[tunnel] Unable to clear runtime state: ${error instanceof Error ? error.message : String(error)}`);
     }

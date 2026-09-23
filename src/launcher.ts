@@ -114,7 +114,12 @@ import {
   spawnLauncherChildIfRunning,
   waitForChildExit,
 } from "./launcher-process.js";
-import { TunnelSupervisor } from "./launcher-tunnel-supervisor.js";
+import {
+  planTunnelSupervisors,
+  TunnelSupervisor,
+} from "./launcher-tunnel-supervisor.js";
+import { resolveTunnelConfig } from "./server/tunnel-config.js";
+import { listAdditionalTunnelRuntimeStateNames } from "./server/tunnel-runtime-state.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { createGitPullRebaseCommand } from "./server/git-command.js";
 
@@ -210,13 +215,18 @@ let lastRollbackTarget: string | null = null;
 let pendingReleaseFailure: ReleaseFailureState | null = null;
 let releaseCandidateSha: string | null = null;
 let terminalShutdownPromise: Promise<number> | null = null;
-const tunnelSupervisor = new TunnelSupervisor({
+const tunnelConfig = resolveTunnelConfig(process.env);
+const allTunnelSupervisors = planTunnelSupervisors(
+  tunnelConfig.names,
+  listAdditionalTunnelRuntimeStateNames(DATA_DIR),
+).map((plan, index) => new TunnelSupervisor({
   dataDir: DATA_DIR,
   port: currentServerPort,
-  env: process.env,
   log,
-  onReady: (url) => notifyWebhook("🔗 Copilot Bridge public URL ready", url),
-});
+  ...plan,
+  ...(index === 0 ? { onReady: (url: string) => notifyWebhook("🔗 Copilot Bridge public URL ready", url) } : {}),
+}));
+const tunnelSupervisor = allTunnelSupervisors[0];
 const blockedBackendRecovery = createBlockedBackendRecoveryMonitor({
   graceMs: BLOCKED_BACKEND_RECOVERY_GRACE_MS,
   maxRestarts: BLOCKED_BACKEND_RECOVERY_MAX_RESTARTS,
@@ -1070,7 +1080,7 @@ function startServer(target: ServerLaunchTarget = resolveStartupLaunchTarget()):
   });
   const port = resolveBridgePort(env);
   currentServerPort = port;
-  tunnelSupervisor.updatePort(port);
+  for (const supervisor of allTunnelSupervisors) supervisor.updatePort(port);
   log(`Starting server on port ${port} from ${describeLaunchTarget(target)}...`);
   env.BRIDGE_LAUNCHER_LOG_PATH = LAUNCHER_LOG_PATH;
   const serverArgs = target.mode === "source" ? [TSX_CLI, target.entry] : [target.entry];
@@ -1206,13 +1216,13 @@ async function shutdownAndExit(exitCode: number, reason: string): Promise<never>
   if (!terminalShutdownPromise) {
     shuttingDown = true;
     log(`Shutting down launcher children (${reason})...`);
-    const tunnelChild = tunnelSupervisor.prepareForShutdown();
+    const tunnelChildren = allTunnelSupervisors.map((supervisor) => supervisor.prepareForShutdown());
     terminalShutdownPromise = resolveLauncherShutdownExitCode(
       exitCode,
       () => [
         asLauncherChild("server", serverProcess),
         asLauncherChild("management job runner", managementJobRunnerProcess),
-        tunnelChild,
+        ...tunnelChildren,
       ],
       {
         terminateProcessTree,
@@ -1221,7 +1231,7 @@ async function shutdownAndExit(exitCode: number, reason: string): Promise<never>
       },
       createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS),
     ).then(({ exitCode: resolvedExitCode, outcome }) => {
-      tunnelSupervisor.finishShutdown(outcome.ok);
+      for (const supervisor of allTunnelSupervisors) supervisor.finishShutdown(outcome.ok);
       if (!outcome.ok) {
         log(
           `❌ Terminal cleanup incomplete; exiting ${LAUNCHER_CLEANUP_FAILURE_EXIT_CODE} with descendants still active: ${outcome.remaining.join(", ")}`,
@@ -1639,7 +1649,11 @@ async function main() {
     log(startupDecision.logMessage);
   }
 
-  await tunnelSupervisor.start();
+  for (const warning of tunnelConfig.warnings) log(`[tunnel] ${warning}`);
+  log(tunnelConfig.names.length > 0
+    ? `[tunnel] Hosting ${tunnelConfig.names.join(", ")}`
+    : "[tunnel] No tunnel configured (BRIDGE_TUNNEL_NAMES is empty)");
+  for (const supervisor of allTunnelSupervisors) await supervisor.start();
   if (shuttingDown) return;
 
   if (startupDecision.startServer) {

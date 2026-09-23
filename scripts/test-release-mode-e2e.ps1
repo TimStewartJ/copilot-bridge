@@ -404,19 +404,18 @@ try {
   $port = Get-FreeTcpPort
   @(
     "BRIDGE_PORT=$port",
-    "BRIDGE_ENABLE_TUNNEL=false",
     "BRIDGE_DISABLE_UPDATE_CHECK=true",
     "BRIDGE_DATA_DIR=$dataDir",
     "BRIDGE_DOCS_DIR=$(Join-Path $dataDir "docs")",
     "COPILOT_HOME=$(Join-Path $dataDir ".copilot")",
     "BRIDGE_WEBHOOK_URL=",
-    "BRIDGE_TUNNEL_NAME=release-e2e-$port",
+    "BRIDGE_TUNNEL_NAMES=",
     "BRIDGE_PUBLIC_BASE_URL="
   ) | Set-Content -Path (Join-Path $configDir ".env") -Encoding UTF8
 
   Set-Item -Path "Env:BRIDGE_STATE_ROOT" -Value $stateRoot
   Set-Item -Path "Env:BRIDGE_PORT" -Value ([string]$port)
-  Set-Item -Path "Env:BRIDGE_ENABLE_TUNNEL" -Value "false"
+  Remove-Item -Path "Env:BRIDGE_ENABLE_TUNNEL" -ErrorAction SilentlyContinue
   Set-Item -Path "Env:BRIDGE_DISABLE_UPDATE_CHECK" -Value "true"
   Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"
   Set-Item -Path "Env:BRIDGE_RELEASE_ROOT" -Value $installRoot
@@ -425,7 +424,7 @@ try {
   Set-Item -Path "Env:COPILOT_HOME" -Value (Join-Path $dataDir ".copilot")
   Set-Item -Path "Env:BRIDGE_LAUNCHER_LOG_PATH" -Value (Join-Path $logsDir "launcher.log")
   Set-Item -Path "Env:BRIDGE_WEBHOOK_URL" -Value ""
-  Set-Item -Path "Env:BRIDGE_TUNNEL_NAME" -Value "release-e2e-$port"
+  Remove-Item -Path "Env:BRIDGE_TUNNEL_NAME", "Env:BRIDGE_TUNNEL_NAMES" -ErrorAction SilentlyContinue
   Set-Item -Path "Env:BRIDGE_PUBLIC_BASE_URL" -Value ""
 
   $nodePath = Resolve-NodePath
