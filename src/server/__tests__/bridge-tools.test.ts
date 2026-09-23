@@ -19,6 +19,7 @@ describe("Bridge MCP tool definitions", () => {
     expect(toolNames.has("self_restart")).toBe(true);
     expect(toolNames.has("self_update")).toBe(true);
     expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_preview")).toBe(true);
     expect(toolNames.has("staging_deploy")).toBe(true);
   });
 
@@ -63,6 +64,7 @@ describe("registerAllBridgeTools (MCP)", () => {
     expect(toolNames.has("self_restart")).toBe(true);
     expect(toolNames.has("self_update")).toBe(false);
     expect(toolNames.has("staging_init")).toBe(false);
+    expect(toolNames.has("staging_preview")).toBe(false);
     expect(toolNames.has("staging_deploy")).toBe(false);
   });
 
@@ -80,6 +82,7 @@ describe("registerAllBridgeTools (MCP)", () => {
     expect(toolNames.has("self_restart")).toBe(true);
     expect(toolNames.has("self_update")).toBe(true);
     expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_preview")).toBe(true);
     expect(toolNames.has("staging_deploy")).toBe(true);
   });
 
@@ -92,6 +95,7 @@ describe("registerAllBridgeTools (MCP)", () => {
     expect(toolNames.has("self_restart")).toBe(true);
     expect(toolNames.has("self_update")).toBe(true);
     expect(toolNames.has("staging_init")).toBe(true);
+    expect(toolNames.has("staging_preview")).toBe(true);
     expect(toolNames.has("staging_deploy")).toBe(true);
   });
 });
