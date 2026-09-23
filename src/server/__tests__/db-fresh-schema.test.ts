@@ -63,6 +63,8 @@ describe("fresh database schema", () => {
       "idx_event_log_stats_folds_updated",
       "idx_tags_name_key",
       "idx_tasks_nextTouchAt",
+      "task_momentum_events",
+      "idx_task_momentum_events_task",
       "idx_bridge_session_state_lastAttentionAt",
     ]) {
       expect(names, `missing ${name}`).toContain(name);

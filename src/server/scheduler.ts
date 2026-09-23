@@ -587,6 +587,11 @@ export async function triggerSchedule(
     sessionMetaStore.setScheduleMeta(sessionId, scheduleId, schedule.name);
     sessionMetaStore.recordScheduleRun(scheduleId, sessionId);
     try {
+      taskStore.attributeMomentumEventsToSchedule(sessionId, scheduleId, schedule.name);
+    } catch (err) {
+      console.warn(`[scheduler] Could not attribute early momentum changes to "${schedule.name}":`, err instanceof Error ? err.message : err);
+    }
+    try {
       const retention = await enforceScheduleSessionRetention({
         schedule,
         sessionMetaStore,

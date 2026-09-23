@@ -7,6 +7,7 @@ import { Button, DisclosureRow, Field, FieldList, Notice, Section, TextInput } f
 import { formatRevisit, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
 import { getTaskLifecycleDisplayState, getTaskStatusLabel } from "../task-completion-helpers";
 import TaskDeferralDialog from "./TaskDeferralDialog";
+import TaskMomentumHistory from "./TaskMomentumHistory";
 
 type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
 
@@ -16,6 +17,7 @@ interface TaskMomentumFieldsProps {
   task: Task;
   onSaved?: () => void;
   onPatched?: (task: Task) => void;
+  onSelectSession?: (sessionId: string) => void;
 }
 
 interface FieldConfig {
@@ -77,6 +79,7 @@ function TaskMomentumEditor({
   task,
   onSaved,
   onPatched,
+  onSelectSession,
 }: TaskMomentumFieldsProps) {
   const [values, setValues] = useState<FieldValues>(() => toFieldValues(task));
   const [drafts, setDrafts] = useState<FieldValues>(() => toFieldValues(task));
@@ -294,6 +297,7 @@ function TaskMomentumEditor({
         </div>
       )}
       </DisclosureRow>
+      <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />
     </Section>{deferralOpen && <TaskDeferralDialog task={task} onClose={() => setDeferralOpen(false)} onSaved={updated => { onPatched?.(updated); onSaved?.(); }} />}</>
   );
 }

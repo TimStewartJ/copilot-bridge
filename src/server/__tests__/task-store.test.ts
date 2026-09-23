@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { areSessionUnreadBubblesMuted, createTaskStore } from "../task-store.js";
+import {
+  areSessionUnreadBubblesMuted,
+  createTaskStore,
+  TASK_MOMENTUM_EVENT_PREVIEW_CHARS,
+  TASK_MOMENTUM_EVENTS_KEEP,
+  TASK_MOMENTUM_EVENTS_MAX_LIMIT,
+} from "../task-store.js";
 import type { TaskStore } from "../task-store.js";
 import type { DatabaseSync } from "../db.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
@@ -624,6 +630,110 @@ describe("task-store", () => {
       expect(orders.find((o) => o.id === t1.id)!.order).toBe(0);
       expect(orders.find((o) => o.id === t3.id)!.order).toBe(1);
       expect(orders.find((o) => o.id === t2.id)!.order).toBe(2);
+    });
+  });
+
+  describe("momentum audit", () => {
+    it("records one event per changing update with normalized before/after values and the actor", () => {
+      const task = store.createTask("Audit me");
+      store.updateTask(task.id, { nextAction: "Call", nextTouchAt: "2030-01-01T09:00:00-08:00" }, {
+        source: "agent", sessionId: "session-1", scheduleId: "sched-1", scheduleName: "Daily check",
+      });
+      store.updateTask(task.id, { waitingOn: "   " }, { source: "user" });
+      store.updateTask(task.id, { title: "Renamed", notes: "n" }, { source: "user" });
+
+      const events = store.listMomentumEvents(task.id);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        taskId: task.id, source: "agent", sessionId: "session-1", scheduleId: "sched-1", scheduleName: "Daily check",
+        changes: [
+          { field: "nextAction", before: null, after: "Call" },
+          { field: "nextTouchAt", before: null, after: "2030-01-01T17:00:00.000Z" },
+        ],
+      });
+    });
+
+    it("records implicit clears from archiving and from switching to ongoing", () => {
+      const task = store.createTask("Implicit");
+      store.updateTask(task.id, { nextAction: "Step", waitingOn: "Reply", doneWhen: "Shipped" }, { source: "user" });
+      store.updateTask(task.id, { kind: "ongoing" }, { source: "user" });
+      store.updateTask(task.id, { status: "archived" }, { source: "user" });
+
+      const [archive, kindSwitch] = store.listMomentumEvents(task.id);
+      expect(kindSwitch.changes).toEqual([{ field: "doneWhen", before: "Shipped", after: null }]);
+      expect(archive.changes).toEqual([
+        { field: "nextAction", before: "Step", after: null },
+        { field: "waitingOn", before: "Reply", after: null },
+      ]);
+    });
+
+    it("records deferral and defaults an unattributed change to system", () => {
+      const task = store.createTask("Defer");
+      store.updateTask(task.id, { deferred: true });
+      expect(store.listMomentumEvents(task.id)[0]).toMatchObject({
+        source: "system", changes: [{ field: "deferred", before: false, after: true }],
+      });
+      expect(store.listMomentumEvents(task.id)[0].sessionId).toBeUndefined();
+    });
+
+    it("stores bounded previews of long values with their original length", () => {
+      const task = store.createTask("Long");
+      const long = "x".repeat(TASK_MOMENTUM_EVENT_PREVIEW_CHARS + 250);
+      store.updateTask(task.id, { nextAction: long }, { source: "agent" });
+      store.updateTask(task.id, { nextAction: null }, { source: "agent" });
+
+      const [cleared, set] = store.listMomentumEvents(task.id);
+      expect(set.changes[0]).toEqual({
+        field: "nextAction", before: null, after: long.slice(0, TASK_MOMENTUM_EVENT_PREVIEW_CHARS), afterLength: long.length,
+      });
+      expect(cleared.changes[0]).toMatchObject({ before: long.slice(0, TASK_MOMENTUM_EVENT_PREVIEW_CHARS), beforeLength: long.length, after: null });
+      expect(store.getTask(task.id)?.nextAction).toBeUndefined();
+    });
+
+    it("keeps only the newest events per task and bounds the list limit", () => {
+      const task = store.createTask("Busy");
+      const other = store.createTask("Other");
+      store.updateTask(other.id, { nextAction: "Untouched" }, { source: "user" });
+      for (let i = 0; i < TASK_MOMENTUM_EVENTS_KEEP + 5; i += 1) {
+        store.updateTask(task.id, { nextAction: `Step ${i}` }, { source: "agent" });
+      }
+      const count = (id: string) => (db.prepare("SELECT COUNT(*) AS n FROM task_momentum_events WHERE taskId = ?").get(id) as { n: number }).n;
+      expect(count(task.id)).toBe(TASK_MOMENTUM_EVENTS_KEEP);
+      expect(count(other.id)).toBe(1);
+      expect(store.listMomentumEvents(task.id, 3).map((event) => event.changes[0].after)).toEqual([
+        `Step ${TASK_MOMENTUM_EVENTS_KEEP + 4}`, `Step ${TASK_MOMENTUM_EVENTS_KEEP + 3}`, `Step ${TASK_MOMENTUM_EVENTS_KEEP + 2}`,
+      ]);
+      expect(store.listMomentumEvents(task.id, 10_000)).toHaveLength(TASK_MOMENTUM_EVENTS_MAX_LIMIT);
+      expect(store.listMomentumEvents(task.id, 0)).toHaveLength(1);
+    });
+
+    it("rolls the task update back when the audit write fails", () => {
+      const task = store.createTask("Atomic");
+      db.exec(`CREATE TRIGGER fail_momentum_audit BEFORE INSERT ON task_momentum_events BEGIN SELECT RAISE(ABORT, 'audit down'); END;`);
+      expect(() => store.updateTask(task.id, { nextAction: "Lost" }, { source: "user" })).toThrow(/audit down/);
+      expect(store.getTask(task.id)?.nextAction).toBeUndefined();
+      db.exec("DROP TRIGGER fail_momentum_audit");
+    });
+
+    it("attaches a schedule to that session's unattributed agent events only", () => {
+      const task = store.createTask("Late schedule");
+      store.updateTask(task.id, { nextAction: "Early write" }, { source: "agent", sessionId: "run-1" });
+      store.updateTask(task.id, { nextAction: "Other session" }, { source: "agent", sessionId: "run-2" });
+      store.updateTask(task.id, { nextAction: "Mine" }, { source: "user" });
+
+      expect(store.attributeMomentumEventsToSchedule("run-1", "sched-1", "Hourly scout")).toBe(1);
+      expect(store.attributeMomentumEventsToSchedule("run-1", "sched-x", "Renamed")).toBe(0);
+      const [user, other, early] = store.listMomentumEvents(task.id);
+      expect(early).toMatchObject({ sessionId: "run-1", scheduleId: "sched-1", scheduleName: "Hourly scout" });
+      expect(other.scheduleName).toBeUndefined();
+      expect(user.scheduleName).toBeUndefined();
+    });
+
+    it("deletes a task's history with the task", () => {
+      const task = store.createTask("Gone");
+      store.updateTask(task.id, { nextAction: "Step" }, { source: "user" });
+      store.deleteTask(task.id);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM task_momentum_events").get()).toEqual({ n: 0 });
     });
   });
 

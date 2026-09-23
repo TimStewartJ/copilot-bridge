@@ -318,6 +318,34 @@ describe("scheduler restart gating", () => {
     });
   });
 
+  it("attributes momentum written before prompt delivery finished to the schedule", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "fast-session" }),
+      startWorkAndWaitForDelivery: vi.fn().mockImplementation(async () => {
+        ctx.taskStore.updateTask(task.id, { nextAction: "Early step" }, { source: "agent", sessionId: "fast-session" });
+      }),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id, name: "Fast schedule", prompt: "go", type: "cron", cron: "0 0 * * *",
+    });
+
+    await expect(scheduler.triggerSchedule(schedule.id)).resolves.toEqual({ sessionId: "fast-session" });
+
+    expect(ctx.taskStore.listMomentumEvents(task.id)[0]).toMatchObject({
+      source: "agent", sessionId: "fast-session", scheduleId: schedule.id, scheduleName: "Fast schedule",
+    });
+  });
+
   it("emits the linked task id when a schedule triggers", async () => {
     const { ctx } = createTestApp();
     const events: Array<{ type: string; scheduleId?: string; sessionId?: string; taskId?: string }> = [];
