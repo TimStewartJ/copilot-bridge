@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { resolveRuntimePaths } from "./runtime-paths.js";
+import { resolveTunnelConfig } from "./tunnel-config.js";
 import { readTunnelRuntimeState } from "./tunnel-runtime-state.js";
 
 const PUBLIC_BASE_URL = normalizeBaseUrl(process.env.BRIDGE_PUBLIC_BASE_URL);
@@ -9,7 +10,7 @@ const DATA_DIR = resolveRuntimePaths(process.env).dataDir;
 let observedPublicOrigin: string | undefined;
 
 function tunnelEnabled(): boolean {
-  return !/^(0|false|no|off)$/i.test(process.env.BRIDGE_ENABLE_TUNNEL || "");
+  return resolveTunnelConfig(process.env).names.length > 0;
 }
 
 function firstForwardedValue(value: string | string[] | undefined): string | undefined {
