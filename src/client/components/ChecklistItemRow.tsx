@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { DS, cx } from "../design/tokens";
 import { IdentitySwatch } from "../design/primitives";
+import { prefersReducedMotion } from "../lib/motion";
 
 // ── Variant-specific props ──────────────────────────────────────
 
@@ -86,7 +87,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
   // Scroll into view on highlight
   useEffect(() => {
     if (highlight && rowRef.current) {
-      rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      rowRef.current.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
     }
   }, [highlight]);
 

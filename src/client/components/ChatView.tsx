@@ -85,6 +85,7 @@ import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
 import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
+import { prefersReducedMotion } from "../lib/motion";
 
 const INITIAL_PAGE_SIZE = 50;
 const MANUAL_LOAD_PAGE_SIZE = 200;
@@ -369,12 +370,6 @@ function getLatestMessageRole(entries: ChatEntry[]): ChatMessage["role"] | null 
     if (isChatMessageEntry(entry)) return entry.role;
   }
   return null;
-}
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== "undefined"
-    && typeof window.matchMedia === "function"
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function safeInternalPath(value: string | null): string | null {

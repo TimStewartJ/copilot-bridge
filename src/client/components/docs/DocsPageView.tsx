@@ -46,6 +46,7 @@ import {
   type DocsPageRef,
 } from "./docs-model";
 import { DS } from "../../design/tokens";
+import { prefersReducedMotion } from "../../lib/motion";
 
 /** Narrowest reading pane that still fits the contents rail beside a readable column. */
 const TOC_RAIL_MIN_WIDTH = 900;
@@ -220,7 +221,7 @@ export default function DocsPageView({ page, schema, hash, onEdit, onDelete }: D
 
   const handleAnchorSelect = useCallback((anchor: string, source: "heading" | "link" | "toc") => {
     const id = findHeadingByAnchor(headings, anchor)?.id ?? anchor;
-    if (!scrollToHeading(id, "smooth")) return;
+    if (!scrollToHeading(id, prefersReducedMotion() ? "auto" : "smooth")) return;
     const fragment = `#${encodeURIComponent(id)}`;
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}${fragment}`);
     if (source !== "heading") return;
