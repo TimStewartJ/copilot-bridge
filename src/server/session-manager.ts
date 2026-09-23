@@ -163,6 +163,7 @@ import {
 import { createSessionContextTruncationMarker } from "./session-context-normalizer.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
+  BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE,
   BACKEND_NOT_INITIALIZED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
   BACKEND_RECOVERY_BLOCKED_MESSAGE,
@@ -317,6 +318,8 @@ type SessionCapacityReservation = {
 
 type TimedOutSessionResume = {
   token: symbol;
+  /** Recovers the backend if the timed-out resume never settles. */
+  watchdog: ReturnType<typeof setTimeout>;
 };
 
 export type SessionCapacityReason =
@@ -2422,6 +2425,7 @@ export class SessionManager {
     const releaseBarrier = (): boolean => {
       const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
       if (barrier?.token !== token) return false;
+      clearTimeout(barrier.watchdog);
       this.settlingTimedOutSessionResumes.delete(sessionId);
       this.notifySessionCapacityChanged();
       return true;
@@ -2431,17 +2435,31 @@ export class SessionManager {
         timedOut = true;
         slow = true;
         diagnostic("timeout");
-        if (
-          this.backend !== owningBackend
-          || this.backendGeneration !== owningBackendGeneration
-        ) return;
-        this.settlingTimedOutSessionResumes.set(sessionId, { token });
+        const isCurrentBackend = () =>
+          this.backend === owningBackend && this.backendGeneration === owningBackendGeneration;
+        if (!isCurrentBackend()) return;
+        const recover = (detail: string) => {
+          if (!isCurrentBackend()) return;
+          this.handleBackendDisconnect(owningBackend, { at: new Date().toISOString(), reason: "rpc-timeout", detail });
+        };
+        const detail = `session resume exceeded ${SESSION_RESUME_TIMEOUT_MS / 1_000}s for session ${sessionId}`;
+        const anotherResumeStuck = this.settlingTimedOutSessionResumes.size > 0;
+        const watchdog = setTimeout(
+          () => recover(`timed-out resume never settled for session ${sessionId}`),
+          SESSION_RESUME_TIMEOUT_MS,
+        );
+        watchdog.unref?.();
+        this.settlingTimedOutSessionResumes.set(sessionId, { token, watchdog });
         this.notifySessionCapacityChanged();
-        this.handleBackendDisconnect(owningBackend, {
-          at: new Date().toISOString(),
-          reason: "rpc-timeout",
-          detail: `session resume exceeded ${SESSION_RESUME_TIMEOUT_MS / 1_000}s for session ${sessionId}`,
-        });
+        // One slow resume on a runtime that still answers fails only its own request.
+        if (anotherResumeStuck || typeof owningBackend.probeHealth !== "function") {
+          recover(detail);
+          return;
+        }
+        owningBackend.probeHealth(undefined, `rpc-timeout: ${detail}`).then(
+          (healthy) => { if (!healthy) recover(detail); },
+          () => recover(detail),
+        );
       },
       disconnectLateSession: async (session) => {
         this.sessionRuntimeOwners.set(session, owner);
@@ -2497,6 +2515,7 @@ export class SessionManager {
   private releaseTimedOutSessionResumeBarriers(): number {
     const barriers = [...this.settlingTimedOutSessionResumes.values()];
     this.settlingTimedOutSessionResumes.clear();
+    for (const barrier of barriers) clearTimeout(barrier.watchdog);
     if (barriers.length > 0) this.notifySessionCapacityChanged();
     return barriers.length;
   }
@@ -3392,7 +3411,6 @@ export class SessionManager {
     if (this.backendTransition?.phase === "blocked") return BACKEND_RECOVERY_BLOCKED_MESSAGE;
     if (
       this.backendTransition
-      || this.settlingTimedOutSessionResumes.size > 0
       || [...this.cleanupOwnership.values()].some((record) => record.phase !== "release-pending")
     ) {
       return BACKEND_RECONNECTING_MESSAGE;
@@ -3527,23 +3545,6 @@ export class SessionManager {
       });
   }
 
-  /**
-   * Fail every in-flight run locally with `message`. Used when the backend
-   * is known to be dead, so nothing will ever answer an abort.
-   * Returns the interrupted runs so callers can decide what to resume.
-   */
-  failAllActiveRuns(message: string): InterruptedRun[] {
-    const interrupted = this.getActiveRuns();
-    for (const { sessionId } of interrupted) {
-      try {
-        this.activeRunControllers.get(sessionId)?.completeError(message);
-      } catch (error) {
-        console.error(`[sdk] [${sessionId.slice(0, 8)}] Failed to fail the active run locally:`, error);
-      }
-    }
-    return interrupted;
-  }
-
   private handleBackendDisconnect(backend: AgentBackend, info: AgentBackendDisconnect): void {
     if (this.shuttingDown) return;
     if (this.backendTransition) return;
@@ -3561,7 +3562,27 @@ export class SessionManager {
       + `failing ${this.activeRunControllers.size} in-flight run(s), dropping ${cachedSessions} cached session(s), and restarting the backend`,
     );
 
-    const interrupted = this.failAllActiveRuns(BACKEND_DISCONNECTED_MESSAGE);
+    // The backend is dead, so nothing will ever answer an abort: fail every in-flight run locally.
+    // Quiet defer turns refire on their own, and a session is re-sent a continue prompt at most once
+    // per cooldown window so a backend that dies on the same prompt cannot loop.
+    const interrupted = this.getActiveRuns();
+    const resumable: InterruptedRun[] = [];
+    for (const run of interrupted) {
+      const skipReason = this.getAutoResumeSkipReason(run);
+      try {
+        this.activeRunControllers.get(run.sessionId)?.completeError(
+          skipReason === "cooldown" ? BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE : BACKEND_DISCONNECTED_MESSAGE,
+        );
+      } catch (error) {
+        console.error(`[sdk] [${run.sessionId.slice(0, 8)}] Failed to fail the active run locally:`, error);
+      }
+      if (!skipReason) {
+        resumable.push(run);
+        continue;
+      }
+      if (skipReason === "cooldown") this.markSessionAttention(run.sessionId);
+      this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "skipped", reason: skipReason });
+    }
     this.lastInterruptedSessionCount = interrupted.length;
     this.recordSpan("backend.disconnect", 0, undefined, {
       reason: info.reason,
@@ -3572,7 +3593,7 @@ export class SessionManager {
     });
     this.emitBackendStatus();
 
-    void this.recoverBackendAfterDisconnect(backend, interrupted, 0);
+    void this.recoverBackendAfterDisconnect(backend, resumable, 0);
   }
 
   /**
@@ -3607,7 +3628,7 @@ export class SessionManager {
 
   private async recoverBackendAfterDisconnect(
     deadBackend: AgentBackend,
-    interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }>,
+    interrupted: InterruptedRun[],
     attempt: number,
     progress: BackendRecoveryProgress = { startedAtMs: Date.now(), startRetries: 0 },
   ): Promise<void> {
@@ -3686,37 +3707,26 @@ export class SessionManager {
     this.emitBackendStatus();
   }
 
-  /**
-   * Re-send a continue prompt to interactive sessions whose accepted turn was
-   * cut off by the disconnect. Quiet defer turns are skipped (the loop fires
-   * again on its own) and each session is resumed at most once per cooldown
-   * window so a backend that dies on the same prompt cannot loop.
-   */
-  private async autoResumeInterruptedRuns(
-    interrupted: Array<{ sessionId: string; promptAccepted: boolean; attentionMode: "normal" | "quiet" }>,
-  ): Promise<number> {
+  private getAutoResumeSkipReason(run: InterruptedRun): "prompt_not_accepted" | "quiet_turn" | "cooldown" | undefined {
+    if (!run.promptAccepted) return "prompt_not_accepted";
+    if (run.attentionMode === "quiet") return "quiet_turn";
+    const lastAt = this.backendAutoResumeAt.get(run.sessionId);
+    return lastAt !== undefined && Date.now() - lastAt < BACKEND_AUTO_RESUME_COOLDOWN_MS ? "cooldown" : undefined;
+  }
+
+  /** Re-send a continue prompt to interactive sessions whose accepted turn was cut off by the disconnect. */
+  private async autoResumeInterruptedRuns(resumable: InterruptedRun[]): Promise<number> {
     let resumed = 0;
-    for (const run of interrupted) {
+    for (const run of resumable) {
       if (this.shuttingDown) break;
       const sid = run.sessionId.slice(0, 8);
-      const skipReason = !run.promptAccepted
-        ? "prompt_not_accepted"
-        : run.attentionMode === "quiet"
-          ? "quiet_turn"
-          : (() => {
-              const lastAt = this.backendAutoResumeAt.get(run.sessionId);
-              return lastAt !== undefined && Date.now() - lastAt < BACKEND_AUTO_RESUME_COOLDOWN_MS ? "cooldown" : undefined;
-            })();
-      if (skipReason) {
-        this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "skipped", reason: skipReason });
-        continue;
-      }
       const idleDeadline = createDeadline(BACKEND_AUTO_RESUME_IDLE_WAIT_MS);
       while (this.isSessionBusy(run.sessionId) && remainingMs(idleDeadline) > 0) {
         await new Promise((resolve) => setTimeout(resolve, Math.min(250, remainingMs(idleDeadline))));
       }
       if (this.isSessionBusy(run.sessionId)) {
         console.warn(`[sdk] [${sid}] Skipping backend-recovery resume: session is still busy`);
+        this.markSessionAttention(run.sessionId);
         this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "skipped", reason: "still_busy" });
         continue;
       }
@@ -3729,6 +3739,7 @@ export class SessionManager {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[sdk] [${sid}] Backend-recovery resume failed: ${message}`);
+        this.markSessionAttention(run.sessionId);
         this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "failed", error: message });
       }
     }

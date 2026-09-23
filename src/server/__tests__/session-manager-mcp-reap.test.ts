@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { readSessionLaunchContext } from "../session-launch-context.js";
 import type { AgentBackendDisconnect } from "../agent-backend/types.js";
 import { AppliedPromptFingerprints } from "../session-prompt-fingerprint.js";
+import { BACKEND_DISCONNECTED_MESSAGE, BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE } from "../backend-availability.js";
 
 type FakeSession = {
   sessionId?: string;
@@ -224,6 +225,30 @@ describe("SessionManager retirement fencing", () => {
     await rejected;
     expect(manager.sessionObjects.has("late")).toBe(false);
     expect(backend.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("fails an interactive run inside the auto-resume cooldown with a clear message and marks it for attention", async () => {
+    const { manager } = createManager();
+    const { backend } = runtime(manager);
+    const controller = () => ({ isCompleted: () => false, completeError: vi.fn() });
+    const cooled = controller();
+    const fresh = controller();
+    manager.activeRunControllers.set("cooled", cooled);
+    manager.activeRunControllers.set("fresh", fresh);
+    vi.spyOn(manager, "getActiveRuns").mockReturnValue([
+      { sessionId: "cooled", promptAccepted: true, attentionMode: "normal" },
+      { sessionId: "fresh", promptAccepted: true, attentionMode: "normal" },
+    ]);
+    manager.backendAutoResumeAt.set("cooled", Date.now());
+    const markAttention = vi.spyOn(manager, "markSessionAttention").mockImplementation(() => {});
+    const recover = vi.spyOn(manager, "recoverBackendAfterDisconnect").mockResolvedValue(undefined);
+
+    manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+
+    expect(cooled.completeError).toHaveBeenCalledWith(BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE);
+    expect(fresh.completeError).toHaveBeenCalledWith(BACKEND_DISCONNECTED_MESSAGE);
+    expect(markAttention).toHaveBeenCalledExactlyOnceWith("cooled");
+    expect(recover).toHaveBeenCalledWith(backend, [expect.objectContaining({ sessionId: "fresh" })], 0);
   });
 
   it("fences a failed replacement before attempting another and bounds recovery attempts", async () => {
