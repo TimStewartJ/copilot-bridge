@@ -323,7 +323,7 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("shows a deferred-work rollup across linked sessions", async () => {
+  it("does not show a redundant deferred-work rollup above linked sessions", async () => {
     const linkedSessions = [
       createSession({
         sessionId: "session-1",
@@ -339,7 +339,7 @@ describe("TaskPanel", () => {
       { linkedSessions },
     );
 
-    expect(html).toContain("3 active deferred checks across 2 sessions");
+    expect(html).not.toContain("active deferred check");
   });
 
   it("renders attached task agent definitions in the Details section", async () => {
