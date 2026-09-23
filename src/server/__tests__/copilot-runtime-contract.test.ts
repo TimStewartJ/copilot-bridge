@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { COMPUTER_USE_PLUGIN_NAME, resolveComputerUsePlugin } from "../computer-use-plugin.js";
 
-const EXPECTED_CLI_VERSION = "1.0.87";
+const EXPECTED_CLI_VERSION = "1.0.88";
 const EXPECTED_SDK_VERSION = "1.0.14";
 
 // Launching the pinned CLI lives in copilot-cli-launch.native.test.ts.
