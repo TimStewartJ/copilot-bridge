@@ -13,7 +13,7 @@ import {
   useDeleteTagMutation,
   useReorderTagsMutation,
 } from "../../hooks/queries/useTags";
-import { ArrowDown, ArrowUp, Check, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   TAG_COLORS,
   TAG_COLOR_BG,
@@ -22,11 +22,10 @@ import {
   TAG_COLOR_TEXT,
 } from "../../tag-colors";
 import { SettingsSection } from "./SettingsSection";
-import EmptyState from "../shared/EmptyState";
 import { summarizeMcpServerConfig } from "./mcp-display";
 import { DS, cx } from "../../design/tokens";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "../ContextMenu";
-import { IdentitySwatch } from "../../design/primitives";
+import { Button, EmptyHint, IdentitySwatch, SettingList } from "../../design/primitives";
 
 const iconButtonClass =
   cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "disabled:opacity-30");
@@ -226,31 +225,24 @@ function TagCard({
   const [menu, setMenu] = useState<ContextMenuPosition | null>(null);
 
   return (
-    <div className={DS.layout.objectRow}>
-      <div className="flex items-start gap-1">
+    <div className="min-w-0 py-1 first:pt-0 last:pb-0">
+      <div className="flex min-w-0 items-center gap-1">
         <button
           type="button"
           onClick={() => onEdit(tag)}
-          className={cx(DS.row.stacked, "flex-1")}
+          className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "flex-1 gap-2.5")}
           aria-label={`Edit ${tag.name}`}
         >
-          <div className="min-w-0 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <TagPillPreview name={tag.name} color={tag.color} />
-              {hasInstructions && <TagMetaBadge>instructions</TagMetaBadge>}
-            </div>
-            {hasInstructions ? (
-              <p className="line-clamp-2 text-xs leading-5 text-text-muted">
-                {tag.instructions}
-              </p>
-            ) : (
-              <p className="text-xs text-text-faint">No custom instructions.</p>
-            )}
-          </div>
+          <TagPillPreview name={tag.name} color={tag.color} />
+          {hasInstructions && (
+            <span className="min-w-0 flex-1 truncate text-xs text-text-secondary" title={tag.instructions}>
+              {tag.instructions}
+            </span>
+          )}
         </button>
 
         <button type="button" aria-label={`Actions for ${tag.name}`} aria-haspopup="menu" aria-expanded={Boolean(menu)}
-          className={cx(iconButtonClass, "mt-2")}
+          className={iconButtonClass}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             setMenu({ x: rect.right - 180, y: rect.bottom + 4 });
@@ -596,23 +588,25 @@ export function TagsSection({
 
   return (
     <SettingsSection
-      title="Tags"
-      description="Organize tasks, groups, and docs. Tags can carry custom instructions and select registered MCP servers."
+      title="All tags"
+      count={tags.length}
+      description="Tags can add instructions and MCP servers to the sessions they are on."
       action={
-        <button
-          type="button"
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<Plus size={13} />}
           onClick={() => {
             cancelEditing();
             setAdding(true);
           }}
           disabled={adding}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface disabled:opacity-50")}
         >
-          + Add Tag
-        </button>
+          Add tag
+        </Button>
       }
     >
-      <div className="space-y-3">
+      <SettingList>
         {tags.map((tag, tagIndex) =>
           editingId === tag.id ? (
             <EditTagCard
@@ -648,12 +642,7 @@ export function TagsSection({
         )}
 
         {tags.length === 0 && !adding && (
-          <EmptyState
-            message="No tags yet"
-            sub="Create one to organize your tasks and docs"
-            action={() => setAdding(true)}
-            actionLabel="Add tag"
-          />
+          <EmptyHint>No tags yet. Add one to organize tasks and docs.</EmptyHint>
         )}
 
         {adding && (
@@ -667,7 +656,7 @@ export function TagsSection({
             onCancel={() => setAdding(false)}
           />
         )}
-      </div>
+      </SettingList>
     </SettingsSection>
   );
 }

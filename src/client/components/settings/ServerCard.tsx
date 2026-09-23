@@ -1,17 +1,36 @@
+import { useState } from "react";
+import { ChevronRight, Pencil, Trash2 } from "lucide-react";
 import type { McpServerConfig, McpServerStatus } from "../../api";
-import { CheckCircle2, XCircle, Loader2, AlertTriangle } from "lucide-react";
 import {
   classifyMcpServerExecution,
   getMcpServerTransport,
   isLocalMcpServerConfig,
 } from "../../../mcp-config";
-import { ConfigCard } from "./ConfigCard";
 import { MCP_CONNECTION_GUIDANCE, mcpObservationLabel, mcpObservationTitle } from "../mcp-status-display";
-import {
-  summarizeMcpServerConfig,
-  summarizeMcpServerExecution,
-} from "./mcp-display";
-import { DS, cx } from "../../design/tokens";
+import { summarizeMcpServerExecution } from "./mcp-display";
+import { Button, Field, FieldList, StatusIcon, Switch } from "../../design/primitives";
+import { DS, cx, type DsStatusKind } from "../../design/tokens";
+
+type StatusDisplay = { kind?: DsStatusKind; word: string; tone: string; title?: string };
+
+function describeStatus(status: McpServerStatus | undefined): StatusDisplay {
+  switch (status?.status) {
+    case "connected":
+      return { kind: "on", word: "Connected", tone: "text-text-secondary", title: MCP_CONNECTION_GUIDANCE };
+    case "failed":
+      return { kind: "danger", word: "Failed", tone: "text-error", title: status.error };
+    case "needs-auth":
+      return { kind: "warning", word: "Needs sign-in", tone: "text-warning", title: "Open a session using this server to sign in." };
+    case "pending":
+      return { kind: "working", word: "Connecting", tone: "text-text-secondary" };
+    case "disabled":
+      return { word: "Disabled", tone: "text-text-faint" };
+    case "not_configured":
+      return { word: "Not configured", tone: "text-text-faint" };
+    default:
+      return { word: "No status", tone: "text-text-faint" };
+  }
+}
 
 export function ServerCard({
   name,
@@ -22,6 +41,7 @@ export function ServerCard({
   defaultToggleDisabled,
   onEdit,
   onRemove,
+  defaultExpanded = false,
 }: {
   name: string;
   config: McpServerConfig;
@@ -31,148 +51,77 @@ export function ServerCard({
   defaultToggleDisabled?: boolean;
   onEdit: () => void;
   onRemove: () => void;
+  defaultExpanded?: boolean;
 }) {
-  const st = status?.status;
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const transport = getMcpServerTransport(config);
   const execution = classifyMcpServerExecution(config);
-  const statusBadge = (() => {
-    switch (st) {
-      case "connected":
-        return (
-          <span className={cx(DS.badge.base, "bg-success/15 text-success flex items-center gap-0.5")} title={MCP_CONNECTION_GUIDANCE}>
-            <CheckCircle2 size={10} /> connected
-          </span>
-        );
-      case "failed":
-        return (
-          <span className={cx(DS.badge.base, "bg-error/15 text-error flex items-center gap-0.5")} title={status?.error}>
-            <XCircle size={10} /> failed
-          </span>
-        );
-      case "needs-auth":
-        return (
-          <span className={cx(DS.badge.base, "bg-warning/15 text-warning flex items-center gap-0.5")} title="Open a session using this server to sign in.">
-            <AlertTriangle size={10} /> needs auth
-          </span>
-        );
-      case "pending":
-        return (
-          <span className={cx(DS.badge.base, "bg-warning/15 text-warning flex items-center gap-0.5")}>
-            <Loader2 size={10} className="animate-spin" /> connecting
-          </span>
-        );
-      case "disabled":
-      case "not_configured":
-        return (
-          <span className={cx(DS.badge.base, "bg-bg-secondary text-text-muted")}>
-            {st}
-          </span>
-        );
-      default:
-        return (
-          <span className={cx(DS.badge.base, "bg-bg-secondary text-text-faint flex items-center gap-0.5")}>
-            <AlertTriangle size={10} /> no status
-          </span>
-        );
-    }
-  })();
+  const display = describeStatus(status);
+  const local = isLocalMcpServerConfig(config);
+  const secretNames = local ? Object.keys(config.env ?? {}) : Object.keys(config.headers ?? {});
 
   return (
-    <ConfigCard
-      title={name}
-      badge={statusBadge}
-      onEdit={onEdit}
-      onRemove={onRemove}
-      removeTitle="Remove"
-    >
-      {status && <p className="mt-1 text-[11px] text-text-muted" title={mcpObservationTitle(status)}>{mcpObservationLabel(status)}</p>}
-      {st === "connected" && <p className="mt-1 text-[11px] text-text-muted">{MCP_CONNECTION_GUIDANCE}</p>}
-      {st === "failed" && status?.error && (
-        <div className="mt-1 text-[11px] text-error bg-error/5 px-2 py-1 rounded">
-          {status.error}
-        </div>
-      )}
-      <div className="mt-2 space-y-1">
-        <div className="text-xs text-text-muted">
-          <span className="text-text-faint">transport:</span>{" "}
-          <code className="text-text-secondary">{transport}</code>
-        </div>
-        <div className="text-xs text-text-muted">
-          <span className="text-text-faint">execution:</span>{" "}
-          <code className="text-text-secondary">{summarizeMcpServerExecution(config)}</code>
-          <span className="mt-0.5 block text-[11px] text-text-faint">
-            {execution.reason}
+    <div className="min-w-0 py-1.5 first:pt-0 last:pb-0">
+      <div className="flex min-w-0 items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          aria-expanded={expanded}
+          aria-label={`${name} details`}
+          className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "flex-1 gap-2.5")}
+        >
+          <ChevronRight size={13} aria-hidden="true" className={cx(DS.row.chevron, expanded && DS.row.chevronOpen)} />
+          <span className="min-w-0 truncate font-medium text-text-primary">{name}</span>
+          <span className={cx(DS.text.literal, "hidden shrink-0 sm:inline")}>{transport}</span>
+          <span className={cx("ml-auto inline-flex shrink-0 items-center gap-1.5 text-xs", display.tone)} title={display.title}>
+            {display.kind && <StatusIcon kind={display.kind} decorative />}
+            {display.word}
           </span>
-        </div>
-        {isLocalMcpServerConfig(config) ? (
-          <>
-            <div className="text-xs text-text-muted">
-              <span className="text-text-faint">command:</span>{" "}
-              <code className="text-text-secondary">{config.command}</code>
-            </div>
-            {config.args.length > 0 && (
-              <div className="text-xs text-text-muted">
-                <span className="text-text-faint">args:</span>{" "}
-                <code className="text-text-secondary break-all">
-                  {config.args.join(" ")}
-                </code>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="text-xs text-text-muted">
-            <span className="text-text-faint">url:</span>{" "}
-            <code className="text-text-secondary break-all">{config.url}</code>
-          </div>
-        )}
-        {config.tools && config.tools.length > 0 && (
-          <div className="text-xs text-text-muted">
-            <span className="text-text-faint">tools:</span>{" "}
-            <code className="text-text-secondary">
-              {config.tools.join(", ")}
-            </code>
-          </div>
-        )}
-        {isLocalMcpServerConfig(config) ? (
-          config.env && Object.keys(config.env).length > 0 && (
-            <div className="text-xs text-text-muted">
-              <span className="text-text-faint">env:</span>{" "}
-              <code className="text-text-secondary">
-                {Object.keys(config.env).join(", ")}
-              </code>
-            </div>
-          )
-        ) : (
-          config.headers && Object.keys(config.headers).length > 0 && (
-            <div className="text-xs text-text-muted">
-              <span className="text-text-faint">headers:</span>{" "}
-              <code className="text-text-secondary">
-                {Object.keys(config.headers).join(", ")}
-              </code>
-            </div>
-          )
-        )}
+        </button>
         {onToggleEnabledByDefault && (
-          <label
-            className="mt-3 flex items-start gap-2 rounded-md border border-border bg-bg-surface/60 px-2 py-2 text-xs text-text-muted"
-            title={summarizeMcpServerConfig(config)}
-          >
-            <input
-              type="checkbox"
-              checked={!!enabledByDefault}
-              disabled={defaultToggleDisabled}
-              onChange={(e) => onToggleEnabledByDefault(e.target.checked)}
-              className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5 disabled:opacity-50")}
-            />
-            <span>
-              <span className="font-medium text-text-secondary">Enabled by default</span>
-              <span className="block text-[11px] text-text-faint">
-                Attach this server to every session.
-              </span>
-            </span>
-          </label>
+          <Switch
+            checked={!!enabledByDefault}
+            disabled={defaultToggleDisabled}
+            onChange={(event) => onToggleEnabledByDefault(event.target.checked)}
+            aria-label={`Attach ${name} to every session`}
+            title="Attach to every session"
+          />
         )}
       </div>
-    </ConfigCard>
+
+      {expanded && (
+        <div className={cx(DS.rail, DS.motion.reveal, "space-y-2 pb-2")}>
+          {status && (
+            <p className={DS.field.help} title={mcpObservationTitle(status)}>
+              {mcpObservationLabel(status)}
+              {status.status === "connected" && ` · ${MCP_CONNECTION_GUIDANCE}`}
+            </p>
+          )}
+          {status?.status === "failed" && status.error && (
+            <p className="text-xs text-error">{status.error}</p>
+          )}
+          <FieldList>
+            <Field label="Execution" mono>
+              {summarizeMcpServerExecution(config)}
+              <span className={cx(DS.field.help, "block font-sans")}>{execution.reason}</span>
+            </Field>
+            {local ? (
+              <>
+                <Field label="Command" mono>{config.command}</Field>
+                {config.args.length > 0 && <Field label="Arguments" mono>{config.args.join(" ")}</Field>}
+              </>
+            ) : (
+              <Field label="URL" mono>{config.url}</Field>
+            )}
+            {config.tools && config.tools.length > 0 && <Field label="Tools" mono>{config.tools.join(", ")}</Field>}
+            {secretNames.length > 0 && <Field label={local ? "Environment" : "Headers"} mono>{secretNames.join(", ")}</Field>}
+          </FieldList>
+          <div className="flex flex-wrap gap-1">
+            <Button size="sm" variant="ghost" icon={<Pencil size={13} />} onClick={onEdit} aria-label={`Edit ${name}`}>Edit</Button>
+            <Button size="sm" variant="danger" icon={<Trash2 size={13} />} onClick={onRemove} aria-label="Remove">Remove</Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

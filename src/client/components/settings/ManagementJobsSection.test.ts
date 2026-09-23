@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, Fragment } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BridgeRuntimeStatus } from "../../bridge-management-api";
 import type { AgentBackendStatus } from "../../../shared/agent-backend-status.js";
@@ -16,6 +16,7 @@ import {
 } from "../../test-react-harness";
 import { installDomShim } from "../../test-dom-shim";
 import { ManagementJobsSection } from "./ManagementJobsSection";
+import { BridgeRuntimeSection } from "./BridgeRuntimeSection";
 
 const hookMocks = vi.hoisted(() => ({
   useManagementJobsQuery: vi.fn(),
@@ -271,7 +272,8 @@ function installSelectAwareDomShim() {
 
 async function renderSection() {
   const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
-  await harness.render(createElement(ManagementJobsSection));
+  // The System page shows the runtime controls and the job list together.
+  await harness.render(createElement(Fragment, null, createElement(BridgeRuntimeSection), createElement(ManagementJobsSection)));
   return harness;
 }
 
@@ -284,8 +286,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("ManagementJobsSection", () => {
-  it("renders inferred runner summary, stale warnings, disabled running cancel, and collapsed JSON", async () => {
+describe("System page runtime and management jobs", () => {
+  it("renders stale warnings, disabled running cancel, the opened running job, and collapsed JSON", async () => {
     const running = createJob({
       id: "running-job-123456",
       status: "running",
@@ -300,10 +302,13 @@ describe("ManagementJobsSection", () => {
 
     const harness = await renderSection();
     try {
+      expect(harness.dom.container.textContent ?? "").not.toContain("recent log line");
+      const runningRow = findAllByTag(harness.dom.container, "BUTTON")
+        .find((candidate) => getReactProps(candidate)?.["aria-expanded"] === false && candidate.textContent?.includes("running-jo"));
+      await harness.act(async () => { getReactProps(runningRow)?.onClick?.(); });
       await waitUntilAct(harness.act, () => (harness.dom.container.textContent ?? "").includes("recent log line"));
       const text = harness.dom.container.textContent ?? "";
 
-      expect(text).toContain("Runner summary");
       expect(text).toContain("Runner health is inferred");
       expect(text).toContain("Stale");
       expect(text).toContain("Cancel unavailable");
@@ -359,11 +364,12 @@ describe("ManagementJobsSection", () => {
     try {
       (globalThis.window as unknown as { confirm: typeof confirm }).confirm = confirm;
       const text = harness.dom.container.textContent ?? "";
-      expect(text).toContain("Current activity");
+      expect(text).toContain("3 active sessions · 2 waiting for input · 2 agents running");
+      expect(text).toContain("1 stalled session · 1 failed agent");
       expect(text).toContain("Active sessions");
       expect(text).toContain("Agents running");
       expect(text).toContain("1 stale snapshot excluded");
-      expect(text).toContain("Copilot capacity");
+      expect(text).toContain("11 of 32 live contexts · 17.5 of 64 weighted units");
       expect(text).toContain("Live contexts");
       expect(text).toContain("11 / 32");
       expect(text).toContain("17.5 / 64");
@@ -411,11 +417,11 @@ describe("ManagementJobsSection", () => {
   });
 
   it.each([
-    ["ready", "text-success"],
+    ["ready", "text-text-secondary"],
     ["starting", "text-warning"],
     ["reconnecting", "text-warning"],
     ["disconnected", "text-error"],
-    ["stopped", "text-text-muted"],
+    ["stopped", "text-text-secondary"],
   ] as const)("renders agent backend %s with the expected badge tone", async (state, toneClass) => {
     mockManagementJobs([], createRuntimeStatus({ agentBackend: createAgentBackendStatus({ state }) }));
 

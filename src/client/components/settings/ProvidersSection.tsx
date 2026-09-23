@@ -5,6 +5,7 @@ import { SettingsSection } from "./SettingsSection";
 import { ConfigCard } from "./ConfigCard";
 import { ProviderEditor, type ProviderEditorField } from "./ProviderEditor";
 import { DS, cx } from "../../design/tokens";
+import { SettingList } from "../../design/primitives";
 
 const ADO_FIELDS: ProviderEditorField[] = [
   { key: "org", label: "Organization", placeholder: "e.g. my-org", required: true },
@@ -63,40 +64,25 @@ export function ProvidersSection({
     updateProvider({ ...providers, [key]: undefined });
   };
 
-  const configuredBadge = (
-    <span className={cx(DS.badge.base, "bg-success/15 text-success flex items-center gap-0.5")}>
-      <Check size={10} />
-      configured
+  const stateWord = (text: string, on = false) => (
+    <span className={cx("inline-flex items-center gap-1 text-xs", on ? "text-text-secondary" : "text-text-faint")}>
+      {on && <Check size={11} aria-hidden="true" />}
+      {text}
     </span>
   );
-
-  const notConfiguredBadge = (
-    <span className={cx(DS.badge.base, "bg-bg-surface text-text-faint")}>
-      not configured
-    </span>
-  );
-
+  const configuredBadge = stateWord("configured", true);
+  const notConfiguredBadge = stateWord("not configured");
   // GitHub enrichment works without settings, so its badge reports whether
   // defaults for short refs exist rather than whether the provider is usable.
-  const githubDefaultsBadge = (
-    <span className={cx(DS.badge.base, "bg-success/15 text-success flex items-center gap-0.5")}>
-      <Check size={10} />
-      defaults set
-    </span>
-  );
-
-  const githubNoDefaultsBadge = (
-    <span className={cx(DS.badge.base, "bg-bg-surface text-text-faint")}>
-      no defaults
-    </span>
-  );
+  const githubDefaultsBadge = stateWord("defaults set", true);
+  const githubNoDefaultsBadge = stateWord("no defaults");
 
   return (
     <SettingsSection
       title="Providers"
-      description="Work tracking providers for enriching linked work items and pull requests."
+      description="Used to show linked work items and pull requests."
     >
-      <div className="space-y-2">
+      <SettingList>
         {/* ADO Provider */}
         {editingProvider === "ado" ? (
           <ProviderEditor
@@ -130,17 +116,7 @@ export function ProvidersSection({
             removeTitle="Remove"
           >
             {providers.ado && (
-              <div className="mt-2 space-y-1">
-                {[
-                  { label: "org", value: providers.ado.org },
-                  { label: "project", value: providers.ado.project },
-                ].map((f) => (
-                  <div key={f.label} className="text-xs text-text-muted">
-                    <span className="text-text-faint">{f.label}:</span>{" "}
-                    <code className="text-text-secondary">{f.value}</code>
-                  </div>
-                ))}
-              </div>
+              <p className={cx(DS.text.literal, "mt-0.5")}>{providers.ado.org} / {providers.ado.project}</p>
             )}
           </ConfigCard>
         )}
@@ -183,29 +159,13 @@ export function ProvidersSection({
             }
             removeTitle="Remove"
           >
-            <div className="mt-2 text-xs text-text-faint">
-              Fully qualified <code>owner/repo#123</code> refs and github.com URLs link
-              without configuration; defaults only fill in short refs.
-            </div>
+            <p className={cx(DS.setting.hint, "mt-0.5")}>
+              <code>owner/repo#123</code> refs and URLs link without configuration; defaults fill in short refs.
+            </p>
             {providers.github && (
-              <div className="mt-2 space-y-1">
-                {providers.github.owner && (
-                  <div className="text-xs text-text-muted">
-                    <span className="text-text-faint">owner:</span>{" "}
-                    <code className="text-text-secondary">
-                      {providers.github.owner}
-                    </code>
-                  </div>
-                )}
-                {providers.github.defaultRepo && (
-                  <div className="text-xs text-text-muted">
-                    <span className="text-text-faint">default repo:</span>{" "}
-                    <code className="text-text-secondary">
-                      {providers.github.defaultRepo}
-                    </code>
-                  </div>
-                )}
-              </div>
+              <p className={cx(DS.text.literal, "mt-0.5")}>
+                {[providers.github.owner, providers.github.defaultRepo].filter(Boolean).join(" / ")}
+              </p>
             )}
           </ConfigCard>
         )}
@@ -246,24 +206,13 @@ export function ProvidersSection({
             removeTitle="Remove"
           >
             {providers.linear && (
-              <div className="mt-2 space-y-1">
-                <div className="text-xs text-text-muted">
-                  <span className="text-text-faint">workspace:</span>{" "}
-                  <code className="text-text-secondary">
-                    {providers.linear.workspace}
-                  </code>
-                </div>
-                <div className="text-xs text-text-muted">
-                  <span className="text-text-faint">api key:</span>{" "}
-                  <code className="text-text-secondary">
-                    {providers.linear.apiKey.slice(0, 8)}••••••
-                  </code>
-                </div>
-              </div>
+              <p className={cx(DS.text.literal, "mt-0.5")}>
+                {providers.linear.workspace} · {providers.linear.apiKey.slice(0, 8)}••••••
+              </p>
             )}
           </ConfigCard>
         )}
-      </div>
+      </SettingList>
     </SettingsSection>
   );
 }

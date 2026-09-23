@@ -18,7 +18,7 @@ describe("useModelPresets", () => {
 
   beforeEach(async () => {
     harness = await createReactDomHarness();
-    queryClient.setQueryData<AppSettings>(queryKeys.settings, {
+    let serverSettings: AppSettings = {
       mcpServers: {},
       model: "gpt-5.6",
       modelPresets: {
@@ -26,13 +26,16 @@ describe("useModelPresets", () => {
         preset2: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
       },
       lastModelPreset: "preset1",
-    });
+    };
+    queryClient.setQueryData<AppSettings>(queryKeys.settings, structuredClone(serverSettings));
+    // The server answers a PATCH with the full settings after applying it.
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}"));
+      serverSettings = { ...serverSettings, ...body };
       return {
         ok: true,
         statusText: "OK",
-        json: async () => ({ mcpServers: {}, ...body }),
+        json: async () => structuredClone(serverSettings),
       };
     }));
   });

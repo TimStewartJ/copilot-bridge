@@ -231,12 +231,75 @@ export function FormRow({
   );
 }
 
+/**
+ * One setting: what it is on the left, with at most a short hint, and its control on the right.
+ * On a narrow container the control drops beneath the label. Rows sit in a `SettingList`, which
+ * draws the hairlines between them. `children` holds anything that belongs beneath the whole row,
+ * such as a notice or an opened editor. Long explanations belong behind a Details, not in `hint`.
+ */
+export function SettingRow({
+  label,
+  hint,
+  htmlFor,
+  labelId,
+  control,
+  children,
+  className,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  /** The id of a single field the label names. */
+  htmlFor?: string;
+  /** Lets a group of controls name itself with aria-labelledby. */
+  labelId?: string;
+  control?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cx("@container/setting-row min-w-0 py-3 first:pt-0 last:pb-0", className)}>
+      <div className="flex min-w-0 flex-col gap-2 @[30rem]/setting-row:flex-row @[30rem]/setting-row:items-center @[30rem]/setting-row:justify-between @[30rem]/setting-row:gap-6">
+        <div className="min-w-0">
+          {htmlFor
+            ? <label id={labelId} htmlFor={htmlFor} className={DS.setting.label}>{label}</label>
+            : <div id={labelId} className={DS.setting.label}>{label}</div>}
+          {hint && <div className={DS.setting.hint}>{hint}</div>}
+        </div>
+        {control && <div className={DS.setting.control}>{control}</div>}
+      </div>
+      {children && <div className="mt-2 min-w-0">{children}</div>}
+    </div>
+  );
+}
+
+/** The rows of one settings section, separated by hairlines instead of boxes. */
+export function SettingList({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cx(DS.surface.divided, "min-w-0", className)}>{children}</div>;
+}
+
+/**
+ * An on/off setting. It is a native checkbox with the switch role, so it keeps checkbox semantics
+ * and keyboard behaviour. On is the neutral high-contrast fill, never accent.
+ */
+export function Switch({
+  className,
+  ...rest
+}: Omit<ComponentProps<"input">, "type" | "role">) {
+  // The label around the track gives it a 40px touch target on a phone without growing the track.
+  return (
+    <label className="-m-2 inline-flex min-h-10 min-w-10 shrink-0 cursor-pointer items-center justify-center p-2 md:m-0 md:min-h-0 md:min-w-0 md:p-0">
+      <input type="checkbox" role="switch" className={cx(DS.setting.switch, className)} {...rest} />
+    </label>
+  );
+}
+
 // ── Structure ───────────────────────────────────────────────────────────────
 
 /**
  * A labelled group of rows. It draws no box: the label and the space around it do the grouping.
  */
 export function Section({
+  id,
   label,
   count,
   action,
@@ -246,6 +309,8 @@ export function Section({
   className,
   labelClassName,
 }: {
+  /** Lets a link or a scroll target reach this section. */
+  id?: string;
   label: ReactNode;
   /** A figure that belongs to the label, such as how many rows follow or "3/7". */
   count?: ReactNode;
@@ -261,7 +326,7 @@ export function Section({
   const headingId = useId();
   const Heading = level === "page" ? "h2" : "h3";
   return (
-    <section aria-labelledby={headingId} data-ds-surface={surface ? "group" : undefined} className={cx(surface && DS.layout.section, className)}>
+    <section id={id} aria-labelledby={headingId} data-ds-surface={surface ? "group" : undefined} className={cx(surface && DS.layout.section, className)}>
       <div className={cx("flex items-center justify-between gap-2", level === "page" ? "mb-2 min-h-8" : "min-h-7", labelClassName)}>
         <Heading id={headingId} className={level === "page" ? DS.text.sectionTitle : DS.text.sectionLabel}>
           {label}

@@ -11,6 +11,7 @@ export interface ConfigCardProps {
   children?: React.ReactNode;
 }
 
+/** A configured object in a settings list: its name and state on one line, a short detail beneath. */
 export function ConfigCard({
   title,
   badge,
@@ -20,16 +21,16 @@ export function ConfigCard({
   children,
 }: ConfigCardProps) {
   return (
-    <div className={DS.layout.objectRow}>
-      <div className="flex items-start justify-between">
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cx(DS.text.sectionTitle, "break-words")}>{title}</span>
+    <div className="min-w-0 py-3 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className={cx(DS.setting.label, "break-words")}>{title}</span>
             {badge}
           </div>
           {children}
         </div>
-        <div className="ml-2 flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <IconButton onClick={onEdit} label={`Edit ${title}`} title="Edit">
             <Pencil size={14} />
           </IconButton>
