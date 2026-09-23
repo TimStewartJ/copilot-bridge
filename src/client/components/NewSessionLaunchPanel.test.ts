@@ -378,12 +378,118 @@ describe("NewSessionLaunchPanel", () => {
       "Claude Sonnet 5",
       "Claude Haiku 4.5",
     ]);
-    expect(document.activeElement).toBe(options[0]);
+    expect(document.activeElement).toBe(options[1]);
 
     await harness!.act(async () => {
       getReactProps(options[1])?.onClick?.();
     });
     expect(props.onModelChange).toHaveBeenCalledWith("preset2", "claude-sonnet-5");
+  });
+
+  it("opens the model menu when the live tile is clicked again", async () => {
+    const props = { ...requiredProps(), onModelSelectionCommitted: vi.fn() };
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...props,
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "gpt-5-mini", name: "GPT-5 mini" },
+      ],
+      selectedModelId: "gpt-5-mini",
+      selectedPresetSlot: "preset1",
+      presets: { preset1: { model: "gpt-5-mini" } },
+    }));
+
+    const liveTile = findTile(harness!.dom.container, "Preset 1");
+    expect(getReactProps(liveTile)?.["aria-haspopup"]).toBe("listbox");
+    expect(getReactProps(liveTile)?.["aria-expanded"]).toBe(false);
+    await harness!.act(async () => {
+      getReactProps(liveTile)?.onClick?.();
+    });
+
+    const options = findAllByTag(harness!.dom.container, "BUTTON")
+      .filter((button) => getReactProps(button)?.role === "option");
+    expect(options.map((button) => button.textContent)).toEqual(["GPT-5.6", "GPT-5 mini"]);
+    expect(document.activeElement).toBe(options[1]);
+    expect(props.onPresetChange).not.toHaveBeenCalled();
+    expect(props.onModelSelectionCommitted).not.toHaveBeenCalled();
+
+    await harness!.act(async () => {
+      getReactProps(options[0])?.onClick?.();
+    });
+    expect(props.onModelChange).toHaveBeenCalledWith("preset1", "gpt-5.6");
+    expect(props.onModelSelectionCommitted).toHaveBeenCalledTimes(1);
+    expect(findAllByTag(harness!.dom.container, "BUTTON")
+      .some((button) => getReactProps(button)?.role === "option")).toBe(false);
+  });
+
+  it("reports a committed selection when an inactive preset tile is chosen", async () => {
+    const props = { ...requiredProps(), onModelSelectionCommitted: vi.fn() };
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...props,
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "claude-opus-5", name: "Claude Opus 5" },
+      ],
+      selectedModelId: "gpt-5.6",
+      selectedPresetSlot: "preset1",
+    }));
+
+    const inactive = findTile(harness!.dom.container, "Preset 2");
+    expect(getReactProps(inactive)?.["aria-haspopup"]).toBeUndefined();
+    await harness!.act(async () => {
+      getReactProps(inactive)?.onClick?.();
+    });
+    expect(props.onPresetChange).toHaveBeenCalledWith("preset2");
+    expect(props.onModelSelectionCommitted).toHaveBeenCalledTimes(1);
+    expect(findAllByTag(harness!.dom.container, "BUTTON")
+      .some((button) => getReactProps(button)?.role === "option")).toBe(false);
+  });
+
+  it("moves through choices with arrow keys and returns focus to the tile on Escape", async () => {
+    const props = { ...requiredProps(), onModelSelectionCommitted: vi.fn() };
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...props,
+      models: [
+        { id: "gpt-5.6", name: "GPT-5.6" },
+        { id: "claude-opus-5", name: "Claude Opus 5" },
+      ],
+      selectedModelId: "gpt-5.6",
+      selectedPresetSlot: "preset1",
+    }));
+
+    const addListener = vi.spyOn(document, "addEventListener");
+    const caret = findAllByTag(harness!.dom.container, "BUTTON")
+      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 2 model");
+    await harness!.act(async () => {
+      getReactProps(caret)?.onClick?.();
+    });
+
+    const options = findAllByTag(harness!.dom.container, "BUTTON")
+      .filter((button) => getReactProps(button)?.role === "option");
+    const menu = findAllByTag(harness!.dom.container, "DIV")
+      .find((element) => getReactProps(element)?.role === "listbox");
+    expect(document.activeElement).toBe(options[1]);
+    const preventDefault = vi.fn();
+    await harness!.act(async () => {
+      getReactProps(menu)?.onKeyDown?.({ key: "ArrowDown", preventDefault });
+    });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(document.activeElement).toBe(options[0]);
+
+    const keydown = addListener.mock.calls
+      .filter(([type]) => type === "keydown")
+      .map(([, handler]) => handler as unknown as (event: { key: string }) => void)
+      .at(-1);
+    if (!keydown) throw new Error("Refine menu did not register an Escape handler");
+    await harness!.act(async () => {
+      keydown({ key: "Escape" });
+    });
+    addListener.mockRestore();
+
+    expect(findAllByTag(harness!.dom.container, "BUTTON")
+      .some((button) => getReactProps(button)?.role === "option")).toBe(false);
+    expect(document.activeElement).toBe(findTile(harness!.dom.container, "Preset 2"));
+    expect(props.onModelSelectionCommitted).not.toHaveBeenCalled();
   });
 
   it("marks the Bridge default inside the refine menu rather than on the tile", async () => {

@@ -585,7 +585,7 @@ describe("SessionList change model dialog", () => {
         "Claude Sonnet 5",
         "Claude Haiku 4.5",
       ]);
-      expect(document.activeElement).toBe(options[0]);
+      expect(document.activeElement).toBe(options[1]);
     } finally {
       await harness.cleanup();
     }

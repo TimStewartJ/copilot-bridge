@@ -137,6 +137,25 @@ describe("ChatInput voice retry", () => {
     expect(textarea.value).toBe("hello");
   });
 
+  it("takes focus when a focus request arrives on a fine-pointer device", async () => {
+    await renderChatInput({ focusRequest: 0 });
+    const textarea = findTextarea(getHarness().dom.container);
+    textarea.blur?.();
+    expect(document.activeElement).not.toBe(textarea);
+
+    await renderChatInput({ focusRequest: 1 });
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("ignores focus requests on touch devices so the keyboard does not pop up", async () => {
+    pointerFineMatches = false;
+    await renderChatInput({ focusRequest: 0 });
+    const textarea = findTextarea(getHarness().dom.container);
+
+    await renderChatInput({ focusRequest: 1 });
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
   it("keeps the composer visible in constrained chat layouts", async () => {
     await renderChatInput();
 

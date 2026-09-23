@@ -108,6 +108,8 @@ interface ChatInputProps {
   /** Hides the record button while something else owns the microphone (hands-free voice). */
   hideVoiceInput?: boolean;
   placeholder?: string;
+  /** Incremented to request focus (desktop only, so touch devices do not raise the keyboard). */
+  focusRequest?: number;
 }
 
 export default function ChatInput({
@@ -131,6 +133,7 @@ export default function ChatInput({
   defaultSendMode = DEFAULT_SEND_MODE,
   hideVoiceInput = false,
   placeholder = "Type a message...",
+  focusRequest = 0,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -349,6 +352,18 @@ export default function ChatInput({
       textareaRef.current?.focus();
     }
   }, [composerKey]);
+
+  const handledFocusRequestRef = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === handledFocusRequestRef.current) return;
+    handledFocusRequestRef.current = focusRequest;
+    if (!hasFinePointer()) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    const end = el.value.length;
+    el.setSelectionRange?.(end, end);
+  }, [focusRequest]);
 
   const addFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
