@@ -17,6 +17,7 @@ import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
+import TaskKindBadge from "./TaskKindBadge";
 import {
   FolderOpen,
   LayoutDashboard,
@@ -28,12 +29,10 @@ import {
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
 import TaskMomentumHistory from "./TaskMomentumHistory";
-import TaskKindSwitcher from "./TaskKindSwitcher";
 import TaskPanelSummaryRow from "./TaskPanelSummaryRow";
 import TaskGitStatusSummary from "./TaskGitStatusSummary";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
-import { getTaskKindUpdate } from "../task-kind";
 import { LoadingSkeletonRegion, Skeleton, SkeletonRow, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
 import { Badge, Button, Section, IdentitySwatch } from "../design/primitives";
@@ -103,12 +102,12 @@ export function TaskPanelRouteSkeleton() {
     >
       <div className={cx(DS.surface.pane, "absolute inset-0 overflow-y-auto overflow-x-hidden")}>
         <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-3 p-3")}>
-          <div className="flex items-center justify-between gap-2">
-            <Skeleton width={64} height={10} shape="pill" />
-            <Skeleton width={96} height={22} shape="rounded" />
+          <div className="flex items-start gap-2">
+            <Skeleton width="82%" height={18} shape="pill" />
+            <Skeleton width={16} height={16} shape="rounded" />
           </div>
-          <Skeleton width="82%" height={18} shape="pill" />
           <div className="flex flex-wrap gap-1.5">
+            <Skeleton width={48} height={14} shape="pill" />
             <Skeleton width={72} height={14} shape="pill" />
             <Skeleton width={48} height={14} shape="pill" />
           </div>
@@ -198,8 +197,6 @@ export default function TaskPanel({
   const activeSession = linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
   const sessionWorkspaceQuery = useSessionWorkspaceQuery(activeSession?.sessionId, task?.id);
 
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
   const [previewAgentDefinition, setPreviewAgentDefinition] = useState<TaskAgentDefinitionSummary | null>(null);
@@ -240,7 +237,6 @@ export default function TaskPanel({
       window.clearTimeout(highlightTimerRef.current);
       highlightTimerRef.current = null;
     }
-    setEditingTitle(false);
     setPreviewDocPath(null);
     setWorkspaceSheetOpen(false);
     setHighlightChecklistItemId(null);
@@ -361,19 +357,6 @@ export default function TaskPanel({
   );
   const showSecondarySummaries = true;
 
-  const commitTitle = () => {
-    const trimmed = titleDraft.trim();
-    if (trimmed && trimmed !== task.title) {
-      onUpdateTask(task.id, { title: trimmed });
-    }
-    setEditingTitle(false);
-  };
-
-  const handleKindChange = (nextKind: Task["kind"]) => {
-    const updates = getTaskKindUpdate(currentTask, nextKind);
-    if (!updates) return;
-    void onUpdateTask(task.id, updates);
-  };
   const showCompletionButton = currentTask.kind !== "ongoing"
     && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
   const completionDisabled = !showCompletionButton || isUpdatingCompletion;
@@ -413,52 +396,29 @@ export default function TaskPanel({
         scrollRestoration={scrollRestoration}
       >
         <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-3 p-3")}>
-        <div className="flex items-center justify-between gap-2">
-          {onViewDashboard ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="-ml-2.5"
-              icon={<LayoutDashboard size={13} aria-hidden="true" />}
-              onClick={() => openTaskOverview()}
-              title="Open task overview"
-            >
-              Overview
-            </Button>
-          ) : <span />}
-          <div className="flex shrink-0 items-center gap-1.5">
-            <TaskKindSwitcher kind={currentTask.kind} onChange={handleKindChange} />
-          </div>
-        </div>
-
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1 space-y-2">
-            {editingTitle ? (
-              <input
-                autoFocus
-                className={cx(DS.text.title, "-mx-2 w-[calc(100%+1rem)] rounded-lg border border-border bg-bg-hover/30 px-2 py-1 outline-none focus:border-text-faint")}
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onBlur={commitTitle}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitTitle();
-                  if (e.key === "Escape") setEditingTitle(false);
-                }}
-              />
-            ) : (
+            {onViewDashboard ? (
               <button
-                onClick={() => {
-                  setTitleDraft(task.title);
-                  setEditingTitle(true);
-                }}
-                className={cx(DS.text.title, "w-full rounded text-left", DS.focus)}
-                title="Click to edit title"
+                type="button"
+                onClick={openTaskOverview}
+                aria-label={`Open overview for ${task.title}`}
+                className={cx(DS.text.title, "group/title flex min-w-0 flex-1 items-start gap-2 rounded text-left", DS.focus)}
+                title="Open task overview"
               >
-                <span className="line-clamp-3">{task.title}</span>
+                <span className="line-clamp-3 min-w-0 flex-1">{task.title}</span>
+                <LayoutDashboard
+                  size={15}
+                  className="mt-1 shrink-0 text-text-secondary opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 group-hover/title:opacity-100 group-focus-visible/title:opacity-100"
+                  aria-hidden="true"
+                />
               </button>
+            ) : (
+              <h1 className={cx(DS.text.title, "line-clamp-3")}>{task.title}</h1>
             )}
 
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <TaskKindBadge kind={currentTask.kind} showTask />
               {group && (
                 <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
                   <IdentitySwatch color={group.color} />

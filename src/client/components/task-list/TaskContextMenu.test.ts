@@ -13,7 +13,7 @@ import {
 import TaskContextMenu from "./TaskContextMenu";
 import { installDialogDom } from "../../test-dialog-harness";
 
-function createTask(): Task {
+function createTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task-1",
     title: "Clipboard task",
@@ -31,6 +31,7 @@ function createTask(): Task {
     workItems: [],
     pullRequests: [],
     tags: [],
+    ...overrides,
   };
 }
 
@@ -56,7 +57,20 @@ function setClipboard(clipboard: unknown) {
   (globalThis.navigator as unknown as { clipboard?: unknown }).clipboard = clipboard;
 }
 
-async function renderTaskContextMenu(onClose: () => void, actions: ComponentProps<typeof TaskContextMenu>["actions"] = {}) {
+function stubWindowConfirm(confirm: (message?: string) => boolean) {
+  const descriptor = Object.getOwnPropertyDescriptor(window, "confirm");
+  Object.defineProperty(window, "confirm", { configurable: true, writable: true, value: confirm });
+  return () => {
+    if (descriptor) Object.defineProperty(window, "confirm", descriptor);
+    else Reflect.deleteProperty(window, "confirm");
+  };
+}
+
+async function renderTaskContextMenu(
+  onClose: () => void,
+  actions: ComponentProps<typeof TaskContextMenu>["actions"] = {},
+  task: Task = createTask(),
+) {
   const harness = await createReactDomHarness({ installDom: installDialogDom });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnMount: false } },
@@ -67,7 +81,7 @@ async function renderTaskContextMenu(onClose: () => void, actions: ComponentProp
     QueryClientProvider,
     { client: queryClient },
     createElement(TaskContextMenu, {
-      task: createTask(),
+      task,
       position: { x: 10, y: 10 },
       taskGroups: [],
       sessionMap: new Map<string, Session>(),
@@ -134,5 +148,67 @@ describe("TaskContextMenu reorder entry", () => {
     try {
       expect(hasButtonWithText(withoutReorder.dom.container, "Reorder tasks")).toBe(false);
     } finally { await withoutReorder.cleanup(); }
+  });
+});
+
+describe("TaskContextMenu kind change", () => {
+  it("changes the task kind through the context menu", async () => {
+    const update = vi.fn();
+    const onClose = vi.fn();
+    const harness = await renderTaskContextMenu(onClose, { onUpdateTask: update });
+    try {
+      await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Change kind to ongoing")); });
+
+      expect(update).toHaveBeenCalledExactlyOnceWith("task-1", { kind: "ongoing", doneWhen: null });
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("asks before clearing a task's Done when definition", async () => {
+    const update = vi.fn();
+    const onClose = vi.fn();
+    const harness = await renderTaskContextMenu(
+      onClose,
+      { onUpdateTask: update },
+      createTask({ doneWhen: "Ship the release" }),
+    );
+    const confirm = vi.fn(() => false);
+    const restoreConfirm = stubWindowConfirm(confirm);
+    try {
+      await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Change kind to ongoing…")); });
+
+      expect(confirm).toHaveBeenCalledExactlyOnceWith(
+        "Changing this to an ongoing task will clear its Done when definition. Continue?",
+      );
+      expect(update).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      restoreConfirm();
+      await harness.cleanup();
+    }
+  });
+
+  it("changes back to a task without removing its Done when definition", async () => {
+    const update = vi.fn();
+    const onClose = vi.fn();
+    const harness = await renderTaskContextMenu(
+      onClose,
+      { onUpdateTask: update },
+      createTask({ kind: "ongoing", doneWhen: "Ship the release" }),
+    );
+    const confirm = vi.fn(() => false);
+    const restoreConfirm = stubWindowConfirm(confirm);
+    try {
+      await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Change kind to task")); });
+
+      expect(confirm).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalledExactlyOnceWith("task-1", { kind: "task" });
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      restoreConfirm();
+      await harness.cleanup();
+    }
   });
 });
