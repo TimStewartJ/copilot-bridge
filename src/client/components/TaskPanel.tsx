@@ -22,7 +22,6 @@ import {
   LayoutDashboard,
   AlertTriangle,
   CheckCircle2,
-  Clock,
   Plus,
   RotateCcw,
 } from "lucide-react";
@@ -556,20 +555,6 @@ export default function TaskPanel({
               </Button>
             )}
           >
-            {linkedSessions.some((session) => session.deferSummary.count > 0) && (
-              <div className="mb-1 flex items-center gap-1.5 text-xs text-text-muted">
-                <Clock size={11} className="shrink-0 text-text-faint" aria-hidden="true" />
-                <span>
-                  {linkedSessions.reduce((count, session) => count + session.deferSummary.count, 0)} active deferred check{
-                    linkedSessions.reduce((count, session) => count + session.deferSummary.count, 0) === 1 ? "" : "s"
-                  } across {
-                    linkedSessions.filter((session) => session.deferSummary.count > 0).length
-                  } session{
-                    linkedSessions.filter((session) => session.deferSummary.count > 0).length === 1 ? "" : "s"
-                  }
-                </span>
-              </div>
-            )}
             <TaskSessionList
               task={task}
               linkedSessions={linkedSessions}
