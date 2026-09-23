@@ -472,6 +472,17 @@ describe("settings-store", () => {
     });
   });
 
+  it("stores and clears the reduced-motion override and rejects unknown values", () => {
+    store.updateSettings({ motion: "reduce" });
+    expect(store.getSettings().motion).toBe("reduce");
+    store.updateSettings({ motion: "full" });
+    expect(store.getSettings().motion).toBe("full");
+    expect(() => store.updateSettings({ motion: "slow" } as never)).toThrow("motion must be system, reduce, or full");
+    expect(store.getSettings().motion).toBe("full");
+    store.updateSettings({ motion: "" } as never);
+    expect(store.getSettings().motion).toBeUndefined();
+  });
+
   it("does not overwrite an unreadable row when a later update is attempted", () => {
     const raw = "{broken";
     writeRawSettings(raw);

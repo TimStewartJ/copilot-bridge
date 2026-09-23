@@ -2,6 +2,10 @@
 @import "@fontsource-variable/inter";
 @plugin "@tailwindcss/typography";
 
+/* Motion variants follow the resolved Appearance setting (lib/motion.ts), not only the device query. */
+@custom-variant motion-reduce (&:where(:root[data-motion="reduce"] *));
+@custom-variant motion-safe (&:where(:root[data-motion="full"] *));
+
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
 
@@ -254,12 +258,11 @@ body {
   mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 2.25rem), rgba(0, 0, 0, 0.18) 100%);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .streaming-text-fade {
-    animation: none;
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
+/* Resolved from the Appearance motion setting or the device preference (lib/motion.ts). */
+:root[data-motion="reduce"] .streaming-text-fade {
+  animation: none;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 /* ── Design system foundation (see src/client/design/README.md) ─────── */
@@ -359,16 +362,15 @@ html[data-theme="light"] {
   margin-left: 0.5rem;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .shimmer-text {
-    animation: none;
-    color: var(--color-text-secondary);
-    background-image: none;
-  }
+/* Resolved from the Appearance motion setting or the device preference (lib/motion.ts). */
+:root[data-motion="reduce"] .shimmer-text {
+  animation: none;
+  color: var(--color-text-secondary);
+  background-image: none;
+}
 
-  .ds-reveal {
-    animation: none;
-  }
+:root[data-motion="reduce"] .ds-reveal {
+  animation: none;
 }
 
 /* Indeterminate progress bar for the chat history sync strip. */
@@ -397,12 +399,11 @@ html[data-theme="light"] {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .history-sync-bar::after {
-    animation: none;
-    width: 100%;
-    opacity: 0.6;
-  }
+/* Resolved from the Appearance motion setting or the device preference (lib/motion.ts). */
+:root[data-motion="reduce"] .history-sync-bar::after {
+  animation: none;
+  width: 100%;
+  opacity: 0.6;
 }
 
 /*
@@ -442,11 +443,10 @@ html[data-theme="light"] {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .history-syncing::after {
-    animation: none;
-    background: none;
-  }
+/* Resolved from the Appearance motion setting or the device preference (lib/motion.ts). */
+:root[data-motion="reduce"] .history-syncing::after {
+  animation: none;
+  background: none;
 }
 
 /*
@@ -1015,11 +1015,11 @@ html[data-theme="light"] {
   animation: docs-fade-in 0.18s ease-out;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .docs-fade-in,
-  .docs-dialog-in,
-  .docs-content-in,
-  .docs-heading-flash {
-    animation: none;
-  }
+/* Resolved from the Appearance motion setting or the device preference (lib/motion.ts). */
+:root[data-motion="reduce"] .docs-fade-in,
+:root[data-motion="reduce"] .docs-dialog-in,
+:root[data-motion="reduce"] .docs-content-in,
+:root[data-motion="reduce"] .docs-heading-flash {
+  animation: none;
 }
+

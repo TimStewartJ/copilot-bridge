@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { VoiceState } from "./voice-api";
+import { prefersReducedMotion } from "../lib/motion";
 
 interface OrbTheme {
   hue: number;
@@ -39,7 +40,6 @@ export function VoiceOrb({ state, turnProbability, getMicLevel, getOutputLevel }
     let hue = THEMES.idle.hue;
     let alpha = THEMES.idle.alpha;
     let level = 0;
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
     const draw = (timestamp: number) => {
       frame = requestAnimationFrame(draw);
@@ -65,7 +65,7 @@ export function VoiceOrb({ state, turnProbability, getMicLevel, getOutputLevel }
       level += (Math.min(1, target) - level) * 0.22;
       hue += (theme.hue - hue) * 0.06;
       alpha += (theme.alpha - alpha) * 0.05;
-      const t = reducedMotion ? 0 : timestamp / 1000;
+      const t = prefersReducedMotion() ? 0 : timestamp / 1000;
       const cx = width / 2;
       const cy = height / 2;
       const base = Math.min(width, height) * 0.24;

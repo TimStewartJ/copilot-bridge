@@ -8,10 +8,11 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { ThemePreference } from "./api";
+import type { MotionPreference, ThemePreference } from "./api";
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { Button, Notice } from "./design/primitives";
 import { DS } from "./design/tokens";
+import { applyMotion, REDUCED_MOTION_QUERY, resolveMotion } from "./lib/motion";
 
 type EffectiveTheme = "light" | "dark";
 
@@ -23,6 +24,10 @@ interface ThemeContextValue {
   savedTheme: ThemePreference;
   /** Preview a settings draft; null returns to the saved preference. Persistence belongs to Save. */
   previewTheme: (preference: ThemePreference | null) => void;
+  /** Reduced-motion preference, including an unsaved settings preview. */
+  motion: MotionPreference;
+  savedMotion: MotionPreference;
+  previewMotion: (preference: MotionPreference | null) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
@@ -53,6 +58,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>("dark");
   const [loaded, setLoaded] = useState(false);
   const [preview, setPreview] = useState<ThemePreference | null>(null);
+  const [motionPreview, setMotionPreview] = useState<MotionPreference | null>(null);
 
   const { data: settings, error, refetch } = useSettingsQuery();
 
@@ -72,6 +78,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (!loaded) applyTheme("dark");
   }, [loaded]);
 
+  const savedMotion = settings?.motion ?? "system";
+  const motion = motionPreview ?? savedMotion;
+
+  useEffect(() => {
+    applyMotion(resolveMotion(motion));
+    if (motion !== "system" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(REDUCED_MOTION_QUERY);
+    const handler = () => applyMotion(resolveMotion("system"));
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [motion]);
+
   // Listen for system preference changes when in "system" mode
   useEffect(() => {
     if (theme !== "system") return;
@@ -87,6 +105,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [theme]);
 
   const previewTheme = useCallback((preference: ThemePreference | null) => setPreview(preference), []);
+  const previewMotion = useCallback((preference: MotionPreference | null) => setMotionPreview(preference), []);
 
   // Don't render children until we've loaded the theme to avoid flash
   if (!loaded) {
@@ -104,7 +123,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ThemeContext.Provider value={{ theme, effectiveTheme, savedTheme: settings?.theme ?? "dark", previewTheme }}>
+    <ThemeContext.Provider value={{ theme, effectiveTheme, savedTheme: settings?.theme ?? "dark", previewTheme, motion, savedMotion, previewMotion }}>
       {children}
     </ThemeContext.Provider>
   );

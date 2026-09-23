@@ -5,9 +5,11 @@ import { installDomShim } from "./test-dom-shim";
 import { ThemeProvider, useTheme } from "./useTheme";
 import { AppearanceSection } from "./components/settings/AppearanceSection";
 import type { AppSettings } from "./api";
+import { prefersReducedMotion } from "./lib/motion";
 
 const state = vi.hoisted(() => ({
-  settings: { theme: "dark", mcpServers: {} },
+  settings: { theme: "dark", mcpServers: {} } as Record<string, unknown>,
+  deviceReducesMotion: false,
   patch: vi.fn(),
   hasData: true,
   error: null as Error | null,
@@ -17,11 +19,14 @@ vi.mock("./hooks/queries/useSettings", () => ({ useSettingsQuery: () => ({ data:
 vi.mock("./api", () => ({ patchSettings: state.patch }));
 
 function Probe() {
-  const { theme, savedTheme, previewTheme } = useTheme();
+  const { theme, savedTheme, previewTheme, motion, previewMotion } = useTheme();
   return createElement("div", null,
     createElement("output", null, `${theme}/${savedTheme}`),
+    createElement("output", null, `motion:${motion}`),
     createElement("button", { onClick: () => previewTheme("light") }, "Preview"),
     createElement("button", { onClick: () => previewTheme(null) }, "Restore"),
+    createElement("button", { onClick: () => previewMotion("full") }, "Preview full motion"),
+    createElement("button", { onClick: () => previewMotion(null) }, "Restore motion"),
   );
 }
 
@@ -31,6 +36,7 @@ describe("reversible theme drafts", () => {
     await harness?.cleanup();
     harness = undefined;
     state.settings = { theme: "dark", mcpServers: {} };
+    state.deviceReducesMotion = false;
     state.patch.mockClear();
     state.hasData = true;
     state.error = null;
@@ -41,7 +47,11 @@ describe("reversible theme drafts", () => {
     harness ??= await createReactDomHarness({ installDom: () => {
       const dom = installDomShim();
       Object.defineProperty(document, "querySelector", { configurable: true, value: () => null });
-      Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) });
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: (query: string) => ({
+        matches: query.includes("reduced-motion") ? state.deviceReducesMotion : false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }) });
       return dom;
     } });
     await harness.render(createElement(ThemeProvider, null, createElement(Probe)));
@@ -105,6 +115,55 @@ describe("reversible theme drafts", () => {
     await harness!.render(appearance({ ...saved, theme: "light" }));
     await render();
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(state.patch).not.toHaveBeenCalled();
+  });
+
+  it("resolves reduced motion from the device by default and lets the saved override win", async () => {
+    state.deviceReducesMotion = true;
+    await render();
+    expect(harness!.dom.container.textContent).toContain("motion:system");
+    expect(document.documentElement.getAttribute("data-motion")).toBe("reduce");
+    expect(prefersReducedMotion()).toBe(true);
+
+    state.settings = { ...state.settings, motion: "full" };
+    await render();
+    expect(document.documentElement.getAttribute("data-motion")).toBe("full");
+    expect(prefersReducedMotion()).toBe(false);
+
+    state.deviceReducesMotion = false;
+    state.settings = { ...state.settings, motion: "reduce" };
+    await render();
+    expect(document.documentElement.getAttribute("data-motion")).toBe("reduce");
+    expect(prefersReducedMotion()).toBe(true);
+  });
+
+  it("previews the motion override without saving and restores the saved value", async () => {
+    await render();
+    expect(document.documentElement.getAttribute("data-motion")).toBe("full");
+    state.settings = { ...state.settings, motion: "reduce" };
+    await render();
+    expect(document.documentElement.getAttribute("data-motion")).toBe("reduce");
+    await click("Preview full motion");
+    expect(harness!.dom.container.textContent).toContain("motion:full");
+    expect(document.documentElement.getAttribute("data-motion")).toBe("full");
+    await click("Restore motion");
+    expect(document.documentElement.getAttribute("data-motion")).toBe("reduce");
+    expect(state.patch).not.toHaveBeenCalled();
+  });
+
+  it("drafts the motion override from the Appearance section", async () => {
+    await render();
+    const saved: AppSettings = { mcpServers: {}, theme: "dark" };
+    const setDraft = vi.fn();
+    const appearance = (draft: AppSettings) => createElement(ThemeProvider, null, createElement(AppearanceSection, { draft, setDraft }));
+    await harness!.render(appearance(saved));
+    const reduced = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent === "Reduced");
+    await harness!.act(async () => { getReactProps(reduced)?.onClick?.(); });
+    expect(setDraft).toHaveBeenCalledWith({ ...saved, motion: "reduce" });
+    await harness!.render(appearance({ ...saved, motion: "reduce" }));
+    expect(document.documentElement.getAttribute("data-motion")).toBe("reduce");
+    await harness!.render(appearance(saved));
+    expect(document.documentElement.getAttribute("data-motion")).toBe("full");
     expect(state.patch).not.toHaveBeenCalled();
   });
 });
