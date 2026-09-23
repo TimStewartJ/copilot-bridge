@@ -114,6 +114,8 @@ hover/selected rows and constrained panes.
 | A choice between a few options | `SegmentedControl` |
 | Options that wrap, or a multi-select | `ChoiceButton` in `DS.choice.group` |
 | A text field, select, labelled control | `TextInput`, `TextArea`, `Select`, `FormRow` |
+| One setting: its name, a short hint, its control at the end of the line | `SettingRow` inside a `SettingList` |
+| An on/off setting | `Switch` (a native checkbox with the switch role; on is the neutral fill) |
 | A group of rows with a label | `Section` (`surface` for a significant region; `level="page"` on a full-page view) |
 | Something that opens to show more | `DisclosureRow`; `Details` when no state is needed |
 | Labelled values | `FieldList` + `Field`, not one box per value |
@@ -193,14 +195,27 @@ loaded/empty/error states, both themes and phone/container widths before publish
   another card. Notes/docs use plain Markdown excerpts; message excerpts remain literal for code
   searches. Query syntax, coverage details and help are available without competing with results.
 - Settings uses one neutral category surface with separated sections, not one card per setting.
-  Keep common defaults visible, and use disclosures for long instruction text, catalog details and
-  optional icon choices. Mobile category selection must expose every category without a sideways
-  hunt. Live quota remains one tap away in the mobile header. Long configuration lists follow the
-  primary controls; row actions stay in the shared overflow menu instead of crowding phone layouts.
-- Draft controls use the page's Save/Discard pair. Save only changed top-level fields; do not write
-  unchanged or independently saved values back from an older snapshot. Theme changes are reversible
-  previews until Save, and revert on Discard or leaving settings. Model metadata arriving is a read,
-  never an implicit edit to the saved draft. Missing/error states offer a real retry.
+  Each setting is a `SettingRow`: its name, at most one short hint, and the control at the end of
+  the line. A section has at most a one-line description. Longer explanations, raw configuration,
+  logs and diagnostic figures sit behind a `Details` or open beneath their row. Collections (MCP
+  servers, skills, tags, jobs) are one line per item that opens for more. Categories are
+  Chat, Responses, Appearance, Notifications & device, Integrations, Tags, Voice, System and
+  Copilot usage; System holds status, controls, release updates, management jobs, the browser and
+  the source version, with one Refresh for the page. Retired `?group=` ids (`general`, `updates`,
+  `management`, `diagnostics`) still resolve, and `?section=` opens a part of System.
+- Mobile category selection must expose every category without a sideways hunt. Live quota remains
+  one tap away in the mobile header. Row actions stay in the shared overflow menu or the opened
+  row instead of crowding phone layouts.
+- Settings save as they change, through the one settings writer (`lib/settings-writer.ts`) that
+  Settings, Helm and model presets share. It sends one PATCH at a time with only the changed
+  top-level keys, shows the change at once, puts a value back when the server rejects it, asks the
+  server what it holds after a lost response, and offers Undo for the last save and Retry for a
+  failure that can be retried. The header says Saving…, Saved or what failed; a control whose value
+  failed also shows the error beside itself. Long free text (identity, instructions, paths) uses
+  `DraftTextField`: it saves on its own Save, keeps unsaved text for the tab in sessionStorage, and
+  its Save is never the primary button. A setting whose save has side effects on the server, such as
+  computer use evicting cached sessions, is disabled until its previous change is saved. Model
+  metadata arriving is a read, never an implicit edit. Missing/error states offer a real retry.
 - Labels must be associated with their input, select or textarea. Field errors are described by the
   affected control, and native dropdown affordances remain visible.
 

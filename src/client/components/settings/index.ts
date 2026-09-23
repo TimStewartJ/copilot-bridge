@@ -22,3 +22,4 @@ export { CopilotUsageSection } from "./CopilotUsageSection";
 export { BrowserDiagnosticsSection } from "./BrowserDiagnosticsSection";
 export { ManagementJobsSection } from "./ManagementJobsSection";
 export { SettingsCategoryNav } from "./SettingsCategoryNav";
+export { BridgeRuntimeSection } from "./BridgeRuntimeSection";

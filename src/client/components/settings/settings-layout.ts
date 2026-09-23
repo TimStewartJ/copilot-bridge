@@ -1,77 +1,61 @@
-export type CategoryId = "general" | "integrations" | "voice" | "updates" | "usage" | "diagnostics";
-
-export type SectionId =
-  | "system-prompt"
-  | "model"
-  | "reasoning-effort"
+export type CategoryId =
+  | "chat"
+  | "responses"
   | "appearance"
-  | "notifications"
-  | "device-management"
-  | "defer-worker"
-  | "computer-use"
-  | "providers"
+  | "device"
+  | "integrations"
   | "tags"
-  | "mcp-servers"
-  | "skills"
-  | "speech-engine"
-  | "management-jobs"
-  | "browser-diagnostics"
-  | "updates"
-  | "bridge-status"
-  | "local-copilot-usage";
+  | "voice"
+  | "system"
+  | "usage";
 
 export interface CategoryMeta {
   id: CategoryId;
   label: string;
-  sections: SectionId[];
-  description?: string;
+  /** Categories in one nav group are listed together; a hairline separates the groups. */
+  group: "preferences" | "connections" | "host";
 }
 
 export const SETTINGS_CATEGORIES: CategoryMeta[] = [
-  {
-    id: "general",
-    label: "General",
-    description: "Defaults for new chats, response preferences, and this device.",
-    sections: ["model", "reasoning-effort", "system-prompt", "appearance", "notifications", "device-management", "defer-worker"],
-  },
-  {
-    id: "integrations",
-    label: "Integrations",
-    description: "Connected services, tools, skills, and shared tags.",
-    sections: ["providers", "mcp-servers", "computer-use", "skills", "tags"],
-  },
-  {
-    id: "voice",
-    label: "Voice",
-    description: "Speech recognition and hands-free audio on the Bridge host.",
-    sections: ["speech-engine"],
-  },
-  {
-    id: "updates",
-    label: "Updates & Deployment",
-    description: "Software updates, background jobs, and host operations.",
-    sections: ["updates", "management-jobs", "bridge-status"],
-  },
-  {
-    id: "diagnostics",
-    label: "Diagnostics",
-    description: "Inspect browser health and troubleshoot connections.",
-    sections: ["browser-diagnostics"],
-  },
-  {
-    id: "usage",
-    label: "Copilot Usage",
-    description: "Local usage estimates and SDK-reported metering.",
-    sections: ["local-copilot-usage"],
-  },
+  { id: "chat", label: "Chat", group: "preferences" },
+  { id: "responses", label: "Responses", group: "preferences" },
+  { id: "appearance", label: "Appearance", group: "preferences" },
+  { id: "device", label: "Notifications & device", group: "preferences" },
+  { id: "integrations", label: "Integrations", group: "connections" },
+  { id: "tags", label: "Tags", group: "connections" },
+  { id: "voice", label: "Voice", group: "connections" },
+  { id: "system", label: "System", group: "host" },
+  { id: "usage", label: "Copilot usage", group: "host" },
 ];
 
-export const DEFAULT_CATEGORY: CategoryId = "general";
+export const DEFAULT_CATEGORY: CategoryId = "chat";
 
-/** Retired category ids kept so existing `?group=` deep links still resolve. */
+/** Parts of the System page a link can open directly with `?section=`. */
+export type SystemSectionId = "updates" | "jobs" | "browser" | "version";
+
+/** Retired category ids kept so existing `?group=` deep links and remembered categories still resolve. */
 const CATEGORY_ALIASES: Record<string, CategoryId> = {
-  management: "updates",
+  general: "chat",
+  management: "system",
+  updates: "system",
+  diagnostics: "system",
 };
+
+/** Where on the System page a retired category's content now lives. */
+const LEGACY_SECTIONS: Record<string, SystemSectionId> = {
+  management: "jobs",
+  updates: "updates",
+  diagnostics: "browser",
+};
+
+/** The System section a retired `?group=` link pointed at, if any. */
+export function legacySectionFor(value: string | null | undefined): SystemSectionId | undefined {
+  return value ? LEGACY_SECTIONS[value] : undefined;
+}
+
+export function normalizeSystemSection(value: string | null | undefined): SystemSectionId | undefined {
+  return value === "updates" || value === "jobs" || value === "browser" || value === "version" ? value : undefined;
+}
 
 const VALID_CATEGORY_IDS = new Set<string>(SETTINGS_CATEGORIES.map((c) => c.id));
 

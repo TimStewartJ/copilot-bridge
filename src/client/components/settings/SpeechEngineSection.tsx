@@ -7,6 +7,7 @@ import { fetchVoiceStatus, startVoiceInstall, type VoiceEngineCapability, type V
 import { formatBytes } from "../../voice/voice-view-model";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { Button, Details, Notice, SettingList, SettingRow } from "../../design/primitives";
 
 const CAPABILITY_NAMES: Record<VoiceEngineCapability, string> = {
   asr: "speech recognition",
@@ -98,123 +99,91 @@ export function SpeechEngineSection() {
   return (
     <SettingsSection
       title="Speech engine"
-      description="Local speech recognition and voices for the chat mic and Helm's hands-free mode. Audio never leaves the computer hosting Bridge; only text reaches your Copilot model."
+      description="Runs on this computer. Audio never leaves it; only text reaches your model."
       action={(
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface gap-1.5")}
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
+        <Button size="sm" variant="ghost" onClick={() => void refresh()}
+          icon={loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}>
           Refresh
-        </button>
+        </Button>
       )}
     >
-      <div className={DS.layout.formGroup}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-accent">
-              <AudioLines size={15} />
-              Parakeet v3 · Smart Turn · Kokoro
-            </div>
-            <p className="mt-1 text-xs text-text-muted">
-              One install powers both features: speech detection, end-of-turn detection, speech recognition and voices, all running on the CPU.
+      <SettingList>
+        <SettingRow
+          label="Parakeet v3 · Smart Turn · Kokoro"
+          hint="Speech detection, end of turn, recognition and voices, on the CPU."
+          control={<span className={cx("text-xs font-medium", badge.text === "Setup failed" ? "text-error" : "text-text-secondary")}>{badge.text}</span>}
+        >
+          {installStatus && !installStatus.supported && (
+            <p className={DS.field.help}>
+              The speech engine isn&apos;t available for this host ({installStatus.target}). It supports Windows x64, Linux x64 and Arm64, and Apple Silicon Macs.
             </p>
-          </div>
-          <span className={cx(DS.badge.base, "shrink-0", badge.className)}>
-            {badge.text}
-          </span>
-        </div>
-
-        {installStatus && !installStatus.supported && (
-          <div className={cx(DS.layout.formGroup, "text-xs text-text-secondary")}>
-            The speech engine isn&apos;t available for this host ({installStatus.target}). It supports Windows x64, Linux x64 and Arm64, and Apple Silicon Macs.
-          </div>
-        )}
-
-        {progress && (
-          <div>
-            <div className="flex justify-between gap-3 text-xs text-text-muted">
-              <span className="truncate">{PHASE_LABELS[progress.phase]} {progress.label}</span>
-              <span className="tabular-nums">{Math.round(progress.overallFraction * 100)}%</span>
+          )}
+          {progress && (
+            <div>
+              <div className="flex justify-between gap-3 text-xs text-text-secondary">
+                <span className="truncate">{PHASE_LABELS[progress.phase]} {progress.label}</span>
+                <span className="tabular-nums">{Math.round(progress.overallFraction * 100)}%</span>
+              </div>
+              <div className={cx(DS.meter.track, "mt-1.5")}>
+                <div className={cx(DS.meter.fill, "transition-[width] duration-500")} style={{ width: `${Math.max(2, progress.overallFraction * 100)}%` }} />
+              </div>
             </div>
-            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-bg-surface">
-              <div className={cx(DS.meter.fill, "transition-[width] duration-500")} style={{ width: `${Math.max(2, progress.overallFraction * 100)}%` }} />
-            </div>
-          </div>
-        )}
-
-        {installStatus?.supported && !installStatus.installed && !installStatus.installing && (
-          <button
-            type="button"
-            onClick={() => void install()}
-            disabled={startingInstall}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "gap-1.5 disabled:opacity-60")}
-          >
-            {startingInstall ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            {installStatus.error ? "Retry setup" : "Download and set up"} ({formatBytes(installStatus.remainingBytes || installStatus.totalBytes)})
-          </button>
-        )}
-
-        {installStatus?.error && !installStatus.installing && (
-          <div className={cx(DS.notice.surface, "break-words px-3 py-2 text-xs text-error")}>
-            Setup failed: {installStatus.error}
-          </div>
-        )}
+          )}
+          {installStatus?.supported && !installStatus.installed && !installStatus.installing && (
+            <Button size="sm" variant="primary" onClick={() => void install()} disabled={startingInstall}
+              icon={startingInstall ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}>
+              {installStatus.error ? "Retry setup" : "Download and set up"} ({formatBytes(installStatus.remainingBytes || installStatus.totalBytes)})
+            </Button>
+          )}
+          {installStatus?.error && !installStatus.installing && (
+            <p className="mt-2 break-words text-xs text-error">Setup failed: {installStatus.error}</p>
+          )}
+        </SettingRow>
 
         {voiceStatus && (
-          <div className="grid gap-2 text-xs md:grid-cols-2">
-            <div className={DS.layout.formGroup}>
-              <div className="flex items-center gap-1.5 font-medium text-text-secondary"><Mic size={12} /> Chat mic</div>
-              <p className="mt-1 text-text-muted">
-                {micStatus?.available
-                  ? `Ready. Recordings up to ${describeRecordingLimit(micStatus.maxDurationSeconds)} are transcribed on this computer.`
-                  : micStatus?.reason ?? "Unavailable."}
-              </p>
-            </div>
-            <div className={DS.layout.formGroup}>
-              <div className="flex items-center gap-1.5 font-medium text-text-secondary"><AudioLines size={12} /> Hands-free (Helm)</div>
-              <p className="mt-1 text-text-muted">
-                {installStatus?.installed ? "Ready for hands-free conversations." : "Available once the speech engine is installed."}
-              </p>
-              {installStatus?.installed && (
-                <Link to="/helm" className="mt-1.5 inline-flex items-center gap-1 text-accent hover:underline">
-                  Open Helm
-                </Link>
-              )}
-            </div>
-            <div className={cx(DS.layout.formGroup, "md:col-span-2")}>
-              <div className="flex items-center gap-1.5 font-medium text-text-secondary"><Cpu size={12} /> Engine</div>
-              <p className="mt-1 text-text-muted">{describeEngineState(voiceStatus.engine)}</p>
-            </div>
-          </div>
+          <>
+            <SettingRow
+              label={<span className="inline-flex items-center gap-1.5"><Mic size={13} className="text-text-secondary" />Chat mic</span>}
+              hint={micStatus?.available
+                ? `Ready. Recordings up to ${describeRecordingLimit(micStatus.maxDurationSeconds)} are transcribed on this computer.`
+                : micStatus?.reason ?? "Unavailable."}
+            />
+            <SettingRow
+              label={<span className="inline-flex items-center gap-1.5"><AudioLines size={13} className="text-text-secondary" />Hands-free (Helm)</span>}
+              hint={installStatus?.installed ? "Ready for hands-free conversations." : "Available once the speech engine is installed."}
+              control={installStatus?.installed ? (
+                <Link to="/helm" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}>Open Helm</Link>
+              ) : undefined}
+            />
+            <SettingRow
+              label={<span className="inline-flex items-center gap-1.5"><Cpu size={13} className="text-text-secondary" />Engine</span>}
+              hint={describeEngineState(voiceStatus.engine)}
+            />
+          </>
         )}
 
         {assets.length > 0 && (
-          <div>
-            <div className={cx(DS.text.sectionLabel, "font-medium text-text-faint")}>Components</div>
-            <ul className="mt-1.5 divide-y divide-border rounded-md border border-border bg-bg-primary text-xs">
-              {assets.map((asset) => (
-                <li key={asset.id} className="flex items-center justify-between gap-3 px-3 py-1.5">
-                  <span className="min-w-0 truncate text-text-secondary">{asset.label}</span>
-                  <span className="flex shrink-0 items-center gap-2 tabular-nums text-text-muted">
-                    {formatBytes(asset.sizeBytes)}
-                    {asset.installed
-                      ? <Check size={12} className="text-success" aria-label="Installed" />
-                      : <span className="text-text-faint">not installed</span>}
-                  </span>
-                </li>
-              ))}
-            </ul>
+          <div className="py-3 last:pb-0">
+            <Details label="Components" detail={`${assets.filter((asset) => asset.installed).length} of ${assets.length} installed`}>
+              <ul className={cx(DS.surface.divided, "pt-1 text-xs")}>
+                {assets.map((asset) => (
+                  <li key={asset.id} className="flex items-center justify-between gap-3 py-1.5">
+                    <span className="min-w-0 truncate text-text-secondary">{asset.label}</span>
+                    <span className="flex shrink-0 items-center gap-2 tabular-nums text-text-secondary">
+                      {formatBytes(asset.sizeBytes)}
+                      {asset.installed
+                        ? <Check size={12} className="text-text-secondary" aria-label="Installed" />
+                        : <span className="text-text-faint">not installed</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Details>
           </div>
         )}
+      </SettingList>
 
-        {error && (
-          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-            {error}
-          </div>
-        )}
-      </div>
+      {error && <Notice tone="danger" className="mt-3">{error}</Notice>}
     </SettingsSection>
   );
 }

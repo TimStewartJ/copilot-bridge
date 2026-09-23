@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DS } from "../../design/tokens";
 import {
   createMcpServer,
   deleteMcpServer,
@@ -9,21 +10,17 @@ import {
   type McpServerConfig,
   type McpServerStatus,
 } from "../../api";
-import EmptyState from "../shared/EmptyState";
 import { ServerCard } from "./ServerCard";
 import { ServerEditor } from "./ServerEditor";
 import { SettingsSection } from "./SettingsSection";
-import { DS, cx } from "../../design/tokens";
+import { Button, EmptyHint, Notice, SettingList } from "../../design/primitives";
+import { Plus } from "lucide-react";
 
 function sortServers(servers: McpServer[]): McpServer[] {
   return [...servers].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
-export function McpServersSection({
-  resetSignal,
-}: {
-  resetSignal: number;
-}) {
+export function McpServersSection() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loadingServers, setLoadingServers] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,11 +58,6 @@ export function McpServersSection({
     loadServers();
     loadStatuses();
   }, []);
-
-  useEffect(() => {
-    setEditingServerId(null);
-    setAddingServer(false);
-  }, [resetSignal]);
 
   const setUpdatedServer = (server: McpServer) => {
     setServers((current) => sortServers(current.map((item) => (item.id === server.id ? server : item))));
@@ -153,24 +145,16 @@ export function McpServersSection({
 
   return (
     <SettingsSection
-      title="MCP Servers"
-      description="Registered tool servers. Enable by default to attach a server to every session; local servers can declare automatic, shared, or session-isolated execution."
+      title="MCP servers"
+      description="Switch on to attach a server to every new session."
       action={
-        <button
-          onClick={() => setAddingServer(true)}
-          disabled={addingServer || loadingServers}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface disabled:opacity-50")}
-        >
-          + Add Server
-        </button>
+        <Button size="sm" variant="ghost" icon={<Plus size={13} />} onClick={() => setAddingServer(true)} disabled={addingServer || loadingServers}>
+          Add server
+        </Button>
       }
     >
-      <div className="space-y-2">
-        {error && (
-          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-            {error}
-          </div>
-        )}
+      <SettingList>
+        {error && <Notice tone="danger" className="mb-2">{error}</Notice>}
 
         {servers.map((server) =>
           editingServerId === server.id ? (
@@ -197,17 +181,10 @@ export function McpServersSection({
           ),
         )}
 
-        {loadingServers && (
-          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-            Loading MCP servers…
-          </div>
-        )}
+        {loadingServers && <p role="status" className={DS.field.help}>Loading MCP servers…</p>}
 
         {!loadingServers && servers.length === 0 && !addingServer && (
-          <EmptyState
-            message="No MCP servers"
-            sub="Add one to enable tool access"
-          />
+          <EmptyHint>No MCP servers yet. Add one to give sessions tools.</EmptyHint>
         )}
 
         {addingServer && (
@@ -220,7 +197,7 @@ export function McpServersSection({
             isNew
           />
         )}
-      </div>
+      </SettingList>
     </SettingsSection>
   );
 }

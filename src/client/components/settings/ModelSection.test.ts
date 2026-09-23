@@ -42,7 +42,7 @@ describe("model settings draft", () => {
     const draft: AppSettings = { model: "economy", contextTier: "long_context", mcpServers: {} };
     const setDraft = vi.fn();
     await harness.render(createElement(ModelSection, { draft, setDraft }));
-    expect(harness.dom.container.textContent).toContain("It has been preserved");
+    expect(harness.dom.container.textContent).toContain("It is kept for now");
     expect(setDraft).not.toHaveBeenCalled();
     const select = findAllByTag(harness.dom.container, "SELECT")[0];
     await harness.act(async () => { getReactProps(select)?.onChange?.({ target: { value: "other" } }); });

@@ -9,19 +9,15 @@ import {
 } from "../../push-notifications";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { Badge, Details, Field, FieldList, SettingList, SettingRow } from "../../design/primitives";
 
-function statusToneClassName(tone: "success" | "warning" | "error" | "neutral"): string {
-  switch (tone) {
-    case "success":
-      return "bg-success/15 text-success";
-    case "warning":
-      return "bg-warning/15 text-warning";
-    case "error":
-      return "bg-error/10 text-error";
-    default:
-      return "bg-bg-surface text-text-secondary";
-  }
-}
+/** Working push is ordinary, so it stays neutral; only problems take a colour. */
+const BADGE_TONE = {
+  success: "neutral",
+  neutral: "neutral",
+  warning: "warning",
+  error: "danger",
+} as const;
 
 function describePushState(state: ClientPushState | null, loading: boolean): {
   label: string;
@@ -125,107 +121,81 @@ export function NotificationsSection() {
     }
   };
 
+  const button = (variant: "secondary" | "ghost") => cx(DS.button.base, DS.button.size.sm, DS.button.variant[variant], DS.focus, "gap-1.5");
+
   return (
     <SettingsSection
       title="Notifications"
-      description="Control this browser's push subscription. Routine completions stay in their task and do not interrupt you. On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first."
+      description="Only conversations waiting for your input notify you."
       action={(
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          disabled={busy}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-        >
+        <button type="button" onClick={() => void refresh()} disabled={busy} className={button("ghost")}>
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
           Refresh
         </button>
       )}
     >
-      <div className={DS.layout.formGroup}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-accent">
-              {state?.subscribed ? <Bell size={15} /> : <BellOff size={15} />}
-              Browser push
-            </div>
-            <p className="mt-1 text-xs text-text-muted">{descriptor.detail}</p>
-            <p className="mt-1 text-xs text-text-muted">
-              Session notifications are for conversations requesting your input. Home does not grant additional notification authority.
-            </p>
+      <SettingList>
+        <SettingRow
+          label={<span className="inline-flex items-center gap-1.5">{state?.subscribed ? <Bell size={13} /> : <BellOff size={13} />}Push on this browser</span>}
+          hint={descriptor.detail}
+          control={<Badge tone={BADGE_TONE[descriptor.tone]}>{descriptor.label}</Badge>}
+        >
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => void runAction("enable", () => enablePushNotifications(state?.server ?? null), () => "Notifications enabled for this browser.")}
+              disabled={busy || !canEnable}
+              className={button("secondary")}
+            >
+              {action === "enable" ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />}
+              Enable
+            </button>
+            <button
+              type="button"
+              onClick={() => void runAction("disable", disablePushNotifications, () => "Notifications disabled for this browser.")}
+              disabled={busy || !canDisable}
+              className={button("ghost")}
+            >
+              {action === "disable" ? <Loader2 size={12} className="animate-spin" /> : <BellOff size={12} />}
+              Disable
+            </button>
+            <button
+              type="button"
+              onClick={() => void runAction("test", sendCurrentSubscriptionTestNotification, (result) => {
+                const summary = result as { sent?: number; pruned?: number };
+                return summary.sent
+                  ? "Test notification sent."
+                  : summary.pruned
+                    ? "Subscription was expired and has been pruned."
+                    : "No active subscription was available to notify.";
+              })}
+              disabled={busy || !canTest}
+              className={button("ghost")}
+            >
+              {action === "test" ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              Send test
+            </button>
           </div>
-          <span className={cx(DS.badge.base, "shrink-0", statusToneClassName(descriptor.tone))}>
-            {descriptor.label}
-          </span>
+          {state?.server && !state.server.configured && (
+            <pre className={cx(DS.surface.inset, "mt-2 overflow-x-auto px-3 py-2 text-xs text-text-secondary")}>
+              <code>{state.server.missingEnv.map((name) => `${name}=`).join("\n")}</code>
+            </pre>
+          )}
+          {message && <p role="status" className={cx(DS.field.help, "mt-2")}>{message}</p>}
+        </SettingRow>
+      </SettingList>
+      <Details label="How notifications work" className="mt-3">
+        <div className="space-y-2 pt-2 text-xs leading-relaxed text-text-secondary">
+          <p>Session notifications are for conversations requesting your input. Routine completions stay in their task and do not interrupt you. Home does not grant additional notification authority.</p>
+          <p>On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first.</p>
+          <FieldList>
+            <Field label="Permission" mono>{state?.permission ?? "checking"}</Field>
+            <Field label="Server" mono>{state?.server?.configured ? "configured" : "not configured"}</Field>
+            <Field label="Subscriptions" mono>{String(state?.server?.subscriptionCount ?? 0)}</Field>
+            <Field label="Browser" mono>{state?.support.supported ? "supported" : "unsupported"}</Field>
+          </FieldList>
         </div>
-
-        <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2">
-          <div>
-            <span className="text-text-faint">permission:</span>{" "}
-            <code className="text-text-secondary">{state?.permission ?? "checking"}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">server:</span>{" "}
-            <code className="text-text-secondary">{state?.server?.configured ? "configured" : "not configured"}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">subscriptions:</span>{" "}
-            <code className="text-text-secondary">{state?.server?.subscriptionCount ?? 0}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">browser:</span>{" "}
-            <code className="text-text-secondary">{state?.support.supported ? "supported" : "unsupported"}</code>
-          </div>
-        </div>
-
-        {state?.server && !state.server.configured && (
-          <pre className="overflow-x-auto rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">
-            <code>{state.server.missingEnv.map((name) => `${name}=`).join("\n")}</code>
-          </pre>
-        )}
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void runAction("enable", () => enablePushNotifications(state?.server ?? null), () => "Notifications enabled for this browser.")}
-            disabled={busy || !canEnable}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.focus, "gap-1.5 disabled:bg-bg-surface disabled:text-text-faint")}
-          >
-            {action === "enable" ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />}
-            Enable
-          </button>
-          <button
-            type="button"
-            onClick={() => void runAction("disable", disablePushNotifications, () => "Notifications disabled for this browser.")}
-            disabled={busy || !canDisable}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-          >
-            {action === "disable" ? <Loader2 size={12} className="animate-spin" /> : <BellOff size={12} />}
-            Disable
-          </button>
-          <button
-            type="button"
-            onClick={() => void runAction("test", sendCurrentSubscriptionTestNotification, (result) => {
-              const summary = result as { sent?: number; pruned?: number };
-              return summary.sent
-                ? "Test notification sent."
-                : summary.pruned
-                  ? "Subscription was expired and has been pruned."
-                  : "No active subscription was available to notify.";
-            })}
-            disabled={busy || !canTest}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-          >
-            {action === "test" ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-            Send test
-          </button>
-        </div>
-
-        {message && (
-          <div role="status" className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-            {message}
-          </div>
-        )}
-      </div>
+      </Details>
     </SettingsSection>
   );
 }

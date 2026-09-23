@@ -9,6 +9,7 @@ import {
 } from "../../../shared/copilot-context.js";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { SettingList, SettingRow } from "../../design/primitives";
 
 export function DeferWorkerSection({
   draft,
@@ -47,12 +48,12 @@ export function DeferWorkerSection({
   return (
     <SettingsSection
       title="Deferred workers"
-      description="Run defers in temporary sessions instead of reloading the parent conversation. Temporary sessions are deleted after each check."
+      description="Each check runs in a temporary session that is deleted afterwards."
     >
-      <div className="grid min-w-0 gap-4 @[36rem]/settings-content:grid-cols-3">
-        <label className="space-y-1 text-xs font-medium text-text-secondary">
-          <span>Model</span>
+      <SettingList>
+        <SettingRow label="Model" htmlFor="defer-worker-model" control={(
           <select
+            id="defer-worker-model"
             value={settings.model ?? ""}
             onChange={(event) => {
               const model = event.target.value || undefined;
@@ -73,22 +74,22 @@ export function DeferWorkerSection({
                   : settings.reasoningEffort,
               });
             }}
-            className={cx(DS.field.input, DS.field.inputSize.md)}
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
           >
             <option value="">Automatic (economy model when available)</option>
             {availableModels.map((model) => (
               <option key={model.id} value={model.id}>{model.name}</option>
             ))}
           </select>
-        </label>
+        )} />
 
-        <label className="space-y-1 text-xs font-medium text-text-secondary">
-          <span>Context</span>
+        <SettingRow label="Context" htmlFor="defer-worker-context" control={(
           <select
+            id="defer-worker-context"
             value={selectedModelUsesDynamicSelection ? "" : settings.contextTier ?? "default"}
             onChange={(event) => update({ contextTier: event.target.value as CopilotContextTier })}
             disabled={selectedModelUsesDynamicSelection}
-            className={cx(DS.field.input, DS.field.inputSize.md)}
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
           >
             {selectedModelUsesDynamicSelection && <option value="">Selected dynamically</option>}
             <option value="default">
@@ -100,15 +101,15 @@ export function DeferWorkerSection({
               </option>
             )}
           </select>
-        </label>
+        )} />
 
-        <label className="space-y-1 text-xs font-medium text-text-secondary">
-          <span>Reasoning effort</span>
+        <SettingRow label="Reasoning effort" htmlFor="defer-worker-effort" control={(
           <select
+            id="defer-worker-effort"
             value={selectedModelUsesDynamicSelection ? "" : settings.reasoningEffort ?? ""}
             onChange={(event) => update({ reasoningEffort: event.target.value || undefined })}
             disabled={selectedModelUsesDynamicSelection}
-            className={cx(DS.field.input, DS.field.inputSize.md)}
+            className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
           >
             <option value="">{selectedModelUsesDynamicSelection ? "Selected dynamically" : "Model default"}</option>
             {efforts.map((effort) => (
@@ -117,8 +118,8 @@ export function DeferWorkerSection({
               </option>
             ))}
           </select>
-        </label>
-      </div>
+        )} />
+      </SettingList>
     </SettingsSection>
   );
 }

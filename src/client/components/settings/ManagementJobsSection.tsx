@@ -1,64 +1,56 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Activity,
-  AlertTriangle,
-  Download,
-  Gauge,
-  Loader2,
-  Power,
-  RotateCcw,
-  RotateCw,
-  Terminal,
-  Trash2,
-  XCircle,
-} from "lucide-react";
-import type { BridgeRuntimeStatus } from "../../bridge-management-api";
-import type { AgentBackendLifecycleState, AgentBackendStatus } from "../../../shared/agent-backend-status.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronRight, Loader2, RotateCcw, RotateCw, XCircle } from "lucide-react";
 import {
   MANAGEMENT_JOB_STATUSES,
   MANAGEMENT_JOB_TYPES,
   type ManagementJobDetail,
   type ManagementJobFilters,
-  type ManagementJobListResponse,
   type ManagementJobStatus,
   type ManagementJobSummary,
   type ManagementJobType,
 } from "../../management-job-api";
 import {
   useCancelManagementJobMutation,
-  useEnqueueManagementJobMutation,
   useManagementJobQuery,
   useManagementJobsQuery,
   useRetryManagementJobMutation,
 } from "../../hooks/queries/useManagementJobs";
-import {
-  useBridgeRuntimeStatusQuery,
-  useEvictIdleCacheMutation,
-  useRestartBridgeMutation,
-} from "../../hooks/queries/useBridgeRuntimeStatus";
-import { useRestartStatusQuery } from "../../hooks/queries/useRestartStatus";
-import { isRecord } from "../../../shared/is-record.js";
-import EmptyState from "../shared/EmptyState";
-import { SettingsSection } from "./SettingsSection";
+import { timeAgo } from "../../time";
+import { Badge, Button, Details, EmptyHint, Notice, StatusIcon } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
+import { SettingsSection } from "./SettingsSection";
+import {
+  formatDateTime,
+  formatDurationMs,
+  formatElapsed,
+  formatError,
+  formatJson,
+  heartbeatAgeMs,
+  jobTypeLabel,
+  plural,
+  shortJobId,
+  statusLabel,
+} from "./management-format";
 
 const JOB_TYPES = MANAGEMENT_JOB_TYPES;
 const JOB_STATUSES = MANAGEMENT_JOB_STATUSES;
 const ACTIVE_STATUSES = new Set<ManagementJobStatus>(["queued", "running"]);
 const RETRYABLE_STATUSES = new Set<ManagementJobStatus>(["failed", "cancelled"]);
 const CONFIRMATION_TYPES = new Set<ManagementJobType>(["self_update", "staging_deploy"]);
-const EXCLUSIVE_JOB_TYPES = new Set<ManagementJobType>(["self_update", "staging_deploy"]);
-const LIMITS = [25, 50, 100, 200];
+const LIMITS = [10, 25, 50, 100, 200];
 const ACTIVE_JOB_FILTERS: ManagementJobFilters = { statuses: ["queued", "running"], limit: 200 };
 
 type JobTypeFilter = "all" | ManagementJobType;
 type JobStatusFilter = "all" | ManagementJobStatus;
-type RuntimeStatusWithAgentBackend = BridgeRuntimeStatus & { agentBackend?: AgentBackendStatus };
 
-export function ManagementJobsSection() {
+/**
+ * Launcher-supervised jobs: self-update, staging preview and deploy. Queued and running jobs are
+ * always shown; history is one line per job and opens beneath the row that was chosen.
+ */
+export function ManagementJobsSection({ refreshSignal = 0, open = false }: { refreshSignal?: number; open?: boolean }) {
   const [typeFilter, setTypeFilter] = useState<JobTypeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<JobStatusFilter>("all");
-  const [limit, setLimit] = useState(50);
+  const [limit, setLimit] = useState(10);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -72,17 +64,12 @@ export function ManagementJobsSection() {
   const activeJobsQuery = useManagementJobsQuery(ACTIVE_JOB_FILTERS);
   const jobsQuery = useManagementJobsQuery(filters);
   const detailQuery = useManagementJobQuery(selectedJobId ?? undefined);
-  const runtimeQuery = useBridgeRuntimeStatusQuery();
-  const restartStatusQuery = useRestartStatusQuery();
   const cancelMutation = useCancelManagementJobMutation();
-  const enqueueMutation = useEnqueueManagementJobMutation();
   const retryMutation = useRetryManagementJobMutation();
-  const restartMutation = useRestartBridgeMutation();
-  const evictIdleCacheMutation = useEvictIdleCacheMutation();
 
   const activeList = activeJobsQuery.data ?? null;
-  const list = activeList ?? jobsQuery.data ?? null;
   const recentList = jobsQuery.data ?? null;
+  const list = activeList ?? recentList;
   const activeJobs = useMemo(
     () => activeList?.jobs.filter((job) => ACTIVE_STATUSES.has(job.status)) ?? [],
     [activeList],
@@ -91,39 +78,18 @@ export function ManagementJobsSection() {
     () => recentList?.jobs.filter((job) => !ACTIVE_STATUSES.has(job.status)) ?? [],
     [recentList],
   );
-  const jobs = useMemo(
-    () => [...activeJobs, ...recentJobs],
-    [activeJobs, recentJobs],
-  );
-  const selectedSummary = jobs.find((job) => job.id === selectedJobId) ?? null;
-  const selectedJob = detailQuery.data ?? selectedSummary;
-  const activeExclusiveJob = activeJobs.find((job) => EXCLUSIVE_JOB_TYPES.has(job.type)) ?? null;
-  const busy = activeJobsQuery.isFetching
-    || jobsQuery.isFetching
-    || detailQuery.isFetching
-    || runtimeQuery.isLoading
-    || restartStatusQuery.isLoading;
-  const jobActionBusy = cancelMutation.isPending || retryMutation.isPending;
-  const controlBusy = enqueueMutation.isPending
-    || restartMutation.isPending
-    || evictIdleCacheMutation.isPending;
-  const runtimeStatus = runtimeQuery.data as RuntimeStatusWithAgentBackend | undefined;
+  const actionBusy = cancelMutation.isPending || retryMutation.isPending;
 
+  const refetchRef = useRef<() => void>(() => undefined);
+  refetchRef.current = () => {
+    void activeJobsQuery.refetch();
+    void jobsQuery.refetch();
+    if (selectedJobId) void detailQuery.refetch();
+  };
+  const firstSignal = useRef(refreshSignal);
   useEffect(() => {
-    if (selectedJobId || jobs.length === 0) return;
-    setSelectedJobId(jobs[0]?.id ?? null);
-  }, [jobs, selectedJobId]);
-
-  const refresh = useCallback(async () => {
-    setActionError(null);
-    await Promise.all([
-      activeJobsQuery.refetch(),
-      jobsQuery.refetch(),
-      runtimeQuery.refetch(),
-      restartStatusQuery.refetch(),
-      selectedJobId ? detailQuery.refetch() : Promise.resolve(),
-    ]);
-  }, [activeJobsQuery, detailQuery, jobsQuery, restartStatusQuery, runtimeQuery, selectedJobId]);
+    if (refreshSignal !== firstSignal.current) refetchRef.current();
+  }, [refreshSignal]);
 
   const handleCancel = useCallback(async (job: ManagementJobSummary) => {
     if (job.status !== "queued") return;
@@ -168,193 +134,48 @@ export function ManagementJobsSection() {
     }
   }, [activeJobsQuery, jobsQuery, retryMutation]);
 
-  const handleSelfUpdate = useCallback(async () => {
-    const confirmed = window.confirm(
-      "Queue a Bridge self-update job?\n\nThe launcher will pull the latest source, validate it, and restart the Bridge if the update succeeds.",
-    );
-    if (!confirmed) return;
-
-    setActionError(null);
-    setActionMessage(null);
-    try {
-      const result = await enqueueMutation.mutateAsync({ type: "self_update" });
-      setSelectedJobId(result.job.id);
-      setActionMessage(
-        result.reused
-          ? `Using existing self-update job ${shortJobId(result.job.id)}.`
-          : `Self-update queued as ${shortJobId(result.job.id)}.`,
-      );
-      void activeJobsQuery.refetch();
-      void jobsQuery.refetch();
-      void runtimeQuery.refetch();
-    } catch (error) {
-      setActionError(`Self-update failed to queue: ${formatError(error)}`);
-    }
-  }, [activeJobsQuery, enqueueMutation, jobsQuery, runtimeQuery]);
-
-  const handleRestart = useCallback(async (now: boolean) => {
-    if (now && !window.confirm(buildRestartNowConfirmation(runtimeStatus))) return;
-
-    setActionError(null);
-    setActionMessage(null);
-    try {
-      const result = await restartMutation.mutateAsync(now ? { force: true, resume: true } : undefined);
-      setActionMessage(
-        now
-          ? `Restarting now. ${result.resumingRuns ?? 0} running session${result.resumingRuns === 1 ? "" : "s"} will resume afterwards.`
-          : "Restart requested. It happens once the Bridge is idle and blocks nothing until then.",
-      );
-      void runtimeQuery.refetch();
-      void restartStatusQuery.refetch();
-    } catch (error) {
-      setActionError(`Restart failed: ${formatError(error)}`);
-    }
-  }, [restartMutation, restartStatusQuery, runtimeQuery, runtimeStatus]);
-
-  const handleEvictIdleCache = useCallback(async () => {
-    const capacity = runtimeQuery.data?.capacity;
-    const idleCachedSessions = capacity
-      ? Math.max(0, capacity.cache.readyParents - capacity.cache.protectedParents)
-      : 0;
-    const confirmed = window.confirm(
-      `Evict ${idleCachedSessions} idle cached session${idleCachedSessions === 1 ? "" : "s"}?\n\n`
-      + "Active sessions and sessions with running agents are protected. Evicted sessions will resume from disk when used again.",
-    );
-    if (!confirmed) return;
-
-    setActionError(null);
-    setActionMessage(null);
-    try {
-      const result = await evictIdleCacheMutation.mutateAsync();
-      const protectedSummary = result.protectedSessions > 0
-        ? ` ${result.protectedSessions} protected session${result.protectedSessions === 1 ? " was" : "s were"} kept warm.`
-        : "";
-      setActionMessage(
-        result.evictedSessions > 0
-          ? `Evicted ${result.evictedSessions} idle cached session${result.evictedSessions === 1 ? "" : "s"}.${protectedSummary}`
-          : `No idle cached sessions were evicted.${protectedSummary}`,
-      );
-      await runtimeQuery.refetch();
-    } catch (error) {
-      setActionError(`Idle cache eviction failed: ${formatError(error)}`);
-    }
-  }, [evictIdleCacheMutation, runtimeQuery]);
-
-  const selfUpdateDisabledReason = getSelfUpdateDisabledReason({
-    runtime: runtimeStatus,
-    runtimeError: runtimeQuery.error,
-    activeExclusiveJob,
-    busy: controlBusy,
-  });
-  const restartDisabledReason = getRestartDisabledReason({
-    runtime: runtimeStatus,
-    runtimeError: runtimeQuery.error,
-    busy: controlBusy,
-  });
-  const cacheCapacity = runtimeStatus?.capacity.cache;
-  const idleCachedSessions = cacheCapacity
-    ? Math.max(0, cacheCapacity.readyParents - cacheCapacity.protectedParents)
-    : 0;
-  const evictIdleCacheDisabledReason = controlBusy
-    ? "Another management control is in progress."
-    : !runtimeStatus
-      ? "Runtime cache status is unavailable."
-      : idleCachedSessions === 0
-        ? "No idle cached sessions to evict."
-        : null;
+  const staleCount = list?.staleCount ?? activeJobs.filter((job) => job.stale).length;
+  const latest = recentJobs[0];
+  const summary = [
+    activeList || recentList ? `${activeJobs.length} active` : "Checking…",
+    latest && `last: ${jobTypeLabel(latest.type).toLowerCase()} ${statusLabel(latest.status)} ${timeAgo(latest.completedAt ?? latest.updatedAt ?? latest.createdAt)}`,
+  ].filter(Boolean).join(" · ");
+  const rowProps = {
+    selectedJobId,
+    staleAfterMs: list?.staleAfterMs,
+    fetchedAt: list?.fetchedAt,
+    detail: detailQuery.data ?? null,
+    detailLoading: Boolean(selectedJobId) && detailQuery.isLoading && !detailQuery.data,
+    detailError: detailQuery.error ?? null,
+    onRefreshDetail: () => void detailQuery.refetch(),
+    onToggle: (jobId: string) => setSelectedJobId((current) => (current === jobId ? null : jobId)),
+    onCancel: handleCancel,
+    onRetry: handleRetry,
+    actionBusy,
+  };
 
   return (
-    <SettingsSection
-      title="Bridge Management"
-      description="Review live Bridge activity, queue operational controls, and inspect launcher-supervised management jobs."
-      action={(
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          disabled={busy}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-        >
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
-          Refresh
-        </button>
-      )}
-    >
-      <div className="space-y-4">
-        <CurrentActivityCard
-          status={runtimeStatus ?? null}
-          loading={runtimeQuery.isLoading && !runtimeQuery.data}
-          error={runtimeQuery.error}
-        />
-
-        <CapacityCard
-          status={runtimeStatus ?? null}
-          loading={runtimeQuery.isLoading && !runtimeQuery.data}
-          error={runtimeQuery.error}
-        />
-
-        <BridgeControlsCard
-          selfUpdateDisabledReason={selfUpdateDisabledReason}
-          restartDisabledReason={restartDisabledReason}
-          restartPending={restartStatusQuery.data?.pending === true}
-          queueingUpdate={enqueueMutation.isPending}
-          restarting={restartMutation.isPending}
-          evictingIdleCache={evictIdleCacheMutation.isPending}
-          idleCachedSessions={idleCachedSessions}
-          evictIdleCacheDisabledReason={evictIdleCacheDisabledReason}
-          onQueueSelfUpdate={() => void handleSelfUpdate()}
-          onRestart={() => void handleRestart(false)}
-          onRestartNow={() => void handleRestart(true)}
-          onEvictIdleCache={() => void handleEvictIdleCache()}
-        />
-
-        {(activeJobsQuery.error || jobsQuery.error || actionError || actionMessage) && (
-          <div className="space-y-2">
-            {(activeJobsQuery.error || jobsQuery.error) && (
-              <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-                Failed to load management jobs: {formatError(activeJobsQuery.error ?? jobsQuery.error)}
-              </div>
-            )}
-            {actionError && (
-              <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-                {actionError}
-              </div>
-            )}
-            {actionMessage && (
-              <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-success")}>
-                {actionMessage}
-              </div>
-            )}
-          </div>
+    <SettingsSection id="settings-system-jobs" title="Management jobs" description={summary}>
+      <div className="space-y-3">
+        {(activeJobsQuery.error || jobsQuery.error) && (
+          <Notice tone="danger">Failed to load management jobs: {formatError(activeJobsQuery.error ?? jobsQuery.error)}</Notice>
+        )}
+        {actionError && <Notice tone="danger">{actionError}</Notice>}
+        {actionMessage && <p role="status" className={DS.field.help}>{actionMessage}</p>}
+        {staleCount > 0 && (
+          <Notice tone="warning" icon={<AlertTriangle size={14} />} title={`${plural(staleCount, "running job")} look stale`}>
+            No heartbeat for over {list?.staleAfterMs ? formatDurationMs(list.staleAfterMs) : "the stale limit"}. Runner health is inferred from job heartbeats.
+          </Notice>
         )}
 
-        <RunnerSummaryCard list={list} loading={(activeJobsQuery.isLoading || jobsQuery.isLoading) && !list} />
+        {activeJobsQuery.isLoading && !activeList ? (
+          <p role="status" className={DS.field.help}>Loading management jobs…</p>
+        ) : activeJobs.length > 0 && (
+          <JobList jobs={activeJobs} {...rowProps} />
+        )}
 
-        <JobListCard
-          title="Active jobs"
-          description="Queued and running launcher jobs are listed first. Running cancellation is disabled until cooperative cancellation is supported by job implementations."
-          jobs={activeJobs}
-          emptyMessage="No active management jobs"
-          emptySub="Queued or running self-update, staging preview, and staging deploy work will appear here."
-          selectedJobId={selectedJobId}
-          list={activeList}
-          loading={activeJobsQuery.isLoading && !activeList}
-          onSelectJob={setSelectedJobId}
-          onCancel={handleCancel}
-          onRetry={handleRetry}
-          actionBusy={jobActionBusy}
-        />
-
-        <div className={DS.layout.formGroup}>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm font-medium text-accent">
-                <Activity size={15} />
-                Recent jobs
-              </div>
-              <p className="mt-1 text-xs text-text-muted">
-                History is sorted newest first. Filters apply to recent rows; runner summary counts remain unfiltered active-job totals.
-              </p>
-            </div>
+        <Details label="Recent jobs" detail={recentList ? `${recentJobs.length} shown` : undefined} open={open || undefined}>
+          <div className="space-y-2 pt-2">
             <FilterControls
               typeFilter={typeFilter}
               statusFilter={statusFilter}
@@ -363,525 +184,17 @@ export function ManagementJobsSection() {
               onStatusFilterChange={setStatusFilter}
               onLimitChange={setLimit}
             />
+            {jobsQuery.isLoading && !recentList ? (
+              <p role="status" className={DS.field.help}>Loading management jobs…</p>
+            ) : recentJobs.length === 0 ? (
+              <EmptyHint>No recent matching jobs.</EmptyHint>
+            ) : (
+              <JobList jobs={recentJobs} {...rowProps} />
+            )}
           </div>
-          <JobTableOrEmpty
-            jobs={recentJobs}
-            emptyMessage="No recent matching jobs"
-            emptySub="Adjust filters or run a management operation to populate recent history."
-            selectedJobId={selectedJobId}
-            list={recentList}
-            loading={jobsQuery.isLoading && !recentList}
-            onSelectJob={setSelectedJobId}
-            onCancel={handleCancel}
-            onRetry={handleRetry}
-            actionBusy={jobActionBusy}
-          />
-        </div>
-
-        <JobDetailPanel
-          job={selectedJob}
-          detail={detailQuery.data ?? null}
-          loading={Boolean(selectedJobId) && detailQuery.isLoading && !detailQuery.data}
-          error={detailQuery.error ?? null}
-          staleAfterMs={list?.staleAfterMs}
-          fetchedAt={list?.fetchedAt}
-          onRefresh={() => void detailQuery.refetch()}
-          onCancel={handleCancel}
-          onRetry={handleRetry}
-          actionBusy={jobActionBusy}
-        />
+        </Details>
       </div>
     </SettingsSection>
-  );
-}
-
-function CurrentActivityCard({
-  status,
-  loading,
-  error,
-}: {
-  status: RuntimeStatusWithAgentBackend | null;
-  loading: boolean;
-  error: unknown;
-}) {
-  const sessions = status?.sessions;
-  const agents = status?.agents;
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <Activity size={15} />
-            Current activity
-          </div>
-          <p className="mt-1 text-xs text-text-muted">
-            Live in-memory activity for top-level sessions and background agents. Stale agent snapshots are excluded from current counts.
-          </p>
-        </div>
-        <div className="text-[11px] text-text-faint">
-          Updated {loading ? "checking…" : formatDateTime(status?.fetchedAt)}
-        </div>
-      </div>
-
-      {error && !status ? (
-        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-          Runtime status unavailable: {formatError(error)}
-        </div>
-      ) : (
-        <>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-            <SummaryMetric label="Active sessions" value={loading ? "…" : String(sessions?.active ?? 0)} tone={(sessions?.active ?? 0) > 0 ? "info" : "default"} />
-            <SummaryMetric label="Stalled sessions" value={loading ? "…" : String(sessions?.stalled ?? 0)} tone={(sessions?.stalled ?? 0) > 0 ? "warning" : "success"} />
-            <SummaryMetric label="Awaiting input" value={loading ? "…" : String(sessions?.waitingForUserInput ?? 0)} tone={(sessions?.waitingForUserInput ?? 0) > 0 ? "warning" : "default"} />
-            <SummaryMetric label="Agents running" value={loading ? "…" : String(agents?.running ?? 0)} tone={(agents?.running ?? 0) > 0 ? "info" : "default"} />
-            <SummaryMetric label="Agents idle" value={loading ? "…" : String(agents?.idle ?? 0)} />
-            <SummaryMetric label="Agents failed" value={loading ? "…" : String(agents?.failed ?? 0)} tone={(agents?.failed ?? 0) > 0 ? "error" : "success"} />
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-faint">
-            <span>PID {status?.pid ?? "unknown"}</span>
-            <span>Uptime {status ? formatDurationMs(status.uptimeSeconds * 1_000) : "unknown"}</span>
-            <span>{agents?.total ?? 0} tracked agents in {agents?.liveSessions ?? 0} live session snapshots</span>
-            {(agents?.staleSessions ?? 0) > 0 && (
-              <span>
-                {agents?.staleSessions} stale snapshot{agents?.staleSessions === 1 ? "" : "s"} excluded
-              </span>
-            )}
-            {(agents?.unknownSessions ?? 0) > 0 && (
-              <span>
-                {agents?.unknownSessions} snapshot{agents?.unknownSessions === 1 ? "" : "s"} unavailable
-              </span>
-            )}
-          </div>
-          <AgentBackendBlock backend={status?.agentBackend ?? null} />
-        </>
-      )}
-    </div>
-  );
-}
-
-function AgentBackendBlock({ backend }: { backend: AgentBackendStatus | null }) {
-  if (!backend) {
-    return (
-      <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-        Agent backend status is unavailable from this server version.
-      </div>
-    );
-  }
-
-  const lastDisconnect = backend.lastDisconnect;
-  return (
-    <div className={cx(DS.layout.formGroup, "text-xs")}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium text-text-secondary">Agent backend</span>
-        <AgentBackendStateBadge state={backend.state} />
-      </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-text-muted">
-        <span>Connection {backend.connection ?? "unknown"}</span>
-        <span>PID {backend.pid ?? "unknown"}</span>
-        <span>Backend started {formatDateTime(backend.createdAt)}</span>
-      </div>
-      {lastDisconnect && (
-        <div className="mt-2 text-text-muted">
-          Last disconnect {formatDateTime(lastDisconnect.at)}: {lastDisconnect.reason}
-          {lastDisconnect.detail ? ` - ${lastDisconnect.detail}` : ""}
-        </div>
-      )}
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-text-faint">
-        <span>Disconnects {backend.disconnectCount}</span>
-        <span>Recoveries {backend.recoveryCount}</span>
-        <span>Interrupted {backend.lastInterruptedSessionCount}</span>
-        <span>Auto-resumed {backend.lastAutoResumedSessionCount}</span>
-      </div>
-      {backend.lastRecoveryError && (
-        <div className="mt-2 text-error">Last recovery error: {backend.lastRecoveryError}</div>
-      )}
-    </div>
-  );
-}
-
-function AgentBackendStateBadge({ state }: { state: AgentBackendLifecycleState }) {
-  return (
-    <span className={cx(DS.badge.base, agentBackendStateClassName(state))}>
-      {state}
-    </span>
-  );
-}
-
-function agentBackendStateClassName(state: AgentBackendLifecycleState): string {
-  switch (state) {
-    case "ready":
-      return "bg-success/15 text-success";
-    case "starting":
-    case "reconnecting":
-      return "bg-warning/15 text-warning";
-    case "disconnected":
-      return "bg-error/10 text-error";
-    case "stopped":
-      return "bg-bg-surface text-text-muted";
-  }
-}
-
-function CapacityCard({
-  status,
-  loading,
-  error,
-}: {
-  status: RuntimeStatusWithAgentBackend | null;
-  loading: boolean;
-  error: unknown;
-}) {
-  const capacity = status?.capacity;
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <Gauge size={15} />
-            Copilot capacity
-          </div>
-          <p className="mt-1 text-xs text-text-muted">
-            Admission uses both a hard live-context limit and an MCP-weighted unit budget. Idle cached parents are evictable and do not count as used pressure.
-          </p>
-        </div>
-        <div className="text-[11px] text-text-faint">
-          Updated {loading ? "checking…" : formatDateTime(status?.fetchedAt)}
-        </div>
-      </div>
-
-      {error && !status ? (
-        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-          Capacity status unavailable: {formatError(error)}
-        </div>
-      ) : !capacity ? (
-        <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-          {loading ? "Loading capacity status…" : "Capacity statistics are unavailable from this server version."}
-        </div>
-      ) : (
-        <>
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            <SummaryMetric
-              label="Live contexts"
-              value={`${formatCapacityValue(capacity.contexts.used)} / ${formatCapacityValue(capacity.contexts.limit)}`}
-              tone={capacityTone(capacity.contexts.used, capacity.contexts.limit)}
-            />
-            <SummaryMetric
-              label="Weighted units"
-              value={`${formatCapacityValue(capacity.weightedUnits.used)} / ${formatCapacityValue(capacity.weightedUnits.limit)}`}
-              tone={capacityTone(capacity.weightedUnits.used, capacity.weightedUnits.limit)}
-            />
-            <SummaryMetric
-              label="Local MCP slots"
-              value={formatCapacityValue(capacity.localMcpSlots.used)}
-              tone={capacity.localMcpSlots.used > 0 ? "info" : "default"}
-            />
-            <SummaryMetric
-              label="Waiting requests"
-              value={String(capacity.waitingRequests)}
-              tone={capacity.waitingRequests > 0 ? "warning" : "success"}
-            />
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <CapacityBar
-              label="Context pressure"
-              used={capacity.contexts.used}
-              retained={capacity.contexts.retained}
-              limit={capacity.contexts.limit}
-            />
-            <CapacityBar
-              label="Weighted pressure"
-              used={capacity.weightedUnits.used}
-              retained={capacity.weightedUnits.retained}
-              limit={capacity.weightedUnits.limit}
-            />
-          </div>
-
-          {capacity.cleanup.failed > 0 && (
-            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-              New work is blocked while {capacity.cleanup.failed} failed cleanup{capacity.cleanup.failed === 1 ? "" : "s"} remain. Bridge retries these automatically; restart if the count does not clear.
-            </div>
-          )}
-          {capacity.cleanup.failed === 0 && capacity.waitingRequests > 0 && (
-            <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-warning")}>
-              {capacity.waitingRequests} request{capacity.waitingRequests === 1 ? " is" : "s are"} waiting for live capacity or cleanup headroom.
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-faint">
-            <span>
-              Parent cache {capacity.cache.readyParents}/{capacity.cache.limit}, {capacity.cache.protectedParents} protected
-            </span>
-            <span>
-              Cleanup {capacity.cleanup.pending} pending, {capacity.cleanup.failed} failed, limit {capacity.cleanup.limit}
-            </span>
-            <span>Local MCP weight +{formatCapacityValue(capacity.localMcpWeight)} per context</span>
-            <span>Capacity wait {formatCapacityValue(capacity.waitTimeoutSeconds)}s</span>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function CapacityBar({
-  label,
-  used,
-  retained,
-  limit,
-}: {
-  label: string;
-  used: number;
-  retained: number;
-  limit: number;
-}) {
-  const percentage = limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0;
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="font-medium text-text-secondary">{label}</span>
-        <span className="text-text-muted">
-          {formatCapacityValue(used)} used, {formatCapacityValue(retained)} retained
-        </span>
-      </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full bg-bg-surface">
-        <div
-          className={cx("h-full rounded-full transition-[width]", capacityBarClassName(used, limit))}
-          style={{ width: `${percentage}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function BridgeControlsCard({
-  selfUpdateDisabledReason,
-  restartDisabledReason,
-  restartPending,
-  evictIdleCacheDisabledReason,
-  queueingUpdate,
-  restarting,
-  evictingIdleCache,
-  idleCachedSessions,
-  onQueueSelfUpdate,
-  onRestart,
-  onRestartNow,
-  onEvictIdleCache,
-}: {
-  selfUpdateDisabledReason: string | null;
-  restartDisabledReason: string | null;
-  restartPending: boolean;
-  evictIdleCacheDisabledReason: string | null;
-  queueingUpdate: boolean;
-  restarting: boolean;
-  evictingIdleCache: boolean;
-  idleCachedSessions: number;
-  onQueueSelfUpdate: () => void;
-  onRestart: () => void;
-  onRestartNow: () => void;
-  onEvictIdleCache: () => void;
-}) {
-  return (
-    <div className={DS.layout.formGroup}>
-      <div>
-        <div className="flex items-center gap-2 text-sm font-medium text-accent">
-          <Power size={15} />
-          Bridge controls
-        </div>
-        <p className="mt-1 text-xs text-text-muted">
-          Restart and self-update are launcher-supervised. Idle cache eviction only disconnects session trees that are safe to resume later.
-        </p>
-      </div>
-      <div className="grid gap-3 lg:grid-cols-3">
-        <div className={DS.layout.formGroup}>
-          <div className="text-sm font-medium text-text-secondary">Self-update</div>
-          <p className="mt-1 text-xs text-text-muted">
-            Pull the latest source, validate it, and restart with automatic rollback if activation fails.
-          </p>
-          <button
-            type="button"
-            onClick={onQueueSelfUpdate}
-            disabled={Boolean(selfUpdateDisabledReason)}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "mt-3 gap-1.5 disabled:opacity-50")}
-          >
-            {queueingUpdate ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-            {queueingUpdate ? "Queueing…" : "Queue self-update"}
-          </button>
-          <p className="mt-2 text-[11px] text-text-faint">
-            {selfUpdateDisabledReason ?? "Available for source-managed Bridge installations."}
-          </p>
-        </div>
-
-        <div className={DS.layout.formGroup}>
-          <div className="text-sm font-medium text-text-secondary">Operational restart</div>
-          <p className="mt-1 text-xs text-text-muted">
-            Reload configuration and dependencies without pulling or deploying code changes.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onRestart}
-              disabled={Boolean(restartDisabledReason)}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1.5 disabled:opacity-50")}
-            >
-              {restarting ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
-              {restarting ? "Requesting…" : "Restart when idle"}
-            </button>
-            <button
-              type="button"
-              onClick={onRestartNow}
-              disabled={Boolean(restartDisabledReason)}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "gap-1.5 disabled:opacity-50")}
-            >
-              {restarting ? <Loader2 size={12} className="animate-spin" /> : <AlertTriangle size={12} />}
-              {restarting ? "Requesting…" : "Restart now"}
-            </button>
-          </div>
-          <p className="mt-2 text-[11px] text-text-faint">
-            {restartDisabledReason ?? (restartPending
-              ? "A restart is pending. It happens once every session and job is idle, and blocks nothing until then."
-              : "A restart waits until every session and job is idle, and blocks nothing until then. Restart now stops running sessions and resumes them afterwards.")}
-          </p>
-        </div>
-
-        <div className={DS.layout.formGroup}>
-          <div className="text-sm font-medium text-text-secondary">Idle session cache</div>
-          <p className="mt-1 text-xs text-text-muted">
-            Disconnect every cached session tree that has no active turn or running background agent.
-          </p>
-          <button
-            type="button"
-            onClick={onEvictIdleCache}
-            disabled={Boolean(evictIdleCacheDisabledReason)}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "mt-3 gap-1.5 border border-border bg-bg-surface disabled:opacity-50")}
-          >
-            {evictingIdleCache ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-            {evictingIdleCache ? "Evicting…" : "Evict idle cache"}
-          </button>
-          <p className="mt-2 text-[11px] text-text-faint">
-            {evictIdleCacheDisabledReason
-              ?? `${idleCachedSessions} idle cached session${idleCachedSessions === 1 ? "" : "s"} can be evicted now.`}
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RunnerSummaryCard({
-  list,
-  loading,
-}: {
-  list: ManagementJobListResponse | null;
-  loading: boolean;
-}) {
-  const jobs = list?.jobs ?? [];
-  const activeCount = list?.activeCount ?? jobs.filter((job) => ACTIVE_STATUSES.has(job.status)).length;
-  const runningCount = list?.runningCount ?? jobs.filter((job) => job.status === "running").length;
-  const queuedCount = list?.queuedCount ?? jobs.filter((job) => job.status === "queued").length;
-  const staleCount = list?.staleCount ?? jobs.filter((job) => job.stale).length;
-
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <Activity size={15} />
-            Runner summary
-          </div>
-          <p className="mt-1 text-xs text-text-muted">
-            Runner health is inferred from queued/running jobs and their heartbeats; there is no dedicated idle-runner heartbeat yet.
-          </p>
-        </div>
-        <div className="text-[11px] text-text-faint">
-          Updated {loading ? "checking…" : formatDateTime(list?.fetchedAt)}
-        </div>
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-        <SummaryMetric label="Active" value={loading ? "…" : String(activeCount)} />
-        <SummaryMetric label="Running" value={loading ? "…" : String(runningCount)} tone={runningCount > 0 ? "info" : "default"} />
-        <SummaryMetric label="Queued" value={loading ? "…" : String(queuedCount)} tone={queuedCount > 0 ? "warning" : "default"} />
-        <SummaryMetric label="Stale" value={loading ? "…" : String(staleCount)} tone={staleCount > 0 ? "error" : "success"} />
-        <SummaryMetric
-          label="Stale after"
-          value={list?.staleAfterMs ? formatDurationMs(list.staleAfterMs) : "unknown"}
-        />
-      </div>
-    </div>
-  );
-}
-
-function SummaryMetric({
-  label,
-  value,
-  tone = "default",
-}: {
-  label: string;
-  value: string;
-  tone?: "default" | "success" | "warning" | "error" | "info";
-}) {
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
-      <div className={cx("mt-1 text-lg font-semibold", metricToneClassName(tone))}>{value}</div>
-    </div>
-  );
-}
-
-function JobListCard({
-  title,
-  description,
-  jobs,
-  emptyMessage,
-  emptySub,
-  selectedJobId,
-  list,
-  loading,
-  onSelectJob,
-  onCancel,
-  onRetry,
-  actionBusy,
-}: {
-  title: string;
-  description: string;
-  jobs: ManagementJobSummary[];
-  emptyMessage: string;
-  emptySub: string;
-  selectedJobId: string | null;
-  list: ManagementJobListResponse | null;
-  loading: boolean;
-  onSelectJob: (jobId: string) => void;
-  onCancel: (job: ManagementJobSummary) => void;
-  onRetry: (job: ManagementJobSummary) => void;
-  actionBusy: boolean;
-}) {
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <Terminal size={15} />
-            {title}
-          </div>
-          <p className="mt-1 text-xs text-text-muted">{description}</p>
-        </div>
-        <span className={cx(DS.badge.base, "shrink-0 bg-bg-primary text-text-secondary")}>
-          {jobs.length} shown
-        </span>
-      </div>
-      <JobTableOrEmpty
-        jobs={jobs}
-        emptyMessage={emptyMessage}
-        emptySub={emptySub}
-        selectedJobId={selectedJobId}
-        list={list}
-        loading={loading}
-        onSelectJob={onSelectJob}
-        onCancel={onCancel}
-        onRetry={onRetry}
-        actionBusy={actionBusy}
-      />
-    </div>
   );
 }
 
@@ -900,225 +213,124 @@ function FilterControls({
   onStatusFilterChange: (value: JobStatusFilter) => void;
   onLimitChange: (value: number) => void;
 }) {
+  const select = cx(DS.field.input, DS.field.inputSize.sm);
   return (
-    <div className="flex flex-wrap gap-2 text-xs text-text-muted">
-      <label className="flex items-center gap-1.5">
-        Type
-        <select
-          aria-label="Management job type filter"
-          value={typeFilter}
-          onChange={(event) => onTypeFilterChange(event.target.value as JobTypeFilter)}
-          className={cx(DS.field.input, DS.field.inputSize.md)}
-        >
-          <option value="all">all</option>
-          {JOB_TYPES.map((type) => (
-            <option key={type} value={type}>{jobTypeLabel(type)}</option>
-          ))}
-        </select>
-      </label>
-      <label className="flex items-center gap-1.5">
-        Status
-        <select
-          aria-label="Management job status filter"
-          value={statusFilter}
-          onChange={(event) => onStatusFilterChange(event.target.value as JobStatusFilter)}
-          className={cx(DS.field.input, DS.field.inputSize.md)}
-        >
-          <option value="all">all</option>
-          {JOB_STATUSES.map((status) => (
-            <option key={status} value={status}>{statusLabel(status)}</option>
-          ))}
-        </select>
-      </label>
-      <label className="flex items-center gap-1.5">
-        Limit
-        <select
-          aria-label="Management job limit filter"
-          value={limit}
-          onChange={(event) => onLimitChange(Number(event.target.value))}
-          className={cx(DS.field.input, DS.field.inputSize.md)}
-        >
-          {LIMITS.map((value) => (
-            <option key={value} value={value}>{value}</option>
-          ))}
-        </select>
-      </label>
+    <div className="grid max-w-xl grid-cols-1 gap-2 sm:grid-cols-3">
+      <select aria-label="Management job type filter" value={typeFilter}
+        onChange={(event) => onTypeFilterChange(event.target.value as JobTypeFilter)} className={select}>
+        <option value="all">All types</option>
+        {JOB_TYPES.map((type) => <option key={type} value={type}>{jobTypeLabel(type)}</option>)}
+      </select>
+      <select aria-label="Management job status filter" value={statusFilter}
+        onChange={(event) => onStatusFilterChange(event.target.value as JobStatusFilter)} className={select}>
+        <option value="all">All statuses</option>
+        {JOB_STATUSES.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+      </select>
+      <select aria-label="Management job limit filter" value={limit}
+        onChange={(event) => onLimitChange(Number(event.target.value))} className={select}>
+        {LIMITS.map((value) => <option key={value} value={value}>Last {value}</option>)}
+      </select>
     </div>
   );
 }
 
-function JobTableOrEmpty({
-  jobs,
-  emptyMessage,
-  emptySub,
-  selectedJobId,
-  list,
-  loading,
-  onSelectJob,
-  onCancel,
-  onRetry,
-  actionBusy,
-}: {
-  jobs: ManagementJobSummary[];
-  emptyMessage: string;
-  emptySub: string;
+interface JobRowProps {
   selectedJobId: string | null;
-  list: ManagementJobListResponse | null;
-  loading: boolean;
-  onSelectJob: (jobId: string) => void;
+  staleAfterMs?: number;
+  fetchedAt?: string;
+  detail: ManagementJobDetail | null;
+  detailLoading: boolean;
+  detailError: unknown;
+  onRefreshDetail: () => void;
+  onToggle: (jobId: string) => void;
   onCancel: (job: ManagementJobSummary) => void;
   onRetry: (job: ManagementJobSummary) => void;
   actionBusy: boolean;
-}) {
-  if (loading) {
-    return (
-      <div className={cx(DS.layout.formGroup, "text-sm text-text-muted")}>
-        Loading management jobs…
-      </div>
-    );
-  }
+}
 
-  if (jobs.length === 0) {
-    return <EmptyState message={emptyMessage} sub={emptySub} />;
-  }
-
+function JobList({ jobs, ...rowProps }: JobRowProps & { jobs: ManagementJobSummary[] }) {
   return (
-    <div className="overflow-x-auto rounded-md border border-border bg-bg-primary">
-      <table className="min-w-max w-full text-xs">
-        <thead className="bg-bg-secondary text-text-muted">
-          <tr className="border-b border-border">
-            <th className="px-3 py-2 text-left font-medium">Job</th>
-            <th className="px-3 py-2 text-left font-medium">Status</th>
-            <th className="px-3 py-2 text-left font-medium">Created / started</th>
-            <th className="px-3 py-2 text-left font-medium">Elapsed</th>
-            <th className="px-3 py-2 text-left font-medium">Runner</th>
-            <th className="px-3 py-2 text-left font-medium">Heartbeat</th>
-            <th className="px-3 py-2 text-right font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((job) => (
-            <JobRow
-              key={job.id}
-              job={job}
-              selected={job.id === selectedJobId}
-              staleAfterMs={list?.staleAfterMs}
-              fetchedAt={list?.fetchedAt}
-              onSelect={() => onSelectJob(job.id)}
-              onCancel={() => onCancel(job)}
-              onRetry={() => onRetry(job)}
-              actionBusy={actionBusy}
-            />
-          ))}
-        </tbody>
-      </table>
+    <div className={DS.surface.divided}>
+      {jobs.map((job) => <JobRow key={job.id} job={job} {...rowProps} />)}
     </div>
   );
 }
 
 function JobRow({
   job,
-  selected,
+  selectedJobId,
   staleAfterMs,
   fetchedAt,
-  onSelect,
+  detail,
+  detailLoading,
+  detailError,
+  onRefreshDetail,
+  onToggle,
   onCancel,
   onRetry,
   actionBusy,
-}: {
-  job: ManagementJobSummary;
-  selected: boolean;
-  staleAfterMs?: number;
-  fetchedAt?: string;
-  onSelect: () => void;
-  onCancel: () => void;
-  onRetry: () => void;
-  actionBusy: boolean;
-}) {
-  const heartbeatAge = heartbeatAgeMs(job, fetchedAt);
-  const elapsedStart = job.startedAt ?? job.createdAt;
-  const elapsedEnd = job.completedAt;
+}: JobRowProps & { job: ManagementJobSummary }) {
+  const selected = job.id === selectedJobId;
   const isRetryable = RETRYABLE_STATUSES.has(job.status);
-  const rowClassName = cx("border-b border-border", selected ? DS.row.selected : "hover:bg-bg-hover");
+  const when = job.completedAt ?? job.startedAt ?? job.createdAt;
 
   return (
-    <tr className={rowClassName} onClick={onSelect}>
-      <td className="px-3 py-2 align-top">
-        <button type="button" className={cx(DS.row.stacked, "p-0")} onClick={onSelect}>
-          <div className="font-medium text-text-secondary">{jobTypeLabel(job.type)}</div>
-          <code className="text-[11px] text-text-faint">{shortJobId(job.id)}</code>
+    <div className="min-w-0 py-1">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onToggle(job.id)}
+          aria-expanded={selected}
+          className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "flex-1 gap-2.5", selected && DS.row.selected)}
+        >
+          <ChevronRight size={13} aria-hidden="true" className={cx(DS.row.chevron, selected && DS.row.chevronOpen)} />
+          <span className="shrink-0 font-medium text-text-primary">{jobTypeLabel(job.type)}</span>
+          <code className={cx(DS.text.literal, "hidden sm:inline")}>{shortJobId(job.id)}</code>
+          <JobStatusBadge status={job.status} stale={job.stale} />
+          {job.cancelRequestedAt && <span className="text-[11px] text-warning">cancel requested</span>}
+          <span className={cx(DS.row.trailing, "hidden sm:flex")}>
+            <span title={formatDateTime(when)}>{timeAgo(when)}</span>
+            <span>{formatElapsed(job.startedAt ?? job.createdAt, job.completedAt)}</span>
+          </span>
         </button>
-      </td>
-      <td className="px-3 py-2 align-top">
-        <div className="flex flex-col gap-1">
-          <StatusPill status={job.status} stale={job.stale} />
-          {job.cancelRequestedAt && (
-            <span className="text-[11px] text-warning">cancel requested</span>
-          )}
-        </div>
-      </td>
-      <td className="px-3 py-2 align-top text-text-muted">
-        <div>{formatDateTime(job.createdAt)}</div>
-        <div className="text-[11px] text-text-faint">started {formatDateTime(job.startedAt)}</div>
-      </td>
-      <td className="px-3 py-2 align-top text-text-muted">{formatElapsed(elapsedStart, elapsedEnd)}</td>
-      <td className="px-3 py-2 align-top text-text-muted">{job.runnerPid ?? "—"}</td>
-      <td className="px-3 py-2 align-top text-text-muted">
-        <div>{heartbeatAge === undefined ? "—" : `${formatDurationMs(heartbeatAge)} ago`}</div>
-        {job.stale && (
-          <div className="mt-1 flex items-center gap-1 text-[11px] text-warning">
-            <AlertTriangle size={11} />
-            Stale{staleAfterMs ? ` > ${formatDurationMs(staleAfterMs)}` : ""}
-          </div>
+        {job.status === "queued" && (
+          <Button size="sm" variant="danger" disabled={actionBusy} onClick={() => onCancel(job)}
+            icon={actionBusy ? <Loader2 size={11} className="animate-spin" /> : <XCircle size={11} />}>
+            Cancel
+          </Button>
         )}
-      </td>
-      <td className="px-3 py-2 align-top text-right">
-        <div className="flex justify-end gap-1.5">
-          {job.status === "queued" && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onCancel();
-              }}
-              disabled={actionBusy}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "gap-1 disabled:opacity-60")}
-            >
-              {actionBusy ? <Loader2 size={10} className="animate-spin" /> : <XCircle size={10} />}
-              Cancel
-            </button>
-          )}
-          {job.status === "running" && (
-            <button
-              type="button"
-              disabled
-              title="Running job cancellation is not enabled until cooperative cancellation is implemented."
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "cursor-not-allowed gap-1 border border-border bg-bg-surface text-text-faint")}
-            >
-              Cancel unavailable
-            </button>
-          )}
-          {isRetryable && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onRetry();
-              }}
-              disabled={actionBusy}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.choice.selected, "gap-1 border text-accent disabled:opacity-60")}
-            >
-              {actionBusy ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
-              Retry
-            </button>
-          )}
+        {job.status === "running" && (
+          <Button size="sm" variant="ghost" disabled aria-label="Cancel unavailable"
+            title="Running job cancellation is not enabled until cooperative cancellation is implemented.">
+            <span className="hidden sm:inline">Cancel unavailable</span>
+            <span className="sm:hidden">Cancel</span>
+          </Button>
+        )}
+        {isRetryable && (
+          <Button size="sm" variant="ghost" disabled={actionBusy} onClick={() => onRetry(job)}
+            icon={actionBusy ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}>
+            Retry
+          </Button>
+        )}
+      </div>
+      {selected && (
+        <div className={cx(DS.rail, DS.motion.reveal, "pb-2")}>
+          <JobDetail
+            job={detail && detail.id === job.id ? detail : job}
+            detail={detail && detail.id === job.id ? detail : null}
+            loading={detailLoading}
+            error={detailError}
+            staleAfterMs={staleAfterMs}
+            fetchedAt={fetchedAt}
+            onRefresh={onRefreshDetail}
+          />
         </div>
-      </td>
-    </tr>
+      )}
+    </div>
   );
 }
 
-function JobDetailPanel({
+function JobDetail({
   job,
   detail,
   loading,
@@ -1126,139 +338,56 @@ function JobDetailPanel({
   staleAfterMs,
   fetchedAt,
   onRefresh,
-  onCancel,
-  onRetry,
-  actionBusy,
 }: {
-  job: ManagementJobSummary | ManagementJobDetail | null;
+  job: ManagementJobSummary | ManagementJobDetail;
   detail: ManagementJobDetail | null;
   loading: boolean;
   error: unknown;
   staleAfterMs?: number;
   fetchedAt?: string;
   onRefresh: () => void;
-  onCancel: (job: ManagementJobSummary) => void;
-  onRetry: (job: ManagementJobSummary) => void;
-  actionBusy: boolean;
 }) {
-  if (!job) {
-    return (
-      <div className={DS.layout.formGroup}>
-        <EmptyState
-          message="Select a management job"
-          sub="Choose a row above to inspect job metadata, sanitized logs, and action state."
-        />
-      </div>
-    );
-  }
-
   const heartbeatAge = heartbeatAgeMs(job, fetchedAt);
-  const canCancel = job.status === "queued";
-  const canRetry = RETRYABLE_STATUSES.has(job.status);
-
   return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-accent">
-            <Terminal size={15} />
-            Job detail
-            <StatusPill status={job.status} stale={job.stale} />
-          </div>
-          <p className="mt-1 break-all font-mono text-[11px] text-text-faint">{job.id}</p>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={loading}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1 border border-border bg-bg-primary disabled:opacity-60")}
-          >
-            {loading ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
-            Refresh detail
-          </button>
-          {canCancel && (
-            <button
-              type="button"
-              onClick={() => onCancel(job)}
-              disabled={actionBusy}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.danger, "gap-1 disabled:opacity-60")}
-            >
-              <XCircle size={11} />
-              Cancel queued
-            </button>
-          )}
-          {job.status === "running" && (
-            <button
-              type="button"
-              disabled
-              title="Running job cancellation is not enabled until cooperative cancellation is implemented."
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "cursor-not-allowed gap-1 border border-border bg-bg-surface text-text-faint")}
-            >
-              Cancel unavailable
-            </button>
-          )}
-          {canRetry && (
-            <button
-              type="button"
-              onClick={() => onRetry(job)}
-              disabled={actionBusy}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, DS.choice.selected, "gap-1 border text-accent disabled:opacity-60")}
-            >
-              <RotateCcw size={11} />
-              Retry
-            </button>
-          )}
-        </div>
+    <div className="space-y-3 pt-1">
+      {job.stale && (
+        <Notice tone="warning" icon={<AlertTriangle size={14} />}>
+          This running job appears stale{staleAfterMs ? ` because its heartbeat is older than ${formatDurationMs(staleAfterMs)}` : ""}.
+        </Notice>
+      )}
+      {error ? <Notice tone="danger">Detail refresh failed: {formatError(error)}</Notice> : null}
+
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className={cx(DS.text.meta, "min-w-0")}>
+          Created {formatDateTime(job.createdAt)} · Started {formatDateTime(job.startedAt)}
+          {" · "}Elapsed {formatElapsed(job.startedAt ?? job.createdAt, job.completedAt)}
+          {job.completedAt && ` · Completed ${formatDateTime(job.completedAt)}`}
+          {" · "}Heartbeat {heartbeatAge === undefined ? "—" : `${formatDurationMs(heartbeatAge)} ago`}
+          {" · "}Runner PID {job.runnerPid === undefined ? "—" : String(job.runnerPid)}
+          <span className="block break-all font-mono">{job.id}</span>
+        </p>
+        <Button size="sm" variant="ghost" onClick={onRefresh} disabled={loading}
+          icon={loading ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}>
+          Refresh detail
+        </Button>
       </div>
 
-      {job.stale && (
-        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-warning")}>
-          This running job appears stale{staleAfterMs ? ` because its heartbeat is older than ${formatDurationMs(staleAfterMs)}` : ""}.
-        </div>
+      {job.error && (
+        <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words text-[11px] text-error">{job.error}</pre>
       )}
 
-      {error ? (
-        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-          Detail refresh failed: {formatError(error)}
-        </div>
-      ) : null}
-
-      <div className="grid gap-2 text-xs md:grid-cols-2 xl:grid-cols-4">
-        <DetailStat label="Type" value={jobTypeLabel(job.type)} />
-        <DetailStat label="Created" value={formatDateTime(job.createdAt)} />
-        <DetailStat label="Started" value={formatDateTime(job.startedAt)} />
-        <DetailStat label="Completed" value={formatDateTime(job.completedAt)} />
-        <DetailStat label="Elapsed" value={formatElapsed(job.startedAt ?? job.createdAt, job.completedAt)} />
-        <DetailStat label="Heartbeat age" value={heartbeatAge === undefined ? "—" : `${formatDurationMs(heartbeatAge)} ago`} />
-        <DetailStat label="Runner PID" value={job.runnerPid === undefined ? "—" : String(job.runnerPid)} />
-        <DetailStat label="Updated" value={formatDateTime(job.updatedAt)} />
-      </div>
-
       {detail ? (
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="space-y-1">
           <JsonDetails label="Input JSON" value={detail.input} />
           <JsonDetails label="Result JSON" value={detail.result} empty="No result recorded yet." />
         </div>
       ) : (
-        <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-          {loading ? "Loading detail payload…" : "Detail payload is not loaded yet."}
-        </div>
+        <p className={DS.field.help}>{loading ? "Loading detail payload…" : "Detail payload is not loaded yet."}</p>
       )}
 
-      {job.error && (
-        <div className={cx(DS.notice.surface, "p-3")}>
-          <div className="text-xs font-medium text-error">Error</div>
-          <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words text-[11px] text-error">{job.error}</pre>
-        </div>
-      )}
-
-      <div className={DS.layout.formGroup}>
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-xs font-medium text-text-secondary">Sanitized recent log tail</div>
-          {loading && <Loader2 size={12} className="animate-spin text-text-muted" />}
-        </div>
-        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-secondary p-3 text-[11px] text-text-muted">
+      <div>
+        <p className={DS.text.sectionLabel}>Sanitized recent log tail</p>
+        <pre className={cx(DS.surface.inset, "mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap break-words p-3 text-[11px] text-text-secondary")}>
           {detail?.logTail?.trim() ? detail.logTail : "No log lines available."}
         </pre>
       </div>
@@ -1266,244 +395,32 @@ function JobDetailPanel({
   );
 }
 
-function DetailStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
-      <div className="mt-1 break-words text-xs text-text-secondary">{value}</div>
-    </div>
-  );
-}
-
-function JsonDetails({
-  label,
-  value,
-  empty = "No value recorded.",
-}: {
-  label: string;
-  value: unknown;
-  empty?: string;
-}) {
+function JsonDetails({ label, value, empty = "No value recorded." }: { label: string; value: unknown; empty?: string }) {
   const hasValue = value !== undefined && value !== null;
   return (
-    <details className="rounded-md border border-border bg-bg-primary p-3">
-      <summary className="cursor-pointer text-xs font-medium text-text-secondary">
-        {label}
-      </summary>
+    <Details label={label}>
       {hasValue ? (
-        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-secondary p-3 text-[11px] text-text-muted">
+        <pre className={cx(DS.surface.inset, "mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words p-3 text-[11px] text-text-secondary")}>
           {formatJson(value)}
         </pre>
       ) : (
-        <p className="mt-2 text-xs text-text-muted">{empty}</p>
+        <p className={cx(DS.field.help, "pt-1")}>{empty}</p>
       )}
-    </details>
+    </Details>
   );
 }
 
-function StatusPill({ status, stale }: { status: ManagementJobStatus; stale?: boolean }) {
-  return (
-    <span className={cx(DS.badge.base, "w-fit items-center", statusToneClassName(status, stale))}>
-      {stale ? "stale" : statusLabel(status)}
-    </span>
-  );
-}
-
-function statusToneClassName(status: ManagementJobStatus, stale?: boolean): string {
-  if (stale) return "bg-warning/15 text-warning";
+function JobStatusBadge({ status, stale }: { status: ManagementJobStatus; stale?: boolean }) {
+  if (stale) return <Badge tone="warning"><StatusIcon kind="warning" decorative />Stale</Badge>;
   switch (status) {
-    case "queued":
-      return "bg-warning/15 text-warning";
-    case "running":
-      return "bg-info-surface text-info";
-    case "succeeded":
-      return "bg-success/15 text-success";
     case "failed":
-      return "bg-error/10 text-error";
-    case "cancelled":
-      return "bg-bg-surface text-text-muted";
-    default:
-      return "bg-bg-surface text-text-muted";
-  }
-}
-
-function metricToneClassName(tone: "default" | "success" | "warning" | "error" | "info"): string {
-  switch (tone) {
-    case "success":
-      return "text-success";
-    case "warning":
-      return "text-warning";
-    case "error":
-      return "text-error";
-    case "info":
-      return "text-info";
-    default:
-      return "text-text-primary";
-  }
-}
-
-function capacityTone(
-  used: number,
-  limit: number,
-): "default" | "success" | "warning" | "error" | "info" {
-  if (limit <= 0) return "default";
-  const ratio = used / limit;
-  if (ratio >= 1) return "error";
-  if (ratio >= 0.8) return "warning";
-  if (ratio > 0) return "info";
-  return "success";
-}
-
-function capacityBarClassName(used: number, limit: number): string {
-  const tone = capacityTone(used, limit);
-  if (tone === "error") return "bg-error";
-  if (tone === "warning") return "bg-warning";
-  if (tone === "success") return "bg-success";
-  return "bg-info";
-}
-
-function formatCapacityValue(value: number): string {
-  return Number.isInteger(value)
-    ? String(value)
-    : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function getSelfUpdateDisabledReason({
-  runtime,
-  runtimeError,
-  activeExclusiveJob,
-  busy,
-}: {
-  runtime: RuntimeStatusWithAgentBackend | undefined;
-  runtimeError: unknown;
-  activeExclusiveJob: ManagementJobSummary | null;
-  busy: boolean;
-}): string | null {
-  if (busy) return "A management request is being submitted.";
-  if (!runtime) return runtimeError ? "Runtime availability could not be checked." : "Checking availability…";
-  if (runtime.isStaging) return "Unavailable from staging previews.";
-  if (!runtime.sourceManagementAvailable) return "Requires a source-managed Bridge checkout.";
-  if (activeExclusiveJob) {
-    return `${jobTypeLabel(activeExclusiveJob.type)} is already ${activeExclusiveJob.status}.`;
-  }
-  return null;
-}
-
-function getRestartDisabledReason({
-  runtime,
-  runtimeError,
-  busy,
-}: {
-  runtime: RuntimeStatusWithAgentBackend | undefined;
-  runtimeError: unknown;
-  busy: boolean;
-}): string | null {
-  if (busy) return "A management request is being submitted.";
-  if (!runtime) return runtimeError ? "Runtime availability could not be checked." : "Checking availability…";
-  if (runtime.isStaging) return "Unavailable from staging previews.";
-  return null;
-}
-
-function buildRestartNowConfirmation(runtime: RuntimeStatusWithAgentBackend | undefined): string {
-  const active = runtime?.sessions.active ?? 0;
-  return `Restart Bridge now?\n\n${active} running session${active === 1 ? "" : "s"} will stop and pick up where ${active === 1 ? "it" : "they"} left off once the Bridge is back.`;
-}
-
-function jobTypeLabel(type: ManagementJobType): string {
-  switch (type) {
-    case "self_update":
-      return "Self update";
-    case "staging_preview":
-      return "Staging preview";
-    case "staging_deploy":
-      return "Staging deploy";
-    default:
-      return type;
-  }
-}
-
-function statusLabel(status: ManagementJobStatus): string {
-  switch (status) {
-    case "queued":
-      return "queued";
+      return <Badge tone="danger"><StatusIcon kind="danger" decorative />{statusLabel(status)}</Badge>;
     case "running":
-      return "running";
+      return <Badge tone="neutral"><StatusIcon kind="working" decorative />{statusLabel(status)}</Badge>;
     case "succeeded":
-      return "succeeded";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
+      return <Badge tone="neutral"><StatusIcon kind="done" decorative />{statusLabel(status)}</Badge>;
     default:
-      return status;
+      return <Badge tone="neutral">{statusLabel(status)}</Badge>;
   }
 }
 
-function shortJobId(id: string): string {
-  return id.length <= 10 ? id : id.slice(0, 10);
-}
-
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value;
-  return new Date(timestamp).toLocaleString();
-}
-
-function formatElapsed(start: string | undefined, end?: string): string {
-  if (!start) return "—";
-  const startTime = Date.parse(start);
-  if (!Number.isFinite(startTime)) return "—";
-  const endTime = end ? Date.parse(end) : Date.now();
-  if (!Number.isFinite(endTime)) return "—";
-  return formatDurationMs(Math.max(0, endTime - startTime));
-}
-
-function formatDurationMs(value: number): string {
-  if (!Number.isFinite(value)) return "unknown";
-  const totalSeconds = Math.max(0, Math.round(value / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
-function heartbeatAgeMs(job: ManagementJobSummary, fetchedAt: string | undefined): number | undefined {
-  if (typeof job.heartbeatAgeMs === "number" && Number.isFinite(job.heartbeatAgeMs)) {
-    return Math.max(0, job.heartbeatAgeMs);
-  }
-  if (!job.heartbeatAt) return undefined;
-  const heartbeatTime = Date.parse(job.heartbeatAt);
-  const referenceTime = fetchedAt ? Date.parse(fetchedAt) : Date.now();
-  if (!Number.isFinite(heartbeatTime) || !Number.isFinite(referenceTime)) return undefined;
-  return Math.max(0, referenceTime - heartbeatTime);
-}
-
-function formatJson(value: unknown): string {
-  try {
-    return JSON.stringify(redactSensitive(value), null, 2) ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function redactSensitive(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
-  if (!isRecord(value)) return value;
-  const redacted: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    redacted[key] = isSensitiveKey(key) ? "[redacted]" : redactSensitive(item);
-  }
-  return redacted;
-}
-
-function isSensitiveKey(key: string): boolean {
-  return /token|secret|password|authorization|api[-_]?key|private[-_]?key/i.test(key);
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
