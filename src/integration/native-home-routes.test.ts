@@ -3,6 +3,12 @@ import request from "supertest";
 import { createTestApp } from "../server/__tests__/test-app.js";
 import { getBridgeToolDefinitions } from "../server/agent-tools-mcp/register.js";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { withTestSourceCheckout } = await import("../server/__tests__/test-paths.js");
+  return { ...actual, existsSync: withTestSourceCheckout(actual.existsSync) };
+});
+
 describe("native Home API and retained Bridge routes", () => {
   it("uses the existing task and checklist mutations with no dashboard domain", async () => {
     const { app, ctx, db } = createTestApp();
