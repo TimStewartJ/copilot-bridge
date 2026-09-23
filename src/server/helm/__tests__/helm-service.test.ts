@@ -20,6 +20,7 @@ function createHarness() {
     isSessionBusy: vi.fn((sessionId: string) => busy.has(sessionId)),
     listModels: vi.fn(async () => [
       { id: "claude-opus-5", supportedReasoningEfforts: ["low", "high"] },
+      { id: "gpt-6-luna", supportedReasoningEfforts: ["none", "low"] },
       { id: "gpt-5.6-luna", supportedReasoningEfforts: ["none", "low"] },
     ]),
     createSession: vi.fn(async (options: { expectedSessionId?: string }) => ({ sessionId: options.expectedSessionId! })),
@@ -82,7 +83,7 @@ describe("HelmService conversations", () => {
     expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("high");
   });
 
-  it("creates a conversation on a fast model with the Helm profile registered first", async () => {
+  it("creates a conversation on GPT-6 Luna with the Helm profile registered first", async () => {
     const { helm, store, sessionManager } = createHarness();
     sessionManager.createSession.mockImplementationOnce(async (options: { expectedSessionId?: string }) => {
       // The profile resolver must already recognize the id while the session is being built.
@@ -90,10 +91,10 @@ describe("HelmService conversations", () => {
       return { sessionId: options.expectedSessionId! };
     });
     const conversation = await helm.createConversation();
-    // Starts at the typed effort, clamped to what the model has (luna here: none and low only).
+    // Starts at the typed effort, clamped to what GPT-6 Luna supports here.
     expect(sessionManager.createSession).toHaveBeenCalledWith({
       expectedSessionId: conversation.sessionId,
-      model: "gpt-5.6-luna",
+      model: "gpt-6-luna",
       reasoningEffort: "low",
     });
     expect(conversation).toMatchObject({ turnCount: 0, kept: false, busy: false, handsFree: false, title: null });
