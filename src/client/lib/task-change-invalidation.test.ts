@@ -26,6 +26,8 @@ describe("invalidateTaskChangeQueries", () => {
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
     expect(predicate?.({ queryKey: queryKeys.taskGitStatus("task-123") })).toBe(true);
+    expect(predicate?.({ queryKey: queryKeys.taskMomentumEvents("task-123") })).toBe(true);
+    expect(predicate?.({ queryKey: queryKeys.taskMomentumEvents("task-999") })).toBe(false);
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-999") })).toBe(false);
     expect(predicate?.({ queryKey: queryKeys.taskChecklistItems("task-123") })).toBe(false);
   });

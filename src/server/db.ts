@@ -371,6 +371,19 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (taskId, sessionId)
     );
 
+    -- Audit trail of changes to a task's "where things stand" fields
+    CREATE TABLE IF NOT EXISTS task_momentum_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      at TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('agent', 'user', 'system')),
+      sessionId TEXT,
+      scheduleId TEXT,
+      scheduleName TEXT,
+      changesJson TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_momentum_events_task ON task_momentum_events(taskId, id);
+
     -- Task ↔ Work Item links
     CREATE TABLE IF NOT EXISTS task_work_items (
       taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

@@ -7,6 +7,7 @@ import { toDateTimeInputValue } from "../lib/task-revisit";
 
 const patchTaskMock = vi.hoisted(() => vi.fn());
 vi.mock("../api", () => ({ patchTask: patchTaskMock }));
+vi.mock("./TaskMomentumHistory", () => ({ default: () => null }));
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {

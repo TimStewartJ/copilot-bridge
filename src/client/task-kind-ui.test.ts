@@ -21,6 +21,8 @@ import TaskContextMenu from "./components/task-list/TaskContextMenu";
 
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 
+vi.mock("./components/TaskMomentumHistory", () => ({ default: () => null }));
+
 vi.mock("./hooks/queries/useTags", () => ({
   useTagsQuery: vi.fn(),
 }));
