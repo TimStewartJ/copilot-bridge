@@ -118,6 +118,7 @@ import {
   planTunnelSupervisors,
   TunnelSupervisor,
 } from "./launcher-tunnel-supervisor.js";
+import { createGitHubTunnelHostAuth } from "./launcher-github-tunnel-auth.js";
 import { resolveTunnelConfig } from "./server/tunnel-config.js";
 import { listAdditionalTunnelRuntimeStateNames } from "./server/tunnel-runtime-state.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
@@ -216,14 +217,16 @@ let pendingReleaseFailure: ReleaseFailureState | null = null;
 let releaseCandidateSha: string | null = null;
 let terminalShutdownPromise: Promise<number> | null = null;
 const tunnelConfig = resolveTunnelConfig(process.env);
+const githubTunnelHostAuth = createGitHubTunnelHostAuth();
 const allTunnelSupervisors = planTunnelSupervisors(
-  tunnelConfig.names,
+  tunnelConfig.tunnels,
   listAdditionalTunnelRuntimeStateNames(DATA_DIR),
-).map((plan, index) => new TunnelSupervisor({
+).map(({ auth, ...plan }, index) => new TunnelSupervisor({
   dataDir: DATA_DIR,
   port: currentServerPort,
   log,
   ...plan,
+  ...(auth === "github" ? { hostAuth: githubTunnelHostAuth } : {}),
   ...(index === 0 ? { onReady: (url: string) => notifyWebhook("🔗 Copilot Bridge public URL ready", url) } : {}),
 }));
 const tunnelSupervisor = allTunnelSupervisors[0];
@@ -1650,8 +1653,8 @@ async function main() {
   }
 
   for (const warning of tunnelConfig.warnings) log(`[tunnel] ${warning}`);
-  log(tunnelConfig.names.length > 0
-    ? `[tunnel] Hosting ${tunnelConfig.names.join(", ")}`
+  log(tunnelConfig.tunnels.length > 0
+    ? `[tunnel] Hosting ${tunnelConfig.tunnels.map((tunnel) => tunnel.auth === "github" ? `github:${tunnel.name}` : tunnel.name).join(", ")}`
     : "[tunnel] No tunnel configured (BRIDGE_TUNNEL_NAMES is empty)");
   for (const supervisor of allTunnelSupervisors) await supervisor.start();
   if (shuttingDown) return;

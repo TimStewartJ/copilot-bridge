@@ -10,7 +10,7 @@ const DATA_DIR = resolveRuntimePaths(process.env).dataDir;
 let observedPublicOrigin: string | undefined;
 
 function tunnelEnabled(): boolean {
-  return resolveTunnelConfig(process.env).names.length > 0;
+  return resolveTunnelConfig(process.env).tunnels.length > 0;
 }
 
 function firstForwardedValue(value: string | string[] | undefined): string | undefined {

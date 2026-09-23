@@ -8,6 +8,8 @@ import {
   parseTunnelHostConnections,
   planTunnelSupervisors,
   TunnelSupervisor,
+  type TunnelHostAuth,
+  type TunnelHostCredential,
   type TunnelSupervisorDependencies,
 } from "./launcher-tunnel-supervisor.js";
 import type { ProcessIdentity, ProcessTreeTerminationResult } from "./server/platform.js";
@@ -61,6 +63,8 @@ function createHarness(options: {
   hostRecoveryGraceMs?: number;
   terminateDelayMs?: number;
   additionalName?: string;
+  hostAuth?: TunnelHostAuth;
+  hostTokenRenewMarginMs?: number;
 } = {}) {
   const children = options.children ?? [new FakeChild(101)];
   const fetchResponses = [...(options.fetchResponses ?? [])];
@@ -113,6 +117,8 @@ function createHarness(options: {
     hostRecoveryGraceMs: options.hostRecoveryGraceMs ?? 20,
     ...(options.healthSlowMs !== undefined ? { healthSlowMs: options.healthSlowMs } : {}),
     ...(options.additionalName !== undefined ? { additionalName: options.additionalName } : {}),
+    ...(options.hostAuth ? { hostAuth: options.hostAuth } : {}),
+    ...(options.hostTokenRenewMarginMs !== undefined ? { hostTokenRenewMarginMs: options.hostTokenRenewMarginMs } : {}),
   }, deps);
   return {
     supervisor,
@@ -153,15 +159,125 @@ describe("TunnelSupervisor", () => {
       "host",
       "tim-bridge",
     ]);
+    expect(buildTunnelHostArgs("tim-bridge.usw3", 3333, true)).toEqual([
+      "host",
+      "tim-bridge.usw3",
+      "--access-token",
+      "-",
+    ]);
   });
 
   it("plans one supervisor per tunnel plus cleanup-only slots", () => {
     expect(planTunnelSupervisors([])).toEqual([{ tunnelName: null }]);
-    expect(planTunnelSupervisors(["bridge-work", "bridge-gh"], ["bridge-gh", "old-gh"])).toEqual([
-      { tunnelName: "bridge-work" },
-      { tunnelName: "bridge-gh", additionalName: "bridge-gh" },
+    expect(planTunnelSupervisors([
+      { name: "bridge-work", auth: "cli" },
+      { name: "bridge-gh", auth: "github" },
+    ], ["bridge-gh", "old-gh"])).toEqual([
+      { tunnelName: "bridge-work", auth: "cli" },
+      { tunnelName: "bridge-gh", additionalName: "bridge-gh", auth: "github" },
       { tunnelName: null, additionalName: "old-gh" },
     ]);
+  });
+
+  describe("token-hosted tunnels", () => {
+    function credential(token: string, issuedAt: number, lifetimeMs: number): TunnelHostCredential {
+      return { hostName: "bridge-github.usw3", accessToken: token, issuedAt, expiresAt: issuedAt + lifetimeMs };
+    }
+
+    function fakeHostAuth(credentials: Array<(() => TunnelHostCredential) | Error>) {
+      const queue = [...credentials];
+      return {
+        getCredential: vi.fn(async (_name: string) => {
+          const next = queue.shift();
+          if (!next) throw new Error("no more credentials");
+          if (next instanceof Error) throw next;
+          return next();
+        }),
+        inspectHost: vi.fn(async () => ({ hostConnections: 1 })),
+      } satisfies TunnelHostAuth;
+    }
+
+    it("hosts with the provider's token and checks the host through it", async () => {
+      vi.useFakeTimers();
+      const child = new FakeChild(301);
+      const hostAuth = fakeHostAuth([() => credential("token-1", Date.now(), 24 * 60 * 60_000)]);
+      const harness = createHarness({
+        children: [child],
+        tunnelName: "bridge-github",
+        additionalName: "bridge-github",
+        hostAuth,
+      });
+
+      await startAndPublish(harness, child, "https://gh-owned.example.devtunnels.ms");
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(hostAuth.getCredential).toHaveBeenCalledWith("bridge-github");
+      expect(harness.spawnTunnel).toHaveBeenCalledWith("bridge-github.usw3", 3333, "token-1");
+      expect(hostAuth.inspectHost).toHaveBeenCalledWith(expect.objectContaining({ accessToken: "token-1" }), 25);
+      expect(harness.inspectTunnelHost).not.toHaveBeenCalled();
+      expect(harness.logs).toContain("[tunnel bridge-github] Ready at https://gh-owned.example.devtunnels.ms");
+    });
+
+    it("restarts the host with a fresh token before the current one expires", async () => {
+      vi.useFakeTimers();
+      const first = new FakeChild(301);
+      const second = new FakeChild(302);
+      const hostAuth = fakeHostAuth([
+        () => credential("token-1", Date.now(), 1_000),
+        () => credential("token-2", Date.now(), 1_000),
+      ]);
+      const harness = createHarness({ children: [first, second], hostAuth, hostTokenRenewMarginMs: 400 });
+
+      await startAndPublish(harness, first);
+      await vi.advanceTimersByTimeAsync(550);
+      expect(hostAuth.getCredential).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(hostAuth.getCredential).toHaveBeenCalledTimes(2);
+      expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(301), expect.any(Object));
+      expect(harness.spawnTunnel).toHaveBeenLastCalledWith("bridge-github.usw3", 3333, "token-2");
+      expect(harness.logs).toContain("[tunnel] Restarting host with a renewed token");
+    });
+
+    it("keeps the running host when renewal fails and logs it once", async () => {
+      vi.useFakeTimers();
+      const child = new FakeChild(301);
+      const hostAuth = fakeHostAuth([
+        () => credential("token-1", Date.now(), 1_000),
+        new Error("credential store unavailable"),
+        new Error("credential store unavailable"),
+        new Error("credential store unavailable"),
+      ]);
+      const harness = createHarness({ children: [child], hostAuth, hostTokenRenewMarginMs: 400 });
+
+      await startAndPublish(harness, child);
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(hostAuth.getCredential.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+      expect(harness.spawnTunnel).toHaveBeenCalledTimes(1);
+      expect(hostAuth.inspectHost.mock.calls.length).toBeGreaterThan(2);
+      expect(harness.logs.filter((line) => line.includes("Host token renewal failed"))).toHaveLength(1);
+    });
+
+    it("retries with backoff when no token can be obtained at launch", async () => {
+      vi.useFakeTimers();
+      const child = new FakeChild(301);
+      const hostAuth = fakeHostAuth([
+        new Error("No GitHub credential from git credential fill"),
+        () => credential("token-1", Date.now(), 24 * 60 * 60_000),
+      ]);
+      const harness = createHarness({ children: [child], hostAuth });
+
+      void harness.supervisor.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.spawnTunnel).not.toHaveBeenCalled();
+      expect(harness.logs).toContain("[tunnel] No GitHub credential from git credential fill");
+      expect(harness.logs).toContain("[tunnel] Retrying in 0.01s");
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(harness.spawnTunnel).toHaveBeenCalledWith("bridge-github.usw3", 3333, "token-1");
+    });
   });
 
   it("only cleans up a removed additional tunnel", async () => {
