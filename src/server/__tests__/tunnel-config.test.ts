@@ -3,29 +3,36 @@ import { normalizeTunnelName, resolveTunnelConfig } from "../tunnel-config.js";
 
 describe("tunnel config", () => {
   it("hosts no tunnel when nothing is configured", () => {
-    expect(resolveTunnelConfig({})).toEqual({ names: [], warnings: [] });
-    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: "" })).toEqual({ names: [], warnings: [] });
-    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: " , " })).toEqual({ names: [], warnings: [] });
+    expect(resolveTunnelConfig({})).toEqual({ tunnels: [], warnings: [] });
+    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: "" })).toEqual({ tunnels: [], warnings: [] });
+    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: " , " })).toEqual({ tunnels: [], warnings: [] });
   });
 
   it("reads an ordered list with the primary tunnel first", () => {
     expect(resolveTunnelConfig({
-      BRIDGE_TUNNEL_NAMES: " Bridge-Work, bridge-gh bad.name\nbridge-work,,other-one ",
+      BRIDGE_TUNNEL_NAMES: " Bridge-Work, GitHub:bridge-gh bad.name\nbridge-work,,github:bad.name other-one ",
     })).toEqual({
-      names: ["bridge-work", "bridge-gh", "other-one"],
-      warnings: [expect.stringContaining('Skipping invalid tunnel name "bad.name"')],
+      tunnels: [
+        { name: "bridge-work", auth: "cli" },
+        { name: "bridge-gh", auth: "github" },
+        { name: "other-one", auth: "cli" },
+      ],
+      warnings: [
+        expect.stringContaining('Skipping invalid tunnel name "bad.name"'),
+        expect.stringContaining('Skipping invalid tunnel name "github:bad.name"'),
+      ],
     });
   });
 
   it("keeps a legacy single tunnel name working until the list is set", () => {
     expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAME: "Tim-Bridge" })).toEqual({
-      names: ["tim-bridge"],
+      tunnels: [{ name: "tim-bridge", auth: "cli" }],
       warnings: ["BRIDGE_TUNNEL_NAME is deprecated; rename it to BRIDGE_TUNNEL_NAMES"],
     });
     expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAME: "tim-bridge", BRIDGE_ENABLE_TUNNEL: "false" }))
-      .toEqual({ names: [], warnings: [] });
+      .toEqual({ tunnels: [], warnings: [] });
     expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: "", BRIDGE_TUNNEL_NAME: "tim-bridge" })).toEqual({
-      names: [],
+      tunnels: [],
       warnings: ["BRIDGE_TUNNEL_NAMES is set, so BRIDGE_TUNNEL_NAME and BRIDGE_ENABLE_TUNNEL are ignored"],
     });
   });
