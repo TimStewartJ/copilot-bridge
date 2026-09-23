@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { Task, Session } from "../api";
-import { createReactDomHarness } from "../test-react-harness";
+import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
 
 const useTaskWorkspaceMock = vi.hoisted(() => vi.fn());
 const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
@@ -215,6 +215,59 @@ async function renderTaskPanelHtml(task: Task, workspaceOverrides: Record<string
 }
 
 describe("TaskPanel", () => {
+  it("opens Overview from the title and keeps task-kind and rename controls out of the panel", async () => {
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace());
+    useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
+
+    const harness = await createReactDomHarness();
+    const onViewDashboard = vi.fn();
+
+    try {
+      const { default: TaskPanel } = await import("./TaskPanel");
+      await harness.render(
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(TaskPanel, {
+            task: createTask(),
+            taskGroups: [],
+            sessions: [],
+            activeSessionId: null,
+            onSelectSession: () => {},
+            onNewSession: () => {},
+            onUpdateTask: async () => null,
+            onViewDashboard,
+          }),
+        ),
+      );
+
+      const titleButton = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => getReactProps(button)?.["aria-label"] === "Open overview for Workspace task");
+      if (!titleButton) throw new Error("Overview title button was not rendered");
+      expect(getReactProps(titleButton)?.title).toBe("Open task overview");
+
+      const overviewIcon = findAllByTag(titleButton, "SVG")[0];
+      expect(getReactProps(overviewIcon)?.className).toContain("group-hover/title:opacity-100");
+      expect(getReactProps(overviewIcon)?.className).toContain("group-focus-visible/title:opacity-100");
+      expect(getReactProps(overviewIcon)?.className).toContain("[@media(hover:hover)]:opacity-0");
+
+      const buttons = findAllByTag(harness.dom.container, "BUTTON");
+      expect(buttons.some((button) => button.textContent?.trim() === "Overview")).toBe(false);
+      expect(buttons.some((button) => (
+        ["Task", "Ongoing"].includes(button.textContent?.trim() ?? "")
+        && getReactProps(button)?.["aria-pressed"] !== undefined
+      ))).toBe(false);
+      expect(harness.dom.container.textContent).not.toContain("Click to edit title");
+
+      await harness.act(async () => {
+        getReactProps(titleButton)?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      });
+      expect(onViewDashboard).toHaveBeenCalledExactlyOnceWith("task-1");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("supports transitioning from no task to a selected task without a hook-order error", async () => {
     useTaskWorkspaceMock.mockReturnValue(createWorkspace());
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });

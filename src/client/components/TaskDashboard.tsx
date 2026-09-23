@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import type {
   BatchAction,
   CopilotUsageCostBreakdownUsd,
@@ -30,7 +30,7 @@ import TaskKindBadge from "./TaskKindBadge";
 import { formatRevisit } from "../lib/task-revisit";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
-import { Badge, EmptyHint, Field, FieldList, Notice, Section, StatRow, IdentitySwatch } from "../design/primitives";
+import { Badge, Button, EmptyHint, Field, FieldList, FormRow, IconButton, Notice, Section, StatRow, TextInput, IdentitySwatch } from "../design/primitives";
 import { describeMeteredCoverage, formatUsageCredits as formatAiCredits, formatUsageNumber as formatNumber, formatUsageUsd as formatUsd, meteredCostUsd } from "../lib/usage-presentation";
 import UsageModelList from "./usage/UsageModelList";
 import {
@@ -41,6 +41,7 @@ import {
   GitBranch,
   Info,
   Milestone,
+  Pencil,
   StickyNote,
   Tags,
   TimerReset,
@@ -192,9 +193,68 @@ export default function TaskDashboard({
   taskGroups = [],
   sessions,
   onSelectSession,
+  onUpdateTask,
   onRefresh,
   scrollRestoration,
 }: TaskDashboardProps) {
+  const titleInputId = useId();
+  const titleErrorId = `${titleInputId}-error`;
+  const latestTitleTaskIdRef = useRef(task.id);
+  latestTitleTaskIdRef.current = task.id;
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(task.title);
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEditingTitle(false);
+    setTitleDraft(task.title);
+    setSavingTitle(false);
+    setTitleError(null);
+  }, [task.id]);
+
+  const cancelTitleEdit = () => {
+    setEditingTitle(false);
+    setTitleDraft(task.title);
+    setTitleError(null);
+  };
+
+  const saveTitle = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (savingTitle) return;
+
+    const title = titleDraft.trim();
+    if (!title) {
+      setTitleError("A task title is required.");
+      return;
+    }
+    if (title === task.title) {
+      cancelTitleEdit();
+      return;
+    }
+
+    const requestedTaskId = task.id;
+    setSavingTitle(true);
+    setTitleError(null);
+    try {
+      const updatedTask = await onUpdateTask(requestedTaskId, { title });
+      if (latestTitleTaskIdRef.current !== requestedTaskId) return;
+      if (!updatedTask) {
+        setTitleError("The title was not saved. Try again.");
+        return;
+      }
+      setTitleDraft(updatedTask.title);
+      setEditingTitle(false);
+    } catch (error) {
+      if (latestTitleTaskIdRef.current !== requestedTaskId) return;
+      setTitleError(error instanceof Error && error.message
+        ? `The title was not saved: ${error.message}`
+        : "The title was not saved. Try again.");
+    } finally {
+      if (latestTitleTaskIdRef.current === requestedTaskId) setSavingTitle(false);
+    }
+  };
+
   const ws = useTaskWorkspace(task, taskGroups, sessions);
   const {
     enrichedWIs,
@@ -309,9 +369,55 @@ export default function TaskDashboard({
               <TaskKindBadge kind={task.kind} showTask />
               <span className={DS.text.meta}>Last activity {timeAgo(lastActivity)}</span>
             </div>
-            <h1 className={DS.text.pageTitle}>
-              {task.title}
-            </h1>
+            <div className="flex min-w-0 items-start gap-2">
+              <h1 className={cx(DS.text.pageTitle, "min-w-0 flex-1")}>{task.title}</h1>
+              {!editingTitle && (
+                <IconButton
+                  size="sm"
+                  label="Edit title"
+                  onClick={() => {
+                    setTitleDraft(task.title);
+                    setTitleError(null);
+                    setEditingTitle(true);
+                  }}
+                >
+                  <Pencil size={14} aria-hidden="true" />
+                </IconButton>
+              )}
+            </div>
+            {editingTitle && (
+              <form onSubmit={(event) => { void saveTitle(event); }} className="max-w-3xl space-y-2">
+                <FormRow label="Task title" htmlFor={titleInputId}>
+                  <TextInput
+                    id={titleInputId}
+                    autoFocus
+                    value={titleDraft}
+                    onChange={(event) => {
+                      setTitleDraft(event.target.value);
+                      setTitleError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && !savingTitle) {
+                        event.preventDefault();
+                        cancelTitleEdit();
+                      }
+                    }}
+                    aria-invalid={titleError ? true : undefined}
+                    aria-describedby={titleError ? titleErrorId : undefined}
+                    disabled={savingTitle}
+                  />
+                  {titleError && <p id={titleErrorId} role="alert" className="text-xs text-error">{titleError}</p>}
+                </FormRow>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" type="submit" disabled={savingTitle}>
+                    {savingTitle ? "Saving…" : "Save title"}
+                  </Button>
+                  <Button size="sm" type="button" variant="ghost" disabled={savingTitle} onClick={cancelTitleEdit}>
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            )}
             <p className={cx(DS.text.prose, "max-w-3xl")}>
               Task context, completion checks and activity.
             </p>

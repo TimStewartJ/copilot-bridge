@@ -12,12 +12,13 @@ import {
 } from "../../task-completion-helpers";
 import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
-import { isOngoingTask } from "../../task-kind";
+import { getTaskKindLabel, getTaskKindUpdate, isOngoingTask } from "../../task-kind";
 import TaskDeferralDialog from "../TaskDeferralDialog";
 import { IdentitySwatch } from "../../design/primitives";
 
 type TaskMenuUpdates = {
-  title?: TaskPatch["title"];
+  kind?: TaskPatch["kind"];
+  doneWhen?: TaskPatch["doneWhen"];
   muted?: TaskPatch["muted"];
   status?: TaskPatch["status"];
   nextTouchAt?: TaskPatch["nextTouchAt"];
@@ -93,6 +94,9 @@ export default function TaskContextMenu({
     });
   }, [checklistItemsQuery.data, queryClient, sessionMap, task]);
   const showArchiveToggle = shouldShowTaskArchiveToggle(task, completionState);
+  const nextKind = isOngoingTask(task) ? "task" : "ongoing";
+  const kindUpdate = onUpdateTask ? getTaskKindUpdate(task, nextKind) : null;
+  const kindChangeClearsDefinition = kindUpdate?.kind === "ongoing" && Boolean(task.doneWhen?.trim());
 
   if (deferralOpen) return <TaskDeferralDialog task={task} onClose={closeMenu} />;
 
@@ -154,6 +158,20 @@ export default function TaskContextMenu({
       <CtxDivider />
 
       {/* Status changes */}
+      {kindUpdate && (
+        <CtxItem
+          label={`Change kind to ${getTaskKindLabel(kindUpdate.kind).toLowerCase()}${kindChangeClearsDefinition ? "…" : ""}`}
+          title={kindChangeClearsDefinition ? "This clears the current Done when definition." : undefined}
+          onClick={() => {
+            if (
+              kindChangeClearsDefinition
+              && !window.confirm("Changing this to an ongoing task will clear its Done when definition. Continue?")
+            ) return;
+            onUpdateTask?.(task.id, kindUpdate);
+            closeMenu();
+          }}
+        />
+      )}
       {onUpdateTask && task.status !== "active" && completionState.ctaState !== "completed" && (
         <CtxItem
           icon={<Play size={14} />}

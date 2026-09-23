@@ -65,8 +65,8 @@ export default function SortableTaskItem({
 
   const isRail = variant === "rail";
   const allSignals = getTaskRowSignals(task, indicator);
-  // An open question and a working agent are marked in the leading slot the unread dot uses,
-  // not as badges. Priority there: answer needed, then working, then unread.
+  // An open question, unread activity and a working agent share one leading slot.
+  // Priority there: answer needed, then unread, then working.
   const needsInputSignal = allSignals.find((candidate) => candidate.kind === "needs-input");
   const busySignal = allSignals.find((candidate) => candidate.kind === "busy");
   const signals = allSignals.filter((candidate) => candidate.kind !== "needs-input" && candidate.kind !== "busy");
@@ -103,14 +103,14 @@ export default function SortableTaskItem({
         <span data-task-row-leading="" className="flex w-3 shrink-0 items-center justify-center">
           {needsInputSignal ? (
             <StatusIcon kind="needs-input" label={needsInputSignal.label} />
-          ) : busySignal ? (
-            <StatusIcon kind="working" label={busySignal.label} />
-          ) : showUnreadDot && (
+          ) : showUnreadDot ? (
             <>
               <StatusIcon kind="unread" decorative />
               <span className="sr-only">Unread conversations</span>
             </>
-          )}
+          ) : busySignal ? (
+            <StatusIcon kind="working" label={busySignal.label} />
+          ) : null}
         </span>
         <span className={`truncate flex-1 ${emphasizeTitle ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
           {task.title}

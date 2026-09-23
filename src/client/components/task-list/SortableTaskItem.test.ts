@@ -105,15 +105,21 @@ describe("SortableTaskItem", () => {
       expect(root.textContent).not.toContain("working");
     });
 
-    it("draws a working agent in the leading slot, without a working badge, in both variants", async () => {
+    it("gives unread activity the leading slot over a working agent in both variants", async () => {
       for (const variant of ["rail", "list"] as const) {
         const root = await renderRow(task, indicator({ busy: true, busyCount: 2, unreadCount: 1, unread: true }), variant);
-        const leading = leadingIcon(root);
-        expect(getReactProps(leading)?.["data-status"]).toBe("working");
-        expect(getReactProps(leading)?.["aria-label"]).toBe("2 sessions working");
-        expect(statusIcons(root)).toEqual(["working"]);
+        expect(getReactProps(leadingIcon(root))?.["data-status"]).toBe("unread");
+        expect(statusIcons(root)).toEqual(["unread"]);
         expect(root.textContent).not.toContain("working");
       }
+    });
+
+    it("draws a working agent in the leading slot when there is no unread activity", async () => {
+      const root = await renderRow(task, indicator({ busy: true, busyCount: 2 }));
+      const leading = leadingIcon(root);
+      expect(getReactProps(leading)?.["data-status"]).toBe("working");
+      expect(getReactProps(leading)?.["aria-label"]).toBe("2 sessions working");
+      expect(statusIcons(root)).toEqual(["working"]);
     });
 
     it("keeps Stalled as a badge and draws no spinner for it", async () => {
