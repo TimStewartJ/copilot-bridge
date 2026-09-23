@@ -26,6 +26,11 @@ interface UseLongPressMenuReturn<T> {
   closeMenu: () => void;
   /** Whether this id is currently being long-pressed (for visual feedback) */
   isTarget: (id: T) => boolean;
+  /**
+   * Forget a pending "swallow the next click" guard. Call it when the rows that were long-pressed
+   * were swapped out (reorder mode), so the first click on them afterwards is not eaten.
+   */
+  resetClickGuard: () => void;
 }
 
 const LONG_PRESS_MS = 500;
@@ -53,6 +58,9 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
   }, []);
 
   const closeMenu = useCallback(() => setMenu(null), []);
+  const resetClickGuard = useCallback(() => {
+    triggered.current = false;
+  }, []);
   const openMenu = useCallback((x: number, y: number, id: T) => setMenu({ x, y, id }), []);
 
   const bind = useCallback(
@@ -103,5 +111,5 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
     [longPressTarget],
   );
 
-  return { bind, menu, openMenu, closeMenu, isTarget };
+  return { bind, menu, openMenu, closeMenu, isTarget, resetClickGuard };
 }

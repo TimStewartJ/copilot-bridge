@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSessionActivityTime, type EnrichedTaskData, type Task, type TaskGroup, type Session, type TaskPatch } from "../../api";
-import { AlertTriangle, Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X, ArrowUpDown } from "lucide-react";
 import { queryKeys } from "../../queryClient";
 import { writeClipboardText } from "../../lib/clipboard";
 import { useTaskChecklistItemsQuery } from "../../hooks/queries/useChecklistItems";
@@ -30,6 +30,8 @@ interface TaskContextMenuActions {
   onDeleteTask?: (taskId: string) => void;
   onMoveTaskToGroup?: (taskId: string, groupId: string | undefined) => void;
   onCreateGroup?: (name: string, color?: string) => Promise<TaskGroup | null>;
+  /** Enter the list's reorder mode. Passed only when the list can be reordered. */
+  onStartReorder?: () => void;
 }
 
 interface TaskContextMenuProps {
@@ -53,7 +55,7 @@ export default function TaskContextMenu({
   actions,
   onClose,
 }: TaskContextMenuProps) {
-  const { markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup } = actions;
+  const { markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup, onStartReorder } = actions;
   const queryClient = useQueryClient();
   const checklistItemsQuery = useTaskChecklistItemsQuery(task.id);
 
@@ -211,6 +213,17 @@ export default function TaskContextMenu({
             label="Clear revisit date"
             disabled={!task.nextTouchAt}
             onClick={() => { onUpdateTask(task.id, { nextTouchAt: null }); closeMenu(); }}
+          />
+        </>
+      )}
+
+      {onStartReorder && task.status === "active" && (
+        <>
+          <CtxDivider />
+          <CtxItem
+            icon={<ArrowUpDown size={14} />}
+            label="Reorder tasks"
+            onClick={() => { closeMenu(); onStartReorder(); }}
           />
         </>
       )}

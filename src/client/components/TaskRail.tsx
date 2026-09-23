@@ -19,8 +19,8 @@ import useTaskIndicators, {
 } from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
-import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
-import { DndContext, closestCenter } from "@dnd-kit/core";
+import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
+import { DndContext } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
@@ -213,7 +213,7 @@ export default function TaskRail({
   const chatTabAttentionDescription = describeTabAttention(chatTabAttention, "chat", "chats");
 
   // Context menu state (tasks)
-  const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();
+  const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget, resetClickGuard } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
   // Group context menu state
@@ -231,6 +231,8 @@ export default function TaskRail({
     handleDragStart,
     handleDragOver,
     handleDragEnd,
+    handleDragCancel,
+    collisionDetection,
   } = useCrossGroupDnd({
     tasks: sortedTasks,
     groupedSections,
@@ -238,6 +240,14 @@ export default function TaskRail({
     onReorderTasks,
     onMoveTaskToGroup,
     onMoveAndReorder,
+  });
+  const newTaskButtonRef = useRef<HTMLButtonElement>(null);
+  const canReorder = Boolean(onReorderTasks) && sortedTasks.length >= 2;
+  const reorderMode = useTaskReorderMode({
+    enabled: canReorder && expanded && railTab === "tasks",
+    dragging: Boolean(activeDragTask),
+    onExit: resetClickGuard,
+    returnFocusRef: newTaskButtonRef,
   });
   const unreadTaskEdgeRefreshKey = useMemo(() => {
     const parts: string[] = [expanded ? "expanded" : "collapsed", railTab, showArchived ? "archived" : "open"];
@@ -548,12 +558,13 @@ export default function TaskRail({
         {railTab === "tasks" ? (
           <>
             {/* New Task button */}
-            <Button fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
+            <Button ref={newTaskButtonRef} fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
               New task
             </Button>
+            {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
             <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
 
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+            <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
               {hasGroups && displaySections ? (
                 // ── Grouped mode ──────────────────────────────────
                 <>
@@ -625,6 +636,8 @@ export default function TaskRail({
                                   bindLongPress={bindLongPress}
                                   onSelectTask={onSelectTask}
                                   variant="rail"
+                                  rowDrag={canReorder}
+                                  reordering={reorderMode.reordering}
                                 />
                               ))}
                             </SortableContext>
@@ -648,6 +661,8 @@ export default function TaskRail({
                       bindLongPress={bindLongPress}
                       onSelectTask={onSelectTask}
                       variant="rail"
+                      rowDrag={canReorder}
+                      reordering={reorderMode.reordering}
                     />
                   ))}
                 </SortableContext>
@@ -807,7 +822,14 @@ export default function TaskRail({
           sessionMap={sessionMap}
           isUnread={isUnread}
           activeSessionId={activeSessionId}
-          actions={{ markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup }}
+          actions={{
+            markRead,
+            onUpdateTask,
+            onDeleteTask,
+            onMoveTaskToGroup,
+            onCreateGroup,
+            onStartReorder: canReorder && !reorderMode.reordering ? reorderMode.start : undefined,
+          }}
           onClose={closeMenu}
         />
       )}
