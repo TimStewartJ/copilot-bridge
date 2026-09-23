@@ -6,7 +6,7 @@ import { useTheme } from "../../useTheme";
 import ThemePicker from "../ThemePicker";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
-import { Details, SegmentedControl } from "../../design/primitives";
+import { Details, SegmentedControl, SettingList, SettingRow } from "../../design/primitives";
 
 const MOTION_OPTIONS: { value: MotionPreference; label: string; title: string; Icon: typeof Monitor }[] = [
   { value: "system", label: "System", title: "Follow this device's reduced-motion setting", Icon: Monitor },
@@ -53,52 +53,45 @@ export function AppearanceSection({
   };
 
   return (
-    <SettingsSection
-      title="Appearance"
-      description="Preview your theme and motion here. Save to keep them, or Discard to restore the saved appearance."
-    >
-      <div className={DS.layout.formGroup}>
-        {/* Theme */}
-        <div>
-          <p className="text-xs text-text-faint mb-2">Theme</p>
-          <ThemePicker value={theme} onChange={handleThemeChange} />
-        </div>
-
-        <div>
-          <p className="text-xs text-text-faint mb-2">Reduced motion</p>
-          <SegmentedControl
-            ariaLabel="Reduced motion"
-            value={motion}
-            onChange={handleMotionChange}
-            onReselect={handleMotionChange}
-            options={MOTION_OPTIONS.map(({ value, label, title, Icon }) => ({ value, label, title, icon: <Icon size={14} /> }))}
-          />
-          <p className={cx(DS.field.help, "mt-2")}>
-            System follows this device&apos;s setting. Reduced or Full overrides it on every device.
-          </p>
-        </div>
-
-        <Details label="App icon" detail={FAVICON_OPTIONS.find((option) => option.key === currentFavicon)?.label}>
-          <div className="space-y-4 pt-2">
-            <div>
-              <p className="text-xs text-text-secondary mb-2">Icon — Bridge</p>
-              <div className="flex flex-wrap gap-3">
-                {bridgeOptions.map((opt) => (
-                  <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
-                ))}
+    <SettingsSection title="Appearance">
+      <SettingList>
+        <SettingRow label="Theme" control={<ThemePicker value={theme} onChange={handleThemeChange} />} />
+        <SettingRow
+          label="Motion"
+          hint="System follows this device. Reduced or Full applies on every device."
+          control={(
+            <SegmentedControl
+              ariaLabel="Reduced motion"
+              value={motion}
+              onChange={handleMotionChange}
+              onReselect={handleMotionChange}
+              options={MOTION_OPTIONS.map(({ value, label, title, Icon }) => ({ value, label, title, icon: <Icon size={14} /> }))}
+            />
+          )}
+        />
+        <div className="py-3 last:pb-0">
+          <Details label="App icon" detail={FAVICON_OPTIONS.find((option) => option.key === currentFavicon)?.label}>
+            <div className="space-y-4 pt-2">
+              <div>
+                <p className="mb-2 text-xs text-text-secondary">Bridge</p>
+                <div className="flex flex-wrap gap-3">
+                  {bridgeOptions.map((opt) => (
+                    <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="mb-2 text-xs text-text-secondary">Alternative</p>
+                <div className="flex flex-wrap gap-3">
+                  {altOptions.map((opt) => (
+                    <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
+                  ))}
+                </div>
               </div>
             </div>
-            <div>
-              <p className="text-xs text-text-secondary mb-2">Icon — Alternative</p>
-              <div className="flex flex-wrap gap-3">
-                {altOptions.map((opt) => (
-                  <FaviconTile key={opt.key} option={opt} selected={currentFavicon === opt.key} onSelect={selectFavicon} effectiveTheme={effectiveTheme} />
-                ))}
-              </div>
-            </div>
-          </div>
-        </Details>
-      </div>
+          </Details>
+        </div>
+      </SettingList>
     </SettingsSection>
   );
 }
@@ -128,7 +121,7 @@ function FaviconTile({
         alt={option.label}
         className="w-10 h-10 rounded-md"
       />
-      <span className={cx("text-[10px]", selected ? "text-accent font-medium" : "text-text-muted")}>
+      <span className={cx("text-[10px]", selected ? "font-medium text-text-primary" : "text-text-secondary")}>
         {option.label}
       </span>
     </button>

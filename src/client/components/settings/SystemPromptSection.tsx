@@ -7,14 +7,14 @@ import {
   resolveResponseStyle,
 } from "../../../shared/response-style.js";
 import { SettingsSection } from "./SettingsSection";
-import { DS, cx } from "../../design/tokens";
-import { Details } from "../../design/primitives";
+import { DS } from "../../design/tokens";
+import { Button, Details, SettingList, SettingRow } from "../../design/primitives";
+import { useSettingsWriter } from "../../hooks/queries/useSettings";
+import { DraftTextField } from "./DraftTextField";
 
 const DEFAULT_IDENTITY_PLACEHOLDER =
   "You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.";
 
-const TEXTAREA_CLASS_NAME = cx(DS.field.input, DS.field.textarea, "resize-y");
-const FIELD_LABEL_CLASS_NAME = cx(DS.field.label, "block mb-1.5");
 
 export function SystemPromptSection({
   draft,
@@ -28,132 +28,112 @@ export function SystemPromptSection({
   const detailDescription = RESPONSE_DETAIL_OPTIONS.find((option) => option.value === style.detail)?.description;
   const isDefaultStyle = style.detail === "adaptive" && style.guidance === DEFAULT_RESPONSE_STYLE_GUIDANCE;
   const customInstructions = draft.customInstructions ?? "";
+  const { failedKeys, pendingKeys, error: writeError } = useSettingsWriter();
+  const responseStyleError = failedKeys.has("responseStyle") ? writeError?.message : null;
   const hasLegacyBlock = customInstructions.includes("<anti_slop_response_quality") || customInstructions.includes("</anti_slop_response_quality");
 
+  const commit = (changes: Partial<AppSettings>) => setDraft({ ...structuredClone(draft), ...changes });
+
   return (
-    <SettingsSection title="Responses and instructions" description="Saved changes apply to new chats and fresh session resumes. Chats already in progress are not interrupted.">
-      <div className="space-y-5">
-        <Details label="Identity" detail={draft.identity?.trim() ? "Custom identity" : "Bridge default"}>
-          <div className="pt-2">
-          <label htmlFor={`${id}-identity`} className={FIELD_LABEL_CLASS_NAME}>Identity</label>
-          <p id={`${id}-identity-help`} className="text-xs text-text-secondary mb-2">
-            Defines who the agent is. Replaces the default system identity.
-          </p>
-          <textarea
-            id={`${id}-identity`}
-            aria-describedby={`${id}-identity-help`}
-            value={draft.identity ?? ""}
-            onChange={(e) => {
-              const next = structuredClone(draft);
-              next.identity = e.target.value;
-              setDraft(next);
-            }}
-            placeholder={DEFAULT_IDENTITY_PLACEHOLDER}
-            rows={3}
-            className={TEXTAREA_CLASS_NAME}
-          />
-          </div>
-        </Details>
-
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-medium text-text-primary">Response style</h3>
-              <p className="text-xs text-text-secondary mt-1">Natural and direct by default. Explicit requests for tone, detail, or format take precedence.</p>
-            </div>
-            <button
-              type="button"
-              disabled={isDefaultStyle}
-              onClick={() => {
-                const next = structuredClone(draft);
-                next.responseStyle = resolveResponseStyle();
-                setDraft(next);
-              }}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, DS.focus, "border border-border disabled:opacity-50")}
-            >
-              Reset to default
-            </button>
-          </div>
-
-          <fieldset aria-describedby={`${id}-detail-help`}>
-            <legend className="text-xs text-text-secondary mb-1">Default detail</legend>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {RESPONSE_DETAIL_OPTIONS.map((option) => (
-                <label key={option.value} className="inline-flex min-h-11 items-center gap-2 text-xs text-text-secondary cursor-pointer">
-                  <input
-                    type="radio"
-                    name={`${id}-detail`}
-                    value={option.value}
-                    checked={style.detail === option.value}
-                    onChange={() => {
-                      const next = structuredClone(draft);
-                      next.responseStyle = { ...style, detail: option.value };
-                      setDraft(next);
-                    }}
-                    className={DS.control.checkbox}
-                  />
-                  {option.label}
-                </label>
-              ))}
-            </div>
-            <p id={`${id}-detail-help`} className="text-xs text-text-secondary">{detailDescription}</p>
-          </fieldset>
-
-          <Details label="Style guidance" detail={style.guidance === DEFAULT_RESPONSE_STYLE_GUIDANCE || !style.guidance.trim() ? "Default guidance" : "Customized"}>
-          <div className="pt-2">
-            <label htmlFor={`${id}-style`} className={FIELD_LABEL_CLASS_NAME}>Style guidance</label>
-            <textarea
-              id={`${id}-style`}
-              aria-describedby={`${id}-style-help`}
-              value={style.guidance}
-              onChange={(e) => {
-                const next = structuredClone(draft);
-                next.responseStyle = { ...style, guidance: e.target.value };
-                setDraft(next);
-              }}
-              maxLength={MAX_RESPONSE_STYLE_GUIDANCE_LENGTH}
-              rows={6}
-              className={TEXTAREA_CLASS_NAME}
-            />
-            <div className="flex flex-wrap justify-between gap-2 text-xs text-text-secondary mt-1.5">
-              <p id={`${id}-style-help`}>Leave blank to use the default guidance. Use Save to apply edits or reset.</p>
-              <span>{style.guidance.length.toLocaleString()} / {MAX_RESPONSE_STYLE_GUIDANCE_LENGTH.toLocaleString()}</span>
-            </div>
-          </div>
-          </Details>
-
-          <Details label="Response quality (always on)">
-            <div className="pt-2 text-xs leading-relaxed text-text-secondary">
-            <p>Bridge always includes guidance for supported claims, clear uncertainty, independent judgment, and honest reporting of research, changes, and tests. Style preferences do not remove these safeguards.</p>
-            </div>
-          </Details>
-        </div>
-
-        <Details label="Custom instructions" detail={customInstructions.trim() ? "Configured" : "None"}>
-        <div className="pt-2">
-          <label htmlFor={`${id}-custom`} className={FIELD_LABEL_CLASS_NAME}>Custom Instructions</label>
-          <p id={`${id}-custom-help`} className="text-xs text-text-secondary mb-2">
-            Additional domain context, preferences, or rules. Set presentation preferences in Response Style instead.
-          </p>
-          <textarea
-            id={`${id}-custom`}
-            aria-describedby={`${id}-custom-help`}
-            value={customInstructions}
-            onChange={(e) => {
-              const next = structuredClone(draft);
-              next.customInstructions = e.target.value;
-              setDraft(next);
-            }}
-            placeholder="e.g. Prefer TypeScript over JavaScript. Use the terminology from my project."
-            rows={3}
-            className={TEXTAREA_CLASS_NAME}
-          />
-        </div>
-        </Details>
-        {hasLegacyBlock && (
-          <p role="note" className="text-xs text-text-secondary">An edited or incomplete legacy response-quality block was preserved here. Review it to avoid overlapping response-style guidance.</p>
+    <>
+      <SettingsSection
+        title="Response style"
+        description="Applies to new chats and fresh session resumes; chats in progress are not interrupted."
+        action={(
+          <Button size="sm" variant="ghost" disabled={isDefaultStyle} onClick={() => commit({ responseStyle: resolveResponseStyle() })}>
+            Reset to default
+          </Button>
         )}
-      </div>
-    </SettingsSection>
+      >
+        <SettingList>
+          <SettingRow
+            label="Default detail"
+            hint={<span id={`${id}-detail-help`}>{detailDescription}</span>}
+            control={(
+              <fieldset aria-describedby={`${id}-detail-help`} className="min-w-0">
+                <legend className="sr-only">Default detail</legend>
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {RESPONSE_DETAIL_OPTIONS.map((option) => (
+                    <label key={option.value} className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-[13px] text-text-secondary md:min-h-8">
+                      <input
+                        type="radio"
+                        name={`${id}-detail`}
+                        value={option.value}
+                        checked={style.detail === option.value}
+                        onChange={() => commit({ responseStyle: { ...style, detail: option.value } })}
+                        className={DS.control.checkbox}
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+          />
+        </SettingList>
+        <div className="mt-3 space-y-1">
+          <Details label="Style guidance" detail={style.guidance === DEFAULT_RESPONSE_STYLE_GUIDANCE || !style.guidance.trim() ? "Default guidance" : "Customized"}>
+            <div className="pt-2">
+              <DraftTextField
+                storageKey="responseStyle.guidance"
+                label="Style guidance"
+                multiline
+                rows={6}
+                value={style.guidance}
+                maxLength={MAX_RESPONSE_STYLE_GUIDANCE_LENGTH}
+                help="Leave blank to use the default guidance."
+                footer={(text) => <span>{text.length.toLocaleString()} / {MAX_RESPONSE_STYLE_GUIDANCE_LENGTH.toLocaleString()}</span>}
+                error={responseStyleError}
+                pending={pendingKeys.has("responseStyle")}
+                onCommit={(guidance) => commit({ responseStyle: { ...style, guidance } })}
+              />
+            </div>
+          </Details>
+          <Details label="Response quality (always on)">
+            <p className="pt-2 text-xs leading-relaxed text-text-secondary">
+              Bridge always asks for supported claims, clear uncertainty, independent judgment, and honest reports of research, changes and tests. Style preferences do not remove these.
+            </p>
+          </Details>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Instructions">
+        <div className="space-y-1">
+          <Details label="Identity" detail={draft.identity?.trim() ? "Custom identity" : "Bridge default"}>
+            <div className="pt-2">
+              <DraftTextField
+                storageKey="identity"
+                label="Identity"
+                multiline
+                value={draft.identity ?? ""}
+                placeholder={DEFAULT_IDENTITY_PLACEHOLDER}
+                help="Who the agent is. Replaces the default identity."
+                error={failedKeys.has("identity") ? writeError?.message : null}
+                pending={pendingKeys.has("identity")}
+                onCommit={(identity) => commit({ identity })}
+              />
+            </div>
+          </Details>
+          <Details label="Custom instructions" detail={customInstructions.trim() ? "Configured" : "None"}>
+            <div className="pt-2">
+              <DraftTextField
+                storageKey="customInstructions"
+                label="Custom instructions"
+                multiline
+                value={customInstructions}
+                placeholder="e.g. Prefer TypeScript over JavaScript. Use the terminology from my project."
+                help="Domain context, preferences or rules. Presentation belongs in Response style."
+                error={failedKeys.has("customInstructions") ? writeError?.message : null}
+                pending={pendingKeys.has("customInstructions")}
+                onCommit={(text) => commit({ customInstructions: text })}
+              />
+            </div>
+          </Details>
+        </div>
+        {hasLegacyBlock && (
+          <p role="note" className="mt-2 text-xs text-text-secondary">An edited or incomplete legacy response-quality block was preserved here. Review it to avoid overlapping response-style guidance.</p>
+        )}
+      </SettingsSection>
+    </>
   );
 }

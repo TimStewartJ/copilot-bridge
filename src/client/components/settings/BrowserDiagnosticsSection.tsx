@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, Globe2, Loader2, Monitor, RotateCw, ShieldCheck, X } from "lucide-react";
+import { Globe2, Loader2, Monitor, RotateCw, ShieldCheck, X } from "lucide-react";
 import {
   ApiError,
   checkAdoBrowserAuthentication,
@@ -13,20 +13,18 @@ import {
   type BrowserDiagnosticsResponse,
   type BrowserDiagnosticsTone,
 } from "../../api";
-import { Field } from "./Field";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { Badge, Button, Details, Field, FieldList, Notice, SettingList, SettingRow, Switch } from "../../design/primitives";
+import { useSettingsWriter } from "../../hooks/queries/useSettings";
+import { DraftTextField } from "./DraftTextField";
 
-function statusToneClassName(tone: BrowserDiagnosticsTone): string {
-  switch (tone) {
-    case "success":
-      return "bg-success/15 text-success";
-    case "warning":
-      return "bg-warning/15 text-warning";
-    default:
-      return "bg-error/10 text-error";
-  }
-}
+/** A healthy browser is ordinary, so it stays neutral; only trouble takes a colour. */
+const SUMMARY_TONE: Record<BrowserDiagnosticsTone, "neutral" | "warning" | "danger"> = {
+  success: "neutral",
+  warning: "warning",
+  error: "danger",
+};
 
 function formatTimestamp(value: string | undefined): string {
   if (!value) return "unknown";
@@ -66,10 +64,17 @@ function formatHeadedCloseError(reason: unknown): string {
 export function BrowserDiagnosticsSection({
   draft,
   setDraft,
+  refreshSignal = 0,
+  open = false,
 }: {
   draft: AppSettings;
   setDraft: (d: AppSettings) => void;
+  refreshSignal?: number;
+  open?: boolean;
 }) {
+  const { failedKeys, pendingKeys, error: writeError } = useSettingsWriter();
+  const browserPending = pendingKeys.has("browser");
+  const browserError = failedKeys.has("browser") ? writeError?.message : null;
   const [diagnostics, setDiagnostics] = useState<BrowserDiagnosticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
@@ -102,6 +107,11 @@ export function BrowserDiagnosticsSection({
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const firstSignal = useRef(refreshSignal);
+  useEffect(() => {
+    if (refreshSignal !== firstSignal.current) refresh();
+  }, [refresh, refreshSignal]);
 
   const updateBrowserSetting = (
     field: "executablePath" | "masterProfileDirectory",
@@ -206,270 +216,145 @@ export function BrowserDiagnosticsSection({
       ? "present"
       : "not created yet";
 
+  const publicContext = diagnostics?.contexts.public;
+  const authContext = diagnostics?.contexts.authenticated;
+  const adoState = authContext?.serviceChecks.find((check) => check.service === "ado")?.state ?? "unknown";
+  const busyButton = (active: boolean) => active ? <Loader2 size={11} className="animate-spin" /> : null;
+
   return (
-    <SettingsSection
-      title="Browser Diagnostics"
-      description="Manage the disposable public browser and the dedicated authenticated browser as separate security contexts."
-      action={(
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
-          Refresh
-        </button>
-      )}
-    >
-      <div className={DS.layout.formGroup}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-accent">
-              <Monitor size={15} />
-              Browser runtime
-            </div>
-            <p className="mt-1 text-xs text-text-muted">
-              {summary?.detail ?? "Loading current browser diagnostics."}
-            </p>
-          </div>
-          {summary && (
-            <span className={cx(DS.badge.base, "shrink-0", statusToneClassName(summary.tone))}>
-              {summary.label}
-            </span>
+    <SettingsSection id="settings-system-browser" title="Browser">
+      <SettingList>
+        <SettingRow
+          label="Browser runtime"
+          hint={summary?.detail ?? (loading ? "Checking browser diagnostics…" : "Browser diagnostics are unavailable.")}
+          control={summary ? <Badge tone={SUMMARY_TONE[summary.tone]}>{summary.label}</Badge> : undefined}
+        />
+        <SettingRow
+          label={<span className="inline-flex items-center gap-1.5"><Globe2 size={13} className="text-text-secondary" />Public browser</span>}
+          hint={publicContext
+            ? `Disposable, for search and fetches · ${publicContext.state} · probe ${publicContext.functionalProbe.state}`
+            : "Disposable and unauthenticated. Used by search and ordinary browser fetches."}
+          control={(
+            <Button size="sm" variant="ghost" onClick={() => void probeContext("public")} disabled={probing !== null}
+              icon={busyButton(probing === "public") ?? <RotateCw size={11} />}>
+              Check public browser
+            </Button>
           )}
-        </div>
+        />
+        <SettingRow
+          label={<span className="inline-flex items-center gap-1.5"><ShieldCheck size={13} className="text-text-secondary" />Authenticated browser</span>}
+          hint={authContext
+            ? `Signed-in profile · ${authContext.state} · probe ${authContext.functionalProbe.state} · ADO: ${adoState}`
+            : "Dedicated signed-in profile. Authenticated operations are explicit and serialized."}
+          control={(
+            <>
+              <Button size="sm" variant="ghost" onClick={() => void probeContext("authenticated")} disabled={probing !== null}
+                icon={busyButton(probing === "authenticated") ?? <RotateCw size={11} />}>
+                Check browser
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => void checkAdo()} disabled={checkingAdo || probing !== null}
+                icon={busyButton(checkingAdo) ?? <ShieldCheck size={11} />}>
+                Verify ADO
+              </Button>
+            </>
+          )}
+        />
+        <SettingRow
+          label="Run authenticated browser headed"
+          htmlFor="browser-headed"
+          hint="Only the signed-in profile. Public browsing stays headless."
+          control={<Switch id="browser-headed" checked={headedValue} onChange={(event) => updateBrowserHeaded(event.target.checked)} />}
+        />
+        <SettingRow
+          label="Authenticated browser window"
+          hint="Open the signed-in profile to sign in or pass a check by hand."
+          control={(
+            <>
+              <Button size="sm" onClick={() => void launchHeaded()} disabled={launching || closing}
+                icon={busyButton(launching) ?? <Monitor size={12} />}>
+                Launch
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => void closeHeaded()} disabled={launching || closing}
+                icon={busyButton(closing) ?? <X size={12} />}>
+                Close
+              </Button>
+            </>
+          )}
+        />
+      </SettingList>
 
-        {diagnostics && (
-          <div className="grid gap-3 xl:grid-cols-3">
-            <div className={DS.layout.formGroup}>
-              <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
-                <Activity size={14} />
-                Runtime
-              </div>
-              <div className="mt-3 space-y-1 text-[11px] text-text-muted">
-                <div>Transport: <code className="text-text-secondary">{diagnostics.runtime.transport.kind}</code></div>
-                <div>State: <code className="text-text-secondary">{diagnostics.runtime.transport.state}</code></div>
-                <div>Namespace: <code className="text-text-secondary">{diagnostics.runtime.transport.namespace}</code></div>
-                <div>Last probe: <code className="text-text-secondary">{formatTimestamp(diagnostics.runtime.transport.lastSuccessfulProbeAt)}</code></div>
-              </div>
-            </div>
+      {(message || error) && (
+        error
+          ? <Notice tone="danger" className="mt-3">{error}</Notice>
+          : <p role="status" className={cx(DS.field.help, "mt-3")}>{message}</p>
+      )}
 
-            <div className={DS.layout.formGroup}>
-              <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
-                <Globe2 size={14} />
-                Public browser
-              </div>
-              <p className="mt-1 text-[11px] text-text-faint">
-                Disposable and unauthenticated. Used by search and ordinary browser fetches.
-              </p>
-              <div className="mt-3 space-y-1 text-[11px] text-text-muted">
-                <div>State: <code className="text-text-secondary">{diagnostics.contexts.public.state}</code></div>
-                <div>Probe: <code className="text-text-secondary">{diagnostics.contexts.public.functionalProbe.state}</code></div>
-                <div>Active / queued: <code className="text-text-secondary">{diagnostics.contexts.public.activeOperations} / {diagnostics.contexts.public.queueDepth}</code></div>
-                <div>Concurrency: <code className="text-text-secondary">{diagnostics.contexts.public.concurrencyLimit}</code></div>
-                <div className="break-all">Root: <code className="text-text-secondary">{diagnostics.contexts.public.disposableProfileRoot}</code></div>
-              </div>
-              <button
-                type="button"
-                onClick={() => void probeContext("public")}
-                disabled={probing !== null}
-                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "mt-3 gap-1.5 bg-bg-surface disabled:text-text-faint")}
-              >
-                {probing === "public" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
-                Check public browser
-              </button>
-            </div>
-
-            <div className={DS.layout.formGroup}>
-              <div className="flex items-center gap-2 text-xs font-medium text-text-secondary">
-                <ShieldCheck size={14} />
-                Authenticated browser
-              </div>
-              <p className="mt-1 text-[11px] text-text-faint">
-                Dedicated signed-in profile. Authenticated operations are explicit and serialized.
-              </p>
-              <div className="mt-3 space-y-1 text-[11px] text-text-muted">
-                <div>State: <code className="text-text-secondary">{diagnostics.contexts.authenticated.state}</code></div>
-                <div>Probe: <code className="text-text-secondary">{diagnostics.contexts.authenticated.functionalProbe.state}</code></div>
-                <div>Active / queued: <code className="text-text-secondary">{diagnostics.contexts.authenticated.activeOperations} / {diagnostics.contexts.authenticated.queueDepth}</code></div>
-                <div className="break-all">Profile: <code className="text-text-secondary">{diagnostics.contexts.authenticated.profilePath}</code></div>
-                <div>
-                  ADO:{" "}
-                  <code className="text-text-secondary">
-                    {diagnostics.contexts.authenticated.serviceChecks.find((check) => check.service === "ado")?.state ?? "unknown"}
-                  </code>
-                </div>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void probeContext("authenticated")}
-                  disabled={probing !== null}
-                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-                >
-                  {probing === "authenticated" ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
-                  Check browser
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void checkAdo()}
-                  disabled={checkingAdo || probing !== null}
-                  className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-                >
-                  {checkingAdo ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
-                  Verify ADO
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="grid gap-3 lg:grid-cols-2">
-          <Field label="Browser executable path">
-            <input
-              value={executablePathValue}
-              onChange={(event) => updateBrowserSetting("executablePath", event.target.value)}
-              placeholder="Leave blank to use the environment override, or auto-detect Chrome"
-              className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
-            />
-          </Field>
-          <Field label="Authenticated browser profile directory">
-            <input
-              value={masterProfileDirectoryValue}
-              onChange={(event) => updateBrowserSetting("masterProfileDirectory", event.target.value)}
-              placeholder="Leave blank to use Bridge's dedicated authenticated profile"
-              className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
-            />
-          </Field>
-        </div>
-
-        <label className="flex items-start gap-3 rounded-md border border-border bg-bg-primary px-3 py-2">
-          <input
-            type="checkbox"
-            checked={headedValue}
-            onChange={(event) => updateBrowserHeaded(event.target.checked)}
-            className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5")}
-          />
-          <span className="min-w-0">
-            <span className="block text-xs font-medium text-text-secondary">
-              Run authenticated browser headed
-            </span>
-            <span className="mt-0.5 block text-[11px] text-text-faint">
-              Public browser operations remain disposable and headless. This setting applies only to the dedicated authenticated profile.
-            </span>
-          </span>
-        </label>
-
-        <div className="grid gap-2 text-xs text-text-muted md:grid-cols-2">
-          <div>
-            <span className="text-text-faint">agent-browser:</span>{" "}
-            <code className="text-text-secondary">
-              {!diagnostics ? "checking" : diagnostics.agentBrowserInstalled ? "installed" : "missing"}
-            </code>
-          </div>
-          <div>
-            <span className="text-text-faint">binary:</span>{" "}
-            <code className="text-text-secondary">{binaryState}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">profile:</span>{" "}
-            <code className="text-text-secondary">{profileState}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">session:</span>{" "}
-            <code className="text-text-secondary">{config?.sessionName ?? "checking"}</code>
-          </div>
-          <div>
-            <span className="text-text-faint">mode:</span>{" "}
-            <code className="text-text-secondary">
-              {!config ? "checking" : config.headed ? "headed" : "not headed"}
-            </code>
-          </div>
-        </div>
-
-        {config && (
-          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-            <div>
-              <span className="text-text-faint">effective browser:</span>{" "}
-              <code className="break-all text-text-secondary">{config.executablePath ?? "agent-browser auto-detect"}</code>
-            </div>
-            <div>
-              <span className="text-text-faint">browser source:</span>{" "}
-              <code className="text-text-secondary">{config.executablePathSource}</code>
-            </div>
-            <div>
-              <span className="text-text-faint">authenticated profile:</span>{" "}
-              <code className="break-all text-text-secondary">{config.masterProfileDirectory}</code>
-            </div>
-            <div>
-              <span className="text-text-faint">effective mode:</span>{" "}
-              <code className="text-text-secondary">{config.headed ? "headed" : "not headed"}</code>
-            </div>
-          </div>
-        )}
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void launchHeaded()}
-            disabled={launching || closing}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.primary, "gap-1.5 disabled:bg-bg-surface disabled:text-text-faint")}
-          >
-            {launching ? <Loader2 size={12} className="animate-spin" /> : <Monitor size={12} />}
-            Launch authenticated browser
-          </button>
-          <button
-            type="button"
-            onClick={() => void closeHeaded()}
-            disabled={launching || closing}
-            className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 bg-bg-surface disabled:text-text-faint")}
-          >
-            {closing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-            Close authenticated browser
-          </button>
-          <span className="text-[11px] text-text-faint">
-            Save browser edits first. These actions use the saved browser diagnostics settings.
-          </span>
-        </div>
-
-        <div className={DS.layout.formGroup}>
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-medium text-text-secondary">Recent browser signals</div>
-            <div className="text-[11px] text-text-faint">
-              {diagnostics ? `Last ${diagnostics.windowHours}h, checked ${formatTimestamp(diagnostics.checkedAt)}` : "Checking..."}
-            </div>
-          </div>
-          {diagnostics?.issues.length ? (
-            <div className="mt-3 grid gap-2 lg:grid-cols-2">
-              {diagnostics.issues.map((issue) => (
-                <div key={issue.code} className={DS.layout.formGroup}>
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-medium text-text-secondary">{issue.label}</span>
-                    <span className={cx(DS.badge.base, "bg-warning/15 text-warning")}>
-                      {issue.count}
+      <div className="mt-3 space-y-1">
+        <Details
+          label="Recent browser signals"
+          detail={diagnostics ? (diagnostics.issues.length ? `${diagnostics.issues.reduce((sum, issue) => sum + issue.count, 0)} in the last ${diagnostics.windowHours}h` : "None") : undefined}
+        >
+          <div className="pt-1">
+            {diagnostics?.issues.length ? (
+              <div className={DS.surface.divided}>
+                {diagnostics.issues.map((issue) => (
+                  <div key={issue.code} className="flex items-center justify-between gap-3 py-1.5 text-xs">
+                    <span className="text-text-secondary">{issue.label}</span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span className={DS.text.meta}>latest {formatTimestamp(issue.latestAt)}</span>
+                      <Badge tone="warning">{issue.count}</Badge>
                     </span>
                   </div>
-                  <div className="mt-1 text-[11px] text-text-faint">
-                    Latest: {formatTimestamp(issue.latestAt)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-2 text-xs text-text-muted">
-              No recent browser challenge, recovery, or readiness failure telemetry was observed.
-            </p>
-          )}
-        </div>
-
-        {(message || error) && (
-          <div className={cx("rounded-md border px-3 py-2 text-xs", error
-              ? cx(DS.notice.surface, "text-error")
-              : cx(DS.notice.surface, "text-success"))}>
-            {error ?? message}
+                ))}
+              </div>
+            ) : (
+              <p className={DS.field.help}>No recent browser challenge, recovery, or readiness failure telemetry was observed.</p>
+            )}
+            {diagnostics && <p className={cx(DS.text.meta, "mt-1")}>Checked {formatTimestamp(diagnostics.checkedAt)}</p>}
           </div>
-        )}
+        </Details>
+
+        <Details label="Paths and technical details" open={open || undefined}>
+          <div className="space-y-3 pt-2">
+            <DraftTextField
+              storageKey="browser.executablePath"
+              label="Browser executable path"
+              value={executablePathValue}
+              placeholder="Leave blank to use the environment override, or auto-detect Chrome"
+              error={browserError}
+              pending={browserPending}
+              onCommit={(value) => updateBrowserSetting("executablePath", value)}
+            />
+            <DraftTextField
+              storageKey="browser.masterProfileDirectory"
+              label="Authenticated browser profile directory"
+              value={masterProfileDirectoryValue}
+              placeholder="Leave blank to use Bridge's dedicated authenticated profile"
+              error={browserError}
+              pending={browserPending}
+              onCommit={(value) => updateBrowserSetting("masterProfileDirectory", value)}
+            />
+            <FieldList>
+              <Field label="agent-browser" mono>{!diagnostics ? "checking" : diagnostics.agentBrowserInstalled ? "installed" : "missing"}</Field>
+              <Field label="Binary" mono>{binaryState}</Field>
+              <Field label="Effective browser" mono>{config ? (config.executablePath ?? "agent-browser auto-detect") : "checking"}</Field>
+              <Field label="Browser source" mono>{config?.executablePathSource ?? "checking"}</Field>
+              <Field label="Profile" mono>{profileState}</Field>
+              <Field label="Authenticated profile" mono>{config?.masterProfileDirectory ?? authContext?.profilePath ?? "checking"}</Field>
+              <Field label="Session" mono>{config?.sessionName ?? "checking"}</Field>
+              <Field label="Mode" mono>{!config ? "checking" : config.headed ? "headed" : "not headed"}</Field>
+              {diagnostics && (
+                <>
+                  <Field label="Transport" mono>{`${diagnostics.runtime.transport.kind} · ${diagnostics.runtime.transport.state} · ${diagnostics.runtime.transport.namespace}`}</Field>
+                  <Field label="Last probe" mono>{formatTimestamp(diagnostics.runtime.transport.lastSuccessfulProbeAt)}</Field>
+                  <Field label="Public queue" mono>{`${publicContext!.activeOperations} active / ${publicContext!.queueDepth} queued · limit ${publicContext!.concurrencyLimit}`}</Field>
+                  <Field label="Public root" mono>{publicContext!.disposableProfileRoot}</Field>
+                  <Field label="Authenticated queue" mono>{`${authContext!.activeOperations} active / ${authContext!.queueDepth} queued`}</Field>
+                </>
+              )}
+            </FieldList>
+          </div>
+        </Details>
       </div>
     </SettingsSection>
   );

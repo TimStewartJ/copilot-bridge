@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "../../api";
 import {
   DEFAULT_RESPONSE_STYLE_GUIDANCE,
@@ -18,8 +18,29 @@ async function renderSection(draft: AppSettings) {
 }
 
 function styleTextarea(container: unknown) {
-  return findAllByTag(container, "TEXTAREA")[1];
+  return findAllByTag(container, "TEXTAREA")[0];
 }
+
+function buttonWithText(container: unknown, text: string) {
+  const button = findAllByTag(container, "BUTTON").find((candidate) => candidate.textContent === text);
+  if (!button) throw new Error(`No "${text}" button`);
+  return button;
+}
+
+function memoryStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    get length() { return store.size; },
+    clear: () => store.clear(),
+    getItem: (key) => store.get(key) ?? null,
+    key: (index) => [...store.keys()][index] ?? null,
+    removeItem: (key) => { store.delete(key); },
+    setItem: (key, value) => { store.set(key, String(value)); },
+  };
+}
+
+beforeEach(() => { vi.stubGlobal("sessionStorage", memoryStorage()); });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("SystemPromptSection", () => {
   it("shows natural-and-direct defaults, adaptive detail, quality safeguards, and truthful apply timing", async () => {
@@ -31,7 +52,6 @@ describe("SystemPromptSection", () => {
     expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false]);
     expect(container.textContent).toContain("Response quality (always on)");
     expect(container.textContent).toContain("new chats and fresh session resumes");
-    expect(container.textContent).toContain("Use Save to apply edits or reset");
     expect(getReactProps(findAllByTag(container, "BUTTON")[0])?.disabled).toBe(true);
   });
 
@@ -76,22 +96,48 @@ describe("SystemPromptSection", () => {
     expect(draft.responseStyle?.detail).toBe("adaptive");
   });
 
-  it("edits and clears guidance while preserving the selected detail level", async () => {
+  it("saves edited guidance only on Save, keeping the selected detail level", async () => {
     const draft: AppSettings = { mcpServers: {}, responseStyle: { detail: "concise", guidance: "Old guidance." } };
     const { harness, container, setDraft, render } = await renderSection(draft);
     await harness.act(async () => {
       getReactProps(styleTextarea(container))?.onChange?.({ target: { value: "Use precise terms." } });
     });
+    expect(setDraft).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Not saved yet");
+    await harness.act(async () => { getReactProps(buttonWithText(container, "Save"))?.onClick?.(); });
     expect(setDraft).toHaveBeenLastCalledWith({ ...draft, responseStyle: { detail: "concise", guidance: "Use precise terms." } });
+
+    const saved = setDraft.mock.calls.at(-1)?.[0];
+    if (!saved) throw new Error("No updated settings draft");
+    await render(saved);
     await harness.act(async () => {
       getReactProps(styleTextarea(container))?.onChange?.({ target: { value: "" } });
     });
+    await harness.act(async () => { getReactProps(buttonWithText(container, "Save"))?.onClick?.(); });
     const next = setDraft.mock.calls.at(-1)?.[0];
     expect(next).toEqual({ ...draft, responseStyle: { detail: "concise", guidance: "" } });
     if (!next) throw new Error("No updated settings draft");
     await render(next);
     expect(getReactProps(styleTextarea(container))?.value).toBe("");
     expect(container.textContent).toContain("Leave blank to use the default guidance");
+    expect(container.textContent).not.toContain("Not saved yet");
+  });
+
+  it("keeps unsaved guidance for this tab and cancels back to the saved text", async () => {
+    const draft: AppSettings = { mcpServers: {}, responseStyle: { detail: "adaptive", guidance: "Saved." } };
+    const first = await renderSection(draft);
+    await first.harness.act(async () => {
+      getReactProps(styleTextarea(first.container))?.onChange?.({ target: { value: "Half-written" } });
+    });
+    await first.harness.cleanup();
+
+    const second = await renderSection(draft);
+    expect(getReactProps(styleTextarea(second.container))?.value).toBe("Half-written");
+    expect(second.container.textContent).toContain("Unsaved edit restored");
+    await second.harness.act(async () => { getReactProps(buttonWithText(second.container, "Cancel"))?.onClick?.(); });
+    expect(getReactProps(styleTextarea(second.container))?.value).toBe("Saved.");
+    expect(sessionStorage.getItem("bridge-settings-unsaved:responseStyle.guidance")).toBeNull();
+    expect(second.setDraft).not.toHaveBeenCalled();
   });
 
   it("resets only response style in the draft, with an explicit persistable default", async () => {

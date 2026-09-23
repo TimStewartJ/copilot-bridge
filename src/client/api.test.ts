@@ -149,6 +149,12 @@ describe("serializeSettingsPatch", () => {
     expect(serializeSettingsPatch({ theme: "dark" })).toBe(JSON.stringify({ theme: "dark" }));
   });
 
+  it("sends any other explicit clear as null so it is not dropped", () => {
+    expect(serializeSettingsPatch({ providers: undefined, browser: undefined, identity: undefined, helm: undefined })).toBe(
+      JSON.stringify({ providers: null, browser: null, identity: null, helm: null }),
+    );
+  });
+
   it("preserves explicit model clears", () => {
     expect(serializeSettingsPatch({ model: undefined })).toBe(
       JSON.stringify({ model: "" }),

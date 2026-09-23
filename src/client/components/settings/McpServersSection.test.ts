@@ -29,12 +29,20 @@ const server = {
   updatedAt: "2026-05-20T12:00:00.000Z",
 };
 
-function findRemoveButton(root: any): any {
+function findButtonByLabel(root: any, label: string): any {
   const button = findAllByTag(root, "BUTTON").find(
-    (candidate) => getReactProps(candidate)?.title === "Remove",
+    (candidate) => getReactProps(candidate)?.["aria-label"] === label,
   );
-  if (!button) throw new Error("Remove button not found");
+  if (!button) throw new Error(`${label} button not found`);
   return button;
+}
+
+/** The actions live in the opened row. */
+async function openRowAndFindRemove(target: ReactDomHarness): Promise<any> {
+  await target.act(async () => {
+    getReactProps(findButtonByLabel(target.dom.container, "example details"))?.onClick?.({});
+  });
+  return findButtonByLabel(target.dom.container, "Remove");
 }
 
 describe("McpServersSection remove confirmation", () => {
@@ -52,7 +60,7 @@ describe("McpServersSection remove confirmation", () => {
     const confirmSpy = vi.fn(() => confirmResult);
     harness = await createReactDomHarness();
     (globalThis.window as unknown as { confirm: () => boolean }).confirm = confirmSpy;
-    await harness.render(createElement(McpServersSection, { resetSignal: 0 }));
+    await harness.render(createElement(McpServersSection));
     await waitUntilAct(harness.act, () =>
       (harness!.dom.container.textContent ?? "").includes("example"),
     );
@@ -61,7 +69,7 @@ describe("McpServersSection remove confirmation", () => {
 
   it("deletes an MCP server only after the user confirms", async () => {
     const { confirmSpy } = await renderSection(true);
-    const button = findRemoveButton(harness!.dom.container);
+    const button = await openRowAndFindRemove(harness!);
     await harness!.act(async () => {
       await getReactProps(button)?.onClick?.({});
     });
@@ -75,7 +83,7 @@ describe("McpServersSection remove confirmation", () => {
 
   it("keeps the MCP server when the user cancels the confirmation", async () => {
     const { confirmSpy } = await renderSection(false);
-    const button = findRemoveButton(harness!.dom.container);
+    const button = await openRowAndFindRemove(harness!);
     await harness!.act(async () => {
       await getReactProps(button)?.onClick?.({});
     });

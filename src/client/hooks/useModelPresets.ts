@@ -2,7 +2,6 @@ import { useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchSettings,
-  patchSettings,
   type AppSettings,
   type ModelInfo,
   type ModelPresets,
@@ -18,29 +17,17 @@ import {
   type ModelPresetSelection,
 } from "../lib/model-presets";
 import { queryClient, queryKeys } from "../queryClient";
+import { settingsWriter } from "./queries/useSettings";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import {
   getModelPresetSlotForFamily,
   type ModelPresetSlot,
 } from "../../shared/model-presets.js";
 
-let settingsWriteChain = Promise.resolve();
-let latestSettingsWrite = 0;
-
+/** The shared writer applies the change to the cached settings at once and sends it in order. */
 function enqueueSettingsPatch(updates: Partial<AppSettings>): void {
-  const writeId = ++latestSettingsWrite;
-  settingsWriteChain = settingsWriteChain.then(async () => {
-    try {
-      const settings = await patchSettings(updates);
-      if (writeId === latestSettingsWrite) {
-        queryClient.setQueryData(queryKeys.settings, settings);
-      }
-    } catch (error) {
-      console.error("[model-presets] Failed to remember preset", error);
-      if (writeId === latestSettingsWrite) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.settings });
-      }
-    }
+  settingsWriter.patch(updates).catch((error: unknown) => {
+    console.error("[model-presets] Failed to remember preset", error);
   });
 }
 
@@ -154,15 +141,6 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     if (!nextPresets && cachedSettings?.lastModelPreset === slot) return;
 
     const mergedPresets = nextPresets ?? currentPresets;
-    queryClient.setQueryData<AppSettings>(queryKeys.settings, (current) => (
-      current
-        ? {
-          ...current,
-          ...(mergedPresets ? { modelPresets: mergedPresets } : {}),
-          lastModelPreset: slot,
-        }
-        : current
-    ));
     enqueueSettingsPatch({
       ...(mergedPresets ? { modelPresets: mergedPresets } : {}),
       lastModelPreset: slot,

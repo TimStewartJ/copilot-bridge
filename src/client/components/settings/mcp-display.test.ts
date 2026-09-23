@@ -78,7 +78,7 @@ describe("tag MCP selection UI", () => {
 });
 
 describe("ServerCard", () => {
-  it("explains enabled-by-default registry servers", () => {
+  it("offers enabled-by-default as a labelled switch on the row", () => {
     const html = renderToStaticMarkup(createElement(ServerCard, {
       name: "github",
       config: { type: "http", url: "https://example.com/mcp" },
@@ -88,13 +88,25 @@ describe("ServerCard", () => {
       onRemove: vi.fn(),
     }));
 
-    expect(html).toContain("Enabled by default");
-    expect(html).toContain("Attach this server to every session.");
+    expect(html).toMatch(/<input[^>]*role="switch"[^>]*aria-label="Attach github to every session"[^>]*checked/);
   });
 
-  it("renders execution classification and its reason", () => {
+  it("keeps the configuration closed until the row is opened", () => {
     const html = renderToStaticMarkup(createElement(ServerCard, {
       name: "ado",
+      config: { command: "agency", args: ["mcp", "ado"] },
+      onEdit: vi.fn(),
+      onRemove: vi.fn(),
+    }));
+
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("agency");
+  });
+
+  it("renders execution classification and its reason when opened", () => {
+    const html = renderToStaticMarkup(createElement(ServerCard, {
+      name: "ado",
+      defaultExpanded: true,
       config: {
         command: "agency",
         args: ["mcp", "ado"],

@@ -12,6 +12,7 @@ import {
 } from "../../api";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { SettingList, SettingRow } from "../../design/primitives";
 
 const DELAY_LABELS: Record<number, string> = {
   0: "Now",
@@ -176,47 +177,59 @@ export function DeviceManagementSection() {
   const idleHibernateAt = onIdle?.hibernateAt ?? null;
   const idleRemainingMs = idleHibernateAt != null ? idleHibernateAt - now : 0;
 
+  const quietButton = cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5");
+
   return (
-    <SettingsSection
-      title="Device Management"
-      description="Shortcuts for managing the device running this Copilot Bridge instance."
-    >
-      <div className={DS.layout.formGroup}>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-accent">
-              <Moon size={15} />
-              Hibernate device
+    <SettingsSection title="This computer" description="The machine running Bridge. Bridge resumes when it wakes.">
+      <SettingList>
+        <SettingRow
+          label="Hibernate"
+          htmlFor="hibernate-delay"
+          control={(
+            <>
+              <select
+                id="hibernate-delay"
+                value={delayMinutes}
+                onChange={(event) => setDelayMinutes(Number(event.target.value))}
+                disabled={hibernating}
+                aria-label="Hibernation delay"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.compactField)}
+              >
+                {HIBERNATE_DELAY_MINUTES.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {DELAY_LABELS[minutes] ?? `In ${minutes} minutes`}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void handleHibernate()}
+                disabled={hibernating}
+                className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1.5")}
+              >
+                {hibernating ? <Loader2 size={12} className="animate-spin" /> : <Moon size={12} />}
+                {delayMinutes > 0 ? "Schedule" : "Hibernate"}
+              </button>
+            </>
+          )}
+        >
+          {isPending && pending?.scheduledAt != null && (
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-primary">
+              <span>
+                Hibernating in <span className="font-medium tabular-nums">{formatCountdown(remainingMs)}</span> (at{" "}
+                {formatClock(pending.scheduledAt)}).
+              </span>
+              <button type="button" onClick={() => void handleCancel()} disabled={cancelling} className={quietButton}>
+                {cancelling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+                Cancel
+              </button>
             </div>
-            <p className="mt-1 text-xs text-text-muted">
-              Put the host device into hibernation now or after a delay. Bridge resumes when the
-              device wakes. &ldquo;On idle&rdquo; waits until every session has been idle for{" "}
-              {HIBERNATE_IDLE_GRACE_MINUTES} minutes, then hibernates.
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <select
-              value={delayMinutes}
-              onChange={(event) => setDelayMinutes(Number(event.target.value))}
-              disabled={hibernating}
-              aria-label="Hibernation delay"
-              className={cx(DS.field.input, DS.field.inputSize.md, "disabled:cursor-not-allowed disabled:text-text-faint")}
-            >
-              {HIBERNATE_DELAY_MINUTES.map((minutes) => (
-                <option key={minutes} value={minutes}>
-                  {DELAY_LABELS[minutes] ?? `In ${minutes} minutes`}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={() => void handleHibernate()}
-              disabled={hibernating}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "gap-1.5")}
-            >
-              {hibernating ? <Loader2 size={12} className="animate-spin" /> : <Moon size={12} />}
-              {delayMinutes > 0 ? "Schedule" : "Hibernate"}
-            </button>
+          )}
+        </SettingRow>
+        <SettingRow
+          label="Hibernate when idle"
+          hint={`After every session has been idle for ${HIBERNATE_IDLE_GRACE_MINUTES} minutes.`}
+          control={(
             <button
               type="button"
               onClick={() => void handleToggleOnIdle()}
@@ -227,77 +240,47 @@ export function DeviceManagementSection() {
                   ? "Turn off automatic hibernation when all sessions are idle"
                   : "Hibernate automatically once all sessions are idle"
               }
-              className={cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "gap-1.5 disabled:bg-bg-surface disabled:text-text-faint", onIdleArmed
-                  ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, DS.segmented.selected)
-                  : cx(DS.button.base, DS.button.size.sm, DS.segmented.option, "border border-border bg-bg-surface text-text-primary hover:bg-bg-primary"))}
+              className={cx(DS.button.base, DS.button.size.sm, "gap-1.5", onIdleArmed ? DS.segmented.selected : DS.button.variant.secondary)}
             >
               {togglingOnIdle ? <Loader2 size={12} className="animate-spin" /> : <Timer size={12} />}
               {onIdleArmed ? "On idle: on" : "On idle"}
             </button>
-          </div>
-        </div>
-
-        {onIdleArmed && (
-          <div className={cx(DS.notice.surface, DS.choice.selected, DS.row.selected, "flex flex-col gap-2 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between")}>
-            <span>
-              {idleBlockedReason ? (
-                <>
-                  Hibernating on idle — held because{" "}
-                  <span className="font-medium">{idleBlockedReason.toLowerCase()}</span>.
-                </>
-              ) : idleActiveSessions > 0 ? (
-                <>
-                  Hibernating on idle — waiting for{" "}
-                  <span className="font-medium">
-                    {idleActiveSessions} active session{idleActiveSessions === 1 ? "" : "s"}
-                  </span>{" "}
-                  to finish.
-                </>
-              ) : idleHibernateAt != null ? (
-                <>
-                  All sessions idle — hibernating in{" "}
-                  <span className="font-medium">{formatCountdown(idleRemainingMs)}</span>.
-                </>
-              ) : (
-                <>Hibernating on idle — waiting for all sessions to go idle.</>
-              )}
-            </span>
-            <button
-              type="button"
-              onClick={() => void handleToggleOnIdle()}
-              disabled={togglingOnIdle}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 border border-border bg-bg-surface disabled:text-text-faint")}
-            >
-              {togglingOnIdle ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-              Turn off
-            </button>
-          </div>
-        )}
-
-        {isPending && pending?.scheduledAt != null && (
-          <div className={cx(DS.notice.surface, "flex flex-col gap-2 px-3 py-2 text-xs text-text-primary sm:flex-row sm:items-center sm:justify-between")}>
-            <span>
-              Hibernating in <span className="font-medium">{formatCountdown(remainingMs)}</span> (at{" "}
-              {formatClock(pending.scheduledAt)}).
-            </span>
-            <button
-              type="button"
-              onClick={() => void handleCancel()}
-              disabled={cancelling}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5 border border-border bg-bg-surface disabled:text-text-faint")}
-            >
-              {cancelling ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-              Cancel
-            </button>
-          </div>
-        )}
-
-        {message && (
-          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-            {message}
-          </div>
-        )}
-      </div>
+          )}
+        >
+          {onIdleArmed && (
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-primary">
+              <span>
+                {idleBlockedReason ? (
+                  <>
+                    Hibernating on idle — held because{" "}
+                    <span className="font-medium">{idleBlockedReason.toLowerCase()}</span>.
+                  </>
+                ) : idleActiveSessions > 0 ? (
+                  <>
+                    Hibernating on idle — waiting for{" "}
+                    <span className="font-medium">
+                      {idleActiveSessions} active session{idleActiveSessions === 1 ? "" : "s"}
+                    </span>{" "}
+                    to finish.
+                  </>
+                ) : idleHibernateAt != null ? (
+                  <>
+                    All sessions idle — hibernating in{" "}
+                    <span className="font-medium tabular-nums">{formatCountdown(idleRemainingMs)}</span>.
+                  </>
+                ) : (
+                  <>Hibernating on idle — waiting for all sessions to go idle.</>
+                )}
+              </span>
+              <button type="button" onClick={() => void handleToggleOnIdle()} disabled={togglingOnIdle} className={quietButton}>
+                {togglingOnIdle ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+                Turn off
+              </button>
+            </div>
+          )}
+        </SettingRow>
+      </SettingList>
+      {message && <p role="status" className={cx(DS.field.help, "mt-2")}>{message}</p>}
     </SettingsSection>
   );
 }

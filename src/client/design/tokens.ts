@@ -323,6 +323,19 @@ export const DS = {
     help: "text-xs text-text-secondary",
   },
 
+  /** A settings row (SettingRow): the name, a short hint, and the control at the end of the line. */
+  setting: {
+    label: "block text-[13px] font-medium text-text-primary",
+    hint: "mt-0.5 text-xs leading-relaxed text-text-secondary",
+    control: "flex min-w-0 shrink-0 flex-wrap items-center gap-2 @[30rem]/setting-row:justify-end",
+    /** A select or short input at the end of a row: full width when stacked, a fixed column beside the label. */
+    field: "w-full @[30rem]/setting-row:w-64",
+    /** A short select that shares the end of a row with a button. */
+    compactField: "w-full @[30rem]/setting-row:w-40",
+    /** A native checkbox drawn as a switch. The thumb is the ::before of the input itself. */
+    switch: `relative h-6 w-10 shrink-0 cursor-pointer appearance-none rounded-full border border-control-edge bg-bg-hover transition-colors before:absolute before:left-0.5 before:top-0.5 before:size-[18px] before:rounded-full before:bg-text-secondary before:transition-transform checked:border-text-primary checked:bg-text-primary checked:before:translate-x-4 checked:before:bg-bg-primary disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none motion-reduce:before:transition-none ${FOCUS}`,
+  },
+
   /** Menu actions and search suggestions share a full-width, touch-safe row. */
   menu: {
     item: `flex min-h-10 w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:text-text-faint md:min-h-8 ${FOCUS}`,

@@ -2232,6 +2232,11 @@ export function serializeSettingsPatch(updates: AppSettingsUpdates): string {
   if ("responseStyle" in updates && updates.responseStyle === undefined) {
     normalized.responseStyle = {};
   }
+  // JSON.stringify drops undefined, so any other explicit clear (providers, browser, identity, an
+  // undo back to "unset") is sent as null, which the server treats as "remove this setting".
+  for (const key of Object.keys(normalized)) {
+    if (normalized[key] === undefined) normalized[key] = null;
+  }
   return JSON.stringify(normalized);
 }
 
@@ -2251,7 +2256,8 @@ export async function patchSettings(updates: AppSettingsUpdates): Promise<AppSet
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    // The status matters to the settings writer: 400 is a rejected value, 409 a concurrent write.
+    throw new ApiError(err.error || res.statusText, res.status, err.details);
   }
   return res.json();
 }

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, GitCommitHorizontal, Loader2, RotateCw } from "lucide-react";
 import {
   fetchBridgeCommitMetadata,
   fetchLauncherLogTail,
@@ -14,13 +13,13 @@ import {
   type BridgeStatusDescriptor,
   type BridgeStatusTone,
 } from "../../lib/bridge-commit-status";
-import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { Badge, Details, Notice, SettingList, SettingRow } from "../../design/primitives";
 
 const LAUNCHER_LOG_LINE_COUNT = 8;
 
-export function BridgeCommitsSection() {
+export function BridgeCommitsSection({ refreshSignal = 0, open = false }: { refreshSignal?: number; open?: boolean }) {
   const [commits, setCommits] = useState<BridgeCommitMetadata | null>(null);
   const [launcherLog, setLauncherLog] = useState<LauncherLogTail | null>(null);
   const [commitsLoading, setCommitsLoading] = useState(true);
@@ -70,60 +69,60 @@ export function BridgeCommitsSection() {
     refresh();
   }, [refresh]);
 
-  const loading = commitsLoading || launcherLogLoading;
+  const refreshRef = useRef<() => void>(() => undefined);
+  refreshRef.current = () => refresh(true);
+  const firstSignal = useRef(refreshSignal);
+  useEffect(() => {
+    if (refreshSignal !== firstSignal.current) refreshRef.current();
+  }, [refreshSignal]);
+
   const errors = [commitError, launcherLogError].filter(
     (message): message is string => message !== null,
   );
-  const error = errors.length > 0 ? errors.join(" ") : null;
+  const overview = describeBridgeOverview(commits, commitsLoading);
+  const running = commits?.running;
+  const lineCount = launcherLog?.status === "ok" ? launcherLog.lines.length : 0;
 
   return (
-    <SettingsSection
-      title="Bridge Status"
-      description="Compare local, tracked upstream, and running bridge commits, plus the latest launcher lines from the bridge serving this UI."
-      action={(
-        <button
-          onClick={() => refresh(true)}
-          disabled={loading}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "bg-bg-surface gap-1.5")}
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}
-          Refresh
-        </button>
-      )}
-    >
-      <div className="space-y-3">
-        <CommitOverviewCard commits={commits} loading={commitsLoading} />
-        <div className="grid gap-2 lg:grid-cols-3">
-          <CommitCard
-            title="Local"
-            subtitle="Current worktree HEAD"
-            snapshot={commits?.local ?? null}
-            loading={commitsLoading}
-          />
-          <CommitCard
-            title="Remote"
-            subtitle="Tracked upstream branch"
-            snapshot={commits?.remote ?? null}
-            loading={commitsLoading}
-          />
-          <CommitCard
-            title="Running"
-            subtitle="Bridge process serving this UI"
-            snapshot={commits?.running ?? null}
-            loading={commitsLoading}
-          />
-        </div>
-        <LauncherLogCard
-          launcherLog={launcherLog}
-          loading={launcherLogLoading}
+    <SettingsSection id="settings-system-version" title="Source version">
+      <SettingList>
+        <SettingRow
+          label={running?.status === "ok" ? `Running ${running.shortSha}` : commitsLoading ? "Checking…" : "Running commit unavailable"}
+          hint={overview.detail}
+          control={<StatusBadge descriptor={overview} />}
         />
-
-        {error && (
-          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-            Bridge status check failed: {error}
+      </SettingList>
+      <div className="mt-3 space-y-1">
+        <Details label="Local, remote and running commits" open={open || undefined}>
+          <div className="pt-1">
+            <ComparisonLine label="Local vs remote" descriptor={describeLocalVsRemote(commits?.comparisons.localVsRemote, commitsLoading)} />
+            <ComparisonLine label="Running vs local" descriptor={describeRunningVsLocal(commits?.comparisons.runningVsLocal, commitsLoading)} />
+            <div className={cx(DS.surface.divided, "mt-2")}>
+              <CommitLine title="Local" subtitle="Current worktree HEAD" snapshot={commits?.local ?? null} loading={commitsLoading} />
+              <CommitLine title="Remote" subtitle="Tracked upstream branch" snapshot={commits?.remote ?? null} loading={commitsLoading} />
+              <CommitLine title="Running" subtitle="Bridge process serving this UI" snapshot={commits?.running ?? null} loading={commitsLoading} />
+            </div>
           </div>
-        )}
+        </Details>
+        <Details label="Launcher log" detail={launcherLog?.status === "ok" ? `Last ${lineCount} ${lineCount === 1 ? "line" : "lines"}` : undefined}>
+          <div className="pt-1">
+            {launcherLogLoading && !launcherLog ? (
+              <p role="status" className={DS.field.help}>Loading launcher log…</p>
+            ) : launcherLog?.status === "ok" ? (
+              launcherLog.lines.length > 0 ? (
+                <pre className={cx(DS.surface.inset, "overflow-x-auto whitespace-pre-wrap break-words px-3 py-2 text-xs text-text-secondary")}>
+                  {launcherLog.lines.join("\n")}
+                </pre>
+              ) : (
+                <p className={DS.field.help}>The launcher log file exists, but no lines have been written yet.</p>
+              )
+            ) : (
+              <p className="text-xs text-error">{launcherLog?.error ?? "Launcher log is unavailable."}</p>
+            )}
+          </div>
+        </Details>
       </div>
+      {errors.length > 0 && <Notice tone="danger" className="mt-3">Bridge status check failed: {errors.join(" ")}</Notice>}
     </SettingsSection>
   );
 }
@@ -132,88 +131,30 @@ function formatRequestError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function CommitOverviewCard({
-  commits,
-  loading,
-}: {
-  commits: BridgeCommitMetadata | null;
-  loading: boolean;
-}) {
-  const overview = describeBridgeOverview(commits, loading);
-  const localSummary = describeLocalVsRemote(commits?.comparisons.localVsRemote, loading);
-  const runningSummary = describeRunningVsLocal(commits?.comparisons.runningVsLocal, loading);
+/** Healthy and informational states stay neutral; only disagreement or failure takes a colour. */
+const TONE_BADGE: Record<BridgeStatusTone, "neutral" | "warning" | "danger"> = {
+  success: "neutral",
+  info: "neutral",
+  neutral: "neutral",
+  warning: "warning",
+  error: "danger",
+};
 
+function StatusBadge({ descriptor }: { descriptor: BridgeStatusDescriptor }) {
+  return <Badge tone={TONE_BADGE[descriptor.tone]}>{descriptor.label}</Badge>;
+}
+
+function ComparisonLine({ label, descriptor }: { label: string; descriptor: BridgeStatusDescriptor }) {
   return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <GitBranch size={15} />
-            Sync overview
-          </div>
-          <p className="mt-1 text-xs text-text-muted">{overview.detail}</p>
-        </div>
-        <StatusPill descriptor={overview} />
-      </div>
-
-      <div className="grid gap-2 md:grid-cols-2">
-        <ComparisonSummaryCard label="Local vs remote" descriptor={localSummary} />
-        <ComparisonSummaryCard label="Running vs local" descriptor={runningSummary} />
-      </div>
-    </div>
+    <p className="flex flex-wrap items-center gap-2 py-1 text-xs text-text-secondary">
+      <span className="font-medium">{label}</span>
+      <StatusBadge descriptor={descriptor} />
+      <span>{descriptor.detail}</span>
+    </p>
   );
 }
 
-function ComparisonSummaryCard({
-  label,
-  descriptor,
-}: {
-  label: string;
-  descriptor: BridgeStatusDescriptor;
-}) {
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] font-medium tracking-wide text-text-muted">{label}</div>
-          <p className="mt-1 text-xs text-text-muted">{descriptor.detail}</p>
-        </div>
-        <StatusPill descriptor={descriptor} compact />
-      </div>
-    </div>
-  );
-}
-
-function StatusPill({
-  descriptor,
-  compact = false,
-}: {
-  descriptor: BridgeStatusDescriptor;
-  compact?: boolean;
-}) {
-  return (
-    <span className={cx("shrink-0 rounded-full font-medium", compact ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]", statusToneClassName(descriptor.tone))}>
-      {descriptor.label}
-    </span>
-  );
-}
-
-function statusToneClassName(tone: BridgeStatusTone): string {
-  switch (tone) {
-    case "success":
-      return "bg-success/15 text-success";
-    case "warning":
-      return "bg-warning/15 text-warning";
-    case "error":
-      return "bg-error/10 text-error";
-    case "info":
-      return "bg-info-surface text-info";
-    default:
-      return "bg-bg-surface text-text-secondary";
-  }
-}
-
-function CommitCard({
+function CommitLine({
   title,
   subtitle,
   snapshot,
@@ -224,126 +165,20 @@ function CommitCard({
   snapshot: BridgeCommitSnapshot | null;
   loading: boolean;
 }) {
-  const badgeText = loading && !snapshot
-    ? "Checking…"
-    : snapshot?.status === "ok"
-      ? snapshot.shortSha
-      : "Unavailable";
-
-  const badgeClassName = loading && !snapshot
-    ? "bg-bg-surface text-text-muted"
-    : snapshot?.status === "ok"
-      ? "bg-bg-primary text-text-secondary"
-      : "bg-error/10 text-error";
-
   return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <GitCommitHorizontal size={15} />
-            {title}
-          </div>
-          <p className="mt-1 text-xs text-text-muted">{subtitle}</p>
-        </div>
-        <span className={cx(DS.badge.base, "shrink-0", badgeClassName)}>
-          {badgeText}
-        </span>
+    <div className="min-w-0 py-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[13px]">
+        <span className="font-medium text-text-primary">{title}</span>
+        {snapshot?.status === "ok" && <code className={DS.text.literal}>{snapshot.shortSha}</code>}
+        {snapshot?.status === "ok" && <code className={DS.text.literal}>{snapshot.ref}</code>}
+        <span className={DS.field.help}>{subtitle}</span>
       </div>
-
       {loading && !snapshot ? (
-        <LoadingSkeletonRegion
-          isLoading
-          label={`Loading ${title.toLowerCase()} commit metadata`}
-          className="space-y-2"
-        >
-          <Skeleton height={24} width="56%" />
-          <SkeletonText lines={2} widths={["88%", "64%"]} />
-        </LoadingSkeletonRegion>
+        <p role="status" className={DS.field.help}>Checking…</p>
       ) : snapshot?.status === "ok" ? (
-        <div className="space-y-2">
-          <code className="inline-flex max-w-full rounded bg-bg-primary px-2 py-1 text-[11px] text-text-secondary">
-            {snapshot.ref}
-          </code>
-          <p className="text-sm leading-5 text-text-secondary break-words line-clamp-2">
-            {snapshot.message}
-          </p>
-          <code className="block break-all text-[11px] text-text-faint">
-            {snapshot.sha}
-          </code>
-        </div>
+        <p className="truncate text-xs text-text-secondary" title={`${snapshot.message}\n${snapshot.sha}`}>{snapshot.message}</p>
       ) : (
-        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-          {snapshot?.error ?? "Commit metadata is unavailable."}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LauncherLogCard({
-  launcherLog,
-  loading,
-}: {
-  launcherLog: LauncherLogTail | null;
-  loading: boolean;
-}) {
-  const lineCount = launcherLog?.status === "ok" ? launcherLog.lines.length : 0;
-  const badgeText = loading && !launcherLog
-    ? "Checking…"
-    : launcherLog?.status === "ok"
-      ? `${lineCount} ${lineCount === 1 ? "line" : "lines"}`
-      : "Unavailable";
-
-  const badgeClassName = loading && !launcherLog
-    ? "bg-bg-surface text-text-muted"
-    : launcherLog?.status === "ok"
-      ? "bg-bg-primary text-text-secondary"
-      : "bg-error/10 text-error";
-
-  return (
-    <div className={DS.layout.formGroup}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent">
-            <GitCommitHorizontal size={15} />
-            Launcher log tail
-          </div>
-          <p className="mt-1 text-xs text-text-muted">
-            Latest {LAUNCHER_LOG_LINE_COUNT} lines from the running launcher process.
-          </p>
-        </div>
-        <span className={cx(DS.badge.base, "shrink-0", badgeClassName)}>
-          {badgeText}
-        </span>
-      </div>
-
-      {loading && !launcherLog ? (
-        <LoadingSkeletonRegion
-          isLoading
-          label="Loading launcher log tail"
-          className="space-y-2"
-        >
-          {Array.from({ length: 3 }, (_, index) => (
-            <div key={index} className={DS.layout.formGroup}>
-              <SkeletonText lines={1} widths={[index === 0 ? "92%" : index === 1 ? "76%" : "84%"]} />
-            </div>
-          ))}
-        </LoadingSkeletonRegion>
-      ) : launcherLog?.status === "ok" ? (
-        launcherLog.lines.length > 0 ? (
-          <pre className="overflow-x-auto rounded-md border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary whitespace-pre-wrap break-words">
-            {launcherLog.lines.join("\n")}
-          </pre>
-        ) : (
-          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-            The launcher log file exists, but no lines have been written yet.
-          </div>
-        )
-      ) : (
-        <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-          {launcherLog?.error ?? "Launcher log is unavailable."}
-        </div>
+        <p className="text-xs text-error">{snapshot?.error ?? "Commit metadata is unavailable."}</p>
       )}
     </div>
   );

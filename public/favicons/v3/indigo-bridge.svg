@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Copilot Bridge">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#4338ca"/></linearGradient></defs>
+  <rect width="128" height="128" rx="30" fill="url(#bg)"/>
+  <rect x="1" y="1" width="126" height="126" rx="29" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="2"/>
+  <path d="M42 28V100M86 28V100" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke="#fff" stroke-width="10"/><path d="M18 80H110" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke="#fff" stroke-width="10"/><path d="M20 66C30 56 38 42 42 30C50 62 78 62 86 30C90 42 98 56 108 66" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke="#fff" stroke-width="7"/>
+</svg>

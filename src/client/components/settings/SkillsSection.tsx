@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { ChevronRight, Trash2 } from "lucide-react";
 import {
   deleteSkill,
   fetchSkill,
@@ -7,9 +7,9 @@ import {
   type Skill,
   type SkillDetail,
 } from "../../api";
-import EmptyState from "../shared/EmptyState";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
+import { Badge, Button, EmptyHint, Notice, SettingList } from "../../design/primitives";
 
 function sortSkills(skills: Skill[]): Skill[] {
   return [...skills].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
@@ -48,65 +48,40 @@ function SkillCard({
   const isBundled = skill.source === "bundled";
 
   return (
-    <div className={cx(DS.layout.objectRow, "group")}>
-      <div className="flex items-start justify-between gap-2">
-        <button
-          onClick={toggleExpanded}
-          className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "flex-1 items-start gap-2 py-2")}
-          aria-expanded={expanded}
-        >
-          <span className="mt-0.5 text-text-muted">
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </span>
-          <span className="flex-1 min-w-0">
-            <span className="flex items-center gap-2">
-              <span className="text-sm font-medium text-accent">{skill.name}</span>
-              <span
-                className={cx(DS.text.sectionLabel, "rounded px-1.5 py-0.5 font-medium", isBundled
-                    ? "bg-bg-surface text-text-muted"
-                    : "text-accent")}
-              >
-                {skill.source}
-              </span>
-            </span>
-            {skill.description && (
-              <span className="mt-1 block text-xs text-text-muted">{skill.description}</span>
-            )}
-          </span>
-        </button>
-        {!isBundled && (
-          <button
-            onClick={onRemove}
-            disabled={removing}
-            className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost, "hover:text-error disabled:opacity-50")}
-            title="Delete skill"
-          >
-            <Trash2 size={14} />
-          </button>
+    <div className="min-w-0 py-1.5 first:pt-0 last:pb-0">
+      <button
+        type="button"
+        onClick={toggleExpanded}
+        className={cx(DS.row.base, DS.row.touch, DS.row.interactive, "gap-2.5")}
+        aria-expanded={expanded}
+      >
+        <ChevronRight size={13} aria-hidden="true" className={cx(DS.row.chevron, expanded && DS.row.chevronOpen)} />
+        <span className="shrink-0 font-medium text-text-primary">{skill.name}</span>
+        <Badge tone="neutral">{skill.source}</Badge>
+        {skill.description && !expanded && (
+          <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">{skill.description}</span>
         )}
-      </div>
+      </button>
 
       {expanded && (
-        <div className="mt-3 border-t border-border pt-3">
+        <div className={cx(DS.rail, DS.motion.reveal, "space-y-2 pb-2")}>
+          {skill.description && <p className={DS.text.prose}>{skill.description}</p>}
           {skill.allowedTools.length > 0 && (
-            <div className="mb-2 flex flex-wrap items-center gap-1">
-              <span className="text-[11px] font-medium text-text-secondary">Allowed tools:</span>
-              {skill.allowedTools.map((tool) => (
-                <code
-                  key={tool}
-                  className="rounded bg-bg-surface px-1.5 py-0.5 text-[11px] text-text-secondary"
-                >
-                  {tool}
-                </code>
-              ))}
-            </div>
+            <p className={DS.field.help}>
+              Allowed tools: <span className={DS.text.literal}>{skill.allowedTools.join(", ")}</span>
+            </p>
           )}
-          {loadingDetail && <div className="text-xs text-text-muted">Loading…</div>}
-          {detailError && <div className="text-xs text-error">{detailError}</div>}
+          {loadingDetail && <p role="status" className={DS.field.help}>Loading…</p>}
+          {detailError && <p className="text-xs text-error">{detailError}</p>}
           {detail && (
-            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-surface p-3 text-[11px] leading-relaxed text-text-secondary">
+            <pre className={cx(DS.surface.inset, "max-h-80 overflow-auto whitespace-pre-wrap break-words p-3 text-[11px] leading-relaxed text-text-secondary")}>
               {detail.body || "(empty)"}
             </pre>
+          )}
+          {!isBundled && (
+            <Button size="sm" variant="danger" icon={<Trash2 size={13} />} onClick={onRemove} disabled={removing} title="Delete skill">
+              Delete skill
+            </Button>
           )}
         </div>
       )}
@@ -161,14 +136,10 @@ export function SkillsSection() {
   return (
     <SettingsSection
       title="Skills"
-      description="On-disk Copilot skills. Home skills can be deleted; bundled skills ship with the app and are read-only. Changes apply to new sessions."
+      description="Changes apply to new sessions. Bundled skills are read-only."
     >
-      <div className="space-y-2">
-        {error && (
-          <div className={cx(DS.notice.surface, "px-3 py-2 text-xs text-error")}>
-            {error}
-          </div>
-        )}
+      <SettingList>
+        {error && <Notice tone="danger" className="mb-2">{error}</Notice>}
 
         {skills.map((skill) => (
           <SkillCard
@@ -179,19 +150,12 @@ export function SkillsSection() {
           />
         ))}
 
-        {loading && (
-          <div className={cx(DS.layout.formGroup, "text-xs text-text-muted")}>
-            Loading skills…
-          </div>
-        )}
+        {loading && <p role="status" className={DS.field.help}>Loading skills…</p>}
 
         {!loading && skills.length === 0 && (
-          <EmptyState
-            message="No skills"
-            sub="Add a SKILL.md under ~/.copilot/skills to define one"
-          />
+          <EmptyHint>No skills. Add a SKILL.md under ~/.copilot/skills to define one.</EmptyHint>
         )}
-      </div>
+      </SettingList>
     </SettingsSection>
   );
 }

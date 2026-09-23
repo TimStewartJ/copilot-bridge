@@ -2,7 +2,7 @@ export { DS, cx, type DsTone, type DsButtonVariant, type DsButtonSize, type DsSt
 export {
   Badge, Button, ChoiceButton, CountBadge, Details, DisclosureRow, EmptyHint,
   Field, FieldList, FormRow, IconButton, IdentitySwatch, MetaLine, Notice, Panel, Section,
-  SegmentedControl, Select, StatRow, StatusIcon, STATUS_LABEL, TextArea, TextInput, type SegmentedOption,
+  SegmentedControl, Select, SettingList, SettingRow, StatRow, StatusIcon, STATUS_LABEL, Switch, TextArea, TextInput, type SegmentedOption,
 } from "./primitives";
 export {
   IDENTITY_COLORS, IDENTITY_EDGE, IDENTITY_FILL, IDENTITY_TEXT, IDENTITY_TINT, identityColor, type IdentityColor,

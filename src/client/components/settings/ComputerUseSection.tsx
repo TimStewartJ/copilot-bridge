@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { fetchComputerUseStatus, type AppSettings, type ComputerUseStatus } from "../../api";
 import { SettingsSection } from "./SettingsSection";
-import { DS, cx } from "../../design/tokens";
+import { DS } from "../../design/tokens";
+import { SettingList, SettingRow, Switch } from "../../design/primitives";
+import { useSettingsWriter } from "../../hooks/queries/useSettings";
 
 export function ComputerUseSection({
   draft,
@@ -27,50 +29,44 @@ export function ComputerUseSection({
     };
   }, []);
 
+  const { pendingKeys } = useSettingsWriter();
   const enabled = draft.computerUse?.enabled === true;
   const unavailable = status?.available === false;
+  // Each committed change evicts every cached session on the server, so a second toggle waits
+  // until the first has been saved.
+  const saving = pendingKeys.has("computerUse");
   const availability = error
     ? `Status check failed: ${error}`
     : !status
     ? "Checking the installed Copilot SDK…"
     : status.available
-    ? `Computer Use plugin ${status.version ?? "(unknown version)"} is installed with the Copilot SDK.`
+    ? `Plugin ${status.version ?? "(unknown version)"}. Each session with it on runs one more local process.`
     : status.reason ?? "The Computer Use plugin is not installed.";
 
   return (
-    <SettingsSection
-      title="Computer use"
-      description="Let sessions read and control desktop apps through the Computer Use server that ships with the Copilot SDK."
-    >
-      <div className={DS.layout.formGroup}>
-        <label className="flex items-start gap-3 rounded-md border border-border bg-bg-primary px-3 py-2">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={unavailable && !enabled}
-            onChange={(event) => setDraft({
-              ...draft,
-              computerUse: event.target.checked ? { enabled: true } : undefined,
-            })}
-            className={cx(DS.control.checkbox, "mt-0.5 h-3.5 w-3.5")}
-          />
-          <span className="min-w-0">
-            <span className="block text-xs font-medium text-text-secondary">
-              Enable computer use in sessions
-            </span>
-            <span className="mt-0.5 block text-[11px] text-text-faint">
-              Applies to new sessions, and to existing sessions from their next message. Each session with it on runs one more local process.
-            </span>
-          </span>
-        </label>
-
-        <p className={cx("text-xs", unavailable || error ? "text-warning" : "text-text-muted")}>
-          {availability}
-        </p>
-        <p className="text-[11px] text-text-faint">
-          The Bridge approves tool requests automatically, so a session can click and type in any app on this machine without asking. Turn this on only for a Bridge you alone can reach.
-        </p>
-      </div>
+    <SettingsSection title="Computer use">
+      <SettingList>
+        <SettingRow
+          label="Let sessions control desktop apps"
+          htmlFor="settings-computer-use"
+          hint={<span className={unavailable || error ? "text-warning" : undefined}>{availability}</span>}
+          control={(
+            <Switch
+              id="settings-computer-use"
+              checked={enabled}
+              disabled={(unavailable && !enabled) || saving}
+              onChange={(event) => setDraft({
+                ...draft,
+                computerUse: event.target.checked ? { enabled: true } : undefined,
+              })}
+            />
+          )}
+        >
+          <p className={DS.field.help}>
+            Bridge approves tool requests automatically, so a session can click and type in any app here without asking. Use it only on a Bridge that you alone can reach.
+          </p>
+        </SettingRow>
+      </SettingList>
     </SettingsSection>
   );
 }
