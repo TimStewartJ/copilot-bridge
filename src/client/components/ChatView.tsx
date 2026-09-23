@@ -161,6 +161,8 @@ interface ChatViewProps {
   /** Hides the composer's record button while something else owns the microphone. */
   hideVoiceInput?: boolean;
   composerPlaceholder?: string;
+  /** Incremented to move focus into the composer (desktop only). */
+  composerFocusRequest?: number;
 }
 
 function useThrottledText(value: string, intervalMs: number): string {
@@ -524,6 +526,7 @@ export default function ChatView({
   composerAccessory,
   hideVoiceInput,
   composerPlaceholder,
+  composerFocusRequest,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3099,6 +3102,7 @@ export default function ChatView({
         defaultSendMode={defaultSendMode}
         hideVoiceInput={hideVoiceInput}
         placeholder={composerPlaceholder}
+        focusRequest={composerFocusRequest}
       />}
       {/* Plan sheet overlay */}
       {showPlan && sessionId && (

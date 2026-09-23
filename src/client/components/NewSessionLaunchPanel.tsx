@@ -32,6 +32,8 @@ interface NewSessionLaunchPanelProps {
   onContextTierChange: (contextTier?: CopilotContextTier) => void;
   onModeChange: (mode: SendMode) => void;
   onAgentChange?: (agentName?: string) => void;
+  /** Called after a preset or model is chosen so the composer can take focus. */
+  onModelSelectionCommitted?: () => void;
 }
 
 const MODE_OPTIONS: LaunchOption<SendMode>[] = [
@@ -61,6 +63,7 @@ export default function NewSessionLaunchPanel({
   onContextTierChange,
   onModeChange,
   onAgentChange,
+  onModelSelectionCommitted,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
   const hasResolvedModelSelection = Boolean(
@@ -123,6 +126,7 @@ export default function NewSessionLaunchPanel({
                 disabled={Boolean(modelsError)}
                 onSelectPreset={onPresetChange}
                 onSelectModel={onModelChange}
+                onSelectionCommitted={onModelSelectionCommitted}
               />
             )}
             {modelsError && (
