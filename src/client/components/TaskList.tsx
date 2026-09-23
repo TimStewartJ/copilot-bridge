@@ -7,10 +7,10 @@ import useLongPressMenu from "../hooks/useLongPressMenu";
 import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections } from "../task-helpers";
-import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, UnreadTaskEdgePill, useUnreadTaskEdges } from "./task-list";
+import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
 import { DS, cx } from "../design/tokens";
 import { Button, IdentitySwatch } from "../design/primitives";
-import { DndContext, closestCenter } from "@dnd-kit/core";
+import { DndContext } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
 
@@ -75,7 +75,7 @@ export default function TaskList({
 
   const taskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
 
-  const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget } = useLongPressMenu<string>();
+  const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget, resetClickGuard } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
   const grouped = useMemo(() => groupTasksByStatus(tasks), [tasks]);
@@ -105,6 +105,8 @@ export default function TaskList({
     handleDragStart,
     handleDragOver,
     handleDragEnd,
+    handleDragCancel,
+    collisionDetection,
   } = useCrossGroupDnd({
     tasks: grouped.active,
     groupedSections,
@@ -112,6 +114,14 @@ export default function TaskList({
     onReorderTasks,
     onMoveTaskToGroup,
     onMoveAndReorder,
+  });
+  const newTaskButtonRef = useRef<HTMLButtonElement>(null);
+  const canReorder = Boolean(onReorderTasks) && grouped.active.length >= 2;
+  const reorderMode = useTaskReorderMode({
+    enabled: canReorder,
+    dragging: Boolean(activeDragTask),
+    onExit: resetClickGuard,
+    returnFocusRef: newTaskButtonRef,
   });
   const unreadTaskEdgeRefreshKey = useMemo(() => {
     const parts: string[] = [showArchived ? "archived" : "open"];
@@ -138,7 +148,7 @@ export default function TaskList({
     refreshKey: unreadTaskEdgeRefreshKey,
   });
 
-  const renderGroup = (label: string, items: Task[]) => {
+  const renderGroup = (label: string, items: Task[], sortable = false) => {
     if (items.length === 0) return null;
     return (
       <div key={label} className={cx(DS.surface.group, "overflow-hidden")} data-ds-surface="group">
@@ -156,6 +166,7 @@ export default function TaskList({
               isLongPressTarget={isTarget(task.id)}
               bindLongPress={bindLongPress}
               onSelectTask={onSelectTask}
+              reordering={sortable && reorderMode.reordering}
             />
           ))}
         </SortableContext>
@@ -165,11 +176,12 @@ export default function TaskList({
 
   return (
     <div ref={taskListScopeRef} className={className ?? "flex-1 overflow-y-auto p-2 space-y-2"}>
-      <Button fullWidth icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
+      <Button ref={newTaskButtonRef} fullWidth icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
         New task
       </Button>
+      {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
       <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
         {hasGroups && displaySections ? (
           displaySections.map((section) => {
             const group = section.group;
@@ -257,6 +269,7 @@ export default function TaskList({
                         isLongPressTarget={isTarget(task.id)}
                         bindLongPress={bindLongPress}
                         onSelectTask={onSelectTask}
+                        reordering={reorderMode.reordering}
                       />
                     ))}
                   </SortableContext>
@@ -266,7 +279,7 @@ export default function TaskList({
             );
           })
         ) : (
-          renderGroup("Active", grouped.active)
+          renderGroup("Active", grouped.active, true)
         )}
         <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
       </DndContext>
@@ -298,7 +311,14 @@ export default function TaskList({
           sessionMap={sessionMap}
           isUnread={isUnread}
           activeSessionId={activeSessionId}
-          actions={{ markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup }}
+          actions={{
+            markRead,
+            onUpdateTask,
+            onDeleteTask,
+            onMoveTaskToGroup,
+            onCreateGroup,
+            onStartReorder: canReorder && !reorderMode.reordering ? reorderMode.start : undefined,
+          }}
           onClose={closeMenu}
         />
       )}

@@ -1,16 +1,51 @@
 import { useState, useRef, useCallback } from "react";
 import {
+  closestCenter,
   KeyboardSensor,
+  pointerWithin,
   PointerSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragStartEvent,
   type DragOverEvent,
+  type CollisionDetection,
 } from "@dnd-kit/core";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import type { Task, TaskGroup } from "../api";
 
 export type Section = { group: TaskGroup | null; tasks: Task[] };
+
+/** `data.type` of a group's drop area, so collision detection can tell it from a task row. */
+export const TASK_GROUP_DROPPABLE = "task-group";
+
+/**
+ * Task rows win over the group box around them: with plain closestCenter a row dragged inside its
+ * own group often lands on the group box and nothing moves. A group is the target only when the
+ * pointer is over one with no rows showing (empty or collapsed), so tasks can still be dropped in.
+ */
+export const taskListCollisionDetection: CollisionDetection = (args) => {
+  const isGroup = (container: (typeof args.droppableContainers)[number]) =>
+    container.data.current?.type === TASK_GROUP_DROPPABLE;
+  const taskContainers = args.droppableContainers.filter((container) => !isGroup(container));
+
+  const groupHit = pointerWithin(args).find((collision) => {
+    const container = args.droppableContainers.find((candidate) => candidate.id === collision.id);
+    return container && isGroup(container);
+  });
+  if (groupHit) {
+    const groupRect = args.droppableRects.get(groupHit.id);
+    const showsRows = groupRect && taskContainers.some((container) => {
+      if (container.id === args.active.id) return false;
+      const rect = args.droppableRects.get(container.id);
+      return rect && rect.top >= groupRect.top && rect.bottom <= groupRect.bottom;
+    });
+    if (!showsRows) return [groupHit];
+  }
+
+  const taskHits = closestCenter({ ...args, droppableContainers: taskContainers });
+  return taskHits.length > 0 ? taskHits : closestCenter(args);
+};
 
 interface UseCrossGroupDndOptions {
   tasks: Task[];
@@ -31,7 +66,7 @@ export default function useCrossGroupDnd({
 }: UseCrossGroupDndOptions) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -102,12 +137,18 @@ export default function useCrossGroupDnd({
     });
   }, []);
 
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event;
-    const finalSections = localSectionsRef.current;
+  const resetDrag = useCallback(() => {
     setActiveId(null);
     setLocalSections(null);
     localSectionsRef.current = null;
+  }, []);
+
+  const handleDragCancel = useCallback(() => resetDrag(), [resetDrag]);
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    const finalSections = localSectionsRef.current;
+    resetDrag();
 
     if (!over || !onReorderTasks) return;
 
@@ -181,7 +222,7 @@ export default function useCrossGroupDnd({
     const [moved] = reordered.splice(oldIndex, 1);
     reordered.splice(newIndex, 0, moved);
     onReorderTasks(reordered.map((t) => t.id));
-  }, [tasks, onReorderTasks, hasGroups, onMoveTaskToGroup, onMoveAndReorder]);
+  }, [tasks, onReorderTasks, hasGroups, onMoveTaskToGroup, onMoveAndReorder, resetDrag]);
 
   return {
     sensors,
@@ -191,5 +232,7 @@ export default function useCrossGroupDnd({
     handleDragStart,
     handleDragOver,
     handleDragEnd,
+    handleDragCancel,
+    collisionDetection: taskListCollisionDetection,
   };
 }
