@@ -257,7 +257,7 @@ describe("getTaskIndicator", () => {
       expect(getTaskStatus(createIndicator({ busy: true, stalled: true })))
         .toEqual({ kind: "warning", label: "Stalled" });
       expect(getTaskStatus(createIndicator({ busy: true, unreadCount: 1 })))
-        .toEqual({ kind: "working", label: "Agent working" });
+        .toEqual({ kind: "unread", label: "Unread conversations" });
       expect(getTaskStatus(createIndicator({ unreadCount: 1 })))
         .toEqual({ kind: "unread", label: "Unread conversations" });
       expect(getTaskStatus(createIndicator())).toBeNull();

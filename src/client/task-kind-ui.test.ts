@@ -8,6 +8,7 @@ import type {
   CopilotUsageSessionRow,
   CopilotUsageSummary,
   Task,
+  TaskPatch,
 } from "./api";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage";
 import { useCopilotUsageQuery } from "./hooks/queries/useCopilotUsage";
@@ -18,6 +19,7 @@ import TaskDashboard, { buildSessionUsageAnalytics } from "./components/TaskDash
 import TaskKindBadge from "./components/TaskKindBadge";
 import TaskMomentumFields from "./components/TaskMomentumFields";
 import TaskContextMenu from "./components/task-list/TaskContextMenu";
+import { createReactDomHarness, findAllByTag, getReactProps } from "./test-react-harness";
 
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 
@@ -299,6 +301,102 @@ afterEach(() => {
 });
 
 describe("kind-aware task UI", () => {
+  it("renames a task from Overview only after an explicit save", async () => {
+    const task = createTask();
+    const onUpdateTask = vi.fn(async (_taskId: string, updates: TaskPatch): Promise<Task> => ({
+      ...task,
+      title: updates.title ?? task.title,
+    }));
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(MemoryRouter, null, createElement(TaskDashboard, {
+        task,
+        taskGroups: [],
+        sessions: [],
+        onSelectSession: vi.fn(),
+        onNewSession: vi.fn(),
+        onUpdateTask,
+      })));
+
+      const editButton = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => getReactProps(button)?.["aria-label"] === "Edit title");
+      if (!editButton) throw new Error("Edit title button was not rendered");
+
+      await harness.act(async () => {
+        getReactProps(editButton)?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      });
+
+      const input = findAllByTag(harness.dom.container, "INPUT")[0];
+      if (!input) throw new Error("Task title input was not rendered");
+      await harness.act(async () => {
+        getReactProps(input)?.onChange?.({ target: { value: "Renamed task" } });
+      });
+      expect(onUpdateTask).not.toHaveBeenCalled();
+
+      const form = findAllByTag(harness.dom.container, "FORM")[0];
+      if (!form) throw new Error("Task title form was not rendered");
+      await harness.act(async () => {
+        getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
+      });
+
+      expect(onUpdateTask).toHaveBeenCalledExactlyOnceWith("task-1", { title: "Renamed task" });
+      expect(findAllByTag(harness.dom.container, "FORM")).toHaveLength(0);
+      expect(findAllByTag(harness.dom.container, "BUTTON").some(
+        (button) => getReactProps(button)?.["aria-label"] === "Edit title",
+      )).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps a failed title draft available and lets the user cancel", async () => {
+    const task = createTask();
+    const onUpdateTask = vi.fn(async () => null);
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(MemoryRouter, null, createElement(TaskDashboard, {
+        task,
+        taskGroups: [],
+        sessions: [],
+        onSelectSession: vi.fn(),
+        onNewSession: vi.fn(),
+        onUpdateTask,
+      })));
+
+      const editButton = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => getReactProps(button)?.["aria-label"] === "Edit title");
+      if (!editButton) throw new Error("Edit title button was not rendered");
+      await harness.act(async () => {
+        getReactProps(editButton)?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      });
+
+      const input = findAllByTag(harness.dom.container, "INPUT")[0];
+      if (!input) throw new Error("Task title input was not rendered");
+      await harness.act(async () => {
+        getReactProps(input)?.onChange?.({ target: { value: "Unsaved task" } });
+      });
+      const form = findAllByTag(harness.dom.container, "FORM")[0];
+      if (!form) throw new Error("Task title form was not rendered");
+      await harness.act(async () => {
+        getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
+      });
+
+      expect(harness.dom.container.textContent).toContain("The title was not saved. Try again.");
+      expect(getReactProps(findAllByTag(harness.dom.container, "INPUT")[0])?.value).toBe("Unsaved task");
+      const cancel = findAllByTag(harness.dom.container, "BUTTON")
+        .find((button) => button.textContent?.trim() === "Cancel");
+      if (!cancel) throw new Error("Cancel button was not rendered");
+      await harness.act(async () => {
+        getReactProps(cancel)?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      });
+
+      expect(findAllByTag(harness.dom.container, "FORM")).toHaveLength(0);
+      expect(onUpdateTask).toHaveBeenCalledExactlyOnceWith("task-1", { title: "Unsaved task" });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("TaskMomentumFields starts collapsed and does not summarize an ongoing finish line", () => {
     const html = renderToStaticMarkup(createElement(TaskMomentumFields, {
       task: createTask({ kind: "ongoing", doneWhen: "Ship it" }),
