@@ -5,6 +5,8 @@ import { writeTunnelRuntimeState } from "../tunnel-runtime-state.js";
 const ENV_KEYS = [
   "BRIDGE_PUBLIC_BASE_URL",
   "BRIDGE_TRUST_PROXY",
+  "BRIDGE_TUNNEL_NAMES",
+  "BRIDGE_TUNNEL_NAME",
   "BRIDGE_ENABLE_TUNNEL",
   "BRIDGE_DATA_DIR",
 ] as const;
@@ -48,7 +50,7 @@ describe("public URL helpers", () => {
       process: { pid: 123, startMarker: "started-123" },
       updatedAt: new Date().toISOString(),
     });
-    const publicUrl = await loadPublicUrl({ BRIDGE_DATA_DIR: dataDir });
+    const publicUrl = await loadPublicUrl({ BRIDGE_DATA_DIR: dataDir, BRIDGE_TUNNEL_NAMES: "bridge-work,bridge-gh" });
 
     expect(publicUrl.getPublicBaseUrl()).toBe("https://bridge-123.devtunnels.ms");
     expect(publicUrl.buildPublicUrl("/staging/preview-123/")).toBe(
@@ -56,7 +58,7 @@ describe("public URL helpers", () => {
     );
   });
 
-  it("ignores launcher tunnel state when tunnel management is disabled", async () => {
+  it("ignores launcher tunnel state when no tunnel is configured", async () => {
     const dataDir = makeTestDir("public-url-disabled");
     writeTunnelRuntimeState(dataDir, {
       url: "https://stale.devtunnels.ms",
@@ -66,7 +68,7 @@ describe("public URL helpers", () => {
     });
     const publicUrl = await loadPublicUrl({
       BRIDGE_DATA_DIR: dataDir,
-      BRIDGE_ENABLE_TUNNEL: "false",
+      BRIDGE_TUNNEL_NAMES: "",
     });
 
     expect(publicUrl.getPublicBaseUrl()).toBeUndefined();

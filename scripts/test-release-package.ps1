@@ -132,6 +132,7 @@ $envNames = @(
   "BRIDGE_ENABLE_TUNNEL",
   "BRIDGE_WEBHOOK_URL",
   "BRIDGE_TUNNEL_NAME",
+  "BRIDGE_TUNNEL_NAMES",
   "BRIDGE_PUBLIC_BASE_URL",
   "BRIDGE_DISABLE_UPDATE_CHECK",
   "BRIDGE_DISTRIBUTION_MODE"
@@ -220,9 +221,9 @@ try {
   Set-Item -Path "Env:BRIDGE_DOCS_DIR" -Value (Join-Path $dataDir "docs")
   Set-Item -Path "Env:COPILOT_HOME" -Value (Join-Path $dataDir ".copilot")
   Set-Item -Path "Env:BRIDGE_PORT" -Value ([string]$Port)
-  Set-Item -Path "Env:BRIDGE_ENABLE_TUNNEL" -Value "false"
+  Remove-Item -Path "Env:BRIDGE_ENABLE_TUNNEL" -ErrorAction SilentlyContinue
   Set-Item -Path "Env:BRIDGE_WEBHOOK_URL" -Value ""
-  Set-Item -Path "Env:BRIDGE_TUNNEL_NAME" -Value "copilot-bridge-smoke-$Port"
+  Remove-Item -Path "Env:BRIDGE_TUNNEL_NAME", "Env:BRIDGE_TUNNEL_NAMES" -ErrorAction SilentlyContinue
   Set-Item -Path "Env:BRIDGE_PUBLIC_BASE_URL" -Value ""
   Set-Item -Path "Env:BRIDGE_DISABLE_UPDATE_CHECK" -Value "true"
   Set-Item -Path "Env:BRIDGE_DISTRIBUTION_MODE" -Value "release"

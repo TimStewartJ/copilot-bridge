@@ -6,7 +6,7 @@ import {
   buildTunnelHostArgs,
   isTunnelAuthRedirect,
   parseTunnelHostConnections,
-  resolveTunnelName,
+  planTunnelSupervisors,
   TunnelSupervisor,
   type TunnelSupervisorDependencies,
 } from "./launcher-tunnel-supervisor.js";
@@ -53,13 +53,14 @@ function createHarness(options: {
   children?: FakeChild[];
   fetchResponses?: Response[];
   state?: TunnelRuntimeState | null;
-  env?: NodeJS.ProcessEnv;
+  tunnelName?: string | null;
   onReady?: (url: string) => void | Promise<void>;
   healthTimeoutMs?: number;
   healthSlowMs?: number;
   hostConnections?: Array<number | null>;
   hostRecoveryGraceMs?: number;
   terminateDelayMs?: number;
+  additionalName?: string;
 } = {}) {
   const children = options.children ?? [new FakeChild(101)];
   const fetchResponses = [...(options.fetchResponses ?? [])];
@@ -98,7 +99,7 @@ function createHarness(options: {
   const supervisor = new TunnelSupervisor({
     dataDir: "bridge-data",
     port: 3333,
-    env: options.env ?? {},
+    tunnelName: options.tunnelName === undefined ? "copilot-bridge" : options.tunnelName,
     log: (message) => logs.push(message),
     onReady: options.onReady ?? ((url) => {
       readyUrls.push(url);
@@ -111,6 +112,7 @@ function createHarness(options: {
     healthFailureThreshold: 2,
     hostRecoveryGraceMs: options.hostRecoveryGraceMs ?? 20,
     ...(options.healthSlowMs !== undefined ? { healthSlowMs: options.healthSlowMs } : {}),
+    ...(options.additionalName !== undefined ? { additionalName: options.additionalName } : {}),
   }, deps);
   return {
     supervisor,
@@ -146,16 +148,83 @@ afterEach(() => {
 });
 
 describe("TunnelSupervisor", () => {
-  it("uses one stable default name without mutating persistent tunnel ports", () => {
-    expect(resolveTunnelName({})).toBe("copilot-bridge");
-    expect(resolveTunnelName({ BRIDGE_TUNNEL_NAME: "Tim-Bridge" })).toBe("tim-bridge");
+  it("hosts a persistent tunnel without mutating its ports", () => {
     expect(buildTunnelHostArgs("tim-bridge", 3333)).toEqual([
       "host",
       "tim-bridge",
     ]);
-    expect(() => resolveTunnelName({ BRIDGE_TUNNEL_NAME: "bad.name" })).toThrow(
-      "Invalid BRIDGE_TUNNEL_NAME",
+  });
+
+  it("plans one supervisor per tunnel plus cleanup-only slots", () => {
+    expect(planTunnelSupervisors([])).toEqual([{ tunnelName: null }]);
+    expect(planTunnelSupervisors(["bridge-work", "bridge-gh"], ["bridge-gh", "old-gh"])).toEqual([
+      { tunnelName: "bridge-work" },
+      { tunnelName: "bridge-gh", additionalName: "bridge-gh" },
+      { tunnelName: null, additionalName: "old-gh" },
+    ]);
+  });
+
+  it("only cleans up a removed additional tunnel", async () => {
+    vi.useFakeTimers();
+    const orphan = identity(160);
+    const harness = createHarness({
+      tunnelName: null,
+      additionalName: "old-gh",
+      state: { url: "https://old.example.devtunnels.ms", port: 3333, process: orphan, updatedAt: "" },
+    });
+
+    await harness.supervisor.start();
+    await vi.advanceTimersByTimeAsync(100);
+
+    const fileName = "tunnel-runtime-old-gh.json";
+    expect(harness.deps.readState).toHaveBeenCalledWith("bridge-data", fileName);
+    expect(harness.terminateProcessTree).toHaveBeenCalledTimes(1);
+    expect(harness.clearState).toHaveBeenCalledWith("bridge-data", fileName);
+    expect(harness.spawnTunnel).not.toHaveBeenCalled();
+    expect(harness.logs).toContain("[tunnel old-gh] Cleaning up previous tunnel PID 160");
+  });
+
+  it("gives an additional tunnel its own name, state file, and log label", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(201);
+    const orphan = identity(150);
+    const harness = createHarness({
+      children: [child],
+      tunnelName: "bridge-gh",
+      additionalName: "bridge-gh",
+      state: { url: null, port: 3333, process: orphan, updatedAt: "" },
+    });
+
+    await startAndPublish(harness, child, "https://gh.example.devtunnels.ms");
+
+    const fileName = "tunnel-runtime-bridge-gh.json";
+    expect(harness.deps.readState).toHaveBeenCalledWith("bridge-data", fileName);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(orphan, expect.anything());
+    expect(harness.clearState).toHaveBeenCalledWith("bridge-data", fileName);
+    expect(harness.spawnTunnel).toHaveBeenCalledWith("bridge-gh", 3333);
+    expect(harness.writeState).toHaveBeenLastCalledWith(
+      "bridge-data",
+      expect.objectContaining({ url: "https://gh.example.devtunnels.ms", process: identity(201) }),
+      fileName,
     );
+    expect(harness.logs).toContain("[tunnel bridge-gh] Ready at https://gh.example.devtunnels.ms");
+    expect(harness.supervisor.prepareForShutdown().label).toBe("tunnel bridge-gh");
+  });
+
+  it("keeps the primary tunnel on the shared runtime state file", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+
+    await startAndPublish(harness, child);
+
+    expect(harness.writeState).toHaveBeenLastCalledWith(
+      "bridge-data",
+      expect.objectContaining({ url: "https://bridge.example.devtunnels.ms" }),
+      "tunnel-runtime.json",
+    );
+    expect(harness.logs).toContain("[tunnel] Ready at https://bridge.example.devtunnels.ms");
+    expect(harness.supervisor.prepareForShutdown().label).toBe("tunnel");
   });
 
   it("recognizes only the Dev Tunnels relay sign-in redirect", () => {
@@ -748,7 +817,7 @@ describe("TunnelSupervisor", () => {
     vi.useFakeTimers();
     const orphan = identity(77);
     const harness = createHarness({
-      env: { BRIDGE_ENABLE_TUNNEL: "false" },
+      tunnelName: null,
       state: {
         url: "https://old.example.devtunnels.ms",
         port: 3333,
@@ -770,7 +839,6 @@ describe("TunnelSupervisor", () => {
 
     await vi.advanceTimersByTimeAsync(0);
     expect(harness.terminateProcessTree).toHaveBeenCalledTimes(1);
-    expect(harness.logs).toContain("[tunnel] Disabled by BRIDGE_ENABLE_TUNNEL");
     expect(harness.logs).toContain("[tunnel] Previous tunnel cleanup failed: snapshot-unavailable");
     expect(harness.logs).toContain("[tunnel] Retrying in 0.01s");
 
