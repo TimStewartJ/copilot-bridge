@@ -13,7 +13,7 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
   >;
   type PricingMetadataLike = Pick<
     CopilotUsageSummary["models"][number],
-    "pricingKey" | "pricedAs" | "pricingStatus" | "normalizedPricingModel"
+    "pricingKey" | "pricedAs" | "pricingStatus" | "normalizedPricingModel" | "contextTier" | "contextTierLabel"
   >;
   const serializeTokenTotals = (row: TokenTotalsLike) => ({
     requests: row.requests,
@@ -47,6 +47,9 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     pricedAs: row.pricedAs,
     pricingStatus: row.pricingStatus,
     normalizedPricingModel: row.normalizedPricingModel,
+    // The same model can appear once per context tier; without these the rows are indistinguishable.
+    ...(row.contextTier ? { contextTier: row.contextTier } : {}),
+    ...(row.contextTierLabel ? { contextTierLabel: row.contextTierLabel } : {}),
   });
   const serializeUnpricedModelRow = (row: CopilotUsageSummary["unpricedModels"][number]) => ({
     model: row.model,
