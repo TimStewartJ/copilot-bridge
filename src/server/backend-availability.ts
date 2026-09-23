@@ -8,6 +8,10 @@ import { isAgentRpcTimeoutError } from "./agent-backend/rpc-timeouts.js";
 /** An in-flight run or request was failed because the backend RPC channel was lost. */
 export const BACKEND_DISCONNECTED_MESSAGE =
   "Agent backend disconnected; the Bridge is restarting it. Try again shortly.";
+/** Like BACKEND_DISCONNECTED_MESSAGE, for an interrupted run the Bridge will not continue on its own. */
+export const BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE =
+  "Agent backend disconnected again soon after its last recovery; the Bridge is restarting it "
+  + "but will not continue this session automatically. Send a message to continue.";
 /** The backend is being replaced after a disconnect; new work is refused until it is back. */
 export const BACKEND_RECONNECTING_MESSAGE = "Agent backend is reconnecting; try again shortly.";
 export const BACKEND_RECOVERY_BLOCKED_MESSAGE =
@@ -34,6 +38,7 @@ export const BACKEND_RECOVERY_CONTINUE_PROMPT = [
 
 const BACKEND_UNAVAILABLE_MESSAGES = [
   BACKEND_DISCONNECTED_MESSAGE,
+  BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
   BACKEND_RECOVERY_BLOCKED_MESSAGE,
   SESSION_RESUME_SETTLING_MESSAGE,
