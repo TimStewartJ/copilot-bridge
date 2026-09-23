@@ -2693,6 +2693,11 @@ function SessionRoute({
     applyLaunchSelection(modelPresetMemory.selectModel(slot, modelId));
   }, [applyLaunchSelection, modelPresetMemory]);
 
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const requestComposerFocus = useCallback(() => {
+    setComposerFocusRequest((current) => current + 1);
+  }, []);
+
   const handleLaunchReasoningEffortChange = useCallback((reasoningEffort?: string) => {
     if (!reasoningEffort) return;
     setDraftLaunchOptions(composerKey, (current) => {
@@ -2885,6 +2890,7 @@ function SessionRoute({
       onContextTierChange={handleLaunchContextTierChange}
       onModeChange={setLaunchMode}
       onAgentChange={handleLaunchAgentChange}
+      onModelSelectionCommitted={requestComposerFocus}
     />
   ) : undefined;
 
@@ -2931,6 +2937,7 @@ function SessionRoute({
       onForkSession={onForkSession}
       newWorkDisabled={launchConfigurationLoading}
       newWorkDisabledHint={launchConfigurationLoading ? "Loading model defaults…" : undefined}
+      composerFocusRequest={composerFocusRequest}
     />
   );
 }

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { Check, ChevronDown } from "lucide-react";
 import type { ModelInfo, ModelPresets } from "../../api";
 import type { ModelPresetSlot } from "../../../shared/model-presets.js";
@@ -34,7 +41,7 @@ function PresetRefineMenu({
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const firstItemRef = useRef<HTMLButtonElement | null>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [placement, setPlacement] = useState<MenuPlacement | null>(null);
   const slot = tile.slot;
 
@@ -81,15 +88,37 @@ function PresetRefineMenu({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
+  const selectedIndex = models.findIndex((model) => model.id === tile.model?.id);
+  const initialIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
   useEffect(() => {
-    firstItemRef.current?.focus?.();
+    itemRefs.current[initialIndex]?.focus?.();
+    // Focus the current choice once, when the menu opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const moveFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+    const items = itemRefs.current.slice(0, models.length).filter((item): item is HTMLButtonElement => Boolean(item));
+    if (items.length === 0) return;
+    event.preventDefault();
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? items.length - 1
+        : event.key === "ArrowDown"
+          ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[next]?.focus?.();
+  };
 
   return (
     <div
       ref={menuRef}
       role="listbox"
       aria-label={`${tile.label} models`}
+      onKeyDown={moveFocus}
       className={cx(
         "z-50 min-w-52 overflow-y-auto overscroll-contain p-1",
         DS.surface.floating,
@@ -109,7 +138,9 @@ function PresetRefineMenu({
         return (
           <button
             key={model.id}
-            ref={index === 0 ? firstItemRef : undefined}
+            ref={(node) => {
+              itemRefs.current[index] = node;
+            }}
             type="button"
             role="option"
             aria-selected={selected}
@@ -147,6 +178,7 @@ export default function ModelPresetPicker({
   idPrefix,
   onSelectPreset,
   onSelectModel,
+  onSelectionCommitted,
 }: {
   models: readonly ModelInfo[];
   selectedModelId: string;
@@ -158,10 +190,13 @@ export default function ModelPresetPicker({
   idPrefix: string;
   onSelectPreset: (slot: ModelPresetSlot) => void;
   onSelectModel: (slot: ModelPresetSlot, modelId: string) => void;
+  /** Called after a preset or model is chosen, so the host can move focus onward (e.g. to the composer). */
+  onSelectionCommitted?: () => void;
 }) {
   const [openSlot, setOpenSlot] = useState<ModelPresetSlot | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tileRefs = useRef<Partial<Record<ModelPresetSlot, HTMLDivElement | null>>>({});
+  const tileButtonRefs = useRef<Partial<Record<ModelPresetSlot, HTMLButtonElement | null>>>({});
   const state = resolveModelPresetState({
     models,
     selectedModelId,
@@ -185,6 +220,11 @@ export default function ModelPresetPicker({
   useEffect(() => {
     if (disabled) setOpenSlot(null);
   }, [disabled]);
+
+  const closeMenuAndRestoreFocus = useCallback((slot: ModelPresetSlot) => {
+    setOpenSlot(null);
+    tileButtonRefs.current[slot]?.focus?.();
+  }, []);
 
   return (
     <div
@@ -214,18 +254,37 @@ export default function ModelPresetPicker({
             >
               <div className="flex items-stretch">
                 <button
+                  ref={(node) => {
+                    tileButtonRefs.current[tile.slot] = node;
+                  }}
                   type="button"
                   id={`${idPrefix}-${tile.slot}`}
                   aria-label={`${tile.label}: ${tile.model?.name ?? "no model selected"}`}
                   aria-pressed={live}
-                  title={tile.model?.name ?? "No model selected"}
+                  aria-haspopup={live && !menuDisabled ? "listbox" : undefined}
+                  aria-expanded={live && !menuDisabled ? open : undefined}
+                  title={live && !menuDisabled
+                    ? `${tile.model?.name ?? "No model selected"} (click to change model)`
+                    : tile.model?.name ?? "No model selected"}
                   disabled={bodyDisabled}
                   onClick={() => {
+                    // The live tile doubles as its own menu trigger: a second click refines it.
+                    if (live && !menuDisabled) {
+                      setOpenSlot(open ? null : tile.slot);
+                      return;
+                    }
                     setOpenSlot(null);
                     onSelectPreset(tile.slot);
+                    onSelectionCommitted?.();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown" && !menuDisabled) {
+                      event.preventDefault();
+                      setOpenSlot(tile.slot);
+                    }
                   }}
                   className={cx(
-                    "h-10 min-w-0 flex-1 truncate rounded-l-md pl-2 pr-0.5 text-left text-[13px] font-medium transition-colors enabled:hover:text-text-primary disabled:cursor-not-allowed sm:pl-2.5 sm:pr-1 md:h-8",
+                    "h-10 min-w-0 flex-1 truncate rounded-l-md pl-2.5 pr-1 text-left text-[13px] font-medium transition-colors enabled:hover:text-text-primary disabled:cursor-not-allowed md:h-8",
                     DS.focus,
                   )}
                 >
@@ -238,12 +297,18 @@ export default function ModelPresetPicker({
                   aria-haspopup="listbox"
                   disabled={menuDisabled}
                   onClick={() => setOpenSlot(open ? null : tile.slot)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown" && !menuDisabled) {
+                      event.preventDefault();
+                      setOpenSlot(tile.slot);
+                    }
+                  }}
                   className={cx(
-                    "flex w-6 shrink-0 items-center justify-center rounded-r-md text-text-faint transition-colors enabled:hover:text-text-primary disabled:cursor-not-allowed sm:w-7",
+                    "relative flex w-9 shrink-0 items-center justify-center rounded-r-md text-text-faint before:absolute before:inset-y-2 before:left-0 before:border-l before:border-border-subtle transition-colors enabled:hover:bg-bg-hover/60 enabled:hover:text-text-primary disabled:cursor-not-allowed",
                     DS.focus,
                   )}
                 >
-                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                  <ChevronDown className="h-4 w-4" aria-hidden="true" />
                 </button>
               </div>
               {open && !menuDisabled && (
@@ -255,8 +320,9 @@ export default function ModelPresetPicker({
                   onSelect={(modelId) => {
                     setOpenSlot(null);
                     onSelectModel(tile.slot, modelId);
+                    onSelectionCommitted?.();
                   }}
-                  onClose={() => setOpenSlot(null)}
+                  onClose={() => closeMenuAndRestoreFocus(tile.slot)}
                 />
               )}
             </div>
