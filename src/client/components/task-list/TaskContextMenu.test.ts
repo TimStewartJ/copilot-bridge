@@ -117,3 +117,22 @@ describe("TaskContextMenu copy task id", () => {
     }
   });
 });
+
+describe("TaskContextMenu reorder entry", () => {
+  it("offers Reorder tasks only when the list can be reordered, and closes before entering the mode", async () => {
+    const onClose = vi.fn();
+    const calls: string[] = [];
+    onClose.mockImplementation(() => calls.push("close"));
+    const onStartReorder = vi.fn(() => calls.push("reorder"));
+    const harness = await renderTaskContextMenu(onClose, { onStartReorder });
+    try {
+      await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Reorder tasks")); });
+      expect(calls).toEqual(["close", "reorder"]);
+    } finally { await harness.cleanup(); }
+
+    const withoutReorder = await renderTaskContextMenu(vi.fn());
+    try {
+      expect(hasButtonWithText(withoutReorder.dom.container, "Reorder tasks")).toBe(false);
+    } finally { await withoutReorder.cleanup(); }
+  });
+});

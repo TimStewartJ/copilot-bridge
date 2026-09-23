@@ -9,8 +9,11 @@ import {
 } from "../test-react-harness";
 import useLongPressMenu from "./useLongPressMenu";
 
+let resetGuard: (() => void) | null = null;
+
 function LongPressFixture({ onActivate }: { onActivate: () => void }) {
-  const { bind, menu, isTarget } = useLongPressMenu<string>();
+  const { bind, menu, isTarget, resetClickGuard } = useLongPressMenu<string>();
+  resetGuard = resetClickGuard;
   return createElement("button", {
     ...bind("message-1", onActivate),
     type: "button",
@@ -62,6 +65,22 @@ describe("useLongPressMenu", () => {
     expect(preventDefault).toHaveBeenCalled();
     expect(stopPropagation).toHaveBeenCalled();
     expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("lets the next click through after resetClickGuard, when the pressed row was swapped out", async () => {
+    if (!harness) throw new Error("Harness not initialized");
+    const onActivate = vi.fn();
+    await harness.render(createElement(LongPressFixture, { onActivate }));
+    await harness.act(async () => {
+      getReactProps(findButton(harness!))?.onTouchStart?.({ touches: [{ clientX: 20, clientY: 30 }] });
+    });
+    await advanceTimersByTimeAct(harness.act, 500);
+    // No synthesized click arrived (the row was replaced by reorder mode); leaving the mode resets the guard.
+    await harness.act(async () => resetGuard?.());
+    await harness.act(async () => {
+      getReactProps(findButton(harness!))?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    });
+    expect(onActivate).toHaveBeenCalledOnce();
   });
 
   it("cancels when the touch moves beyond the threshold", async () => {
