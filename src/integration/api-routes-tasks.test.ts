@@ -67,6 +67,25 @@ describe("Task routes", () => {
     expect(resumed.body.task).toMatchObject({ deferred: false, nextAction: "Review", waitingOn: "External reply" });
   });
 
+  it("GET /api/tasks/:id/momentum-events lists UI and agent changes newest first", async () => {
+    const task = ctx.taskStore.createTask("History");
+    ctx.taskStore.updateTask(task.id, { nextAction: "Agent step" }, { source: "agent", sessionId: "sched-session", scheduleId: "sched-9", scheduleName: "Hourly scout" });
+    const patched = await request(app).patch(`/api/tasks/${task.id}`).send({ waitingOn: "A reply" });
+    expect(patched.status).toBe(200);
+
+    const res = await request(app).get(`/api/tasks/${task.id}/momentum-events?limit=5`);
+    expect(res.status).toBe(200);
+    expect(res.body.events).toEqual([
+      expect.objectContaining({ source: "user", changes: [{ field: "waitingOn", before: null, after: "A reply" }] }),
+      expect.objectContaining({ source: "agent", sessionId: "sched-session", scheduleId: "sched-9", scheduleName: "Hourly scout" }),
+    ]);
+    expect(res.body.events[0].sessionId).toBeUndefined();
+
+    expect((await request(app).get(`/api/tasks/${task.id}/momentum-events?limit=0`)).status).toBe(400);
+    expect((await request(app).get(`/api/tasks/${task.id}/momentum-events?limit=abc`)).status).toBe(400);
+    expect((await request(app).get("/api/tasks/missing-task/momentum-events")).status).toBe(404);
+  });
+
   it("GET /api/tasks/:id/session-storage returns recursive size for linked sessions only", async () => {
     const task = ctx.taskStore.createTask("Storage task");
     const linkedSessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";

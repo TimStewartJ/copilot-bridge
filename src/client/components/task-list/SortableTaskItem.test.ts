@@ -128,6 +128,18 @@ describe("SortableTaskItem", () => {
     });
   });
 
+  describe("momentum", () => {
+    it("keeps the next step and wait out of the row in both variants", async () => {
+      for (const variant of ["rail", "list"] as const) {
+        const root = await renderRow({ ...task, nextAction: "Call the landlord", waitingOn: "Lease draft" }, indicator(), variant);
+        expect(root.textContent).toContain("Ship it");
+        expect(root.textContent).not.toContain("Call the landlord");
+        expect(root.textContent).not.toContain("Lease draft");
+        expect(root.textContent).not.toContain("Next step");
+      }
+    });
+  });
+
   describe("reordering", () => {
     it("has no drag handle, and the row is the only control, outside reorder mode", async () => {
       for (const variant of ["rail", "list"] as const) {

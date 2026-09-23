@@ -21,7 +21,7 @@ export function invalidateTaskScopedChangeQueries(
     predicate: (query) =>
       query.queryKey[0] === "task"
       && query.queryKey[1] === taskId
-      && (query.queryKey[2] === "enriched" || query.queryKey[2] === "git-status"),
+      && (query.queryKey[2] === "enriched" || query.queryKey[2] === "git-status" || query.queryKey[2] === "momentum-events"),
   });
 }
 

@@ -345,6 +345,27 @@ describe("session manager task tools", () => {
       .resolves.toMatchObject({ success: true, deferred: false, waitingOn: "A reply", nextTouchAt: null });
   });
 
+  it("task_update_momentum and task_update record agent attribution with the session's schedule", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Attributed");
+    ctx.sessionMetaStore.setScheduleMeta("session-1", "sched-1", "Daily rental search");
+
+    await getTool(ctx, "task_update_momentum").handler({
+      taskId: task.id,
+      nextAction: "Verify the listing",
+      followUp: { mode: "keep" },
+    }, createInvocation("task_update_momentum"));
+    await getTool(ctx, "task_update").handler({ taskId: task.id, doneWhen: "Lease signed" }, { ...createInvocation("task_update"), sessionId: "session-2" });
+
+    const [doneWhenEvent, momentumEvent] = ctx.taskStore.listMomentumEvents(task.id);
+    expect(momentumEvent).toMatchObject({
+      source: "agent", sessionId: "session-1", scheduleId: "sched-1", scheduleName: "Daily rental search",
+      changes: [{ field: "nextAction", before: null, after: "Verify the listing" }],
+    });
+    expect(doneWhenEvent).toMatchObject({ source: "agent", sessionId: "session-2", changes: [{ field: "doneWhen", after: "Lease signed" }] });
+    expect(doneWhenEvent.scheduleName).toBeUndefined();
+  });
+
   it("task_update_momentum sets and clears nullable momentum fields", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum host");

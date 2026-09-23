@@ -7,7 +7,7 @@ import {
   resolveWorkItemUnlink,
 } from "../task-link-identity.js";
 import type { AppContext } from "../app-context.js";
-import type { Task } from "../task-store.js";
+import type { Task, TaskChangeActor } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
@@ -41,6 +41,16 @@ function isTaskMomentumAlreadyCurrent(
 }
 
 const TASK_INFO_SESSION_ID_PREVIEW_LIMIT = 10;
+
+function agentTaskChangeActor(ctx: AppContext, sessionId: string | undefined): TaskChangeActor {
+  const meta = sessionId ? ctx.sessionMetaStore?.getMeta(sessionId) : undefined;
+  return {
+    source: "agent",
+    ...(sessionId ? { sessionId } : {}),
+    ...(meta?.scheduleId ? { scheduleId: meta.scheduleId } : {}),
+    ...(meta?.scheduleName ? { scheduleName: meta.scheduleName } : {}),
+  };
+}
 
 function compactTaskInfoSessionIds(sessionIds: readonly string[]): {
   sessionIds: string[];
@@ -130,7 +140,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
       required: ["taskId"],
     },
-    handler: async (args: any) => {
+    handler: async (args: any, invocation) => {
       if (args.status !== undefined || args.completionAction !== undefined) {
         return toolFailure("Task completion and archival are controlled by the UI.");
       }
@@ -159,7 +169,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       let updatedTask = task.value;
       if (Object.keys(updates).length > 0) {
         try {
-          updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any);
+          updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any, agentTaskChangeActor(ctx, invocation?.sessionId));
         } catch (error) {
           if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
           throw error;
@@ -178,13 +188,13 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_update_momentum", {
-    description: "Update where a task stands: next step, waiting for, revisit date, and task deferral. These are optional context, not required activity. Always decide followUp explicitly. Task deferral only removes it from Home's Continue working; it does not pause schedules, sessions, notifications or session defer jobs. Change deferred only when the user requests setting the task aside or resuming it; changing other fields never resumes it.",
+    description: "Update where a task stands for the user: next step, waiting for, revisit date, and task deferral. Optional context, not required activity or a progress log. Call it when you stop work or the direction changes, not after each step. Findings, evidence, verification results and run history stay in your reply; state a later run truly needs belongs in a dedicated doc, never in these fields. Every change is recorded with its session and schedule and shown to the user. Always decide followUp explicitly. Task deferral only removes it from Home's Continue working; it does not pause schedules, sessions, notifications or session defer jobs. Change deferred only when the user requests setting the task aside or resuming it; changing other fields never resumes it.",
     parameters: {
       type: "object",
       properties: {
         taskId: { type: "string", description: "The task ID" },
-        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The next useful step, not a running activity log. Leave empty when there is no useful step yet. Null clears it." },
-        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "A person, response, event or prerequisite. Waiting does not mean the whole task is blocked. Null clears it." },
+        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "One short, concrete step (a sentence) that the user or an agent will take next. Never results, evidence, progress, a run log or saved state for a later run. Leave empty when there is no useful step yet. Null clears it." },
+        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "An outside dependency: a person, reply, event or prerequisite. Leave empty when nothing external is pending; never put findings or status here. Waiting does not mean the whole task is blocked. Null clears it." },
         deferred: { type: "boolean", description: "True sets the task aside without archiving or muting it; false explicitly resumes it. Due revisits, live questions, replies and checklist deadlines remain visible under their usual rules." },
         followUp: {
           type: "object",
@@ -230,7 +240,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         },
       ],
     },
-    handler: async (args: any) => {
+    handler: async (args: any, invocation) => {
       const followUp = args.followUp;
       if (!followUp || typeof followUp !== "object" || Array.isArray(followUp)) {
         return toolFailure("followUp is required and must include mode: set, keep, or clear");
@@ -304,7 +314,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
 
       let updatedTask = task.value;
       try {
-        updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any);
+        updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any, agentTaskChangeActor(ctx, invocation?.sessionId));
       } catch (error) {
         if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
         throw error;

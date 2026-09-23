@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
+import TaskMomentumHistory from "./TaskMomentumHistory";
 import TaskKindSwitcher from "./TaskKindSwitcher";
 import TaskPanelSummaryRow from "./TaskPanelSummaryRow";
 import TaskGitStatusSummary from "./TaskGitStatusSummary";
@@ -526,14 +527,17 @@ export default function TaskPanel({
       </div>
 
         <div className="space-y-3 px-3 pb-6 pt-3">
-          {showMomentumFields && (
+          {showMomentumFields ? (
             <TaskMomentumFields
               task={currentTask}
               onPatched={setMomentumTask}
+              onSelectSession={onSelectSession}
               onSaved={() => {
                 void onTasksChanged?.();
               }}
             />
+          ) : (
+            <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} standalone />
           )}
 
           <Section

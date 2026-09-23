@@ -883,6 +883,40 @@ export async function fetchTaskSessionStorage(
   );
 }
 
+export type TaskMomentumField = "nextAction" | "waitingOn" | "nextTouchAt" | "deferred" | "doneWhen";
+
+export interface TaskMomentumChange {
+  field: TaskMomentumField;
+  before: string | boolean | null;
+  after: string | boolean | null;
+  beforeLength?: number;
+  afterLength?: number;
+}
+
+export interface TaskMomentumEvent {
+  id: number;
+  taskId: string;
+  at: string;
+  source: "agent" | "user" | "system";
+  sessionId?: string;
+  scheduleId?: string;
+  scheduleName?: string;
+  changes: TaskMomentumChange[];
+}
+
+export async function fetchTaskMomentumEvents(
+  taskId: string,
+  options?: { signal?: AbortSignal; limit?: number },
+): Promise<TaskMomentumEvent[]> {
+  const limit = options?.limit ?? 20;
+  const result = await apiFetch<{ events: TaskMomentumEvent[] }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/momentum-events?limit=${limit}`,
+    undefined,
+    { signal: options?.signal },
+  );
+  return result.events;
+}
+
 export interface CreateSessionOptions {
   model?: string;
   reasoningEffort?: ReasoningEffort;

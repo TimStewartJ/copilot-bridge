@@ -55,6 +55,44 @@ export interface Task {
 
 export type TaskCompletionAction = "complete-and-archive";
 
+export const TASK_MOMENTUM_FIELDS = ["nextAction", "waitingOn", "nextTouchAt", "deferred", "doneWhen"] as const;
+export type TaskMomentumField = typeof TASK_MOMENTUM_FIELDS[number];
+export type TaskChangeSource = "agent" | "user" | "system";
+
+/** Who is changing a task, recorded on momentum audit events. */
+export interface TaskChangeActor {
+  source: TaskChangeSource;
+  sessionId?: string;
+  scheduleId?: string;
+  scheduleName?: string;
+}
+
+export interface TaskMomentumChange {
+  field: TaskMomentumField;
+  before: string | boolean | null;
+  after: string | boolean | null;
+  /** Original length, present only when the stored value was truncated to a preview. */
+  beforeLength?: number;
+  afterLength?: number;
+}
+
+export interface TaskMomentumEvent {
+  id: number;
+  taskId: string;
+  at: string;
+  source: TaskChangeSource;
+  sessionId?: string;
+  scheduleId?: string;
+  scheduleName?: string;
+  changes: TaskMomentumChange[];
+}
+
+/** Newest audit events kept per task. */
+export const TASK_MOMENTUM_EVENTS_KEEP = 200;
+/** Values are stored as bounded previews so run-log-sized writes cannot bloat history. */
+export const TASK_MOMENTUM_EVENT_PREVIEW_CHARS = 500;
+export const TASK_MOMENTUM_EVENTS_MAX_LIMIT = 100;
+
 /**
  * `removed` is false when the delete matched no row, so callers can report an
  * honest no-op instead of claiming an unlink that never happened.
@@ -231,6 +269,86 @@ export function normalizeOptionalTimestamp(value: unknown, opts: { strict?: bool
   return normalized;
 }
 
+// ── Momentum audit ────────────────────────────────────────────────
+
+type MomentumSnapshot = Record<TaskMomentumField, string | boolean | null>;
+
+function readMomentumSnapshot(db: DatabaseSync, id: string): MomentumSnapshot | undefined {
+  const row = db.prepare("SELECT nextAction, waitingOn, nextTouchAt, deferred, doneWhen FROM tasks WHERE id = ?").get(id) as any;
+  if (!row) return undefined;
+  return {
+    nextAction: normalizeOptionalText(row.nextAction) ?? null,
+    waitingOn: normalizeOptionalText(row.waitingOn) ?? null,
+    nextTouchAt: normalizeOptionalTimestamp(row.nextTouchAt) ?? null,
+    deferred: row.deferred === 1 || row.deferred === true,
+    doneWhen: normalizeOptionalText(row.doneWhen) ?? null,
+  };
+}
+
+function previewMomentumValue(value: string | boolean | null): { value: string | boolean | null; length?: number } {
+  if (typeof value !== "string" || value.length <= TASK_MOMENTUM_EVENT_PREVIEW_CHARS) return { value };
+  return { value: value.slice(0, TASK_MOMENTUM_EVENT_PREVIEW_CHARS), length: value.length };
+}
+
+function diffMomentumSnapshots(before: MomentumSnapshot, after: MomentumSnapshot): TaskMomentumChange[] {
+  const changes: TaskMomentumChange[] = [];
+  for (const field of TASK_MOMENTUM_FIELDS) {
+    if (before[field] === after[field]) continue;
+    const b = previewMomentumValue(before[field]);
+    const a = previewMomentumValue(after[field]);
+    changes.push({
+      field,
+      before: b.value,
+      after: a.value,
+      ...(b.length !== undefined ? { beforeLength: b.length } : {}),
+      ...(a.length !== undefined ? { afterLength: a.length } : {}),
+    });
+  }
+  return changes;
+}
+
+function normalizeActorText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function recordMomentumEvent(
+  db: DatabaseSync,
+  taskId: string,
+  at: string,
+  actor: TaskChangeActor,
+  changes: TaskMomentumChange[],
+): void {
+  db.prepare(`
+    INSERT INTO task_momentum_events (taskId, at, source, sessionId, scheduleId, scheduleName, changesJson)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    taskId,
+    at,
+    actor.source,
+    normalizeActorText(actor.sessionId),
+    normalizeActorText(actor.scheduleId),
+    normalizeActorText(actor.scheduleName),
+    JSON.stringify(changes),
+  );
+  db.prepare(`
+    DELETE FROM task_momentum_events
+    WHERE taskId = ? AND id NOT IN (
+      SELECT id FROM task_momentum_events WHERE taskId = ? ORDER BY id DESC LIMIT ?
+    )
+  `).run(taskId, taskId, TASK_MOMENTUM_EVENTS_KEEP);
+}
+
+function parseMomentumChanges(raw: unknown, eventId: unknown): TaskMomentumChange[] {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : undefined;
+    if (Array.isArray(parsed)) return parsed.filter((change) => change && typeof change.field === "string");
+  } catch {
+    // Reported below.
+  }
+  console.warn(`[tasks] Momentum event ${String(eventId)} has unreadable changes; showing it without details`);
+  return [];
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createTaskStore(
@@ -342,7 +460,7 @@ export function createTaskStore(
     return task;
   }
 
-  function updateTask(id: string, updates: TaskUpdate): Task {
+  function updateTask(id: string, updates: TaskUpdate, actor: TaskChangeActor = { source: "system" }): Task {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
     if (!row) throw new Error(`Task ${id} not found`);
 
@@ -468,10 +586,16 @@ export function createTaskStore(
     // leave the destination cohort shifted without the moved task landing at 0.
     runTransaction(db, () => {
       assertTaskGroupExists(db, groupId);
+      const momentumBefore = readMomentumSnapshot(db, id);
       if (shouldBumpCohort) {
         db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
       }
       db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+      const momentumAfter = readMomentumSnapshot(db, id);
+      if (momentumBefore && momentumAfter) {
+        const changes = diffMomentumSnapshots(momentumBefore, momentumAfter);
+        if (changes.length > 0) recordMomentumEvent(db, id, now, actor, changes);
+      }
     });
 
     const task = getTask(id)!;
@@ -756,12 +880,42 @@ export function createTaskStore(
     return getTask(taskId)!;
   }
 
+  function listMomentumEvents(taskId: string, limit = 20): TaskMomentumEvent[] {
+    const bounded = Math.max(1, Math.min(TASK_MOMENTUM_EVENTS_MAX_LIMIT, Math.floor(limit)));
+    const rows = db.prepare(`
+      SELECT id, taskId, at, source, sessionId, scheduleId, scheduleName, changesJson
+      FROM task_momentum_events WHERE taskId = ? ORDER BY id DESC LIMIT ?
+    `).all(taskId, bounded) as any[];
+    return rows.map((row) => ({
+      id: Number(row.id),
+      taskId: String(row.taskId),
+      at: String(row.at),
+      source: row.source as TaskChangeSource,
+      ...(row.sessionId ? { sessionId: String(row.sessionId) } : {}),
+      ...(row.scheduleId ? { scheduleId: String(row.scheduleId) } : {}),
+      ...(row.scheduleName ? { scheduleName: String(row.scheduleName) } : {}),
+      changes: parseMomentumChanges(row.changesJson, row.id),
+    }));
+  }
+
+  /**
+   * A scheduled session receives its schedule metadata only after its prompt is delivered, so a
+   * fast first write can be recorded without it. Attach the schedule to those events once known.
+   */
+  function attributeMomentumEventsToSchedule(sessionId: string, scheduleId: string, scheduleName: string): number {
+    const result = db.prepare(`
+      UPDATE task_momentum_events SET scheduleId = ?, scheduleName = ?
+      WHERE sessionId = ? AND source = 'agent' AND scheduleId IS NULL
+    `).run(scheduleId, scheduleName, sessionId) as { changes?: number };
+    return result.changes ?? 0;
+  }
+
   return {
     listTasks, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
     getTaskSessionCounts,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
-    findTaskBySessionId, linkPR, unlinkPR,
+    findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule,
   };
 }
 

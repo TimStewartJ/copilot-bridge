@@ -35,6 +35,8 @@ vi.mock("../api", async (importOriginal) => {
   };
 });
 
+vi.mock("./TaskMomentumHistory", () => ({ default: () => null }));
+
 vi.mock("../hooks/queries/useTags", () => ({
   useTagsQuery: () => ({ data: [] }),
 }));

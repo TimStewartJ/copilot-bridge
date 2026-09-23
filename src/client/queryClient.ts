@@ -42,6 +42,7 @@ export const queryKeys = {
   taskAgentDefinitions: (id: string) => ["task", id, "agent-definitions"] as const,
   openChecklistItems: ["checklist-items", "open"] as const,
   taskGitStatus: (id: string) => ["task", id, "git-status"] as const,
+  taskMomentumEvents: (id: string) => ["task", id, "momentum-events"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
   taskSessionStorage: (id: string, sessionIds: readonly string[]) =>
     ["task", id, "session-storage", ...sessionIds] as const,

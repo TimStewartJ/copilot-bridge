@@ -126,10 +126,6 @@ export default function SortableTaskItem({
           </span>
         )}
       </div>
-      {(task.nextAction || task.waitingOn) && <p className={cx(DS.text.meta, "pl-[18px] mt-1 truncate")}
-        title={task.nextAction || task.waitingOn}>
-        {task.nextAction ? `${task.deferred ? "When resumed" : "Next step"}: ${task.nextAction}` : `Waiting for: ${task.waitingOn}`}
-      </p>}
       <div className="pl-[18px] mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-text-muted">
         {task.muted && <span className="font-medium">muted</span>}
         {task.muted && <span className="text-text-faint">•</span>}
