@@ -28,6 +28,7 @@ import {
 import { migrateLegacyResponseQualityBlock } from "./response-style-migration.js";
 
 export type ThemePreference = "light" | "dark" | "system";
+export type MotionPreference = "system" | "reduce" | "full";
 // Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
 // so this is an open string alias rather than a fixed enumeration.
 export type ReasoningEffort = string;
@@ -76,6 +77,8 @@ export interface AppSettings {
   mcpServers: Record<string, McpServerConfig>;
   favicon?: string;
   theme?: ThemePreference;
+  /** Overrides the device prefers-reduced-motion setting when not "system". */
+  motion?: MotionPreference;
   identity?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
@@ -179,6 +182,14 @@ function normalizeTheme(value: unknown): ThemePreference | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (value !== "light" && value !== "dark" && value !== "system") {
     validationError("theme must be light, dark, or system");
+  }
+  return value;
+}
+
+function normalizeMotion(value: unknown): MotionPreference | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value !== "system" && value !== "reduce" && value !== "full") {
+    validationError("motion must be system, reduce, or full");
   }
   return value;
 }
@@ -454,6 +465,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("providers" in value) normalized.providers = normalizeProviders(value.providers);
   if ("favicon" in value) normalized.favicon = normalizeOptionalString(value.favicon, "favicon");
   if ("theme" in value) normalized.theme = normalizeTheme(value.theme);
+  if ("motion" in value) normalized.motion = normalizeMotion(value.motion);
   if ("identity" in value) normalized.identity = normalizeOptionalString(value.identity, "identity");
   if ("customInstructions" in value) {
     normalized.customInstructions = normalizeOptionalString(value.customInstructions, "customInstructions");

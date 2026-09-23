@@ -2098,6 +2098,8 @@ export interface ProvidersConfig {
 }
 
 export type ThemePreference = "light" | "dark" | "system";
+/** "system" follows the device prefers-reduced-motion setting; the others override it. */
+export type MotionPreference = "system" | "reduce" | "full";
 // Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
 // so this is an open string alias rather than a fixed enumeration.
 export type ReasoningEffort = string;
@@ -2153,6 +2155,7 @@ export interface AppSettings {
   mcpServers: Record<string, McpServerConfig>;
   favicon?: string;
   theme?: ThemePreference;
+  motion?: MotionPreference;
   identity?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;

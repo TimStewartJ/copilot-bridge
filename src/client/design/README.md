@@ -35,6 +35,9 @@ quiet, dense with information, and calm until something needs attention.
    On a chat screen it is Send. Everything else is `secondary` (a quiet fill) or `ghost` (text).
 7. **Motion means alive.** Shimmer (`DS.motion.live`) for work in flight, reveal (`DS.motion.reveal`)
    for content opening. Nothing moves for decoration, and both stop under reduced motion.
+   Reduced motion is the resolved Appearance setting, which can override the device: key CSS off
+   `:root[data-motion="reduce"]` or the `motion-reduce:` variant, and scripts off
+   `prefersReducedMotion()` from `lib/motion.ts`, never the raw `prefers-reduced-motion` query.
 8. **An absent state is said once, quietly** (`EmptyHint`, `Field`'s `empty`), never drawn as a
    dashed empty box.
 9. **Numbers are tabular, literal input is mono.** A ticking figure must not jitter; a command, path

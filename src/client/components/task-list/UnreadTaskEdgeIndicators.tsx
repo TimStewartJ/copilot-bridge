@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { DS, cx } from "../../design/tokens";
 import { StatusIcon } from "../../design/primitives";
+import { prefersReducedMotion } from "../../lib/motion";
 
 const UNREAD_TASK_ROW_SELECTOR = "[data-unread-task-id]";
 const SCROLL_EPSILON = 1;
@@ -75,12 +76,6 @@ function edgeStateEquals(a: UnreadTaskEdgeState, b: UnreadTaskEdgeState): boolea
     && a.above.targetTaskId === b.above.targetTaskId
     && a.below.count === b.below.count
     && a.below.targetTaskId === b.below.targetTaskId;
-}
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== "undefined"
-    && typeof window.matchMedia === "function"
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function getTaskId(row: HTMLElement): string | null {
