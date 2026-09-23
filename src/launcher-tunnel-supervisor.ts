@@ -7,6 +7,7 @@ import {
   type ProcessTreeTerminationResult,
 } from "./server/platform.js";
 import { createDeadline, type Deadline } from "./server/deadline.js";
+import type { TunnelHostAuthKind, TunnelSpec } from "./server/tunnel-config.js";
 import {
   additionalTunnelRuntimeStateFileName,
   clearTunnelRuntimeState,
@@ -40,6 +41,7 @@ const HEALTH_FAILURE_WINDOW = 5;
  */
 const HEALTH_SLOW_MS = 3_000;
 const HOST_RECOVERY_GRACE_MS = 15_000;
+const HOST_TOKEN_RENEW_MARGIN_MS = 60 * 60_000;
 const IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
 
 const HOST_STATUS_WAKE_RE =
@@ -70,6 +72,20 @@ export type TunnelHostStatus = {
   detail?: string;
 };
 
+/** A token-authenticated way to host one tunnel, independent of the devtunnel CLI login. */
+export type TunnelHostCredential = {
+  /** `<tunnel>.<cluster>`, the form `devtunnel host --access-token` needs. */
+  hostName: string;
+  accessToken: string;
+  issuedAt: number;
+  expiresAt: number;
+};
+
+export type TunnelHostAuth = {
+  getCredential: (tunnelName: string) => Promise<TunnelHostCredential>;
+  inspectHost: (credential: TunnelHostCredential, timeoutMs: number) => Promise<TunnelHostStatus>;
+};
+
 export function isTunnelAuthRedirect(status: number, location: string | null | undefined): boolean {
   if (status !== 301 && status !== 302 && status !== 303 && status !== 307 && status !== 308) return false;
   if (!location) return false;
@@ -97,6 +113,13 @@ export type TunnelSupervisorOptions = {
    * and log label. Only the primary file feeds the server's public URL.
    */
   additionalName?: string;
+  /**
+   * Host with short-lived tokens from this provider instead of the devtunnel CLI
+   * login. The host restarts with a fresh token before the current one expires.
+   */
+  hostAuth?: TunnelHostAuth;
+  /** Renew a host token this long before it expires (default 1 hour). */
+  hostTokenRenewMarginMs?: number;
   onReady?: (url: string) => void | Promise<void>;
   retryBaseMs?: number;
   retryCapMs?: number;
@@ -110,7 +133,7 @@ export type TunnelSupervisorOptions = {
 };
 
 export type TunnelSupervisorDependencies = {
-  spawnTunnel: (name: string, port: number) => ChildProcess;
+  spawnTunnel: (name: string, port: number, accessToken?: string) => ChildProcess;
   captureProcessIdentity: (pid: number, deadline: Deadline) => Promise<ProcessIdentity | null>;
   terminateProcessTree: (
     identity: ProcessIdentity,
@@ -125,11 +148,16 @@ export type TunnelSupervisorDependencies = {
 };
 
 const defaultDependencies: TunnelSupervisorDependencies = {
-  spawnTunnel: (name, port) => spawn(
-    "devtunnel",
-    buildTunnelHostArgs(name, port),
-    { stdio: ["ignore", "pipe", "pipe"] },
-  ),
+  spawnTunnel: (name, port, accessToken) => {
+    if (accessToken === undefined) {
+      return spawn("devtunnel", buildTunnelHostArgs(name, port), { stdio: ["ignore", "pipe", "pipe"] });
+    }
+    // The token goes over stdin so it never appears in a process command line.
+    const child = spawn("devtunnel", buildTunnelHostArgs(name, port, true), { stdio: ["pipe", "pipe", "pipe"] });
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(accessToken);
+    return child;
+  },
   captureProcessIdentity,
   terminateProcessTree,
   waitForChildExit,
@@ -175,31 +203,33 @@ export function parseTunnelHostConnections(stdout: string): number {
   return hostConnections;
 }
 
-export function buildTunnelHostArgs(name: string, _port: number): string[] {
-  return ["host", name];
+export function buildTunnelHostArgs(name: string, _port: number, readAccessTokenFromStdin = false): string[] {
+  return readAccessTokenFromStdin ? ["host", name, "--access-token", "-"] : ["host", name];
 }
 
 export type TunnelSupervisorPlan = {
   tunnelName: string | null;
   additionalName?: string;
+  auth?: TunnelHostAuthKind;
 };
 
 /**
- * One supervisor per configured tunnel; the first name is the primary and owns
+ * One supervisor per configured tunnel; the first is the primary and owns
  * `tunnel-runtime.json`. The primary slot exists even with no tunnel configured, and
  * every additional tunnel that still has a state file keeps a slot after it leaves
  * the list, so a tunnel host a previous launcher left running is still cleaned up.
  */
 export function planTunnelSupervisors(
-  names: readonly string[],
+  tunnels: readonly TunnelSpec[],
   staleAdditionalNames: readonly string[] = [],
 ): TunnelSupervisorPlan[] {
-  const [primary = null, ...additional] = names;
+  const [primary, ...additional] = tunnels;
+  const additionalNames = additional.map((tunnel) => tunnel.name);
   return [
-    { tunnelName: primary },
-    ...additional.map((name) => ({ tunnelName: name, additionalName: name })),
+    primary ? { tunnelName: primary.name, auth: primary.auth } : { tunnelName: null },
+    ...additional.map((tunnel) => ({ tunnelName: tunnel.name, additionalName: tunnel.name, auth: tunnel.auth })),
     ...staleAdditionalNames
-      .filter((name) => !additional.includes(name))
+      .filter((name) => !additionalNames.includes(name))
       .map((name) => ({ tunnelName: null, additionalName: name })),
   ];
 }
@@ -249,6 +279,8 @@ export class TunnelSupervisor {
   private readonly healthFailureWindow: number;
   private readonly healthSlowMs: number;
   private readonly hostRecoveryGraceMs: number;
+  private readonly hostAuth?: TunnelHostAuth;
+  private readonly hostTokenRenewMarginMs: number;
   private readonly deps: TunnelSupervisorDependencies;
   private readonly name: string | null;
   private readonly stateFileName: string;
@@ -262,6 +294,11 @@ export class TunnelSupervisor {
   private identity: Promise<ProcessIdentity | null> | null = null;
   private url: string | null = null;
   private published = false;
+  /** Token the current child was started with, when hosting through `hostAuth`. */
+  private credential: TunnelHostCredential | null = null;
+  /** A renewed token fetched before the running host was stopped, used by the next launch. */
+  private pendingCredential: TunnelHostCredential | null = null;
+  private renewalFailureLogged = false;
   private generation = 0;
   private retryDelayMs: number;
   /** Most recent health observations for the current child, oldest first. */
@@ -304,6 +341,8 @@ export class TunnelSupervisor {
     );
     this.healthSlowMs = options.healthSlowMs ?? HEALTH_SLOW_MS;
     this.hostRecoveryGraceMs = options.hostRecoveryGraceMs ?? HOST_RECOVERY_GRACE_MS;
+    this.hostAuth = options.hostAuth;
+    this.hostTokenRenewMarginMs = options.hostTokenRenewMarginMs ?? HOST_TOKEN_RENEW_MARGIN_MS;
     this.retryDelayMs = this.retryBaseMs;
     this.deps = dependencies;
   }
@@ -418,6 +457,9 @@ export class TunnelSupervisor {
     }
 
     const child = this.child;
+    if (this.credential && Date.now() >= this.renewAt(this.credential) && await this.renewHostToken(child)) {
+      return;
+    }
     const localUrl = `http://127.0.0.1:${this.port}/api/health`;
     const local = await probe(this.deps.fetch, localUrl, this.healthTimeoutMs);
     if (!local.healthy) {
@@ -426,7 +468,9 @@ export class TunnelSupervisor {
       return;
     }
 
-    const hostStatus = await this.deps.inspectTunnelHost(this.name, this.healthTimeoutMs);
+    const hostStatus = this.credential && this.hostAuth
+      ? await this.hostAuth.inspectHost(this.credential, this.healthTimeoutMs)
+      : await this.deps.inspectTunnelHost(this.name, this.healthTimeoutMs);
     if (!this.isActiveChild(child)) return;
     if (hostStatus.hostConnections === null) {
       if (!this.hostStatusFailureLogged) {
@@ -539,10 +583,56 @@ export class TunnelSupervisor {
     this.clearState();
   }
 
+  private renewAt(credential: TunnelHostCredential): number {
+    const lifetime = credential.expiresAt - credential.issuedAt;
+    return credential.issuedAt + Math.max(lifetime - this.hostTokenRenewMarginMs, lifetime / 2);
+  }
+
+  /**
+   * Fetch the next token while the current host keeps serving, then restart the host
+   * with it. Returns false when the fetch failed: the host keeps running, health checks
+   * continue, and renewal is retried on the next check.
+   */
+  private async renewHostToken(child: ChildProcess): Promise<boolean> {
+    if (!this.hostAuth || this.name === null) return false;
+    let next: TunnelHostCredential;
+    try {
+      next = await this.hostAuth.getCredential(this.name);
+    } catch (error) {
+      if (!this.renewalFailureLogged) {
+        this.renewalFailureLogged = true;
+        this.log(
+          `[tunnel] Host token renewal failed; retrying until the current token expires at ${
+            new Date(this.credential?.expiresAt ?? Date.now()).toISOString()
+          }: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return false;
+    }
+    this.renewalFailureLogged = false;
+    this.pendingCredential = next;
+    if (!this.isActiveChild(child)) return true;
+    const stopped = await this.stopChild(child, "host token renewal");
+    if (!stopped) throw new Error("Unable to stop tunnel for host token renewal");
+    this.log("[tunnel] Restarting host with a renewed token");
+    this.requestReconcile(0);
+    return true;
+  }
+
   private async launch(): Promise<void> {
-    if (!this.desired || this.name === null) return;
+    const name = this.name;
+    if (!this.desired || name === null) return;
+    let credential: TunnelHostCredential | null = null;
+    if (this.hostAuth) {
+      credential = this.pendingCredential ?? await this.hostAuth.getCredential(name);
+      this.pendingCredential = null;
+      if (!this.desired || this.child) return;
+    }
     const generation = ++this.generation;
-    const child = this.deps.spawnTunnel(this.name, this.port);
+    const child = credential
+      ? this.deps.spawnTunnel(credential.hostName, this.port, credential.accessToken)
+      : this.deps.spawnTunnel(name, this.port);
+    this.credential = credential;
     this.resetHostConnectionState();
     this.child = child;
     this.identity = child.pid

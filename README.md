@@ -182,6 +182,8 @@ The launcher hosts the persistent dev tunnels listed in `BRIDGE_TUNNEL_NAMES` (c
 
 Dev Tunnels sends a visitor to one sign-in provider per tunnel, so mixing Microsoft and GitHub rules on one tunnel sends browsers without a cookie to the wrong sign-in page. To offer both, list two tunnels, each with one kind of rule. Each additional tunnel gets its own `tunnel-runtime-<name>.json` state file. The Bridge has no sign-in of its own, so each tunnel's access control is the whole security boundary.
 
+A tunnel owned by a GitHub account can run next to tunnels owned by the devtunnel CLI's login: list it as `github:<name>`. The CLI holds one login at a time, so instead of using it the launcher reads the github.com credential that Git Credential Manager (or another git credential helper) stores for HTTPS, asks the Dev Tunnels API for a host token for that tunnel, and runs `devtunnel host <name>.<cluster> --access-token -` with the token on stdin. Host tokens last about 24 hours; the launcher fetches the next one an hour before expiry and restarts the host with it, a gap of a few seconds. Prompts are disabled, so if the credential is missing or revoked the launcher logs why and retries; sign in once with a git command over HTTPS to github.com to fix it. With owner-only access, only that GitHub account can open the tunnel. To create one, run `devtunnel user login -g`, `devtunnel create <name>` and `devtunnel port create <name> -p 3333`, then log the CLI back in to the account that owns your other tunnels.
+
 To start the packaged release automatically when you sign in, run this from the extracted release root:
 
 ```powershell
