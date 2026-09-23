@@ -53,13 +53,23 @@ describe("selectHelmModel", () => {
     { id: "claude-opus-5", supportedReasoningEfforts: ["low", "medium", "high"] },
     { id: "gpt-5-mini", supportedReasoningEfforts: ["low", "medium"] },
     { id: "gpt-5.6-luna", supportedReasoningEfforts: ["none", "low"], policy: { state: "disabled" } },
+    { id: "gpt-6-luna", supportedReasoningEfforts: ["none", "low"] },
   ] as any;
 
-  it("prefers the first enabled fast model and starts it at the wanted effort, clamped to what it has", () => {
-    expect(selectHelmModel(models, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
-    expect(selectHelmModel(models, undefined, "low")).toEqual({ model: "gpt-5-mini", reasoningEffort: "low" });
+  it("prefers GPT-6 Luna and starts it at the wanted effort, clamped to what it has", () => {
+    expect(selectHelmModel(models, undefined, "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
+    expect(selectHelmModel(models, undefined, "low")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
     // Without a wanted effort the model keeps its own default.
-    expect(selectHelmModel(models)).toEqual({ model: "gpt-5-mini" });
+    expect(selectHelmModel(models)).toEqual({ model: "gpt-6-luna" });
+  });
+
+  it("falls back to another fast model when GPT-6 Luna is unavailable or disabled", () => {
+    const withoutLunaSix = models.filter((model: { id: string }) => model.id !== "gpt-6-luna");
+    const disabledLunaSix = models.map((model: { id: string; policy?: { state: string } }) =>
+      model.id === "gpt-6-luna" ? { ...model, policy: { state: "disabled" } } : model,
+    );
+    expect(selectHelmModel(withoutLunaSix, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
+    expect(selectHelmModel(disabledLunaSix, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
   });
 
   it("honors a requested model", () => {
@@ -71,6 +81,6 @@ describe("selectHelmModel", () => {
   it("falls back sensibly when the catalog is empty or the request is unknown or disabled", () => {
     expect(selectHelmModel([], undefined, "max")).toEqual({});
     expect(selectHelmModel([], "some-model", "max")).toEqual({ model: "some-model" });
-    expect(selectHelmModel(models, "gpt-5.6-luna", "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
+    expect(selectHelmModel(models, "gpt-5.6-luna", "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
   });
 });
