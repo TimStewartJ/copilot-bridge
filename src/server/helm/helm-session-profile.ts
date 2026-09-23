@@ -8,7 +8,7 @@ import { resolveSupportedReasoningEffort } from "../../shared/reasoning-effort.j
 import { buildHelmSystemPrompt } from "./helm-prompt.js";
 
 /** Cheap, fast models preferred for Helm, in order. Real work goes to worker sessions. */
-export const PREFERRED_HELM_MODELS = ["gpt-5.6-luna", "mai-code-1.1-flash", "gpt-5.4-mini", "gpt-5-mini", "claude-haiku-4.5"];
+export const PREFERRED_HELM_MODELS = ["gpt-6-luna", "gpt-5.6-luna", "mai-code-1.1-flash", "gpt-5.4-mini", "gpt-5-mini", "claude-haiku-4.5"];
 
 export interface HelmModelSelection {
   model?: string;
