@@ -312,7 +312,7 @@ export default function TaskList({
           <button
             onClick={() => setShowSetAside(!showSetAside)}
             aria-expanded={showSetAside}
-            className="w-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1"
+            className="w-full whitespace-nowrap px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1"
           >
             {showSetAside ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Set aside ({grouped.setAside.length})
             {setAsideNeeds.size > 0 && (

@@ -747,7 +747,7 @@ export default function TaskRail({
                 <button
                   onClick={() => setShowSetAside((v) => !v)}
                   aria-expanded={showSetAside}
-                  className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                  className="w-full flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 mt-2 text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
                 >
                   {showSetAside ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <EyeOff size={12} />
