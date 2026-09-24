@@ -117,8 +117,6 @@ import BackendStatusBanner from "./components/BackendStatusBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileWorkSegments } from "./components/MobileWorkSegments";
-import AllTasks from "./components/AllTasks";
-import { SegmentedControl } from "./design/primitives";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
@@ -2444,14 +2442,6 @@ function MobileTaskListView({
   scrollRestoration?: PullToRefreshScrollRestoration;
   onOpenSearch: () => void;
 }){
-  // A phone has no room for the sidebar beside All tasks, so the Work tab offers both views of the same tasks.
-  const [taskView, setTaskViewState] = useState<"state" | "order">(() => {
-    try { return localStorage.getItem("bridge.mobileTasks.view") === "order" ? "order" : "state"; } catch { return "state"; }
-  });
-  const setTaskView = (view: "state" | "order") => {
-    setTaskViewState(view);
-    try { localStorage.setItem("bridge.mobileTasks.view", view); } catch { /* preference only */ }
-  };
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
       {/* Header: the Work tab's two lists, then search */}
@@ -2466,12 +2456,6 @@ function MobileTaskListView({
           Search
         </button>
       </div>
-      {!quickChatsMode && (
-        <div className="flex items-center justify-end border-b border-border px-4 py-2">
-          <SegmentedControl ariaLabel="Task list view" size="sm" value={taskView} onChange={setTaskView}
-            options={[{ value: "state", label: "By state" }, { value: "order", label: "My order" }]} />
-        </div>
-      )}
 
       {/* Content — pull-to-refresh wraps both tabs */}
       <div className="flex-1 min-h-0 relative">
@@ -2506,8 +2490,6 @@ function MobileTaskListView({
             archivedLoading={archivedLoading}
             className="min-w-0 overflow-x-hidden p-2 space-y-0.5"
           />
-        ) : taskView === "state" ? (
-          <AllTasks compact onSelectTask={onSelectTask} />
         ) : (
           <TaskList
             tasks={tasks}

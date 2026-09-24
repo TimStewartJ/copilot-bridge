@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Archive, Check, ChevronDown, ChevronRight, Clock3, Moon, Pin, Plus, RefreshCw, Sparkles, Activity, ArrowRight, Hourglass, CircleDashed, EyeOff } from "lucide-react";
+import { Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Moon, Pin, Plus, RefreshCw, Sparkles, Activity, ArrowRight, Hourglass, CircleDashed, EyeOff } from "lucide-react";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { TASK_STATE_LABELS, TASK_STATE_ORDER, type TaskState } from "../../shared/task-state";
 import { Badge, Button, EmptyHint, IdentitySwatch, Notice, SegmentedControl } from "../design/primitives";
@@ -39,11 +39,13 @@ interface Props {
   onSelectTask: (id: string) => void;
   /** Phone layout: filter chips instead of the stat band, short sections, no bulk selection. */
   compact?: boolean;
+  /** Return to Home, which is where All tasks is opened from on a phone. */
+  onBack?: () => void;
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
 
 /** Every active task grouped by what it needs, for reviewing and tidying the whole list. The sidebar keeps Tim's own order. */
-export default function AllTasks({ onSelectTask, compact = false, scrollRestoration }: Props) {
+export default function AllTasks({ onSelectTask, compact = false, onBack, scrollRestoration }: Props) {
   const query = useTaskOverviewQuery();
   const outcomes = useTaskOutcomes();
   const [grouping, setGroupingState] = useState<Grouping>(loadGrouping);
@@ -78,6 +80,7 @@ export default function AllTasks({ onSelectTask, compact = false, scrollRestorat
   const activeTotal = rows.length;
   const header = <header className="flex flex-wrap items-end justify-between gap-3">
     <div>
+      {compact && onBack && <Button variant="ghost" size="sm" onClick={onBack}><ChevronLeft size={14} />Home</Button>}
       <h1 className={compact ? "text-xl font-semibold text-text-primary" : "text-2xl font-semibold tracking-tight text-text-primary"}>All tasks</h1>
       <p className={cx(DS.text.prose, "mt-1")}>{query.data ? `${activeTotal} active${compact ? "" : ". How your work stands, grouped by what it needs."}` : "Loading…"}</p>
     </div>
@@ -161,9 +164,8 @@ export default function AllTasks({ onSelectTask, compact = false, scrollRestorat
       : !sections.length ? <EmptyHint>{filter ? "No tasks in this state." : "No active tasks."}</EmptyHint> : <div className="space-y-3">{list}</div>}
   </div>;
 
-  // On a phone this sits inside the Work tab's own pull-to-refresh scroller.
-  return <div className={compact ? "min-w-0" : "relative flex-1 min-h-0"}>
-    {compact ? content : <PullToRefresh className="absolute inset-0" scrollRestoration={scrollRestoration} onRefresh={async () => { await query.refetch(); }}>{content}</PullToRefresh>}
+  return <div className="relative flex-1 min-h-0">
+    <PullToRefresh className="absolute inset-0" scrollRestoration={scrollRestoration} onRefresh={async () => { await query.refetch(); }}>{content}</PullToRefresh>
     {selectedRows.length > 0 && <div className={cx(DS.surface.floating, "fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 px-3 py-2")} role="toolbar" aria-label="Selected tasks">
       <span className="px-1 text-sm font-medium text-text-primary">{selectedRows.length} selected</span>
       <Button size="sm" disabled={outcomes.pending || selectedRows.some(row => row.kind !== "task")} icon={<Check size={13} aria-hidden="true" />}
