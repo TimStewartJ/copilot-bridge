@@ -73,6 +73,7 @@ import {
 } from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
 import SkillLoadedCard from "./SkillLoadedCard";
+import AskUserRecordBlock from "./chat/AskUserRecord";
 import ActivityBlock from "./chat/ActivityBlock";
 import { ChatRunActiveProvider } from "./chat/chat-run-context";
 import LiveStatusLine from "./chat/LiveStatusLine";
@@ -2267,9 +2268,19 @@ export default function ChatView({
   const toolForest = useMemo(() => buildToolCallForest(toolEntries), [toolEntries]);
   const activeToolForest = useMemo(() => buildToolCallForest(activeToolCalls), [activeToolCalls]);
   const activeRootNodes = useMemo(() => getActiveToolCallRoots(activeToolForest.roots), [activeToolForest.roots]);
+  /**
+   * A step with no recorded end is only "running" while something can still end it: this view's
+   * stream, a run the last disk read reported (or no read yet), a background agent, or another
+   * Copilot client holding the session. Otherwise it simply never finished.
+   */
+  const runActive = isStreaming
+    || creating
+    || historyRunBusy !== false
+    || (backgroundAgents?.running ?? 0) > 0
+    || externallyInUse;
   const renderBlocks = useMemo(
-    () => groupActivitySegments(segmentChatEntries(displayEntries)),
-    [displayEntries],
+    () => groupActivitySegments(segmentChatEntries(displayEntries), { includeUnfinishedQuestions: !runActive }),
+    [displayEntries, runActive],
   );
   /**
    * While the run is between steps, the block at the end of the transcript is where the next step
@@ -2281,16 +2292,6 @@ export default function ChatView({
     return trailing?.type === "activity" ? trailing.key : null;
   }, [hasStreamingText, isStreaming, renderBlocks]);
   liveActivityKeyRef.current = liveActivityKey;
-  /**
-   * A step with no recorded end is only "running" while something can still end it: this view's
-   * stream, a run the last disk read reported (or no read yet), a background agent, or another
-   * Copilot client holding the session. Otherwise it simply never finished.
-   */
-  const runActive = isStreaming
-    || creating
-    || historyRunBusy !== false
-    || (backgroundAgents?.running ?? 0) > 0
-    || externallyInUse;
   const runHeaderState = useMemo(() => deriveLiveRunHeaderState({
     creating,
     isStreaming,
@@ -2720,6 +2721,15 @@ export default function ChatView({
               live={segment.key === liveActivityKey}
               liveLabel={intentText}
             />
+          </div>,
+        );
+        return;
+      }
+
+      if (segment.type === "question") {
+        result.push(
+          <div key={segment.key} className={`${CHAT_RAIL_CLASS} pt-4`}>
+            <AskUserRecordBlock toolCall={segment.toolCall} />
           </div>,
         );
         return;

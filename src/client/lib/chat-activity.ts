@@ -1,6 +1,7 @@
-import type { ChatReasoningEntry, ChatToolEntry } from "../api";
+import type { ChatReasoningEntry, ChatToolEntry, ToolCall } from "../api";
 import type { ChatRenderSegment } from "./tool-call-tree";
 import { getToolCallStatus } from "./tool-call-status";
+import { isSettledAskUserCall } from "./ask-user-record";
 
 /**
  * Work the agent did between two things it said: its thinking and its tool calls, in order. The
@@ -25,9 +26,25 @@ export interface ActivityBlock {
   steps: ActivityStep[];
 }
 
+/** A question the agent asked, lifted out of its steps so the exchange reads as conversation. */
+export interface QuestionBlock {
+  type: "question";
+  key: string;
+  toolCall: ToolCall;
+}
+
 export type ChatRenderBlock =
   | ActivityBlock
+  | QuestionBlock
   | Exclude<ChatRenderSegment, { type: "tool-segment" } | { type: "reasoning-segment" }>;
+
+export interface GroupActivityOptions {
+  /**
+   * Also lift out questions with no recorded answer. Only safe once nothing can still answer them;
+   * while a run is live the open question is shown by its own form.
+   */
+  includeUnfinishedQuestions?: boolean;
+}
 
 export interface ActivitySummary {
   toolCount: number;
@@ -68,10 +85,44 @@ function getBlockBaseKey(step: ActivityStep): string {
     ?? step.key;
 }
 
-export function groupActivitySegments(segments: ChatRenderSegment[]): ChatRenderBlock[] {
+export function groupActivitySegments(
+  segments: ChatRenderSegment[],
+  options: GroupActivityOptions = {},
+): ChatRenderBlock[] {
   const blocks: ChatRenderBlock[] = [];
   const keyCounts = new Map<string, number>();
   let steps: ActivityStep[] = [];
+
+  // A call can appear more than once (a start row and a later snapshot); the fullest copy decides.
+  const latestToolCalls = new Map<string, ToolCall>();
+  for (const segment of segments) {
+    if (segment.type !== "tool-segment") continue;
+    for (const { toolCall } of segment.entries) {
+      const known = latestToolCalls.get(toolCall.toolCallId);
+      if (!known || getToolCallStatus(known) === "running") latestToolCalls.set(toolCall.toolCallId, toolCall);
+    }
+  }
+  const questionIds = new Set(
+    [...latestToolCalls.values()]
+      .filter((toolCall) => isSettledAskUserCall(toolCall, options.includeUnfinishedQuestions === true))
+      .map((toolCall) => toolCall.toolCallId),
+  );
+  const emittedQuestionIds = new Set<string>();
+
+  const pushTools = (
+    entries: ChatToolEntry[],
+    index: number,
+    segment: Extract<ChatRenderSegment, { type: "tool-segment" }>,
+  ) => {
+    if (entries.length === 0) return;
+    steps.push({
+      kind: "tools",
+      key: toolStepKey(entries, index),
+      entries,
+      ...(segment.turnId ? { turnId: segment.turnId } : {}),
+      ...(segment.turnInstanceId ? { turnInstanceId: segment.turnInstanceId } : {}),
+    });
+  };
 
   const flush = () => {
     if (steps.length === 0) return;
@@ -90,13 +141,25 @@ export function groupActivitySegments(segments: ChatRenderSegment[]): ChatRender
     }
     if (segment.type === "tool-segment") {
       if (segment.entries.length === 0) return;
-      steps.push({
-        kind: "tools",
-        key: toolStepKey(segment.entries, index),
-        entries: segment.entries,
-        ...(segment.turnId ? { turnId: segment.turnId } : {}),
-        ...(segment.turnInstanceId ? { turnInstanceId: segment.turnInstanceId } : {}),
-      });
+      if (questionIds.size === 0) {
+        pushTools(segment.entries, index, segment);
+        return;
+      }
+      let pending: ChatToolEntry[] = [];
+      for (const entry of segment.entries) {
+        const id = entry.toolCall.toolCallId;
+        if (!questionIds.has(id)) {
+          pending.push(entry);
+          continue;
+        }
+        if (emittedQuestionIds.has(id)) continue;
+        emittedQuestionIds.add(id);
+        pushTools(pending, index, segment);
+        pending = [];
+        flush();
+        blocks.push({ type: "question", key: `question:${id}`, toolCall: latestToolCalls.get(id) ?? entry.toolCall });
+      }
+      pushTools(pending, index, segment);
       return;
     }
     flush();

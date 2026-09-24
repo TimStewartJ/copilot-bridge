@@ -45,6 +45,48 @@ function activity(blocks: ReturnType<typeof blocksOf>): ActivityBlock[] {
 }
 
 describe("groupActivitySegments", () => {
+  it("lifts an answered question out of the steps, splitting the block around it", () => {
+    const question = { message: "Which one?", requestedSchema: { properties: { pick: { type: "string", enum: ["a", "b"] } } } };
+    const blocks = blocksOf([
+      { role: "user", content: "Go" },
+      tool("read", "turn-a"),
+      tool("ask_user", "turn-b", { args: question, success: true, completedAt: at(30), result: "User responded:\npick: a" }),
+      tool("edit", "turn-c"),
+    ]);
+
+    expect(blocks.map((block) => block.type)).toEqual(["message", "activity", "question", "activity"]);
+    expect(blocks[2]).toMatchObject({ type: "question", key: "question:ask_user-call" });
+    expect(activity(blocks)[1]?.steps).toMatchObject([{ kind: "tools", entries: [{ id: "edit" }] }]);
+  });
+
+  it("keeps an open question in the steps until the run is over", () => {
+    const entries: ChatEntry[] = [tool("ask_user", "turn-a", { args: { message: "Which one?" } })];
+
+    expect(groupActivitySegments(segmentChatEntries(entries)).map((block) => block.type)).toEqual(["activity"]);
+    expect(groupActivitySegments(segmentChatEntries(entries), { includeUnfinishedQuestions: true }).map((block) => block.type))
+      .toEqual(["question"]);
+  });
+
+  it("uses the completed copy of a question that appears twice and shows it once", () => {
+    const args = { message: "Which one?" };
+    const blocks = blocksOf([
+      { ...tool("ask_user", "turn-a", { args }), id: "start" },
+      { ...tool("ask_user", "turn-a", { args, success: true, result: "User responded: this one" }), id: "done" },
+    ]);
+
+    expect(blocks.map((block) => block.type)).toEqual(["question"]);
+    expect(blocks[0]).toMatchObject({ toolCall: { result: "User responded: this one" } });
+  });
+
+  it("leaves a question a sub-agent asked inside its agent", () => {
+    const blocks = blocksOf([
+      tool("agent", "turn-a", { isSubAgent: true }),
+      tool("ask_user", "turn-a", { args: { message: "Which?" }, parentToolCallId: "agent-call", success: true, result: "User responded: x" }),
+    ]);
+
+    expect(blocks.map((block) => block.type)).toEqual(["activity"]);
+  });
+
   it("folds the thinking and tool calls of consecutive turns into one block", () => {
     const blocks = blocksOf([
       { role: "user", content: "Fix the bug" },
