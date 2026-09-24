@@ -52,9 +52,9 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     const automationCount = (schedulesByTask.get(task.id) ?? 0)
       + task.sessionIds.filter(id => prompts.has(id) || loops.has(id)).length;
     const signals = momentum.get(task.id);
-    // Only things Tim did count: opening the task, editing it, or writing in one of its conversations.
+    // Only things Tim did to the task count: editing it or writing in one of its conversations. Looking at it does not.
     const touches: Array<[TaskTouchKind, string | undefined]> = [
-      ["opened", task.lastOpenedAt], ["edited", signals?.userEditedAt], ["message", signals?.lastMessageAt], ["created", task.createdAt],
+      ["edited", signals?.userEditedAt], ["message", signals?.lastMessageAt], ["created", task.createdAt],
     ];
     const lastEngagedAt = latestTime(...touches.map(([, at]) => at));
     const lastTouchKind = lastEngagedAt ? touches.find(([, at]) => at && Date.parse(at) === Date.parse(lastEngagedAt))?.[0] : undefined;

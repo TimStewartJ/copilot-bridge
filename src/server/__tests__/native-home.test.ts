@@ -248,20 +248,15 @@ describe("native Home composition", () => {
     expect(home.resume.map(row => ({ id: row.id, kind: row.lastTouchKind }))).toEqual([{ id: written.id, kind: "message" }]);
   });
 
-  it("keeps opening a task silent and treats it as engagement", async () => {
+  it("treats Tim's own edits as engagement, silently from the task's point of view", async () => {
     const app = setup();
-    const task = app.taskStore.createTask("Old but just opened");
+    const task = app.taskStore.createTask("Old but just edited");
     db.prepare("UPDATE tasks SET createdAt = ? WHERE id = ?").run(new Date(Date.now() - 90 * 86_400_000).toISOString(), task.id);
     expect((await app.snapshot()).quiet.items.map(row => row.id)).toEqual([task.id]);
-    const before = app.taskStore.getTask(task.id)!;
-    expect(app.taskStore.markOpened(task.id)).toBeTruthy();
-    const after = app.taskStore.getTask(task.id)!;
-    expect(after.updatedAt).toBe(before.updatedAt);
-    expect(after.lastOpenedAt).toBeTruthy();
+    app.taskStore.updateTask(task.id, { nextAction: "Decide" }, { source: "user" });
     const home = await app.snapshot();
     expect(home.quiet.total).toBe(0);
-    expect(home.resume[0]).toMatchObject({ id: task.id, state: "in_motion", lastTouchKind: "opened" });
-    expect(app.taskStore.markOpened("missing")).toBeUndefined();
+    expect(home.resume[0]).toMatchObject({ id: task.id, state: "in_motion", lastTouchKind: "edited" });
   });
 
   it("counts enabled schedules and active defers as automation, so their tasks never look abandoned", async () => {

@@ -13,7 +13,7 @@ export interface TaskStateInput {
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
-  /** When Tim last opened the task, edited it or wrote in one of its conversations. */
+  /** When Tim last edited the task or wrote in one of its conversations. */
   lastEngagedAt?: string;
   /** When the current waiting-for text was last set, when known. */
   waitingSince?: string;
@@ -29,7 +29,7 @@ export interface TaskStateInput {
 export interface DerivedTaskState {
   state: TaskState;
   reasons: TaskNeedsYouReason[];
-  /** Waiting for something without Tim opening the task in a while. */
+  /** Waiting for something without Tim touching the task in a while. */
   staleWait: boolean;
   /** Whole days since the last engagement, or null when unknown. */
   idleDays: number | null;
