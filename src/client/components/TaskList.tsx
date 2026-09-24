@@ -8,9 +8,10 @@ import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
+import { needsYouCount, setAsideAttention } from "../lib/task-state-ui";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
 import { DS, cx } from "../design/tokens";
-import { Button, IdentitySwatch } from "../design/primitives";
+import { Button, IdentitySwatch, StatusIcon } from "../design/primitives";
 import { DndContext } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
@@ -95,6 +96,7 @@ export default function TaskList({
     : undefined, [onMoveAndReorder, setAsideIds, statusGroups]);
   const overview = useTaskOverviewQuery();
   const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
+  const setAsideNeeds = useMemo(() => setAsideAttention(overview.data?.tasks, setAsideIds), [overview.data, setAsideIds]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSetAside, setShowSetAside] = useState(false);
   useEffect(() => {
@@ -313,6 +315,12 @@ export default function TaskList({
             className="w-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1"
           >
             {showSetAside ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Set aside ({grouped.setAside.length})
+            {setAsideNeeds.size > 0 && (
+              <span className={cx("ml-1 inline-flex items-center gap-1 font-medium", DS.tone.warning)}>
+                <StatusIcon kind="warning" decorative />
+                {needsYouCount(setAsideNeeds.size)}
+              </span>
+            )}
           </button>
           {showSetAside && renderGroup("Set aside", grouped.setAside)}
         </>

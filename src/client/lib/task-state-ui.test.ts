@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskOverviewRow } from "../../shared/task-overview";
-import { contextLine, describeIdle, formatSpan, KEEP_DAYS, outcomePatches, setAsidePatches, stateBadge } from "./task-state-ui";
+import { contextLine, describeIdle, describeTouch, formatSpan, KEEP_DAYS, needsYouCount, outcomePatches, setAsideAttention, setAsidePatches, stateBadge } from "./task-state-ui";
 import { groupHomeChecklistByDate } from "../components/HomeChecklist";
 
 const NOW = new Date("2026-09-22T12:00:00Z");
@@ -66,5 +66,27 @@ describe("checklist by due date", () => {
       ["Overdue", ["late", "late2"]], ["Due today", ["today"]], ["Next two weeks", ["soon"]], ["Later", ["later"]], ["No date", ["none"]],
     ]);
     expect(groupHomeChecklistByDate([], "2026-09-22")).toEqual([]);
+  });
+});
+
+describe("set-aside tasks that still need Tim", () => {
+  it("names only set-aside tasks in Needs you, with their reason", () => {
+    const rows = [
+      row({ id: "asks", state: "needs_you", reasons: ["question"], inputCount: 1, deferred: true }),
+      row({ id: "due", state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-09-20T00:00:00.000Z", deferred: true }),
+      row({ id: "working", state: "needs_you", reasons: ["stalled"], stalledCount: 1 }),
+      row({ id: "resting", state: "set_aside", deferred: true }),
+    ];
+    const result = setAsideAttention(rows, new Set(["asks", "due", "resting"]), NOW);
+    expect([...result.keys()]).toEqual(["asks", "due"]);
+    expect(result.get("asks")).toBe("Answer needed");
+    expect(result.get("due")).toMatch(/^Revisit · /);
+    expect(needsYouCount(1)).toBe("1 needs you");
+    expect(needsYouCount(2)).toBe("2 need you");
+  });
+  it("says what the last touch was", () => {
+    expect(describeTouch(row({ idleDays: 21, lastTouchKind: "message" }))).toBe("You wrote in its conversation 3 weeks ago");
+    expect(describeTouch(row({ idleDays: 0, lastTouchKind: "opened" }))).toBe("You opened it today");
+    expect(describeTouch(row({ idleDays: null }))).toBe("No recent activity from you");
   });
 });

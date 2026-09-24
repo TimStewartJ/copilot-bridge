@@ -123,6 +123,8 @@ export default function AllTasks({ onSelectTask, compact = false, scrollRestorat
       {row.state === "no_next_step" && !compact
         ? <Button size="sm" variant="ghost" icon={<Plus size={13} aria-hidden="true" />} onClick={() => onSelectTask(row.id)}>Next step</Button>
         : badge && <Badge tone={badge.tone === "warning" ? "warning" : badge.tone === "info" ? "info" : "neutral"}>{badge.label}</Badge>}
+      {/* Outside Set aside, say that it was set aside: it surfaced for a reason, not because it resumed. */}
+      {row.deferred && row.state !== "set_aside" && <Badge>Deferred</Badge>}
       <span className={cx(DS.text.meta, "hidden w-24 shrink-0 text-right sm:block")} title={describeTouch(row)}>{describeIdle(row)}</span>
     </div>;
   };
