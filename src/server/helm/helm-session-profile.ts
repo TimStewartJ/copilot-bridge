@@ -39,6 +39,8 @@ export interface HelmSessionProfileOptions {
   workingDirectory: string;
   timeZone?: string;
   defaultWorkModel?: string;
+  /** The user's names list from Helm settings. */
+  glossary?: string;
 }
 
 export const HELM_CLIENT_NAME = "Copilot Bridge Helm";
@@ -90,6 +92,7 @@ export function applyHelmSessionProfile<T extends Record<string, unknown>>(base:
       content: buildHelmSystemPrompt({
         timeZone: options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
         ...(options.defaultWorkModel ? { defaultWorkModel: options.defaultWorkModel } : {}),
+        ...(options.glossary ? { glossary: options.glossary } : {}),
       }),
     },
   } as unknown as T;

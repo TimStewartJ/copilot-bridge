@@ -15,7 +15,7 @@ describe("Helm routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ current: null, resumable: null, recent: [] });
     expect(res.body.policy).toEqual({ freshAfterMs: 6 * 3_600_000, retainMs: 14 * 86_400_000, maxConversations: 25 });
-    expect(res.body.reasoningEfforts).toEqual({ typed: "max", spoken: "xhigh" });
+    expect(res.body.reasoningEfforts).toEqual({ typed: "max", spoken: "medium" });
   });
 
   it("lets Settings change how hard each mode thinks, effective for the next turn", async () => {
@@ -27,7 +27,7 @@ describe("Helm routes", () => {
 
     await request(app).patch("/api/settings").send({ helm: { typedReasoningEffort: 7 } }).expect(400);
     await request(app).patch("/api/settings").send({ helm: null }).expect(200);
-    expect((await request(app).get("/api/helm")).body.reasoningEfforts).toEqual({ typed: "max", spoken: "xhigh" });
+    expect((await request(app).get("/api/helm")).body.reasoningEfforts).toEqual({ typed: "max", spoken: "medium" });
   });
 
   it("creates, resets, resumes, keeps and deletes conversations", async () => {

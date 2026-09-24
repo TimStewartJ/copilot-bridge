@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { REASONING_EFFORT_LEVELS, resolveSupportedReasoningEffort, sortReasoningEfforts } from "../../shared/reasoning-effort";
@@ -21,19 +21,30 @@ export interface HelmEffortPreference {
   onChange(mode: "typed" | "spoken", effort: string): void;
 }
 
+export interface HelmGlossaryPreference {
+  value: string;
+  /** Saves when the field loses focus with a changed value. */
+  onSave(value: string): void;
+  error?: string | null;
+}
+
 /** Hands-free and Helm settings. Voice changes apply immediately, even mid-conversation. */
 export function VoiceSettingsSheet({
   controller,
   helmModel,
   helmEfforts,
+  helmGlossary,
   onClose,
 }: {
   controller: VoiceModeController;
   helmModel?: HelmModelPreference;
   helmEfforts?: HelmEffortPreference;
+  helmGlossary?: HelmGlossaryPreference;
   onClose(): void;
 }) {
   const { settings, status } = controller;
+  const [glossaryDraft, setGlossaryDraft] = useState(helmGlossary?.value ?? "");
+  useEffect(() => setGlossaryDraft(helmGlossary?.value ?? ""), [helmGlossary?.value]);
   const modelsQuery = useModelsQuery({ enabled: Boolean(helmModel || helmEfforts) });
   const models = useMemo(
     () => (modelsQuery.data ?? []).filter((model) => !model.policy || model.policy.state === "enabled"),
@@ -97,6 +108,24 @@ export function VoiceSettingsSheet({
                 {selectArrow}
               </div>
               <div id="helm-model-help" className={help}>Used for new Helm conversations. Helm only coordinates; real work still goes to sessions on your default or chosen models.</div>
+            </div>
+          )}
+          {helmGlossary && (
+            <div>
+              <label htmlFor="helm-setting-glossary" className={label}>Names Helm should know</label>
+              <textarea
+                id="helm-setting-glossary"
+                aria-describedby="helm-glossary-help"
+                rows={3}
+                maxLength={2000}
+                className={cx(DS.field.input, DS.field.textarea, "mt-1 resize-y text-sm")}
+                placeholder="timmiepc = my PC (sounds like Timmy PC); Tether = my iPhone app"
+                value={glossaryDraft}
+                onChange={(event) => setGlossaryDraft(event.target.value)}
+                onBlur={() => { if (glossaryDraft.trim() !== helmGlossary.value.trim()) helmGlossary.onSave(glossaryDraft); }}
+              />
+              <div id="helm-glossary-help" className={help}>Machines, projects and apps you mention by name, and how they sound. Helm gets this with every hands-free turn and in new conversations.</div>
+              {helmGlossary.error && <div role="alert" className="text-[11px] text-error">{helmGlossary.error}</div>}
             </div>
           )}
           {helmEfforts && (

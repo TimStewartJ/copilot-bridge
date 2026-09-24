@@ -12,6 +12,8 @@ export interface BridgeSearchRequest {
   offset?: number;
   /** Refresh results/progress without starting another full reconciliation sweep. */
   refreshOnly?: boolean;
+  /** Match any of the words instead of all of them. */
+  anyWord?: boolean;
 }
 
 export interface SearchMessageMatch {

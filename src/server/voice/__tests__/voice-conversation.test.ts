@@ -157,6 +157,53 @@ describe("VoiceConversation", () => {
     expect(ctx.sink.has("metrics")).toBe(true);
   });
 
+  it("resends the parts of a reply a reconnecting client has not started playing", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "What's unread?");
+    ctx.agent.last.listener.onDelta("Two sessions finished. ");
+    await advance(10);
+    ctx.agent.last.listener.onDelta("One is still running. ");
+    await advance(10);
+    expect(ctx.sink.audio).toHaveLength(2);
+    const [first, second] = ctx.sink.audio;
+    ctx.conversation.onPlaybackStarted(first!.genId, first!.chunkId);
+
+    expect(ctx.conversation.resendUnplayedAudio()).toBe(1);
+    expect(ctx.sink.audio).toHaveLength(3);
+    expect(ctx.sink.audio[2]).toBe(second);
+    ctx.conversation.onPlaybackStarted(second!.genId, second!.chunkId);
+    expect(ctx.conversation.resendUnplayedAudio()).toBe(0);
+  });
+
+  it("gives the first thing said after a reconnect the resume note, once", async () => {
+    const ctx = setup();
+    ctx.conversation.setResumeNote("Hands-free just reconnected.");
+    await speakTurn(ctx, "What did you say?");
+    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "What did you say?", resumeNote: "Hands-free just reconnected." });
+    ctx.agent.last.listener.onDelta("I said two sessions finished. ");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(10);
+    ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
+    await speakTurn(ctx, "Thanks, what else?");
+    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "Thanks, what else?" });
+  });
+
+  it("remembers the last reply and whether it played to the end", async () => {
+    const ctx = setup();
+    expect(ctx.conversation.lastReply()).toBeUndefined();
+    await speakTurn(ctx, "What's unread?");
+    ctx.agent.last.listener.onDelta("Two sessions finished. ");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(10);
+    expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: false });
+    ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
+    expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: true });
+  });
+  it("has nothing to resend between replies", async () => {
+    const ctx = setup();
+    expect(ctx.conversation.resendUnplayedAudio()).toBe(0);
+  });
+
   it("waits through a hesitation until the fallback timer", async () => {
     const ctx = setup();
     ctx.engine.probabilities.push(0.05, 0.05, 0.05, 0.05);
@@ -449,5 +496,19 @@ describe("looksLikeEcho", () => {
   it("flags transcripts that repeat the assistant's own speech", () => {
     expect(looksLikeEcho("the tellus session is still running", "The Tellus worldgen session is still running.")).toBe(true);
     expect(looksLikeEcho("tell me about the deploy", "The Tellus worldgen session is still running.")).toBe(false);
+  });
+
+  it("flags short echoes of its own lead-ins, which a phone speaker feeds back into the mic", () => {
+    // 23 Sep 2026: "One sec." and "Let me check." heard back as the user and treated as barge-in.
+    expect(looksLikeEcho("One sec.", "One sec.")).toBe(true);
+    expect(looksLikeEcho("Let me change.", "Let me check.")).toBe(true);
+    expect(looksLikeEcho("running", "The Tellus worldgen session is still running.")).toBe(true);
+  });
+
+  it("does not take a short new request for an echo", () => {
+    expect(looksLikeEcho("Stop.", "One sec.")).toBe(false);
+    expect(looksLikeEcho("What time is it?", "The Tellus worldgen session is still running.")).toBe(false);
+    expect(looksLikeEcho("the deploy", "The Tellus worldgen session is still running.")).toBe(false);
+    expect(looksLikeEcho("One sec.", "")).toBe(false);
   });
 });

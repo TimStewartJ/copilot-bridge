@@ -5,6 +5,7 @@ import {
   buildBridgeSnapshotLine,
   countBridgeSessions,
   createHelmToolDefinitions,
+  describeProgress,
   formatAgo,
   HELM_TOOL_NAMES,
   isHelmBridgeToolName,
@@ -201,6 +202,51 @@ describe("Helm tools", () => {
     expect(facade.marked).toEqual([["aaaaaaaa-1111-4000-8000-000000000001"]]);
   });
 
+  it("finds a task by what it is about, and retries with any word when every word misses", async () => {
+    const { ctx } = createContext();
+    const search = vi.fn(async (request: { anyWord?: boolean }) => (request.anyWord
+      ? {
+        tasks: { items: [{ taskId: "task-1", title: "Helm Task Stats and Talk", snippet: "the standalone iPhone app", archived: false }], total: 1 },
+        chats: { items: [{ sessionId: "aaaaaaaa-1111-4000-8000-000000000001", title: "Access Apple Watch Health Data", taskTitle: "Helm Task Stats and Talk", archived: false, matchCount: 3, matches: [{ sourceEventId: "e", role: "user" as const, snippet: "Apple integration" }] }], total: 1 },
+        docs: { items: [], total: 0 },
+        coverage: { state: "ready" as const, indexedSessions: 1, totalSessions: 1, errors: [] },
+      }
+      : {
+        tasks: { items: [], total: 0 }, chats: { items: [], total: 0 }, docs: { items: [], total: 0 },
+        coverage: { state: "ready" as const, indexedSessions: 1, totalSessions: 1, errors: [] },
+      }));
+    (ctx as { searchIndex?: unknown }).searchIndex = { search };
+    const result = await tool(ctx, createFacade(), "find").run({ query: "standalone copilot app apple integration" });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(search.mock.calls[0]![0]).toMatchObject({ q: "standalone copilot app apple integration", scope: "global", kind: "all", refreshOnly: true });
+    expect(result.matchedAnyWord).toBe(true);
+    expect(result.tasks[0]).toMatchObject({ title: "Helm Task Stats and Talk", link: "bridge://task/task-1", matched: "the standalone iPhone app" });
+    expect(result.sessions[0]).toMatchObject({ ref: "aaaaaaaa", task: "Helm Task Stats and Talk", matched: "Apple integration", matchCount: 3 });
+  });
+
+  it("find fails clearly when this Bridge has no search index", async () => {
+    const { ctx } = createContext();
+    const result = await tool(ctx, createFacade(), "find").run({ query: "tellus" });
+    expect(result).toMatchObject({ resultType: "failure" });
+  });
+
+  it("says what a busy session has been doing, not just that it has not replied yet", () => {
+    const progress = describeProgress([
+      { type: "message", role: "user", content: "Compare Sonnet 5 and GPT 5.5", timestamp: new Date(now - 4 * 60_000).toISOString() },
+      { type: "reasoning", content: "**Comparing pricing pages** I should read both" },
+      { type: "tool", toolCall: { name: "web_search", startedAt: "a", completedAt: "b" } },
+      { type: "tool", toolCall: { name: "web_fetch", startedAt: "c" } },
+    ], now);
+    expect(progress).toEqual({ workingFor: "4m", stepsSoFar: 2, recentSteps: ["web_search", "web_fetch (running)"], thinkingAbout: "Comparing pricing pages" });
+  });
+
+  it("marks sessions a schedule started", async () => {
+    const { ctx } = createContext();
+    const facade = createFacade();
+    facade.listSessions = async () => [session({ sessionId: "ffffffff-6666-4000-8000-000000000006", title: "Docs upkeep", unread: true, triggeredBy: "schedule", scheduleName: "docs-maintenance" })];
+    const result = await tool(ctx, facade, "list_sessions").run({ filter: "unread" });
+    expect(result.sessions[0]).toMatchObject({ title: "Docs upkeep", startedBy: 'schedule "docs-maintenance"' });
+  });
   it("sends to a session and watches it", async () => {
     const { ctx } = createContext();
     const facade = createFacade();

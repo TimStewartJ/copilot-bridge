@@ -38,7 +38,7 @@ const ANNOUNCE_DEBOUNCE_MS = 1_500;
 
 export type VoiceGatewayEvent =
   | VoiceServerEvent
-  | { type: "hello"; conversationId: string; helmSessionId: string; transport: "websocket" | "http"; settings: VoiceSettings; state: string }
+  | { type: "hello"; conversationId: string; helmSessionId: string; transport: "websocket" | "http"; settings: VoiceSettings; state: string; resendsAudio?: boolean }
   | { type: "engine"; state: VoiceEngineStatus["state"]; detail?: string }
   | { type: "bridge_counts"; unread: number; running: number; waiting: number }
   | { type: "pong"; t: number }
@@ -140,6 +140,7 @@ class ConversationSession implements VoiceClientSink {
       snapshot: async () => buildBridgeSnapshotLine(await gateway.facade.listSessions()),
       // Everything hands-free answers is spoken, including a message typed while it is on.
       resolveReasoningEffort: () => gateway.helm.getTurnReasoningEffort("spoken"),
+      glossary: () => gateway.ctx.settingsStore.getSettings().helm?.glossary,
       logger: console,
       onTiming: (timing) => this.log.write("agent_timing", { ...timing }),
     });
@@ -190,12 +191,19 @@ class ConversationSession implements VoiceClientSink {
       transport: transport.kind,
       settings: this.settings,
       state: this.conversation.state,
+      // An HTTP client (the phone app) that reconnects mid-reply is sent the parts it has not started
+      // playing again. The web page keeps its own scheduled audio across reconnects, so it is not.
+      ...(transport.kind === "http" ? { resendsAudio: true } : {}),
     });
     const engineStatus = this.gateway.engine.status;
     transport.sendJson({ type: "engine", state: engineStatus.state, ...(engineStatus.detail ? { detail: engineStatus.detail } : {}) });
     if (this.started) {
       transport.sendJson({ type: "state", state: this.conversation.state });
       void this.pushCounts();
+      if (transport.kind === "http") {
+        const resent = this.conversation.resendUnplayedAudio();
+        if (resent > 0) this.log.write("reattach_resend", { chunks: resent });
+      }
     }
   }
 
@@ -386,6 +394,7 @@ class ConversationSession implements VoiceClientSink {
     this.unsubscribeBus?.();
     this.unsubscribeEngine?.();
     this.unbindHandsFree?.();
+    this.gateway.noteEnded(this.helmSessionId, reason, this.conversation.lastReply());
     // Leaving hands-free must not cut off a reply: detach first so the session keeps writing it into the chat.
     this.agent.detach();
     this.conversation.dispose();
@@ -512,6 +521,24 @@ export interface VoiceGatewayOptions {
   runtime: Pick<VoiceRuntime, "paths" | "engine" | "installer">;
 }
 
+/** A hands-free connection that starts again within this long of the last one gets a resume note. */
+const RESUME_NOTE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * What the model is told when hands-free comes back right after it ended, most often because a phone's
+ * connection dropped mid-reply (24 Sep 2026: "What's the most recent message you heard from me?",
+ * "I missed it, can you say it again?").
+ */
+export function buildResumeNote(sinceMs: number, reply: { text: string; finished: boolean } | undefined): string {
+  const seconds = Math.max(1, Math.round(sinceMs / 1000));
+  const gap = seconds < 90 ? `${seconds} seconds` : `${Math.round(seconds / 60)} minutes`;
+  const lead = `Hands-free just reconnected, ${gap} after the previous connection ended (often a dropped phone connection).`;
+  if (!reply) return `${lead} If the user seems to have missed something, offer to repeat it.`;
+  const excerpt = reply.text.replace(/\s+/g, " ").trim().slice(0, 300);
+  return reply.finished
+    ? `${lead} Your last reply was: "${excerpt}". If the user asks what you said or seems to have missed it, say it again briefly.`
+    : `${lead} Your last reply was cut off before it finished playing: "${excerpt}". If the user asks what you said or seems to have missed it, say it again briefly.`;
+}
 export class VoiceGateway {
   readonly ctx: AppContext;
   readonly facade: HelmBridgeFacade;
@@ -520,6 +547,8 @@ export class VoiceGateway {
   readonly engine: VoiceEngine;
   readonly installer: VoiceInstaller;
   private readonly conversations = new Map<string, ConversationSession>();
+  /** When each Helm conversation's last hands-free connection ended, for the next one's resume note. */
+  private readonly recentEnds = new Map<string, { at: number; reply?: { text: string; finished: boolean } }>();
   private readonly httpTransports = new WeakMap<ConversationSession, HttpTransport>();
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: MAX_AUDIO_FRAME_BYTES, perMessageDeflate: false });
 
@@ -550,9 +579,20 @@ export class VoiceGateway {
       if (existing.helmSessionId === helmSessionId) void existing.end("hands-free started somewhere else");
     }
     const session = new ConversationSession(this, helmSessionId, normalizeVoiceSettings(settings));
+    const ended = this.recentEnds.get(helmSessionId);
+    this.recentEnds.delete(helmSessionId);
+    if (ended && Date.now() - ended.at <= RESUME_NOTE_WINDOW_MS) {
+      session.conversation.setResumeNote(buildResumeNote(Date.now() - ended.at, ended.reply));
+    }
     this.conversations.set(session.id, session);
     session.armGraceTimer();
     return { conversationId: session.id, token: session.token };
+  }
+
+  /** Records that a hands-free connection ended; a takeover is not a drop and leaves no note. */
+  noteEnded(helmSessionId: string, reason: string, reply: { text: string; finished: boolean } | undefined): void {
+    if (reason === "hands-free started somewhere else") return;
+    this.recentEnds.set(helmSessionId, { at: Date.now(), ...(reply ? { reply } : {}) });
   }
 
   /**

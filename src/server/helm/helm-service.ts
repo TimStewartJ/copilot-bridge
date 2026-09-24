@@ -40,9 +40,10 @@ export type HelmTurnMode = "typed" | "spoken";
 
 /**
  * Reasoning effort per mode, used when Settings don't say otherwise. Typed turns can afford to
- * think; spoken turns keep someone waiting in silence, so they think less.
+ * think; spoken turns keep someone waiting in silence, so they think less. At xhigh the wait from
+ * the end of speech to the first spoken word was 5.3 s at the median and up to 19 s (24 Sep 2026).
  */
-export const HELM_DEFAULT_REASONING_EFFORTS: Record<HelmTurnMode, string> = { typed: "max", spoken: "xhigh" };
+export const HELM_DEFAULT_REASONING_EFFORTS: Record<HelmTurnMode, string> = { typed: "max", spoken: "medium" };
 
 export interface HelmConversationView {
   sessionId: string;
@@ -159,6 +160,7 @@ export class HelmService implements HelmToolRuntime {
           tools,
           workingDirectory: this.getWorkingDirectory(),
           defaultWorkModel: this.ctx.settingsStore.getSettings().model,
+          glossary: this.ctx.settingsStore.getSettings().helm?.glossary,
         }),
         // Anything that isn't a hands-free turn (chat, a transcribed recording) is answered in the chat.
         defaultTurnReasoningEffort: () => this.getTurnReasoningEffort("typed"),

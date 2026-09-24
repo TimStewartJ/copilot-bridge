@@ -35,8 +35,11 @@ export const VOICE_TIMING = {
   /** Extra wait when every end-of-turn check says the user is clearly mid-thought ("so I was thinking, um"). */
   unfinishedExtensionMs: 1_500,
   unfinishedProbability: 0.15,
-  /** Speak a short lead-in if nothing has been said this long after the user finished. */
-  fillerDelayMs: 2_000,
+  /**
+   * Speak a short lead-in if nothing has been said this long after the user finished. A tool call that
+   * takes time speaks one sooner. At 2 s nearly every turn opened with "One sec." (21 of 24 on 24 Sep 2026).
+   */
+  fillerDelayMs: 3_000,
   bargeInDuckMs: 250,
   bargeInFirstCheckMs: 450,
   bargeInSecondCheckMs: 1_000,
@@ -85,6 +88,8 @@ export interface AgentTurnInput {
   interruptedSpeech?: string;
   /** Identity of a typed message, so the chat can reconcile its optimistic copy. */
   clientMessageId?: string;
+  /** Context for the model about how this hands-free connection started (see setResumeNote). */
+  resumeNote?: string;
 }
 
 export interface AgentTurnListener {
@@ -209,6 +214,8 @@ interface GenerationState {
   cancelled: boolean;
   held: boolean;
   heldAudio: VoiceAudioChunk[];
+  /** Everything emitted for this reply, so a client that reconnects mid-reply can hear what it missed. */
+  sentAudio: VoiceAudioChunk[];
   audioSecondsSent: number;
   firstAudioAt?: number;
   playedChunkIds: Set<number>;
@@ -260,6 +267,8 @@ export class VoiceConversation {
   private sleepSegmentStart?: number;
   private carryText?: string;
   private interruptedSpeech?: string;
+  private resumeNote?: string;
+  private lastReplyState?: { genId: number; text: string; finished: boolean };
   private fillerSeq = 0;
   private lastSpeechAt: number;
   private autoSleepTimer?: unknown;
@@ -339,6 +348,20 @@ export class VoiceConversation {
       default:
         break;
     }
+  }
+
+  /**
+   * Hands-free restarted soon after the last connection ended (a dropped call, most likely): the
+   * next thing the user says reaches the model with this note, so it can offer to repeat itself.
+   */
+  setResumeNote(note: string): void {
+    this.resumeNote = note;
+  }
+
+  /** The newest reply and whether it played to the end, for the note the next connection gets. */
+  lastReply(): { text: string; finished: boolean } | undefined {
+    const reply = this.lastReplyState;
+    return reply && reply.text.trim() ? { text: reply.text, finished: reply.finished } : undefined;
   }
 
   onPlaybackStarted(genId: number, chunkId: number): void {
@@ -731,6 +754,10 @@ export class VoiceConversation {
     speechEndAt: number,
     onDelivery?: (delivery: TypedTextDelivery) => void,
   ): void {
+    if (this.resumeNote && (input.kind === "user" || input.kind === "continuation" || input.kind === "interrupted")) {
+      input = { ...input, resumeNote: this.resumeNote };
+      this.resumeNote = undefined;
+    }
     const gen = this.createGeneration(input.kind, metrics, speechEndAt);
     this.gen = gen;
     let deliveryReported = false;
@@ -791,6 +818,7 @@ export class VoiceConversation {
       cancelled: false,
       held: false,
       heldAudio: [],
+      sentAudio: [],
       audioSecondsSent: 0,
       playedChunkIds: new Set(),
       sleepAfter: false,
@@ -853,6 +881,7 @@ export class VoiceConversation {
       if (!gen.text.trim()) this.enqueueChunk(gen, "Sorry, I couldn't reach Copilot just now.");
     }
     this.flushPendingSpeech(gen);
+    if (gen.kind !== "local") this.lastReplyState = { genId: gen.id, text: gen.text, finished: false };
     this.sink.send({ type: "assistant_done", genId: gen.id, text: gen.text, interrupted: aborted });
     this.log("assistant", { genId: gen.id, text: gen.text, aborted });
     this.maybeFinishGeneration(gen, { playbackIdle: false });
@@ -955,7 +984,29 @@ export class VoiceConversation {
       }
     }
     gen.audioSecondsSent += chunk.pcm.length / chunk.sampleRate;
+    gen.sentAudio.push(chunk);
     this.sink.sendAudio(chunk);
+  }
+
+  /**
+   * A client that reconnected mid-reply missed the audio sent while it was away (and may have dropped
+   * what it had queued but not started). Sends every chunk of the current reply it has not started
+   * playing again, in order, and restarts the playback clock. Returns how many audio pieces were sent.
+   */
+  resendUnplayedAudio(): number {
+    const gen = this.gen;
+    if (!gen || gen.cancelled || gen.held) return 0;
+    const missing = gen.sentAudio.filter((chunk) => !gen.playedChunkIds.has(chunk.chunkId));
+    if (missing.length === 0) return 0;
+    gen.firstAudioAt = this.timers.now();
+    gen.audioSecondsSent = 0;
+    for (const chunk of missing) {
+      gen.audioSecondsSent += chunk.pcm.length / chunk.sampleRate;
+      this.sink.sendAudio(chunk);
+    }
+    this.log("resend_audio", { genId: gen.id, chunks: missing.length });
+    this.maybeFinishGeneration(gen, { playbackIdle: false });
+    return missing.length;
   }
 
   private releaseHeld(gen: GenerationState): void {
@@ -999,6 +1050,7 @@ export class VoiceConversation {
   private finishGeneration(gen: GenerationState): void {
     if (this.gen !== gen || gen.cancelled) return;
     if (gen.playbackIdleTimer) this.timers.clearTimeout(gen.playbackIdleTimer);
+    if (this.lastReplyState?.genId === gen.id) this.lastReplyState.finished = true;
     this.gen = undefined;
     this.clearBargeIn();
     if (gen.sleepAfter) {
@@ -1050,11 +1102,21 @@ function words(text: string): string[] {
   return text.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
 }
 
-/** True when a "user" transcript is mostly the assistant's own recent speech leaking into the mic. */
+/**
+ * True when a "user" transcript is mostly the assistant's own recent speech leaking into the mic.
+ * Short ones count too: on a phone speaker the Bridge heard its own "One sec." and "Let me check." (as
+ * "Let me change.") and cancelled its answer three times (23 Sep 2026). A short transcript is echo when
+ * it appears word for word in what was just said, or shares two of its three words with it.
+ */
 export function looksLikeEcho(transcript: string, spokenText: string): boolean {
   const heard = words(transcript);
-  if (heard.length < 3 || !spokenText) return false;
-  const spoken = new Set(words(spokenText.slice(-400)));
+  if (heard.length === 0 || !spokenText) return false;
+  const recent = words(spokenText.slice(-400));
+  const spoken = new Set(recent);
   const overlap = heard.filter((word) => spoken.has(word)).length;
+  if (heard.length <= 3) {
+    const phrase = ` ${heard.join(" ")} `;
+    return ` ${recent.join(" ")} `.includes(phrase) || (heard.length === 3 && overlap >= 2);
+  }
   return overlap / heard.length >= 0.75;
 }

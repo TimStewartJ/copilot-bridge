@@ -15,9 +15,39 @@ describe("buildHelmSystemPrompt", () => {
     expect(prompt).toContain("Local time zone: America/Los_Angeles.");
     expect(prompt).toContain("hands_free");
   });
+
+  it("asks which task or session before acting on an ambiguous spoken name, and keeps spoken lists short", () => {
+    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles" });
+    expect(prompt).toContain("ask which before acting");
+    expect(prompt).toContain("Never start a second session for a request you already dispatched");
+    expect(prompt).toContain("name the first two or three in one sentence");
+  });
+
+  it("uses find for loosely named tasks, reports progress, flags automated sessions and lets acknowledgements pass", () => {
+    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles" });
+    expect(prompt).toContain("call find first");
+    expect(prompt).toContain("report its progress");
+    expect(prompt).toContain("is automated: say so");
+    expect(prompt).toContain("A bare acknowledgement");
+    expect(prompt).not.toContain("Names the user uses");
+  });
+
+  it("includes the user's names list when there is one", () => {
+    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles", glossary: "timmiepc = Timmy PC" });
+    expect(prompt).toContain("Names the user uses (speech recognition may mishear them; map what you hear onto these): timmiepc = Timmy PC");
+  });
 });
 
 describe("composeHandsFreePrompt", () => {
+  it("adds the names list and a resume note as Bridge notes without showing them in the transcript", () => {
+    const composed = composeHandsFreePrompt(
+      { kind: "user", text: "what did you say?", resumeNote: "Hands-free just reconnected, 8 seconds after the previous connection ended." },
+      { ...context, glossary: "Tether = my iPhone app" },
+    );
+    expect(composed.prompt).toBe("[hands-free]\n[Names the user uses: Tether = my iPhone app]\n[Hands-free just reconnected, 8 seconds after the previous connection ended.]\nwhat did you say?");
+    expect(composed.displayPrompt).toBe("what did you say?");
+  });
+
   it("frames what the user said but shows only their words", () => {
     expect(composeHandsFreePrompt({ kind: "user", text: "what's new?" }, { ...context, snapshot: "2 unread" })).toEqual({
       prompt: "[hands-free]\n[Bridge now: 2 unread]\nwhat's new?",
