@@ -62,7 +62,7 @@ describe("native task deferral dialog", () => {
   });
   it("explains an already-arrived revisit rather than silently changing it", async () => {
     await render({ ...task, nextTouchAt: "2000-01-01T00:00:00Z" });
-    expect(harness.dom.container.textContent).toContain("will still appear in Ready to revisit");
+    expect(harness.dom.container.textContent).toContain("show under Needs you on Home right away");
     await submit();
     expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: true });
   });

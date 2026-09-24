@@ -100,3 +100,18 @@ export const OUTCOME_DONE: Record<TaskOutcome, string> = {
   mute: "Muted",
   set_aside: "Set aside",
 };
+
+/** Set-aside tasks that still need Tim (a question, a stall or a reached revisit), by id with the reason to show. */
+export function setAsideAttention(rows: readonly TaskOverviewRow[] | undefined, setAsideIds: ReadonlySet<string>, now = new Date()): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const row of rows ?? []) {
+    if (row.state !== "needs_you" || !setAsideIds.has(row.id)) continue;
+    result.set(row.id, stateBadge(row, now)?.label ?? "Needs you");
+  }
+  return result;
+}
+
+/** "1 needs you" / "2 need you", for a collapsed section header. */
+export function needsYouCount(count: number): string {
+  return `${count} need${count === 1 ? "s" : ""} you`;
+}

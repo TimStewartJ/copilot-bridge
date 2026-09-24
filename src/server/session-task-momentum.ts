@@ -12,7 +12,7 @@ export function formatTaskMomentumContext(task: Task): string | undefined {
   const hasNextTouchAt = !!task.nextTouchAt?.trim();
 
   if (task.deferred) {
-    lines.push("- Deferred: set aside from Home's Continue working until explicitly resumed. A revisit brings it back for review only. Running sessions, schedules and session defers are not paused.");
+    lines.push("- Deferred: in Set aside, out of the task list's working section and Home's working sections, until explicitly resumed. A revisit brings it back for review only. Running sessions, schedules and session defers are not paused.");
   }
   if (task.kind !== "ongoing" && task.doneWhen?.trim()) {
     lines.push(`- Done when: ${formatTaskMomentumValue(task.doneWhen)}`);

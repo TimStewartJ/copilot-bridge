@@ -2,7 +2,7 @@ import { createElement, type ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, Task } from "../api";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
-import { findAllByTag, getReactProps, waitTick } from "../test-react-harness";
+import { findAllByTag, getReactProps, waitTick, waitUntilAct } from "../test-react-harness";
 
 const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
@@ -59,7 +59,7 @@ describe("TaskRail navigation attention", () => {
     harness = null;
   });
 
-  async function renderRail(overrides: Partial<ComponentProps<typeof TaskRail>> = {}) {
+  async function renderRail(overrides: Partial<ComponentProps<typeof TaskRail>> = {}, overviewTasks: unknown[] = []) {
     const props: ComponentProps<typeof TaskRail> = {
       tasks: [],
       activeTaskId: null,
@@ -75,7 +75,7 @@ describe("TaskRail navigation attention", () => {
       onToggleExpanded: vi.fn(),
       ...overrides,
     };
-    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, tasks: [] });
+    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, sourceErrors: [], tasks: overviewTasks });
     harness ??= await createDialogTestHarness();
     await harness.render(createElement(TaskRail, props));
     return props;
@@ -170,5 +170,19 @@ describe("TaskRail navigation attention", () => {
     expect(text()).toContain("Parked idea");
     expect(text()).toContain("Deferred");
     expect(text()).toContain("Muted");
+  });
+  it("flags a set-aside task that needs you without opening the section", async () => {
+    await renderRail({ expanded: true, tasks: [createTask(), createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1 })] }, [
+      { id: "deferred", title: "Parked idea", kind: "task", muted: false, deferred: true, state: "needs_you", reasons: ["question"], staleWait: false,
+        idleDays: 40, busyCount: 0, stalledCount: 0, inputCount: 1, automationCount: 0, order: 1 },
+    ]);
+    const text = () => harness!.dom.container.textContent ?? "";
+    await waitUntilAct(harness!.act, () => text().includes("1 needs you"), { label: "set-aside attention" });
+    expect(text()).toContain("Set aside (1)1 needs you");
+    expect(text()).not.toContain("Parked idea");
+    const toggle = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.includes("Set aside (1)"));
+    await harness!.act(async () => { getReactProps(toggle)!.onClick(); await waitTick(); });
+    expect(text()).toContain("Answer needed");
+    expect(text()).toContain("Deferred");
   });
 });

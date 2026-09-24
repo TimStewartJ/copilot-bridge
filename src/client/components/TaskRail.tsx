@@ -20,6 +20,7 @@ import useTaskIndicators, {
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { splitArchivedTasks, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
+import { needsYouCount, setAsideAttention } from "../lib/task-state-ui";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
 import { DndContext } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -190,6 +191,8 @@ export default function TaskRail({
     : undefined, [activeTasksForOrder, onMoveAndReorder, setAsideIds]);
   const overview = useTaskOverviewQuery();
   const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
+  // A deferred task that asks something or reaches its revisit date must not vanish inside a collapsed section.
+  const setAsideNeeds = useMemo(() => setAsideAttention(overview.data?.tasks, setAsideIds), [overview.data, setAsideIds]);
   const [showSetAside, setShowSetAside] = useState(false);
   useEffect(() => {
     if (activeTaskId && setAsideIds.has(activeTaskId)) setShowSetAside(true);
@@ -366,7 +369,7 @@ export default function TaskRail({
                 <button
                   key={task.id}
                   onClick={() => onSelectTask(task.id)}
-                  title={getTaskTitle(task)}
+                  title={setAsideNeeds.has(task.id) ? `${getTaskTitle(task)} • ${setAsideNeeds.get(task.id)}` : getTaskTitle(task)}
                   className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} text-text-primary hover:brightness-110`}
                 >
                   {initials}
@@ -386,12 +389,17 @@ export default function TaskRail({
             <>
               <button
                 onClick={() => setShowSetAside((v) => !v)}
-                title={`Set aside (${setAsideTasks.length})`}
-                aria-label={`Set aside (${setAsideTasks.length})`}
+                title={`Set aside (${setAsideTasks.length})${setAsideNeeds.size ? ` • ${needsYouCount(setAsideNeeds.size)}` : ""}`}
+                aria-label={`Set aside (${setAsideTasks.length})${setAsideNeeds.size ? `, ${needsYouCount(setAsideNeeds.size)}` : ""}`}
                 aria-expanded={showSetAside}
-                className="w-9 h-9 rounded-lg flex items-center justify-center text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
+                className="relative w-9 h-9 rounded-lg flex items-center justify-center text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
               >
                 <EyeOff size={16} />
+                {setAsideNeeds.size > 0 && (
+                  <span className={DS.status.corner}>
+                    <StatusIcon kind="warning" decorative />
+                  </span>
+                )}
               </button>
               {showSetAside && setAsideTasks.map((task) => (
                 <button
@@ -744,6 +752,12 @@ export default function TaskRail({
                   {showSetAside ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <EyeOff size={12} />
                   Set aside ({setAsideTasks.length})
+                  {setAsideNeeds.size > 0 && (
+                    <span className={cx("ml-1 inline-flex items-center gap-1 font-medium", DS.tone.warning)}>
+                      <StatusIcon kind="warning" decorative />
+                      {needsYouCount(setAsideNeeds.size)}
+                    </span>
+                  )}
                 </button>
                 {showSetAside && (
                   <div className={cx(DS.surface.group, "mb-1 overflow-hidden")} data-ds-surface="group">
@@ -758,6 +772,7 @@ export default function TaskRail({
                         <span className="w-3 shrink-0" />
                         <span className="min-w-0 flex-1 truncate font-medium text-text-primary">{task.title}</span>
                         <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
+                        {setAsideNeeds.has(task.id) && <span className={cx(DS.badge.base, DS.badge.tone.warning)}>{setAsideNeeds.get(task.id)}</span>}
                         <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>{task.muted ? "Muted" : "Deferred"}</span>
                       </button>
                     ))}

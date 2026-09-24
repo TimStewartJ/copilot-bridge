@@ -26,7 +26,7 @@ export function QuietTaskActions({ row, disabled, onOutcome, onLater, size = "sm
   const keepTitle = `Keep it; if it is still quiet it comes back in ${KEEP_DAYS / 7} weeks.`;
   if (row.kind === "ongoing") {
     return <div className="flex flex-wrap gap-1.5">
-      <Button size={size} disabled={disabled} onClick={onLater} title="Hide from Continue working until you resume it">Set aside…</Button>
+      <Button size={size} disabled={disabled} onClick={onLater} title="Move to Set aside until you resume it, with an optional revisit date">Set aside…</Button>
       <Button size={size} disabled={disabled} onClick={() => onOutcome("mute")} title="Stop unread indicators and keep it out of Home">Mute</Button>
       <Button size={size} variant="ghost" disabled={disabled} onClick={() => onOutcome("keep")} title={keepTitle}>{keepLabel}</Button>
     </div>;
