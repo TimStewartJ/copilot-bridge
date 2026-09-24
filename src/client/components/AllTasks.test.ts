@@ -93,4 +93,12 @@ describe("All tasks", () => {
     expect(text()).toContain("Task states are unavailable, not empty.");
     expect(text()).not.toContain("No active tasks");
   });
+  it("says a surfaced task is still deferred", async () => {
+    await render([row({ id: "d", title: "Parked but asking", state: "needs_you", reasons: ["question"], inputCount: 1, deferred: true }), row({ id: "e", title: "Plain" })]);
+    const needs = findAllByTag(harness.dom.container, "SECTION").find(node => getReactProps(node)?.["aria-label"] === "Needs you");
+    expect(needs?.textContent).toContain("Answer needed");
+    expect(needs?.textContent).toContain("Deferred");
+    const upNext = findAllByTag(harness.dom.container, "SECTION").find(node => getReactProps(node)?.["aria-label"] === "Up next");
+    expect(upNext?.textContent).not.toContain("Deferred");
+  });
 });

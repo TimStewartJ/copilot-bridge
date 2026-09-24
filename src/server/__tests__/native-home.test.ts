@@ -43,7 +43,7 @@ describe("native Home composition", () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name);
     for (const removed of ["works", "commitments", "human_requests", "results", "proposals", "decisions", "alerts", "focus_events", "feed_cards"]) expect(tables).not.toContain(removed);
   });
-  it("excludes deferred tasks only from Continue working, not revisits, inputs, replies or deadlines", async () => {
+  it("keeps deferred tasks out of working sections, but not revisits, inputs, replies or deadlines", async () => {
     const app = setup([{ sessionId: "waiting", lastActivityAt: "2026-09-21T12:00:00Z" }, { sessionId: "reply", lastActivityAt: "2026-09-21T12:00:00Z" }]);
     const task = app.taskStore.createTask("Deferred ongoing work", undefined, "ongoing");
     app.taskStore.updateTask(task.id, { deferred: true, nextTouchAt: "2000-01-01T00:00:00Z", nextAction: "Read comparison" });
