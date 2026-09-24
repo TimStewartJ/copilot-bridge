@@ -698,6 +698,7 @@ async function readScannedRegionFingerprint(
 
 /**
  * Scan `eventsPath` up to `upToBytes`, resuming from the cached fold when the log only grew.
+ * Split records accumulate chunk fragments and are joined once, avoiding repeated prefix copies.
  * Head/tail fingerprints over the already-scanned region detect rewrites (compaction, undo,
  * fork) that would otherwise make a resumed fold wrong.
  */
@@ -739,8 +740,9 @@ async function scanEventLogStats(
     const scanner = createEventLogStatsScanner(sessionId, state);
     const chunkBuffer = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
     let fileOffset = startOffset;
-    let leftover = Buffer.alloc(0);
-    let leftoverStartOffset = startOffset;
+    let pending: Buffer[] = [];
+    let pendingBytes = 0;
+    let pendingStartOffset = startOffset;
     let scannedBytes = startOffset;
     let sliceStartedAt = performance.now();
 
@@ -750,26 +752,29 @@ async function scanEventLogStats(
       if (bytesRead === 0) break;
 
       const chunk = chunkBuffer.subarray(0, bytesRead);
-      const combined = leftover.length > 0
-        ? Buffer.concat([leftover, chunk], leftover.length + bytesRead)
-        : chunk;
-      const combinedStartOffset = leftover.length > 0 ? leftoverStartOffset : fileOffset;
       let lineStart = 0;
 
       while (true) {
-        const newlineIndex = combined.indexOf(0x0a, lineStart);
+        const newlineIndex = chunk.indexOf(0x0a, lineStart);
         if (newlineIndex < 0) break;
-        scanner.processLine(combined.subarray(lineStart, newlineIndex), combinedStartOffset + lineStart);
+        const line = chunk.subarray(lineStart, newlineIndex);
+        if (pendingBytes > 0) {
+          scanner.processLine(Buffer.concat([...pending, line], pendingBytes + line.length), pendingStartOffset);
+          pending = [];
+          pendingBytes = 0;
+        } else {
+          scanner.processLine(line, fileOffset + lineStart);
+        }
         lineStart = newlineIndex + 1;
-        scannedBytes = combinedStartOffset + lineStart;
+        scannedBytes = fileOffset + lineStart;
       }
 
-      if (lineStart < combined.length) {
-        leftover = Buffer.from(combined.subarray(lineStart));
-        leftoverStartOffset = combinedStartOffset + lineStart;
-      } else {
-        leftover = Buffer.alloc(0);
-        leftoverStartOffset = fileOffset + bytesRead;
+      if (lineStart < chunk.length) {
+        if (pendingBytes === 0) pendingStartOffset = fileOffset + lineStart;
+        // The read buffer is reused; retain only this chunk's unfinished fragment.
+        const fragment = Buffer.from(chunk.subarray(lineStart));
+        pending.push(fragment);
+        pendingBytes += fragment.length;
       }
       fileOffset += bytesRead;
 
@@ -803,8 +808,8 @@ async function scanEventLogStats(
 
     // The tail transform also consumes a final line without a trailing newline, so the returned
     // stats must include it even though it is never folded into the cached state.
-    if (leftover.length > 0) {
-      scanner.processLine(leftover, leftoverStartOffset);
+    if (pendingBytes > 0) {
+      scanner.processLine(Buffer.concat(pending, pendingBytes), pendingStartOffset);
     }
 
     return { state: scanner.syncState(), resumedFrom: startOffset, scannedBytes, waitedMs };

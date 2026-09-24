@@ -202,6 +202,92 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect(readSpan?.metadata?.tailEventCount as number).toBeLessThan(5_180);
   });
 
+  it("assembles multi-chunk records without repeatedly copying or searching their prefixes", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-long-records");
+    const sessionId = "long-records";
+    const events = [
+      { id: "turn-start", type: "assistant.turn_start", data: { turnId: "turn-1" } },
+      { id: "old", type: "user.message", data: { content: "old" } },
+      {
+        id: "tool-start", type: "tool.execution_start",
+        data: { toolCallId: "tool-1", toolName: "powershell", arguments: { command: "Get-Date" } },
+      },
+      { type: "permission.requested", data: { payload: "x".repeat(4 * 1024 * 1024) } },
+      {
+        id: "tool-end", type: "tool.execution_complete",
+        data: { toolCallId: "tool-1", success: true, result: { content: "\u00e9\u{1f600}".repeat(128 * 1024) } },
+      },
+      { id: "request", type: "user.message", data: { content: "request" } },
+      { id: "reply", type: "assistant.message", data: { content: "done", reasoningText: "thinking" } },
+      { id: "turn-end", type: "assistant.turn_end", data: { turnId: "turn-1" } },
+      { id: "recent", type: "user.message", timestamp: "2026-04-30T11:00:00.000Z", data: { content: "recent" } },
+    ];
+    writeSessionFiles(copilotHome, sessionId, {});
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const raw = `${events.map((event) => JSON.stringify(event)).join("\r\n")}\r\n`;
+    writeFileSync(eventsPath, raw);
+    const { deps, spans } = createDeps(copilotHome);
+    const full = await readMessagesFromDisk(deps, sessionId);
+    const concat = vi.spyOn(Buffer, "concat");
+    const originalIndexOf = Buffer.prototype.indexOf;
+    let largestSearchBuffer = 0;
+    const search = vi.spyOn(Buffer.prototype, "indexOf").mockImplementation(function (
+      this: Buffer,
+      ...args: Parameters<typeof originalIndexOf>
+    ) {
+      if (args[0] === 0x0a) largestSearchBuffer = Math.max(largestSearchBuffer, this.length);
+      return originalIndexOf.apply(this, args);
+    });
+    try {
+      const latest = await readMessagesFromDisk(deps, sessionId, { limit: 2 });
+      const copiedBytes = concat.mock.calls.reduce((total, [buffers, length]) =>
+        total + (length ?? buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0)), 0);
+      expect(concat).toHaveBeenCalled();
+      expect(copiedBytes).toBeLessThanOrEqual(Buffer.byteLength(raw) * 2);
+      expect(largestSearchBuffer).toBeLessThanOrEqual(256 * 1024);
+      expect(latest).toEqual({ ...full, messages: full.messages.slice(-2), hasMore: true });
+      expect(spans.find((span) => span.name === "session.readFromDisk.stats")?.metadata)
+        .toMatchObject({ cacheResult: "miss", scannedBytes: Buffer.byteLength(raw), eventCount: events.length });
+    } finally {
+      search.mockRestore();
+      concat.mockRestore();
+    }
+  });
+
+  it("caches only complete lines when a multi-chunk final record has no newline", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-long-final-record");
+    const sessionId = "long-final-record";
+    const prefix = [
+      { type: "permission.requested", data: { payload: "x".repeat(2 * 1024 * 1024) } },
+      { id: "old", type: "user.message", data: { content: "old" } },
+    ];
+    writeSessionFiles(copilotHome, sessionId, { events: prefix });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const prefixBytes = Buffer.byteLength(`${prefix.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    const content = "\u00e9\u{1f600}".repeat(128 * 1024);
+    const finalRecord = JSON.stringify({ id: "final", type: "user.message", data: { content } });
+    appendFileSync(eventsPath, finalRecord);
+    const { deps, spans } = createDeps(copilotHome);
+
+    const first = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
+    expect(first.total).toBe(2);
+    expect(first.messages[0]?.content).toBe(content);
+    expect(spans.find((span) => span.name === "session.readFromDisk.stats")?.metadata)
+      .toMatchObject({ cacheResult: "miss", scannedBytes: prefixBytes });
+
+    const appended = `\r\n${JSON.stringify({ id: "next", type: "user.message", data: { content: "next" } })}\r\n`;
+    appendFileSync(eventsPath, appended);
+    const resumed = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
+    const statsSpans = spans.filter((span) => span.name === "session.readFromDisk.stats");
+    expect(statsSpans[1]?.metadata).toMatchObject({
+      cacheResult: "resumed",
+      resumedFromOffset: prefixBytes,
+      scannedBytes: Buffer.byteLength(finalRecord + appended),
+    });
+    const full = await readMessagesFromDisk(deps, sessionId);
+    expect(resumed).toEqual({ ...full, messages: full.messages.slice(-1), hasMore: true });
+  });
+
   it("preserves the active turn instance when the bounded tail starts mid-turn", async () => {
     const copilotHome = makeTestDir("session-disk-reader-tail-turn-instance");
     const padding = Array.from({ length: 5_000 }, (_, index) => ({
