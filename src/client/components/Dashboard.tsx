@@ -6,6 +6,7 @@ import { useWorkMapQuery } from "../hooks/queries/useWorkMap";
 import { loadWorkMapFilters } from "../work-map-filter-state";
 import NativeHome from "./NativeHome";
 import AllTasks from "./AllTasks";
+import { useIsMobile } from "../useIsMobile";
 import { ALL_TASKS_PATH } from "../lib/dashboard-routes";
 import DashboardWorkMap from "./DashboardWorkMap";
 import { Button } from "../design/primitives";
@@ -25,6 +26,7 @@ export default function Dashboard(props: DashboardProps) {
   const { data: settings } = useSettingsQuery();
   const mapActive = location.pathname === "/dashboard/work-map";
   const tasksActive = location.pathname === ALL_TASKS_PATH;
+  const isMobile = useIsMobile();
   const [includeArchived, setIncludeArchived] = useState(() => loadWorkMapFilters().includeArchived);
   const [assignedToMe, setAssignedToMe] = useState(() => loadWorkMapFilters().assignedToMeOnly);
   const map = useWorkMapQuery(mapActive && !!settings?.providers?.ado, includeArchived, assignedToMe);
@@ -39,6 +41,6 @@ export default function Dashboard(props: DashboardProps) {
         onRefresh={map.refresh} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived}
         assignedToMeOnly={assignedToMe} onAssignedToMeChange={setAssignedToMe}
         onSelectTask={props.onSelectTask} onCreateTaskForWorkItem={props.onCreateTaskForWorkItem} />
-    </div></div> : tasksActive ? <AllTasks onSelectTask={id => props.onSelectTask(id)} scrollRestoration={props.scrollRestoration} /> : <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
+    </div></div> : tasksActive ? <AllTasks compact={isMobile} onBack={() => navigate("/dashboard/home")} onSelectTask={id => props.onSelectTask(id)} scrollRestoration={props.scrollRestoration} /> : <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
   </div>;
 }
