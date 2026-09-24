@@ -310,6 +310,8 @@ export function createVoiceJobManager({
     try {
       sessionManager.startWork(targetSessionId, transcript);
       await waitForTranscriptAcceptance(targetSessionId, transcript, sendingJob.updatedAt);
+      // A dictated message is Tim's own words, like a typed one: it counts toward task states.
+      try { taskStore.recordUserMessage?.(targetSessionId); } catch (error) { console.warn("[voice] Could not record a sent message:", error); }
       await markJobDone(job.id, transcript);
     } catch (error) {
       if (isBridgeRestartingError(error)) {

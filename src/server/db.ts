@@ -8,6 +8,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReturnedDeferPrompt } from "./defer-result-message.js";
 import { initializeDashboardRetirementSchema } from "./dashboard-retirement-schema.js";
+import { initializeSessionUserMessagesSchema } from "./session-user-messages-schema.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 
@@ -952,6 +953,7 @@ function initSchema(db: DatabaseSync): void {
   }
 
   initializeDashboardRetirementSchema(db);
+  initializeSessionUserMessagesSchema(db);
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
   initializeDocsFts(db);

@@ -9,7 +9,7 @@ vi.mock("./PullToRefresh", () => ({ default: ({ children }: { children: unknown 
 import AllTasks from "./AllTasks";
 
 const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id: "t", title: "Task", kind: "task", muted: false, deferred: false,
-  state: "up_next", reasons: [], staleWait: false, idleDays: 10, engagementApproximate: false, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
+  state: "up_next", reasons: [], staleWait: false, idleDays: 10, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
 function overview(tasks: TaskOverviewRow[]): TaskOverview {
   const counts = { needs_you: 0, in_motion: 0, up_next: 0, waiting: 0, no_next_step: 0, gone_quiet: 0, set_aside: 0 };
   for (const task of tasks) counts[task.state] += 1;
