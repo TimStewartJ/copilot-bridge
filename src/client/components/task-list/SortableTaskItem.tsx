@@ -2,7 +2,6 @@ import type { PointerEvent } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
-import { timeAgo } from "../../time";
 import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import type { LongPressBindings } from "../../hooks/useLongPressMenu";
@@ -29,6 +28,8 @@ interface SortableTaskItemProps {
   rowDrag?: boolean;
   /** Reorder mode: the row stops opening the task and shows a drag handle beside it. */
   reordering?: boolean;
+  /** Task states say this task has gone quiet. */
+  quiet?: boolean;
 }
 
 const SIGNAL_TONE: Record<TaskRowSignalTone, keyof typeof DS.badge.tone> = {
@@ -51,6 +52,7 @@ export default function SortableTaskItem({
   variant = "list",
   rowDrag = false,
   reordering = false,
+  quiet = false,
 }: SortableTaskItemProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -64,17 +66,14 @@ export default function SortableTaskItem({
   };
 
   const isRail = variant === "rail";
-  const allSignals = getTaskRowSignals(task, indicator);
+  const allSignals = getTaskRowSignals(task, indicator, undefined, { quiet });
   // An open question, unread activity and a working agent share one leading slot.
   // Priority there: answer needed, then unread, then working.
   const needsInputSignal = allSignals.find((candidate) => candidate.kind === "needs-input");
   const busySignal = allSignals.find((candidate) => candidate.kind === "busy");
   const signals = allSignals.filter((candidate) => candidate.kind !== "needs-input" && candidate.kind !== "busy");
-  const primarySignal = signals[0];
-  const supportingSignal = signals
-    .find((candidate) => candidate.kind === "deferred" && candidate !== primarySignal) ?? signals
-    .slice(1)
-    .find((candidate) => candidate.kind !== "unread");
+  // One line, one status: unread already has its dot, so it only names the row when nothing else does.
+  const primarySignal = signals.find((candidate) => candidate.kind !== "unread");
   const showUnreadDot = shouldShowTaskRowUnreadDot(task, indicator);
   const emphasizeTitle = showUnreadDot || Boolean(needsInputSignal);
 
@@ -125,19 +124,6 @@ export default function SortableTaskItem({
             {isRail ? primarySignal.shortLabel : primarySignal.label}
           </span>
         )}
-      </div>
-      <div className="pl-[18px] mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-text-muted">
-        {task.muted && <span className="font-medium">muted</span>}
-        {task.muted && <span className="text-text-faint">•</span>}
-        {!task.muted && supportingSignal && (
-          <>
-            <span className="truncate font-medium" title={supportingSignal.label}>
-              {isRail ? supportingSignal.shortLabel : supportingSignal.label}
-            </span>
-            <span className="text-text-faint">•</span>
-          </>
-        )}
-        <span className="shrink-0">{timeAgo(indicator?.lastActivity ?? task.updatedAt)}</span>
       </div>
     </>
   );

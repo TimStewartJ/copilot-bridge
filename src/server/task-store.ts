@@ -36,6 +36,8 @@ export interface Task {
   muted: boolean;
   deferred: boolean;
   status: TaskStatus;
+  /** When Tim last opened the task in the UI. Not a task change: it never bumps updatedAt. */
+  lastOpenedAt?: string;
   groupId?: string;
   cwd?: string;
   notes: string;
@@ -376,6 +378,7 @@ export function createTaskStore(
       muted: row.muted === 1 || row.muted === true,
       deferred: row.deferred === 1 || row.deferred === true,
       status: normalizeStoredTaskStatus(row.status),
+      ...(normalizeOptionalTimestamp(row.lastOpenedAt) ? { lastOpenedAt: normalizeOptionalTimestamp(row.lastOpenedAt) } : {}),
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
       notes: row.notes,
@@ -426,6 +429,29 @@ export function createTaskStore(
       if (kindDiff !== 0) return kindDiff;
       return a.order - b.order;
     });
+  }
+
+  /** Records that Tim opened a task. Deliberately silent: no updatedAt change and no task:changed event. */
+  function markOpened(id: string, at = new Date().toISOString()): string | undefined {
+    const result = db.prepare(
+      "UPDATE tasks SET lastOpenedAt = ? WHERE id = ? AND (lastOpenedAt IS NULL OR lastOpenedAt < ?)",
+    ).run(at, id, at) as { changes?: number };
+    if (!result.changes && !db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(id)) return undefined;
+    return (db.prepare("SELECT lastOpenedAt FROM tasks WHERE id = ?").get(id) as any)?.lastOpenedAt ?? at;
+  }
+
+  /** One pass over the momentum history: Tim's latest own edit, and when waiting-for last changed, per task. */
+  function listMomentumSignals(): Map<string, { userEditedAt?: string; waitingChangedAt?: string }> {
+    const signals = new Map<string, { userEditedAt?: string; waitingChangedAt?: string }>();
+    for (const row of db.prepare("SELECT taskId, MAX(at) AS at FROM task_momentum_events WHERE source = 'user' GROUP BY taskId").all() as any[]) {
+      signals.set(String(row.taskId), { userEditedAt: String(row.at) });
+    }
+    for (const row of db.prepare(`SELECT taskId, MAX(at) AS at FROM task_momentum_events
+      WHERE changesJson LIKE '%"field":"waitingOn"%' GROUP BY taskId`).all() as any[]) {
+      const id = String(row.taskId);
+      signals.set(id, { ...signals.get(id), waitingChangedAt: String(row.at) });
+    }
+    return signals;
   }
 
   function getTask(id: string): Task | undefined {
@@ -915,7 +941,7 @@ export function createTaskStore(
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
     getTaskSessionCounts,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
-    findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule,
+    findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, markOpened, listMomentumSignals,
   };
 }
 

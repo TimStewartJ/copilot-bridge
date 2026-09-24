@@ -13,6 +13,7 @@ export type TaskRowSignalKind =
   | "unread"
   | "completed"
   | "deferred"
+  | "quiet"
   | "archived";
 
 export type TaskRowSignalTone = "accent" | "info" | "warning" | "success" | "danger" | "faint";
@@ -42,6 +43,7 @@ const SIGNAL_STATUS: Record<TaskRowSignalKind, DsStatusKind> = {
   unread: "unread",
   completed: "done",
   deferred: "paused",
+  quiet: "paused",
   archived: "closed",
 };
 
@@ -63,6 +65,8 @@ export function getTaskRowSignals(
   task: Task,
   indicator?: TaskIndicator,
   now = new Date(),
+  /** From task states: untouched long enough to be worth a look. Never derived from checklist items. */
+  options: { quiet?: boolean } = {},
 ): TaskRowSignal[] {
   const lifecycleState = getTaskLifecycleDisplayState(task);
   if (lifecycleState === "archived") {
@@ -115,6 +119,7 @@ export function getTaskRowSignals(
       "faint",
     ));
   }
+  if (options.quiet) signals.push(signal("quiet", "Quiet for a month or more", "Quiet", "faint"));
 
   return signals;
 }

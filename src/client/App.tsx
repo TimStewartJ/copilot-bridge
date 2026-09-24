@@ -28,6 +28,7 @@ import {
   isSessionActive,
   markSessionReadOnPageHide,
   getTaskDeletionPreview,
+  markTaskOpened,
   ApiError,
   API_BASE,
   type ChecklistItem,
@@ -42,6 +43,7 @@ import {
   type CreateSessionOptions,
 } from "./api";
 import { useReadState } from "./useReadState";
+import { TASK_OVERVIEW_KEY } from "./hooks/queries/useTaskOverview";
 import { usePageAttention } from "./usePageAttention";
 import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type VoiceBackgroundJob, type VoiceSessionActivity, type VoiceSessionSettled } from "./hooks/useBackgroundVoiceJobs";
 import {
@@ -50,7 +52,7 @@ import {
 } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
-import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
+import { ALL_TASKS_PATH, getRememberedDashboardPath, isAllTasksPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
@@ -115,13 +117,15 @@ import BackendStatusBanner from "./components/BackendStatusBanner";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components/PullToRefresh";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileWorkSegments } from "./components/MobileWorkSegments";
+import AllTasks from "./components/AllTasks";
+import { SegmentedControl } from "./design/primitives";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
 import { useIsMobile } from "./useIsMobile";
 import { useFavicon } from "./useFavicon";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { resolveDocumentTitle } from "./lib/document-title";
 import { getLastViewedSession, setLastViewedSession, clearLastViewedSession, getLastViewedDoc, getLastActiveTask, setLastActiveTask, clearLastActiveTask, getLastActiveQuickChat, setLastActiveQuickChat, clearLastActiveQuickChat, getLastMobileWorkSegment, setLastMobileWorkSegment } from "./last-viewed";
-import { createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
+import { consumeTaskCompletionClaim, createTaskCompletionFeedback, createTaskCompletionToast, type TaskCompletionFeedback } from "./lib/task-completion-feedback";
 import { DS, cx } from "./design/tokens";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
@@ -567,6 +571,8 @@ function AppShell() {
         if (event.sessionId && event.deferSummary) {
           patchSessionInCache(event.sessionId, { deferSummary: event.deferSummary });
           void queryClient.invalidateQueries({ queryKey: queryKeys.sessionDefers(event.sessionId) });
+          // Active defers count as automation in task states.
+          void queryClient.invalidateQueries({ queryKey: TASK_OVERVIEW_KEY });
         }
         break;
       case "session:history-truncated":
@@ -600,6 +606,8 @@ function AppShell() {
         break;
       case "schedule:changed":
         queryClient.invalidateQueries({ queryKey: ["task"] });
+        // Enabled schedules keep a task out of Gone quiet.
+        void queryClient.invalidateQueries({ queryKey: TASK_OVERVIEW_KEY });
         break;
       case "task:changed":
         taskChangeInvalidator.handleTaskChange(event.taskId);
@@ -618,6 +626,8 @@ function AppShell() {
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
+        // Reading a task's conversation counts toward its engagement.
+        void queryClient.invalidateQueries({ queryKey: TASK_OVERVIEW_KEY });
         break;
       case "status:connected":
         void refetchRestartStatus();
@@ -656,6 +666,7 @@ function AppShell() {
       const previousTask = previousTasks.get(task.id);
       if (!previousTask) continue;
       if (!isTaskCompleted(previousTask) && isTaskCompleted(task)) {
+        if (consumeTaskCompletionClaim(task.id)) continue;
         completedTasks.push({
           feedback: buildTaskCompletionFeedback(task, previousTask.status),
           sortTime: new Date(task.completedAt ?? task.updatedAt).getTime(),
@@ -746,6 +757,19 @@ function AppShell() {
   useEffect(() => {
     if (activeTaskId) setLastActiveTask(activeTaskId);
   }, [activeTaskId]);
+  // Opening a task is Tim's engagement signal for task states; throttled so switching back and forth stays quiet.
+  const openedTasksRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!activeTaskId) return;
+    const last = openedTasksRef.current.get(activeTaskId) ?? 0;
+    if (Date.now() - last < 5 * 60_000) return;
+    const taskId = activeTaskId, attemptedAt = Date.now();
+    openedTasksRef.current.set(taskId, attemptedAt);
+    // Home and the overview both derive from the open; a failed write is forgotten so the next visit retries.
+    void markTaskOpened(taskId).then(() => queryClient.invalidateQueries({ queryKey: ["dashboard"] })).catch(() => {
+      if (openedTasksRef.current.get(taskId) === attemptedAt) openedTasksRef.current.delete(taskId);
+    });
+  }, [activeTaskId, queryClient]);
   useEffect(() => {
     if (activeSessionId && !activeTaskId && quickChatsMode) {
       setLastActiveQuickChat(activeSessionId);
@@ -986,6 +1010,7 @@ function AppShell() {
 
   const isDocsActive = mobileRouteMeta.activeTab === "docs";
   const isDashboardActive = location.pathname === "/" || isDashboardRoutePath(location.pathname);
+  const isAllTasksActive = isAllTasksPath(location.pathname);
 
   // ── Mobile bottom nav state ──────────────────────────────────
   const mobileActiveTab = mobileRouteMeta.activeTab;
@@ -1820,6 +1845,8 @@ function AppShell() {
         onNewTask={handleNewTask}
         isQuickChatsActive={quickChatsMode && !activeTaskId}
         onGoHome={handleOpenDashboard}
+        onOpenAllTasks={() => navigate(ALL_TASKS_PATH)}
+        isAllTasksActive={isAllTasksActive}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
         onOpenHelm={handleOpenHelm}
@@ -2009,6 +2036,20 @@ function AppShell() {
             />
             <Route
               path="dashboard/home"
+              element={
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItem={handleCreateTaskForWorkItem}
+                  onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
+                  scrollRestoration={mobileDashboardScrollRestoration}
+                />
+              }
+            />
+            <Route
+              path="dashboard/tasks"
               element={
                 <Dashboard
                   onSelectTask={handleSelectTask}
@@ -2403,6 +2444,14 @@ function MobileTaskListView({
   scrollRestoration?: PullToRefreshScrollRestoration;
   onOpenSearch: () => void;
 }){
+  // A phone has no room for the sidebar beside All tasks, so the Work tab offers both views of the same tasks.
+  const [taskView, setTaskViewState] = useState<"state" | "order">(() => {
+    try { return localStorage.getItem("bridge.mobileTasks.view") === "order" ? "order" : "state"; } catch { return "state"; }
+  });
+  const setTaskView = (view: "state" | "order") => {
+    setTaskViewState(view);
+    try { localStorage.setItem("bridge.mobileTasks.view", view); } catch { /* preference only */ }
+  };
   return (
     <div className="flex flex-col h-full bg-bg-secondary min-w-0 overflow-hidden">
       {/* Header: the Work tab's two lists, then search */}
@@ -2417,6 +2466,12 @@ function MobileTaskListView({
           Search
         </button>
       </div>
+      {!quickChatsMode && (
+        <div className="flex items-center justify-end border-b border-border px-4 py-2">
+          <SegmentedControl ariaLabel="Task list view" size="sm" value={taskView} onChange={setTaskView}
+            options={[{ value: "state", label: "By state" }, { value: "order", label: "My order" }]} />
+        </div>
+      )}
 
       {/* Content — pull-to-refresh wraps both tabs */}
       <div className="flex-1 min-h-0 relative">
@@ -2451,6 +2506,8 @@ function MobileTaskListView({
             archivedLoading={archivedLoading}
             className="min-w-0 overflow-x-hidden p-2 space-y-0.5"
           />
+        ) : taskView === "state" ? (
+          <AllTasks compact onSelectTask={onSelectTask} />
         ) : (
           <TaskList
             tasks={tasks}

@@ -6,16 +6,18 @@ import type { TransformedEntry } from "./event-transform.js";
 import { isRecord } from "../shared/is-record.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { maxIsoTime } from "../shared/session-activity.js";
+import { buildTaskOverview, byLongestIdle, byRecentEngagement, toOverviewSessions, type TaskOverviewContext } from "./task-overview.js";
 
 interface Session {
   sessionId: string; summary?: string; archived?: boolean; triggeredBy?: string;
   lastAttentionAt?: string; lastVisibleActivityAt?: string; lastActivityAt?: string; modifiedTime?: string;
 }
-const SECTIONS: HomeSection[] = ["overview", "tasks", "inputs", "follow-ups", "actions", "replies"];
+const SECTIONS: HomeSection[] = ["overview", "tasks", "inputs", "follow-ups", "actions", "replies", "quiet"];
+const RESUME_SIZE = 5;
 const PAGE_SIZE = 20;
 const OVERVIEW_SIZE = 3;
 const OVERVIEW_ACTIONS = 5;
-type HomeContext = Pick<AppContext, "taskStore" | "taskGroupStore" | "checklistStore" | "readStateStore"> & {
+type HomeContext = Pick<AppContext, "taskStore" | "taskGroupStore" | "checklistStore" | "readStateStore"> & TaskOverviewContext & {
   // SessionManager's public count includes both native asks and elicitations.
   sessionManager: Pick<AppContext["sessionManager"], "getSessionRunState" | "getPendingUserInputCount" | "hydratePendingInteractions" | "readMessagesFromDisk">;
 };
@@ -172,7 +174,15 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
       replyCache.delete(session.sessionId); replyCache.set(session.sessionId, cached);
       return { ...await cached.value, ...ref };
     });
-    return { section, tasks: page(section === "tasks" ? taskRows : taskRows.filter(task => !task.deferred), "tasks"),
+    const parsedSessions = sourceErrors.length && !rawSessions.length ? null : toOverviewSessions(rawSessions);
+    const overview = buildTaskOverview(ctx, parsedSessions?.sessions ?? null, now.getTime(), allTasks, parsedSessions?.invalid ?? 0);
+    const attention = overview.tasks.filter(row => row.state === "needs_you" && row.reasons.some(reason => reason !== "question"))
+      .sort((a, b) => (a.nextTouchAt ?? "").localeCompare(b.nextTouchAt ?? "") || a.order - b.order);
+    const attentionIds = new Set(attention.map(row => row.id));
+    const resume = overview.tasks.filter(row => row.state === "in_motion" && !attentionIds.has(row.id)).sort(byRecentEngagement).slice(0, RESUME_SIZE);
+    const quiet = overview.tasks.filter(row => row.state === "gone_quiet").sort(byLongestIdle);
+    return { section, attention, resume, quiet: page(quiet, "quiet"), taskCounts: overview.counts,
+      tasks: page(section === "tasks" ? taskRows : taskRows.filter(task => !task.deferred), "tasks"),
       deferredTaskTotal: tasks.filter(task => task.deferred).length,
       inputs: { ...inputPage, items: inputRows, total: sourceErrors.length ? null : pending.length - ended },
       followUps: page(followUps, "follow-ups"), actionCounts, today: date,

@@ -59,6 +59,13 @@ export function getRememberedDashboardPath(): string {
   return DASHBOARD_TAB_PATHS.focus;
 }
 
+/** The All tasks view: a task-state overview. On a phone it is the Work tab's task list. */
+export const ALL_TASKS_PATH = "/dashboard/tasks";
+
+export function isAllTasksPath(pathname: string): boolean {
+  return normalizePathname(pathname) === ALL_TASKS_PATH;
+}
+
 export function isDashboardRoutePath(pathname: string): boolean {
   const normalized = normalizePathname(pathname);
   return normalized === DASHBOARD_TAB_PATHS.focus

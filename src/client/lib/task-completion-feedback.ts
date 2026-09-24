@@ -59,3 +59,22 @@ export function createTaskCompletionToast(
     action: { label: "Reopen task", pendingLabel: "Reopening…", onAction: onUndo },
   };
 }
+
+const CLAIM_MS = 60_000;
+const claimedCompletions = new Map<string, number>();
+
+/**
+ * Marks completions whose confirmation and undo another surface already shows, such as Home's
+ * quiet-task outcomes, so the global "Reopen task" toast does not offer a second, lossier undo.
+ */
+export function claimTaskCompletionFeedback(taskIds: readonly string[], now = Date.now()): void {
+  for (const id of taskIds) claimedCompletions.set(id, now + CLAIM_MS);
+}
+
+/** True once per claim: the detector consumes it so a later, unrelated completion still gets its toast. */
+export function consumeTaskCompletionClaim(taskId: string, now = Date.now()): boolean {
+  const expires = claimedCompletions.get(taskId);
+  if (expires === undefined) return false;
+  claimedCompletions.delete(taskId);
+  return expires >= now;
+}
