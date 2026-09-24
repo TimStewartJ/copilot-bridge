@@ -1,7 +1,11 @@
 import type { DeferLoop } from "./defer-loop-store.js";
 import type { DeferWorkerAction, DeferWorkerKind } from "./defer-worker.js";
 import type { DeferCheckpoint } from "./defer-checkpoint.js";
-import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
+import {
+  MANAGEMENT_JOB_DELIVERY_ID_PREFIX,
+  type DeferredPrompt,
+  type DeferredPromptStore,
+} from "./deferred-prompt-store.js";
 import type { TelemetrySpan, TelemetryStore } from "./telemetry-store.js";
 
 export type DeferDeliveryStatus = "pending" | "running" | "completed" | "failed";
@@ -224,6 +228,7 @@ export function listDeferActivityDeliveries(
     .filter((item) =>
       item.status !== "cancelled"
       && !!item.sourceId
+      && !item.sourceId.startsWith(MANAGEMENT_JOB_DELIVERY_ID_PREFIX)
       && (!options.deferId || item.sourceId === options.deferId)
     )
     .slice(0, limit)

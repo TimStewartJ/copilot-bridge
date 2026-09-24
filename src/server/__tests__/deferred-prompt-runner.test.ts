@@ -1,6 +1,8 @@
 import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setupTestDb } from "./helpers.js";
+import { makeTestDir, setupTestDb } from "./helpers.js";
+import { createManagementJobStore } from "../management-job-store.js";
+import { managementJobDeliveryId } from "../management-job-delivery.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import {
   createDeferredPromptRunner,
@@ -1369,6 +1371,78 @@ describe("deferred-prompt-runner", () => {
       expect(store.get(first.id)?.status).toBe("failed");
       expect(store.get(second.id)?.status).toBe("completed");
       errorSpy.mockRestore();
+      runner.shutdown();
+    });
+  });
+
+  describe("management job results", () => {
+    function failJobFor(sessionId: string) {
+      const jobs = createManagementJobStore(db, { dataDir: makeTestDir("runner-management-job-results") });
+      const job = jobs.enqueue("staging_preview", { stagingDir: "worktree" }, { originSessionId: sessionId });
+      jobs.fail(job.id, "Preview validation failed.");
+      return managementJobDeliveryId(job.id);
+    }
+
+    it("waits for a busy origin session and sends the result when it goes idle", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const deliveryId = failJobFor("session-1");
+      const busySessions = new Set(["session-1"]);
+      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sm._started).toEqual([]);
+      expect(store.get(deliveryId)?.status).toBe("pending");
+
+      busySessions.delete("session-1");
+      bus.emit({ type: "session:idle", sessionId: "session-1" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm._started).toEqual([
+        { sessionId: "session-1", prompt: expect.stringContaining("Preview validation failed.") },
+      ]);
+      expect(sm._started[0].prompt.startsWith("<bridge_notice>")).toBe(true);
+      expect(store.get(deliveryId)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("finds a result another process queued at its next sweep", async () => {
+      const store = createDeferredPromptStore(db);
+      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const runner = createDeferredPromptRunner(store, sm as any, createGlobalBus());
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const deliveryId = failJobFor("session-1");
+      await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+      expect(sm._started).toHaveLength(1);
+      expect(store.get(deliveryId)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("withdraws an unsent job result when its session is archived, but keeps defer results", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const busySessions = new Set(["session-1"]);
+      const jobDeliveryId = failJobFor("session-1");
+      const deferDelivery = store.enqueueDelivery(createReturnedDeferDelivery(
+        { deferId: "once_1", kind: "once", parentSessionId: "session-1" },
+        "Defer result.",
+        { deliveryId: "defer-delivery-1" },
+      ));
+      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      bus.emit({ type: "session:archived", sessionId: "session-1", archived: true });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.get(jobDeliveryId)?.status).toBe("cancelled");
+      expect(store.get(deferDelivery.id)?.status).toBe("pending");
       runner.shutdown();
     });
   });

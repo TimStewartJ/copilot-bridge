@@ -12,6 +12,9 @@ import type { DeferredResultDelivery } from "./defer-result-message.js";
 export type DeferredPromptStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 export type DeferredPromptPurpose = "defer" | "delivery";
 
+/** Delivery ids for management job results sent back to the session that queued the job. */
+export const MANAGEMENT_JOB_DELIVERY_ID_PREFIX = "management-job:";
+
 /** Upper bound on rows removed by a single terminal-row prune pass. */
 export const DEFAULT_TERMINAL_PRUNE_LIMIT = 500;
 
@@ -205,6 +208,14 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     WHERE sessionId = ?
       AND status IN ('pending', 'running')
       AND purpose = 'defer'
+  `);
+  const cancelManagementJobDeliveriesStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'cancelled', updatedAt = ?
+    WHERE sessionId = ?
+      AND status = 'pending'
+      AND purpose = 'delivery'
+      AND substr(id, 1, ${MANAGEMENT_JOB_DELIVERY_ID_PREFIX.length}) = '${MANAGEMENT_JOB_DELIVERY_ID_PREFIX}'
   `);
   const reactivateFailedDeliveryStmt = db.prepare(`
     UPDATE deferred_prompts
@@ -476,6 +487,15 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   }
 
   /**
+   * Withdraw management job results still waiting for a session that is archived or gone.
+   * Returned defer results keep their own delivery rules and are not touched.
+   */
+  function cancelManagementJobDeliveriesForSession(sessionId: string): number {
+    const result = cancelManagementJobDeliveriesStmt.run(new Date().toISOString(), sessionId);
+    return (result as any).changes as number;
+  }
+
+  /**
    * Hard-delete every row owned by a session. Used when the session itself is
    * deleted, so no orphaned deferral rows survive its owner.
    */
@@ -529,6 +549,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     renewClaim,
     cancelById,
     cancelForSession,
+    cancelManagementJobDeliveriesForSession,
     deleteForSession,
     pruneTerminalRows,
     reclaimExpiredRunning,

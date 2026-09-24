@@ -311,6 +311,11 @@ export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
     deferredPromptStore: ctx.deferredPromptStore,
     deferLoopStore: ctx.deferLoopStore,
   });
+  try {
+    ctx.managementJobStore?.reconcileResultDeliveries();
+  } catch (error) {
+    console.error("[management-jobs] Could not queue unsent job results at startup:", error);
+  }
   ctx.deferredPromptRunner?.start();
   ctx.deferLoopRunner?.start();
 }

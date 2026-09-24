@@ -78,6 +78,7 @@ export async function deleteTaskWithOwnedState(
       // still wake up and run a deferred prompt.
       for (const sessionId of archivedSessionIds) {
         ctx.deferredPromptStore?.cancelForSession(sessionId);
+        ctx.deferredPromptStore?.cancelManagementJobDeliveriesForSession(sessionId);
         ctx.deferLoopStore?.cancelForSession(sessionId);
       }
       onSessionsChanged?.("task-deletion:sessions-archived");
