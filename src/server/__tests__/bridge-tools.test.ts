@@ -23,6 +23,18 @@ describe("Bridge MCP tool definitions", () => {
     expect(toolNames.has("staging_deploy")).toBe(true);
   });
 
+  it("docs_search retries with any word when no page has every word", async () => {
+    const { ctx } = createTestApp();
+    const page = ctx.docsStore!.writePage("helm/plan", "---\ntitle: Helm plan\ndescription: The phone app\n---\nHands-free runs through the hub.");
+    ctx.docsIndex!.indexPage(page);
+    const tool = createDocsToolDefinitions(ctx).find((candidate) => candidate.name === "docs_search")!;
+    const exact = await tool.handler({ query: "hands-free hub" }, {} as any) as any;
+    expect(exact.total).toBe(1);
+    expect(exact.matchedAnyWord).toBeUndefined();
+    const loose = await tool.handler({ query: "Helm hands-free sessions Bridge instances logging" }, {} as any) as any;
+    expect(loose).toMatchObject({ total: 1, matchedAnyWord: true });
+    expect(loose.results[0].path).toBe("helm/plan");
+  });
   it("docs_search returns a diagnosable tool failure when docs FTS is unhealthy", async () => {
     const { ctx, db } = createTestApp();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

@@ -348,6 +348,15 @@ export default function HelmView({
     );
   }, [refreshHelm, setHelmState, settingsMutation, settingsQuery.data?.helm, state?.reasoningEfforts]);
 
+  const [glossaryError, setGlossaryError] = useState<string | null>(null);
+  const handleGlossarySave = useCallback((glossary: string) => {
+    setGlossaryError(null);
+    settingsMutation.mutate(
+      { helm: { ...settingsQuery.data?.helm, glossary } },
+      { onError: (error) => setGlossaryError(error instanceof Error ? error.message : String(error)) },
+    );
+  }, [settingsMutation, settingsQuery.data?.helm]);
+
   // ── Hands-free ─────────────────────────────────────────────────
 
   const startHandsFree = useCallback(async () => {
@@ -627,6 +636,11 @@ export default function HelmView({
             modelId: sessionModelQuery.data?.model ?? (helmModel || undefined),
             error: effortError,
             onChange: handleEffortChange,
+          } : undefined}
+          helmGlossary={settingsQuery.data ? {
+            value: settingsQuery.data.helm?.glossary ?? "",
+            onSave: handleGlossarySave,
+            error: glossaryError,
           } : undefined}
           onClose={() => setSettingsOpen(false)}
         />

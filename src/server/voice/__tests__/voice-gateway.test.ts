@@ -9,7 +9,7 @@ import { makeTestDir } from "../../__tests__/helpers.js";
 import { resolveVoicePaths } from "../voice-catalog.js";
 import type { VoiceEngine } from "../voice-engine.js";
 import type { HelmBridgeFacade } from "../../helm/helm-tools.js";
-import { decodePcmBody, encodeAudioFrame, VoiceGateway, type HttpEventSink, type VoiceGatewayHelm } from "../voice-gateway.js";
+import { buildResumeNote, decodePcmBody, encodeAudioFrame, VoiceGateway, type HttpEventSink, type VoiceGatewayHelm } from "../voice-gateway.js";
 import type { VoiceInstaller } from "../voice-installer.js";
 import { createVoiceRouter } from "../voice-router.js";
 
@@ -304,5 +304,15 @@ describe("VoiceGateway WebSocket transport", () => {
     await vi.waitFor(() => expect(pushed).toEqual([512]));
     ws.close();
     await gateway.shutdown();
+  });
+});
+
+describe("buildResumeNote", () => {
+  it("tells Helm how long ago hands-free ended and what it last said", () => {
+    expect(buildResumeNote(8_000, { text: "The probe  only said DONE.", finished: false }))
+      .toBe('Hands-free just reconnected, 8 seconds after the previous connection ended (often a dropped phone connection). Your last reply was cut off before it finished playing: "The probe only said DONE.". If the user asks what you said or seems to have missed it, say it again briefly.');
+    expect(buildResumeNote(180_000, { text: "Done.", finished: true })).toContain("3 minutes after");
+    expect(buildResumeNote(180_000, { text: "Done.", finished: true })).toContain('Your last reply was: "Done."');
+    expect(buildResumeNote(2_000, undefined)).toContain("offer to repeat it");
   });
 });

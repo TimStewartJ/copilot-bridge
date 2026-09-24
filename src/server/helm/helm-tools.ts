@@ -18,6 +18,9 @@ export interface HelmSessionSummary {
   lastActivityAt?: string;
   linkedTaskIds: string[];
   intentText?: string | null;
+  /** "schedule" for sessions a schedule started; absent for the user's own and other agents'. */
+  triggeredBy?: string;
+  scheduleName?: string;
 }
 
 /** Bridge operations shared with the REST API so Helm actions behave exactly like the UI. */
@@ -42,6 +45,7 @@ export interface HelmToolRuntime {
 
 export const HELM_TOOL_NAMES = [
   "bridge_overview",
+  "find",
   "list_sessions",
   "read_session",
   "send_to_session",
@@ -164,7 +168,43 @@ function describeSession(ctx: AppContext, session: HelmSessionSummary, now = Dat
     ...(session.archived ? { archived: true } : {}),
     ...(task ? { task: task.title, taskLink: formatBridgeLink({ kind: "task", taskId: task.id }) } : {}),
     ...(session.intentText && session.runState !== "idle" ? { doing: session.intentText } : {}),
+    ...(session.triggeredBy === "schedule"
+      ? { startedBy: session.scheduleName ? `schedule "${session.scheduleName}"` : "a schedule" }
+      : {}),
     ...(formatAgo(session.lastActivityAt, now) ? { lastActivity: formatAgo(session.lastActivityAt, now) } : {}),
+  };
+}
+
+type TranscriptEntry = {
+  type?: string;
+  role?: string;
+  content?: string;
+  timestamp?: string;
+  toolCall?: { name?: string; startedAt?: string; completedAt?: string };
+};
+
+/**
+ * What a running session is doing, from its transcript since the last prompt: how long it has been at
+ * it, its last few tool steps (the one still running marked), and the heading of its latest thinking.
+ * A busy session that has not written any text yet otherwise reads as "no reply" (24 Sep 2026).
+ */
+export function describeProgress(entries: readonly TranscriptEntry[], now = Date.now()) {
+  let start = entries.length;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]!;
+    if (entry.type === "message" && entry.role === "user") { start = index; break; }
+  }
+  const since = entries.slice(start + 1);
+  const tools = since.filter((entry) => entry.type === "tool" && entry.toolCall?.name);
+  const thinking = [...since].reverse().find((entry) => entry.type === "reasoning" && entry.content?.trim());
+  const heading = thinking?.content?.match(/\*\*([^*\n]{3,120})\*\*/)?.[1]?.trim();
+  const promptAt = entries[start]?.timestamp;
+  const workingFor = promptAt ? formatAgo(promptAt, now)?.replace(/ ago$/, "") : undefined;
+  return {
+    ...(workingFor ? { workingFor } : {}),
+    stepsSoFar: tools.length,
+    recentSteps: tools.slice(-4).map((entry) => `${entry.toolCall!.name}${entry.toolCall!.completedAt ? "" : " (running)"}`),
+    ...(heading ? { thinkingAbout: heading } : {}),
   };
 }
 
@@ -283,6 +323,57 @@ export function createHelmToolDefinitions(
         };
       },
     }),
+    defineBridgeTool("find", {
+      description: "Find tasks, sessions and notes by what they are about, not only by title: searches task titles and notes, session titles and chat messages, and the knowledge base. Use it whenever the user names a task or session loosely or by topic (\"the Apple integration task\", \"the standalone app\"), before picking one from task_list or list_sessions. Returns the best matches with the text that matched; if several could fit, ask which one.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The user's words for it, e.g. \"standalone copilot app apple integration\"." },
+          kind: { type: "string", enum: ["all", "task", "chat", "doc"], description: "Only tasks, sessions (chat) or notes (doc). Defaults to all." },
+        },
+        required: ["query"],
+      },
+      handler: async (args: any) => {
+        const query = String(args.query ?? "").trim().slice(0, 500);
+        if (!query) return toolFailure("query is required");
+        if (!ctx.searchIndex) return toolFailure("Search is not available on this Bridge right now. Use task_list or list_sessions.");
+        const kind = ["all", "task", "chat", "doc"].includes(args.kind) ? args.kind : "all";
+        const request = { q: query, scope: "global" as const, kind, limit: 5, offset: 0, refreshOnly: true };
+        let result = await ctx.searchIndex.search(request);
+        let matchedAnyWord = false;
+        const found = (value: typeof result) => value.tasks.total + value.chats.total + value.docs.total;
+        if (found(result) === 0 && query.split(/\s+/).length > 1) {
+          result = await ctx.searchIndex.search({ ...request, anyWord: true });
+          matchedAnyWord = true;
+        }
+        return {
+          ...(matchedAnyWord ? { matchedAnyWord: true } : {}),
+          tasks: result.tasks.items.map((task) => ({
+            taskId: task.taskId,
+            title: task.title,
+            link: formatBridgeLink({ kind: "task", taskId: task.taskId }),
+            matched: task.snippet,
+            ...(task.archived ? { archived: true } : {}),
+          })),
+          sessions: result.chats.items.map((chat) => ({
+            ref: sessionRef(chat.sessionId),
+            title: chat.title,
+            link: formatBridgeLink({ kind: "session", sessionId: chat.sessionId }),
+            ...(chat.taskTitle ? { task: chat.taskTitle } : {}),
+            ...(chat.matches[0] ? { matched: chat.matches[0].snippet } : {}),
+            matchCount: chat.matchCount,
+            ...(chat.archived ? { archived: true } : {}),
+          })),
+          notes: result.docs.items.map((doc) => ({
+            path: doc.path,
+            title: doc.title,
+            link: formatBridgeLink({ kind: "doc", path: doc.path }),
+            matched: doc.snippet,
+          })),
+          ...(result.coverage.state !== "ready" ? { coverage: "Some sessions are still being indexed; results may be incomplete." } : {}),
+        };
+      },
+    }),
     defineBridgeTool("list_sessions", {
       description: "List Bridge chat sessions. Filter by unread, running, waiting (needs the user), recent, archived, or a title query or task id.",
       parameters: {
@@ -357,6 +448,7 @@ export function createHelmToolDefinitions(
           ...(latestPrompt ? { lastPrompt: truncate(latestPrompt.content, 500) } : {}),
           ...(latestReply ? { latestReply: truncate(latestReply.content, MAX_REPLY_CHARS), repliedAt: latestReply.timestamp } : { latestReply: null }),
           ...(live?.content ? { liveProgress: truncate(live.content, 800) } : {}),
+          ...(session.runState !== "idle" ? { progress: describeProgress(messages as TranscriptEntry[]) } : {}),
           ...(historyCount > 0
             ? { recentMessages: textMessages.slice(-historyCount).map((entry) => ({ role: entry.role, content: truncate(entry.content, 1_200) })) }
             : {}),

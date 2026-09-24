@@ -3,7 +3,12 @@ export interface ParsedSearchQuery {
   keywords: string[];
 }
 
-export function parseSearchQuery(query: string): ParsedSearchQuery {
+/**
+ * Every word must match by default. With `anyWord`, any one of them may, and full-text ranking puts the
+ * pages with the most matches first: a spoken question as a search ("Helm hands-free sessions Bridge
+ * instances logging") otherwise finds nothing because one word is missing.
+ */
+export function parseSearchQuery(query: string, options: { anyWord?: boolean } = {}): ParsedSearchQuery {
   const keywords: string[] = [];
   const pattern = /"([^"]+)"|(\S+)/g;
   for (const match of query.matchAll(pattern)) {
@@ -15,7 +20,7 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
     keywords,
     fts: keywords
       .map((keyword) => `"${keyword.replaceAll('"', '""')}"`)
-      .join(" "),
+      .join(options.anyWord ? " OR " : " "),
   };
 }
 
