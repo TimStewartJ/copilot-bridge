@@ -6,7 +6,8 @@ import EmptyState from "./shared/EmptyState";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useTaskIndicators from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
-import { groupTasksByStatus, buildGroupSections } from "../task-helpers";
+import { groupTasksByStatus, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
+import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
 import { DS, cx } from "../design/tokens";
 import { Button, IdentitySwatch } from "../design/primitives";
@@ -78,8 +79,27 @@ export default function TaskList({
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget, resetClickGuard } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
-  const grouped = useMemo(() => groupTasksByStatus(tasks), [tasks]);
+  const statusGroups = useMemo(() => groupTasksByStatus(tasks), [tasks]);
+  // Deferred and muted tasks sit in a collapsed Set aside section, out of the reorderable list.
+  const grouped = useMemo(() => ({
+    active: statusGroups.active.filter((task) => !isSetAsideTask(task)),
+    setAside: statusGroups.active.filter(isSetAsideTask),
+    archived: statusGroups.archived,
+  }), [statusGroups]);
+  const setAsideIds = useMemo(() => new Set(grouped.setAside.map((task) => task.id)), [grouped]);
+  const reorderVisible = useMemo(() => onReorderTasks
+    ? (ids: string[]) => onReorderTasks(mergeVisibleOrder(statusGroups.active, setAsideIds, ids))
+    : undefined, [onReorderTasks, setAsideIds, statusGroups]);
+  const moveAndReorderVisible = useMemo(() => onMoveAndReorder
+    ? (taskId: string, groupId: string | undefined, ids: string[]) => onMoveAndReorder(taskId, groupId, mergeVisibleOrder(statusGroups.active, setAsideIds, ids, groupId ?? null))
+    : undefined, [onMoveAndReorder, setAsideIds, statusGroups]);
+  const overview = useTaskOverviewQuery();
+  const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
   const [showArchived, setShowArchived] = useState(false);
+  const [showSetAside, setShowSetAside] = useState(false);
+  useEffect(() => {
+    if (activeTaskId && setAsideIds.has(activeTaskId)) setShowSetAside(true);
+  }, [activeTaskId, setAsideIds]);
 
   useEffect(() => {
     if (tasks.some((task) => task.id === activeTaskId && task.status === "archived")) {
@@ -111,9 +131,9 @@ export default function TaskList({
     tasks: grouped.active,
     groupedSections,
     hasGroups,
-    onReorderTasks,
+    onReorderTasks: reorderVisible,
     onMoveTaskToGroup,
-    onMoveAndReorder,
+    onMoveAndReorder: moveAndReorderVisible,
   });
   const newTaskButtonRef = useRef<HTMLButtonElement>(null);
   const canReorder = Boolean(onReorderTasks) && grouped.active.length >= 2;
@@ -166,6 +186,7 @@ export default function TaskList({
               isLongPressTarget={isTarget(task.id)}
               bindLongPress={bindLongPress}
               onSelectTask={onSelectTask}
+              quiet={quietIds.has(task.id)}
               reordering={sortable && reorderMode.reordering}
             />
           ))}
@@ -269,6 +290,7 @@ export default function TaskList({
                         isLongPressTarget={isTarget(task.id)}
                         bindLongPress={bindLongPress}
                         onSelectTask={onSelectTask}
+                        quiet={quietIds.has(task.id)}
                         reordering={reorderMode.reordering}
                       />
                     ))}
@@ -283,6 +305,18 @@ export default function TaskList({
         )}
         <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
       </DndContext>
+      {grouped.setAside.length > 0 && (
+        <>
+          <button
+            onClick={() => setShowSetAside(!showSetAside)}
+            aria-expanded={showSetAside}
+            className="w-full px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors flex items-center gap-1"
+          >
+            {showSetAside ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Set aside ({grouped.setAside.length})
+          </button>
+          {showSetAside && renderGroup("Set aside", grouped.setAside)}
+        </>
+      )}
       {grouped.archived.length > 0 && (
         <>
           <button

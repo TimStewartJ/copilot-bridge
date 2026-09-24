@@ -1,5 +1,5 @@
 import { matchPath } from "react-router-dom";
-import { isDashboardRoutePath } from "./dashboard-routes";
+import { isAllTasksPath, isDashboardRoutePath } from "./dashboard-routes";
 
 export type MobileNavTab = "home" | "work" | "helm" | "docs" | "settings";
 
@@ -96,6 +96,17 @@ function buildMeta(overrides: Partial<MobileRouteMeta> & Pick<MobileRouteMeta, "
 
 export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMeta {
   const normalizedPath = normalizePathname(pathname);
+
+  if (isAllTasksPath(normalizedPath)) {
+    return buildMeta({
+      route: "task-list",
+      activeTab: "work",
+      workSegment: "tasks",
+      showBottomNav: true,
+      isRoot: true,
+      isDetail: false,
+    });
+  }
 
   if (isDashboardRoutePath(normalizedPath)) {
     return buildMeta({

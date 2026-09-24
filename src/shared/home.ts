@@ -1,7 +1,10 @@
 import type { PendingUserInputRequestView } from "../server/user-input-types.js";
 import type { PendingElicitationRequestView } from "../server/elicitation-types.js";
+import type { TaskOverviewRow } from "./task-overview.js";
+import type { TaskState } from "./task-state.js";
 
-export type HomeSection = "overview" | "tasks" | "inputs" | "follow-ups" | "actions" | "replies";
+/** `tasks` and `follow-ups` remain accepted for clients loaded before task states; new clients never request them. */
+export type HomeSection = "overview" | "tasks" | "inputs" | "follow-ups" | "actions" | "replies" | "quiet";
 export interface HomePage<T> { items: T[]; total: number | null; offset: number; hasMore: boolean }
 export interface HomeTask {
   id: string; title: string; kind: "task" | "ongoing"; deferred: boolean; groupName?: string; groupColor?: string;
@@ -27,6 +30,14 @@ export interface HomeReply extends HomeSessionRef {
 }
 export interface HomeSnapshot {
   section: HomeSection;
+  /** Tasks needing Tim for a task-level reason (reached revisit, stalled session). Questions are in `inputs`. */
+  attention: TaskOverviewRow[];
+  /** Up to five tasks in motion, most recently engaged first. */
+  resume: TaskOverviewRow[];
+  /** Tasks that have gone quiet, longest untouched first. */
+  quiet: HomePage<TaskOverviewRow>;
+  taskCounts: Record<TaskState, number>;
+  /** Legacy fields for clients loaded before task states. */
   tasks: HomePage<HomeTask>;
   deferredTaskTotal: number;
   inputs: HomePage<HomeInputSummary>;

@@ -23,4 +23,10 @@ describe("native task-row meaning", () => {
       expect.objectContaining({ label: "Waiting for", tone: "neutral" }),
     ]);
   });
+  it("marks a quiet task only when task states say so, as a faint status", () => {
+    const task: Task = { id: "task", title: "Old", kind: "task", muted: false, deferred: false, status: "active",
+      notes: "", priority: 0, order: 0, createdAt: "", updatedAt: "", sessionIds: [], workItems: [], pullRequests: [] };
+    expect(getTaskRowSignals(task)).toEqual([]);
+    expect(getTaskRowSignals(task, undefined, new Date(), { quiet: true })).toEqual([expect.objectContaining({ kind: "quiet", shortLabel: "Quiet", tone: "faint" })]);
+  });
 });

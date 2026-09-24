@@ -51,6 +51,18 @@ function failOnStatement(match: string): () => void {
 }
 
 describe("Task routes", () => {
+  it("GET /api/tasks/overview is not mistaken for a task ID and reports derived states", async () => {
+    const task = ctx.taskStore.createTask("Overview task");
+    const res = await request(app).get("/api/tasks/overview");
+    expect(res.status).toBe(200);
+    expect(res.body.tasks).toContainEqual(expect.objectContaining({ id: task.id, state: "in_motion" }));
+    expect(res.body.counts.in_motion).toBeGreaterThanOrEqual(1);
+    const opened = await request(app).post(`/api/tasks/${task.id}/opened`);
+    expect(opened.status).toBe(200);
+    expect(ctx.taskStore.getTask(task.id)?.lastOpenedAt).toBe(opened.body.lastOpenedAt);
+    expect((await request(app).post("/api/tasks/missing/opened")).status).toBe(404);
+  });
+
   it("PATCH defers/resumes the native task without muting, archiving or clearing context", async () => {
     const task = ctx.taskStore.createTask("Keep this task");
     ctx.taskStore.updateTask(task.id, { notes: "Context", nextAction: "Review", waitingOn: "External reply" });

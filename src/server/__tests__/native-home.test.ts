@@ -4,6 +4,7 @@ import { createTaskStore } from "../task-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createReadStateStore } from "../read-state-store.js";
+import { createScheduleStore } from "../schedule-store.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import type { DatabaseSync } from "../db.js";
 import type { SessionManager } from "../session-manager.js";
@@ -22,8 +23,9 @@ describe("native Home composition", () => {
       hydratePendingInteractions: vi.fn<SessionManager["hydratePendingInteractions"]>(async () => ({ pendingUserInputs: [], pendingElicitations: [] })),
       readMessagesFromDisk: vi.fn<SessionManager["readMessagesFromDisk"]>(async id => ({ messages: [{ id: "message", type: "message", role: "assistant", sourceEventId: `reply-${id}`, content: "A source-backed answer" }], total: 1, hasMore: false, coverage: {} })),
     };
-    const reader = createHomeReader({ taskStore, checklistStore, readStateStore, taskGroupStore: createTaskGroupStore(db, bus), sessionManager: manager }, async () => sessions);
-    return { ...reader, taskStore, checklistStore, readStateStore, manager };
+    const scheduleStore = createScheduleStore(db);
+    const reader = createHomeReader({ taskStore, checklistStore, readStateStore, scheduleStore, taskGroupStore: createTaskGroupStore(db, bus), sessionManager: manager }, async () => sessions);
+    return { ...reader, taskStore, checklistStore, readStateStore, scheduleStore, manager };
   }
   it("uses existing task momentum and identities without creating new work records", async () => {
     const app = setup([{ sessionId: "conversation", summary: "Compare options", lastActivityAt: "2026-09-21T12:00:00Z" }]);
@@ -191,5 +193,74 @@ describe("native Home composition", () => {
     app.taskStore.linkSession(task.id, "first"); app.taskStore.linkSession(task.id, "second");
     expect((await app.snapshot()).replies.items.map(item => item.sessionId)).toEqual(["second"]);
     expect((await app.snapshot("replies")).replies.items.map(item => item.sessionId)).toEqual(["second", "first"]);
+  });
+
+  it("derives task sections from task facts only, never from the checklist", async () => {
+    const app = setup([{ sessionId: "recent-chat", lastActivityAt: new Date().toISOString() }]);
+    const old = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const quiet = app.taskStore.createTask("Quiet idea");
+    const inMotion = app.taskStore.createTask("Active work");
+    const revisit = app.taskStore.createTask("Check back");
+    const checklistOnly = app.taskStore.createTask("Has an overdue to-do");
+    db.prepare("UPDATE tasks SET createdAt = ? WHERE id IN (?, ?, ?)").run(old, quiet.id, revisit.id, checklistOnly.id);
+    app.taskStore.linkSession(inMotion.id, "recent-chat");
+    app.readStateStore.markRead("recent-chat", new Date().toISOString());
+    app.taskStore.updateTask(revisit.id, { nextTouchAt: "2000-01-01T00:00:00Z" });
+    app.checklistStore.createChecklistItem(checklistOnly.id, "Overdue to-do", "2000-01-01");
+    const home = await app.snapshot();
+    expect(home.attention.map(row => row.id)).toEqual([revisit.id]);
+    expect(home.attention[0].reasons).toEqual(["revisit"]);
+    expect(home.resume.map(row => row.id)).toEqual([inMotion.id]);
+    expect(home.quiet.items.map(row => row.id).sort()).toEqual([quiet.id, checklistOnly.id].sort());
+    expect(home.taskCounts).toMatchObject({ needs_you: 1, in_motion: 1, gone_quiet: 2 });
+    expect(home.actionCounts.overdue).toBe(1);
+  });
+
+  it("never calls a task with unreadable conversations quiet", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const app = setup([null, { sessionId: "valid" }]);
+    const old = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const linked = app.taskStore.createTask("Has a conversation");
+    const unlinked = app.taskStore.createTask("No conversations");
+    db.prepare("UPDATE tasks SET createdAt = ? WHERE id IN (?, ?)").run(old, linked.id, unlinked.id);
+    app.taskStore.linkSession(linked.id, "maybe-busy");
+    const home = await app.snapshot();
+    expect(home.quiet.items.map(row => row.id)).toEqual([unlinked.id]);
+    expect(home.taskCounts.no_next_step).toBe(1);
+  });
+
+  it("keeps opening a task silent and treats it as engagement", async () => {
+    const app = setup();
+    const task = app.taskStore.createTask("Old but just opened");
+    db.prepare("UPDATE tasks SET createdAt = ? WHERE id = ?").run(new Date(Date.now() - 90 * 86_400_000).toISOString(), task.id);
+    expect((await app.snapshot()).quiet.items.map(row => row.id)).toEqual([task.id]);
+    const before = app.taskStore.getTask(task.id)!;
+    expect(app.taskStore.markOpened(task.id)).toBeTruthy();
+    const after = app.taskStore.getTask(task.id)!;
+    expect(after.updatedAt).toBe(before.updatedAt);
+    expect(after.lastOpenedAt).toBeTruthy();
+    const home = await app.snapshot();
+    expect(home.quiet.total).toBe(0);
+    expect(home.resume[0]).toMatchObject({ id: task.id, state: "in_motion", engagementApproximate: false });
+    expect(app.taskStore.markOpened("missing")).toBeUndefined();
+  });
+
+  it("counts enabled schedules and active defers as automation, so their tasks never look abandoned", async () => {
+    const app = setup();
+    const task = app.taskStore.createTask("Weekly monitor");
+    db.prepare("UPDATE tasks SET createdAt = ? WHERE id = ?").run(new Date(Date.now() - 90 * 86_400_000).toISOString(), task.id);
+    app.scheduleStore.createSchedule({ taskId: task.id, name: "Weekly", prompt: "Check", type: "cron", cron: "0 8 * * 1" } as never);
+    const home = await app.snapshot();
+    expect(home.quiet.total).toBe(0);
+    expect(home.taskCounts.no_next_step).toBe(1);
+  });
+
+  it("still serves the legacy task fields for a client loaded before task states", async () => {
+    const app = setup();
+    app.taskStore.createTask("Legacy");
+    const legacy = await app.snapshot("tasks");
+    expect(legacy.tasks.items).toHaveLength(1);
+    expect(Array.isArray(legacy.followUps.items)).toBe(true);
+    expect(parseHomeQuery({ section: "quiet" }).section).toBe("quiet");
   });
 });

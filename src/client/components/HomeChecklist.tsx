@@ -44,6 +44,22 @@ export function groupHomeChecklist(items: readonly HomeAction[]): ChecklistGroup
   return [...groups.values()];
 }
 
+interface DateBucket { key: string; label: string; tone?: "danger" | "warning"; items: HomeAction[] }
+
+/** Buckets items by when they are due: overdue, today, the next two weeks, later, undated. Order within stays as given. */
+export function groupHomeChecklistByDate(items: readonly HomeAction[], today: string): DateBucket[] {
+  const buckets: DateBucket[] = [
+    { key: "overdue", label: "Overdue", tone: "danger", items: [] }, { key: "today", label: "Due today", tone: "warning", items: [] },
+    { key: "soon", label: "Next two weeks", items: [] }, { key: "later", label: "Later", items: [] }, { key: "undated", label: "No date", items: [] },
+  ];
+  for (const item of items) {
+    const diff = item.deadline ? Math.round((utcDay(item.deadline) - utcDay(today)) / DAY_MS) : null;
+    const key = diff === null ? "undated" : diff < 0 ? "overdue" : diff === 0 ? "today" : diff <= 14 ? "soon" : "later";
+    buckets.find(bucket => bucket.key === key)!.items.push(item);
+  }
+  return buckets.filter(bucket => bucket.items.length);
+}
+
 interface RecentlyDone { item: HomeAction; index: number; expires: number }
 
 /** Keeps just-completed items in their place until their Undo window closes, even after a refetch drops them. */
@@ -56,6 +72,8 @@ export function mergeRecentlyDone(items: readonly HomeAction[], recent: readonly
 
 interface Props {
   mode: "overview" | "full";
+  /** Home groups by due date so to-dos stay separate from task status; the full list keeps task grouping. */
+  grouping?: "task" | "date";
   items: HomeAction[];
   counts: HomeActionCounts;
   today: string;
@@ -65,7 +83,7 @@ interface Props {
   onError: (message: string) => void;
 }
 
-export default function HomeChecklist({ mode, items, counts, today, action, onSelectTask, onChanged, onError }: Props) {
+export default function HomeChecklist({ mode, grouping = "task", items, counts, today, action, onSelectTask, onChanged, onError }: Props) {
   const [recent, setRecent] = useState<RecentlyDone[]>([]);
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const recentRef = useRef(recent);
@@ -117,7 +135,13 @@ export default function HomeChecklist({ mode, items, counts, today, action, onSe
 
   return <Section label={mode === "full" ? "Open items" : "Checklist"} level={mode === "full" ? "page" : "group"} surface action={action}>
     {summary}
-    {groupHomeChecklist(shown).map(group => <div key={group.key} className="mt-3 border-t border-border pt-3">
+    {grouping === "date" && groupHomeChecklistByDate(shown, today).map(bucket => <div key={bucket.key} className="mt-3 border-t border-border pt-3">
+      <p className={cx(DS.text.meta, "font-medium", bucket.tone && DS.tone[bucket.tone])}>{bucket.label}</p>
+      <ul className="mt-1">{bucket.items.map(item => <ChecklistRow key={item.id} item={item} mode={mode} today={today}
+        done={doneIds.has(item.id)} busy={busy.has(item.id)} onComplete={() => complete(item)} onUndo={() => undo(item)}
+        onReschedule={deadline => reschedule(item, deadline)} source={{ title: item.taskTitle, onOpen: item.taskId ? () => onSelectTask(item.taskId!, { checklistItemId: item.id }) : undefined }} />)}</ul>
+    </div>)}
+    {grouping === "task" && groupHomeChecklist(shown).map(group => <div key={group.key} className="mt-3 border-t border-border pt-3">
       <div className="flex min-w-0 items-center gap-2">
         {group.groupColor && <IdentitySwatch color={group.groupColor} />}
         {group.taskId
@@ -133,9 +157,11 @@ export default function HomeChecklist({ mode, items, counts, today, action, onSe
   </Section>;
 }
 
-function ChecklistRow({ item, mode, today, done, busy, onComplete, onUndo, onReschedule }: {
+function ChecklistRow({ item, mode, today, done, busy, onComplete, onUndo, onReschedule, source }: {
   item: HomeAction; mode: Props["mode"]; today: string; done: boolean; busy: boolean;
   onComplete: () => void; onUndo: () => void; onReschedule: (deadline: string | null) => void;
+  /** Where the to-do comes from, shown as secondary text when rows are not grouped under their task. */
+  source?: { title?: string; onOpen?: () => void };
 }) {
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
@@ -165,6 +191,9 @@ function ChecklistRow({ item, mode, today, done, busy, onComplete, onUndo, onRes
         {done ? <span>Done</span> : deadline && <span className={cx("inline-flex items-center gap-1",
           deadline.tone === "danger" && cx("font-medium", DS.tone.danger), deadline.tone === "warning" && cx("font-medium", DS.tone.warning))}>
           {deadline.tone === "danger" && <StatusIcon kind="danger" decorative />}{deadline.tone === "warning" && <StatusIcon kind="warning" decorative />}{deadline.label}</span>}
+        {source && (source.onOpen
+          ? <button type="button" className={cx(DS.focus, "rounded-sm hover:text-text-primary")} onClick={source.onOpen}>from {source.title ?? "task"}</button>
+          : <span>Global checklist</span>)}
         {done && <Button variant="ghost" size="sm" className="-my-1" disabled={busy} onClick={onUndo}>Undo</Button>}
         {!done && (overflows || expanded) && <button type="button" className={cx(DS.focus, "rounded-sm text-text-secondary hover:text-text-primary")}
           aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? "Show less" : "Show more"}</button>}

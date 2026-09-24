@@ -4,7 +4,7 @@ import { GROUP_COLORS } from "../group-colors";
 import { IDENTITY_FILL, identityColor } from "../design/identity";
 import { timeAgo } from "../time";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel, Layers, EyeOff } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -18,7 +18,8 @@ import useTaskIndicators, {
   summarizeTaskTabAttention,
 } from "../hooks/useTaskIndicators";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
-import { splitArchivedTasks, buildGroupSections } from "../task-helpers";
+import { splitArchivedTasks, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
+import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
 import { DndContext } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -37,6 +38,8 @@ interface TaskRailProps {
   onNewTask: (groupId?: string) => void;
   isQuickChatsActive: boolean;
   onGoHome: () => void;
+  onOpenAllTasks?: () => void;
+  isAllTasksActive?: boolean;
   onOpenSettings: () => void;
   onOpenDocs: () => void;
   onOpenHelm?: () => void;
@@ -112,6 +115,8 @@ export default function TaskRail({
   onNewTask,
   isQuickChatsActive,
   onGoHome,
+  onOpenAllTasks,
+  isAllTasksActive = false,
   onOpenSettings,
   onOpenDocs,
   onOpenHelm,
@@ -168,10 +173,27 @@ export default function TaskRail({
 
   const taskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
 
-  const { nonArchived: sortedTasks, archived: archivedTasks } = useMemo(
+  const { nonArchived, archived: archivedTasks } = useMemo(
     () => splitArchivedTasks(tasks),
     [tasks],
   );
+  // Deferred and muted tasks live in a collapsed Set aside section; the main list is for current work.
+  const sortedTasks = useMemo(() => nonArchived.filter((task) => !isSetAsideTask(task)), [nonArchived]);
+  const setAsideTasks = useMemo(() => nonArchived.filter(isSetAsideTask), [nonArchived]);
+  const setAsideIds = useMemo(() => new Set(setAsideTasks.map((task) => task.id)), [setAsideTasks]);
+  const activeTasksForOrder = useMemo(() => tasks.filter((task) => task.status === "active"), [tasks]);
+  const reorderVisible = useMemo(() => onReorderTasks
+    ? (ids: string[]) => onReorderTasks(mergeVisibleOrder(activeTasksForOrder, setAsideIds, ids))
+    : undefined, [activeTasksForOrder, onReorderTasks, setAsideIds]);
+  const moveAndReorderVisible = useMemo(() => onMoveAndReorder
+    ? (taskId: string, groupId: string | undefined, ids: string[]) => onMoveAndReorder(taskId, groupId, mergeVisibleOrder(activeTasksForOrder, setAsideIds, ids, groupId ?? null))
+    : undefined, [activeTasksForOrder, onMoveAndReorder, setAsideIds]);
+  const overview = useTaskOverviewQuery();
+  const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
+  const [showSetAside, setShowSetAside] = useState(false);
+  useEffect(() => {
+    if (activeTaskId && setAsideIds.has(activeTaskId)) setShowSetAside(true);
+  }, [activeTaskId, setAsideIds]);
 
   // Grouped tasks — only when groups exist
   const hasGroups = taskGroups.length > 0;
@@ -237,9 +259,9 @@ export default function TaskRail({
     tasks: sortedTasks,
     groupedSections,
     hasGroups,
-    onReorderTasks,
+    onReorderTasks: reorderVisible,
     onMoveTaskToGroup,
-    onMoveAndReorder,
+    onMoveAndReorder: moveAndReorderVisible,
   });
   const newTaskButtonRef = useRef<HTMLButtonElement>(null);
   const canReorder = Boolean(onReorderTasks) && sortedTasks.length >= 2;
@@ -360,6 +382,29 @@ export default function TaskRail({
               );
             })
           )}
+          {setAsideTasks.length > 0 && (
+            <>
+              <button
+                onClick={() => setShowSetAside((v) => !v)}
+                title={`Set aside (${setAsideTasks.length})`}
+                aria-label={`Set aside (${setAsideTasks.length})`}
+                aria-expanded={showSetAside}
+                className="w-9 h-9 rounded-lg flex items-center justify-center text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
+              >
+                <EyeOff size={16} />
+              </button>
+              {showSetAside && setAsideTasks.map((task) => (
+                <button
+                  key={task.id}
+                  onClick={() => onSelectTask(task.id)}
+                  title={getTaskTitle(task)}
+                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${task.id === activeTaskId ? "ring-2 ring-text-secondary" : ""} text-text-secondary hover:brightness-110`}
+                >
+                  {task.title.slice(0, 2).toUpperCase()}
+                </button>
+              ))}
+            </>
+          )}
           {archivedTasks.length > 0 && (
             <>
               <button
@@ -402,8 +447,8 @@ export default function TaskRail({
           <button
             type="button"
             onClick={onGoHome}
-            title={homeIndicatorDescription ? `Dashboard • ${homeIndicatorDescription}` : "Dashboard"}
-            aria-label={homeIndicatorDescription ? `Dashboard, ${homeIndicatorDescription}` : "Dashboard"}
+            title={homeIndicatorDescription ? `Home • ${homeIndicatorDescription}` : "Home"}
+            aria-label={homeIndicatorDescription ? `Home, ${homeIndicatorDescription}` : "Home"}
             className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
           >
             <LayoutDashboard size={18} />
@@ -413,6 +458,18 @@ export default function TaskRail({
               </span>
             )}
           </button>
+          {onOpenAllTasks && (
+            <button
+              type="button"
+              onClick={onOpenAllTasks}
+              title="All tasks"
+              aria-label="All tasks"
+              aria-current={isAllTasksActive ? "page" : undefined}
+              className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isAllTasksActive)}`}
+            >
+              <Layers size={18} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -636,6 +693,7 @@ export default function TaskRail({
                                   bindLongPress={bindLongPress}
                                   onSelectTask={onSelectTask}
                                   variant="rail"
+                                  quiet={quietIds.has(task.id)}
                                   rowDrag={canReorder}
                                   reordering={reorderMode.reordering}
                                 />
@@ -661,6 +719,7 @@ export default function TaskRail({
                       bindLongPress={bindLongPress}
                       onSelectTask={onSelectTask}
                       variant="rail"
+                      quiet={quietIds.has(task.id)}
                       rowDrag={canReorder}
                       reordering={reorderMode.reordering}
                     />
@@ -674,6 +733,37 @@ export default function TaskRail({
                 message="No tasks yet"
                 sub="Create a task to organize your work"
               />
+            )}
+            {setAsideTasks.length > 0 && (
+              <>
+                <button
+                  onClick={() => setShowSetAside((v) => !v)}
+                  aria-expanded={showSetAside}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                >
+                  {showSetAside ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <EyeOff size={12} />
+                  Set aside ({setAsideTasks.length})
+                </button>
+                {showSetAside && (
+                  <div className={cx(DS.surface.group, "mb-1 overflow-hidden")} data-ds-surface="group">
+                    {setAsideTasks.map((task) => (
+                      <button
+                        key={task.id}
+                        type="button"
+                        {...bindLongPress(task.id, () => onSelectTask(task.id))}
+                        className={cx("flex w-full items-center gap-2 border-b border-border-subtle px-3 py-2 text-left text-sm last:border-b-0 select-none no-callout transition-colors",
+                          ctxMenu?.id === task.id ? "bg-bg-hover ring-1 ring-border" : task.id === activeTaskId ? DS.row.selected : "hover:bg-bg-hover/60")}
+                      >
+                        <span className="w-3 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate font-medium text-text-primary">{task.title}</span>
+                        <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
+                        <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>{task.muted ? "Muted" : "Deferred"}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
             {archivedTasks.length > 0 && (
               <>
@@ -763,17 +853,31 @@ export default function TaskRail({
       <div className="px-2 pb-1">
         <button
           onClick={onGoHome}
-          title={homeIndicatorDescription ? `Dashboard • ${homeIndicatorDescription}` : "Dashboard"}
-          aria-label={homeIndicatorDescription ? `Dashboard, ${homeIndicatorDescription}` : "Dashboard"}
+          title={homeIndicatorDescription ? `Home • ${homeIndicatorDescription}` : "Home"}
+          aria-label={homeIndicatorDescription ? `Home, ${homeIndicatorDescription}` : "Home"}
           className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isDashboardActive)}`}
         >
           <LayoutDashboard size={14} />
-          Dashboard
+          Home
           {homeChecklistIndicator.state !== "none" && (
             <StatusIcon kind={homeIndicatorStatus} decorative size="md" className="ml-auto" />
           )}
         </button>
       </div>
+
+      {onOpenAllTasks && (
+        <div className="px-2 pb-1">
+          <button
+            type="button"
+            onClick={onOpenAllTasks}
+            aria-current={isAllTasksActive ? "page" : undefined}
+            className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isAllTasksActive)}`}
+          >
+            <Layers size={14} />
+            All tasks
+          </button>
+        </div>
+      )}
 
       {/* Docs */}
       <div className="px-2 pb-1">

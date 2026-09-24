@@ -11,6 +11,7 @@ import { join, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { registerHomeRoutes } from "./home.js";
+import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import {
   SettingsValidationError,
@@ -4232,6 +4233,24 @@ export function createApiRouter(
       tags: ctx.tagStore?.getEntityTags("task", t.id) ?? [],
     }));
     res.json({ tasks: tasksWithTags });
+  });
+
+  // Static path: registered before /tasks/:id so "overview" is never read as a task ID.
+  router.get("/tasks/overview", async (_req, res) => {
+    let parsed: ReturnType<typeof toOverviewSessions> | null = null;
+    try { parsed = toOverviewSessions(materializeSessionList(await getEnrichedSessionList(false), false)); }
+    catch (error) { console.error("[tasks] Overview session index unavailable:", error); }
+    try { res.json(buildTaskOverview(ctx, parsed?.sessions ?? null, Date.now(), undefined, parsed?.invalid ?? 0)); }
+    catch (error) {
+      console.error("[tasks] Overview unavailable:", error);
+      res.status(503).json({ error: "Task states could not be read. Nothing is implied about your tasks." });
+    }
+  });
+
+  router.post("/tasks/:id/opened", (req, res) => {
+    const lastOpenedAt = ctx.taskStore.markOpened(req.params.id);
+    if (!lastOpenedAt) return res.status(404).json({ error: "Task not found" });
+    res.json({ lastOpenedAt });
   });
 
   router.put("/tasks/reorder", (req, res) => {
