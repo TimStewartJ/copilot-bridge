@@ -4,7 +4,7 @@ import type { TaskOverviewRow } from "../../shared/task-overview";
 import Dialog from "../design/Dialog";
 import { Button, IdentitySwatch, Notice, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
-import { contextLine, describeIdle, formatSpan, KEEP_DAYS, type TaskOutcome } from "../lib/task-state-ui";
+import { contextLine, describeTouch, formatSpan, KEEP_DAYS, type TaskOutcome } from "../lib/task-state-ui";
 import { toDateTimeStorageValue } from "../lib/task-revisit";
 import type { OutcomeReceipt } from "../hooks/useTaskOutcomes";
 
@@ -121,7 +121,7 @@ export function QuietReviewDialog({ rows, pending, onOutcome, onSetAside, onOpen
           {row.kind === "ongoing" && <Pin size={14} className="rotate-45 text-text-faint" aria-label="Ongoing" />}</h3>
       </div>
       <dl className={cx(DS.surface.inset, "grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2 p-3 text-sm")}>
-        <dt className={DS.text.meta}>Last activity</dt><dd className="text-text-primary">{describeIdle(row)}{row.engagementApproximate ? " (from conversations)" : ""}</dd>
+        <dt className={DS.text.meta}>Last touched</dt><dd className="text-text-primary">{describeTouch(row)}</dd>
         <dt className={DS.text.meta}>{row.nextAction ? "Next step" : row.waitingOn ? "Waiting for" : "Next step"}</dt>
         <dd className={context?.empty ? "text-text-secondary" : "text-text-primary"}>{row.nextAction ?? row.waitingOn ?? "None recorded"}</dd>
         <dt className={DS.text.meta}>Kind</dt><dd className="text-text-primary">{row.kind === "ongoing" ? "Ongoing, no fixed finish line" : "Task"}</dd>

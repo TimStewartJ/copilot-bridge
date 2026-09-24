@@ -22,6 +22,16 @@ export function describeIdle(row: Pick<TaskOverviewRow, "idleDays">): string {
   return `${formatSpan(row.idleDays)} ago`;
 }
 
+const TOUCH_VERB: Record<NonNullable<TaskOverviewRow["lastTouchKind"]>, string> = {
+  opened: "You opened it", edited: "You edited it", message: "You wrote in its conversation", created: "Created",
+};
+
+/** What Tim last did and when, e.g. "You wrote in its conversation 3 weeks ago". */
+export function describeTouch(row: Pick<TaskOverviewRow, "idleDays" | "lastTouchKind">): string {
+  if (row.idleDays === null || !row.lastTouchKind) return "No recent activity from you";
+  return `${TOUCH_VERB[row.lastTouchKind]} ${describeIdle(row)}`;
+}
+
 export function formatShortDate(value: string, now = new Date()): string {
   const date = new Date(value);
   const days = Math.round((date.getTime() - now.getTime()) / DAY_MS);

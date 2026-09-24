@@ -1,11 +1,11 @@
 import type { AppContext } from "./app-context.js";
 import type { Task } from "./task-store.js";
-import type { TaskOverview, TaskOverviewRow } from "../shared/task-overview.js";
+import type { TaskOverview, TaskOverviewRow, TaskTouchKind } from "../shared/task-overview.js";
 import { deriveTaskState, latestTime, TASK_STATE_ORDER, type TaskState } from "../shared/task-state.js";
 import { isRecord } from "../shared/is-record.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 
-export type TaskOverviewContext = Pick<AppContext, "taskStore" | "taskGroupStore" | "readStateStore" | "scheduleStore"> &
+export type TaskOverviewContext = Pick<AppContext, "taskStore" | "taskGroupStore" | "scheduleStore"> &
   Partial<Pick<AppContext, "deferredPromptStore" | "deferLoopStore">> & {
   sessionManager: Pick<AppContext["sessionManager"], "getSessionRunState" | "getPendingUserInputCount">;
 };
@@ -28,7 +28,6 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
   const sourceErrors: string[] = [];
   const active = (tasks ?? ctx.taskStore.listTasks()).filter(task => task.status === "active");
   const groups = new Map(ctx.taskGroupStore.listGroups().map(group => [group.id, group]));
-  const readState = ctx.readStateStore.getReadState();
   const momentum = ctx.taskStore.listMomentumSignals();
   const schedulesByTask = new Map<string, number>();
   for (const schedule of ctx.scheduleStore.listSchedules()) {
@@ -53,9 +52,12 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     const automationCount = (schedulesByTask.get(task.id) ?? 0)
       + task.sessionIds.filter(id => prompts.has(id) || loops.has(id)).length;
     const signals = momentum.get(task.id);
-    const exact = latestTime(task.lastOpenedAt, signals?.userEditedAt);
-    const readAt = latestTime(...task.sessionIds.map(id => readState[id]));
-    const lastEngagedAt = latestTime(exact, readAt, task.createdAt);
+    // Only things Tim did count: opening the task, editing it, or writing in one of its conversations.
+    const touches: Array<[TaskTouchKind, string | undefined]> = [
+      ["opened", task.lastOpenedAt], ["edited", signals?.userEditedAt], ["message", signals?.lastMessageAt], ["created", task.createdAt],
+    ];
+    const lastEngagedAt = latestTime(...touches.map(([, at]) => at));
+    const lastTouchKind = lastEngagedAt ? touches.find(([, at]) => at && Date.parse(at) === Date.parse(lastEngagedAt))?.[0] : undefined;
     const derived = deriveTaskState({
       muted: task.muted, deferred: task.deferred, nextAction: task.nextAction, waitingOn: task.waitingOn,
       nextTouchAt: task.nextTouchAt, lastEngagedAt, waitingSince: signals?.waitingChangedAt,
@@ -68,8 +70,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
       ...(group ? { groupId: group.id, groupName: group.name, groupColor: group.color } : {}),
       ...(task.nextAction ? { nextAction: task.nextAction } : {}), ...(task.waitingOn ? { waitingOn: task.waitingOn } : {}),
       ...(task.nextTouchAt ? { nextTouchAt: task.nextTouchAt } : {}),
-      ...derived, ...(lastEngagedAt ? { lastEngagedAt } : {}),
-      engagementApproximate: !exact || (lastEngagedAt !== undefined && Date.parse(lastEngagedAt) > Date.parse(exact)),
+      ...derived, ...(lastEngagedAt ? { lastEngagedAt } : {}), ...(lastTouchKind ? { lastTouchKind } : {}),
       busyCount, stalledCount, inputCount, automationCount,
       ...(linked[0] ? { sessionId: linked[0].sessionId } : {}),
     };

@@ -748,6 +748,17 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined);
   });
 
+  it("POST /api/chat records Tim's message for task states only once delivery is accepted", async () => {
+    const task = ctx.taskStore.createTask("Linked");
+    ctx.taskStore.linkSession(task.id, "test-session");
+    ctx.sessionManager.startWork = vi.fn(() => { throw new Error("offline"); });
+    expect((await request(app).post("/api/chat").send({ sessionId: "test-session", prompt: "hello" })).status).not.toBe(202);
+    expect(ctx.taskStore.listMomentumSignals().get(task.id)?.lastMessageAt).toBeUndefined();
+    ctx.sessionManager.startWork = vi.fn();
+    expect((await request(app).post("/api/chat").send({ sessionId: "test-session", prompt: "hello" })).status).toBe(202);
+    expect(ctx.taskStore.listMomentumSignals().get(task.id)?.lastMessageAt).toEqual(expect.any(String));
+  });
+
   it("POST /api/chat passes autopilot mode to new work", async () => {
     ctx.sessionManager.startWork = vi.fn();
 
