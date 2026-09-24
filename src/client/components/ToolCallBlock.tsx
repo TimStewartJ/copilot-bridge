@@ -8,6 +8,8 @@ import { useChatRunActive } from "./chat/chat-run-context";
 import { formatToolArgsDetails, hasToolArgs } from "../lib/tool-args";
 import { getToolCallStatus, getToolCallStatusLabel } from "../lib/tool-call-status";
 import { describeToolCall, formatDuration, getToolDurationMs } from "../lib/tool-presentation";
+import { readAskUserRecord } from "../lib/ask-user-record";
+import { AskUserRecordView } from "./chat/AskUserRecord";
 import { DS, cx } from "../design/tokens";
 
 const RESULT_PREVIEW_CHARS = 2000;
@@ -82,6 +84,10 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
   const durationMs = getToolDurationMs(toolCall);
   const startTime = formatStartTime(toolCall);
   const input = useMemo(() => splitPrimaryInput(toolCall.args), [toolCall.args]);
+  const askRecord = useMemo(
+    () => readAskUserRecord(toolCall),
+    [toolCall.args, toolCall.name, toolCall.result, toolCall.success],
+  );
   const running = status === "running" && runActive;
   const failed = status === "failed";
 
@@ -140,37 +146,43 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
             {startTime && <span>{startTime}</span>}
             {durationMs !== undefined && <span>{formatDuration(durationMs)}</span>}
           </div>
-          {/* Progress is what a call has said so far; once it has a result, that says it better. */}
-          {progressText && !result && (
-            <DetailSection label="Latest progress">
-              <pre className={`${DETAIL_PRE_CLASS} max-h-32`}>{progressText}</pre>
-            </DetailSection>
-          )}
-          {input.primary && (
-            <DetailSection label={input.primary.label}>
-              <pre className={`${DETAIL_PRE_CLASS} max-h-40`}>{input.primary.text}</pre>
-            </DetailSection>
-          )}
-          {hasToolArgs(input.rest) && (
-            <DetailSection label="Arguments">
-              <pre className={`${DETAIL_PRE_CLASS} max-h-40`}>{formatToolArgsDetails(input.rest)}</pre>
-            </DetailSection>
-          )}
-          {result && (
-            <DetailSection label="Result">
-              <pre className={`${DETAIL_PRE_CLASS} max-h-64`}>
-                {result.length > RESULT_PREVIEW_CHARS ? `${result.slice(0, RESULT_PREVIEW_CHARS)}\n... (truncated)` : result}
-              </pre>
-              {result.length > RESULT_PREVIEW_CHARS && (
-                <button
-                  type="button"
-                  onClick={() => setShowFullModal(true)}
-                  className="mt-1.5 cursor-pointer text-[11px] text-text-muted underline-offset-2 hover:text-text-primary hover:underline"
-                >
-                  Show full response
-                </button>
+          {askRecord ? (
+            <AskUserRecordView toolCall={toolCall} record={askRecord} variant="detail" waiting={running} />
+          ) : (
+            <>
+              {/* Progress is what a call has said so far; once it has a result, that says it better. */}
+              {progressText && !result && (
+                <DetailSection label="Latest progress">
+                  <pre className={`${DETAIL_PRE_CLASS} max-h-32`}>{progressText}</pre>
+                </DetailSection>
               )}
-            </DetailSection>
+              {input.primary && (
+                <DetailSection label={input.primary.label}>
+                  <pre className={`${DETAIL_PRE_CLASS} max-h-40`}>{input.primary.text}</pre>
+                </DetailSection>
+              )}
+              {hasToolArgs(input.rest) && (
+                <DetailSection label="Arguments">
+                  <pre className={`${DETAIL_PRE_CLASS} max-h-40`}>{formatToolArgsDetails(input.rest)}</pre>
+                </DetailSection>
+              )}
+              {result && (
+                <DetailSection label="Result">
+                  <pre className={`${DETAIL_PRE_CLASS} max-h-64`}>
+                    {result.length > RESULT_PREVIEW_CHARS ? `${result.slice(0, RESULT_PREVIEW_CHARS)}\n... (truncated)` : result}
+                  </pre>
+                  {result.length > RESULT_PREVIEW_CHARS && (
+                    <button
+                      type="button"
+                      onClick={() => setShowFullModal(true)}
+                      className="mt-1.5 cursor-pointer text-[11px] text-text-muted underline-offset-2 hover:text-text-primary hover:underline"
+                    >
+                      Show full response
+                    </button>
+                  )}
+                </DetailSection>
+              )}
+            </>
           )}
           {childNodes.length > 0 && renderChildNodes && (
             <div className="border-l border-border pl-3">
