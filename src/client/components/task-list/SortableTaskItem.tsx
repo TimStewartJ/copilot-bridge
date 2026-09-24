@@ -121,7 +121,8 @@ export default function SortableTaskItem({
             title={primarySignal.label}
           >
             {primarySignal.status !== "unread" && <StatusIcon kind={primarySignal.status} decorative />}
-            {isRail ? primarySignal.shortLabel : primarySignal.label}
+            {/* Short on every list, as in the sidebar; the full wording is the tooltip. */}
+            {primarySignal.shortLabel}
           </span>
         )}
       </div>
