@@ -283,6 +283,12 @@ describe("settings-store", () => {
     })).toThrow("deferWorker.contextTier must be default or long_context");
   });
 
+  it("stores Helm's names list trimmed, drops an empty one and rejects one that is too long", () => {
+    expect(store.updateSettings({ helm: { glossary: "  timmiepc = Timmy PC  " } }).helm).toEqual({ glossary: "timmiepc = Timmy PC" });
+    expect(store.updateSettings({ helm: { glossary: "   " } }).helm).toBeUndefined();
+    expect(() => store.updateSettings({ helm: { glossary: "x".repeat(2_001) } })).toThrow("helm.glossary must be text of at most 2000 characters");
+  });
+
   it("persists and validates Helm's per-mode reasoning efforts", () => {
     expect(store.getSettings().helm).toBeUndefined();
 

@@ -106,6 +106,22 @@ describe("Helm settings sheet", () => {
     expect(getReactProps(selects[0])!.value).toBe("test-model");
   });
 
+  it("edits Helm's names list and saves it only when it changed and the field loses focus", async () => {
+    const onSave = vi.fn();
+    await harness.render(createElement(VoiceSettingsSheet, {
+      controller,
+      helmGlossary: { value: "timmiepc = Timmy PC", onSave, error: null },
+      onClose: mocks.onClose,
+    }));
+    const [field] = findAllByTag(harness.dom.container, "textarea");
+    expect(getReactProps(field)!.value).toBe("timmiepc = Timmy PC");
+    expect(findAllByTag(harness.dom.container, "label").some((label) => getReactProps(label)?.htmlFor === "helm-setting-glossary")).toBe(true);
+    await harness.act(() => getReactProps(field)!.onBlur());
+    expect(onSave).not.toHaveBeenCalled();
+    await harness.act(() => getReactProps(field)!.onChange({ target: { value: "timmiepc = Timmy PC; Tether = my iPhone app" } }));
+    await harness.act(() => getReactProps(findAllByTag(harness.dom.container, "textarea")[0])!.onBlur());
+    expect(onSave).toHaveBeenCalledWith("timmiepc = Timmy PC; Tether = my iPhone app");
+  });
   describe("thinking effort", () => {
     async function renderEfforts(helmEfforts: Record<string, unknown>) {
       await harness.render(createElement(VoiceSettingsSheet, {

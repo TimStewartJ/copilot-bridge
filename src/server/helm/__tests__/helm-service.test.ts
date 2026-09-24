@@ -68,17 +68,17 @@ function createHarness() {
 }
 
 describe("HelmService conversations", () => {
-  it("asks for max effort when typing and xhigh when speaking, until settings say otherwise", async () => {
+  it("asks for max effort when typing and medium when speaking, until settings say otherwise", async () => {
     const { helm, ctx } = createHarness();
     expect(helm.getTurnReasoningEffort("typed")).toBe("max");
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("xhigh");
-    expect((await helm.getState()).reasoningEfforts).toEqual({ typed: "max", spoken: "xhigh" });
+    expect(helm.getTurnReasoningEffort("spoken")).toBe("medium");
+    expect((await helm.getState()).reasoningEfforts).toEqual({ typed: "max", spoken: "medium" });
     // Anything that isn't a hands-free turn is answered in the chat.
     expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("max");
 
     (ctx.settingsStore as { getSettings(): unknown }).getSettings = () => ({ model: "claude-opus-5", helm: { typedReasoningEffort: "high" } });
     expect(helm.getTurnReasoningEffort("typed")).toBe("high");
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("xhigh");
+    expect(helm.getTurnReasoningEffort("spoken")).toBe("medium");
     // Read per turn: the profile built earlier follows the change.
     expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("high");
   });

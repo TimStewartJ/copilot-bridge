@@ -54,7 +54,14 @@ export interface HelmSettings {
   typedReasoningEffort?: ReasoningEffort;
   /** Reasoning effort for Helm turns answered out loud in hands-free. */
   spokenReasoningEffort?: ReasoningEffort;
+  /**
+   * Names the user says that speech recognition mishears or Helm can't know (machine, project and app
+   * names), given to Helm with its instructions and with hands-free turns.
+   */
+  glossary?: string;
 }
+
+export const HELM_GLOSSARY_MAX_LENGTH = 2_000;
 
 export interface ModelFamilyDefault {
   model: string;
@@ -275,10 +282,17 @@ function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
   };
   const typedReasoningEffort = readEffort("typedReasoningEffort");
   const spokenReasoningEffort = readEffort("spokenReasoningEffort");
-  if (!typedReasoningEffort && !spokenReasoningEffort) return undefined;
+  const rawGlossary = value.glossary;
+  if (rawGlossary !== undefined && rawGlossary !== null
+    && (typeof rawGlossary !== "string" || rawGlossary.length > HELM_GLOSSARY_MAX_LENGTH)) {
+    validationError(`helm.glossary must be text of at most ${HELM_GLOSSARY_MAX_LENGTH} characters`);
+  }
+  const glossary = typeof rawGlossary === "string" ? rawGlossary.trim() || undefined : undefined;
+  if (!typedReasoningEffort && !spokenReasoningEffort && !glossary) return undefined;
   return {
     ...(typedReasoningEffort ? { typedReasoningEffort } : {}),
     ...(spokenReasoningEffort ? { spokenReasoningEffort } : {}),
+    ...(glossary ? { glossary } : {}),
   };
 }
 

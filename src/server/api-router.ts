@@ -263,6 +263,7 @@ function parseSearchRequest(query: express.Request["query"]): Required<BridgeSea
   return {
     q,
     refreshOnly: query.refreshOnly === "true",
+    anyWord: false,
     scope: scope as SearchScope,
     taskId,
     sessionId,
@@ -1353,6 +1354,8 @@ export function createApiRouter(
           lastActivityAt: activity,
           linkedTaskIds: Array.isArray(session.linkedTaskIds) ? session.linkedTaskIds : [],
           intentText: session.intentText ?? null,
+          ...(typeof session.triggeredBy === "string" ? { triggeredBy: session.triggeredBy } : {}),
+          ...(typeof session.scheduleName === "string" && session.scheduleName ? { scheduleName: session.scheduleName } : {}),
         };
       });
     },

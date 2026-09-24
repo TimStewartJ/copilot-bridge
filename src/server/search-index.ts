@@ -748,7 +748,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       return [];
     });
     const tasks = deps.taskStore.listTasks();
-    const parsed = parseSearchQuery(request.q);
+    const parsed = parseSearchQuery(request.q, { anyWord: request.anyWord });
 
     const chatSearch = request.kind === "task" || request.kind === "doc"
       ? { result: { items: [], total: 0 }, errors: [] }
@@ -771,7 +771,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       && deps.docsIndex
     ) {
       try {
-        const result = deps.docsIndex.search(request.q, request.limit, request.offset);
+        const result = deps.docsIndex.search(request.q, request.limit, request.offset, { anyWord: request.anyWord });
         docs = {
           total: result.total,
           items: result.results.map((item) => ({

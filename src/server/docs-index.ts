@@ -53,6 +53,8 @@ export interface DocsIndexOptions {
 export interface DocsSearchOptions {
   /** Treat the last keyword as a prefix so as-you-type queries match partial words. */
   prefix?: boolean;
+  /** Match pages with any of the words instead of all of them (best matches rank first). */
+  anyWord?: boolean;
 }
 
 /** Descriptions ride along on every tree node, so keep them to a preview length. */
@@ -320,7 +322,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
   // ── Search ────────────────────────────────────────────────────
 
   function buildFtsQuery(query: string, searchOptions: DocsSearchOptions): string {
-    const parsed = parseSearchQuery(query);
+    const parsed = parseSearchQuery(query, { anyWord: searchOptions.anyWord });
     // A trailing space means the last word is finished, so only an in-progress word gets a prefix match.
     if (!searchOptions.prefix || !parsed.fts || /\s$/.test(query)) return parsed.fts;
     return `${parsed.fts}*`;

@@ -53,11 +53,17 @@ export interface RegisterDocsToolsOptions {
 export function createDocsToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return ctx.docsStore && ctx.docsIndex ? [
     defineBridgeTool("docs_search", {
-      description: "Search the knowledge base using full-text search. Returns matching pages with titles, snippets, and relevance scores.",
+      description: "Search the knowledge base using full-text search. Returns matching pages with titles, snippets, and relevance scores. When no page has every word, it retries with any of the words and says so (matchedAnyWord).",
       parameters: { type: "object", properties: { query: { type: "string", description: "Search query text" }, limit: { type: "number", description: "Max results (default 20)" }, offset: { type: "number", description: "Offset for pagination (default 0)" } }, required: ["query"] },
       handler: async (args: any) => {
         try {
-          return ctx.docsIndex!.search(args.query, args.limit ?? 20, args.offset ?? 0);
+          const limit = args.limit ?? 20;
+          const offset = args.offset ?? 0;
+          const all = ctx.docsIndex!.search(args.query, limit, offset);
+          const words = String(args.query ?? "").trim().split(/\s+/).filter(Boolean);
+          if (all.total > 0 || words.length < 2) return all;
+          const any = ctx.docsIndex!.search(args.query, limit, offset, { anyWord: true });
+          return any.total > 0 ? { ...any, matchedAnyWord: true } : all;
         } catch (error) {
           return normalizeDocsToolFailure(error);
         }

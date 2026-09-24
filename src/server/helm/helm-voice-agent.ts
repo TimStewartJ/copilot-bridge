@@ -34,6 +34,8 @@ export interface HelmVoiceAgentOptions {
   sessionManager: HelmVoiceSessionManager;
   getBus(sessionId: string): HelmVoiceEventBus;
   snapshot?: () => Promise<string | undefined>;
+  /** The user's names list from Helm settings. Read per turn; sent when it is new to this conversation. */
+  glossary?: () => string | undefined;
   /** Reasoning effort for turns answered out loud. Read per turn so a settings change applies at once. */
   resolveReasoningEffort?: () => string | undefined;
   timeZone?: string;
@@ -75,6 +77,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
   private active?: ActiveTurn;
   private queue: Promise<void> = Promise.resolve();
   private lastSnapshot?: string;
+  private lastGlossary?: string;
   private detached = false;
   readonly sessionId: string;
   readonly timeZone: string;
@@ -210,7 +213,10 @@ export class HelmVoiceAgent implements VoiceAgentApi {
       return;
     }
     const snapshot = await this.readSnapshot(turn);
-    const composed = composeHandsFreePrompt(turn.input, { snapshot, timeZone: this.timeZone });
+    const glossary = this.options.glossary?.()?.trim() || undefined;
+    const newGlossary = glossary && glossary !== this.lastGlossary ? glossary : undefined;
+    if (glossary) this.lastGlossary = glossary;
+    const composed = composeHandsFreePrompt(turn.input, { snapshot, timeZone: this.timeZone, ...(newGlossary ? { glossary: newGlossary } : {}) });
     const idle = await this.waitUntilIdle(turn);
     if (turn.done) return;
     if (turn.aborting || this.detached) {

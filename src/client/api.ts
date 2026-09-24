@@ -2185,6 +2185,8 @@ export interface HelmSettings {
   typedReasoningEffort?: ReasoningEffort;
   /** Reasoning effort for Helm turns answered out loud in hands-free. */
   spokenReasoningEffort?: ReasoningEffort;
+  /** Names the user says that Helm should recognize (machines, projects, apps). */
+  glossary?: string;
 }
 
 export interface AppSettings {
