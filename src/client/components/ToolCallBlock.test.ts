@@ -88,4 +88,33 @@ describe("ToolCallBlock details", () => {
     expect(running).toContain("Latest progress");
     expect(running).toContain("PARTIAL-OUTPUT");
   });
+
+  it("shows a question as the form it was, not as its schema", async () => {
+    const text = await openRow({
+      toolCallId: "ask-1",
+      name: "ask_user",
+      args: {
+        message: "Which **shape** should I create?",
+        requestedSchema: {
+          properties: {
+            tracking: {
+              type: "string",
+              title: "ADO tracking",
+              oneOf: [{ const: "feature_task", title: "Feature plus Task" }, { const: "none", title: "Nothing yet" }],
+            },
+          },
+        },
+      },
+      startedAt: "2026-09-20T08:00:00.000Z",
+      completedAt: "2026-09-20T08:05:00.000Z",
+      success: true,
+      result: "User responded:\ntracking: feature_task",
+    });
+
+    expect(text).toContain("ADO tracking");
+    expect(text).toContain("Feature plus Task");
+    expect(text).toContain("Nothing yet");
+    expect(text).not.toContain("requestedSchema");
+    expect(text).not.toContain("User responded");
+  });
 });
