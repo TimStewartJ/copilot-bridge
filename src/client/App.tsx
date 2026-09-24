@@ -28,7 +28,6 @@ import {
   isSessionActive,
   markSessionReadOnPageHide,
   getTaskDeletionPreview,
-  markTaskOpened,
   ApiError,
   API_BASE,
   type ChecklistItem,
@@ -755,19 +754,6 @@ function AppShell() {
   useEffect(() => {
     if (activeTaskId) setLastActiveTask(activeTaskId);
   }, [activeTaskId]);
-  // Opening a task is Tim's engagement signal for task states; throttled so switching back and forth stays quiet.
-  const openedTasksRef = useRef(new Map<string, number>());
-  useEffect(() => {
-    if (!activeTaskId) return;
-    const last = openedTasksRef.current.get(activeTaskId) ?? 0;
-    if (Date.now() - last < 5 * 60_000) return;
-    const taskId = activeTaskId, attemptedAt = Date.now();
-    openedTasksRef.current.set(taskId, attemptedAt);
-    // Home and the overview both derive from the open; a failed write is forgotten so the next visit retries.
-    void markTaskOpened(taskId).then(() => queryClient.invalidateQueries({ queryKey: ["dashboard"] })).catch(() => {
-      if (openedTasksRef.current.get(taskId) === attemptedAt) openedTasksRef.current.delete(taskId);
-    });
-  }, [activeTaskId, queryClient]);
   useEffect(() => {
     if (activeSessionId && !activeTaskId && quickChatsMode) {
       setLastActiveQuickChat(activeSessionId);

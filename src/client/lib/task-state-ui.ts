@@ -23,7 +23,7 @@ export function describeIdle(row: Pick<TaskOverviewRow, "idleDays">): string {
 }
 
 const TOUCH_VERB: Record<NonNullable<TaskOverviewRow["lastTouchKind"]>, string> = {
-  opened: "You opened it", edited: "You edited it", message: "You wrote in its conversation", created: "Created",
+  edited: "You edited it", message: "You wrote in its conversation", created: "Created",
 };
 
 /** What Tim last did and when, e.g. "You wrote in its conversation 3 weeks ago". */

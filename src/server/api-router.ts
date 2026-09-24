@@ -4259,12 +4259,6 @@ export function createApiRouter(
     }
   });
 
-  router.post("/tasks/:id/opened", (req, res) => {
-    const lastOpenedAt = ctx.taskStore.markOpened(req.params.id);
-    if (!lastOpenedAt) return res.status(404).json({ error: "Task not found" });
-    res.json({ lastOpenedAt });
-  });
-
   router.put("/tasks/reorder", (req, res) => {
     const { taskIds } = req.body;
     if (!Array.isArray(taskIds)) return res.status(400).json({ error: "taskIds array is required" });
