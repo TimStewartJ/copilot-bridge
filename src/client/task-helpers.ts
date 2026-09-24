@@ -73,3 +73,38 @@ export function buildGroupSections(tasks: Task[], taskGroups: TaskGroup[]): Grou
   }
   return sections;
 }
+
+/** Deferred and muted tasks leave the main list for a collapsed Set aside section. */
+export function isSetAsideTask(task: Pick<Task, "deferred" | "muted" | "status">): boolean {
+  return task.status === "active" && (task.deferred || task.muted);
+}
+
+/**
+ * The sidebar reorders only the tasks it shows, and grouped drags submit just one group's IDs. The
+ * server numbers exactly the IDs it receives, so hidden set-aside tasks from that same cohort keep
+ * their slots and the new visible order fills the rest. Hidden tasks in other groups are untouched.
+ * Pass `targetGroupId` when a task is moving into a group, since its stored group is still the old one.
+ */
+export function mergeVisibleOrder(
+  activeTasks: readonly Task[],
+  hiddenIds: ReadonlySet<string>,
+  visibleOrder: readonly string[],
+  targetGroupId?: string | null,
+): string[] {
+  if (!hiddenIds.size) return [...visibleOrder];
+  const submitted = new Set(visibleOrder);
+  const groups = targetGroupId !== undefined
+    ? new Set([targetGroupId ?? ""])
+    : new Set(activeTasks.filter(task => submitted.has(task.id)).map(task => task.groupId ?? ""));
+  const cohort = activeTasks
+    .filter(task => submitted.has(task.id) || (hiddenIds.has(task.id) && groups.has(task.groupId ?? "")))
+    .sort((a, b) => a.order - b.order);
+  const queue = visibleOrder.filter(id => !hiddenIds.has(id));
+  const merged: string[] = [];
+  for (const task of cohort) {
+    if (hiddenIds.has(task.id)) merged.push(task.id);
+    else if (queue.length) merged.push(queue.shift()!);
+  }
+  merged.push(...queue);
+  return merged;
+}

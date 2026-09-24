@@ -1,17 +1,24 @@
 import { createElement, type ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Session } from "../api";
-import {
-  createReactDomHarness,
-  findAllByTag,
-  getReactProps,
-  type ReactDomHarness,
-} from "../test-react-harness";
-import TaskRail from "./TaskRail";
+import type { Session, Task } from "../api";
+import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
+import { findAllByTag, getReactProps, waitTick } from "../test-react-harness";
 
+const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
+vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
 vi.mock("./CopilotQuotaMenu", () => ({
   default: () => null,
 }));
+
+import TaskRail from "./TaskRail";
+
+function createTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-1", title: "Current work", kind: "task", muted: false, deferred: false, status: "active",
+    notes: "", priority: 0, order: 0, createdAt: NOW, updatedAt: NOW, sessionIds: [], workItems: [], pullRequests: [],
+    ...overrides,
+  };
+}
 
 const NOW = "2026-08-07T16:00:00.000Z";
 
@@ -45,7 +52,7 @@ function attentionBadge(button: any): any {
 }
 
 describe("TaskRail navigation attention", () => {
-  let harness: ReactDomHarness | null = null;
+  let harness: DialogTestHarness | null = null;
 
   afterEach(async () => {
     await harness?.cleanup();
@@ -68,7 +75,8 @@ describe("TaskRail navigation attention", () => {
       onToggleExpanded: vi.fn(),
       ...overrides,
     };
-    harness ??= await createReactDomHarness();
+    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, tasks: [] });
+    harness ??= await createDialogTestHarness();
     await harness.render(createElement(TaskRail, props));
     return props;
   }
@@ -85,7 +93,7 @@ describe("TaskRail navigation attention", () => {
     });
 
     for (const label of [
-      "Dashboard",
+      "Home",
       "Chats, 1 chat needs attention; 1 needs an answer",
       "Docs",
       "New Task",
@@ -134,5 +142,33 @@ describe("TaskRail navigation attention", () => {
       "Chats, 1 chat needs attention; 1 needs an answer",
     );
     expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-accent");
+  });
+
+  it("offers All tasks as navigation and keeps set-aside tasks out of the working list", async () => {
+    const onOpenAllTasks = vi.fn();
+    await renderRail({
+      expanded: true,
+      onOpenAllTasks,
+      tasks: [
+        createTask(),
+        createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1 }),
+        createTask({ id: "muted", title: "Quiet feed", muted: true, order: 2 }),
+      ],
+    });
+    const text = () => harness!.dom.container.textContent ?? "";
+    expect(text()).toContain("Current work");
+    expect(text()).not.toContain("Parked idea");
+    expect(text()).toContain("Set aside (2)");
+
+    const allTasks = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.trim() === "All tasks");
+    expect(allTasks).toBeDefined();
+    await harness!.act(async () => { getReactProps(allTasks)!.onClick(); });
+    expect(onOpenAllTasks).toHaveBeenCalledOnce();
+
+    const toggle = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.includes("Set aside (2)"));
+    await harness!.act(async () => { getReactProps(toggle)!.onClick(); await waitTick(); });
+    expect(text()).toContain("Parked idea");
+    expect(text()).toContain("Deferred");
+    expect(text()).toContain("Muted");
   });
 });

@@ -348,6 +348,7 @@ function initSchema(db: DatabaseSync): void {
       kind TEXT NOT NULL DEFAULT 'task',
       muted INTEGER NOT NULL DEFAULT 0,
       deferred INTEGER NOT NULL DEFAULT 0,
+      lastOpenedAt TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       groupId TEXT,
       cwd TEXT,
@@ -846,6 +847,9 @@ function initSchema(db: DatabaseSync): void {
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {
     db.exec("ALTER TABLE tasks ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!taskColumns.some(column => column.name === "lastOpenedAt")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN lastOpenedAt TEXT");
   }
 
   const deferLoopColumns = new Set(

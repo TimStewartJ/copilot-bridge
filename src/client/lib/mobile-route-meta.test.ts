@@ -34,6 +34,11 @@ describe("getMobileRouteMeta", () => {
     expect(getMobileRouteMeta("/docs/recipes", "?db")).toMatchObject({ route: "docs-detail", showSharedHeader: false, docPath: "recipes" });
   });
 
+  it("keeps All tasks inside the Work tab's task segment", () => {
+    expect(getMobileRouteMeta("/dashboard/tasks")).toMatchObject({ route: "task-list", activeTab: "work", workSegment: "tasks" });
+    expect(getMobileRouteMeta("/dashboard/tasks/")).toMatchObject({ route: "task-list", workSegment: "tasks" });
+  });
+
   it("puts the task list and the quick chats under one Work tab, told apart by segment", () => {
     expect(getMobileRouteMeta("/")).toMatchObject({ route: "task-list", activeTab: "work", workSegment: "tasks", isRoot: true });
     expect(getMobileRouteMeta("/chats")).toMatchObject({ route: "chat-list", activeTab: "work", workSegment: "chats", isRoot: true });
