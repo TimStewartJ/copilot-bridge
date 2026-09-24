@@ -440,16 +440,35 @@ export function createTaskStore(
     return (db.prepare("SELECT lastOpenedAt FROM tasks WHERE id = ?").get(id) as any)?.lastOpenedAt ?? at;
   }
 
-  /** One pass over the momentum history: Tim's latest own edit, and when waiting-for last changed, per task. */
-  function listMomentumSignals(): Map<string, { userEditedAt?: string; waitingChangedAt?: string }> {
-    const signals = new Map<string, { userEditedAt?: string; waitingChangedAt?: string }>();
+  /**
+   * Records that Tim sent a message or answered a question in a conversation. Silent like markOpened:
+   * it feeds task states, not task history. Only routes carrying his own words call it.
+   */
+  function recordUserMessage(sessionId: string, at = new Date().toISOString()): void {
+    db.prepare(`INSERT INTO session_user_messages (sessionId, lastSentAt) VALUES (?, ?)
+      ON CONFLICT(sessionId) DO UPDATE SET lastSentAt = excluded.lastSentAt WHERE excluded.lastSentAt > lastSentAt`).run(sessionId, at);
+  }
+
+  /**
+   * One pass per source, per task: Tim's latest own edit, the last message he sent in a linked
+   * conversation, and when waiting-for last changed.
+   */
+  function listMomentumSignals(): Map<string, MomentumSignals> {
+    const signals = new Map<string, MomentumSignals>();
+    const add = (taskId: unknown, patch: MomentumSignals) => {
+      const id = String(taskId);
+      signals.set(id, { ...signals.get(id), ...patch });
+    };
     for (const row of db.prepare("SELECT taskId, MAX(at) AS at FROM task_momentum_events WHERE source = 'user' GROUP BY taskId").all() as any[]) {
-      signals.set(String(row.taskId), { userEditedAt: String(row.at) });
+      add(row.taskId, { userEditedAt: String(row.at) });
+    }
+    for (const row of db.prepare(`SELECT ts.taskId, MAX(m.lastSentAt) AS at FROM task_sessions ts
+      JOIN session_user_messages m ON m.sessionId = ts.sessionId GROUP BY ts.taskId`).all() as any[]) {
+      add(row.taskId, { lastMessageAt: String(row.at) });
     }
     for (const row of db.prepare(`SELECT taskId, MAX(at) AS at FROM task_momentum_events
       WHERE changesJson LIKE '%"field":"waitingOn"%' GROUP BY taskId`).all() as any[]) {
-      const id = String(row.taskId);
-      signals.set(id, { ...signals.get(id), waitingChangedAt: String(row.at) });
+      add(row.taskId, { waitingChangedAt: String(row.at) });
     }
     return signals;
   }
@@ -941,8 +960,10 @@ export function createTaskStore(
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
     getTaskSessionCounts,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
-    findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, markOpened, listMomentumSignals,
+    findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, markOpened, recordUserMessage, listMomentumSignals,
   };
 }
 
 export type TaskStore = ReturnType<typeof createTaskStore>;
+
+export interface MomentumSignals { userEditedAt?: string; lastMessageAt?: string; waitingChangedAt?: string }

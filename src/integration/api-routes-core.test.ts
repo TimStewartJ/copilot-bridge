@@ -337,12 +337,16 @@ describe("User input response route", () => {
       timestamp: submittedAt,
     });
     ctx.sessionManager.submitUserInputResponse = submitUserInputResponse;
+    const task = ctx.taskStore.createTask("Asked a question");
+    ctx.taskStore.linkSession(task.id, "session-123");
 
     const res = await request(app)
       .post("/api/sessions/session-123/user-input/request-1/respond")
       .send({ answer: "yes", wasFreeform: false });
 
     expect(res.status).toBe(200);
+    // Answering is Tim's own words, so it counts as touching the task.
+    expect(ctx.taskStore.listMomentumSignals().get(task.id)?.lastMessageAt).toEqual(expect.any(String));
     expect(res.body).toEqual({
       requestId: "request-1",
       answer: "yes",

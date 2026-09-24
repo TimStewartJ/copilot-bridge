@@ -204,7 +204,7 @@ describe("native Home composition", () => {
     const checklistOnly = app.taskStore.createTask("Has an overdue to-do");
     db.prepare("UPDATE tasks SET createdAt = ? WHERE id IN (?, ?, ?)").run(old, quiet.id, revisit.id, checklistOnly.id);
     app.taskStore.linkSession(inMotion.id, "recent-chat");
-    app.readStateStore.markRead("recent-chat", new Date().toISOString());
+    app.taskStore.recordUserMessage("recent-chat");
     app.taskStore.updateTask(revisit.id, { nextTouchAt: "2000-01-01T00:00:00Z" });
     app.checklistStore.createChecklistItem(checklistOnly.id, "Overdue to-do", "2000-01-01");
     const home = await app.snapshot();
@@ -229,6 +229,25 @@ describe("native Home composition", () => {
     expect(home.taskCounts.no_next_step).toBe(1);
   });
 
+  it("counts messages Tim sends, never conversations he only read", async () => {
+    const app = setup([{ sessionId: "read-only" }, { sessionId: "written" }]);
+    const old = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const read = app.taskStore.createTask("Only read");
+    const written = app.taskStore.createTask("Wrote in it");
+    db.prepare("UPDATE tasks SET createdAt = ? WHERE id IN (?, ?)").run(old, read.id, written.id);
+    app.taskStore.linkSession(read.id, "read-only");
+    app.taskStore.linkSession(written.id, "written");
+    app.readStateStore.markRead("read-only", new Date().toISOString());
+    const before = app.taskStore.getTask(written.id)!;
+    app.taskStore.recordUserMessage("written");
+    app.taskStore.recordUserMessage("written", "2000-01-01T00:00:00.000Z");
+    expect(app.taskStore.getTask(written.id)!.updatedAt).toBe(before.updatedAt);
+    const home = await app.snapshot();
+    expect(home.quiet.items.map(row => row.id)).toEqual([read.id]);
+    expect(home.quiet.items[0].lastTouchKind).toBe("created");
+    expect(home.resume.map(row => ({ id: row.id, kind: row.lastTouchKind }))).toEqual([{ id: written.id, kind: "message" }]);
+  });
+
   it("keeps opening a task silent and treats it as engagement", async () => {
     const app = setup();
     const task = app.taskStore.createTask("Old but just opened");
@@ -241,7 +260,7 @@ describe("native Home composition", () => {
     expect(after.lastOpenedAt).toBeTruthy();
     const home = await app.snapshot();
     expect(home.quiet.total).toBe(0);
-    expect(home.resume[0]).toMatchObject({ id: task.id, state: "in_motion", engagementApproximate: false });
+    expect(home.resume[0]).toMatchObject({ id: task.id, state: "in_motion", lastTouchKind: "opened" });
     expect(app.taskStore.markOpened("missing")).toBeUndefined();
   });
 

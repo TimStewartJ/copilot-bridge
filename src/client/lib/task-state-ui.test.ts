@@ -5,7 +5,7 @@ import { groupHomeChecklistByDate } from "../components/HomeChecklist";
 
 const NOW = new Date("2026-09-22T12:00:00Z");
 const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id: "t", title: "Task", kind: "task", muted: false, deferred: false,
-  state: "up_next", reasons: [], staleWait: false, idleDays: 10, engagementApproximate: false, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
+  state: "up_next", reasons: [], staleWait: false, idleDays: 10, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
 
 describe("task state wording", () => {
   it("says spans and idle time the way a person would", () => {

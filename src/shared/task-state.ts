@@ -13,7 +13,7 @@ export interface TaskStateInput {
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
-  /** When Tim last opened the task or read one of its conversations. */
+  /** When Tim last opened the task, edited it or wrote in one of its conversations. */
   lastEngagedAt?: string;
   /** When the current waiting-for text was last set, when known. */
   waitingSince?: string;

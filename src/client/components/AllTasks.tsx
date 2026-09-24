@@ -6,7 +6,7 @@ import { Badge, Button, EmptyHint, IdentitySwatch, Notice, SegmentedControl } fr
 import { DS, cx } from "../design/tokens";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import { useTaskOutcomes } from "../hooks/useTaskOutcomes";
-import { contextLine, describeIdle, stateBadge } from "../lib/task-state-ui";
+import { contextLine, describeIdle, describeTouch, stateBadge } from "../lib/task-state-ui";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { OutcomeNotice, QuietReviewDialog } from "./QuietTasks";
 
@@ -123,7 +123,7 @@ export default function AllTasks({ onSelectTask, compact = false, scrollRestorat
       {row.state === "no_next_step" && !compact
         ? <Button size="sm" variant="ghost" icon={<Plus size={13} aria-hidden="true" />} onClick={() => onSelectTask(row.id)}>Next step</Button>
         : badge && <Badge tone={badge.tone === "warning" ? "warning" : badge.tone === "info" ? "info" : "neutral"}>{badge.label}</Badge>}
-      <span className={cx(DS.text.meta, "hidden w-24 shrink-0 text-right sm:block")} title={row.engagementApproximate ? "Estimated from conversation activity" : undefined}>{describeIdle(row)}</span>
+      <span className={cx(DS.text.meta, "hidden w-24 shrink-0 text-right sm:block")} title={describeTouch(row)}>{describeIdle(row)}</span>
     </div>;
   };
 

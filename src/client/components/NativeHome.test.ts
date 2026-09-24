@@ -17,7 +17,7 @@ const empty = (): HomeSnapshot => ({ section: "overview", tasks: emptyPage(), de
   attention: [], resume: [], quiet: emptyPage(), taskCounts: counts(),
   inputErrors: [], sourceErrors: [], actionCounts: { open: 0, overdue: 0, dueToday: 0 }, today: "2026-09-22", timezone: "UTC" });
 const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id: "task", title: "Task", kind: "task", muted: false, deferred: false,
-  state: "in_motion", reasons: [], staleWait: false, idleDays: 2, engagementApproximate: false, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
+  state: "in_motion", reasons: [], staleWait: false, idleDays: 2, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
 describe("Home within native Bridge", () => {
   let harness: DialogTestHarness;
   const selectTask = vi.fn(), selectSession = vi.fn();

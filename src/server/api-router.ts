@@ -3412,6 +3412,13 @@ export function createApiRouter(
   });
 
   // POST /chat — starts work, optionally waiting until the prompt reaches the SDK session
+  // Tim's own words in a conversation are the engagement signal for task states. Best effort only.
+  const noteUserMessage = (sessionId: unknown) => {
+    if (typeof sessionId !== "string" || !sessionId) return;
+    try { ctx.taskStore.recordUserMessage(sessionId); }
+    catch (error) { console.warn("[tasks] Could not record a sent message:", error); }
+  };
+
   router.post("/chat", async (req, res) => {
     const { sessionId, prompt, attachments, mode, waitForDelivery, clientMessageId } = req.body;
 
@@ -3451,6 +3458,7 @@ export function createApiRouter(
     if (ctx.helm?.isHelmSession(sessionId) && attachCount === 0 && !parseSlashCommandPrompt(prompt)) {
       const delivery = await ctx.voiceGateway?.submitTypedText(sessionId, prompt, clientMessageId);
       if (delivery?.delivered) {
+        noteUserMessage(sessionId);
         res.status(202).json({ status: "accepted", mode: "hands-free" });
         return;
       }
@@ -3467,6 +3475,7 @@ export function createApiRouter(
         } else {
           await ctx.sessionManager.steerSession(sessionId, prompt, attachments);
         }
+        noteUserMessage(sessionId);
         res.status(202).json({
           status: "accepted",
           mode: parseSlashCommandPrompt(prompt) ? "command" : "steered",
@@ -3492,6 +3501,7 @@ export function createApiRouter(
       } else {
         ctx.sessionManager.startWork(sessionId, prompt, attachments);
       }
+      noteUserMessage(sessionId);
       res.status(202).json({ status: "accepted" });
     } catch (err) {
       res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
@@ -3506,6 +3516,7 @@ export function createApiRouter(
         req.params.requestId,
         req.body,
       );
+      noteUserMessage(req.params.sessionId);
       res.json(response);
     } catch (err) {
       if (err instanceof PendingInteractionError) {
@@ -3522,6 +3533,7 @@ export function createApiRouter(
         req.params.requestId,
         req.body,
       );
+      noteUserMessage(req.params.sessionId);
       res.json(response);
     } catch (err) {
       if (err instanceof PendingInteractionError) {
