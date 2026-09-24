@@ -1,7 +1,7 @@
 import type { TaskNeedsYouReason, TaskState } from "./task-state.js";
 
-/** What Tim last did to a task. Reading a conversation deliberately does not count. */
-export type TaskTouchKind = "opened" | "edited" | "message" | "created";
+/** What Tim last did to a task. Opening it or reading a conversation deliberately does not count. */
+export type TaskTouchKind = "edited" | "message" | "created";
 
 /** One active task with its derived state, for Home, All tasks and the sidebar. */
 export interface TaskOverviewRow {
@@ -20,7 +20,7 @@ export interface TaskOverviewRow {
   reasons: TaskNeedsYouReason[];
   staleWait: boolean;
   idleDays: number | null;
-  /** Tim's last touch: opening the task, editing it, or writing in a linked conversation; else its creation. */
+  /** Tim's last touch: editing the task or writing in a linked conversation; else its creation. */
   lastEngagedAt?: string;
   lastTouchKind?: TaskTouchKind;
   busyCount: number;

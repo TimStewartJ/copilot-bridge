@@ -86,7 +86,7 @@ describe("set-aside tasks that still need Tim", () => {
   });
   it("says what the last touch was", () => {
     expect(describeTouch(row({ idleDays: 21, lastTouchKind: "message" }))).toBe("You wrote in its conversation 3 weeks ago");
-    expect(describeTouch(row({ idleDays: 0, lastTouchKind: "opened" }))).toBe("You opened it today");
+    expect(describeTouch(row({ idleDays: 0, lastTouchKind: "edited" }))).toBe("You edited it today");
     expect(describeTouch(row({ idleDays: null }))).toBe("No recent activity from you");
   });
 });

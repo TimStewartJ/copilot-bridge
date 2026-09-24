@@ -57,10 +57,8 @@ describe("Task routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.tasks).toContainEqual(expect.objectContaining({ id: task.id, state: "in_motion" }));
     expect(res.body.counts.in_motion).toBeGreaterThanOrEqual(1);
-    const opened = await request(app).post(`/api/tasks/${task.id}/opened`);
-    expect(opened.status).toBe(200);
-    expect(ctx.taskStore.getTask(task.id)?.lastOpenedAt).toBe(opened.body.lastOpenedAt);
-    expect((await request(app).post("/api/tasks/missing/opened")).status).toBe(404);
+    // Opening a task is not recorded: there is no endpoint for it.
+    expect((await request(app).post(`/api/tasks/${task.id}/opened`)).status).toBe(404);
   });
 
   it("PATCH defers/resumes the native task without muting, archiving or clearing context", async () => {

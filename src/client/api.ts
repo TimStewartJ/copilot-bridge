@@ -482,7 +482,6 @@ export interface Task {
   muted: boolean;
   deferred: boolean;
   status: "active" | "archived";
-  lastOpenedAt?: string;
   groupId?: string;
   cwd?: string;
   notes: string;
@@ -814,11 +813,6 @@ export function fetchHome(section: import("../shared/home").HomeSection = "overv
 }
 export function fetchTaskOverview(signal?: AbortSignal): Promise<import("../shared/task-overview").TaskOverview> {
   return apiFetch("/api/tasks/overview", undefined, { signal });
-}
-/** Records that Tim opened a task, for task states. Silent: it is not a task change. */
-export async function markTaskOpened(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(id)}/opened`, { method: "POST" });
-  if (!res.ok) throw new Error(`Recording the task open failed (${res.status})`);
 }
 export function fetchHomeInput(input: import("../shared/home").HomeInputSummary, signal?: AbortSignal): Promise<import("../shared/home").HomeInput> {
   return apiFetch(`/api/home/inputs/${encodeURIComponent(input.sessionId)}/${input.kind}/${encodeURIComponent(input.requestId)}`, undefined, { signal });
