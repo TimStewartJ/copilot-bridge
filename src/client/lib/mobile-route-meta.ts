@@ -97,18 +97,8 @@ function buildMeta(overrides: Partial<MobileRouteMeta> & Pick<MobileRouteMeta, "
 export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMeta {
   const normalizedPath = normalizePathname(pathname);
 
-  if (isAllTasksPath(normalizedPath)) {
-    return buildMeta({
-      route: "task-list",
-      activeTab: "work",
-      workSegment: "tasks",
-      showBottomNav: true,
-      isRoot: true,
-      isDetail: false,
-    });
-  }
-
-  if (isDashboardRoutePath(normalizedPath)) {
+  // All tasks is a view Home opens; the Work tab keeps the ordinary task list, as on desktop.
+  if (isDashboardRoutePath(normalizedPath) || isAllTasksPath(normalizedPath)) {
     return buildMeta({
       route: "dashboard",
       activeTab: "home",
