@@ -16,6 +16,7 @@ import { DEPLOY_RESTART_SOURCE, requestRestart, RESTART_WHEN_IDLE_NOTE } from ".
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
+  type BridgeToolInvocation,
   type DefineBridgeToolOptions,
 } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
@@ -121,6 +122,7 @@ import { runValidationCommand } from "./validation-command-runner.js";
 import type { AppContext } from "./app-context.js";
 import {
   ActiveManagementJobError,
+  type ManagementJob,
   type ManagementJobStore,
 } from "./management-job-store.js";
 import {
@@ -128,7 +130,7 @@ import {
   type StagingPreviewDiscoveryController,
   type StagingPreviewDiscoveryTrigger,
 } from "./staging-preview-discovery.js";
-import { queuedManagementJobResult } from "./management-job-tool-results.js";
+import { managementJobOriginSessionId, queuedManagementJobResult } from "./management-job-tool-results.js";
 import { createGitCommand, createGitPullRebaseCommand } from "./git-command.js";
 
 
@@ -491,6 +493,8 @@ export function startStagingPreviewDiscovery(options: {
   store?: ManagementJobStore | null;
   log?: (msg: string) => void;
   pollIntervalMs?: number;
+  /** Runs after discovery for a batch of finished jobs, so their previews are registered first. */
+  onJobsCompleted?: (jobs: ManagementJob[]) => void;
 } = {}): StagingPreviewDiscoveryController | null {
   const { store } = options;
   if (!store) return null;
@@ -501,7 +505,19 @@ export function startStagingPreviewDiscovery(options: {
     store,
     log: writeLog,
     pollIntervalMs: options.pollIntervalMs,
-    discover: (trigger) => runStagingPreviewDiscovery(trigger, writeLog),
+    discover: async (trigger) => {
+      try {
+        await runStagingPreviewDiscovery(trigger, writeLog);
+      } finally {
+        if (trigger.completedJobs.length > 0) {
+          try {
+            options.onJobsCompleted?.(trigger.completedJobs);
+          } catch (error) {
+            writeLog(`Warning: finished-job handler failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+    },
   });
   controller.resumeActiveJobs();
   return controller;
@@ -2025,6 +2041,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       "Build and serve a preview of the staged frontend changes. " +
       "Queues a management job that runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
       "The live server discovers the built preview from disk and restores the staged backend lazily. " +
+      "Bridge sends the job's final result to the calling session as a new message when it finishes. " +
       "Share the preview URL with the user and wait for confirmation before calling staging_deploy.",
     parameters: {
       type: "object",
@@ -2063,7 +2080,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       "it will skip the commit step and proceed to merge. " +
       "The restart waits in the background until every session and management job is idle and blocks nothing meanwhile; " +
       "deploys that finish before then share that one restart, and deploying again while it is pending is fine. " +
-      "Returns immediately with a management job id and Bridge-monitored background status. " +
+      "Returns immediately with a management job id; Bridge sends the job's final result to the calling session as a new message once the release is active or the deploy fails. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: {
       type: "object",
@@ -2129,7 +2146,7 @@ export interface RegisterStagingToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
-function enqueueStagingPreview(ctx: AppContext, args: any) {
+function enqueueStagingPreview(ctx: AppContext, args: any, invocation?: BridgeToolInvocation) {
   const { stagingDir } = args;
   if (!existsSync(stagingDir)) {
     return stagingFailure(
@@ -2149,7 +2166,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
     const job = store.enqueue("staging_preview", {
       stagingDir,
       validate: args.validate !== false,
-    });
+    }, { originSessionId: managementJobOriginSessionId(invocation) });
     ctx.stagingPreviewDiscovery?.watchJob(job);
     return queuedManagementJobResult(job, "Staging preview");
   } catch (error) {
@@ -2159,7 +2176,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any) {
   }
 }
 
-function enqueueStagingDeploy(ctx: AppContext, args: any) {
+function enqueueStagingDeploy(ctx: AppContext, args: any, invocation?: BridgeToolInvocation) {
   const { stagingDir, message } = args;
   if (!existsSync(stagingDir)) {
     return stagingFailure(
@@ -2176,7 +2193,11 @@ function enqueueStagingDeploy(ctx: AppContext, args: any) {
     return stagingFailure("Staging deploy could not be queued.", "Management job store is not available.");
   }
   try {
-    const job = store.enqueue("staging_deploy", { stagingDir, message });
+    const job = store.enqueue(
+      "staging_deploy",
+      { stagingDir, message },
+      { originSessionId: managementJobOriginSessionId(invocation) },
+    );
     ctx.stagingPreviewDiscovery?.watchJob(job);
     return queuedManagementJobResult(job, "Staging deploy");
   } catch (error) {
@@ -2191,8 +2212,8 @@ export function createStagingToolDefinitions(ctx?: AppContext): BridgeToolDefini
   // Rebuild through the adapter rather than patching `handler`, so these tools
   // keep the argument validation every other Bridge tool gets.
   const boundHandlers: Record<string, DefineBridgeToolOptions["handler"]> = {
-    staging_preview: (args: any) => enqueueStagingPreview(ctx, args),
-    staging_deploy: (args: any) => enqueueStagingDeploy(ctx, args),
+    staging_preview: (args: any, invocation) => enqueueStagingPreview(ctx, args, invocation),
+    staging_deploy: (args: any, invocation) => enqueueStagingDeploy(ctx, args, invocation),
   };
   return STAGING_TOOLS.map((tool) => {
     const bound = boundHandlers[tool.name];

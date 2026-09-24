@@ -273,6 +273,12 @@ async function main(): Promise<void> {
   // the scan and the resume would otherwise never be observed.
   defaultContext.stagingPreviewDiscovery = startStagingPreviewDiscovery({
     store: defaultContext.managementJobStore,
+    // The runner process queues each result for its session; this covers one it did not queue
+    // and wakes the delivery runner now instead of at its next watchdog sweep.
+    onJobsCompleted: () => {
+      defaultContext.managementJobStore?.reconcileResultDeliveries();
+      defaultContext.deferredPromptRunner?.poke();
+    },
   }) ?? undefined;
   registerExistingPreviewsFromDisk();
 

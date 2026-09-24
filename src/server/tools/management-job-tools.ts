@@ -4,9 +4,14 @@ import {
   registerBridgeToolDefinitions,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
-import { bridgeToolResult, getToolResultDisplayText, toolFailure, type BridgeToolNextAction } from "../tool-results.js";
+import { bridgeToolResult, toolFailure, type BridgeToolNextAction } from "../tool-results.js";
 import type { ManagementJob } from "../management-job-store.js";
-import { MANAGEMENT_JOB_DEFER_GUIDANCE } from "../management-job-tool-results.js";
+import { managementJobWaitGuidance } from "../management-job-tool-results.js";
+import {
+  getManagementJobResultSummary,
+  isFinalManagementJob,
+  managementJobDeliveryId,
+} from "../management-job-delivery.js";
 import { isRecord } from "../../shared/is-record.js";
 import { readActiveRelease } from "../release-slots.js";
 
@@ -44,19 +49,7 @@ function isAwaitingDeployActivation(job: ManagementJob, dataDir?: string): boole
     );
 }
 
-function getJobResultSummary(job: ManagementJob): string | undefined {
-  const displayText = getToolResultDisplayText(job.result);
-  if (displayText) return displayText;
-  if (!job.result || typeof job.result !== "object") return undefined;
-  const result = job.result as { message?: unknown; previewUrl?: unknown; previewPath?: unknown; commitSha?: unknown };
-  if (typeof result.message === "string" && result.message.trim()) return result.message.trim();
-  if (typeof result.previewUrl === "string" && result.previewUrl.trim()) return `Preview is ready: ${result.previewUrl.trim()}`;
-  if (typeof result.previewPath === "string" && result.previewPath.trim()) return `Preview is ready at ${result.previewPath.trim()}`;
-  if (typeof result.commitSha === "string" && result.commitSha.trim()) return `Deployment completed at ${result.commitSha.trim()}.`;
-  return undefined;
-}
-
-function getManagementJobContract(job: ManagementJob, dataDir?: string): {
+function getManagementJobContract(job: ManagementJob, dataDir?: string, sessionId?: string): {
   summary: string;
   terminal: boolean;
   toolNextAction: BridgeToolNextAction;
@@ -83,7 +76,7 @@ function getManagementJobContract(job: ManagementJob, dataDir?: string): {
   }
   if (isAwaitingDeployActivation(job, dataDir)) {
     return {
-      summary: `Management job ${job.id} (${job.type}) is waiting for its shared batch restart to activate. ${MANAGEMENT_JOB_DEFER_GUIDANCE}`,
+      summary: `Management job ${job.id} (${job.type}) is waiting for its shared batch restart to activate. ${managementJobWaitGuidance(job, sessionId ?? "")}`,
       terminal: false,
       toolNextAction: "wait",
       retryable: false,
@@ -94,8 +87,8 @@ function getManagementJobContract(job: ManagementJob, dataDir?: string): {
       ? "succeeded"
       : job.status === "failed" ? "failed" : "was cancelled";
     const resultSummary = job.status === "succeeded"
-      ? getJobResultSummary(job)
-      : job.error ?? getJobResultSummary(job);
+      ? getManagementJobResultSummary(job)
+      : job.error ?? getManagementJobResultSummary(job);
     return {
       summary: [
         `Management job ${job.id} (${job.type}) ${outcome}. This status is terminal.`,
@@ -111,11 +104,52 @@ function getManagementJobContract(job: ManagementJob, dataDir?: string): {
   return {
     summary:
       `Management job ${job.id} (${job.type}) is ${job.status}. ` +
-      `Wait for the background runner; do not issue marker or no-op tools. ${MANAGEMENT_JOB_DEFER_GUIDANCE}`,
+      `Wait for the background runner; do not issue marker or no-op tools. ${managementJobWaitGuidance(job, sessionId ?? "")}`,
     terminal: false,
     toolNextAction: "wait",
     retryable: false,
   };
+}
+
+/**
+ * Where the job's result stands for the session that queued it. When that session reads a final
+ * status here, the result it would otherwise be sent is withdrawn: it already has it.
+ */
+function describeResultDelivery(
+  ctx: AppContext,
+  job: ManagementJob,
+  sessionId: string | undefined,
+): { status: string; error?: string } | undefined {
+  if (!job.originSessionId) return undefined;
+  if (sessionId === job.originSessionId && isFinalManagementJob(job)) {
+    try {
+      ctx.managementJobStore?.markResultSeen(job);
+    } catch (error) {
+      console.error(`[management-jobs] Could not withdraw the result of job ${job.id}:`, error);
+    }
+  }
+  const delivery = ctx.deferredPromptStore?.get(managementJobDeliveryId(job.id));
+  if (!delivery) return { status: isFinalManagementJob(job) ? "not-queued" : "waiting-for-job" };
+  return {
+    status: delivery.status,
+    ...(delivery.lastError ? { error: delivery.lastError } : {}),
+  };
+}
+
+const RESULT_DELIVERY_TEXT: Record<string, string> = {
+  "waiting-for-job": "Bridge will send the final result to the session that queued this job when it finishes.",
+  pending: "Bridge has queued the final result for the session that queued this job; it is sent once that session is idle.",
+  running: "Bridge is sending the final result to the session that queued this job now.",
+  completed: "The session that queued this job already has its final result.",
+  cancelled: "The final result was not sent: the session that queued this job was archived.",
+  "not-queued": "The final result was not queued for the session that queued this job (the session was archived).",
+};
+
+function describeResultDeliveryForAgent(delivery: { status: string; error?: string }): string {
+  if (delivery.status === "failed") {
+    return `Bridge could not send the final result to the session that queued this job${delivery.error ? `: ${delivery.error}` : "."}`;
+  }
+  return RESULT_DELIVERY_TEXT[delivery.status] ?? `Result delivery status: ${delivery.status}.`;
 }
 
 function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
@@ -132,7 +166,7 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
         },
         required: ["jobId"],
       },
-      handler: async (args: any) => {
+      handler: async (args: any, invocation) => {
         const jobId = String(args.jobId ?? "").trim();
         if (!jobId) {
           return toolFailure("Missing management job id.");
@@ -151,10 +185,15 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
         const maxBytes = Number.isInteger(args.logTailBytes) && args.logTailBytes > 0
           ? Math.min(Number(args.logTailBytes), 64 * 1024)
           : undefined;
-        const contract = getManagementJobContract(job, ctx.runtimePaths?.dataDir);
+        const contract = getManagementJobContract(job, ctx.runtimePaths?.dataDir, invocation.sessionId);
+        const resultDelivery = describeResultDelivery(ctx, job, invocation.sessionId);
         return bridgeToolResult({
           success: true,
           ...contract,
+          summary: resultDelivery
+            ? `${contract.summary}\n${describeResultDeliveryForAgent(resultDelivery)}`
+            : contract.summary,
+          ...(resultDelivery ? { resultDelivery } : {}),
           jobId: job.id,
           type: job.type,
           status: job.status,

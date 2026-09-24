@@ -103,6 +103,24 @@ describe("fresh database schema", () => {
     reopened.close();
   });
 
+  it("adds the origin session column to existing management jobs without inventing one", () => {
+    const dataDir = makeTestDir("management-job-origin-migration");
+    const legacy = openDatabase(dataDir);
+    legacy.exec(`
+      ALTER TABLE management_jobs DROP COLUMN originSessionId;
+      INSERT INTO management_jobs(id,type,status,input,createdAt,updatedAt)
+      VALUES('old-job','staging_preview','failed','{}','2026-01-01','2026-01-01');
+    `);
+    legacy.close();
+    const migrated = openDatabase(dataDir);
+    expect(migrated.prepare("SELECT id, originSessionId FROM management_jobs").get())
+      .toEqual({ id: "old-job", originSessionId: null });
+    migrated.close();
+    const reopened = openDatabase(dataDir);
+    expect(reopened.prepare("SELECT COUNT(*) AS count FROM management_jobs").get()).toEqual({ count: 1 });
+    reopened.close();
+  });
+
   it("adds the checkpoint column to an existing defer loop table", () => {
     const dataDir = makeTestDir("db-defer-checkpoint-migration");
     const legacy = new DatabaseSync(join(dataDir, "bridge.db"));
