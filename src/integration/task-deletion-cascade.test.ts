@@ -294,6 +294,11 @@ describe("task deletion session disposition", () => {
       cancelledLoops.push(id);
       return 1;
     }) as any;
+    const cancelledJobResults: string[] = [];
+    ctx.deferredPromptStore!.cancelManagementJobDeliveriesForSession = ((id: string) => {
+      cancelledJobResults.push(id);
+      return 1;
+    }) as any;
 
     await request(app).delete(`/api/tasks/${task.id}?sessionDisposition=archive`).expect(200);
 
@@ -302,6 +307,7 @@ describe("task deletion session disposition", () => {
     // archived session could still fire a deferred prompt.
     expect(cancelledPrompts).toEqual(["session-a", "session-b"]);
     expect(cancelledLoops).toEqual(["session-a", "session-b"]);
+    expect(cancelledJobResults).toEqual(["session-a", "session-b"]);
   });
 
   it("keeps the task when a session is linked while the delete runs", async () => {

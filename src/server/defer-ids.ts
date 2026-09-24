@@ -27,3 +27,10 @@ export function parseDeferId(deferId: string): ParsedDeferId | undefined {
   }
   return undefined;
 }
+
+/** Session id prefix of the temporary sessions defer workers run in; they are deleted after each check. */
+export const DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX = "d3f3e000";
+
+export function isDisposableDeferWorkerSessionId(sessionId: string): boolean {
+  return sessionId.startsWith(`${DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX}-`);
+}

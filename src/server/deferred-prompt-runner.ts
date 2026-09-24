@@ -298,7 +298,8 @@ export function createDeferredPromptRunner(
       })),
       reclaimExpiredRunning: (now) => store.reclaimExpiredRunning(now),
       listExpiredRunningSessionIds: (now) => store.listExpiredRunningSessionIds(now),
-      cancelForSession: (sessionId) => store.cancelForSession(sessionId),
+      cancelForSession: (sessionId) =>
+        store.cancelForSession(sessionId) + store.cancelManagementJobDeliveriesForSession(sessionId),
     },
     sessionManager,
     globalBus,

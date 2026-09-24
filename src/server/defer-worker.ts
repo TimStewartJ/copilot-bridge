@@ -22,7 +22,9 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { toolFailure } from "./tool-results.js";
 
-export const DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX = "d3f3e000";
+import { DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX } from "./defer-ids.js";
+
+export { DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX, isDisposableDeferWorkerSessionId } from "./defer-ids.js";
 const DEFER_RESULT_MESSAGE_MAX_CHARS = 16 * 1024;
 const DEFER_RESULT_TOOL_NAME = "defer_result";
 const DEFAULT_DEFER_WORKER_REASONING_EFFORT = "low";
@@ -121,10 +123,6 @@ function createDeferResultSubmission(): DeferResultSubmission {
 export function createDisposableDeferWorkerSessionId(): string {
   const uuid = randomUUID();
   return `${DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX}${uuid.slice(DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX.length)}`;
-}
-
-export function isDisposableDeferWorkerSessionId(sessionId: string): boolean {
-  return sessionId.startsWith(`${DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX}-`);
 }
 
 export function buildDeferWorkerSystemPrompt(kind: DeferWorkerKind): string {

@@ -12,6 +12,13 @@ import {
   type LogRetentionPolicy,
 } from "./log-retention.js";
 import { isPathAtOrUnder, pathsEqual } from "./path-utils.js";
+import {
+  isDeployAwaitingActivation,
+  markManagementJobResultSeen,
+  queueManagementJobDelivery,
+  reconcileManagementJobDeliveries,
+  withdrawPendingManagementJobDeliveries,
+} from "./management-job-delivery.js";
 
 export const MANAGEMENT_JOB_TYPES = ["self_update", "staging_preview", "staging_deploy"] as const;
 export const MANAGEMENT_JOB_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled"] as const;
@@ -34,10 +41,16 @@ export interface ManagementJob {
   updatedAt: string;
   startedAt?: string;
   completedAt?: string;
+  /** Session whose tool call queued the job; it receives the job's final result. */
+  originSessionId?: string;
+}
+
+export interface ManagementJobEnqueueOptions {
+  originSessionId?: string;
 }
 
 export interface ManagementJobStore {
-  enqueue(type: ManagementJobType, input?: unknown): ManagementJob;
+  enqueue(type: ManagementJobType, input?: unknown, options?: ManagementJobEnqueueOptions): ManagementJob;
   get(id: string): ManagementJob | null;
   list(options?: ManagementJobListOptions): ManagementJob[];
   listActive(types?: readonly ManagementJobType[]): ManagementJob[];
@@ -49,6 +62,10 @@ export interface ManagementJobStore {
   fail(id: string, error: string, result?: unknown): ManagementJob;
   cancel(id: string, reason?: string): ManagementJob | null;
   readLogTail(jobOrId: ManagementJob | string, maxBytes?: number): string;
+  /** The origin session read the final status itself; do not also send it the result. */
+  markResultSeen(job: ManagementJob): boolean;
+  /** Queue results of recently finished jobs whose final transition did not queue one. */
+  reconcileResultDeliveries(nowMs?: number): number;
   pruneRetention(options?: ManagementJobRetentionOptions): Promise<ManagementJobRetentionResult>;
 }
 
@@ -98,6 +115,7 @@ interface ManagementJobRow {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  originSessionId?: string | null;
 }
 
 export class ActiveManagementJobError extends Error {
@@ -198,6 +216,7 @@ function rowToJob(row: ManagementJobRow): ManagementJob {
     updatedAt: row.updatedAt,
     startedAt: optionalText(row.startedAt),
     completedAt: optionalText(row.completedAt),
+    originSessionId: optionalText(row.originSessionId ?? null),
   };
 }
 
@@ -244,16 +263,6 @@ function normalizedStagingDir(input: unknown): string {
   return value ? resolve(value) : "";
 }
 
-function isDeployAwaitingActivation(job: ManagementJob): boolean {
-  return job.type === "staging_deploy"
-    && job.status === "succeeded"
-    && isRecord(job.result)
-    && (
-      job.result.restartDeferred === true
-      || (job.result.restartQueued === true && job.result.restartActivated !== true)
-    );
-}
-
 function findStagingJob(
   db: DatabaseSync,
   type: "staging_preview" | "staging_deploy",
@@ -278,6 +287,40 @@ function findStagingJob(
       && pathsEqual(normalizedStagingDir(job.input), stagingDir)
     ));
   return active ?? null;
+}
+
+/**
+ * Older finished jobs this new job replaces for its session: the same kind of work on the same
+ * worktree (or any earlier self-update). Their unsent results would only be stale news.
+ */
+function findSupersededJobIds(
+  db: DatabaseSync,
+  type: ManagementJobType,
+  input: unknown,
+  originSessionId: string,
+): string[] {
+  const stagingDir = normalizedStagingDir(input);
+  if (type !== "self_update" && !stagingDir) return [];
+  const rows = db.prepare(`
+    SELECT *
+    FROM management_jobs
+    WHERE type = ?
+      AND originSessionId = ?
+      AND status NOT IN (${placeholders(ACTIVE_STATUSES)})
+  `).all(type, originSessionId, ...ACTIVE_STATUSES) as unknown as ManagementJobRow[];
+  return rows
+    .map(rowToJob)
+    .filter((job) => type === "self_update" || pathsEqual(normalizedStagingDir(job.input), stagingDir))
+    .map((job) => job.id);
+}
+
+/** A job's final status must be recorded even when its result cannot be queued for the session. */
+function queueDeliveryWithoutFailingJob(db: DatabaseSync, job: ManagementJob, timestamp: string): void {
+  try {
+    queueManagementJobDelivery(db, job, timestamp);
+  } catch (error) {
+    console.error(`[management-jobs] Could not queue the result of job ${job.id} for its session:`, error);
+  }
 }
 
 function getJobRow(db: DatabaseSync, id: string): ManagementJobRow | undefined {
@@ -358,7 +401,8 @@ export function createManagementJobStore(
   const logDir = join(options.dataDir, "management-jobs", "logs");
 
   const store: ManagementJobStore = {
-    enqueue(type, input = {}) {
+    enqueue(type, input = {}, enqueueOptions = {}) {
+      const originSessionId = enqueueOptions.originSessionId?.trim() || null;
       return runImmediateTransaction(db, () => {
         if (type === "self_update") {
           const active = findActiveExclusiveJob(db);
@@ -381,12 +425,24 @@ export function createManagementJobStore(
         const timestamp = nowIso(now);
         const logPath = createLogPath(options.dataDir, id);
         mkdirSync(logDir, { recursive: true });
+        if (originSessionId) {
+          try {
+            withdrawPendingManagementJobDeliveries(
+              db,
+              originSessionId,
+              findSupersededJobIds(db, type, input, originSessionId),
+              timestamp,
+            );
+          } catch (error) {
+            console.error("[management-jobs] Could not withdraw superseded job results:", error);
+          }
+        }
         db.prepare(`
           INSERT INTO management_jobs (
-            id, type, status, input, logPath, createdAt, updatedAt
+            id, type, status, input, logPath, createdAt, updatedAt, originSessionId
           )
-          VALUES (?, ?, 'queued', ?, ?, ?, ?)
-        `).run(id, type, jsonStringify(input), logPath, timestamp, timestamp);
+          VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)
+        `).run(id, type, jsonStringify(input), logPath, timestamp, timestamp, originSessionId);
         const row = getJobRow(db, id);
         if (!row) throw new Error(`Failed to read enqueued management job ${id}`);
         return rowToJob(row);
@@ -553,37 +609,45 @@ export function createManagementJobStore(
     },
 
     succeed(id, result = {}) {
-      const timestamp = nowIso(now);
-      db.prepare(`
-        UPDATE management_jobs
-        SET status = 'succeeded',
-            result = ?,
-            error = NULL,
-            completedAt = ?,
-            updatedAt = ?,
-            heartbeatAt = ?
-        WHERE id = ?
-      `).run(jsonStringify(result), timestamp, timestamp, timestamp, id);
-      const row = getJobRow(db, id);
-      if (!row) throw new Error(`Failed to read completed management job ${id}`);
-      return rowToJob(row);
+      return runImmediateTransaction(db, () => {
+        const timestamp = nowIso(now);
+        db.prepare(`
+          UPDATE management_jobs
+          SET status = 'succeeded',
+              result = ?,
+              error = NULL,
+              completedAt = ?,
+              updatedAt = ?,
+              heartbeatAt = ?
+          WHERE id = ?
+        `).run(jsonStringify(result), timestamp, timestamp, timestamp, id);
+        const row = getJobRow(db, id);
+        if (!row) throw new Error(`Failed to read completed management job ${id}`);
+        const job = rowToJob(row);
+        queueDeliveryWithoutFailingJob(db, job, timestamp);
+        return job;
+      });
     },
 
     fail(id, error, result = undefined) {
-      const timestamp = nowIso(now);
-      db.prepare(`
-        UPDATE management_jobs
-        SET status = 'failed',
-            result = ?,
-            error = ?,
-            completedAt = ?,
-            updatedAt = ?,
-            heartbeatAt = ?
-        WHERE id = ?
-      `).run(result === undefined ? null : jsonStringify(result), error, timestamp, timestamp, timestamp, id);
-      const row = getJobRow(db, id);
-      if (!row) throw new Error(`Failed to read failed management job ${id}`);
-      return rowToJob(row);
+      return runImmediateTransaction(db, () => {
+        const timestamp = nowIso(now);
+        db.prepare(`
+          UPDATE management_jobs
+          SET status = 'failed',
+              result = ?,
+              error = ?,
+              completedAt = ?,
+              updatedAt = ?,
+              heartbeatAt = ?
+          WHERE id = ?
+        `).run(result === undefined ? null : jsonStringify(result), error, timestamp, timestamp, timestamp, id);
+        const row = getJobRow(db, id);
+        if (!row) throw new Error(`Failed to read failed management job ${id}`);
+        const job = rowToJob(row);
+        queueDeliveryWithoutFailingJob(db, job, timestamp);
+        return job;
+      });
     },
 
     cancel(id, reason = "cancelled") {
@@ -608,7 +672,9 @@ export function createManagementJobStore(
         if (!updated || updated.status !== "cancelled") {
           throw new Error(`Failed to cancel management job ${id}; current status is ${updated?.status ?? "missing"}.`);
         }
-        return rowToJob(updated);
+        const cancelled = rowToJob(updated);
+        queueDeliveryWithoutFailingJob(db, cancelled, timestamp);
+        return cancelled;
       });
     },
 
@@ -616,6 +682,14 @@ export function createManagementJobStore(
       const job = typeof jobOrId === "string" ? store.get(jobOrId) : jobOrId;
       if (!job?.logPath) return "";
       return sanitizeManagementJobLogTail(readFileTail(job.logPath, maxBytes));
+    },
+
+    markResultSeen(job) {
+      return runImmediateTransaction(db, () => markManagementJobResultSeen(db, job, now().getTime()));
+    },
+
+    reconcileResultDeliveries(nowMs = now().getTime()) {
+      return runImmediateTransaction(db, () => reconcileManagementJobDeliveries(db, (id) => store.get(id), nowMs));
     },
 
     async pruneRetention(retentionOptions = {}) {

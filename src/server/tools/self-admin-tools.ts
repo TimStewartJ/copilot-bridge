@@ -3,7 +3,7 @@ import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
 import { requestRestart, RESTART_WHEN_IDLE_NOTE } from "../restart-signal.js";
 import { bridgeToolResult, toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
-import { queuedManagementJobResult } from "../management-job-tool-results.js";
+import { managementJobOriginSessionId, queuedManagementJobResult } from "../management-job-tool-results.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -67,16 +67,18 @@ export function createSelfAdminToolDefinitions(ctx: AppContext): BridgeToolDefin
       "Pull the latest code from the remote repository and restart the server. " +
       "Use this to update the Copilot Bridge to the latest version without the full staging workflow. " +
       "Saves a rollback checkpoint before pulling so the launcher can sync dependencies, rebuild, health-check, and roll back if needed. " +
-      "Returns immediately with a management job id and Bridge-monitored background status. " +
+      "Returns immediately with a management job id; Bridge sends the job's final result to the calling session as a new message when it finishes. " +
       "RESTRICTED: Only the primary session agent may call this tool. Sub-agents spawned via the task tool must NEVER call this.",
     parameters: { type: "object", properties: {} },
-    handler: async () => {
+    handler: async (_args, invocation) => {
       if (isSourceManagementUnavailable(ctx)) {
         return toolFailure("Git self-update is unavailable in packaged release mode. Use the release update.ps1 script with a published package instead.");
       }
 
       try {
-        const job = requireManagementJobStore(ctx).enqueue("self_update", {});
+        const job = requireManagementJobStore(ctx).enqueue("self_update", {}, {
+          originSessionId: managementJobOriginSessionId(invocation),
+        });
         return queuedManagementJobResult(job, "Self-update");
       } catch (error) {
         const activeJob = getActiveManagementJob(error);

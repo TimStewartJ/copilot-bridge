@@ -71,6 +71,8 @@ describe("self-admin restart requests", () => {
     const result = resultRecord(await tool.handler({}, invocation));
     expect(result).toMatchObject({ success: true, status: "queued", jobId: expect.any(String) });
     expect(ctx.managementJobStore!.listActive(["self_update"])).toHaveLength(1);
+    expect(ctx.managementJobStore!.get(String(result.jobId))?.originSessionId).toBe("session-a");
+    expect(result.message).toContain("Bridge sends this job's final result to this session");
     expect(requestRestartMock).not.toHaveBeenCalled();
   });
 

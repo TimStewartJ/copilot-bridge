@@ -794,6 +794,7 @@ function initSchema(db: DatabaseSync): void {
       updatedAt TEXT NOT NULL,
       startedAt TEXT,
       completedAt TEXT,
+      originSessionId TEXT,
       CHECK (type IN ('self_update', 'staging_preview', 'staging_deploy')),
       CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled'))
     );
@@ -847,6 +848,16 @@ function initSchema(db: DatabaseSync): void {
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {
     db.exec("ALTER TABLE tasks ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0");
+  }
+
+  const managementJobColumns = db.prepare("PRAGMA table_info(management_jobs)").all() as Array<{ name: string }>;
+  if (!managementJobColumns.some((column) => column.name === "originSessionId")) {
+    try {
+      db.exec("ALTER TABLE management_jobs ADD COLUMN originSessionId TEXT");
+    } catch (error) {
+      // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
   }
 
   const deferLoopColumns = new Set(
