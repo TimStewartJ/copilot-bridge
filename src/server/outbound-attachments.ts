@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { err, ok, type Result } from "./tool-results.js";
 import { isPathAtOrUnder } from "./path-utils.js";
 
@@ -89,6 +89,42 @@ export function isInlineRenderableAttachment(mimeType: string): boolean {
 
 export function getOutboundAttachmentDir(copilotHome: string, sessionId: string): string {
   return join(copilotHome, "session-state", sessionId, "files", "outgoing");
+}
+
+export function getSessionFilesDir(copilotHome: string, sessionId: string): string {
+  return join(copilotHome, "session-state", sessionId, "files");
+}
+
+/**
+ * A file the user attached to a prompt, kept in the session's files/ folder. The CLI records sent
+ * images without their bytes, so chat history shows them from here. Only direct children of the
+ * folder resolve; subfolders such as outgoing/ and visuals/ have routes of their own.
+ */
+export function resolveSessionUploadedFile(copilotHome: string, sessionId: string, fileName: string): Result<ResolvedOutboundAttachment> {
+  if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
+  if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) return err("fileName is invalid");
+  const filesDir = getSessionFilesDir(copilotHome, sessionId);
+  const filePath = join(filesDir, fileName);
+  if (!existsSync(filePath)) return err("File not found");
+
+  let realPath: string;
+  let realFilesDir: string;
+  try {
+    realPath = realpathSync(filePath);
+    realFilesDir = realpathSync(filesDir);
+  } catch {
+    return err("File not found");
+  }
+  if (!isPathAtOrUnder(realFilesDir, realPath) || dirname(realPath) !== realFilesDir) return err("File path is unsafe");
+
+  try {
+    if (!statSync(realPath).isFile()) return err("File not found");
+  } catch {
+    return err("File not found");
+  }
+  const displayName = basename(realPath);
+  const mimeType = inferOutboundAttachmentMimeType(displayName);
+  return ok({ filePath: realPath, displayName, mimeType, inline: isInlineRenderableAttachment(mimeType) });
 }
 
 export function publishOutboundAttachment(input: PublishOutboundAttachmentInput): Result<PublishedOutboundAttachment> {

@@ -21,25 +21,17 @@ export default function HtmlSandboxVisual({ visual, mode = "inline" }: HtmlSandb
 
   if (!hasFrameContent) {
     return (
-      <div className="rounded-lg border border-border bg-bg-primary p-4 text-sm text-error" role="alert">
+      <div className="p-4 text-sm text-error" role="alert">
         HTML sandbox: content unavailable
       </div>
     );
   }
 
   return (
-    <div className={`flex w-full min-w-0 flex-col ${focusMode ? "h-full min-h-0" : "gap-2"}`}>
-      {!focusMode && (
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-text-muted bg-bg-primary rounded px-1.5 py-0.5 border border-border">
-            Interactive Sandbox
-          </span>
-        </div>
-      )}
-
+    <div className={`flex w-full min-w-0 flex-col ${focusMode ? "h-full min-h-0" : ""}`}>
       <div
-        className={`w-full rounded-lg border border-border overflow-hidden bg-white ${
-          focusMode ? "h-full min-h-0" : "min-h-[220px]"
+        className={`w-full overflow-hidden bg-white ${
+          focusMode ? "h-full min-h-0 rounded-lg" : "min-h-[220px]"
         }`}
       >
         <iframe
