@@ -1,19 +1,13 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
-  fetchModels,
   getSessionActivityTime,
   getSessionRunState,
   isSessionActive,
-  patchSessionModel,
-  refreshModels,
+  fetchModels,
   type BatchAction,
-  type CopilotContextTier,
   type ModelInfo,
-  type ReasoningEffort,
   type Session,
-  type SessionModelCompactionDecision,
   type SessionModelState,
-  type SessionModelSwitchConfirmation,
   type Task,
 } from "../api";
 import { queryClient, queryKeys } from "../queryClient";
@@ -23,40 +17,15 @@ import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy
 import { DS } from "../design/tokens";
 import { Button, StatusIcon } from "../design/primitives";
 import TaskPickerDialog from "./TaskPickerDialog";
-import { useModalDialog } from "./shared/useModalDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { LoadingSkeletonRegion, SkeletonRow } from "./shared/Skeleton";
-import { LaunchOptionRow } from "./shared/LaunchOptionControls";
-import ModelPresetPicker from "./shared/ModelPresetPicker";
-import {
-  buildContextTierOptions,
-  buildReasoningEffortOptions,
-  getSelectableModels,
-} from "../lib/new-session-launch";
-import type { ModelPresetSelection } from "../lib/model-presets";
-import { useModelPresets } from "../hooks/useModelPresets";
-import type { ModelPresetSlot } from "../../shared/model-presets.js";
-import {
-  modelSupportsLongContext,
-} from "../../shared/copilot-context.js";
 import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
-import { formatReasoningEffortLabel } from "../reasoning-effort";
+import { useQuery } from "@tanstack/react-query";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
 import DeferredWorkSheet from "./DeferredWorkSheet";
-import ModelSwitchCompactionPrompt, { MODEL_SWITCH_COMPACTION_TITLE } from "./ModelSwitchCompactionPrompt";
-
-interface ModelSwitchRequest {
-  model: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
-}
-
-interface PendingModelSwitchConfirmation {
-  request: ModelSwitchRequest;
-  confirmation: SessionModelSwitchConfirmation;
-}
+import SessionModelDialog, { canKeepCurrentReasoningEffortForModel } from "./SessionModelDialog";
 
 /** A session log this large is worth noticing; smaller ones keep their size in the tooltip only. */
 export const LARGE_SESSION_LOG_BYTES = 50 * 1024 * 1024;
@@ -103,30 +72,7 @@ function getSessionModelSourceLabel(source?: SessionModelState["source"]): strin
   }
 }
 
-function getPreferredReasoningEffort(model?: ModelInfo): ReasoningEffort | undefined {
-  const supported = model?.supportedReasoningEfforts;
-  if (!supported || supported.length === 0) return undefined;
-  if (model?.defaultReasoningEffort && supported.includes(model.defaultReasoningEffort)) {
-    return model.defaultReasoningEffort;
-  }
-  return supported[0];
-}
-
-export function canKeepCurrentReasoningEffortForModel({
-  supportedReasoningEfforts,
-  currentReasoningEffort,
-  currentEffortLookupReady,
-}: {
-  supportedReasoningEfforts?: readonly ReasoningEffort[];
-  currentReasoningEffort?: string;
-  currentEffortLookupReady: boolean;
-}): boolean {
-  if (!supportedReasoningEfforts) return true;
-  if (!currentEffortLookupReady) return false;
-  if (supportedReasoningEfforts.length === 0) return true;
-  if (!currentReasoningEffort) return true;
-  return supportedReasoningEfforts.includes(currentReasoningEffort);
-}
+export { canKeepCurrentReasoningEffortForModel };
 
 const styles = {
   global: {
@@ -337,22 +283,11 @@ export default function SessionList({
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const anchorRef = useRef<string | null>(null);
-  const [modelOptions, setModelOptions] = useState<ModelInfo[] | null>(null);
-  const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
-  const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
   const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
-  const [modelDraft, setModelDraft] = useState("");
-  const [modelPresetDraft, setModelPresetDraft] = useState<ModelPresetSlot | undefined>();
-  const [reasoningDraft, setReasoningDraft] = useState<"" | ReasoningEffort>("");
-  const [contextTierDraft, setContextTierDraft] = useState<"" | CopilotContextTier>("");
-  const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
-  const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
-  const [modelSwitchConfirmation, setModelSwitchConfirmation] = useState<PendingModelSwitchConfirmation | null>(null);
   const [deferredWorkSessionId, setDeferredWorkSessionId] = useState<string | null>(null);
   const [deferredWorkRestoreFocus, setDeferredWorkRestoreFocus] = useState<HTMLElement | null>(null);
   const sessionButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const [menuError, setMenuError] = useState<string | null>(null);
-  const modelDialogTouchedRef = useRef(false);
   const copyRequestRef = useRef(0);
 
   const closeMenu = useCallback(() => {
@@ -390,88 +325,15 @@ export default function SessionList({
   const archivedCount = Math.max(archivedTotal ?? 0, archivedSessions.length);
   const archivedRemaining = Math.max(0, archivedCount - Math.min(archivedRenderLimit, archivedSessions.length));
   const ctxModelQuery = useSessionModelQuery(ctxSession?.sessionId);
+  // Names models for the context menu from whatever the app already loaded; it never fetches.
+  const cachedModelsQuery = useQuery<ModelInfo[]>({
+    queryKey: queryKeys.models,
+    queryFn: fetchModels,
+    enabled: false,
+  }, queryClient);
   const modelDialogSession = modelDialogSessionId
     ? sessions.find((session) => session.sessionId === modelDialogSessionId)
     : null;
-  const modelDialogQuery = useSessionModelQuery(modelDialogSessionId);
-  const availableModels = getSelectableModels(modelOptions ?? []);
-  const selectedDialogModel = modelOptions?.find((model) => model.id === modelDraft);
-  const selectedDialogModelSupportsLongContext = modelSupportsLongContext(selectedDialogModel);
-  const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;
-  const selectedDialogDisablesReasoning = supportedReasoningEfforts?.length === 0;
-  const currentReasoningEffort = modelDialogQuery.data?.reasoningEffort;
-  const currentEffortLookupReady = modelDialogQuery.isSuccess && !!modelDialogQuery.data;
-  const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
-  const canKeepCurrentReasoningEffort = canKeepCurrentReasoningEffortForModel({
-    supportedReasoningEfforts,
-    currentReasoningEffort,
-    currentEffortLookupReady,
-  });
-  // A model with no advertised efforts keeps whatever the session already has
-  // (the save omits the field), so name that effort instead of "Default".
-  const keepCurrentEffortLabel = supportedReasoningEfforts === undefined
-    ? formatReasoningEffortLabel(currentReasoningEffort)
-    : undefined;
-  const dialogReasoningOptions = buildReasoningEffortOptions(supportedReasoningEfforts)
-    .map((option) => (option.value === null && keepCurrentEffortLabel
-      ? { ...option, label: keepCurrentEffortLabel }
-      : option));
-  const dialogSelectedReasoningEffort = reasoningDraft
-    || (currentReasoningEffort && supportedReasoningEfforts?.includes(currentReasoningEffort)
-      ? currentReasoningEffort
-      : undefined);
-  const dialogContextOptions = buildContextTierOptions(selectedDialogModel);
-  const dialogSelectedContextTier = selectedDialogModelSupportsLongContext
-    ? (contextTierDraft || "default")
-    : undefined;
-  const reasoningDraftCanBeSubmitted =
-    !!reasoningDraft
-    && (!supportedReasoningEfforts || supportedReasoningEfforts.includes(reasoningDraft));
-  // Memory is shared with the new-chat picker; only fetch settings once the
-  // dialog is open so the list itself stays free of extra requests.
-  const modelPresetMemory = useModelPresets({ enabled: !!modelDialogSessionId });
-  const dialogPresetSlot = modelPresetDraft
-    ?? modelPresetMemory.findSlotForModel(modelDraft, availableModels);
-  /**
-   * Applies a preset or model pick to the unsaved dialog drafts only. Remembered
-   * effort/context are restored when the target model can still honor them.
-   */
-  const applyDialogSelection = useCallback((selection: ModelPresetSelection) => {
-    modelDialogTouchedRef.current = true;
-    const modelInfo = modelOptions?.find((model) => model.id === selection.modelId);
-    setModelPresetDraft(selection.slot);
-    setModelDraft(selection.modelId);
-    setReasoningDraft(
-      selection.reasoningEffort
-        && modelInfo?.supportedReasoningEfforts?.includes(selection.reasoningEffort)
-        ? selection.reasoningEffort
-        : "",
-    );
-    setContextTierDraft(
-      modelSupportsLongContext(modelInfo) ? (selection.contextTier ?? "default") : "",
-    );
-  }, [modelOptions]);
-
-  const handleDialogPresetChange = useCallback((slot: ModelPresetSlot) => {
-    const selection = modelPresetMemory.selectPreset(slot, {
-      models: availableModels,
-      selectedModelId: modelDraft,
-      selectedPresetSlot: dialogPresetSlot,
-    });
-    if (selection) applyDialogSelection(selection);
-  }, [applyDialogSelection, availableModels, dialogPresetSlot, modelDraft, modelPresetMemory]);
-
-  const handleDialogModelChange = useCallback((slot: ModelPresetSlot, modelId: string) => {
-    applyDialogSelection(modelPresetMemory.selectModel(slot, modelId));
-  }, [applyDialogSelection, modelPresetMemory]);
-
-  const canSaveModelSwitch =
-    !!modelDialogSessionId
-    && !!modelDraft.trim()
-    && !modelSwitchSaving
-    && !modelOptionsLoading
-    && !(modelDialogSession && isSessionActive(modelDialogSession))
-    && (canKeepCurrentReasoningEffort || reasoningDraftCanBeSubmitted || !supportedReasoningEfforts);
   const unreadCount = activeSessions.filter(
     (session) => !session.archived && isUnread?.(session.sessionId, getSessionActivityTime(session)),
   ).length;
@@ -494,53 +356,6 @@ export default function SessionList({
     });
   }, [activeSessions, selectMode, sessions]);
 
-  const loadModelOptions = useCallback(async (forceRefresh = false) => {
-    setModelOptionsLoading(true);
-    setModelOptionsError(null);
-    try {
-      const models = forceRefresh ? await refreshModels() : await fetchModels();
-      if (forceRefresh) {
-        queryClient.setQueryData(queryKeys.models, models);
-      }
-      setModelOptions(models);
-    } catch (error) {
-      setModelOptionsError(getErrorMessage(error));
-    } finally {
-      setModelOptionsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!modelDialogSessionId || modelOptions || modelOptionsLoading || modelOptionsError) return;
-    void loadModelOptions();
-  }, [loadModelOptions, modelDialogSessionId, modelOptions, modelOptionsError, modelOptionsLoading]);
-
-  useEffect(() => {
-    if (!modelDialogSessionId || modelDialogTouchedRef.current || !modelDialogQuery.data) return;
-    setModelDraft(modelDialogQuery.data.model ?? "");
-    setModelPresetDraft(undefined);
-    setContextTierDraft(modelDialogQuery.data.contextTier ?? "");
-  }, [modelDialogQuery.data, modelDialogSessionId]);
-
-  useEffect(() => {
-    if (!supportedReasoningEfforts) {
-      return;
-    }
-    if (reasoningDraft && !supportedReasoningEfforts.includes(reasoningDraft)) {
-      setReasoningDraft(preferredReasoningEffort ?? "");
-      return;
-    }
-    if (!reasoningDraft && !canKeepCurrentReasoningEffort) {
-      setReasoningDraft(preferredReasoningEffort ?? "");
-    }
-  }, [
-    canKeepCurrentReasoningEffort,
-    currentReasoningEffort,
-    preferredReasoningEffort,
-    reasoningDraft,
-    supportedReasoningEfforts,
-  ]);
-
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -557,132 +372,13 @@ export default function SessionList({
   }, []);
 
   const openModelDialog = useCallback((sessionId: string) => {
-    const currentState = queryClient.getQueryData<SessionModelState>(queryKeys.sessionModel(sessionId));
-    modelDialogTouchedRef.current = false;
     setModelDialogSessionId(sessionId);
-    setModelDraft(currentState?.model ?? "");
-    setModelPresetDraft(undefined);
-    setReasoningDraft("");
-    setContextTierDraft(currentState?.contextTier ?? "");
-    setModelSwitchError(null);
-    setModelSwitchConfirmation(null);
-    setModelOptionsError(null);
     closeMenu();
   }, [closeMenu]);
 
   const closeModelDialog = useCallback(() => {
-    if (modelSwitchSaving) return;
     setModelDialogSessionId(null);
-    setModelSwitchError(null);
-    setModelSwitchConfirmation(null);
-  }, [modelSwitchSaving]);
-
-  const { dialogProps: modelDialogProps } = useModalDialog({
-    onDismiss: closeModelDialog,
-    open: !!modelDialogSessionId,
-    dismissible: !modelSwitchSaving,
-    label: modelSwitchConfirmation ? MODEL_SWITCH_COMPACTION_TITLE : "Change session model",
-  });
-
-  const submitModelSwitch = useCallback(async (
-    sessionId: string,
-    request: ModelSwitchRequest,
-    compactionDecision?: SessionModelCompactionDecision,
-  ) => {
-    setModelSwitchSaving(true);
-    setModelSwitchError(null);
-    try {
-      const result = compactionDecision
-        ? await patchSessionModel(sessionId, request.model, request.reasoningEffort, request.contextTier, {
-            compactionDecision,
-          })
-        : await patchSessionModel(sessionId, request.model, request.reasoningEffort, request.contextTier);
-      if (result.status === "confirmation_required") {
-        setModelSwitchConfirmation({ request, confirmation: result.confirmation });
-        return;
-      }
-      if (result.status === "cancelled") {
-        setModelSwitchConfirmation(null);
-        setModelSwitchError(result.warning ?? (
-          compactionDecision === "compact"
-            ? "The conversation still doesn't fit after compacting, so the model wasn't changed."
-            : "The model wasn't changed."
-        ));
-        return;
-      }
-      const nextReasoningEffort = selectedDialogDisablesReasoning
-        ? undefined
-        : result.reasoningEffort
-          ?? (request.reasoningEffort || modelDialogQuery.data?.reasoningEffort);
-      const nextContextTier = result.contextTier ?? request.contextTier;
-      const savedModelId = result.modelId ?? result.model;
-      const nextState: SessionModelState = {
-        model: savedModelId,
-        ...(nextReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
-        ...(nextContextTier ? { contextTier: nextContextTier } : {}),
-        source: "live",
-      };
-      queryClient.setQueryData(queryKeys.sessionModel(sessionId), nextState);
-      // A saved switch is a committed choice, so it feeds the same memory the
-      // new-chat picker reads.
-      if (dialogPresetSlot) {
-        modelPresetMemory.remember({
-          slot: dialogPresetSlot,
-          modelId: savedModelId,
-          reasoningEffort: nextReasoningEffort,
-          contextTier: nextContextTier,
-        });
-      }
-      setModelSwitchConfirmation(null);
-      setModelDialogSessionId(null);
-    } catch (error) {
-      setModelSwitchError(getErrorMessage(error));
-      // A long compaction can outlive the request, so re-read what the session is actually on.
-      if (compactionDecision) void queryClient.invalidateQueries({ queryKey: queryKeys.sessionModel(sessionId) });
-    } finally {
-      setModelSwitchSaving(false);
-    }
-  }, [
-    modelDialogQuery.data?.reasoningEffort,
-    dialogPresetSlot,
-    modelPresetMemory,
-    selectedDialogDisablesReasoning,
-  ]);
-
-  const handleSaveModelSwitch = useCallback(async () => {
-    if (!modelDialogSessionId) return;
-    const model = modelDraft.trim();
-    if (!model) return;
-
-    const submittedReasoningEffort = reasoningDraftCanBeSubmitted
-      ? reasoningDraft
-      : !canKeepCurrentReasoningEffort
-        ? preferredReasoningEffort
-      : undefined;
-    const submittedContextTier = selectedDialogModelSupportsLongContext
-      ? (contextTierDraft || "default")
-      : undefined;
-    await submitModelSwitch(modelDialogSessionId, {
-      model,
-      reasoningEffort: submittedReasoningEffort,
-      contextTier: submittedContextTier,
-    });
-  }, [
-    contextTierDraft,
-    modelDialogSessionId,
-    modelDraft,
-    reasoningDraft,
-    reasoningDraftCanBeSubmitted,
-    canKeepCurrentReasoningEffort,
-    preferredReasoningEffort,
-    selectedDialogModelSupportsLongContext,
-    submitModelSwitch,
-  ]);
-
-  const handleCompactAndSwitch = useCallback(async () => {
-    if (!modelDialogSessionId || !modelSwitchConfirmation) return;
-    await submitModelSwitch(modelDialogSessionId, modelSwitchConfirmation.request, "compact");
-  }, [modelDialogSessionId, modelSwitchConfirmation, submitModelSwitch]);
+  }, []);
 
   const handleBulkAction = useCallback((action: BatchAction, ids: string[]) => {
     onBulkAction?.(action, ids);
@@ -1102,7 +798,7 @@ export default function SessionList({
                   >
                     {ctxModelQuery.error
                       ? "Unable to load model"
-                      : formatSessionModelLabel(ctxModelQuery.data, modelOptions)}
+                      : formatSessionModelLabel(ctxModelQuery.data, cachedModelsQuery.data)}
                   </div>
                   <div className="text-[10px] text-text-faint">
                     {ctxModelQuery.isFetching && ctxModelQuery.data
@@ -1213,161 +909,13 @@ export default function SessionList({
         </ContextMenu>
       )}
 
-      {modelDialogSessionId && modelSwitchConfirmation && (
-        <div
-          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-          {...modelDialogProps}
-          onClick={closeModelDialog}
-        >
-          <ModelSwitchCompactionPrompt
-            confirmation={modelSwitchConfirmation.confirmation}
-            compacting={modelSwitchSaving}
-            error={modelSwitchError}
-            onCompact={() => {
-              void handleCompactAndSwitch();
-            }}
-            onKeepCurrentModel={closeModelDialog}
-          />
-        </div>
-      )}
-
-      {modelDialogSessionId && !modelSwitchConfirmation && (
-        <div
-          className={DS.surface.scrim}
-          {...modelDialogProps}
-          onClick={closeModelDialog}
-        >
-          <div
-            className={`${DS.surface.dialog} w-full max-w-md space-y-4 p-5`}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div>
-              <div className={DS.text.title}>Change session model</div>
-              <p className={`mt-1 ${DS.text.prose}`}>
-                Changes apply only to this session.
-                {modelDialogSession?.summary ? ` ${modelDialogSession.summary}` : ""}
-              </p>
-            </div>
-
-            <div className="text-[13px]">
-              <span className="text-text-muted">Current model</span>
-              <span className="ml-2 text-text-primary">
-                {modelDialogQuery.error
-                  ? "Unable to load current model"
-                  : formatSessionModelLabel(modelDialogQuery.data, modelOptions)}
-              </span>
-            </div>
-
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                {modelOptionsError ? (
-                  <div className="text-xs text-error" role="alert">
-                    <div>Failed to load models: {modelOptionsError}</div>
-                    <button
-                      type="button"
-                      className={`${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.danger} -ml-2.5 mt-1`}
-                      onClick={() => {
-                        void loadModelOptions();
-                      }}
-                    >
-                      Retry
-                    </button>
-                  </div>
-                ) : modelOptionsLoading ? (
-                  <div className={`flex h-10 items-center text-[13px] md:h-9 ${DS.motion.live}`} role="status">
-                    Loading models...
-                  </div>
-                ) : (
-                  <ModelPresetPicker
-                    idPrefix="session-model"
-                    models={availableModels}
-                    selectedModelId={modelDraft}
-                    selectedPresetSlot={dialogPresetSlot}
-                    globalDefaultModelId={modelPresetMemory.globalDefaultModelId}
-                    presets={modelPresetMemory.presets}
-                    disabled={modelSwitchSaving}
-                    onSelectPreset={handleDialogPresetChange}
-                    onSelectModel={handleDialogModelChange}
-                  />
-                )}
-                {!modelOptionsError && (
-                  <button
-                    type="button"
-                    onClick={() => { void loadModelOptions(true); }}
-                    disabled={modelOptionsLoading || modelSwitchSaving}
-                    className={`${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.ghost} -ml-2.5`}
-                  >
-                    <RotateCw className={`h-3 w-3 ${modelOptionsLoading ? "animate-spin" : ""}`} aria-hidden="true" />
-                    Refresh model list
-                  </button>
-                )}
-              </div>
-
-              {!selectedDialogDisablesReasoning && (
-                <div className="space-y-1.5">
-                  <LaunchOptionRow
-                    ariaLabel="Effort for this session"
-                    options={dialogReasoningOptions}
-                    selectedValue={dialogSelectedReasoningEffort}
-                    onChange={(value) => {
-                      modelDialogTouchedRef.current = true;
-                      setReasoningDraft(value ?? "");
-                    }}
-                    disabled={modelSwitchSaving}
-                  />
-                  {!canKeepCurrentReasoningEffort && currentEffortLookupReady && currentReasoningEffort && (
-                    <div className="text-xs text-text-faint">
-                      Current: {formatReasoningEffortLabel(currentReasoningEffort)}
-                      {" (not supported by selected model)"}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {dialogContextOptions.length > 0 && (
-                <LaunchOptionRow
-                  ariaLabel="Context for this session"
-                  options={dialogContextOptions}
-                  selectedValue={dialogSelectedContextTier}
-                  onChange={(value) => {
-                    modelDialogTouchedRef.current = true;
-                    setContextTierDraft(value ?? "");
-                  }}
-                  disabled={modelSwitchSaving}
-                />
-              )}
-            </div>
-
-            {modelSwitchError && (
-              <div className="text-xs text-error" role="alert">
-                {modelSwitchError}
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                className={`${DS.button.base} ${DS.button.size.md} ${DS.button.variant.ghost}`}
-                onClick={closeModelDialog}
-                disabled={modelSwitchSaving}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className={`${DS.button.base} ${DS.button.size.md} ${DS.button.variant.primary}`}
-                onClick={() => {
-                  void handleSaveModelSwitch();
-                }}
-                disabled={!canSaveModelSwitch}
-                title={modelDialogSession && isSessionActive(modelDialogSession) ? "This session is busy" : undefined}
-              >
-                {modelSwitchSaving && <Loader2 size={14} className="animate-spin" />}
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
+      {modelDialogSessionId && (
+        <SessionModelDialog
+          sessionId={modelDialogSessionId}
+          sessionSummary={modelDialogSession?.summary}
+          busy={!!modelDialogSession && isSessionActive(modelDialogSession)}
+          onClose={closeModelDialog}
+        />
       )}
 
       {deferredWorkSessionId && (
