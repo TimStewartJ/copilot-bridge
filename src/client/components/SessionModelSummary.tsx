@@ -1,4 +1,4 @@
-import { RotateCw } from "lucide-react";
+import { ChevronDown, RotateCw } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ModelInfo, SessionModelState } from "../api";
 import { formatSessionModelSummaryLabel } from "../lib/session-model";
@@ -15,6 +15,8 @@ export default function SessionModelSummary({
   loading,
   error,
   onRetry,
+  onEdit,
+  editDisabledReason,
 }: {
   /** The chat's name. Left out on a phone, where the bar above the chat already shows it. */
   title?: string;
@@ -23,6 +25,10 @@ export default function SessionModelSummary({
   loading: boolean;
   error?: string;
   onRetry: () => void;
+  /** Opens the editor for this chat's model, effort and context. Without it the label is plain text. */
+  onEdit?: () => void;
+  /** Why editing is unavailable right now, such as a working session. Disables the label. */
+  editDisabledReason?: string;
 }) {
   const name = title
     ? <span className="hidden min-w-0 truncate font-medium text-text-secondary md:block" title={title}>{title}</span>
@@ -73,7 +79,25 @@ export default function SessionModelSummary({
       aria-busy={loading}
       aria-label={`Session configuration: ${label}${error ? ". Last refresh failed." : ""}`}
     >
-      <span className="min-w-0 truncate">{label}</span>
+      {onEdit ? (
+        <button
+          type="button"
+          onClick={onEdit}
+          disabled={!!editDisabledReason}
+          title={editDisabledReason ?? "Change model, effort, and context for this chat"}
+          aria-label={`Change model, effort, and context: ${label}`}
+          className={cx(
+            "-mx-1.5 inline-flex h-10 min-w-0 items-center gap-1 rounded-md px-1.5 text-left transition-colors md:h-6",
+            "hover:bg-bg-hover/60 hover:text-text-primary disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-inherit",
+            DS.focus,
+          )}
+        >
+          <span className="min-w-0 truncate">{label}</span>
+          <ChevronDown className="h-3 w-3 shrink-0 text-text-faint" aria-hidden="true" />
+        </button>
+      ) : (
+        <span className="min-w-0 truncate">{label}</span>
+      )}
       {error && retry}
     </span>,
   );
