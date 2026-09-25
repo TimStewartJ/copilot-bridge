@@ -16,12 +16,13 @@ function ImageVisual({ visual, mode }: VisualArtifactRendererProps) {
   if (mode === "focus") {
     return (
       <div
-        className="flex h-full min-h-0 w-full items-center justify-center overflow-auto bg-bg-primary"
+        className="flex h-full min-h-0 w-full items-center justify-center overflow-auto"
+        data-lightbox-backdrop=""
       >
         <img
           src={visual.url}
           alt={altText}
-          className="max-h-full max-w-full object-contain"
+          className="max-h-full max-w-full rounded-lg object-contain"
         />
       </div>
     );
@@ -31,7 +32,8 @@ function ImageVisual({ visual, mode }: VisualArtifactRendererProps) {
     <img
       src={visual.url}
       alt={altText}
-      className="max-h-80 w-full rounded-lg border border-border bg-bg-primary object-contain transition-opacity hover:opacity-95"
+      loading="lazy"
+      className="mx-auto block max-h-[28rem] w-auto max-w-full object-contain transition-opacity group-hover/visual:opacity-95"
     />
   );
 }

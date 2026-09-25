@@ -98,8 +98,8 @@ export default function MermaidVisual({ visual, mode = "inline", viewport }: Mer
   return (
     <div className={`flex w-full min-w-0 flex-col ${focusMode ? "h-full min-h-0" : ""}`}>
       <div
-        className={`w-full rounded-lg border border-border bg-white dark:bg-bg-primary overflow-auto p-4 ${
-          focusMode ? "flex h-full min-h-0 items-center justify-center" : "min-h-[160px] max-h-96"
+        className={`w-full bg-white dark:bg-bg-primary overflow-auto p-4 ${
+          focusMode ? "flex h-full min-h-0 items-center justify-center rounded-lg" : "min-h-[160px] max-h-96"
         }`}
         style={focusMode && viewport?.height ? { maxHeight: viewport.height } : undefined}
       >

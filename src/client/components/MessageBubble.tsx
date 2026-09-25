@@ -2,7 +2,7 @@ import { memo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { CircleAlert, FileText, RotateCcw, TextSelect } from "lucide-react";
+import { CircleAlert, RotateCcw, TextSelect } from "lucide-react";
 import { parseAdoWorkReferenceUrl, type AdoWorkReference } from "../../shared/ado-work-reference";
 import { isRecord } from "../../shared/is-record";
 import type { ChatMessage } from "../api";
@@ -11,6 +11,7 @@ import ToolCallTree from "./ToolCallTree";
 import CodeBlock from "./CodeBlock";
 import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
 import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChatBridgeLink } from "./BridgeReference";
+import { MessageAttachments, OutboundAttachment, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
 import { APP_PROSE } from "./shared/prose-classes";
 import { DS, cx } from "../design/tokens";
 
@@ -21,6 +22,8 @@ interface MessageBubbleProps {
   onRetry?: () => void;
   selectingText?: boolean;
   onFinishSelectingText?: () => void;
+  /** Lets sent images and files in history load from the session's copy on the server. */
+  sessionId?: string;
 }
 
 /**
@@ -124,6 +127,10 @@ const ChatMarkdownParagraph: NonNullable<Components["p"]> = ({ node, children, .
     return <ChatWorkReferencePreview {...workReference} />;
   }
   const link = standaloneLink(node);
+  const outbound = link ? parseOutboundAttachmentLink(link.url) : null;
+  if (outbound) {
+    return <OutboundAttachment {...outbound} />;
+  }
   const bridgeTarget = link ? parseChatBridgeLink(link.url) : null;
   if (link && bridgeTarget) {
     return <BridgeReferenceCard target={bridgeTarget} label={meaningfulLabel(link.label, link.url)} />;
@@ -139,10 +146,40 @@ const ChatMarkdownLink: NonNullable<Components["a"]> = ({ node, children, href, 
   return <a href={href} {...props}>{children}</a>;
 };
 
+/** A markdown image in a reply opens in the full-screen viewer, like any other image in the chat. */
+const ChatMarkdownImage: NonNullable<Components["img"]> = ({ node: _node, src, alt, title }) => {
+  if (typeof src !== "string" || !src) return null;
+  const name = alt?.trim() || src.split(/[?#]/)[0].split("/").pop() || "image";
+  const outbound = parseOutboundAttachmentLink(src);
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        showImages([{
+          src,
+          name,
+          alt: alt ?? name,
+          ...(outbound ? { fileName: outbound.name } : {}),
+          element: event.currentTarget.querySelector("img"),
+        }], 0);
+      }}
+      className={cx(
+        "not-prose my-1 block max-w-full cursor-zoom-in overflow-hidden rounded-2xl border border-surface-edge bg-surface-inset align-top transition-opacity hover:opacity-90",
+        DS.focus,
+      )}
+      aria-label={`Open image ${name}`}
+      title={title ?? name}
+    >
+      <img src={src} alt={alt ?? name} loading="lazy" className="m-0 block max-h-96 w-auto max-w-full object-contain" />
+    </button>
+  );
+};
+
 const MESSAGE_MARKDOWN_COMPONENTS: Components = {
   pre: CodeBlock,
   p: ChatMarkdownParagraph,
   a: ChatMarkdownLink,
+  img: ChatMarkdownImage,
 };
 
 export default memo(function MessageBubble({
@@ -152,11 +189,13 @@ export default memo(function MessageBubble({
   onRetry,
   selectingText = false,
   onFinishSelectingText,
+  sessionId,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
     const hasAttachments = message.attachments && message.attachments.length > 0;
+    const hasText = message.content !== "(image)" && message.content !== "(attachment)" && message.content.length > 0;
     const isFailed = message.delivery?.failed === true;
     const isPending = Boolean(message.delivery) && !isFailed;
     const deliveryState = isFailed ? "failed" : isPending ? "sending" : "sent";
@@ -179,36 +218,15 @@ export default memo(function MessageBubble({
             <TextSelectionControls side="right" onDone={onFinishSelectingText} />
           )}
           <BubbleActions side="right">{actionSlot}</BubbleActions>
-          <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap break-words ${
-            isFailed ? "border border-error/40 bg-bg-elevated" : "bg-bg-elevated"
-          }`}>
-            {hasAttachments && (
-              <div className="flex gap-2 flex-wrap mb-2">
-                {message.attachments!.map((att, i) =>
-                  att.type === "blob" && att.mimeType.startsWith("image/") ? (
-                    <a
-                      key={i}
-                      href={`data:${att.mimeType};base64,${att.data}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={att.displayName ?? "Click to view full size"}
-                    >
-                      <img
-                        src={`data:${att.mimeType};base64,${att.data}`}
-                        alt={att.displayName ?? "attachment"}
-                        className="max-w-[200px] max-h-[200px] rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity"
-                      />
-                    </a>
-                  ) : (
-                    <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-surface text-text-secondary text-xs max-w-[200px]">
-                      <FileText size={14} className="flex-shrink-0 text-text-faint" />
-                      <span className="truncate">{att.displayName ?? "file"}</span>
-                    </div>
-                  ),
-                )}
+          <div className="flex flex-col items-end gap-1.5">
+            {hasAttachments && <MessageAttachments attachments={message.attachments!} align="end" sessionId={sessionId} />}
+            {hasText && (
+              <div className={`rounded-3xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap break-words ${
+                isFailed ? "border border-error/40 bg-bg-elevated" : "bg-bg-elevated"
+              }`}>
+                {message.content}
               </div>
             )}
-            {message.content !== "(image)" && message.content !== "(attachment)" && message.content}
           </div>
           {isFailed && (
             <div

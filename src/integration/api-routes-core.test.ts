@@ -666,6 +666,40 @@ describe("Attachment routes", () => {
       expect(res.body.error, label).toContain(errorFragment);
     }
   });
+
+  it("GET /api/sessions/:id/files/:fileName serves sent images inline and other files as downloads", async () => {
+    const copilotHome = makeTestDir("route-home");
+    const { app: filesApp } = createTestApp({ copilotHome });
+    const filesDir = join(copilotHome, "session-state", sessionId, "files");
+    mkdirSync(join(filesDir, "outgoing"), { recursive: true });
+    writeFileSync(join(filesDir, "photo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    writeFileSync(join(filesDir, "notes.csv"), "a,b\n1,2\n");
+    writeFileSync(join(filesDir, "outgoing", "nested.txt"), "nested");
+
+    const image = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png`);
+    expect(image.status).toBe(200);
+    expect(image.headers["content-type"]).toMatch(/^image\/png/);
+    expect(image.headers["content-disposition"]).toBeUndefined();
+
+    const csv = await request(filesApp).get(`/api/sessions/${sessionId}/files/notes.csv`);
+    expect(csv.status).toBe(200);
+    expect(csv.headers["content-disposition"]).toContain("attachment;");
+
+    const forcedDownload = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png?download=1`);
+    expect(forcedDownload.headers["content-disposition"]).toContain("attachment;");
+
+    const cases: [string, string, number][] = [
+      ["subfolder", `/api/sessions/${sessionId}/files/outgoing`, 404],
+      ["encoded subfolder path", `/api/sessions/${sessionId}/files/outgoing%2Fnested.txt`, 400],
+      ["traversal name", `/api/sessions/${sessionId}/files/..photo.png`, 400],
+      ["bad session id", `/api/sessions/not-a-session/files/photo.png`, 400],
+      ["missing file", `/api/sessions/${sessionId}/files/missing.png`, 404],
+    ];
+    for (const [label, path, status] of cases) {
+      const res = await request(filesApp).get(path);
+      expect(res.status, label).toBe(status);
+    }
+  });
 });
 
 describe("Telemetry routes", () => {

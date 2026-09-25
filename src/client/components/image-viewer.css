@@ -1,0 +1,139 @@
+/*
+ * PhotoSwipe restyled onto the Bridge theme (see image-viewer.ts). The viewer takes the page's
+ * canvas colour in both themes, its bar reads like a dialog header, and its controls are the same
+ * quiet ghost buttons the rest of the app uses.
+ */
+.pswp.bridge-pswp {
+  --pswp-bg: var(--color-surface-canvas);
+  --pswp-placeholder-bg: var(--color-surface-inset);
+  --pswp-root-z-index: 70;
+  --pswp-icon-color: var(--color-text-primary);
+  --pswp-icon-color-secondary: transparent;
+  --pswp-icon-stroke-color: transparent;
+  --pswp-error-text-color: var(--color-text-secondary);
+  --pswp-preloader-color: var(--color-surface-edge);
+  --pswp-preloader-color-secondary: var(--color-text-secondary);
+  color: var(--color-text-primary);
+}
+
+.bridge-pswp .pswp__top-bar {
+  box-sizing: border-box;
+  height: calc(56px + env(safe-area-inset-top));
+  align-items: center;
+  gap: 2px;
+  padding: env(safe-area-inset-top) 8px 0 16px;
+  background: color-mix(in srgb, var(--color-surface-canvas) 88%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+@media (min-width: 640px) {
+  .bridge-pswp .pswp__top-bar {
+    height: calc(64px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) 16px 0 20px;
+  }
+}
+
+.bridge-pswp .bridge-pswp-title {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin-right: auto;
+  line-height: 1.25;
+}
+
+.bridge-pswp .bridge-pswp-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.bridge-pswp .bridge-pswp-count {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-faint);
+}
+
+.bridge-pswp .pswp__top-bar .pswp__button {
+  display: flex;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  color: var(--color-text-secondary);
+  opacity: 1;
+  transition: background-color 150ms, color 150ms;
+}
+
+.bridge-pswp .pswp__top-bar .pswp__button:hover {
+  background: var(--color-surface-selected);
+  color: var(--color-text-primary);
+}
+
+.bridge-pswp .pswp__button--close {
+  margin-right: 0;
+}
+
+.bridge-pswp .pswp__button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 50%, transparent);
+  outline-offset: 0;
+}
+
+.bridge-pswp .pswp__button--zoom {
+  display: none;
+}
+
+.bridge-pswp.pswp--zoom-allowed .pswp__button--zoom {
+  display: flex;
+}
+
+.bridge-pswp.pswp--zoomed-in .bridge-pswp-zoom-v {
+  display: none;
+}
+
+.bridge-pswp .pswp__button--arrow {
+  display: flex;
+  width: 72px;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+}
+
+.bridge-pswp.pswp--one-slide .pswp__button--arrow,
+.bridge-pswp .pswp__button--arrow:disabled {
+  display: none;
+}
+
+.bridge-pswp .bridge-pswp-arrow {
+  display: flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-surface-edge);
+  border-radius: 9999px;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-secondary);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  transition: background-color 150ms, color 150ms;
+}
+
+.bridge-pswp .pswp__button--arrow:hover .bridge-pswp-arrow {
+  background: var(--color-surface-selected);
+  color: var(--color-text-primary);
+}
+
+.bridge-pswp .pswp__preloader {
+  display: none;
+}
+
+:root[data-motion="reduce"] .bridge-pswp,
+:root[data-motion="reduce"] .bridge-pswp .pswp__hide-on-close {
+  --pswp-transition-duration: 0ms;
+}

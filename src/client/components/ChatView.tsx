@@ -2832,6 +2832,7 @@ export default function ChatView({
             isStreaming={isLiveStreamingMessage}
             selectingText={isSelectingText}
             onFinishSelectingText={isSelectingText ? handleFinishSelectingMessageText : undefined}
+            sessionId={sessionId ?? undefined}
             onRetry={canRetryFailedMessage && failedOptimisticMessage
               ? () => { void handleRetryMessage(failedOptimisticMessage); }
               : undefined}

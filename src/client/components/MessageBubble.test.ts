@@ -224,3 +224,36 @@ describe("MessageBubble Azure DevOps references", () => {
     }
   });
 });
+
+describe("MessageBubble images", () => {
+  it("renders a markdown image in a reply as a control that opens the viewer", async () => {
+    const harness = await createReactDomHarness();
+    const src = "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/chart.png";
+    const message = { role: "assistant", content: `Here it is:\n\n![chart.png](${src})` } satisfies ChatMessage;
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+      const open = findAllByTag(harness.dom.container, "BUTTON").find((b) => b.getAttribute?.("aria-label") === "Open image chart.png");
+      expect(open).toBeDefined();
+      expect(findAllByTag(open, "IMG")[0]?.getAttribute("src")).toBe(src);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("shows a sent image from history through the session's copy", async () => {
+    const harness = await createReactDomHarness();
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const message = {
+      role: "user",
+      content: "(image)",
+      attachments: [{ type: "blob", data: "", mimeType: "image/png", displayName: "shot.png" }],
+    } satisfies ChatMessage;
+    try {
+      await harness.render(createElement(MessageBubble, { message, sessionId }));
+      const img = findAllByTag(harness.dom.container, "IMG")[0];
+      expect(img?.getAttribute("src")).toBe(`/api/sessions/${sessionId}/files/shot.png`);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
