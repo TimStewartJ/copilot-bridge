@@ -59,7 +59,7 @@ import type { VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
-import { isCanonicalSessionId, resolveOutboundAttachment } from "./outbound-attachments.js";
+import { isCanonicalSessionId, resolveOutboundAttachment, resolveSessionUploadedFile } from "./outbound-attachments.js";
 import {
   createWorkspaceAvailabilityLookup,
   getWorkspaceAvailability,
@@ -2545,6 +2545,33 @@ export function createApiRouter(
       return res.sendFile(attachment.value.filePath, { dotfiles: "allow" }, onSendError);
     }
     return res.download(attachment.value.filePath, attachment.value.displayName, { dotfiles: "allow" }, onSendError);
+  });
+
+  // Files the user attached to a prompt. Sent images come back from history without their bytes,
+  // so the chat shows them from the copy the upload left in the session's files/ folder.
+  router.get("/sessions/:id/files/:fileName", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const fileName = String(req.params.fileName ?? "").trim();
+    if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) {
+      return res.status(400).json({ error: "fileName is invalid" });
+    }
+    const file = resolveSessionUploadedFile(getCopilotHome(ctx), req.params.id, fileName);
+    if (!file.ok) {
+      return res.status(file.error === "File path is unsafe" ? 403 : 404).json({ error: file.error });
+    }
+    const onSendError = (err: NodeJS.ErrnoException | null) => {
+      if (!err || res.headersSent) return;
+      const statusCode = (err as NodeJS.ErrnoException & { statusCode?: number }).statusCode;
+      res.status(typeof statusCode === "number" ? statusCode : 500).json({ error: err.message });
+    };
+    res.type(file.value.mimeType);
+    if (file.value.inline && req.query.download === undefined) {
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      return res.sendFile(file.value.filePath, { dotfiles: "allow" }, onSendError);
+    }
+    return res.download(file.value.filePath, file.value.displayName, { dotfiles: "allow" }, onSendError);
   });
 
   function sendVisualArtifact(owner: VisualArtifactOwner, artifactId: string, res: express.Response, mode: "inline" | "download"): void {

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { ArrowUp, Square, Paperclip, FileText, X, Loader2, Mic } from "lucide-react";
+import { ArrowUp, Square, Paperclip, Loader2, Mic } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import {
@@ -28,6 +28,7 @@ import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
+import { ComposerAttachmentTray } from "./ChatAttachments";
 import { DS } from "../design/tokens";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -138,6 +139,8 @@ export default function ChatInput({
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(0);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
@@ -446,6 +449,8 @@ export default function ChatInput({
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       void addFiles(files);
@@ -454,6 +459,19 @@ export default function ChatInput({
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    if (dragDepthRef.current === 0) return;
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current === 0) setDragActive(false);
   }, []);
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -612,12 +630,6 @@ export default function ChatInput({
   return (
     <div className="shrink-0">
       <div className={COMPOSER_RAIL_CLASS}>
-        {uploading > 0 && (
-          <div className="flex items-center gap-1 text-xs text-text-faint mb-1">
-            <Loader2 size={12} className="animate-spin" />
-            Uploading…
-          </div>
-        )}
 
         {voiceUi.message && (
           <div
@@ -654,40 +666,6 @@ export default function ChatInput({
           </div>
         )}
 
-        {attachments.length > 0 && (
-          <div className="flex gap-2 mb-2 flex-wrap">
-            {attachments.map((att, i) => (
-              <div key={i} className="relative group">
-                {att.type === "blob" && att.mimeType.startsWith("image/") ? (
-                  <img
-                    src={`data:${att.mimeType};base64,${att.data}`}
-                    alt={att.displayName ?? "attachment"}
-                    className="h-16 w-16 object-cover rounded-md border border-border"
-                  />
-                ) : att.type === "uploaded" && att.previewUrl ? (
-                  <img
-                    src={att.previewUrl}
-                    alt={att.displayName ?? "attachment"}
-                    className="h-16 w-16 object-cover rounded-md border border-border"
-                  />
-                ) : (
-                  <div className="h-16 px-3 flex items-center gap-2 rounded-md border border-border bg-bg-elevated text-text-secondary text-xs max-w-[180px]">
-                    <FileText size={16} className="flex-shrink-0 text-text-faint" />
-                    <span className="truncate">{att.displayName ?? "file"}</span>
-                  </div>
-                )}
-                <button
-                  onClick={() => removeAttachment(i)}
-                  className="absolute -top-1.5 -right-1.5 bg-bg-primary border border-border rounded-full p-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity text-text-secondary hover:text-error"
-                  aria-label={`Remove attachment ${att.displayName ?? "file"}`}
-                  type="button"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
         {slashCommandsSupported && (slashSuggestions.length > 0 || exactSlashCommand) && (
           <div
             className={`mb-2 overflow-hidden p-1 ${DS.surface.floating}`}
@@ -741,10 +719,24 @@ export default function ChatInput({
         )}
 
         <div
-          className={`flex items-end gap-0.5 ${DS.surface.composer}`}
+          className={`relative flex flex-col ${DS.surface.composer} ${dragActive ? "ring-1 ring-text-secondary" : ""}`}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
         >
+          {dragActive && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 rounded-2xl bg-surface-overlay/95 text-sm font-medium text-text-primary">
+              <Paperclip size={16} aria-hidden="true" />
+              Drop files to attach
+            </div>
+          )}
+          <ComposerAttachmentTray
+            attachments={attachments}
+            uploadingCount={uploading}
+            onRemove={removeAttachment}
+          />
+          <div className="flex items-end gap-0.5">
           <button
             onClick={() => fileInputRef.current?.click()}
             className="ml-1 flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:text-text-primary"
@@ -841,6 +833,7 @@ export default function ChatInput({
                 <ArrowUp size={17} strokeWidth={2.25} />
               )}
             </button>
+          </div>
           </div>
         </div>
         {sendModeMenu && (

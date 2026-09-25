@@ -275,8 +275,8 @@ export default function VegaLiteVisual({ visual, mode = "inline", viewport }: Ve
   return (
     <div className={`flex w-full min-w-0 flex-col ${focusMode ? "h-full min-h-0" : ""}`}>
       <div
-        className={`w-full rounded-lg border border-border bg-white dark:bg-bg-primary overflow-auto p-4 ${
-          focusMode ? "h-full min-h-0" : "min-h-[180px] max-h-[28rem]"
+        className={`w-full bg-white dark:bg-bg-primary overflow-auto p-4 ${
+          focusMode ? "h-full min-h-0 rounded-lg" : "min-h-[180px] max-h-[28rem]"
         }`}
         style={{ scrollbarGutter: "stable" }}
       >
