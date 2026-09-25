@@ -19,6 +19,12 @@ export interface TaskChecklistSectionProps {
   variant?: "panel" | "card";
   highlightId?: string | null;
   isReadyToComplete?: boolean;
+  /**
+   * Panel only: whether the add field shows. The panel hides it once nothing is open and reveals
+   * it from the section's Add button.
+   */
+  showComposer?: boolean;
+  onComposerDone?: () => void;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -34,6 +40,8 @@ export default function TaskChecklistSection({
   variant = "panel",
   highlightId,
   isReadyToComplete = false,
+  showComposer = true,
+  onComposerDone,
 }: TaskChecklistSectionProps) {
   const openChecklistItems = checklistItems.filter((t) => !t.done);
   const completedChecklistItems = checklistItems.filter((t) => t.done);
@@ -153,22 +161,33 @@ export default function TaskChecklistSection({
             </div>
           )}
           {readyCue}
-          <div className="px-3 py-1">
-            <input
-              className="w-full text-xs bg-transparent border-none outline-none text-text-secondary placeholder:text-text-faint"
-              placeholder="+ Add item…"
-              value={newChecklistItemText}
-              onChange={(e) => onNewChecklistItemTextChange(e.target.value)}
-              onKeyDown={async (e) => {
-                const text = newChecklistItemText.trim();
-                if (e.key === "Enter" && text) {
-                  onNewChecklistItemTextChange("");
-                  await onCreateChecklistItem(text);
-                  setShowAllOpen(true);
-                }
-              }}
-            />
-          </div>
+          {showComposer && (
+            <div className="px-3 py-1">
+              <input
+                aria-label="Add checklist item"
+                autoFocus={openChecklistItems.length === 0}
+                className="w-full text-[13px] bg-transparent border-none outline-none text-text-secondary placeholder:text-text-faint"
+                placeholder="+ Add item…"
+                value={newChecklistItemText}
+                onChange={(e) => onNewChecklistItemTextChange(e.target.value)}
+                onBlur={() => {
+                  if (!newChecklistItemText.trim()) onComposerDone?.();
+                }}
+                onKeyDown={async (e) => {
+                  const text = newChecklistItemText.trim();
+                  if (e.key === "Escape" && !text) {
+                    onComposerDone?.();
+                    return;
+                  }
+                  if (e.key === "Enter" && text) {
+                    onNewChecklistItemTextChange("");
+                    await onCreateChecklistItem(text);
+                    setShowAllOpen(true);
+                  }
+                }}
+              />
+            </div>
+          )}
           {shouldShowOpenExpansion && (
             <button
               onClick={() => setShowAllOpen((value) => !value)}

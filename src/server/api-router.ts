@@ -4355,6 +4355,38 @@ export function createApiRouter(
     res.json({ task: { ...task, tags } });
   });
 
+  // A task's archived sessions, newest first, one page at a time. The task panel reads these
+  // instead of the global archived list, which holds every archived session in Bridge.
+  router.get("/tasks/:id/archived-sessions", async (req, res) => {
+    try {
+      const task = ctx.taskStore.getTask(req.params.id);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+
+      const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 100, 25);
+      const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
+      const linkedSessionIds = new Set(task.sessionIds);
+      const enriched = await timeRequestOperation(
+        res,
+        "tasks.archivedSessions",
+        () => getEnrichedSessionList(true, { scheduleRefresh: scheduleAfterResponse(res) }),
+        { taskId: task.id },
+      );
+      const archived = materializeSessionList(
+        enriched.filter((session: any) => linkedSessionIds.has(session.sessionId)),
+        true,
+      ).filter((session: any) => session.archived === true);
+
+      res.json({
+        sessions: archived.slice(offset, offset + limit),
+        total: archived.length,
+        offset,
+      });
+    } catch (err) {
+      if (err instanceof ManagementJobApiError) return res.status(400).json({ error: err.message });
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   router.get("/tasks/:id/git-status", async (req, res) => {
     const task = ctx.taskStore.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });

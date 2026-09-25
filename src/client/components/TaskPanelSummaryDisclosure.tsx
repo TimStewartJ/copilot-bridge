@@ -16,7 +16,6 @@ export interface TaskPanelSummaryDisclosureProps {
   chips?: TaskPanelSummaryChip[];
   trailing?: ReactNode;
   titleClassName?: string;
-  subtitleClassName?: string;
 
   // Disclosure control
   /** Total number of items represented by this row. */
@@ -55,7 +54,6 @@ export default function TaskPanelSummaryDisclosure({
   chips,
   trailing,
   titleClassName,
-  subtitleClassName,
   itemCount,
   taskId,
   disclosureId,
@@ -98,7 +96,6 @@ export default function TaskPanelSummaryDisclosure({
         chips={chips}
         trailing={trailing}
         titleClassName={titleClassName}
-        subtitleClassName={subtitleClassName}
         expanded={canExpand ? expanded : undefined}
         onClick={handleClick}
       />

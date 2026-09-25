@@ -21,7 +21,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
 import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Plus, Square, SquareCheckBig, RotateCw, Bot, Terminal } from "lucide-react";
 import { DS } from "../design/tokens";
-import { StatusIcon } from "../design/primitives";
+import { Button, StatusIcon } from "../design/primitives";
 import TaskPickerDialog from "./TaskPickerDialog";
 import { useModalDialog } from "./shared/useModalDialog";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -57,6 +57,11 @@ interface PendingModelSwitchConfirmation {
   request: ModelSwitchRequest;
   confirmation: SessionModelSwitchConfirmation;
 }
+
+/** A session log this large is worth noticing; smaller ones keep their size in the tooltip only. */
+export const LARGE_SESSION_LOG_BYTES = 50 * 1024 * 1024;
+/** Archived rows are drawn this many at a time; a task can hold thousands. */
+export const ARCHIVED_SESSION_RENDER_PAGE = 25;
 
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
@@ -131,15 +136,20 @@ const styles = {
     titleClass: "font-medium truncate",
     metaClass: "text-xs text-text-muted mt-0.5",
     dotSize: "size-3 mr-1.5",
+    /** Lines the meta row up with the title, past the status slot. */
+    metaIndent: "pl-[18px]",
+    deferIndent: "left-[30px]",
     listGap: "space-y-1",
   },
   compact: {
     wrapper: "min-w-0 overflow-x-hidden",
     newButton: `${DS.button.base} ${DS.button.size.sm} ${DS.button.variant.secondary} mb-1.5 w-full`,
     itemPadding: "py-2",
-    titleClass: "font-medium truncate text-xs",
-    metaClass: "text-[10px] text-text-muted mt-0.5",
+    titleClass: "font-medium truncate text-[13px]",
+    metaClass: "text-[11px] text-text-muted mt-0.5",
     dotSize: "size-3 mr-1",
+    metaIndent: "pl-4",
+    deferIndent: "left-7",
     listGap: "space-y-0.5",
   },
 } as const;
@@ -272,6 +282,14 @@ interface SessionListProps {
   onRequestArchived?: () => void;
   archivedLoaded?: boolean;
   archivedLoading?: boolean;
+  /** How many archived sessions exist when the caller loads them a page at a time. */
+  archivedTotal?: number;
+  /** Fetches the next page of archived sessions; called when the drawn rows run out. */
+  onLoadMoreArchived?: () => void;
+  archivedLoadingMore?: boolean;
+  /** Loading archived sessions failed; offer a retry instead of an endless skeleton or an empty list. */
+  archivedError?: boolean;
+  onRetryArchived?: () => void;
   // Hide the new-session button (e.g. when the parent already provides one)
   showNewButton?: boolean;
 }
@@ -303,10 +321,16 @@ export default function SessionList({
   onRequestArchived,
   archivedLoaded,
   archivedLoading = false,
+  archivedTotal,
+  onLoadMoreArchived,
+  archivedLoadingMore = false,
+  archivedError = false,
+  onRetryArchived,
   showNewButton = true,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
+  const [archivedRenderLimit, setArchivedRenderLimit] = useState(ARCHIVED_SESSION_RENDER_PAGE);
   const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
   const [copied, setCopied] = useState(false);
   const [showTaskPicker, setShowTaskPicker] = useState<string | null>(null);
@@ -363,6 +387,8 @@ export default function SessionList({
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
+  const archivedCount = Math.max(archivedTotal ?? 0, archivedSessions.length);
+  const archivedRemaining = Math.max(0, archivedCount - Math.min(archivedRenderLimit, archivedSessions.length));
   const ctxModelQuery = useSessionModelQuery(ctxSession?.sessionId);
   const modelDialogSession = modelDialogSessionId
     ? sessions.find((session) => session.sessionId === modelDialogSessionId)
@@ -764,7 +790,10 @@ export default function SessionList({
           }}
           {...(selectMode ? {} : longPressBindings)}
           onClick={handleClick}
-          title={session.summary || id}
+          title={[
+            session.summary || id,
+            session.eventLogSizeBytes ? formatSize(session.eventLogSizeBytes) : null,
+          ].filter(Boolean).join(" · ")}
           className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
             selectMode && isSelected
               ? "bg-bg-hover ring-1 ring-border"
@@ -774,7 +803,7 @@ export default function SessionList({
                   ? "bg-bg-hover"
                   : "hover:bg-bg-hover"
           } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""} ${
-            deferLabel && !selectMode ? "pb-8" : ""
+            deferLabel && !selectMode ? "pb-11 md:pb-8" : ""
           }`}
         >
           <div className={`${unread ? s.titleClass.replace("font-medium", "font-semibold") : s.titleClass} flex items-center min-w-0`}>
@@ -785,7 +814,7 @@ export default function SessionList({
             ) : isArchiving ? (
               <Loader2 size={10} className={`${s.dotSize} animate-spin text-text-muted shrink-0`} />
             ) : showBackgroundAgents ? (
-              <span title={backgroundAgentsTitle} className="inline-flex shrink-0">
+              <span title={backgroundAgentsTitle} className={`inline-flex ${s.dotSize} shrink-0 items-center justify-center`}>
                 <Bot
                   size={12}
                   className={`text-agent shrink-0${backgroundAgentsRunning ? " animate-pulse" : ""}`}
@@ -805,7 +834,7 @@ export default function SessionList({
               {session.summary || id.slice(0, 8)}
             </span>
           </div>
-          <div className={`${s.metaClass} truncate`}>
+          <div className={`${s.metaClass} ${selectMode ? "pl-5" : s.metaIndent} truncate`}>
             {isArchiving ? "Archiving…" : needsUserInput ? "Needs answer" : timeAgo(getSessionActivityTime(session))}
             {session.externallyInUse && (
               <>
@@ -820,7 +849,7 @@ export default function SessionList({
               </>
             )}
             {session.context?.branch && ` · ${session.context.branch}`}
-            {session.eventLogSizeBytes
+            {session.eventLogSizeBytes && session.eventLogSizeBytes >= LARGE_SESSION_LOG_BYTES
               ? ` · ${formatSize(session.eventLogSizeBytes)}`
               : ""}
             {session.workspace?.overridesTaskWorkspace && (
@@ -849,7 +878,7 @@ export default function SessionList({
               );
               setDeferredWorkSessionId(id);
             }}
-            className={`absolute bottom-1.5 left-3 inline-flex max-w-[calc(100%-1.5rem)] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+            className={`absolute bottom-1.5 ${s.deferIndent} inline-flex min-h-8 max-w-[calc(100%-2.5rem)] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors md:min-h-0 ${
               deferRunning
                 ? "bg-info-surface text-info hover:bg-info/20"
                 : "bg-bg-hover text-text-secondary hover:text-text-primary"
@@ -926,18 +955,28 @@ export default function SessionList({
           {!selectMode && (archivedSessions.length > 0 || archivedLoading || (onRequestArchived && !archivedLoaded)) && (
             <>
               <button
+                type="button"
+                aria-expanded={showArchived}
                 onClick={() => {
                   const next = !showArchived;
                   setShowArchived(next);
+                  if (!next) setArchivedRenderLimit(ARCHIVED_SESSION_RENDER_PAGE);
                   if (next && onRequestArchived && !archivedLoaded) onRequestArchived();
                 }}
-                className="w-full px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors mt-2 flex items-center gap-1"
+                className={`w-full px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors mt-2 flex items-center gap-1 ${DS.row.touch}`}
               >
-                {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Archived{archivedLoaded !== false && !archivedLoading ? ` (${archivedSessions.length})` : ""}
+                {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Archived{archivedLoaded !== false && !archivedLoading ? ` (${archivedCount})` : ""}
               </button>
               {showArchived && (
                 <div className={s.listGap}>
-                  {archivedSessions.length === 0 && (archivedLoading || !archivedLoaded) ? (
+                  {archivedError && archivedSessions.length === 0 ? (
+                    <div role="alert" className="flex items-center gap-2 px-3 py-1 text-xs text-text-secondary">
+                      <span>Archived sessions could not be loaded.</span>
+                      {onRetryArchived && (
+                        <Button size="sm" variant="ghost" onClick={onRetryArchived}>Retry</Button>
+                      )}
+                    </div>
+                  ) : archivedSessions.length === 0 && (archivedLoading || !archivedLoaded) ? (
                     <LoadingSkeletonRegion
                       isLoading
                       label="Loading archived sessions"
@@ -954,7 +993,31 @@ export default function SessionList({
                       </div>
                     </LoadingSkeletonRegion>
                   ) : (
-                    archivedSessions.map(renderItem)
+                    <>
+                      {archivedSessions.slice(0, archivedRenderLimit).map(renderItem)}
+                      {archivedError && onRetryArchived && archivedRemaining > 0 && (
+                        <div role="alert" className="flex items-center gap-2 px-3 py-1 text-xs text-text-secondary">
+                          <span>More archived sessions could not be loaded.</span>
+                          <Button size="sm" variant="ghost" onClick={onRetryArchived}>Retry</Button>
+                        </div>
+                      )}
+                      {!archivedError && archivedRemaining > 0 && (
+                        <button
+                          type="button"
+                          disabled={archivedLoadingMore}
+                          onClick={() => {
+                            const nextLimit = archivedRenderLimit + ARCHIVED_SESSION_RENDER_PAGE;
+                            setArchivedRenderLimit(nextLimit);
+                            if (onLoadMoreArchived && archivedSessions.length < nextLimit) onLoadMoreArchived();
+                          }}
+                          className={`w-full px-3 py-1.5 text-left text-xs text-text-muted hover:text-text-secondary transition-colors disabled:text-text-faint ${DS.row.touch}`}
+                        >
+                          {archivedLoadingMore
+                            ? "Loading…"
+                            : `Show ${Math.min(ARCHIVED_SESSION_RENDER_PAGE, archivedRemaining)} more · ${archivedRemaining} left`}
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               )}

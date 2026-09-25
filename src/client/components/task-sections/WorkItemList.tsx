@@ -10,6 +10,9 @@ import LinkedResourceCopyButton from "./LinkedResourceCopyButton";
 import LinkedResourceUnlinkButton from "./LinkedResourceUnlinkButton";
 import { DS, cx } from "../../design/tokens";
 
+/** Row actions in the task panel keep a full touch target on a phone. */
+const COMPACT_ACTION_CLASS = "inline-flex h-10 w-10 items-center justify-center md:mt-0.5 md:h-6 md:w-6";
+
 // ── Props ────────────────────────────────────────────────────────
 
 export interface WorkItemListProps {
@@ -124,7 +127,6 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
       .slice(0, 3)
       .map(([state, count]) => ({
         label: `${count} ${state}`,
-        className: WI_STATE_STYLES[state] ?? "bg-text-muted/15 text-text-muted",
       }));
 
     const title = items.length === 1
@@ -142,25 +144,6 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
           .filter(Boolean)
           .join(" · ");
 
-    const singleUrl = items.length === 1 && primaryItem.url && primaryItem.url !== "#" ? primaryItem.url : null;
-    // A single item with a URL opens that URL instead of expanding, so the inline
-    // rows (and their unlink buttons) are unreachable — surface one in the row itself.
-    const singleRowKey = `${primaryItem.provider}-${primaryItem.id}`;
-    const showTrailingUnlink = canUnlink && items.length === 1 && !!singleUrl;
-    const trailing = singleUrl ? (
-      <>
-        <LinkedResourceCopyButton
-          url={singleUrl}
-          resourceLabel={`work item ${primaryItem.id}`}
-          iconSize={14}
-          className="p-0.5"
-        />
-        {showTrailingUnlink
-          ? renderUnlinkButton(primaryItem, singleRowKey, { iconSize: 14, className: "p-0.5" })
-          : null}
-      </>
-    ) : undefined;
-
     return (
       <TaskPanelSummaryDisclosure
         label="Work items"
@@ -171,9 +154,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
         itemCount={items.length}
         taskId={taskId}
         disclosureId="work-items"
-        onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
-        expandWhenSingle={!singleUrl}
-        trailing={trailing}
+        expandWhenSingle
       >
         <WorkItemList
           enrichedWIs={enrichedWIs}
@@ -257,7 +238,7 @@ export default function WorkItemList({ enrichedWIs, rawWIs, variant = "compact",
           </div>
         );
         if (!hasActions) return row;
-        const actionClass = isCompact ? "mt-1 p-0.5" : "mt-2 p-1";
+        const actionClass = isCompact ? COMPACT_ACTION_CLASS : "mt-2 p-1";
         return (
           <div key={rowKey} className="hover-action-scope group flex items-start gap-1">
             {row}

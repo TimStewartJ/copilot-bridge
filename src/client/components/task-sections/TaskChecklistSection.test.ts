@@ -152,3 +152,19 @@ describe("TaskChecklistSection panel expansion", () => {
     });
   });
 });
+
+describe("TaskChecklistSection panel composer", () => {
+  it("hides the add field when the panel asks, and reports when an empty field is dismissed", async () => {
+    const onComposerDone = vi.fn();
+    const done = createChecklistItem({ id: "done-1", done: true, text: "Finished" });
+    await withChecklistSection(createBaseProps({ checklistItems: [done], showComposer: false, onComposerDone }), (harness) => {
+      expect(findAllByTag(harness.dom.container, "INPUT")).toHaveLength(0);
+      expect(harness.dom.container.textContent).toContain("1 done");
+    });
+    await withChecklistSection(createBaseProps({ checklistItems: [done], showComposer: true, onComposerDone }), async (harness) => {
+      const input = findInputByPlaceholder(harness.dom.container, "+ Add item…");
+      await harness.act(async () => { getReactProps(input)?.onBlur?.({}); });
+      expect(onComposerDone).toHaveBeenCalledOnce();
+    });
+  });
+});

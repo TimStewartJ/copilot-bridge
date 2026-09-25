@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { Pencil, StickyNote } from "lucide-react";
+import { StickyNote } from "lucide-react";
 import TaskPanelSummaryRow from "../TaskPanelSummaryRow";
 
 // ── Props ────────────────────────────────────────────────────────
@@ -44,20 +44,7 @@ export default function TaskNotesSection({ notes, onView, onEdit, truncate = fal
         label="Notes"
         icon={<StickyNote size={14} />}
         title={preview || "View notes"}
-        titleClassName="line-clamp-2"
         onClick={onView}
-        trailing={(
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit();
-            }}
-            className="p-1 text-text-faint hover:text-text-primary transition-colors"
-            title="Edit notes"
-          >
-            <Pencil size={12} />
-          </button>
-        )}
       />
     );
   }

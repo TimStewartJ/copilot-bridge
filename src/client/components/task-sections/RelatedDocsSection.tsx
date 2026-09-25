@@ -32,7 +32,6 @@ export default function RelatedDocsSection({ docs, variant = "compact", onPrevie
         icon={<BookOpen size={14} />}
         title={title}
         subtitle={subtitle}
-        subtitleClassName={docs.length === 1 ? "truncate font-mono" : undefined}
         itemCount={docs.length}
         taskId={taskId}
         disclosureId="docs"

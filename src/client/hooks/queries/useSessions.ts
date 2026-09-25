@@ -1,5 +1,5 @@
-import { replaceEqualDeep, useQuery, type QueryClient } from "@tanstack/react-query";
-import { fetchSessions, type Session } from "../../api";
+import { replaceEqualDeep, useQuery, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { fetchSessions, type Session, type TaskArchivedSessionsResponse } from "../../api";
 import { queryKeys } from "../../queryClient";
 
 interface UseSessionsQueryOptions {
@@ -66,6 +66,20 @@ export function patchSessionQueryData(
   const targetIds = new Set(sessionIds);
   queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) =>
     prev?.map((session) => targetIds.has(session.sessionId) ? { ...session, ...patch } : session),
+  );
+  // A task's archived pages hold their own copies of the same sessions.
+  queryClient.setQueriesData<InfiniteData<TaskArchivedSessionsResponse>>(
+    { queryKey: queryKeys.taskArchivedSessionsRoot },
+    (prev) => {
+      if (!prev?.pages.some((page) => page.sessions.some((session) => targetIds.has(session.sessionId)))) return prev;
+      return {
+        ...prev,
+        pages: prev.pages.map((page) => ({
+          ...page,
+          sessions: page.sessions.map((session) => targetIds.has(session.sessionId) ? { ...session, ...patch } : session),
+        })),
+      };
+    },
   );
 }
 

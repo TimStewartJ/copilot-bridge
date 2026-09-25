@@ -150,15 +150,17 @@ describe("PullRequestList - summary variant", () => {
     });
   });
 
-  it("single PR with a real URL calls window.open", async () => {
+  it("single PR with a real URL expands inline to its link instead of navigating", async () => {
     await withPullRequestList({ enrichedPRs: [prReal], rawPRs: [], variant: "summary" }, async (harness) => {
       const mockOpen = vi.fn();
       (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
       try {
+        expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
         await clickFirstSummaryButton(harness);
 
-        expect(mockOpen).toHaveBeenCalledOnce();
-        expect(mockOpen).toHaveBeenCalledWith(prReal.url, "_blank", "noopener");
+        expect(mockOpen).not.toHaveBeenCalled();
+        const [anchor] = findAllByTag(harness.dom.container, "A");
+        expect(anchor?.getAttribute("href")).toBe(prReal.url);
       } finally {
         delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
       }
@@ -218,11 +220,13 @@ describe("PullRequestList - copy affordance", () => {
     });
   });
 
-  it("shows the copy action on a single-PR summary without opening the PR", async () => {
+  it("keeps copy in the opened row of a single-PR summary without opening the PR", async () => {
     await withPullRequestList({ enrichedPRs: [prReal], rawPRs: [], variant: "summary" }, async (harness) => {
       const mockOpen = vi.fn();
       (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
       try {
+        expect(findCopyButtons(harness)).toHaveLength(0);
+        await clickFirstSummaryButton(harness);
         await clickCopy(harness);
 
         expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prReal.url);
@@ -434,15 +438,17 @@ describe("PullRequestList - unlink affordance", () => {
     );
   });
 
-  it("exposes an unlink button on a single-PR summary row that cannot expand", async () => {
+  it("keeps unlink in the opened row of a single-PR summary", async () => {
     await withPullRequestList(
-      { enrichedPRs: [prReal], rawPRs: [], variant: "summary", taskId: "task-1" },
+      { enrichedPRs: [prReal], rawPRs: [], variant: "summary", taskId: "task-single-summary" },
       async (harness) => {
+        expect(findUnlinkButtons(harness)).toHaveLength(0);
+        await clickFirstSummaryButton(harness);
         expect(findUnlinkButtons(harness)).toHaveLength(1);
 
         await clickUnlink(harness);
 
-        expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-1", {
+        expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-single-summary", {
           type: "pr",
           repoId: "repo-1",
           prId: 3,

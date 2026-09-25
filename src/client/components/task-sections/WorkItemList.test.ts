@@ -149,15 +149,17 @@ describe("WorkItemList - summary variant", () => {
     });
   });
 
-  it("single item with a real URL calls window.open", async () => {
+  it("single item with a real URL expands inline to its link instead of navigating", async () => {
     await withWorkItemList({ enrichedWIs: [wiReal], rawWIs: [], variant: "summary" }, async (harness) => {
       const mockOpen = vi.fn();
       (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
       try {
+        expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
         await clickFirstSummaryButton(harness);
 
-        expect(mockOpen).toHaveBeenCalledOnce();
-        expect(mockOpen).toHaveBeenCalledWith(wiReal.url, "_blank", "noopener");
+        expect(mockOpen).not.toHaveBeenCalled();
+        const [anchor] = findAllByTag(harness.dom.container, "A");
+        expect(anchor?.getAttribute("href")).toBe(wiReal.url);
       } finally {
         delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
       }
@@ -217,11 +219,13 @@ describe("WorkItemList - copy affordance", () => {
     });
   });
 
-  it("shows the copy action on a single-item summary without opening the work item", async () => {
+  it("keeps copy in the opened row of a single-item summary without opening the work item", async () => {
     await withWorkItemList({ enrichedWIs: [wiReal], rawWIs: [], variant: "summary" }, async (harness) => {
       const mockOpen = vi.fn();
       (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
       try {
+        expect(findCopyButtons(harness)).toHaveLength(0);
+        await clickFirstSummaryButton(harness);
         await clickCopy(harness);
 
         expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(wiReal.url);
@@ -394,15 +398,17 @@ describe("WorkItemList - unlink affordance", () => {
     );
   });
 
-  it("exposes an unlink button on a single-item summary row that cannot expand", async () => {
+  it("keeps unlink in the opened row of a single-item summary", async () => {
     await withWorkItemList(
-      { enrichedWIs: [wiReal], rawWIs: [], variant: "summary", taskId: "task-1" },
+      { enrichedWIs: [wiReal], rawWIs: [], variant: "summary", taskId: "task-single-summary" },
       async (harness) => {
+        expect(findUnlinkButtons(harness)).toHaveLength(0);
+        await clickFirstSummaryButton(harness);
         expect(findUnlinkButtons(harness)).toHaveLength(1);
 
         await clickUnlink(harness);
 
-        expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-1", {
+        expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-single-summary", {
           type: "workItem",
           workItemId: "WI-3",
           provider: "ado",

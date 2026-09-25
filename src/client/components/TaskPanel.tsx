@@ -23,19 +23,24 @@ import {
   LayoutDashboard,
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
+  MoreHorizontal,
   Plus,
   RotateCcw,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
 import TaskMomentumHistory from "./TaskMomentumHistory";
-import TaskPanelSummaryRow from "./TaskPanelSummaryRow";
-import TaskGitStatusSummary from "./TaskGitStatusSummary";
+import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "./TaskPanelSummaryRow";
+import { describeTaskGitStatusSummary } from "../lib/task-git-status-summary";
+import { getTaskPanelDetailsExpanded, setTaskPanelDetailsExpanded } from "../task-panel-disclosure-state";
+import { TaskContextMenu } from "./task-list";
+import { CtxItem } from "./ContextMenu";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import { LoadingSkeletonRegion, Skeleton, SkeletonRow, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
-import { Badge, Button, Section, IdentitySwatch } from "../design/primitives";
+import { Badge, Button, IconButton, Section, IdentitySwatch } from "../design/primitives";
 import {
   AgentDefinitionsSection,
   WorkItemList,
@@ -48,6 +53,10 @@ import {
 import AgentDefinitionPreviewSheet from "./AgentDefinitionPreviewSheet";
 import type { TaskAgentDefinitionSummary } from "../api";
 
+
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
 
 function getPathTail(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");
@@ -85,9 +94,6 @@ interface TaskPanelProps {
   onViewDashboard?: (taskId: string) => void;
   onMarkAllRead?: () => void;
   onBulkAction?: (action: import("../api").BatchAction, sessionIds: string[]) => void;
-  onRequestArchived?: () => void;
-  archivedLoaded?: boolean;
-  archivedLoading?: boolean;
   onSetTaskTags?: (taskId: string, tagIds: string[]) => void;
   scrollRestoration?: PullToRefreshScrollRestoration;
 }
@@ -162,9 +168,6 @@ export default function TaskPanel({
   onViewDashboard,
   onMarkAllRead,
   onBulkAction,
-  onRequestArchived,
-  archivedLoaded,
-  archivedLoading,
   onSetTaskTags,
   scrollRestoration,
 }: TaskPanelProps) {
@@ -205,6 +208,11 @@ export default function TaskPanel({
   const [panelHighlightRequest, setPanelHighlightRequest] = useState<{ highlightId: string | null } | null>(null);
   const [momentumTask, setMomentumTask] = useState(task);
   const [isUpdatingCompletion, setIsUpdatingCompletion] = useState(false);
+  const [taskMenuPosition, setTaskMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [checklistComposerOpen, setChecklistComposerOpen] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(getTaskPanelDetailsExpanded);
+  const sessionMap = useMemo(() => new Map(sessions.map((session) => [session.sessionId, session])), [sessions]);
+  const activeLinkedSessionCount = linkedSessions.filter((session) => !session.archived).length;
   const highlightTimerRef = useRef<number | null>(null);
   const latestTaskIdRef = useRef(task?.id ?? null);
   const pendingChecklistItemId = searchParams.get("checklistItem");
@@ -239,6 +247,8 @@ export default function TaskPanel({
     }
     setPreviewDocPath(null);
     setWorkspaceSheetOpen(false);
+    setTaskMenuPosition(null);
+    setChecklistComposerOpen(false);
     setHighlightChecklistItemId(null);
     setPanelHighlightRequest(null);
   }, [task?.id]);
@@ -304,12 +314,9 @@ export default function TaskPanel({
     if (!currentTask) return [];
     return getTaskAlertChips({
       task: currentTask,
-      sessions: linkedSessions,
-      activeSessionId,
-      isUnread,
       pullRequests: enrichedPRs,
     });
-  }, [activeSessionId, currentTask, enrichedPRs, isUnread, linkedSessions]);
+  }, [currentTask, enrichedPRs]);
 
   const completionCounts = useMemo(() => getTaskCompletionCounts({
     checklistItems,
@@ -341,31 +348,53 @@ export default function TaskPanel({
   const workspaceWarning = sessionWorkspace?.warnings?.[0];
   const workspaceStatus = sessionWorkspace?.gitStatus ?? taskGitStatus;
   const workspaceTitle = activeWorkspacePath ? getPathTail(activeWorkspacePath) : "Set workspace";
-  const workspaceSubtitle = workspaceWarning?.message
-    ?? activeWorkspacePath
-    ?? "Attach a project folder to this task";
-  const workspaceChips = [
-    workspaceOverridesTask
-      ? { label: "override", tone: "warning" as const }
-      : null,
-    sessionWorkspace?.pathState === "missing"
-      ? { label: "missing", tone: "danger" as const }
-      : null,
-  ].filter((item): item is { label: string; tone: "warning" | "danger" } => item !== null);
   const showWorkspaceDefault = Boolean(
     task.cwd && activeWorkspacePath && !areWorkspacePathsEqual(activeWorkspacePath, task.cwd),
   );
-  const showSecondarySummaries = true;
+  const workspaceGit = describeTaskGitStatusSummary(workspaceStatus);
+  const workspaceSubtitle = [
+    workspaceWarning?.message ?? activeWorkspacePath ?? "Attach a project folder to this task",
+    showWorkspaceDefault ? `Task default: ${task.cwd}` : null,
+    workspaceGit?.summaryText,
+  ].filter(Boolean).join(" · ");
+  const workspaceProblem = Boolean(workspaceWarning) || sessionWorkspace?.pathState === "missing";
+  const workspaceChips: TaskPanelSummaryChip[] = [
+    workspaceOverridesTask ? { label: "override", tone: "warning" } : null,
+    sessionWorkspace?.pathState === "missing"
+      ? { label: "missing", tone: "danger" }
+      : workspaceWarning ? { label: "check", tone: "warning" } : null,
+    !workspaceProblem && workspaceGit
+      ? { label: `${workspaceGit.branch} · ${workspaceGit.stateLabel}` }
+      : null,
+  ].filter((chip): chip is TaskPanelSummaryChip => chip !== null);
+  const detailsSummary: Array<{ label: string; tone?: "warning" | "danger" }> = [
+    task.workItems.length > 0 ? { label: pluralize(task.workItems.length, "work item") } : null,
+    task.pullRequests.length > 0 ? { label: pluralize(task.pullRequests.length, "PR") } : null,
+    hasNotesSummary ? { label: "notes" } : null,
+    relatedDocs.length > 0 ? { label: pluralize(relatedDocs.length, "doc") } : null,
+    agentDefinitions.length > 0 ? { label: pluralize(agentDefinitions.length, "agent") } : null,
+    sched.schedules.length > 0 ? { label: pluralize(sched.schedules.length, "schedule") } : null,
+    workspaceProblem
+      ? { label: sessionWorkspace?.pathState === "missing" ? "workspace missing" : "workspace needs a look", tone: sessionWorkspace?.pathState === "missing" ? "danger" as const : "warning" as const }
+      : activeWorkspacePath
+        ? { label: workspaceGit ? `${workspaceTitle} · ${workspaceGit.branch}` : workspaceTitle }
+        : { label: "no workspace" },
+  ].filter((part): part is { label: string; tone?: "warning" | "danger" } => part !== null);
+  const toggleDetails = (expanded: boolean) => {
+    setTaskPanelDetailsExpanded(expanded);
+    setDetailsExpanded(expanded);
+  };
+  const showChecklistComposer = checklistItems.some((item) => !item.done) || checklistComposerOpen;
 
   const showCompletionButton = currentTask.kind !== "ongoing"
     && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
   const completionDisabled = !showCompletionButton || isUpdatingCompletion;
+  // An ongoing task's kind badge already says it has no finish line, so it gets no note.
   const completionDescription = currentTask.kind === "ongoing"
-    ? "No fixed finish line."
+    ? undefined
     : completionState.ctaDescription;
-  const showCompletionDetails = completionState.ctaState !== "archived";
   const showMomentumFields = completionState.ctaState !== "archived";
-  const completionNote = completionDescription;
+  const completionNote = completionState.ctaState !== "archived" ? completionDescription : undefined;
   const handleCompletionAction = async () => {
     if (completionDisabled) return;
     const requestedTaskId = task.id;
@@ -395,23 +424,19 @@ export default function TaskPanel({
         className="absolute inset-0 overflow-x-hidden"
         scrollRestoration={scrollRestoration}
       >
-        <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-3 p-3")}>
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 space-y-2">
+        <div className="mx-auto w-full max-w-3xl">
+        <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-2 p-3")}>
+        <div className="flex items-start gap-1">
+          <div className="min-w-0 flex-1 space-y-1.5">
             {onViewDashboard ? (
               <button
                 type="button"
                 onClick={openTaskOverview}
                 aria-label={`Open overview for ${task.title}`}
-                className={cx(DS.text.title, "group/title flex min-w-0 flex-1 items-start gap-2 rounded text-left", DS.focus)}
+                className={cx(DS.text.title, "block min-w-0 rounded text-left hover:underline hover:decoration-text-faint hover:underline-offset-4", DS.focus)}
                 title="Open task overview"
               >
-                <span className="line-clamp-3 min-w-0 flex-1">{task.title}</span>
-                <LayoutDashboard
-                  size={15}
-                  className="mt-1 shrink-0 text-text-secondary opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 group-hover/title:opacity-100 group-focus-visible/title:opacity-100"
-                  aria-hidden="true"
-                />
+                <span className="line-clamp-3">{task.title}</span>
               </button>
             ) : (
               <h1 className={cx(DS.text.title, "line-clamp-3")}>{task.title}</h1>
@@ -427,13 +452,10 @@ export default function TaskPanel({
               )}
               {(effectiveTags.length > 0 || onSetTaskTags) && (
                 <div className="flex min-w-0 flex-wrap items-center gap-1">
+                  {/* Tags are removed from the picker, not with a tiny inline ×. */}
                   <TagPillList
                     tags={effectiveTags}
                     inheritedTagIds={inheritedTagIds}
-                    onRemove={onSetTaskTags ? (tagId) => {
-                      const newIds = taskOwnTags.filter((tag) => tag.id !== tagId).map((tag) => tag.id);
-                      onSetTaskTags(task.id, newIds);
-                    } : undefined}
                     max={3}
                   />
                   {onSetTaskTags && (
@@ -442,13 +464,25 @@ export default function TaskPanel({
                       inheritedTagIds={inheritedTagIds}
                       onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
                       compact
+                      touch
                     />
                   )}
                 </div>
               )}
             </div>
           </div>
-
+          <IconButton
+            label="Task actions"
+            className="-mr-1.5 -mt-1.5 md:-mt-0.5"
+            aria-haspopup="menu"
+            aria-expanded={taskMenuPosition !== null}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setTaskMenuPosition({ x: Math.max(8, rect.right - 220), y: rect.bottom + 4 });
+            }}
+          >
+            <MoreHorizontal size={16} aria-hidden="true" />
+          </IconButton>
         </div>
 
         {alertChips.length > 0 && (
@@ -461,27 +495,28 @@ export default function TaskPanel({
           </div>
         )}
 
-        {(showCompletionButton || showCompletionDetails) && (
-          <div className="space-y-2">
-            {showCompletionButton && (
-              <Button
-                fullWidth
-                onClick={() => { void handleCompletionAction(); }}
-                disabled={completionDisabled}
-                title={completionDescription}
-                icon={completionState.ctaState === "completed"
-                  ? <RotateCcw size={13} aria-hidden="true" />
-                  : <CheckCircle2 size={13} aria-hidden="true" />}
-              >
-                {completionState.ctaLabel}
-              </Button>
-            )}
-            {showCompletionDetails && (
+        {showCompletionButton && (
+          <div className="space-y-2 pt-1">
+            <Button
+              fullWidth
+              onClick={() => { void handleCompletionAction(); }}
+              disabled={completionDisabled}
+              title={completionDescription}
+              icon={completionState.ctaState === "completed"
+                ? <RotateCcw size={13} aria-hidden="true" />
+                : <CheckCircle2 size={13} aria-hidden="true" />}
+            >
+              {completionState.ctaLabel}
+            </Button>
+            {completionDescription && (
               <p className="text-xs leading-relaxed text-text-muted">
-                {completionNote}
+                {completionDescription}
               </p>
             )}
           </div>
+        )}
+        {!showCompletionButton && completionNote && (
+          <p className="text-xs leading-relaxed text-text-muted">{completionNote}</p>
         )}
       </div>
 
@@ -502,7 +537,7 @@ export default function TaskPanel({
           <Section
             surface
             label="Sessions"
-            count={task.sessionIds.length}
+            count={activeLinkedSessionCount}
             action={(
               <Button
                 size="sm"
@@ -521,7 +556,7 @@ export default function TaskPanel({
               activeSessionId={activeSessionId}
               onSelectSession={onSelectSession}
               onNewSession={onNewSession}
-              showEmptyState={linkedSessions.length === 0}
+              showEmptyState={activeLinkedSessionCount === 0}
               isUnread={isUnread}
               onArchiveSession={onArchiveSession}
               archivingIds={archivingIds}
@@ -534,9 +569,6 @@ export default function TaskPanel({
               onMarkUnread={onMarkUnread}
               onBulkAction={onBulkAction}
               hasDraft={hasDraft}
-              onRequestArchived={onRequestArchived}
-              archivedLoaded={archivedLoaded}
-              archivedLoading={archivedLoading}
               showNewButton={false}
               className="-mx-3 min-w-0 overflow-x-hidden"
             />
@@ -547,7 +579,18 @@ export default function TaskPanel({
             label="Checklist"
             count={checklistItems.length > 0
               ? `${checklistItems.filter((item) => item.done).length}/${checklistItems.length}`
-              : 0}
+              : undefined}
+            action={showChecklistComposer ? undefined : (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-mr-2"
+                icon={<Plus size={13} aria-hidden="true" />}
+                onClick={() => setChecklistComposerOpen(true)}
+              >
+                Add
+              </Button>
+            )}
           >
             <TaskChecklistSection
               taskId={task.id}
@@ -560,12 +603,40 @@ export default function TaskPanel({
               variant="panel"
               highlightId={highlightChecklistItemId}
               isReadyToComplete={currentTask.kind !== "ongoing" && completionState.isReadyToComplete}
+              showComposer={showChecklistComposer}
+              onComposerDone={() => setChecklistComposerOpen(false)}
             />
           </Section>
 
-          {showSecondarySummaries && (
-            <Section label="Details" surface>
-              <div className="space-y-0.5">
+          <Section
+            label="Details"
+            surface
+            action={detailsExpanded ? (
+              <Button size="sm" variant="ghost" className="-mr-2" aria-expanded onClick={() => toggleDetails(false)}>
+                Hide
+              </Button>
+            ) : undefined}
+          >
+            {!detailsExpanded ? (
+              <button
+                type="button"
+                aria-expanded={false}
+                onClick={() => toggleDetails(true)}
+                title={detailsSummary.map((part) => part.label).join(" · ")}
+                className={cx(DS.row.base, DS.row.touch, DS.row.interactive)}
+              >
+                <span className="min-w-0 flex-1 truncate text-text-secondary">
+                  {detailsSummary.map((part, index) => (
+                    <span key={part.label} className={part.tone ? DS.tone[part.tone] : undefined}>
+                      {index > 0 && " · "}
+                      {part.label}
+                    </span>
+                  ))}
+                </span>
+                <ChevronRight size={12} aria-hidden="true" className={DS.row.chevron} />
+              </button>
+            ) : (
+              <div className="@container/task-details space-y-0.5">
                 {task.workItems.length > 0 && (
                   <WorkItemList
                     enrichedWIs={enrichedWIs}
@@ -620,32 +691,19 @@ export default function TaskPanel({
                     onDelete={(id) => sched.remove(id)}
                   />
                 )}
-                <div>
-                  <TaskPanelSummaryRow
-                    label="Workspace"
-                    icon={workspaceWarning || sessionWorkspace?.pathState === "missing"
-                      ? <AlertTriangle size={14} className={sessionWorkspace?.pathState === "missing" ? "text-error" : "text-warning"} />
-                      : <FolderOpen size={14} />}
-                    title={workspaceTitle}
-                    subtitle={workspaceSubtitle}
-                    subtitleClassName={workspaceWarning ? "line-clamp-2 text-warning" : "truncate font-mono"}
-                    chips={workspaceChips}
-                    onClick={openWorkspaceSheet}
-                  />
-                  {!workspaceWarning && (showWorkspaceDefault || workspaceStatus) && (
-                    <div className="pb-1 pl-[22px]">
-                      {showWorkspaceDefault && (
-                        <div className="mb-1 truncate text-[11px] text-text-faint">
-                          Task default: <span className="font-mono">{task.cwd}</span>
-                        </div>
-                      )}
-                      <TaskGitStatusSummary gitStatus={workspaceStatus} />
-                    </div>
-                  )}
-                </div>
+                <TaskPanelSummaryRow
+                  label="Workspace"
+                  icon={workspaceProblem
+                    ? <AlertTriangle size={14} className={sessionWorkspace?.pathState === "missing" ? "text-error" : "text-warning"} />
+                    : <FolderOpen size={14} />}
+                  title={workspaceTitle}
+                  subtitle={workspaceSubtitle}
+                  chips={workspaceChips}
+                  onClick={openWorkspaceSheet}
+                />
               </div>
-            </Section>
-          )}
+            )}
+          </Section>
 
           {schedDetail.isOpen && (
             <ScheduleDetailSheet
@@ -701,6 +759,30 @@ export default function TaskPanel({
               onTaskUpdated={onTasksChanged}
             />
           )}
+          {taskMenuPosition && (
+            <TaskContextMenu
+              task={currentTask}
+              position={taskMenuPosition}
+              taskGroups={taskGroups}
+              sessionMap={sessionMap}
+              isUnread={isUnread}
+              activeSessionId={activeSessionId}
+              actions={{
+                onUpdateTask: (taskId, updates) => { void onUpdateTask(taskId, updates); },
+                onDeleteTask,
+                onMoveTaskToGroup,
+              }}
+              onClose={() => setTaskMenuPosition(null)}
+              renderLeadingItems={onViewDashboard ? (closeMenu) => (
+                <CtxItem
+                  icon={<LayoutDashboard size={14} />}
+                  label="Open task overview"
+                  onClick={() => { closeMenu(); openTaskOverview(); }}
+                />
+              ) : undefined}
+            />
+          )}
+        </div>
         </div>
       </PullToRefresh>
     </div>

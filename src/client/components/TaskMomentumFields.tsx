@@ -7,7 +7,7 @@ import { Button, DisclosureRow, Field, FieldList, Notice, Section, TextInput } f
 import { formatRevisit, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
 import { getTaskLifecycleDisplayState, getTaskStatusLabel } from "../task-completion-helpers";
 import TaskDeferralDialog from "./TaskDeferralDialog";
-import TaskMomentumHistory from "./TaskMomentumHistory";
+import TaskMomentumHistory, { LatestMomentumChange } from "./TaskMomentumHistory";
 
 type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
 
@@ -108,6 +108,8 @@ function TaskMomentumEditor({
     .map((key) => FIELD_CONFIG_BY_KEY[key]);
   const visiblePanelFields = orderedPanelFields.filter((field) => values[field.key] || editingField === field.key);
   const quickAddFields = orderedPanelFields.filter((field) => !values[field.key] && editingField !== field.key);
+  // Nothing set: one closed line says so and when it last changed; the history opens beneath it.
+  const isEmpty = visiblePanelFields.length === 0 && !task.deferred && !saveError;
 
   const persistField = async (field: MomentumFieldKey, rawValue: string) => {
     const normalized = normalizeDraft(field, rawValue);
@@ -187,12 +189,14 @@ function TaskMomentumEditor({
   };
 
   return (
-    <><Section label="Where things stand" surface action={task.status === "active" ? <Button size="sm" variant="ghost"
-      disabled={!!savingField} onClick={() => setDeferralOpen(true)}>{task.deferred ? "Resume task" : "Defer task"}</Button> : undefined}>
+    // Deferring lives in the task menu; resuming stays here because a deferred task needs it.
+    <><Section label="Where things stand" surface action={task.status === "active" && task.deferred ? <Button size="sm" variant="ghost"
+      className="-mr-2" disabled={!!savingField} onClick={() => setDeferralOpen(true)}>Resume task</Button> : undefined}>
       {saveError && <Notice tone="danger" title="The change was not saved">{saveError}</Notice>}
       <DisclosureRow
         label={<span className={cx(DS.row.touch, "flex items-center")}><span className="truncate">{summary}</span></span>}
         title={summary}
+        meta={isEmpty ? <LatestMomentumChange taskId={task.id} /> : undefined}
         expanded={expanded}
         onToggle={setExpanded}
       >
@@ -296,8 +300,9 @@ function TaskMomentumEditor({
           ))}
         </div>
       )}
+      {isEmpty && <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />}
       </DisclosureRow>
-      <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />
+      {!isEmpty && <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />}
     </Section>{deferralOpen && <TaskDeferralDialog task={task} onClose={() => setDeferralOpen(false)} onSaved={updated => { onPatched?.(updated); onSaved?.(); }} />}</>
   );
 }
