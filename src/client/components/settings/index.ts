@@ -6,6 +6,7 @@ export { SystemPromptSection } from "./SystemPromptSection";
 export { ModelSection } from "./ModelSection";
 export { ReasoningEffortSection } from "./ReasoningEffortSection";
 export { DeferWorkerSection } from "./DeferWorkerSection";
+export { SubagentModelsSection } from "./SubagentModelsSection";
 export { ComputerUseSection } from "./ComputerUseSection";
 export { AppearanceSection } from "./AppearanceSection";
 export { NotificationsSection } from "./NotificationsSection";

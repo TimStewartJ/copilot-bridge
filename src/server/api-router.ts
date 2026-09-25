@@ -28,6 +28,7 @@ import {
   SessionBackendDeleteError,
   SessionCapacityError,
   SessionHistoryUndoError,
+  type ModelSelection,
   type SessionRunState,
 } from "./session-manager.js";
 import * as scheduler from "./scheduler.js";
@@ -80,6 +81,7 @@ import {
 import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
+import { changedSubagentSelections } from "../shared/subagent-settings.js";
 import {
   matchesAdoOrganization,
   parseAdoWorkReferenceUrl,
@@ -3123,21 +3125,24 @@ export function createApiRouter(
     return JSON.stringify({
       model: settings.model,
       modelPresets: MODEL_PRESET_SLOTS.map((slot) => settings.modelPresets?.[slot]?.model),
+      subagents: settings.subagents?.agents,
     });
   }
 
   function changedSettingsModels(
     current: AppSettings,
     next: AppSettings,
-  ): string[] {
-    const models = new Set<string>();
-    if (next.model && current.model !== next.model) models.add(next.model);
+  ): ModelSelection[] {
+    const selections = new Map<string, ModelSelection>();
+    const add = (selection: ModelSelection) => selections.set(JSON.stringify(selection), selection);
+    if (next.model && current.model !== next.model) add({ model: next.model });
     for (const slot of MODEL_PRESET_SLOTS) {
       const currentModel = current.modelPresets?.[slot]?.model;
       const nextModel = next.modelPresets?.[slot]?.model;
-      if (nextModel && currentModel !== nextModel) models.add(nextModel);
+      if (nextModel && currentModel !== nextModel) add({ model: nextModel });
     }
-    return [...models];
+    for (const selection of changedSubagentSelections(current.subagents, next.subagents)) add(selection);
+    return [...selections.values()];
   }
 
   // GET /sessions/:id/model — derive current model/reasoning for a session on demand
@@ -5694,8 +5699,8 @@ export function createApiRouter(
       let prepared = ctx.settingsStore.prepareSettingsUpdate(req.body);
       const models = changedSettingsModels(prepared.current, prepared.next);
       if (models.length > 0) {
-        for (const model of models) {
-          const validation = await ctx.sessionManager.validateModelSelection({ model });
+        for (const selection of models) {
+          const validation = await ctx.sessionManager.validateModelSelection(selection);
           if (!validation.ok) {
             return res.status(400).json({ error: validation.error });
           }
@@ -5717,16 +5722,18 @@ export function createApiRouter(
 
       const mcpChanged = JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers);
       const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
+      // The runtime sub-agent override is applied on create/resume, so a cached
+      // session keeps its old policy until it is resumed.
+      const subagentsChanged = JSON.stringify(prev.subagents) !== JSON.stringify(updated.subagents);
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
       // MCP server and plugin changes can't be hot-swapped on a live session — evict
       // so the next resume rebuilds with the new config.
-      if (mcpChanged || computerUseChanged) {
-        console.log(
-          `[settings] ${mcpChanged ? "MCP servers" : "Computer use"} changed — evicting cached sessions for re-resume`,
-        );
+      if (mcpChanged || computerUseChanged || subagentsChanged) {
+        const reason = mcpChanged ? "MCP servers" : computerUseChanged ? "Computer use" : "Sub-agent models";
+        console.log(`[settings] ${reason} changed — evicting cached sessions for re-resume`);
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached

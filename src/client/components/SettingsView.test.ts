@@ -61,6 +61,7 @@ vi.mock("./settings", () => {
     CopilotUsageSection: EmptySection,
     DeviceManagementSection: EmptySection,
     DeferWorkerSection: EmptySection,
+    SubagentModelsSection: EmptySection,
     ManagementJobsSection: EmptySection,
     BridgeRuntimeSection: EmptySection,
     ModelSection: EmptySection,

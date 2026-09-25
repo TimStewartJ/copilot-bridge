@@ -75,6 +75,53 @@ describe("Settings routes", () => {
     });
   });
 
+  it("PATCH /api/settings validates new sub-agent models but not inherit or runtime-default", async () => {
+    const sessionManager = createMockSessionManager();
+    const validateModelSelection = vi.fn(async ({ model }: { model: string }) => (
+      model === "invented-model"
+        ? { ok: false as const, error: "Model is not available: invented-model" }
+        : { ok: true as const }
+    ));
+    sessionManager.validateModelSelection = validateModelSelection;
+    const local = createTestApp({ sessionManager });
+
+    const ok = await request(local.app)
+      .patch("/api/settings")
+      .send({ subagents: { agents: {
+        task: { model: "gpt-6-luna" },
+        "code-review": { model: "inherit" },
+        explore: { model: "runtime-default" },
+      } } });
+    expect(ok.status).toBe(200);
+    expect(validateModelSelection).toHaveBeenCalledTimes(1);
+    expect(validateModelSelection).toHaveBeenCalledWith({ model: "gpt-6-luna" });
+
+    const effort = await request(local.app)
+      .patch("/api/settings")
+      .send({ subagents: { agents: {
+        task: { model: "gpt-6-luna" },
+        "code-review": { model: "inherit" },
+        explore: { model: "runtime-default" },
+        "rubber-duck": { effortLevel: "low" },
+      } } });
+    expect(effort.status).toBe(200);
+    // An effort-only override is validated against the Bridge default model.
+    expect(validateModelSelection).toHaveBeenLastCalledWith({ model: "gpt-6-sol", reasoningEffort: "low" });
+
+    const rejected = await request(local.app)
+      .patch("/api/settings")
+      .send({ subagents: { agents: { task: { model: "invented-model" } } } });
+    expect(rejected.status).toBe(400);
+    expect(local.ctx.settingsStore.getSettings().subagents).toEqual({
+      agents: {
+        task: { model: "gpt-6-luna" },
+        "code-review": { model: "inherit" },
+        explore: { model: "runtime-default" },
+        "rubber-duck": { effortLevel: "low" },
+      },
+    });
+  });
+
   it("PATCH /api/settings proceeds when the metadata owner defers validation", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
@@ -276,6 +323,25 @@ describe("Settings routes", () => {
     expect(res.status).toBe(200);
     expect(evictSpy).toHaveBeenCalledOnce();
     expect(providers.getProvider("github")).not.toBe(cachedProvider);
+  });
+
+  it("PATCH /api/settings evicts cached sessions on each sub-agent source or model change", async () => {
+    const sessionManager = createMockSessionManager();
+    const evictSpy = vi.fn();
+    sessionManager.evictAllCachedSessions = evictSpy;
+    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
+    const local = createTestApp({ sessionManager });
+    const patch = (body: Record<string, unknown>) => request(local.app).patch("/api/settings").send(body);
+
+    // Bridge -> CLI, CLI -> Bridge override, back to defaults: each must reach cached sessions.
+    expect((await patch({ subagents: { source: "cli" } })).status).toBe(200);
+    expect((await patch({ subagents: { agents: { task: { model: "gpt-6-luna" } } } })).status).toBe(200);
+    expect((await patch({ subagents: null })).status).toBe(200);
+    expect(evictSpy).toHaveBeenCalledTimes(3);
+
+    // An unrelated change leaves cached sessions alone.
+    expect((await patch({ theme: "dark" })).status).toBe(200);
+    expect(evictSpy).toHaveBeenCalledTimes(3);
   });
 
   it("PATCH /api/settings persists deferred worker model settings without evicting sessions", async () => {

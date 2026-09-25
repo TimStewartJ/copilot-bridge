@@ -39,6 +39,7 @@ import type {
   SectionOverride,
 } from "@github/copilot-sdk";
 import type { CopilotModelContextMetadata } from "../../shared/copilot-context.js";
+import type { SubagentSettings } from "../../shared/subagent-settings.js";
 import type { RuntimeFenceOptions } from "./runtime-fence.js";
 
 /**
@@ -103,6 +104,11 @@ export interface AgentSessionConfig {
    * marker may ignore it.
    */
   pendingInteractionEvents?: boolean;
+  /**
+   * Bridge-owned sub-agent settings. Backends apply the complete value after
+   * every create and resume, because the runtime override does not persist.
+   */
+  subagents?: SubagentSettings;
   [key: string]: unknown;
 }
 
