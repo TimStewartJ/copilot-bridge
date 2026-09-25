@@ -5,6 +5,7 @@ import { resolveBridgeControlRoot } from "./control-root.js";
 import type { Task } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SettingsStore } from "./settings-store.js";
+import { resolveSubagentSettings, type ResolvedSubagentSettings } from "../shared/subagent-settings.js";
 import type { TagStore } from "./tag-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
@@ -202,6 +203,27 @@ function shouldUseSdkGitHubMcp(
     && !servers[GITHUB_COPILOT_MCP_SERVER_NAME];
 }
 
+// The runtime silently runs a different model for an unavailable sub-agent
+// model and fails a sub-agent whose effort its model does not support, so
+// Bridge omits both and lets the runtime choose. Warn once per value.
+const warnedDroppedSubagentValues = new Set<string>();
+function warnDroppedSubagentModels(
+  requested: ResolvedSubagentSettings | undefined,
+  applied: ResolvedSubagentSettings,
+): void {
+  for (const [name, entry] of Object.entries(requested?.agents ?? {})) {
+    const kept = applied.agents[name];
+    const droppedModel = entry.model && !kept?.model ? entry.model : undefined;
+    const droppedEffort = !droppedModel && entry.effortLevel && !kept?.effortLevel ? entry.effortLevel : undefined;
+    const key = droppedModel ? `model:${droppedModel}` : droppedEffort ? `effort:${entry.model}:${droppedEffort}` : undefined;
+    if (!key || warnedDroppedSubagentValues.has(key)) continue;
+    warnedDroppedSubagentValues.add(key);
+    console.warn(droppedModel
+      ? `[sdk] Sub-agent model ${droppedModel} is not in the model list; ${name} uses the runtime default`
+      : `[sdk] ${entry.model} does not support reasoning effort ${droppedEffort}; ${name} uses the model default`);
+  }
+}
+
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
   const {
@@ -276,6 +298,12 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   }
 
   const settings = deps.settingsStore?.getSettings();
+  // Applied on create and resume: the runtime drops this override on resume.
+  const subagents = resolveSubagentSettings(settings?.subagents, params.options?.modelMetadata);
+  if (subagents) {
+    cfg.subagents = subagents;
+    warnDroppedSubagentModels(resolveSubagentSettings(settings?.subagents), subagents);
+  }
 
   // Computer Use is upstream's plugin from the SDK platform package. Loading it per
   // session keeps the Bridge setting as the only gate, independent of CLI user settings.

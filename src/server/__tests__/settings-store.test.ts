@@ -289,6 +289,48 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({ helm: { glossary: "x".repeat(2_001) } })).toThrow("helm.glossary must be text of at most 2000 characters");
   });
 
+  it("persists and validates Bridge sub-agent model overrides", () => {
+    // Unset means Bridge defaults with no overrides.
+    expect(store.getSettings().subagents).toBeUndefined();
+
+    const updated = store.updateSettings({
+      subagents: {
+        agents: {
+          task: { model: " gpt-5.6-terra " },
+          "rubber-duck": { model: "runtime-default" },
+          explore: { model: "" },
+        },
+      },
+    });
+    expect(updated.subagents).toEqual({
+      agents: { task: { model: "gpt-5.6-terra" }, "rubber-duck": { model: "runtime-default" } },
+    });
+    expect(store.getSettings().subagents).toEqual(updated.subagents);
+
+    // The CLI source keeps overrides so switching back restores them.
+    expect(store.updateSettings({ subagents: { ...updated.subagents, source: "cli" } }).subagents).toEqual({
+      source: "cli",
+      agents: { task: { model: "gpt-5.6-terra" }, "rubber-duck": { model: "runtime-default" } },
+    });
+    expect(store.updateSettings({ subagents: { source: "bridge", agents: {} } }).subagents).toBeUndefined();
+    expect(store.updateSettings({ subagents: null as any }).subagents).toBeUndefined();
+
+    expect(() => store.updateSettings({ subagents: { source: "elsewhere" as any } }))
+      .toThrow("subagents.source must be bridge or cli");
+    expect(() => store.updateSettings({
+      subagents: { agents: { "Bad Name": { model: "gpt-6-luna" } } },
+    })).toThrow("invalid agent name");
+    expect(() => store.updateSettings({
+      subagents: { agents: { task: { model: 5 as any } } },
+    })).toThrow("subagents.agents.task.model must be a string");
+    expect(store.updateSettings({
+      subagents: { agents: { explore: { effortLevel: " low " }, task: { model: "gpt-6-luna", effortLevel: "" } } },
+    }).subagents).toEqual({ agents: { explore: { effortLevel: "low" }, task: { model: "gpt-6-luna" } } });
+    expect(() => store.updateSettings({
+      subagents: { agents: { task: { effortLevel: "Max Power!" } } },
+    })).toThrow("subagents.agents.task.effortLevel must be a reasoning effort name");
+  });
+
   it("persists and validates Helm's per-mode reasoning efforts", () => {
     expect(store.getSettings().helm).toBeUndefined();
 

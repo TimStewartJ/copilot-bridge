@@ -15,6 +15,7 @@
 import { CopilotClient } from "@github/copilot-sdk";
 import { ChildProcess } from "node:child_process";
 import { isRecord } from "../../shared/is-record.js";
+import type { SubagentSettings } from "../../shared/subagent-settings.js";
 
 import {
   HYDRAFUSION_MODEL_ID,
@@ -627,9 +628,11 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   sdkConfig: Record<string, unknown>;
   pendingInteractionEvents: boolean;
   useNativeToolPermissions: boolean;
+  subagents: SubagentSettings | undefined;
 } {
   const {
     pendingInteractionEvents = false,
+    subagents,
     ...sdkConfig
   } = config;
   // Apply on every create/resume, including helpers and sessions with a different model.
@@ -644,7 +647,12 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
     sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
     sdkConfig.askUserVariant = PENDING_INTERACTION_ASK_USER_VARIANT;
   }
-  return { sdkConfig, pendingInteractionEvents, useNativeToolPermissions: !sdkConfig.onPermissionRequest };
+  return {
+    sdkConfig,
+    pendingInteractionEvents,
+    useNativeToolPermissions: !sdkConfig.onPermissionRequest,
+    subagents,
+  };
 }
 
 function wrapCopilotSession(
@@ -1171,6 +1179,7 @@ export class CopilotBackend implements AgentBackend {
     if (this.fenceRequested) throw new Error("Cannot create a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);
+    await this.applySubagentSettings(session, prepared.subagents);
     return wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,
@@ -1184,6 +1193,7 @@ export class CopilotBackend implements AgentBackend {
     if (this.fenceRequested) throw new Error("Cannot resume a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
+    await this.applySubagentSettings(session, prepared.subagents);
     return wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,
@@ -1191,6 +1201,28 @@ export class CopilotBackend implements AgentBackend {
       (handler) => this.subscribeSessionDisconnect(handler),
       prepared.useNativeToolPermissions,
     );
+  }
+
+  // The runtime override replaces the CLI user's subagent settings for this
+  // session only, and a resume starts from user settings again. A failed apply
+  // leaves the session usable on those user settings, so it is logged, not thrown.
+  private async applySubagentSettings(session: any, subagents: SubagentSettings | undefined): Promise<void> {
+    if (!subagents) return;
+    const sid = typeof session?.sessionId === "string" ? session.sessionId.slice(0, 8) : "unknown";
+    const update = session?.rpc?.tools?.updateSubagentSettings;
+    if (typeof update !== "function") {
+      this.logger.warn(`[copilot-backend] [${sid}] Runtime cannot apply Bridge sub-agent settings; using CLI user settings`);
+      return;
+    }
+    try {
+      await this.rpc("session.updateSubagentSettings", () => update.call(session.rpc.tools, { subagents }));
+    } catch (error) {
+      this.logger.warn(
+        `[copilot-backend] [${sid}] Failed to apply Bridge sub-agent settings; using CLI user settings: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   deleteSession(sessionId: string): Promise<unknown> {
