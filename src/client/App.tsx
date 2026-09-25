@@ -81,6 +81,8 @@ import { useTasksQuery } from "./hooks/queries/useTasks";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
+import { useCachedTaskArchivedSessions } from "./hooks/queries/useTaskArchivedSessions";
+import PaneResizeHandle, { usePaneWidth, useViewportWidth } from "./components/shared/PaneResizeHandle";
 import { useExternalSessionUseQuery } from "./hooks/queries/useExternalSessionUse";
 import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, {
@@ -199,17 +201,24 @@ function AppShell() {
     ),
     [externalSessionUseIds, externalSessionUseStatus],
   );
+  const taskArchivedSessions = useCachedTaskArchivedSessions();
+  const archivedSources = useMemo(() => {
+    if (!archivedLoaded) return taskArchivedSessions;
+    if (taskArchivedSessions.length === 0) return archivedQuerySessions;
+    const globalIds = new Set(archivedQuerySessions.map((session) => session.sessionId));
+    return [...archivedQuerySessions, ...taskArchivedSessions.filter((session) => !globalIds.has(session.sessionId))];
+  }, [archivedLoaded, archivedQuerySessions, taskArchivedSessions]);
   const sessions = useMemo(
     () => mergeActiveAndArchivedSessions(
       activeSessions,
-      archivedQuerySessions,
-      archivedLoaded,
+      archivedSources,
+      archivedLoaded || taskArchivedSessions.length > 0,
       restoringArchivedSessionIds,
     ).map((session) => ({
       ...session,
       externallyInUse: externallyInUseSessionIds.has(session.sessionId),
     })),
-    [activeSessions, archivedQuerySessions, archivedLoaded, externallyInUseSessionIds, restoringArchivedSessionIds],
+    [activeSessions, archivedSources, archivedLoaded, externallyInUseSessionIds, restoringArchivedSessionIds, taskArchivedSessions.length],
   );
   const archivedLoading = archivedLoaded && !archivedSessionsFetched;
   const tasksQuery = useTasksQuery();
@@ -218,6 +227,19 @@ function AppShell() {
   const { data: openChecklistItems = [] } = useOpenChecklistItemsQuery();
 
   const [railExpanded, setRailExpanded] = useState(true);
+  const taskPanelPane = usePaneWidth({
+    storageKey: "bridge-task-panel-width",
+    defaultWidth: 288,
+    minWidth: 240,
+    maxWidth: 480,
+  });
+  const viewportWidth = useViewportWidth();
+  // The chat beside the panel keeps a usable width, even when a wide panel was saved on a bigger screen.
+  const taskPanelMaxWidth = Math.max(
+    taskPanelPane.minWidth,
+    Math.min(taskPanelPane.maxWidth, viewportWidth - (railExpanded ? 224 : 56) - 420),
+  );
+  const taskPanelWidth = Math.min(taskPanelPane.width, taskPanelMaxWidth);
   const [quickChatsExpanded, setQuickChatsExpanded] = useState(() => {
     try { return localStorage.getItem("bridge-quick-chats-expanded") === "true"; } catch { return false; }
   });
@@ -420,8 +442,10 @@ function AppShell() {
   // Helper to invalidate session/task/group queries
   const invalidateSessions = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.sessions({ includeArchived: false }), exact: true }), [queryClient]);
-  const invalidateAllSessionQueries = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: ["sessions"] }), [queryClient]);
+  const invalidateAllSessionQueries = useCallback(() => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.taskArchivedSessionsRoot }),
+  ]).then(() => undefined), [queryClient]);
   const invalidateTasks = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
   const invalidateDashboard = useCallback(() =>
@@ -551,7 +575,8 @@ function AppShell() {
         }
         break;
       case "sessions:changed":
-        invalidateAllSessionQueries();
+        // Archived pages refresh on archive transitions only; this event fires for ordinary activity.
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         invalidateDashboard();
         break;
       case "session:user-input":
@@ -1942,7 +1967,18 @@ function AppShell() {
 
             {/* Desktop panel (only when inside a session or quick chats) */}
             {showDesktopPanel && (
-              <div className="hidden md:flex md:w-64 md:shrink-0 min-w-0 min-h-0 border-r border-border bg-bg-secondary">
+              <div
+                className="relative hidden md:flex md:shrink-0 min-w-0 min-h-0 border-r border-border bg-bg-secondary"
+                style={{ width: taskPanelWidth }}
+              >
+                <PaneResizeHandle
+                  label="Resize task panel"
+                  width={taskPanelWidth}
+                  minWidth={taskPanelPane.minWidth}
+                  maxWidth={taskPanelMaxWidth}
+                  defaultWidth={Math.min(taskPanelPane.defaultWidth, taskPanelMaxWidth)}
+                  onResize={(width) => taskPanelPane.setWidth(Math.min(width, taskPanelMaxWidth))}
+                />
                 <TaskPanel
                   task={selectedTask}
                   taskGroups={taskGroups}
@@ -1969,9 +2005,6 @@ function AppShell() {
                   onViewDashboard={(taskId) => navigate(`/tasks/${taskId}/overview`)}
                   onMarkAllRead={handleMarkAllRead}
                   onBulkAction={handleBulkAction}
-                  onRequestArchived={requestArchivedSessions}
-                  archivedLoaded={archivedLoaded}
-                  archivedLoading={archivedLoading}
                   onSetTaskTags={handleSetTaskTags}
                 />
               </div>
@@ -2108,9 +2141,6 @@ function AppShell() {
                     onViewDashboard={(taskId) => navigate(`/tasks/${taskId}/overview`)}
                     onMarkAllRead={handleMarkAllRead}
                     onBulkAction={handleBulkAction}
-                    onRequestArchived={requestArchivedSessions}
-                    archivedLoaded={archivedLoaded}
-                    archivedLoading={archivedLoading}
                     onSetTaskTags={handleSetTaskTags}
                     scrollRestoration={mobileTaskCockpitScrollRestoration}
                   />

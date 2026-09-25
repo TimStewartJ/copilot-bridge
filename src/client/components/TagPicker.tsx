@@ -13,6 +13,8 @@ interface TagPickerProps {
   onChange: (tagIds: string[]) => void;
   /** Compact mode — just a + button */
   compact?: boolean;
+  /** Give the compact button a full touch target on a phone. */
+  touch?: boolean;
 }
 
 export default function TagPicker({
@@ -20,6 +22,7 @@ export default function TagPicker({
   inheritedTagIds,
   onChange,
   compact,
+  touch = false,
 }: TagPickerProps) {
   const { data: allTags = [] } = useTagsQuery();
   const createTagMutation = useCreateTagMutation();
@@ -91,7 +94,9 @@ export default function TagPicker({
         className={cx(
           "inline-flex items-center gap-1 rounded-md text-text-muted transition-colors hover:bg-bg-hover/60 hover:text-text-primary",
           DS.focus,
-          compact ? "h-5 w-5 justify-center" : "h-5 px-1.5 text-[11px] font-medium",
+          compact
+            ? touch ? "h-10 w-10 justify-center md:h-6 md:w-6" : "h-5 w-5 justify-center"
+            : "h-5 px-1.5 text-[11px] font-medium",
         )}
         title="Manage tags"
       >

@@ -407,6 +407,39 @@ describe("Session routes (mocked)", () => {
     ]);
   });
 
+  it("GET /api/tasks/:id/archived-sessions pages only that task's archived sessions, newest first", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+      { sessionId: "active-linked", summary: "Active", modifiedTime: "2026-04-16T15:00:00.000Z" },
+      { sessionId: "archived-old", summary: "Old", modifiedTime: "2026-04-16T10:00:00.000Z" },
+      { sessionId: "archived-mid", summary: "Mid", modifiedTime: "2026-04-16T12:00:00.000Z" },
+      { sessionId: "archived-new", summary: "New", modifiedTime: "2026-04-16T14:00:00.000Z" },
+      { sessionId: "archived-elsewhere", summary: "Other task", modifiedTime: "2026-04-16T16:00:00.000Z" },
+    ]);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = ctx.taskStore.createTask("Busy task");
+    const other = ctx.taskStore.createTask("Other task");
+    for (const id of ["active-linked", "archived-old", "archived-mid", "archived-new"]) ctx.taskStore.linkSession(task.id, id);
+    ctx.taskStore.linkSession(other.id, "archived-elsewhere");
+    for (const id of ["archived-old", "archived-mid", "archived-new", "archived-elsewhere"]) {
+      expect((await request(app).patch(`/api/sessions/${id}`).send({ archived: true })).status).toBe(200);
+    }
+
+    const first = await request(app).get(`/api/tasks/${task.id}/archived-sessions?limit=2`);
+    expect(first.status).toBe(200);
+    expect(first.body.total).toBe(3);
+    expect(first.body.offset).toBe(0);
+    expect(first.body.sessions.map((session: any) => session.sessionId)).toEqual(["archived-new", "archived-mid"]);
+    expect(first.body.sessions.every((session: any) => session.archived === true)).toBe(true);
+
+    const second = await request(app).get(`/api/tasks/${task.id}/archived-sessions?limit=2&offset=2`);
+    expect(second.body.sessions.map((session: any) => session.sessionId)).toEqual(["archived-old"]);
+    expect(second.body.total).toBe(3);
+
+    expect((await request(app).get("/api/tasks/missing-task/archived-sessions")).status).toBe(404);
+    expect((await request(app).get(`/api/tasks/${task.id}/archived-sessions?limit=0`)).status).toBe(400);
+  });
+
   it("GET /api/sessions keeps sessions visible when any linked task is active", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([

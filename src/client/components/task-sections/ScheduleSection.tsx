@@ -6,6 +6,7 @@ import EmptyState from "../shared/EmptyState";
 import TaskPanelSummaryDisclosure from "../TaskPanelSummaryDisclosure";
 import { type TaskPanelSummaryChip } from "../TaskPanelSummaryRow";
 import ScheduleRow from "./ScheduleRow";
+import { IconButton } from "../../design/primitives";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -88,17 +89,16 @@ export default function ScheduleSection({
     const chips: TaskPanelSummaryChip[] = [];
 
     if (activeSchedules.length > 0) {
-      chips.push({ label: `${activeSchedules.length} active`, className: "bg-info-surface text-info" });
+      chips.push({ label: `${activeSchedules.length} active` });
     }
     if (disabledSchedules.length > 0) {
-      chips.push({ label: `${disabledSchedules.length} paused`, className: "bg-text-muted/15 text-text-muted" });
+      chips.push({ label: `${disabledSchedules.length} paused` });
     }
 
+    // The figure at the end of the line says how many are paused, so the title does not repeat it.
     const title = schedules.length === 1
       ? primarySchedule.name
-      : activeSchedules.length === 0
-        ? `${schedules.length} paused schedules`
-        : `${schedules.length} schedules`;
+      : `${schedules.length} schedules`;
 
     const subtitle = schedules.length === 1
       ? getScheduleSummary(primarySchedule)
@@ -120,16 +120,9 @@ export default function ScheduleSection({
         disclosureId="schedules"
         onOpenSingle={() => onOpen(primarySchedule)}
         trailing={onAdd ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onAdd();
-            }}
-            className="p-1 text-text-faint hover:text-accent transition-colors"
-            title="Add schedule"
-          >
-            <Plus size={12} />
-          </button>
+          <IconButton label="Add schedule" onClick={onAdd}>
+            <Plus size={14} aria-hidden="true" />
+          </IconButton>
         ) : undefined}
       >
         {sortedSchedules.map((schedule) => (

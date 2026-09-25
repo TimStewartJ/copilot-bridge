@@ -48,6 +48,9 @@ export const queryKeys = {
     ["task", id, "session-storage", ...sessionIds] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
   scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,
+  /** Kept outside ["sessions"]: those caches hold Session[] and are patched in place. */
+  taskArchivedSessionsRoot: ["task-archived-sessions"] as const,
+  taskArchivedSessions: (id: string) => ["task-archived-sessions", id] as const,
   sessionWorkspace: (sessionId: string, taskId?: string) =>
     ["session-workspace", sessionId, taskId ?? null] as const,
   sessionModel: (sessionId: string) => ["session-model", sessionId] as const,

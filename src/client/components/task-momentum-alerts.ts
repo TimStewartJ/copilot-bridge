@@ -1,5 +1,4 @@
-import type { EnrichedPR, Session, Task } from "../api";
-import { getSessionActivityTime, getSessionRunState } from "../api";
+import type { EnrichedPR, Task } from "../api";
 import { getRevisitState } from "../lib/task-revisit";
 
 export type TaskAlertTone = "accent" | "info" | "success" | "warning" | "danger" | "neutral";
@@ -9,9 +8,6 @@ export interface TaskAlertChip {
     | "follow-up-overdue"
     | "follow-up-due"
     | "waiting"
-    | "session-stalled"
-    | "session-busy"
-    | "session-unread"
     | "active-pr";
   label: string;
   title?: string;
@@ -20,25 +16,22 @@ export interface TaskAlertChip {
   recency: number;
 }
 
+/**
+ * What the task header says needs noticing. Session state (working, stalled, unread) is left to the
+ * session rows just below, which already show it.
+ */
 interface GetTaskAlertChipsOptions {
   task: Task;
-  sessions: Session[];
-  activeSessionId?: string | null;
-  isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
   pullRequests?: EnrichedPR[];
   limit?: number;
 }
 
 export function getTaskAlertChips({
   task,
-  sessions,
-  activeSessionId = null,
-  isUnread,
   pullRequests = [],
   limit = 3,
 }: GetTaskAlertChipsOptions): TaskAlertChip[] {
   const chips: TaskAlertChip[] = [];
-  const activeSessions = sessions.filter((session) => !session.archived);
   const followUpState = getRevisitState(task.nextTouchAt);
 
   if (followUpState === "ready") {
@@ -72,49 +65,6 @@ export function getTaskAlertChips({
     });
   }
 
-  const stalledSessions = activeSessions
-    .filter((session) => getSessionRunState(session) === "stalled")
-    .sort(compareSessionRecency);
-  if (stalledSessions.length > 0) {
-    chips.push({
-      kind: "session-stalled",
-      label: stalledSessions.length === 1 ? "Session stalled" : `${stalledSessions.length} sessions stalled`,
-      title: describeSessions(stalledSessions, "stalled"),
-      tone: "warning",
-      priority: 30,
-      recency: getSessionRecency(stalledSessions[0]),
-    });
-  } else {
-    const busySessions = activeSessions
-      .filter((session) => getSessionRunState(session) === "busy")
-      .sort(compareSessionRecency);
-    if (busySessions.length > 0) {
-      chips.push({
-        kind: "session-busy",
-        label: busySessions.length === 1 ? "Chat in flight" : `${busySessions.length} chats in flight`,
-        title: describeSessions(busySessions, "busy"),
-        tone: "info",
-        priority: 31,
-        recency: getSessionRecency(busySessions[0]),
-      });
-    }
-  }
-
-  const unreadSessions = activeSessions
-    .filter((session) => session.sessionId !== activeSessionId)
-    .filter((session) => isUnread?.(session.sessionId, getSessionActivityTime(session)))
-    .sort(compareSessionRecency);
-  if (unreadSessions.length > 0) {
-    chips.push({
-      kind: "session-unread",
-      label: unreadSessions.length === 1 ? "Unread activity" : `${unreadSessions.length} unread chats`,
-      title: describeSessions(unreadSessions, "unread"),
-      tone: "success",
-      priority: 40,
-      recency: getSessionRecency(unreadSessions[0]),
-    });
-  }
-
   const activePrCount = pullRequests.filter((pr) => pr.status === "active").length;
   if (activePrCount > 0) {
     chips.push({
@@ -130,24 +80,6 @@ export function getTaskAlertChips({
   return chips
     .sort((left, right) => left.priority - right.priority || right.recency - left.recency)
     .slice(0, limit);
-}
-
-function compareSessionRecency(left: Session, right: Session): number {
-  return getSessionRecency(right) - getSessionRecency(left);
-}
-
-function getSessionRecency(session: Session): number {
-  return toTimestamp(getSessionActivityTime(session));
-}
-
-function describeSessions(sessions: Session[], state: "busy" | "stalled" | "unread"): string | undefined {
-  const [first] = sessions;
-  if (!first) return undefined;
-  const label = first.summary || first.intentText || first.sessionId.slice(0, 8);
-  const prefix = state === "unread" ? "Latest unread" : state === "stalled" ? "Latest stalled" : "Latest busy";
-  return sessions.length === 1
-    ? `${prefix}: ${label}`
-    : `${prefix}: ${label} (+${sessions.length - 1} more)`;
 }
 
 function formatFollowUpTitle(value: string): string {
