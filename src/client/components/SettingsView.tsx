@@ -9,6 +9,7 @@ import {
   SystemPromptSection,
   ModelSection,
   DeferWorkerSection,
+  SubagentModelsSection,
   ComputerUseSection,
   AppearanceSection,
   NotificationsSection,
@@ -313,6 +314,7 @@ export default function SettingsView() {
             <CategoryPanel category="chat" activeCategory={activeCategory}>
               <ModelSection draft={draft} setDraft={setDraft} />
               <DeferWorkerSection draft={draft} setDraft={setDraft} />
+              <SubagentModelsSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>
 
             <CategoryPanel category="responses" activeCategory={activeCategory}>

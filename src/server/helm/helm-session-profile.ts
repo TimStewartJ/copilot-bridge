@@ -64,6 +64,7 @@ const KEPT_FROM_BASE_CONFIG = [
   "enableExperimentalMode",
   "memory",
   "onPermissionRequest",
+  "subagents",
 ] as const;
 
 /**

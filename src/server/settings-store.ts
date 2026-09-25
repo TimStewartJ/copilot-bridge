@@ -17,6 +17,12 @@ import {
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
+import {
+  SUBAGENT_EFFORT_PATTERN,
+  SUBAGENT_NAME_PATTERN,
+  type SubagentAgentSetting,
+  type SubagentSettings,
+} from "../shared/subagent-settings.js";
 
 import {
   DEFAULT_RESPONSE_STYLE_GUIDANCE,
@@ -99,6 +105,8 @@ export interface AppSettings {
   lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
+  /** Canonical sub-agent models for Bridge sessions; unset defers to the CLI user settings. */
+  subagents?: SubagentSettings;
   computerUse?: ComputerUseSettings;
   helm?: HelmSettings;
 }
@@ -258,6 +266,49 @@ function normalizeDeferWorkerSettings(value: unknown): DeferWorkerSettings | und
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
+  };
+}
+
+function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("subagents must be an object");
+  const source = value.source;
+  if (source !== undefined && source !== null && source !== "bridge" && source !== "cli") {
+    validationError("subagents.source must be bridge or cli");
+  }
+  const agentsValue = value.agents ?? {};
+  if (!isRecord(agentsValue)) validationError("subagents.agents must be an object");
+  const agents: Record<string, SubagentAgentSetting> = {};
+  for (const [rawName, entry] of Object.entries(agentsValue)) {
+    const name = rawName.trim();
+    if (!SUBAGENT_NAME_PATTERN.test(name)) {
+      validationError(`subagents.agents has an invalid agent name: ${rawName}`);
+    }
+    if (entry === undefined || entry === null) continue;
+    if (!isRecord(entry)) validationError(`subagents.agents.${name} must be an object`);
+    if (entry.model !== undefined && entry.model !== null && typeof entry.model !== "string") {
+      validationError(`subagents.agents.${name}.model must be a string`);
+    }
+    if (entry.effortLevel !== undefined && entry.effortLevel !== null && typeof entry.effortLevel !== "string") {
+      validationError(`subagents.agents.${name}.effortLevel must be a string`);
+    }
+    const model = typeof entry.model === "string" ? entry.model.trim() : "";
+    const effortLevel = typeof entry.effortLevel === "string" ? entry.effortLevel.trim() : "";
+    if (effortLevel && !SUBAGENT_EFFORT_PATTERN.test(effortLevel)) {
+      validationError(`subagents.agents.${name}.effortLevel must be a reasoning effort name`);
+    }
+    if (!model && !effortLevel) continue;
+    agents[name] = {
+      ...(model ? { model } : {}),
+      ...(effortLevel ? { effortLevel } : {}),
+    };
+  }
+  const hasAgents = Object.keys(agents).length > 0;
+  // Bridge defaults with no overrides is the unset state.
+  if (source !== "cli" && !hasAgents) return undefined;
+  return {
+    ...(source === "cli" ? { source: "cli" as const } : {}),
+    ...(hasAgents ? { agents } : {}),
   };
 }
 
@@ -513,6 +564,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("deferWorker" in value) {
     normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
   }
+  if ("subagents" in value) normalized.subagents = normalizeSubagentSettings(value.subagents);
   if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   const legacy = migrateLegacyResponseQualityBlock(normalized.customInstructions);

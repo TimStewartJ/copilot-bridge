@@ -149,6 +149,48 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(resumed.sessionId).toBe("fake-session-id");
   });
 
+  it.each(["create", "resume"] as const)("applies Bridge sub-agent settings after %s without forwarding them to the SDK", async (operation) => {
+    const calls: string[] = [];
+    const updateSubagentSettings = vi.fn(async () => { calls.push("update"); return {}; });
+    const session = createFakeSession({ tools: { updateSubagentSettings } });
+    const client = createFakeClient(session);
+    client.createSession.mockImplementation(async () => { calls.push("create"); return session; });
+    client.resumeSession.mockImplementation(async () => { calls.push("resume"); return session; });
+    const backend = new CopilotBackend(client as any);
+    const subagents = { agents: { task: { model: "gpt-6-luna" }, "code-review": { model: "inherit" } } };
+    const config = { model: "claude-opus-5", subagents };
+
+    if (operation === "create") await backend.createSession(config);
+    else await backend.resumeSession("existing", config);
+
+    const expected = { model: "claude-opus-5", toolSearch: { enabled: false } };
+    if (operation === "create") expect(client.createSession).toHaveBeenCalledWith(expected);
+    else expect(client.resumeSession).toHaveBeenCalledWith("existing", expected);
+    expect(updateSubagentSettings).toHaveBeenCalledWith({ subagents });
+    expect(calls).toEqual([operation, "update"]);
+  });
+
+  it("does not call the sub-agent override when Bridge has no sub-agent settings", async () => {
+    const updateSubagentSettings = vi.fn(async () => ({}));
+    const client = createFakeClient(createFakeSession({ tools: { updateSubagentSettings } }));
+    const backend = new CopilotBackend(client as any);
+    await backend.createSession({ model: "gpt-6-luna" });
+    await backend.resumeSession("existing", {});
+    expect(updateSubagentSettings).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["failing", vi.fn(async () => { throw new Error("rpc exploded"); })],
+  ] as const)("keeps the session usable when the sub-agent override is %s", async (_label, updateSubagentSettings) => {
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const session = createFakeSession(updateSubagentSettings ? { tools: { updateSubagentSettings } } : {});
+    const backend = new CopilotBackend(createFakeClient(session) as any, { logger });
+    const created = await backend.createSession({ subagents: { agents: { task: { model: "gpt-6-luna" } } } });
+    expect(created.sessionId).toBe("fake-session-id");
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("using CLI user settings"));
+  });
+
   it.each(["create", "resume"] as const)("disables discovery on %s without changing tool restrictions or caller config", async (operation) => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
