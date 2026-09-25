@@ -99,6 +99,7 @@ import ConfirmTaskDeleteDialog, { useTaskDeletionProgress } from "./components/C
 import ChatView from "./components/ChatView";
 import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
 import SessionModelSummary from "./components/SessionModelSummary";
+import SessionModelDialog from "./components/SessionModelDialog";
 import Dashboard from "./components/Dashboard";
 import DashboardArchive from "./components/DashboardArchive";
 import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
@@ -2621,6 +2622,15 @@ function SessionRoute({
   const activeSession = sessions.find((s) => s.sessionId === sessionId);
   const hasPlan = activeSession?.hasPlan;
   const activeSessionActivityAt = activeSession?.lastVisibleActivityAt;
+  // Tied to the chat it was opened from: leaving that chat closes it instead of retargeting it.
+  const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
+  const modelDialogSession = modelDialogSessionId
+    ? sessions.find((s) => s.sessionId === modelDialogSessionId)
+    : undefined;
+  const closeModelDialog = useCallback(() => setModelDialogSessionId(null), []);
+  useEffect(() => {
+    setModelDialogSessionId((current) => (current && current !== sessionId ? null : current));
+  }, [sessionId]);
   const draft = getDraft(composerKey);
   const draftLaunch = draft?.launch;
   const voiceJob = getVoiceJob(composerKey);
@@ -2950,49 +2960,64 @@ function SessionRoute({
   ) : undefined;
 
   return (
-    <ChatView
-      // No `key` here — the component must survive draft→real session transitions
-      // so pending first-send work can hand off to the real session without a
-      // remount. Session and draft-composer resets are handled inside ChatView.
-      composerKey={composerKey}
-      sessionId={sessionId}
-      hasPlan={hasPlan}
-      sessionModelSummary={sessionId ? (
-        <SessionModelSummary
-          title={activeSession?.summary || activeSession?.intentText || "Chat"}
-          state={sessionModelQuery.data}
-          models={modelsQuery.data}
-          loading={sessionModelQuery.isLoading || sessionModelQuery.isFetching}
-          error={sessionModelQuery.error instanceof Error ? sessionModelQuery.error.message : undefined}
-          onRetry={() => {
-            void sessionModelQuery.refetch();
-          }}
+    <>
+      {modelDialogSessionId && modelDialogSessionId === sessionId && (
+        <SessionModelDialog
+          key={modelDialogSessionId}
+          sessionId={modelDialogSessionId}
+          sessionSummary={modelDialogSession?.summary}
+          busy={!!modelDialogSession && isSessionActive(modelDialogSession)}
+          onClose={closeModelDialog}
         />
-      ) : undefined}
-      onMessageSent={handleMessageSent}
-      onRenderedReadThrough={onRenderedReadThrough}
-      draft={draft}
-      onDraftChange={handleDraftChange}
-      onDraftClear={handleDraftClear}
-      onCreateAndSend={isDraft ? onCreateAndSend : undefined}
-      emptyState={draftEmptyState}
-      defaultSendMode={isDraft ? launchMode : DEFAULT_SEND_MODE}
-      voiceJob={voiceJob}
-      onSubmitVoiceCapture={handleSubmitVoiceCapture}
-      onReviewVoiceJob={reviewVoiceJob}
-      onClearVoiceJobError={clearVoiceJobError}
-      onDiscardVoiceRecording={discardVoiceRecording}
-      onRetryVoiceJobUpload={retryVoiceJobUpload}
-      reloadToken={sessionReloadToken}
-      busySignal={busySignal}
-      historySignal={historySignal}
-      activeSessionActivityAt={activeSessionActivityAt}
-      externallyInUse={activeSession?.externallyInUse}
-      backgroundAgents={activeSession?.backgroundAgents}
-      onForkSession={onForkSession}
-      newWorkDisabled={launchConfigurationLoading}
-      newWorkDisabledHint={launchConfigurationLoading ? "Loading model defaults…" : undefined}
-      composerFocusRequest={composerFocusRequest}
-    />
+      )}
+      <ChatView
+        // No `key` here — the component must survive draft→real session transitions
+        // so pending first-send work can hand off to the real session without a
+        // remount. Session and draft-composer resets are handled inside ChatView.
+        composerKey={composerKey}
+        sessionId={sessionId}
+        hasPlan={hasPlan}
+        sessionModelSummary={sessionId ? (
+          <SessionModelSummary
+            title={activeSession?.summary || activeSession?.intentText || "Chat"}
+            state={sessionModelQuery.data}
+            models={modelsQuery.data}
+            loading={sessionModelQuery.isLoading || sessionModelQuery.isFetching}
+            error={sessionModelQuery.error instanceof Error ? sessionModelQuery.error.message : undefined}
+            onRetry={() => {
+              void sessionModelQuery.refetch();
+            }}
+            onEdit={() => setModelDialogSessionId(sessionId)}
+            editDisabledReason={activeSession && isSessionActive(activeSession)
+              ? "This session is busy"
+              : undefined}
+          />
+        ) : undefined}
+        onMessageSent={handleMessageSent}
+        onRenderedReadThrough={onRenderedReadThrough}
+        draft={draft}
+        onDraftChange={handleDraftChange}
+        onDraftClear={handleDraftClear}
+        onCreateAndSend={isDraft ? onCreateAndSend : undefined}
+        emptyState={draftEmptyState}
+        defaultSendMode={isDraft ? launchMode : DEFAULT_SEND_MODE}
+        voiceJob={voiceJob}
+        onSubmitVoiceCapture={handleSubmitVoiceCapture}
+        onReviewVoiceJob={reviewVoiceJob}
+        onClearVoiceJobError={clearVoiceJobError}
+        onDiscardVoiceRecording={discardVoiceRecording}
+        onRetryVoiceJobUpload={retryVoiceJobUpload}
+        reloadToken={sessionReloadToken}
+        busySignal={busySignal}
+        historySignal={historySignal}
+        activeSessionActivityAt={activeSessionActivityAt}
+        externallyInUse={activeSession?.externallyInUse}
+        backgroundAgents={activeSession?.backgroundAgents}
+        onForkSession={onForkSession}
+        newWorkDisabled={launchConfigurationLoading}
+        newWorkDisabledHint={launchConfigurationLoading ? "Loading model defaults…" : undefined}
+        composerFocusRequest={composerFocusRequest}
+      />
+    </>
   );
 }
