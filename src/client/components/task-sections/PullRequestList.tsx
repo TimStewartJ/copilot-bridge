@@ -10,6 +10,9 @@ import { useToast } from "../../useToast";
 import LinkedResourceCopyButton from "./LinkedResourceCopyButton";
 import LinkedResourceUnlinkButton from "./LinkedResourceUnlinkButton";
 
+/** Row actions in the task panel keep a full touch target on a phone. */
+const COMPACT_ACTION_CLASS = "inline-flex h-10 w-10 items-center justify-center md:mt-0.5 md:h-6 md:w-6";
+
 // ── Props ────────────────────────────────────────────────────────
 
 export interface PullRequestListProps {
@@ -22,12 +25,6 @@ export interface PullRequestListProps {
 }
 
 type UnlinkablePR = { repoId: string; repoName: string | null; prId: number; provider: ProviderName };
-
-const PR_SUMMARY_STYLES: Record<string, string> = {
-  active: "bg-info-surface text-info",
-  completed: "bg-success/15 text-success",
-  abandoned: "bg-text-muted/15 text-text-muted",
-};
 
 function sortCountEntries(a: [string, number], b: [string, number]) {
   return b[1] - a[1] || a[0].localeCompare(b[0]);
@@ -138,7 +135,6 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
       .slice(0, 3)
       .map(([status, count]) => ({
         label: `${count} ${PR_STATUS_STYLES[status]?.label ?? status}`,
-        className: PR_SUMMARY_STYLES[status] ?? "bg-text-muted/15 text-text-muted",
       }));
 
     const title = items.length === 1
@@ -154,25 +150,6 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
           .filter(Boolean)
           .join(" · ");
 
-    const singleUrl = !hasMultiplePRs && primaryPr.url && primaryPr.url !== "#" ? primaryPr.url : null;
-    // A single PR with a URL opens that URL instead of expanding, so the inline
-    // rows (and their unlink buttons) are unreachable — surface one in the row itself.
-    const singleRowKey = `${primaryPr.repoId}-${primaryPr.prId}`;
-    const showTrailingUnlink = canUnlink && items.length === 1 && !!singleUrl;
-    const trailing = singleUrl ? (
-      <>
-        <LinkedResourceCopyButton
-          url={singleUrl}
-          resourceLabel={`pull request #${primaryPr.prId}`}
-          iconSize={14}
-          className="p-0.5"
-        />
-        {showTrailingUnlink
-          ? renderUnlinkButton(primaryPr, singleRowKey, { iconSize: 14, className: "p-0.5" })
-          : null}
-      </>
-    ) : undefined;
-
     return (
       <TaskPanelSummaryDisclosure
         label="Pull requests"
@@ -183,9 +160,7 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
         itemCount={items.length}
         taskId={taskId}
         disclosureId="pull-requests"
-        onOpenSingle={singleUrl ? () => window.open(singleUrl, "_blank", "noopener") : undefined}
-        expandWhenSingle={!singleUrl}
-        trailing={trailing}
+        expandWhenSingle
       >
         <PullRequestList
           enrichedPRs={enrichedPRs}
@@ -275,7 +250,7 @@ export default function PullRequestList({ enrichedPRs, rawPRs, variant = "compac
           </div>
         );
         if (!hasActions) return row;
-        const actionClass = isCompact ? "mt-1 p-0.5" : "mt-2 p-1";
+        const actionClass = isCompact ? COMPACT_ACTION_CLASS : "mt-2 p-1";
         return (
           <div key={rowKey} className="hover-action-scope group flex items-start gap-1">
             {row}

@@ -23,7 +23,7 @@ import { createReactDomHarness, findAllByTag, getReactProps } from "./test-react
 
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 
-vi.mock("./components/TaskMomentumHistory", () => ({ default: () => null }));
+vi.mock("./components/TaskMomentumHistory", () => ({ default: () => null, LatestMomentumChange: () => null }));
 
 vi.mock("./hooks/queries/useTags", () => ({
   useTagsQuery: vi.fn(),
@@ -408,7 +408,7 @@ describe("kind-aware task UI", () => {
     expect(html).toContain("No next step set");
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("Where things stand");
-    expect(html).toContain("Defer task");
+    expect(html).not.toContain("Defer task");
   });
 
   it("TaskContextMenu suppresses Mark done for ongoing items", () => {

@@ -18,7 +18,7 @@ describe("native task-row meaning", () => {
       expect.objectContaining({ label: "Ready to revisit", tone: "faint" }),
     ]);
     expect(getTaskRowSignals({ ...task, muted: true })).toEqual([expect.objectContaining({ kind: "deferred" })]);
-    expect(getTaskAlertChips({ task, sessions: [] })).toEqual([
+    expect(getTaskAlertChips({ task })).toEqual([
       expect.objectContaining({ label: "Ready to revisit", tone: "neutral" }),
       expect.objectContaining({ label: "Waiting for", tone: "neutral" }),
     ]);

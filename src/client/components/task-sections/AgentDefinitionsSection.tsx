@@ -23,16 +23,7 @@ export default function AgentDefinitionsSection({
       title={definitions.length === 1
         ? primary.displayName ?? primary.name
         : `${definitions.length} attached agents`}
-      subtitle={definitions.length === 1
-        ? primary.description
-        : "Available for delegation and new task chats"}
-      subtitleClassName="line-clamp-2"
-      chips={[
-        {
-          label: `${definitions.filter((definition) => definition.userInvocable).length} selectable`,
-          tone: "neutral",
-        },
-      ]}
+      subtitle={definitions.length === 1 ? primary.description : undefined}
       itemCount={definitions.length}
       taskId={taskId}
       disclosureId="agent-definitions"

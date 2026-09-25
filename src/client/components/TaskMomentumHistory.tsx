@@ -47,6 +47,21 @@ export function describeMomentumChange(change: TaskMomentumChange): { label: str
   return { label, value: formatValue(change.field, change.after), ...(note ? { note } : {}), ...previous };
 }
 
+export function useTaskMomentumEvents(taskId: string) {
+  return useQuery({
+    queryKey: queryKeys.taskMomentumEvents(taskId),
+    queryFn: ({ signal }) => fetchTaskMomentumEvents(taskId, { signal, limit: TASK_MOMENTUM_HISTORY_LIMIT }),
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** When "where things stand" last changed, for a closed row that has nothing else to say. */
+export function LatestMomentumChange({ taskId }: { taskId: string }) {
+  const latest = useTaskMomentumEvents(taskId).data?.[0];
+  if (!latest) return null;
+  return <time dateTime={latest.at} title={new Date(latest.at).toLocaleString()}>Changed {timeAgo(latest.at)}</time>;
+}
+
 function MomentumEventRow({ event, onSelectSession }: { event: TaskMomentumEvent; onSelectSession?: (sessionId: string) => void }) {
   const at = new Date(event.at);
   return (
@@ -95,11 +110,7 @@ export default function TaskMomentumHistory({
   onSelectSession?: (sessionId: string) => void;
   standalone?: boolean;
 }) {
-  const query = useQuery({
-    queryKey: queryKeys.taskMomentumEvents(taskId),
-    queryFn: ({ signal }) => fetchTaskMomentumEvents(taskId, { signal, limit: TASK_MOMENTUM_HISTORY_LIMIT }),
-    refetchOnWindowFocus: false,
-  });
+  const query = useTaskMomentumEvents(taskId);
   const events = query.data ?? [];
   const latest = events[0];
 

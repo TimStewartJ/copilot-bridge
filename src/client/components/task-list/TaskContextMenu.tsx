@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSessionActivityTime, type EnrichedTaskData, type Task, type TaskGroup, type Session, type TaskPatch } from "../../api";
 import { AlertTriangle, Bell, BellOff, Eye, Copy, Check, Play, CheckCircle, Archive, ArchiveRestore, Trash2, FolderOpen, FolderMinus, CalendarDays, X, ArrowUpDown } from "lucide-react";
@@ -15,6 +15,7 @@ import { countTaskUnread } from "../../hooks/useTaskIndicators";
 import { getTaskKindLabel, getTaskKindUpdate, isOngoingTask } from "../../task-kind";
 import TaskDeferralDialog from "../TaskDeferralDialog";
 import { IdentitySwatch } from "../../design/primitives";
+import { DS } from "../../design/tokens";
 
 type TaskMenuUpdates = {
   kind?: TaskPatch["kind"];
@@ -44,6 +45,8 @@ interface TaskContextMenuProps {
   activeSessionId?: string | null;
   actions: TaskContextMenuActions;
   onClose: () => void;
+  /** Items for the screen that opened the menu, shown first. Each receives the menu's close. */
+  renderLeadingItems?: (closeMenu: () => void) => ReactNode;
 }
 
 export default function TaskContextMenu({
@@ -55,6 +58,7 @@ export default function TaskContextMenu({
   activeSessionId,
   actions,
   onClose,
+  renderLeadingItems,
 }: TaskContextMenuProps) {
   const { markRead, onUpdateTask, onDeleteTask, onMoveTaskToGroup, onCreateGroup, onStartReorder } = actions;
   const queryClient = useQueryClient();
@@ -102,6 +106,12 @@ export default function TaskContextMenu({
 
   return (
     <ContextMenu position={position} onClose={closeMenu}>
+      {renderLeadingItems && (
+        <>
+          {renderLeadingItems(closeMenu)}
+          <CtxDivider />
+        </>
+      )}
       {/* Mark all as read */}
       {markRead && (
         <CtxItem
@@ -129,7 +139,8 @@ export default function TaskContextMenu({
 
       {/* Copy Task ID */}
       <button
-        className="w-full px-3 py-1.5 text-left hover:bg-bg-hover flex items-center gap-2 transition-colors"
+        type="button"
+        className={DS.menu.item}
         onClick={() => {
           const requestId = copyRequestRef.current + 1;
           copyRequestRef.current = requestId;

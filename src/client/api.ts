@@ -849,6 +849,27 @@ export async function fetchSessions(includeArchived = false): Promise<Session[]>
   return data.sessions;
 }
 
+export interface TaskArchivedSessionsResponse {
+  sessions: Session[];
+  total: number;
+  offset: number;
+}
+
+export async function fetchTaskArchivedSessions(
+  taskId: string,
+  opts: { limit?: number; offset?: number; signal?: AbortSignal } = {},
+): Promise<TaskArchivedSessionsResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.offset) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return apiFetch<TaskArchivedSessionsResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/archived-sessions${qs ? `?${qs}` : ""}`,
+    undefined,
+    { signal: opts.signal },
+  );
+}
+
 export async function fetchExternalSessionUse(
   sessionIds: readonly string[],
   options?: { signal?: AbortSignal },

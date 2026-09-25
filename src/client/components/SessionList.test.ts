@@ -124,6 +124,109 @@ describe("SessionList external-use indicator", () => {
   });
 });
 
+describe("SessionList log size", () => {
+  it("shows the log size only when it is large, and keeps it in the tooltip", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({ sessionId: "small", summary: "Small session", eventLogSizeBytes: 4 * 1024 * 1024 }),
+      createSession({ sessionId: "large", summary: "Large session", eventLogSizeBytes: 125 * 1024 * 1024 }),
+    ]);
+
+    try {
+      expect(dom.container.textContent).not.toContain("4.0 MB");
+      expect(dom.container.textContent).toContain("125.0 MB");
+      const small = findAllByTag(dom.container, "BUTTON")
+        .find((button) => button.textContent?.includes("Small session"));
+      expect(getReactProps(small)?.title).toBe("Small session · 4.0 MB");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("SessionList archived paging", () => {
+  async function renderArchived(props: Record<string, unknown>) {
+    const harness = await createReactDomHarness();
+    const { default: SessionList } = await import("./SessionList");
+    const sessions = Array.from({ length: 60 }, (_, index) => createSession({
+      sessionId: `archived-${index}`,
+      summary: `Archived ${index}`,
+      archived: true,
+    }));
+    await harness.render(createElement(SessionList, {
+      variant: "compact",
+      sessions,
+      activeSessionId: null,
+      onSelectSession: vi.fn(),
+      onNewSession: vi.fn(),
+      showNewButton: false,
+      ...props,
+    }));
+    const button = (text: string) => findAllByTag(harness.dom.container, "BUTTON")
+      .find((candidate) => candidate.textContent?.trim().startsWith(text));
+    const click = async (text: string) => {
+      const target = button(text);
+      if (!target) throw new Error(`${text} button was not rendered`);
+      await harness.act(async () => { getReactProps(target)?.onClick?.({}); });
+    };
+    const rowCount = () => findAllByTag(harness.dom.container, "BUTTON")
+      .filter((candidate) => /^Archived \d/.test(candidate.textContent?.trim() ?? "")).length;
+    return { harness, button, click, rowCount };
+  }
+
+  it("draws archived rows 25 at a time and asks for the next page when the drawn rows run out", async () => {
+    const onLoadMoreArchived = vi.fn();
+    const { harness, button, click, rowCount } = await renderArchived({
+      archivedLoaded: true,
+      archivedTotal: 200,
+      onLoadMoreArchived,
+    });
+    try {
+      expect(button("Archived")?.textContent).toContain("(200)");
+      await click("Archived");
+      expect(rowCount()).toBe(25);
+      expect(button("Show 25 more")?.textContent).toContain("175 left");
+
+      await click("Show 25 more");
+      expect(rowCount()).toBe(50);
+      expect(onLoadMoreArchived).not.toHaveBeenCalled();
+
+      await click("Show 25 more");
+      expect(rowCount()).toBe(60);
+      expect(onLoadMoreArchived).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("offers a retry when archived sessions fail to load", async () => {
+    const onRetryArchived = vi.fn();
+    const harness = await createReactDomHarness();
+    const { default: SessionList } = await import("./SessionList");
+    try {
+      await harness.render(createElement(SessionList, {
+        variant: "compact",
+        sessions: [],
+        activeSessionId: null,
+        onSelectSession: vi.fn(),
+        onNewSession: vi.fn(),
+        showNewButton: false,
+        onRequestArchived: vi.fn(),
+        archivedLoaded: false,
+        archivedError: true,
+        onRetryArchived,
+      }));
+      const toggle = findAllByTag(harness.dom.container, "BUTTON").find((candidate) => candidate.textContent?.includes("Archived"));
+      await harness.act(async () => { getReactProps(toggle)?.onClick?.({}); });
+      expect(harness.dom.container.textContent).toContain("Archived sessions could not be loaded.");
+      const retry = findAllByTag(harness.dom.container, "BUTTON").find((candidate) => candidate.textContent === "Retry");
+      await harness.act(async () => { getReactProps(retry)?.onClick?.({}); });
+      expect(onRetryArchived).toHaveBeenCalledOnce();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
 describe("SessionList defer summary indicator", () => {
   it("renders a single defer with the next run time", async () => {
     const { dom, cleanup } = await renderSessionList([

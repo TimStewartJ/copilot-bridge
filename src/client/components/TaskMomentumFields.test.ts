@@ -7,7 +7,7 @@ import { toDateTimeInputValue } from "../lib/task-revisit";
 
 const patchTaskMock = vi.hoisted(() => vi.fn());
 vi.mock("../api", () => ({ patchTask: patchTaskMock }));
-vi.mock("./TaskMomentumHistory", () => ({ default: () => null }));
+vi.mock("./TaskMomentumHistory", () => ({ default: () => null, LatestMomentumChange: () => null }));
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -38,12 +38,12 @@ describe("TaskMomentumFields design migration", () => {
     return harness.dom.container;
   }
 
-  it("starts collapsed with one context summary and keeps Defer reachable", async () => {
+  it("starts collapsed with one context summary and leaves Defer to the task menu", async () => {
     const container = await render(createTask({ nextAction: "Review the quotes", waitingOn: "The dealer" }), vi.fn(), false);
     expect(container.textContent).toContain("Where things stand");
     expect(container.textContent).toContain("Next: Review the quotes");
     expect(container.textContent).not.toContain("The dealer");
-    expect(container.textContent).toContain("Defer task");
+    expect(container.textContent).not.toContain("Defer task");
     expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
     expect(findAllByTag(container, "DL")).toHaveLength(0);
     await harness!.act(async () => getReactProps(disclosure(container))!.onClick());
