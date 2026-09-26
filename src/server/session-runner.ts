@@ -102,6 +102,56 @@ const SETTLED_AGENT_TASK_STATUSES = new Set(["idle", "completed", "failed", "can
 const isRunningAgentTask = (task: AgentBackgroundTask): boolean =>
   task.kind === "agent" && !SETTLED_AGENT_TASK_STATUSES.has(task.status);
 
+/**
+ * When a background agent finishes, the runtime wakes the main agent with a notice. While other
+ * background work such as an attached shell is still going, it holds that notice for 60 s (measured
+ * on CLI 1.0.88). A `read_agent` by the main agent consumes it instead, and a cancelled agent sends none.
+ */
+const AGENT_WAKE_WINDOW_MS = 90_000;
+
+/** A background agent that just finished and whose outcome the main agent has not heard yet. */
+function awaitsWake(
+  task: AgentBackgroundTask,
+  reportedAt: ReadonlyMap<string, number> | undefined,
+  now: number,
+): boolean {
+  if (task.kind !== "agent" || task.executionMode !== "background") return false;
+  const settled = task.status === "idle"
+    ? task.idleSince
+    : task.status === "completed" || task.status === "failed" ? task.completedAt : undefined;
+  const settledAt = settled ? Date.parse(settled) : Number.NaN;
+  if (!Number.isFinite(settledAt) || now - settledAt > AGENT_WAKE_WINDOW_MS) return false;
+  return (reportedAt?.get(task.id) ?? Number.NEGATIVE_INFINITY) < settledAt;
+}
+
+/**
+ * A cached session's one event subscription. It lives as long as the session stays cached and hands
+ * events to the open run, so a turn the runtime starts on its own (a background agent's wake-up,
+ * autopilot) is seen even when no run is open.
+ */
+interface SessionFeed {
+  session: AgentSession;
+  unsubscribe: () => void;
+  /** The open run's event handler, registered by `runSessionOperation`. */
+  run?: { controller: SessionRunController; handleEvent: (event: any) => void };
+  /** When the main agent last heard about each background agent: its notice or its own read_agent. */
+  agentReportedAt: Map<string, number>;
+  readAgentCalls: Map<string, string>;
+  attentionMode: SessionAttentionMode;
+  /**
+   * Events from the start of a runtime-started turn, held until a run registers: the run opened
+   * for it (`claimed`), or the next run when the session was busy with something else.
+   */
+  heldTurn?: { startedAt: number; events: unknown[]; claimed?: boolean };
+}
+
+function getEventTimestampMs(event: any): number | undefined {
+  const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
+  if (typeof rawTimestamp !== "string") return undefined;
+  const eventTime = Date.parse(rawTimestamp);
+  return Number.isFinite(eventTime) ? eventTime : undefined;
+}
+
 type SessionEventOrigin = "live" | "persisted_recovery";
 
 interface SessionEventHandlingContext {
@@ -401,6 +451,7 @@ export interface SessionRunnerDeps {
 
 export class SessionRunner {
   private readonly watchdogPromises = new Map<string, Promise<void>>();
+  private readonly sessionFeeds = new Map<string, SessionFeed>();
   private readonly mcpSessionRecoveryAttempts = new Map<string, {
     count: number;
     windowStartedAt: number;
@@ -414,6 +465,112 @@ export class SessionRunner {
       if (!pending) return;
       await pending;
     }
+  }
+
+  /** Subscribes once to a cached session's events; SessionManager calls this as it caches the session. */
+  attachSession(sessionId: string, session: AgentSession): SessionFeed {
+    const current = this.sessionFeeds.get(sessionId);
+    if (current?.session === session) return current;
+    current?.unsubscribe();
+    const feed: SessionFeed = {
+      session,
+      unsubscribe: () => {},
+      agentReportedAt: new Map(),
+      readAgentCalls: new Map(),
+      attentionMode: "normal",
+    };
+    this.sessionFeeds.set(sessionId, feed);
+    feed.unsubscribe = session.on((event) => this.routeSessionEvent(sessionId, feed, event));
+    return feed;
+  }
+
+  /** Ends the subscription as the session leaves the cache. */
+  detachSession(sessionId: string, session: AgentSession): void {
+    const feed = this.sessionFeeds.get(sessionId);
+    if (feed?.session !== session) return;
+    feed.unsubscribe();
+    this.sessionFeeds.delete(sessionId);
+  }
+
+  private routeSessionEvent(sessionId: string, feed: SessionFeed, event: any): void {
+    const mainAgent = !getSdkAgentId(event);
+    const at = getEventTimestampMs(event) ?? Date.now();
+    if (mainAgent) this.noteWhatMainAgentHeard(feed, event, at);
+    if (feed.run && !feed.run.controller.isCompleted()) {
+      feed.run.handleEvent(event);
+      return;
+    }
+    if (feed.heldTurn) {
+      feed.heldTurn.events.push(event);
+      return;
+    }
+    if (!mainAgent || event?.type !== "assistant.turn_start") return;
+    if (this.deps.sessionObjects.get(sessionId) !== feed.session) return;
+    // A run still getting ready to send owns the turns that follow its prompt.
+    if (this.deps.activeRunControllers.get(sessionId)?.isCompleted() === false) return;
+    feed.heldTurn = { startedAt: at, events: [event] };
+    this.followRuntimeTurn(sessionId);
+  }
+
+  private noteWhatMainAgentHeard(feed: SessionFeed, event: any, at: number): void {
+    const data = event?.data;
+    switch (event?.type) {
+      case "system.notification": {
+        const agentId = data?.kind?.agentId;
+        if (typeof agentId === "string") feed.agentReportedAt.set(agentId, at);
+        break;
+      }
+      case "tool.execution_start": {
+        const agentId = data?.arguments?.agent_id;
+        if (data?.toolName === "read_agent" && typeof agentId === "string" && typeof data?.toolCallId === "string") {
+          feed.readAgentCalls.set(data.toolCallId, agentId);
+        }
+        break;
+      }
+      case "tool.execution_complete": {
+        const agentId = feed.readAgentCalls.get(data?.toolCallId);
+        if (agentId === undefined) break;
+        feed.readAgentCalls.delete(data.toolCallId);
+        // A read made before the agent finished is older than its finish, so it still counts as unheard.
+        if (data?.success === true) feed.agentReportedAt.set(agentId, at);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Opens a run for a turn the runtime started on its own, so it is shown and tracked like any other.
+   * While the session is busy the turn stays held; whatever makes it busy calls this again when done
+   * (a run letting go, a resume or an overlay operation ending), or the next run takes the turn.
+   */
+  followRuntimeTurn(sessionId: string): void {
+    const feed = this.sessionFeeds.get(sessionId);
+    const heldTurn = feed?.heldTurn;
+    if (!feed || !heldTurn) return;
+    // A claimed turn still held here belongs to a run that ended before it could register.
+    if (heldTurn.claimed || this.deps.sessionObjects.get(sessionId) !== feed.session) {
+      feed.heldTurn = undefined;
+      return;
+    }
+    if (this.deps.activeRunControllers.has(sessionId) || this.deps.isSessionBusy(sessionId)) return;
+    heldTurn.claimed = true;
+    const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
+    this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
+    bus.reset();
+    const attentionMode = feed.attentionMode;
+    this.startBackgroundRun(
+      sessionId,
+      bus,
+      (runController) => this.runSessionOperation(sessionId, bus, runController, {
+        resumeContext: "runtime_turn",
+        idleSpanName: "session.runtimeTurnToIdle",
+        startLog: `[sdk] [${sessionId.slice(0, 8)}] Following a turn the runtime started on its own...`,
+        attentionMode,
+        followsRuntimeTurn: true,
+        execute: async () => {},
+      }),
+      { promptAccepted: false, attentionMode },
+    ).markPromptAccepted();
   }
 
   private get client(): AgentBackend | null {
@@ -670,6 +827,8 @@ export class SessionRunner {
       }
       this.setSessionRunState(sessionId, "idle", {
       });
+      // Before any pending eviction: a turn the runtime started while this run was letting go is next.
+      this.followRuntimeTurn(sessionId);
       void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
       this.deps.notifySessionCapacityChanged();
       this.deps.flushPendingSessionEviction(sessionId);
@@ -745,6 +904,8 @@ export class SessionRunner {
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       historyTruncation?: QuietIntervalDeferTailTruncationRequest;
+      /** The run follows a turn the runtime already started: there is no prompt to prepare or send. */
+      followsRuntimeTurn?: boolean;
     },
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
@@ -828,6 +989,14 @@ export class SessionRunner {
       await abandonSession(session);
       return;
     }
+    /** A turn the runtime starts after this run is followed with this run's attention mode. */
+    const rememberAttentionMode = (activeSession: unknown): boolean => {
+      const feed = this.sessionFeeds.get(sessionId);
+      if (!feed || feed.session !== activeSession) return false;
+      feed.attentionMode = opts.attentionMode ?? "normal";
+      return true;
+    };
+    if (!rememberAttentionMode(session) && opts.followsRuntimeTurn) return;
 
     const runStepOrCompletion = async <T>(
       stepName: string,
@@ -989,12 +1158,6 @@ export class SessionRunner {
       acceptingSessionEvents = true;
     };
 
-    const getEventTimestampMs = (event: any): number | undefined => {
-      const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
-      if (typeof rawTimestamp !== "string") return undefined;
-      const eventTime = Date.parse(rawTimestamp);
-      return Number.isFinite(eventTime) ? eventTime : undefined;
-    };
     const getEventTimestampIso = (event: any): string | undefined => {
       const eventTime = getEventTimestampMs(event);
       return eventTime === undefined ? undefined : new Date(eventTime).toISOString();
@@ -1810,6 +1973,7 @@ export class SessionRunner {
           }
           if (
             usedCache
+            && !opts.followsRuntimeTurn
             && isStaleAgentSessionError(data?.message)
             && !turnHadSideEffects
             && !runController.isCompleted()
@@ -1970,12 +2134,35 @@ export class SessionRunner {
       }
     };
 
-    const subscribeToSession = (activeSession: typeof session) => {
-      acceptingSessionEvents = false;
-      return activeSession.on((event: any) => handleEvent(event, { origin: "live" }));
+    let unsub: (() => void) | undefined;
+    /**
+     * Registers this run with the session's feed and starts accepting its events, beginning with
+     * any held runtime-started turn: in one tick, so each event is handled once and in order.
+     */
+    const listenToSession = (activeSession: typeof session) => {
+      const feed = this.attachSession(sessionId, activeSession);
+      const registration = { controller: runController, handleEvent: (event: any) => handleEvent(event, { origin: "live" }) };
+      feed.run = registration;
+      unsub = () => {
+        if (feed.run === registration) feed.run = undefined;
+      };
+      beginSend();
+      const heldTurn = feed.heldTurn;
+      if (!heldTurn) return;
+      feed.heldTurn = undefined;
+      sendStart = heldTurn.startedAt;
+      let next = 0;
+      while (next < heldTurn.events.length && !runController.isCompleted()) {
+        registration.handleEvent(heldTurn.events[next++]);
+      }
+      // A later turn held behind this one's end is followed next, when this run lets go.
+      const rest = heldTurn.events.slice(next);
+      const nextTurn = rest.findIndex((event: any) => event?.type === "assistant.turn_start" && !getSdkAgentId(event));
+      if (nextTurn >= 0) {
+        feed.heldTurn = { startedAt: getEventTimestampMs(rest[nextTurn]) ?? Date.now(), events: rest.slice(nextTurn) };
+      }
     };
 
-    let unsub: (() => void) | undefined;
     const eventsJsonlPath = join(this.deps.getSessionStateDir(sessionId), "events.jsonl");
 
     const prepareSessionForSend = async (activeSession: typeof session) => {
@@ -2024,6 +2211,7 @@ export class SessionRunner {
         unsub = undefined;
         await abandonSession(session);
         session = await resumeSession();
+        rememberAttentionMode(session);
         staleCacheRetryCount += 1;
         if (!session) {
           if (!runController.isCompleted()) {
@@ -2040,8 +2228,7 @@ export class SessionRunner {
         }
         if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session))).completed) return;
         if (runController.isCompleted()) return;
-        unsub = subscribeToSession(session);
-        beginSend();
+        listenToSession(session);
         if (runController.isCompleted()) return;
         if (!opts.execute) throw new Error("Session run is missing an execute step");
         if ((await runSendStep("retry send prompt", () => opts.execute!(session))).completed) return;
@@ -2094,7 +2281,8 @@ export class SessionRunner {
     /**
      * Whether a run is still going is the runtime's call, never the log's: sub-agents share
      * events.jsonl, and it cannot show whether the main agent will start another turn. A running
-     * background agent keeps the run alive because the runtime wakes the main agent when it finishes.
+     * background agent keeps the run alive because the runtime wakes the main agent when it finishes,
+     * and so does one that has finished but whose notice has not reached the main agent yet.
      * An attached shell does not: a dev server can outlive every run.
      */
     const askRuntime = async (): Promise<RuntimeAnswer> => {
@@ -2104,7 +2292,9 @@ export class SessionRunner {
         if (activity.processing) return "working";
         const tasks = (await session.listTasks())?.tasks;
         if (!tasks) return "unknown";
-        return tasks.some(isRunningAgentTask) ? "working" : "idle";
+        const now = Date.now();
+        const reportedAt = this.sessionFeeds.get(sessionId)?.agentReportedAt;
+        return tasks.some((task: AgentBackgroundTask) => isRunningAgentTask(task) || awaitsWake(task, reportedAt, now)) ? "working" : "idle";
       } catch (error) {
         console.warn(`[sdk] [${sid}] Could not ask the runtime whether the run is still going: ${getErrorMessage(error)}`);
         return "unknown";
@@ -2258,10 +2448,9 @@ export class SessionRunner {
       try {
         if (runController.isCompleted()) return;
         if (!opts.execute) throw new Error("Session run is missing an execute step");
-        if ((await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
+        if (!opts.followsRuntimeTurn && (await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
         if (runController.isCompleted()) return;
-        unsub = subscribeToSession(session);
-        beginSend();
+        listenToSession(session);
         if (runController.isCompleted()) return;
         if ((await runSendStep("send prompt", () => opts.execute!(session))).completed) return;
         const staleError = pendingStaleSessionError;

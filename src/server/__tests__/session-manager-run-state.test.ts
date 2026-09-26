@@ -1369,7 +1369,7 @@ describe("SessionManager run state", () => {
         copilotHome,
       });
       manager.backend = {
-        createSession: vi.fn().mockResolvedValue({ sessionId: "created-session" }),
+        createSession: vi.fn().mockResolvedValue(makeAgentSessionStub({ sessionId: "created-session" })),
       };
 
       await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
@@ -2482,6 +2482,10 @@ describe("SessionManager run state", () => {
   });
 
   describe("watchdog: the runtime decides whether a run is over", () => {
+    /** The main agent stopping asks the runtime at once, well inside the runtime's hold on a notice. */
+    const mainAgentIdle = (run: { getHandler: () => ((event: any) => void) | undefined }) =>
+      run.getHandler()?.({ type: "assistant.idle", timestamp: new Date().toISOString(), data: {} });
+
     it("finishes a run from the log once the runtime reports it idle twice", async () => {
       const run = await startDeliveredRun("runtime-idle");
       run.session.getActivity.mockResolvedValue({ processing: false });
@@ -2562,12 +2566,86 @@ describe("SessionManager run state", () => {
       await settleWatchdog(run.manager, run.sessionId);
       expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
 
-      // An idle agent waits for a follow-up message and wakes nobody.
+      // An idle agent with no unreported finish wakes nobody.
       agentStatus = "idle";
       await vi.advanceTimersByTimeAsync(60_000);
       await settleWatchdog(run.manager, run.sessionId);
       expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
       expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "waiting for the reviewer" });
+    });
+
+    it("keeps the run open until a finished background agent's notice reaches the main agent", async () => {
+      const run = await startDeliveredRun("runtime-agent-notice");
+      run.session.getActivity.mockResolvedValue({ processing: false });
+      const idleSince = new Date().toISOString();
+      // The shell makes the runtime hold the notice (60 s on CLI 1.0.88) instead of waking the agent at once.
+      run.session.listTasks.mockResolvedValue({ tasks: [
+        { kind: "agent", id: "reviewer", status: "idle", executionMode: "background", idleSince },
+        { kind: "shell", id: "dev-server", status: "running" },
+      ] });
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.message", timestamp: at(run, 1_000), data: { content: "waiting for the reviewer" } },
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
+
+      mainAgentIdle(run);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.session.getActivity).toHaveBeenCalled();
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+
+      run.getHandler()?.({
+        type: "system.notification",
+        timestamp: new Date().toISOString(),
+        data: { kind: { type: "agent_idle", agentId: "reviewer" } },
+      });
+      mainAgentIdle(run);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+    });
+
+    it("counts a successful read_agent as the main agent hearing about the agent", async () => {
+      const run = await startDeliveredRun("runtime-agent-read");
+      run.session.getActivity.mockResolvedValue({ processing: false });
+      run.session.listTasks.mockResolvedValue({ tasks: [
+        { kind: "agent", id: "reviewer", status: "idle", executionMode: "background", idleSince: new Date().toISOString() },
+      ] });
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
+      const read = (toolCallId: string, success: boolean) => {
+        const timestamp = new Date().toISOString();
+        run.getHandler()?.({ type: "tool.execution_start", timestamp, data: { toolCallId, toolName: "read_agent", arguments: { agent_id: "reviewer" } } });
+        run.getHandler()?.({ type: "tool.execution_complete", timestamp, data: { toolCallId, success } });
+      };
+
+      read("read-failed", false);
+      mainAgentIdle(run);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.session.getActivity).toHaveBeenCalled();
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+
+      read("read-ok", true);
+      mainAgentIdle(run);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+    });
+
+    it("does not wait for a notice the runtime will never send", async () => {
+      const run = await startDeliveredRun("runtime-agent-no-notice");
+      run.session.getActivity.mockResolvedValue({ processing: false });
+      const recent = new Date().toISOString();
+      run.session.listTasks.mockResolvedValue({ tasks: [
+        { kind: "agent", id: "stale", status: "idle", executionMode: "background", idleSince: new Date(Date.now() - 91_000).toISOString() },
+        { kind: "agent", id: "cancelled", status: "cancelled", executionMode: "background", completedAt: recent },
+        { kind: "agent", id: "inline", status: "idle", executionMode: "sync", idleSince: recent },
+      ] });
+      writeSessionEvents(run.copilotHome, run.sessionId, [
+        { type: "assistant.turn_end", timestamp: at(run, 2_000), data: { turnId: "1" } },
+      ]);
+
+      mainAgentIdle(run);
+      await settleWatchdog(run.manager, run.sessionId);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
     });
 
     it("does not end a run on the moment of idleness before an autopilot continuation", async () => {
@@ -2643,6 +2721,112 @@ describe("SessionManager run state", () => {
 
       expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
       expect(run.bus.getSnapshot().complete).toBe(false);
+    });
+  });
+
+  describe("turns the runtime starts on its own", () => {
+    async function waitUntil(condition: () => boolean) {
+      for (let i = 0; i < 200 && !condition(); i++) {
+        await new Promise<void>((resolve) => realSetImmediate(resolve));
+      }
+      expect(condition()).toBe(true);
+    }
+
+    function watchSessionStatus(run: { globalBus: any; sessionId: string }) {
+      const status = { busy: 0, idlePreviews: [] as unknown[] };
+      run.globalBus.subscribe((event: any) => {
+        if (event.sessionId !== run.sessionId) return;
+        if (event.type === "session:busy") status.busy++;
+        if (event.type === "session:idle") status.idlePreviews.push(event.assistantPreview);
+      });
+      return status;
+    }
+    async function finishedRun(name: string) {
+      const run = await startDeliveredRun(name);
+      run.getHandler()?.({ type: "assistant.message", timestamp: at(run, 1_000), data: { content: "first" } });
+      run.getHandler()?.({ type: "session.idle", timestamp: at(run, 2_000), data: {} });
+      await flushMicrotasks();
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+      return run;
+    }
+
+    it("follows a turn the runtime starts after a run has ended, from its first event", async () => {
+      const run = await finishedRun("runtime-turn-after-run");
+
+      // Delivered before the followed run subscribes; it must still see them, once each.
+      run.getHandler()?.({ type: "system.notification", timestamp: at(run, 60_000), data: { kind: { type: "agent_idle", agentId: "reviewer" } } });
+      run.getHandler()?.({ type: "assistant.turn_start", timestamp: at(run, 60_001), data: { turnId: "2" } });
+      run.getHandler()?.({ type: "assistant.message_delta", timestamp: at(run, 60_002), data: { deltaContent: "rev" } });
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("busy");
+      // Accepted at once, so a crash or disconnect before it subscribes still continues the turn.
+      expect(run.manager.sessionRuns.get(run.sessionId)?.promptAccepted).toBe(true);
+      // A finished run's bus is replaced for the next run, as for any prompt.
+      const bus = run.eventBusRegistry.getOrCreateBus(run.sessionId);
+      expect(bus).not.toBe(run.bus);
+      await waitUntil(() => bus.getStreamingContent() === "rev");
+      // One subscription per cached session: runs register with it rather than subscribing.
+      expect(run.session.on).toHaveBeenCalledTimes(1);
+      expect(run.session.send).toHaveBeenCalledTimes(1);
+
+      run.getHandler()?.({ type: "assistant.message_delta", timestamp: at(run, 60_003), data: { deltaContent: "iewed" } });
+      expect(bus.getStreamingContent()).toBe("reviewed");
+      run.getHandler()?.({ type: "assistant.message", timestamp: at(run, 60_004), data: { content: "reviewed" } });
+      run.getHandler()?.({ type: "assistant.turn_end", timestamp: at(run, 60_005), data: { turnId: "2" } });
+      run.getHandler()?.({ type: "session.idle", timestamp: at(run, 60_006), data: {} });
+      await flushMicrotasks();
+
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+      expect(bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "reviewed" });
+    });
+
+    it("hands over a turn that starts and ends while the previous run is letting go", async () => {
+      const run = await startDeliveredRun("runtime-turn-during-release");
+      const status = watchSessionStatus(run);
+
+      run.getHandler()?.({ type: "assistant.message", timestamp: at(run, 1_000), data: { content: "first" } });
+      run.getHandler()?.({ type: "session.idle", timestamp: at(run, 2_000), data: {} });
+      run.getHandler()?.({ type: "assistant.turn_start", timestamp: at(run, 2_001), data: { turnId: "2" } });
+      run.getHandler()?.({ type: "assistant.message", timestamp: at(run, 2_002), data: { content: "second" } });
+      run.getHandler()?.({ type: "assistant.turn_end", timestamp: at(run, 2_003), data: { turnId: "2" } });
+      run.getHandler()?.({ type: "session.idle", timestamp: at(run, 2_004), data: {} });
+      await waitUntil(() => status.idlePreviews.length === 2);
+
+      expect(status.busy).toBe(1);
+      expect(status.idlePreviews).toEqual(["first", "second"]);
+      expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+    });
+
+    it("holds a turn that starts while the session is resuming until the resume ends", async () => {
+      const run = await finishedRun("runtime-turn-during-resume");
+      const status = watchSessionStatus(run);
+      run.manager.resumingSessions.set(run.sessionId, 1);
+
+      // Two whole turns inside the resume: each is followed by its own run, in order.
+      for (const [offset, content] of [[60_000, "woke up"], [61_000, "woke again"]] as const) {
+        run.getHandler()?.({ type: "assistant.turn_start", timestamp: at(run, offset), data: { turnId: content } });
+        run.getHandler()?.({ type: "assistant.message", timestamp: at(run, offset + 1), data: { content } });
+        run.getHandler()?.({ type: "session.idle", timestamp: at(run, offset + 2), data: {} });
+      }
+      await flushMicrotasks();
+      expect(status.busy).toBe(0);
+
+      run.manager.endSessionResume({ sessionId: run.sessionId, token: Symbol("resume") });
+      expect(status.busy).toBe(1);
+      await waitUntil(() => status.idlePreviews.length === 2);
+      expect(status.busy).toBe(2);
+      expect(status.idlePreviews).toEqual(["woke up", "woke again"]);
+    });
+
+    it("leaves a run's own turns to the run and stops watching an evicted session", async () => {
+      const run = await startDeliveredRun("runtime-turn-own-and-evicted");
+      run.getHandler()?.({ type: "assistant.turn_start", timestamp: at(run, 1_000), data: { turnId: "1" } });
+      run.getHandler()?.({ type: "assistant.message", timestamp: at(run, 1_500), data: { content: "own" } });
+      run.getHandler()?.({ type: "session.idle", timestamp: at(run, 2_000), data: {} });
+      await flushMicrotasks();
+      expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "own" });
+
+      await run.manager.evictCachedSession(run.sessionId);
+      expect(run.getHandler()).toBeUndefined();
     });
   });
   it("does not recover a persisted subagent error as a parent terminal", async () => {

@@ -168,7 +168,7 @@ describe("SessionManager reloadSession", () => {
     const manager = createManager();
     const oldSession = makeAgentSessionStub({ disconnect: vi.fn() });
     const otherSession = makeAgentSessionStub({ disconnect: vi.fn() });
-    const resumedSession = {
+    const resumedSession = makeAgentSessionStub({
       setModel: vi.fn(),
       listMcpServers: vi.fn().mockImplementation(async () => {
         expect(manager.isSessionBusy("session-1")).toBe(true);
@@ -176,7 +176,7 @@ describe("SessionManager reloadSession", () => {
           servers: [{ name: "demo", status: "connected", source: "settings" }],
         };
       }),
-    };
+    });
     const resumeSession = vi.fn().mockResolvedValue(resumedSession);
     const cleanup = spyOnResumeCleanup(manager);
 
@@ -330,9 +330,9 @@ describe("SessionManager reloadSession", () => {
     vi.useFakeTimers();
     const manager = createManager();
     const lateSession = makeAgentSessionStub({ disconnect: vi.fn() });
-    const recoveredSession = {
+    const recoveredSession = makeAgentSessionStub({
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     let resolveFirstResume!: (session: typeof lateSession) => void;
     const resumeSession = vi.fn()
       .mockImplementationOnce(() => new Promise<typeof lateSession>((resolve) => {
@@ -487,9 +487,9 @@ describe("SessionManager reloadSession", () => {
     vi.useFakeTimers();
     const manager = createManager();
     const staleLateSession = makeAgentSessionStub({ disconnect: vi.fn() });
-    const recoveredSession = {
+    const recoveredSession = makeAgentSessionStub({
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     let resolveFirstResume!: (session: typeof staleLateSession) => void;
     const fence = vi.fn().mockRejectedValue(new Error("process still alive"));
     const resumeSession = vi.fn()
@@ -529,9 +529,9 @@ describe("SessionManager reloadSession", () => {
     const fence = vi.fn(() => new Promise<void>((resolve) => {
       resolveFence = resolve;
     }));
-    const recoveredSession = {
+    const recoveredSession = makeAgentSessionStub({
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     const nextBackend = {
       start: vi.fn().mockResolvedValue(undefined),
       resumeSession: vi.fn().mockResolvedValue(recoveredSession),
@@ -564,9 +564,9 @@ describe("SessionManager reloadSession", () => {
     vi.useFakeTimers();
     const manager = createManager();
     const staleLateSession = makeAgentSessionStub({ disconnect: vi.fn() });
-    const recoveredSession = {
+    const recoveredSession = makeAgentSessionStub({
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     let resolveFirstResume!: (session: typeof staleLateSession) => void;
     const staleBackend = {
       resumeSession: vi.fn(() => new Promise<typeof staleLateSession>((resolve) => {
@@ -642,9 +642,9 @@ describe("SessionManager reloadSession", () => {
   it("does not cache a resume that resolves from a superseded backend", async () => {
     const manager = createManager();
     const staleSession = makeAgentSessionStub({ disconnect: vi.fn() });
-    const recoveredSession = {
+    const recoveredSession = makeAgentSessionStub({
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     let resolveStaleResume!: (session: typeof staleSession) => void;
     const staleBackend = {
       resumeSession: vi.fn(() => new Promise<typeof staleSession>((resolve) => {
@@ -723,9 +723,9 @@ describe("SessionManager reloadSession", () => {
     const list = vi.fn().mockResolvedValue({
       servers: [{ name: "demo", status: "pending", source: "settings" }],
     });
-    const resumedSession = {
+    const resumedSession = makeAgentSessionStub({
       startMcpOauthLogin: login, listMcpServers: list,
-    };
+    });
     const resumeSession = vi.fn().mockResolvedValue(resumedSession);
     const cleanup = spyOnResumeCleanup(manager);
     manager.backend = { resumeSession };
@@ -997,10 +997,10 @@ describe("SessionManager warmSession", () => {
 
   it("does not call setModel on the resumed session", async () => {
     const manager = createManager();
-    const resumedSession = {
+    const resumedSession = makeAgentSessionStub({
       setModel: vi.fn(),
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     const cleanup = spyOnResumeCleanup(manager);
     manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
 
@@ -1014,9 +1014,9 @@ describe("SessionManager warmSession", () => {
 
   it("keeps a warmed session without starting a best-effort MCP probe", async () => {
     const manager = createManager();
-    const resumedSession = {
+    const resumedSession = makeAgentSessionStub({
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     const cleanup = spyOnResumeCleanup(manager);
     manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
 
@@ -1072,10 +1072,10 @@ describe("SessionManager warmSession", () => {
 
   it("coalesces concurrent warm resumes for the same session", async () => {
     const manager = createManager();
-    const resumedSession = {
+    const resumedSession = makeAgentSessionStub({
       setModel: vi.fn(),
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     let resolveResume!: (session: typeof resumedSession) => void;
     const resumeSession = vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
       resolveResume = resolve;
@@ -1109,14 +1109,14 @@ describe("SessionManager warmSession", () => {
 
   it("discards a superseded warm resume without evicting the newer cached session", async () => {
     const manager = createManager();
-    const resumedSession = {
+    const resumedSession = makeAgentSessionStub({
       disconnect: vi.fn(),
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
-    const newerSession = {
+    });
+    const newerSession = makeAgentSessionStub({
       disconnect: vi.fn(),
       listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    };
+    });
     let resolveResume!: (session: typeof resumedSession) => void;
     manager.backend = {
       resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
