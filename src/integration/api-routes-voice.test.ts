@@ -410,7 +410,7 @@ describe("Voice job routes", () => {
     expect(afterRecovery.status).toBe(404);
   });
 
-  it("POST /api/voice-jobs/:id/recovered removes retained audio artifacts", async () => {
+  it("POST /api/voice-jobs/:id/recovered keeps the recording for later diagnosis", async () => {
     const id = randomUUID();
     const dataDir = ctx.runtimePaths!.dataDir;
     const audioPath = join(dataDir, "voice-jobs", id, "recording.wav");
@@ -436,7 +436,7 @@ describe("Voice job routes", () => {
 
     expect(recovered.status).toBe(200);
     expect(recovered.body.status).toBe("recovered");
-    expect(existsSync(join(dataDir, "voice-jobs", id))).toBe(false);
+    expect(existsSync(audioPath)).toBe(true);
   });
 });
 

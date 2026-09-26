@@ -12,6 +12,7 @@ import { createTaskGroupStore } from "../server/task-group-store.js";
 import { createTaskStore } from "../server/task-store.js";
 import {
   createVoiceJobManager,
+  VOICE_JOB_AUDIO_RETENTION_MS,
   VOICE_JOB_ORPHAN_GRACE_MS,
 } from "../server/voice-job-manager.js";
 import { createVoiceJobStore } from "../server/voice-job-store.js";
@@ -174,7 +175,7 @@ describe("voice job restart gating", () => {
   });
 
   describe("voice job artifact retention", () => {
-    it("removes audio artifacts when transcription fails", async () => {
+    it("keeps the recording when transcription fails", async () => {
       const transcribe = vi.fn().mockRejectedValue(new Error("speech engine failed"));
       const { runtimePaths, store, manager } = createManagerHarness(transcribe);
       const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
@@ -192,7 +193,38 @@ describe("voice job restart gating", () => {
         status: "error",
         error: "speech engine failed",
       });
-      expect(existsSync(join(runtimePaths.dataDir, "voice-jobs", accepted.id))).toBe(false);
+      expect(existsSync(join(runtimePaths.dataDir, "voice-jobs", accepted.id, "recording.wav"))).toBe(true);
+    });
+
+    it("keeps a sent recording until the audio retention window passes", async () => {
+      const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine" });
+      const { runtimePaths, store, sessionManager, manager } = createManagerHarness(transcribe);
+      sessionManager.readMessagesFromDisk.mockResolvedValue({
+        messages: [{ type: "message", role: "user", content: "hello bridge", timestamp: new Date().toISOString() }],
+        total: 1,
+        hasMore: false,
+      });
+      const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
+      writeFileSync(sourceFilePath, "test-audio");
+
+      const accepted = await manager.acceptVoiceJob({
+        composerKey: "existing-session",
+        targetSessionId: "existing-session",
+        sourceFilePath,
+        originalFilename: "recording.wav",
+      });
+      await vi.waitFor(() => expect(store.getVoiceJob(accepted.id)?.status).toBe("done"));
+      const jobDir = join(runtimePaths.dataDir, "voice-jobs", accepted.id);
+      expect(transcribe).toHaveBeenCalledWith(expect.objectContaining({ label: `job ${accepted.id}` }));
+      const finishedAt = Date.parse(store.getVoiceJob(accepted.id)!.updatedAt);
+
+      await manager.runMaintenance(finishedAt + VOICE_JOB_AUDIO_RETENTION_MS - 1);
+      expect(existsSync(join(jobDir, "recording.wav"))).toBe(true);
+
+      await manager.runMaintenance(finishedAt + VOICE_JOB_AUDIO_RETENTION_MS + 1);
+      await manager.shutdown();
+      expect(existsSync(jobDir)).toBe(false);
+      expect(store.getVoiceJob(accepted.id)?.status).toBe("done");
     });
 
     it("does not retry terminal transcription errors after restart", async () => {
@@ -210,7 +242,7 @@ describe("voice job restart gating", () => {
       });
       store.markError(id, "speech engine failed");
 
-      await manager.runMaintenance();
+      await manager.runMaintenance(Date.parse(store.getVoiceJob(id)!.updatedAt) + VOICE_JOB_AUDIO_RETENTION_MS + 1);
       manager.resumePendingJobs();
       await manager.shutdown();
 
