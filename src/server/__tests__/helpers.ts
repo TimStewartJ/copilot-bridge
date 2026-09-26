@@ -22,6 +22,7 @@ const TEST_RUNTIME_ENV_KEYS = [
   "BRIDGE_DATA_DIR",
   "BRIDGE_DOCS_DIR",
   "BRIDGE_DOCS_SNAPSHOTS_DIR",
+  "BRIDGE_WORKSPACE_DIR",
   "COPILOT_HOME",
 ] as const;
 const TEST_CLEANUP_MAX_RETRIES = 20;
@@ -111,15 +112,14 @@ export function makeTestRuntimePaths(
   const docsDir = overrides.docsDir ?? join(rootDir, "docs");
   const docsSnapshotsDir = overrides.docsSnapshotsDir ?? join(rootDir, "docs-snapshots");
   const copilotHome = overrides.copilotHome ?? join(rootDir, ".copilot");
-  const workspaceDir = overrides.workspaceDir;
+  // Never resolve the real per-user Bridge workspace from a test.
+  const workspaceDir = overrides.workspaceDir ?? join(rootDir, "workspace");
 
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(docsDir, { recursive: true });
   mkdirSync(docsSnapshotsDir, { recursive: true });
   mkdirSync(copilotHome, { recursive: true });
-  if (workspaceDir) {
-    mkdirSync(workspaceDir, { recursive: true });
-  }
+  mkdirSync(workspaceDir, { recursive: true });
 
   return resolveRuntimePaths(createHermeticEnv(baseEnv), {
     ...overrides,
@@ -127,7 +127,7 @@ export function makeTestRuntimePaths(
     docsDir,
     docsSnapshotsDir,
     copilotHome,
-    ...(workspaceDir ? { workspaceDir } : {}),
+    workspaceDir,
   });
 }
 

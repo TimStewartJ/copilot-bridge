@@ -526,7 +526,8 @@ describe("session workspace routes", () => {
         }),
       }),
     ]);
-    expect(res.body.sessions[0].workspace.effectiveCwd).toBeUndefined();
+    // Neither task's folder is chosen; the session runs in the Bridge workspace.
+    expect(res.body.sessions[0].workspace.effectiveCwd).toBe(ctx.runtimePaths!.workspaceDir);
     expect(res.body.sessions[0].workspace.taskCwd).toBeUndefined();
   });
 
@@ -643,6 +644,52 @@ describe("session workspace routes", () => {
         cwd: taskWorkspace,
       },
     }));
+  });
+
+  it("reports the Bridge workspace for a session that only recorded the server's own directory", async () => {
+    const copilotHome = createCopilotHome();
+    mkdirSync(join(copilotHome, "session-state", "session-1"), { recursive: true });
+    writeFileSync(join(copilotHome, "session-state", "session-1", "workspace.yaml"), `cwd: ${process.cwd()}\n`);
+    const testApp = createTestApp({ copilotHome, sessionManager: createMockSessionManager() as any });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    const workspaceDir = ctx.runtimePaths!.workspaceDir!;
+    readGitWorktreeStatusMock.mockResolvedValue({ status: "not_repo", cwd: workspaceDir });
+
+    const res = await request(app).get("/api/sessions/session-1/workspace");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      effectiveCwd: workspaceDir,
+      source: "bridge_workspace",
+      pathState: "available",
+      canResetToTask: false,
+    });
+  });
+
+  it("labels a pinned neutral workspace as the Bridge workspace and flags a task folder it overrides", async () => {
+    const copilotHome = createCopilotHome();
+    const taskWorkspace = createWorkspace(copilotHome, "task-workspace");
+    const testApp = createTestApp({ copilotHome, sessionManager: createMockSessionManager() as any });
+    app = testApp.app;
+    ctx = testApp.ctx;
+    const workspaceDir = ctx.runtimePaths!.workspaceDir!;
+    readGitWorktreeStatusMock.mockResolvedValue({ status: "not_repo", cwd: workspaceDir });
+    const task = ctx.taskStore.createTask("Later project");
+    ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
+    ctx.taskStore.linkSession(task.id, "session-1");
+    ctx.sessionWorkspaceStore.setWorkspace("session-1", workspaceDir);
+
+    const res = await request(app).get("/api/sessions/session-1/workspace");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      effectiveCwd: workspaceDir,
+      source: "bridge_workspace",
+      taskCwd: taskWorkspace,
+      overridesTaskWorkspace: true,
+      canResetToTask: true,
+    });
   });
 
   it("stores an explicit workspace path", async () => {

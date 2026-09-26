@@ -452,8 +452,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     );
   }
 
-  // Staging rules — only when working on the bridge repo itself
-  const isSelfRepo = !workingDirectory || pathsEqual(workingDirectory, REPO_ROOT);
+  // Staging rules — only when working on the bridge repo itself. A session without a
+  // resolved cwd is not evidence of Bridge work.
+  const isSelfRepo = !!workingDirectory && pathsEqual(workingDirectory, REPO_ROOT);
   const sections: Partial<Record<string, AgentSectionOverride>> = {};
   if (isSelfRepo && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT)) {
     sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };

@@ -6,8 +6,14 @@ import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { Task, TaskStore } from "./task-store.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
 import {
+  ensureNeutralWorkspaceDir,
+  getNeutralAwareAvailability,
+  isImplicitHostCwd,
+  isNeutralWorkspaceCwd,
+  resolveNeutralAwareCwd,
+} from "./neutral-workspace.js";
+import {
   createWorkspaceAvailabilityLookup,
-  getWorkspaceAvailability,
   resolveAvailableWorkspaceCwd,
   resolveAvailableWorkspaceCwdAsync,
 } from "./session-workspace-availability.js";
@@ -19,6 +25,8 @@ export interface SessionWorkspaceControllerDeps {
   taskStore: TaskStore;
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
+  /** Test seam for the Bridge host directories whose recorded cwd is treated as implicit. */
+  hostRoots?: readonly string[];
   isSessionBusy(sessionId: string): boolean;
   onWorkspaceChange(sessionId: string, opts: { busy: boolean }): void;
 }
@@ -98,13 +106,22 @@ export class SessionWorkspaceController {
     if (persistedCwd) return persistedCwd;
 
     const recordedCwd = sessionId ? this.getRecordedWorkspaceCwd(sessionId) : undefined;
-    const availableRecordedCwd = resolveAvailableWorkspaceCwd(recordedCwd);
+    const availableRecordedCwd = this.explicitRecordedCwd(resolveNeutralAwareCwd(recordedCwd, this.deps.runtimePaths));
     if (availableRecordedCwd) return availableRecordedCwd;
 
     const taskCwd = resolveAvailableWorkspaceCwd(task?.cwd);
     if (taskCwd) return taskCwd;
 
-    return undefined;
+    return ensureNeutralWorkspaceDir(this.deps.runtimePaths);
+  }
+
+  isNeutralWorkspaceCwd(cwd?: string): boolean {
+    return isNeutralWorkspaceCwd(cwd, this.deps.runtimePaths);
+  }
+
+  /** Drops a recorded cwd that only reflects the server's own directory; see isImplicitHostCwd. */
+  explicitRecordedCwd(cwd: string | undefined): string | undefined {
+    return cwd && !isImplicitHostCwd(cwd, this.deps.runtimePaths, this.deps.hostRoots) ? cwd : undefined;
   }
 
   resolveEffectiveSessionCwdFromWorkspaceYaml(
@@ -113,8 +130,9 @@ export class SessionWorkspaceController {
   ): string | undefined {
     const linkedTask = this.findLinkedTask(sessionId);
     return this.resolvePersistedSessionCwd(sessionId)
-      ?? resolveAvailableWorkspaceCwd(parseWorkspaceCwd(workspaceYamlContent))
-      ?? resolveAvailableWorkspaceCwd(linkedTask?.cwd);
+      ?? this.explicitRecordedCwd(resolveNeutralAwareCwd(parseWorkspaceCwd(workspaceYamlContent), this.deps.runtimePaths))
+      ?? resolveAvailableWorkspaceCwd(linkedTask?.cwd)
+      ?? ensureNeutralWorkspaceDir(this.deps.runtimePaths);
   }
 
   createWorkspaceYamlCwdResolver(): (sessionId: string, workspaceYamlContent: string) => Promise<string | undefined> {
@@ -134,9 +152,13 @@ export class SessionWorkspaceController {
         taskCwdBySessionId.set(sessionId, task.cwd);
       }
     }
+    // Display-only: the neutral workspace counts as available without recreating it here.
+    const getListAvailability: typeof getAvailability = async (cwd) => this.isNeutralWorkspaceCwd(cwd ?? undefined)
+      ? { cwd: cwd!.trim(), available: true, clearStalePin: false }
+      : await getAvailability(cwd);
     return async (sessionId, workspaceYamlContent) => {
       const pinnedCwd = pinnedWorkspaces[sessionId]?.cwd;
-      const pinnedAvailability = await getAvailability(pinnedCwd);
+      const pinnedAvailability = await getListAvailability(pinnedCwd);
       if (pinnedAvailability?.available) return pinnedAvailability.cwd;
 
       if (pinnedAvailability) {
@@ -154,8 +176,9 @@ export class SessionWorkspaceController {
         : (taskCwdBySessionId.has(sessionId)
             ? taskCwdBySessionId.get(sessionId)
             : this.deps.taskStore.findTaskBySessionId?.(sessionId)?.cwd);
-      return await resolveAvailableWorkspaceCwdAsync(parseWorkspaceCwd(workspaceYamlContent), getAvailability)
-        ?? await resolveAvailableWorkspaceCwdAsync(linkedTaskCwd, getAvailability);
+      return this.explicitRecordedCwd(await resolveAvailableWorkspaceCwdAsync(parseWorkspaceCwd(workspaceYamlContent), getListAvailability))
+        ?? await resolveAvailableWorkspaceCwdAsync(linkedTaskCwd, getAvailability)
+        ?? this.deps.runtimePaths?.workspaceDir;
     };
   }
 
@@ -223,7 +246,7 @@ export class SessionWorkspaceController {
     const storedWorkspace = this.deps.sessionWorkspaceStore?.getWorkspace(sessionId);
     const cwd = storedWorkspace?.cwd?.trim();
     if (!cwd) return undefined;
-    const availability = getWorkspaceAvailability(cwd);
+    const availability = getNeutralAwareAvailability(cwd, this.deps.runtimePaths);
     if (availability?.available) return availability.cwd;
 
     if (availability?.clearStalePin) {

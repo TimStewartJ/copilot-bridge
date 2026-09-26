@@ -24,6 +24,7 @@ import {
 import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
+import { prepareNeutralWorkspaceDir } from "./neutral-workspace.js";
 import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
 import { queueBootRecoveryPrompts } from "./restart-resume.js";
 import { setProcessLaunchObserver } from "./process-host.js";
@@ -68,6 +69,7 @@ app.use(createResponseCompressionMiddleware());
 
 const runtimePaths = resolveRuntimePaths(process.env);
 await prepareDashboardRetirement(runtimePaths.dataDir);
+await prepareNeutralWorkspaceDir(runtimePaths);
 const { ctx: defaultContext } = createAppContext({
   runtimePaths,
   apiBasePath: "/api",
