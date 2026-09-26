@@ -1,4 +1,5 @@
 import { RuntimeConnection, type CopilotClientOptions } from "@github/copilot-sdk";
+import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 
 export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
@@ -16,6 +17,24 @@ export function resolveBridgeCopilotGitHubToken(
   return normalizeOptionalEnvValue(
     clientEnv?.[BRIDGE_COPILOT_GITHUB_TOKEN_ENV] ?? process.env[BRIDGE_COPILOT_GITHUB_TOKEN_ENV],
   );
+}
+
+/**
+ * The runtime falls back to its own process cwd for repository instructions when a
+ * session's cwd is outside any git work tree. Left to inherit the server's cwd (the Bridge
+ * checkout or a release slot), every folder-less session would load the Bridge's AGENTS.md.
+ */
+function runtimeWorkingDirectory(workspaceDir: string | undefined): { workingDirectory?: string } {
+  const dir = normalizeOptionalEnvValue(workspaceDir);
+  if (!dir) return {};
+  try {
+    // Startup prepares it; recreate it if it disappeared so the spawn cannot fail on a missing cwd.
+    mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    // Falling back to the inherited cwd would silently reload the Bridge's own instructions.
+    throw new Error(`Could not prepare the Copilot runtime working directory ${dir}`, { cause: error });
+  }
+  return { workingDirectory: dir };
 }
 
 export function buildCopilotClientOptions(
@@ -38,6 +57,7 @@ export function buildCopilotClientOptions(
   return {
     connection: RuntimeConnection.forStdio({ path: copilotCliPath }),
     env,
+    ...runtimeWorkingDirectory(inheritedEnv.BRIDGE_WORKSPACE_DIR),
     ...(gitHubToken ? { gitHubToken, useLoggedInUser: false } : {}),
   };
 }

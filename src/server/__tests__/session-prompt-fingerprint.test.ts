@@ -28,6 +28,19 @@ describe("Bridge prompt fingerprints", () => {
     expect(JSON.stringify(plan)).not.toContain("TEMP B-TREE");
   });
 
+  it("changes the system-message hash when a section transform or the coauthor option changes", () => {
+    const base = { systemMessage: { mode: "customize", sections: { tone: { action: (text: string) => text.trim() } } } };
+    const renamedTransform = { systemMessage: { mode: "customize", sections: { tone: { action: (text: string) => text.trimEnd() } } } };
+
+    expect(fingerprintPromptConfig(base).systemMessage).not.toBe(fingerprintPromptConfig(renamedTransform).systemMessage);
+    expect(fingerprintPromptConfig(base).sections).not.toBe(fingerprintPromptConfig(renamedTransform).sections);
+    expect(fingerprintPromptConfig({ ...base, coauthorEnabled: false }).systemMessage)
+      .not.toBe(fingerprintPromptConfig({ ...base, coauthorEnabled: true }).systemMessage);
+    expect(fingerprintPromptConfig(base)).toEqual(fingerprintPromptConfig({
+      systemMessage: { mode: "customize", sections: { tone: { action: (text: string) => text.trim() } } },
+    }));
+  });
+
   it("accepts legacy hashes but rejects malformed metadata and reports read failures without failing", () => {
     const store = createTelemetryStore(setupTestDb());
     for (const metadata of [

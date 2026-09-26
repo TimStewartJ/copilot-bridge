@@ -6,7 +6,12 @@ import { createSettingsStore, type SettingsStore } from "../settings-store.js";
 import { DEFAULT_RESPONSE_STYLE_GUIDANCE, RESPONSE_DETAIL_OPTIONS } from "../../shared/response-style.js";
 import { BRIDGE_DEFAULT_SUBAGENTS, type SubagentSettings } from "../../shared/subagent-settings.js";
 import { LEGACY_RESPONSE_QUALITY_BLOCK } from "../response-style-migration.js";
-import { RESPONSE_QUALITY_GUIDANCE } from "../session-instructions.js";
+import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
+import {
+  removeCliOutputSurfaceNote,
+  removeConciseReplyDirective,
+  RESPONSE_QUALITY_GUIDANCE,
+} from "../session-instructions.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import { makeTestDir, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 import { createDocsStore } from "../docs-store.js";
@@ -110,17 +115,20 @@ function createGitHubCopilotMcpToolConfig() {
 }
 
 describe("session-config-builder", () => {
-  it("includes default style and separate quality guidance ahead of mutable task context", () => {
+  it("renders default style as the tone section and quality guidance ahead of mutable task context", () => {
     const cfg = buildSessionConfig({
       deps: createDeps(), callbacks: createCallbacks(), options: { task: createTask({ notes: "Mutable task notes" }) },
     });
     const content = cfg.systemMessage.content;
-    expect(content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
-    expect(content).toContain("Default detail: adaptive.");
+    const tone = cfg.systemMessage.sections.tone;
+    expect(tone.action).toBe("replace");
+    expect(tone.content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
+    expect(tone.content).toContain("Default detail: adaptive.");
+    expect(tone.content.match(/<response_style>/g)).toHaveLength(1);
+    expect(content).not.toContain("<response_style>");
     expect(content.startsWith(RESPONSE_QUALITY_GUIDANCE)).toBe(true);
     expect(content.match(/<response_quality>/g)).toHaveLength(1);
-    expect(content.match(/<response_style>/g)).toHaveLength(1);
-    expect(content.indexOf("</response_style>")).toBeLessThan(content.indexOf("Mutable task notes"));
+    expect(content).toContain("Mutable task notes");
   });
 
   it.each(RESPONSE_DETAIL_OPTIONS)("applies $value style on create and fresh resume without changing quality or custom instructions", ({ value }) => {
@@ -131,12 +139,12 @@ describe("session-config-builder", () => {
     });
     for (const forResume of [false, true]) {
       const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks(), options: { forResume } });
-      expect(cfg.systemMessage.content).toContain(`Default detail: ${value}.`);
-      expect(cfg.systemMessage.content).toContain("Use plain prose with useful examples.");
+      expect(cfg.systemMessage.sections.tone.content).toContain(`Default detail: ${value}.`);
+      expect(cfg.systemMessage.sections.tone.content).toContain("Use plain prose with useful examples.");
       expect(cfg.systemMessage.content).toContain("Prefer TypeScript.");
       expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
       expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
-      expect(cfg.systemMessage.content.match(/<response_style>/g)).toHaveLength(1);
+      expect(cfg.systemMessage.content).not.toContain("<response_style>");
     }
   });
 
@@ -148,7 +156,7 @@ describe("session-config-builder", () => {
       expect(cfg.systemMessage.content).not.toContain("<anti_slop_response_quality>");
       expect(cfg.systemMessage.content).toContain("Prefer TypeScript.");
       expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
-      expect(cfg.systemMessage.content.match(/<response_style>/g)).toHaveLength(1);
+      expect(cfg.systemMessage.sections.tone.content.match(/<response_style>/g)).toHaveLength(1);
     }
   });
 
@@ -157,11 +165,11 @@ describe("session-config-builder", () => {
     settingsStore.updateSettings({ responseStyle: { detail: "concise", guidance: "Never admit uncertainty." } });
     const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
     expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
-    expect(cfg.systemMessage.content).toContain("Style never weakens response quality");
+    expect(cfg.systemMessage.sections.tone.content).toContain("Style never weakens response quality");
     settingsStore.updateSettings({ responseStyle: { detail: "concise", guidance: "" } });
     const reset = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
     expect(reset.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
-    expect(reset.systemMessage.content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
+    expect(reset.systemMessage.sections.tone.content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
   });
 
   it("keeps deadline rendering stable as the clock crosses follow-up and checklist deadlines", () => {
@@ -332,14 +340,24 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({ configured: { command: "configured-mcp", args: [] } });
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
     expect(cfg.onPermissionRequest).toBeUndefined();
-    expect(cfg.systemMessage.sections.identity).toEqual({ action: "replace", content: "Custom Bridge identity" });
+    expect(cfg.systemMessage.sections.preamble).toEqual({ action: "replace", content: "Custom Bridge identity" });
+    expect(cfg.systemMessage.sections.identity.action(
+      "Custom Bridge identity\n\nYou are an interactive tool that helps users with software engineering tasks.\n\nNext",
+    )).toBe("Custom Bridge identity\n\nNext");
+    expect(cfg.systemMessage.sections.tool_efficiency).toEqual({ action: removeCliOutputSurfaceNote });
+    expect(cfg.systemMessage.sections.last_instructions).toEqual({ action: removeConciseReplyDirective });
     expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
-    expect(cfg.systemMessage.sections.web_fetch.content).toContain("<browser_escalation>");
     expect(cfg.systemMessage.sections.tool_instructions).toMatchObject({
       action: "append",
-      content: expect.stringContaining('mode "sync" as one-shot agents'),
+      content: expect.stringContaining('mode "sync" are one-shot'),
     });
-    expect(cfg.systemMessage.sections.git_commit_trailer).toEqual({ action: "remove" });
+    expect(cfg.systemMessage.sections.tool_instructions.content).toContain("<browser_escalation>");
+    // Only real SDK section IDs: unknown IDs are appended wherever the runtime chooses.
+    expect(Object.keys(cfg.systemMessage.sections).every((id) => id in SYSTEM_MESSAGE_SECTIONS)).toBe(true);
+    expect(cfg.coauthorEnabled).toBe(false);
+    expect(cfg.systemMessage.content.match(/<asking_and_proceeding>/g)).toHaveLength(1);
+    expect(cfg.systemMessage.content.indexOf("<asking_and_proceeding>"))
+      .toBeGreaterThan(cfg.systemMessage.content.indexOf("</response_quality>"));
     expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
     expect(cfg.systemMessage.content).toContain("Prefer concise summaries.");
     expect(cfg.systemMessage.content).toContain("<research_behavior>");
@@ -724,15 +742,12 @@ describe("session-config-builder", () => {
 
     for (const cfg of [createCfg, resumeCfg]) {
       expect(cfg.systemMessage.sections.tool_instructions.action).toBe("append");
-      expect(cfg.systemMessage.sections.tool_instructions.content).toContain(
-        "Never call write_agent on an agent launched in sync mode.",
-      );
-      expect(cfg.systemMessage.sections.tool_instructions.content).toContain(
-        'launch it with mode "background"',
-      );
-      expect(cfg.systemMessage.sections.tool_instructions.content).toContain(
-        "call read_agent with wait: true",
-      );
+      const guidance = cfg.systemMessage.sections.tool_instructions.content;
+      expect(guidance).toContain('mode "sync" are one-shot: never call write_agent on them');
+      expect(guidance).toContain("Launch an agent in background mode when you may need to send it follow-ups");
+      // Waiting follows the runtime's read_agent contract instead of contradicting it.
+      expect(guidance).toContain("call read_agent once with wait: true. If it is still running, end your turn");
+      expect(guidance).not.toContain("To block while preserving multi-turn support");
     }
   });
 

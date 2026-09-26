@@ -18,16 +18,25 @@ export interface PromptFingerprintConfig {
   availableTools?: readonly string[];
   customAgents?: readonly unknown[];
   githubMcpToolConfig?: unknown;
+  coauthorEnabled?: boolean;
+}
+
+// Section transforms are functions; their source decides the prompt text, so hash it
+// instead of letting JSON.stringify drop them.
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === "function" ? `[transform ${item.toString()}]` : item) ?? "null";
 }
 
 function hash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value) ?? "null").digest("hex");
+  return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
 export function fingerprintPromptConfig(config: PromptFingerprintConfig) {
   const message = isRecord(config.systemMessage) ? config.systemMessage : {};
   return {
-    systemMessage: hash(config.systemMessage),
+    // coauthorEnabled makes the runtime add or omit its commit-trailer instruction.
+    systemMessage: hash({ systemMessage: config.systemMessage, coauthorEnabled: config.coauthorEnabled }),
     sections: hash(message.sections),
     content: hash(message.content),
     tools: hash({
