@@ -7,7 +7,8 @@
  *   session.start         → data.selectedModel, data.reasoningEffort
  *
  * session.model_change events that omit reasoningEffort preserve the previous
- * reasoning effort, matching SDK event replay. Malformed lines are skipped.
+ * reasoning effort, matching SDK event replay. Events tagged with a top-level
+ * agentId belong to a sub-agent and are ignored. Malformed lines are skipped.
  */
 
 import { readFileSync } from "node:fs";
@@ -28,11 +29,18 @@ interface ExtractedModelEvent extends DerivedModelState {
   preserveContextTier: boolean;
 }
 
+export function isSubagentScopedEvent(event: Record<string, unknown> | null | undefined): boolean {
+  return typeof event?.agentId === "string" && event.agentId.length > 0;
+}
+
 function extractFromEvent(event: unknown): ExtractedModelEvent | null {
   if (!event || typeof event !== "object") return null;
   const e = event as Record<string, unknown>;
   const data = e.data as Record<string, unknown> | undefined;
   if (!data) return null;
+  // Sub-agents write their own session.model_change into the parent's log, tagged
+  // with agentId. They describe the sub-agent's model, never the session's.
+  if (isSubagentScopedEvent(e)) return null;
 
   const type = e.type;
   if (type === "session.model_change") {
