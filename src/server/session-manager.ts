@@ -4599,6 +4599,8 @@ export class SessionManager {
     const t0 = Date.now();
     const result = await backend.forkSession(sourceSessionId, forkOpts);
     const duration = Date.now() - t0;
+    // Pin before the first resume so the fork starts in the source's effective workspace.
+    this.persistSessionWorkspace(result.sessionId, sourceCwd);
     if (this.deps.bridgeToolsMcpServer && typeof backend.resumeSession === "function") {
       try {
         const forkResumeConfig = this.buildSessionConfig({
@@ -4614,11 +4616,11 @@ export class SessionManager {
           cancellationMessage: "Fork resume cancelled before admission",
         });
       } catch (error) {
+        this.deps.sessionWorkspaceStore?.deleteWorkspace(result.sessionId);
         try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
         throw error;
       }
     }
-    this.persistSessionWorkspace(result.sessionId, sourceCwd);
 
     console.log(`[sdk] Forked session ${sourceSessionId.slice(0, 8)} → ${result.sessionId.slice(0, 8)}`);
     this.invalidateSessionListCache("session:fork");

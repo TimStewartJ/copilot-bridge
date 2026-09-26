@@ -121,7 +121,7 @@ export interface SessionWorkspaceSummary {
   warnings?: SessionWorkspaceWarning[];
 }
 
-export type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "none";
+export type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "bridge_workspace" | "none";
 export type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
 export type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace" | "cleared_pinned_workspace";
 

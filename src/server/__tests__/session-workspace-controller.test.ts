@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { resolveRuntimePaths } from "../runtime-paths.js";
@@ -37,23 +37,33 @@ function createTask(id: string, sessionId: string, cwd?: string): Task {
 
 function createController(opts: {
   taskStore: Pick<TaskStore, "listTasks" | "findTaskBySessionId">;
-  sessionWorkspaceStore?: Partial<Pick<SessionWorkspaceStore, "getWorkspace" | "listWorkspaces" | "deleteWorkspace">>;
+  sessionWorkspaceStore?: Partial<Pick<SessionWorkspaceStore, "getWorkspace" | "listWorkspaces" | "deleteWorkspace" | "setWorkspace">>;
   workspaceDir?: string;
+  copilotHome?: string;
+  hostRoots?: string[];
 }): SessionWorkspaceController {
   const dataDir = makeTestDir("session-workspace-controller");
   const runtimePaths = resolveRuntimePaths(process.env, {
     dataDir,
     docsDir: join(dataDir, "docs"),
     copilotHome: join(dataDir, ".copilot"),
-    ...(opts.workspaceDir ? { workspaceDir: opts.workspaceDir } : {}),
+    workspaceDir: opts.workspaceDir ?? join(dataDir, "neutral-workspace"),
   });
   return new SessionWorkspaceController({
     taskStore: opts.taskStore as TaskStore,
     sessionWorkspaceStore: opts.sessionWorkspaceStore as SessionWorkspaceStore | undefined,
     runtimePaths,
+    copilotHome: opts.copilotHome,
+    hostRoots: opts.hostRoots,
     isSessionBusy: () => false,
     onWorkspaceChange: () => {},
   });
+}
+
+function writeRecordedCwd(copilotHome: string, sessionId: string, cwd: string): void {
+  const dir = join(copilotHome, "session-state", sessionId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "workspace.yaml"), createWorkspaceYaml(cwd));
 }
 
 function createWorkspaceYaml(cwd?: string): string {
@@ -195,6 +205,97 @@ describe("SessionWorkspaceController effective cwd resolution", () => {
       warn.mockRestore();
     }
     }
+  });
+});
+
+describe("SessionWorkspaceController neutral workspace", () => {
+  const noTasks = { listTasks: () => [], findTaskBySessionId: () => undefined };
+
+  it("uses the neutral workspace instead of an implicit Bridge host cwd", async () => {
+    const hostRoot = makeTestDir("session-workspace-host");
+    const copilotHome = makeTestDir("session-workspace-home");
+    const workspaceDir = join(makeTestDir("session-workspace-neutral"), "workspace");
+    writeRecordedCwd(copilotHome, "session-a", hostRoot);
+    const controller = createController({ taskStore: noTasks, copilotHome, workspaceDir, hostRoots: [hostRoot] });
+
+    expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-a" })).toBe(workspaceDir);
+    expect(existsSync(workspaceDir)).toBe(true);
+    expect(controller.resolveEffectiveSessionCwdFromWorkspaceYaml("session-a", createWorkspaceYaml(hostRoot)))
+      .toBe(workspaceDir);
+    await expect(controller.createWorkspaceYamlCwdResolver()("session-a", createWorkspaceYaml(hostRoot)))
+      .resolves.toBe(workspaceDir);
+  });
+
+  it("moves an implicit host cwd to the linked task's folder when it has one", () => {
+    const hostRoot = makeTestDir("session-workspace-host");
+    const copilotHome = makeTestDir("session-workspace-home");
+    const taskCwd = makeTestDir("session-workspace-task");
+    writeRecordedCwd(copilotHome, "session-a", hostRoot);
+    const controller = createController({ taskStore: noTasks, copilotHome, hostRoots: [hostRoot] });
+
+    expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-a", task: { cwd: taskCwd } })).toBe(taskCwd);
+  });
+
+  it("keeps an explicit recorded cwd and a recorded neutral workspace", () => {
+    const hostRoot = makeTestDir("session-workspace-host");
+    const copilotHome = makeTestDir("session-workspace-home");
+    const project = makeTestDir("session-workspace-project");
+    const workspaceDir = makeTestDir("session-workspace-neutral");
+    const taskCwd = makeTestDir("session-workspace-task");
+    writeRecordedCwd(copilotHome, "session-project", project);
+    writeRecordedCwd(copilotHome, "session-neutral", workspaceDir);
+    const controller = createController({ taskStore: noTasks, copilotHome, workspaceDir, hostRoots: [hostRoot] });
+
+    expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-project" })).toBe(project);
+    expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-neutral", task: { cwd: taskCwd } }))
+      .toBe(workspaceDir);
+  });
+
+  it("uses the neutral workspace for new sessions without a task folder", () => {
+    const workspaceDir = join(makeTestDir("session-workspace-neutral"), "workspace");
+    const controller = createController({ taskStore: noTasks, workspaceDir, hostRoots: [] });
+
+    expect(controller.resolveEffectiveSessionCwd({ task: null })).toBe(workspaceDir);
+    expect(controller.resolveEffectiveSessionCwd({ task: { cwd: undefined } })).toBe(workspaceDir);
+  });
+
+  it("keeps a pinned or recorded neutral workspace even after it is deleted and the task gains a folder", () => {
+    const copilotHome = makeTestDir("session-workspace-home");
+    const workspaceDir = join(makeTestDir("session-workspace-neutral"), "workspace");
+    mkdirSync(workspaceDir, { recursive: true });
+    const taskCwd = makeTestDir("session-workspace-task");
+    writeRecordedCwd(copilotHome, "session-recorded", workspaceDir);
+    const deleteWorkspace = vi.fn();
+    const controller = createController({
+      taskStore: noTasks,
+      copilotHome,
+      workspaceDir,
+      hostRoots: [],
+      sessionWorkspaceStore: {
+        getWorkspace: (sessionId) => sessionId === "session-pinned"
+          ? { cwd: workspaceDir, updatedAt: "2026-01-01T00:00:00.000Z" }
+          : undefined,
+        deleteWorkspace,
+      },
+    });
+    rmSync(workspaceDir, { recursive: true, force: true });
+
+    expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-pinned", task: { cwd: taskCwd } })).toBe(workspaceDir);
+    expect(existsSync(workspaceDir)).toBe(true);
+    rmSync(workspaceDir, { recursive: true, force: true });
+    expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-recorded", task: { cwd: taskCwd } })).toBe(workspaceDir);
+    expect(existsSync(workspaceDir)).toBe(true);
+    expect(deleteWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("pins the neutral workspace like any other session workspace", () => {
+    const workspaceDir = makeTestDir("session-workspace-neutral");
+    const setWorkspace = vi.fn();
+    const controller = createController({ taskStore: noTasks, workspaceDir, sessionWorkspaceStore: { setWorkspace } });
+
+    controller.persistSessionWorkspace("session-a", workspaceDir);
+
+    expect(setWorkspace).toHaveBeenCalledWith("session-a", workspaceDir);
   });
 });
 

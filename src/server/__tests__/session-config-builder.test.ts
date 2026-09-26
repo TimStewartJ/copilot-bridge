@@ -1307,7 +1307,8 @@ describe("session-config-builder", () => {
     expect(cfg.pendingInteractionEvents).toBe(true);
     expect(cfg.onUserInputRequest).toBeUndefined();
     expect(cfg.onElicitationRequest).toBeUndefined();
-    expect(cfg.systemMessage.sections.code_change_rules.content).toContain("<staging_workflow>");
+    // No resolved cwd is not evidence of Bridge work, so the staging workflow stays out.
+    expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
     expect(cfg.systemMessage.content).toContain('You are helping with task "Config task" (taskId: task-1).');
     expect(cfg.systemMessage.content).toContain("use the task update tool");
     expect(cfg.systemMessage.content).toContain("Currently linked work items: #ABC-123 (linear).");

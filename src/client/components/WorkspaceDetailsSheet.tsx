@@ -331,7 +331,9 @@ export default function WorkspaceDetailsSheet({
                           ? "Using task default"
                           : sessionWorkspace?.source === "workspace_yaml"
                             ? "Using the directory the session was started in"
-                            : "Not configured"}
+                            : sessionWorkspace?.source === "bridge_workspace"
+                              ? "Bridge workspace (no project folder)"
+                              : "Not configured"}
                     </div>
                   </>
                 )
