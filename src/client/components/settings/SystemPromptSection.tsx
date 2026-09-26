@@ -11,9 +11,8 @@ import { DS } from "../../design/tokens";
 import { Button, Details, SettingList, SettingRow } from "../../design/primitives";
 import { useSettingsWriter } from "../../hooks/queries/useSettings";
 import { DraftTextField } from "./DraftTextField";
+import { DEFAULT_IDENTITY } from "../../../shared/session-identity.js";
 
-const DEFAULT_IDENTITY_PLACEHOLDER =
-  "You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.";
 
 
 export function SystemPromptSection({
@@ -106,7 +105,7 @@ export function SystemPromptSection({
                 label="Identity"
                 multiline
                 value={draft.identity ?? ""}
-                placeholder={DEFAULT_IDENTITY_PLACEHOLDER}
+                placeholder={DEFAULT_IDENTITY}
                 help="Who the agent is. Replaces the default identity."
                 error={failedKeys.has("identity") ? writeError?.message : null}
                 pending={pendingKeys.has("identity")}

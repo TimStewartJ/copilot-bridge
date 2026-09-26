@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import {
   BRIDGE_COPILOT_GITHUB_TOKEN_ENV,
   buildCopilotClientOptions,
@@ -86,6 +86,23 @@ describe("SessionManager session config", () => {
         useLoggedInUser: false,
       });
     });
+  });
+
+  it("runs the Copilot runtime in the Bridge workspace, recreating it when missing", () => {
+    const workspaceDir = join(makeTestDir("runtime-working-directory"), "workspace");
+    const options = buildCopilotClientOptions({ COPILOT_HOME: makeTestDir("runtime-working-home"), BRIDGE_WORKSPACE_DIR: ` ${workspaceDir} ` });
+
+    expect(options.workingDirectory).toBe(workspaceDir);
+    expect(existsSync(workspaceDir)).toBe(true);
+    expect(buildCopilotClientOptions({ COPILOT_HOME: makeTestDir("runtime-working-home") }).workingDirectory).toBeUndefined();
+  });
+
+  it("refuses to fall back to the inherited runtime cwd when the Bridge workspace cannot be created", () => {
+    const blocker = join(makeTestDir("runtime-working-blocker"), "file");
+    writeFileSync(blocker, "not a directory");
+
+    expect(() => buildCopilotClientOptions({ BRIDGE_WORKSPACE_DIR: join(blocker, "workspace") }))
+      .toThrow("Could not prepare the Copilot runtime working directory");
   });
 
   it("preserves other runtime flags and isolates the bundled runtime from CLI path overrides", () => {

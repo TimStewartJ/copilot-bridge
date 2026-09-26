@@ -63,6 +63,7 @@ const KEPT_FROM_BASE_CONFIG = [
   "pendingInteractionEvents",
   "enableExperimentalMode",
   "memory",
+  "coauthorEnabled",
   "onPermissionRequest",
   "subagents",
 ] as const;
