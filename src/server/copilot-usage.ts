@@ -28,6 +28,7 @@ import {
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage.js";
 import { COPILOT_DEFER_WORKER_USAGE_RETENTION_DAYS } from "../shared/copilot-usage.js";
 import { BRIDGE_SESSION_MODEL_STATE_FILE } from "./session-model-state-sidecar.js";
+import { isSubagentScopedEvent } from "./session-events-model.js";
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";
 
@@ -685,6 +686,8 @@ export async function scanCopilotUsageSession(
   let latestShutdownAt: string | null = null;
   let selectedModel = "unknown";
   let selectedContextTier: CopilotContextTier | undefined;
+  // Sub-agents log their own model changes in the parent's events, tagged with agentId.
+  const subagentSelections = new Map<string, { model: string; contextTier?: CopilotContextTier }>();
   let sessionCreatedAt: string | null = null;
   let firstShutdownSessionStartTime: number | null = null;
   let firstShutdownTotalNanoAiu: number | null = null;
@@ -736,6 +739,17 @@ export async function scanCopilotUsageSession(
       }
 
       if (eventRecord?.type === "session.model_change") {
+        if (isSubagentScopedEvent(eventRecord)) {
+          const agentModel = normalizeModelName(data?.newModel);
+          if (agentModel) {
+            const agentContextTier = normalizeContextTier(data?.contextTier);
+            subagentSelections.set(eventRecord.agentId as string, {
+              model: agentModel,
+              ...(agentContextTier ? { contextTier: agentContextTier } : {}),
+            });
+          }
+          continue;
+        }
         selectedModel = normalizeModelName(data?.newModel) ?? selectedModel;
         if ("contextTier" in (data ?? {})) {
           selectedContextTier = normalizeContextTier(data?.contextTier);
@@ -751,8 +765,13 @@ export async function scanCopilotUsageSession(
           const requestId = typeof data?.requestId === "string" && data.requestId.trim()
             ? data.requestId.trim()
             : `event:${fallbackEventIndex++}`;
-          const messageModel = normalizeModelName(data?.model) ?? selectedModel;
-          const contextTier = messageModel === selectedModel ? selectedContextTier : undefined;
+          const agentSelection = isSubagentScopedEvent(eventRecord)
+            ? subagentSelections.get(eventRecord.agentId as string)
+            : undefined;
+          const scopeModel = agentSelection?.model ?? selectedModel;
+          const scopeContextTier = agentSelection ? agentSelection.contextTier : selectedContextTier;
+          const messageModel = normalizeModelName(data?.model) ?? scopeModel;
+          const contextTier = messageModel === scopeModel ? scopeContextTier : undefined;
           const key = `${usageModelKey(messageModel, contextTier)}\u0000${requestId}`;
           const existing = assistantUsageByRequest.get(key);
           if (!existing || outputTokens > existing.outputTokens) {
