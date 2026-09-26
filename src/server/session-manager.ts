@@ -1831,6 +1831,7 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (!session || (expectedSession && session !== expectedSession)) return undefined;
     this.sessionObjects.delete(sessionId);
+    this.sessionRunner.detachSession(sessionId, session);
     this.sessionTreeLastActivityAt.delete(sessionId);
     this.slashCommandListCache.delete(sessionId);
     this.agentRegistry.markSessionUnavailable(sessionId);
@@ -2037,6 +2038,7 @@ export class SessionManager {
         }
         this.sessionObjects.delete(sessionId);
         this.sessionObjects.set(sessionId, session);
+        this.sessionRunner.attachSession(sessionId, session);
         this.slashCommandListCache.delete(sessionId);
       } else {
         this.sessionObjects.delete(sessionId);
@@ -2368,6 +2370,7 @@ export class SessionManager {
     } else {
       this.resumingSessions.set(sessionId, count - 1);
     }
+    this.sessionRunner.followRuntimeTurn(sessionId);
     this.notifySessionCapacityChanged();
     this.scheduleCacheOperation(
       this.trimSessionCache("session resume ended"),
@@ -4822,6 +4825,7 @@ export class SessionManager {
       throw error;
     } finally {
       this.sessionOverlayBusyReasons.delete(sessionId);
+      this.sessionRunner.followRuntimeTurn(sessionId);
       this.flushPendingSessionEviction(sessionId);
     }
   }
@@ -5750,6 +5754,7 @@ export class SessionManager {
       };
     } finally {
       this.sessionOverlayBusyReasons.delete(sessionId);
+      this.sessionRunner.followRuntimeTurn(sessionId);
       this.flushPendingSessionEviction(sessionId);
       this.scheduleCacheOperation(
         this.trimSessionCache("model switch ended"),

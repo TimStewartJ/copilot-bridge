@@ -222,7 +222,7 @@ describe("SessionManager session config", () => {
       copilotHome,
     }) as any;
     manager.backend = {
-      createSession: vi.fn(async () => ({ sessionId: "new-session", disconnect: vi.fn() })),
+      createSession: vi.fn(async () => makeAgentSessionStub({ sessionId: "new-session", disconnect: vi.fn() })),
     };
 
     manager.modelMetadata = [{
@@ -331,7 +331,7 @@ describe("SessionManager session config", () => {
       copilotHome,
     }) as any;
     manager.backend = {
-      createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
+      createSession: vi.fn(async () => makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
     await manager.createTaskSession(
@@ -419,7 +419,7 @@ describe("SessionManager session config", () => {
       copilotHome,
     }) as any;
     manager.backend = {
-      createSession: vi.fn(async () => ({ sessionId: "task-session", disconnect: vi.fn() })),
+      createSession: vi.fn(async () => makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
     await manager.createTaskSession(
