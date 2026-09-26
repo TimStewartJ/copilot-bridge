@@ -39,11 +39,19 @@ export interface VoiceEngineLoadResult {
   warmupMs: number;
 }
 
+export interface VoiceClipChunk {
+  startSeconds: number;
+  endSeconds: number;
+  words: number;
+}
+
 export interface VoiceClipTranscription {
   text: string;
   audioSeconds: number;
   speechSeconds: number;
   chunks: number;
+  /** Where each recognizer chunk sat in the recording and how many words it returned. */
+  chunkDetails?: VoiceClipChunk[];
   ms: number;
   /** How the recording arrived: compressed by the browser, or the WAV every browser can send. */
   format: "wav" | "opus";
