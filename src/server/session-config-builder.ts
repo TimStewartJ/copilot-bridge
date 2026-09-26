@@ -23,11 +23,15 @@ import {
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import {
   AGENT_LIFECYCLE_GUIDANCE,
+  ASK_OR_PROCEED_GUIDANCE,
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
   COMPUTER_USE_OFF_GUIDANCE,
   DEFAULT_IDENTITY,
   HOME_GUIDANCE,
+  createCodingModeStatementRemover,
+  removeCliOutputSurfaceNote,
+  removeConciseReplyDirective,
   RESEARCH_GUIDANCE,
   RESPONSE_QUALITY_GUIDANCE,
   STAGING_INSTRUCTIONS,
@@ -369,10 +373,13 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     cfg.workingDirectory = workingDirectory;
   }
 
+  // The Bridge never wants the runtime's commit Co-authored-by instruction.
+  cfg.coauthorEnabled = false;
+
   // Keep stable guidance ahead of mutable task, tag, and docs context.
   const contextParts: string[] = [
     RESPONSE_QUALITY_GUIDANCE,
-    renderResponseStyle(settings?.responseStyle),
+    ASK_OR_PROCEED_GUIDANCE,
     ...(settings?.customInstructions?.trim() ? [settings.customInstructions.trim()] : []),
     RESEARCH_GUIDANCE,
     HOME_GUIDANCE,
@@ -460,14 +467,23 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
   }
 
-  // Identity override — always replace the SDK default with Bridge identity
+  // `identity` is a section group that also carries tone, tool efficiency, search
+  // guidance and the model self-identification, so only the preamble is replaced.
+  // Child overrides apply before the group transform sees the rendered group.
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
-  sections.identity = { action: "replace", content: identityText };
+  sections.identity = { action: createCodingModeStatementRemover(identityText) };
+  sections.preamble = { action: "replace", content: identityText };
+  // The CLI's tone differs by model family and conflicts with the Bridge style setting.
+  sections.tone = { action: "replace", content: renderResponseStyle(settings?.responseStyle) };
+  sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
+  sections.last_instructions = { action: removeConciseReplyDirective };
 
-  // Tighten the SDK's native task/write_agent contract without replacing its
-  // broader per-tool guidance.
-  sections.tool_instructions = { action: "append", content: AGENT_LIFECYCLE_GUIDANCE };
-  sections.git_commit_trailer = { action: "remove" };
+  // Tighten the SDK's native task/write_agent contract and teach web_fetch escalation
+  // without replacing the broader per-tool guidance.
+  sections.tool_instructions = {
+    action: "append",
+    content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
+  };
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
   if (task && deps.tagStore) {
@@ -515,9 +531,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // server's IANA zone name for scheduling and timezone-specific prompts.
   const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   sections.environment_context = { action: "append", content: `\n* Server timezone: ${serverTz}` };
-
-  // Browser escalation guidance — teach the model to recognize web_fetch failures
-  sections.web_fetch = { action: "append", content: BROWSER_GUIDANCE };
 
   const hasContent = contextParts.length > 0;
 

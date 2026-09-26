@@ -2,7 +2,7 @@
 
 export const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql", "report_intent"];
 
-export const DEFAULT_IDENTITY = `You are a helpful AI assistant powered by Copilot Bridge. You are an interactive CLI tool that helps users with software engineering tasks, answers questions, and assists with a wide range of topics. You are versatile and conversational — not limited to coding.`;
+export { DEFAULT_IDENTITY } from "../shared/session-identity.js";
 
 export const RESPONSE_QUALITY_GUIDANCE = `
 <response_quality>
@@ -14,13 +14,66 @@ These safeguards apply regardless of presentation preferences.
 </response_quality>
 `.trim();
 
-export const AGENT_LIFECYCLE_GUIDANCE = `
-**Sub-agent lifecycle**
-* Treat agents launched with mode "sync" as one-shot agents.
-* Never call write_agent on an agent launched in sync mode.
-* If an agent might need correction, refinement, review, or any follow-up, launch it with mode "background".
-* To block while preserving multi-turn support, launch the agent in background mode and call read_agent with wait: true.
+export const ASK_OR_PROCEED_GUIDANCE = `
+<asking_and_proceeding>
+Other instructions pull in different directions on when to ask and when to act. Resolve them this way, unless the user or the task says otherwise:
+- Make routine judgment calls yourself and state the assumption. Ask only when reasonable readings would lead to materially different work, or when proceeding would be unsafe or leave the work useless if the guess is wrong.
+- Before asking, do everything that does not depend on the answer.
+- A question like "should we do X?" authorizes local, reversible work. It does not authorize actions that are hard to undo or that reach other people or shared systems, such as deploying, pushing, sending messages or deleting data. Confirm those first unless the user or task instructions already authorize them.
+</asking_and_proceeding>
 `.trim();
+
+export const AGENT_LIFECYCLE_GUIDANCE = `
+**Sub-agent lifecycle** (refines the sync and background defaults above)
+* Agents launched with mode "sync" are one-shot: never call write_agent on them. Keep sync as the default for one-off work.
+* Launch an agent in background mode when you may need to send it follow-ups, such as a correction or another review round. This is the one exception to using background mode only while doing independent work.
+* To wait for a background agent, call read_agent once with wait: true. If it is still running, end your turn and continue when its completion notification arrives; do not call read_agent repeatedly.
+`.trim();
+
+// Section transforms for CLI-rendered text the Bridge keeps but must correct. The pattern
+// lives inside each function so the prompt fingerprint (which hashes function source)
+// changes whenever the transform does. Each returns the input unchanged when the line is absent.
+
+/**
+ * identity group: removes the runtime's mode statement, which frames every session as
+ * software engineering. The rendered group starts with the Bridge identity (the replaced
+ * preamble) and the runtime places the statement before the tone section, so only that
+ * span is searched and neither a custom identity nor user style guidance is edited.
+ */
+const codingModeStatementRemovers = new Map<string, (content: string) => string>();
+
+export function createCodingModeStatementRemover(identityText: string): (content: string) => string {
+  // One function per identity keeps rebuilt session configs deep-equal.
+  const cached = codingModeStatementRemovers.get(identityText);
+  if (cached) return cached;
+  if (codingModeStatementRemovers.size >= 16) {
+    codingModeStatementRemovers.delete(codingModeStatementRemovers.keys().next().value!);
+  }
+  const remover = (content: string): string => {
+    const statement = "You are an interactive tool that helps users with software engineering tasks.";
+    if (!content.startsWith(identityText)) return content;
+    const start = content.indexOf(statement, identityText.length);
+    // The runtime renders it before the tone section, which holds user-authored style guidance.
+    const toneStart = content.indexOf("<response_style>", identityText.length);
+    if (start < 0 || (toneStart >= 0 && start > toneStart)) return content;
+    const before = content.slice(0, start).replace(/[^\S\r\n]*$/, "");
+    const after = content.slice(start + statement.length);
+    // On its own line the statement takes its trailing blank lines with it; inline, only itself.
+    return /(?:^|\n)$/.test(before) ? before + after.replace(/^[^\S\r\n]*(?:\r?\n)+/, "") : before + after;
+  };
+  codingModeStatementRemovers.set(identityText, remover);
+  return remover;
+}
+
+/** tool_efficiency: Bridge output is rendered in a web and mobile chat, not a terminal. */
+export function removeCliOutputSurfaceNote(content: string): string {
+  return content.replace(/^[^\S\r\n]*Your output appears in a command-line interface\b.*(?:\r?\n|$)/m, "").trimEnd();
+}
+
+/** last_instructions: response length is owned by the Bridge response-style setting. */
+export function removeConciseReplyDirective(content: string): string {
+  return content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
+}
 
 export const TOOL_NAMING_GUIDANCE = `
 <tool_naming>
