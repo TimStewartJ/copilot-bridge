@@ -62,12 +62,18 @@ import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment, resolveSessionUploadedFile } from "./outbound-attachments.js";
 import {
   createWorkspaceAvailabilityLookup,
-  getWorkspaceAvailability,
   resolveAvailableWorkspaceCwd,
   resolveAvailableWorkspaceCwdAsync,
   type WorkspaceAvailability,
   type WorkspaceAvailabilityLookup,
 } from "./session-workspace-availability.js";
+import {
+  getNeutralAwareAvailability,
+  getNeutralWorkspaceDir,
+  isImplicitHostCwd,
+  isNeutralWorkspaceCwd,
+  resolveNeutralAwareCwd,
+} from "./neutral-workspace.js";
 import type { SessionWorkspace } from "./session-workspace-store.js";
 import {
   feedCardVisualOwner,
@@ -361,7 +367,7 @@ const SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR = "Linked task workspace is n
 const SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR = "No sibling worktrees are available for this session.";
 const SESSION_WORKTREE_SELECTION_INVALID_ERROR = "Selected workspace is not a discovered sibling worktree.";
 
-type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "none";
+type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "bridge_workspace" | "none";
 type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
 type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace" | "cleared_pinned_workspace";
 
@@ -536,14 +542,17 @@ function composeSessionWorkspaceSummary(
     });
   }
   const overrideCwd = overrideAvailability?.available ? overrideAvailability.cwd : undefined;
-  const effectiveCwd = overrideCwd ?? recordedCwd ?? taskCwd;
-  const source: SessionWorkspaceSource = overrideCwd
-    ? "session_workspace"
-    : recordedCwd
-      ? "workspace_yaml"
-      : taskCwd
-        ? "task"
-        : "none";
+  const explicitRecordedCwd = isImplicitHostCwd(recordedCwd, ctx.runtimePaths) ? undefined : recordedCwd;
+  const effectiveCwd = overrideCwd ?? explicitRecordedCwd ?? taskCwd ?? getNeutralWorkspaceDir(ctx.runtimePaths);
+  const source: SessionWorkspaceSource = isNeutralWorkspaceCwd(effectiveCwd, ctx.runtimePaths)
+    ? "bridge_workspace"
+    : overrideCwd
+      ? "session_workspace"
+      : explicitRecordedCwd
+        ? "workspace_yaml"
+        : taskCwd
+          ? "task"
+          : "none";
 
   return {
     effectiveCwd,
@@ -568,8 +577,8 @@ function buildSessionWorkspaceSummary(
   const sessionOverride = ctx.sessionWorkspaceStore?.getWorkspace(sessionId);
   return composeSessionWorkspaceSummary(ctx, sessionId, {
     sessionOverride,
-    overrideAvailability: getWorkspaceAvailability(sessionOverride?.cwd),
-    recordedCwd: resolveAvailableWorkspaceCwd(getSessionRecordedCwd(ctx, sessionId)),
+    overrideAvailability: getNeutralAwareAvailability(sessionOverride?.cwd, ctx.runtimePaths),
+    recordedCwd: resolveNeutralAwareCwd(getSessionRecordedCwd(ctx, sessionId), ctx.runtimePaths),
     taskCwd: resolveAvailableWorkspaceCwd(task?.cwd),
   });
 }
@@ -589,9 +598,13 @@ async function buildSessionWorkspaceSummaryForList(
     getAvailability: WorkspaceAvailabilityLookup;
   },
 ): Promise<SessionWorkspaceSummaryWithSource> {
+  // Display-only: the neutral workspace counts as available without recreating it here.
+  const getAvailability: WorkspaceAvailabilityLookup = async (cwd) => isNeutralWorkspaceCwd(cwd ?? undefined, ctx.runtimePaths)
+    ? { cwd: cwd!.trim(), available: true, clearStalePin: false }
+    : await inputs.getAvailability(cwd);
   const [overrideAvailability, recordedCwd, taskCwd] = await Promise.all([
-    inputs.getAvailability(inputs.sessionOverride?.cwd),
-    resolveAvailableWorkspaceCwdAsync(inputs.recordedCwd, inputs.getAvailability),
+    getAvailability(inputs.sessionOverride?.cwd),
+    resolveAvailableWorkspaceCwdAsync(inputs.recordedCwd, getAvailability),
     resolveAvailableWorkspaceCwdAsync(inputs.task?.cwd ?? undefined, inputs.getAvailability),
   ]);
   return composeSessionWorkspaceSummary(ctx, sessionId, {

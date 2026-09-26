@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { resolveDefaultReleaseDataDir, resolveRuntimePaths } from "../runtime-paths.js";
+import { dirname, join } from "node:path";
+import { resolveDefaultReleaseDataDir, resolveDefaultWorkspaceDir, resolveRuntimePaths } from "../runtime-paths.js";
 import { createValidationCommandEnv } from "../validation-command-env.js";
 
 describe("runtime paths", () => {
-  it("derives development defaults without an implicit workspace", () => {
+  it("derives development defaults with a per-user workspace outside the checkout", () => {
     const paths = resolveRuntimePaths({}, { distributionMode: "development" });
 
     expect(paths.dataDir).toMatch(/data$/);
     expect(paths.docsDir).toBe(join(paths.dataDir, "docs"));
     expect(paths.docsSnapshotsDir).toBe(join(paths.dataDir, "backups", "docs", "snapshots"));
     expect(paths.copilotHome).toBeUndefined();
-    expect(paths.workspaceDir).toBeUndefined();
+    expect(paths.workspaceDir).toBe(resolveDefaultWorkspaceDir({}));
+    expect(paths.workspaceDir?.startsWith(paths.dataDir)).toBe(false);
+    expect(paths.env.BRIDGE_WORKSPACE_DIR).toBe(paths.workspaceDir);
     expect(paths.env.BRIDGE_DATA_DIR).toBe(paths.dataDir);
     expect(paths.env.BRIDGE_DOCS_DIR).toBe(paths.docsDir);
     expect(paths.env.BRIDGE_DOCS_SNAPSHOTS_DIR).toBe(paths.docsSnapshotsDir);
@@ -58,12 +60,32 @@ describe("runtime paths", () => {
     expect(paths.docsDir).toBe(join(paths.dataDir, "docs"));
     expect(paths.docsSnapshotsDir).toBe(join(paths.dataDir, "backups", "docs", "snapshots"));
     expect(paths.copilotHome).toBe(join(paths.dataDir, ".copilot"));
-    expect(paths.workspaceDir).toBeUndefined();
+    expect(paths.workspaceDir).toBe(resolveDefaultWorkspaceDir({ LOCALAPPDATA: localAppData }));
     expect(paths.env.BRIDGE_DISTRIBUTION_MODE).toBe("release");
     expect(paths.env.BRIDGE_DATA_DIR).toBe(paths.dataDir);
     expect(paths.env.BRIDGE_DOCS_DIR).toBe(paths.docsDir);
     expect(paths.env.BRIDGE_DOCS_SNAPSHOTS_DIR).toBe(paths.docsSnapshotsDir);
     expect(paths.env.COPILOT_HOME).toBe(paths.copilotHome);
+  });
+
+  it("places the default workspace beside the per-user data directory on every platform", () => {
+    const localAppData = join(tmpdir(), "local-app-data");
+    const xdgDataHome = join(tmpdir(), "xdg-data");
+
+    expect(resolveDefaultWorkspaceDir({ LOCALAPPDATA: localAppData }, "win32"))
+      .toBe(join(localAppData, "CopilotBridge", "workspace"));
+    expect(resolveDefaultWorkspaceDir({ XDG_DATA_HOME: xdgDataHome }, "linux"))
+      .toBe(join(xdgDataHome, "CopilotBridge", "workspace"));
+    expect(resolveDefaultWorkspaceDir({}, "darwin"))
+      .toBe(join(dirname(resolveDefaultReleaseDataDir({}, "darwin")), "workspace"));
+  });
+
+  it("honours an explicit workspace from the environment", () => {
+    const workspaceDir = join(tmpdir(), "env-workspace");
+    const paths = resolveRuntimePaths({ BRIDGE_WORKSPACE_DIR: ` ${workspaceDir} ` }, { distributionMode: "development" });
+
+    expect(paths.workspaceDir).toBe(workspaceDir);
+    expect(paths.env.BRIDGE_WORKSPACE_DIR).toBe(workspaceDir);
   });
 
   it("treats blank optional path env vars as unset", () => {

@@ -63,16 +63,19 @@ async function main(): Promise<void> {
     { shutdownAppContextServices },
     { resolveRuntimePaths },
     { createApiCacheControlMiddleware, createResponseCompressionMiddleware },
+    { prepareNeutralWorkspaceDir },
   ] = await Promise.all([
     import("./api-router.js"),
     import("./app-context-factory.js"),
     import("./app-context-shutdown.js"),
     import("./runtime-paths.js"),
     import("./response-transport.js"),
+    import("./neutral-workspace.js"),
   ]);
 
   const runtimePaths = resolveRuntimePaths(process.env);
   await prepareDashboardRetirement(runtimePaths.dataDir);
+  await prepareNeutralWorkspaceDir(runtimePaths);
   const { ctx, db } = createAppContext({
     runtimePaths,
     apiBasePath,
