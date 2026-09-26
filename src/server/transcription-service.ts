@@ -1,5 +1,5 @@
 // Chat mic transcription, backed by the local speech engine that also powers Helm's hands-free mode.
-import type { VoiceClipTranscription } from "./voice/voice-engine-protocol.js";
+import type { VoiceClipChunk, VoiceClipTranscription } from "./voice/voice-engine-protocol.js";
 import type { VoiceInstallStatus } from "./voice/voice-installer.js";
 
 export const TRANSCRIPTION_PROVIDER = "speech-engine";
@@ -21,6 +21,8 @@ export interface TranscriptionResult {
 
 export interface TranscriptionRequest {
   filePath: string;
+  /** Names the recording in the log, so a transcript can be traced back to its retained audio. */
+  label?: string;
 }
 
 export interface TranscriptionService {
@@ -46,6 +48,11 @@ const MIN_TIMEOUT_MS = 120_000;
 const SETUP_HINT = "Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.";
 
 export const TRANSCRIPTION_LABEL = "Parakeet v3 (local)";
+
+function describeChunks(chunks: readonly VoiceClipChunk[] | undefined): string {
+  if (!chunks?.length) return "";
+  return `; chunks ${chunks.map((chunk) => `${chunk.startSeconds}-${chunk.endSeconds}s ${chunk.words}w`).join(", ")}`;
+}
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   const value = Number.parseInt(raw ?? "", 10);
@@ -83,14 +90,14 @@ export function createTranscriptionService({ installer, engine, env = process.en
   return {
     getStatus,
     getActiveCount: () => activeTranscriptions,
-    async transcribe({ filePath }) {
+    async transcribe({ filePath, label }) {
       const status = getStatus();
       if (!status.available) throw new Error(status.reason ?? "Voice input is unavailable.");
       const release = engine.retain();
       activeTranscriptions++;
       try {
         const result = await engine.transcribeFile(filePath, { timeoutMs });
-        logger?.log(`[transcription] ${result.audioSeconds}s clip (${result.format}, ${Math.round(result.bytes / 1024)} KB; ${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms`);
+        logger?.log(`[transcription] ${label ? `${label} ` : ""}${result.audioSeconds}s clip (${result.format}, ${Math.round(result.bytes / 1024)} KB; ${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms${describeChunks(result.chunkDetails)}`);
         const text = result.text.trim();
         if (!text) throw new Error("No speech was detected in the recording.");
         return { text, provider: TRANSCRIPTION_PROVIDER };

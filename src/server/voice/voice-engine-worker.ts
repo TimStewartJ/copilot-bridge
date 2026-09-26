@@ -9,6 +9,7 @@ import { preferHighPerformanceScheduling } from "../platform.js";
 import {
   floatToInt16,
   int16ToFloat,
+  type VoiceClipChunk,
   type VoiceClipTranscription,
   type VoiceEngineCapability,
   type VoiceEngineInitOptions,
@@ -349,13 +350,24 @@ async function pumpAsr(): Promise<void> {
  * Transcribes speech of any length. The recognizer drops whole sentences from input much longer
  * than a chunk, so it only ever sees chunk-sized pieces, however long the speech ran without a pause.
  */
-async function decodeSpeech(samples: Float32Array, speech: readonly SampleRange[], priority: AsrPriority): Promise<{ text: string; chunks: number }> {
+async function decodeSpeech(
+  samples: Float32Array,
+  speech: readonly SampleRange[],
+  priority: AsrPriority,
+): Promise<{ text: string; chunks: number; chunkDetails: VoiceClipChunk[] }> {
   const chunks = planSpeechChunks(speech, samples.length, { sampleRate: SAMPLE_RATE, ...CLIP_CHUNK_PLAN, samples });
   const parts: string[] = [];
+  const chunkDetails: VoiceClipChunk[] = [];
   for (const chunk of chunks) {
-    parts.push(await decode(samples.slice(chunk.start, chunk.end), priority));
+    const part = await decode(samples.slice(chunk.start, chunk.end), priority);
+    parts.push(part);
+    chunkDetails.push({
+      startSeconds: Math.round((chunk.start / SAMPLE_RATE) * 100) / 100,
+      endSeconds: Math.round((chunk.end / SAMPLE_RATE) * 100) / 100,
+      words: part.split(/\s+/).filter(Boolean).length,
+    });
   }
-  return { text: joinTranscripts(parts), chunks: chunks.length };
+  return { text: joinTranscripts(parts), chunks: chunks.length, chunkDetails };
 }
 
 async function detectSpeech(samples: Float32Array): Promise<SampleRange[]> {
@@ -401,6 +413,7 @@ async function transcribeFile(filePath: string): Promise<VoiceClipTranscription>
     audioSeconds: Math.round((samples.length / SAMPLE_RATE) * 100) / 100,
     speechSeconds: Math.round((segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / SAMPLE_RATE) * 100) / 100,
     chunks: speech.chunks,
+    chunkDetails: speech.chunkDetails,
     ms: Math.round(performance.now() - started),
     format: recording.format,
     bytes: file.length,

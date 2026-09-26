@@ -48,6 +48,8 @@ const VOICE_JOB_DIRECTORY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[
 
 /** Terminal rows remain visible for recovery and diagnostics for 30 days. */
 export const VOICE_JOB_TERMINAL_RETENTION_MS = 30 * DAY_MS;
+/** Recordings of finished jobs are kept briefly so a poor transcript can be replayed against its audio. */
+export const VOICE_JOB_AUDIO_RETENTION_MS = 2 * DAY_MS;
 /** Young untracked directories may belong to an accept request that has not inserted its DB row yet. */
 export const VOICE_JOB_ORPHAN_GRACE_MS = DAY_MS;
 
@@ -137,9 +139,7 @@ export function createVoiceJobManager({
   }
 
   async function markRecovered(id: string): Promise<VoiceJobSnapshot | undefined> {
-    const job = store.getVoiceJob(id);
-    if (!job) return undefined;
-    await cleanupJobArtifacts(job);
+    if (!store.getVoiceJob(id)) return undefined;
     return toSnapshot(store.markRecovered(id));
   }
 
@@ -246,7 +246,7 @@ export function createVoiceJobManager({
       });
 
       try {
-        const result = await transcriptionService.transcribe({ filePath: job.audioPath });
+        const result = await transcriptionService.transcribe({ filePath: job.audioPath, label: `job ${job.id}` });
         transcript = result.text.trim();
         if (!transcript) {
           throw new Error("No transcript returned");
@@ -261,8 +261,6 @@ export function createVoiceJobManager({
         error: undefined,
       });
     }
-
-    await cleanupJobArtifacts(job);
 
     const targetSessionId = job.targetSessionId;
     if (!targetSessionId) {
@@ -417,9 +415,7 @@ export function createVoiceJobManager({
   }
 
   async function markJobDone(id: string, transcript: string): Promise<StoredVoiceJob | undefined> {
-    const job = store.getVoiceJob(id);
-    if (!job) return undefined;
-    await cleanupJobArtifacts(job);
+    if (!store.getVoiceJob(id)) return undefined;
     return store.updateVoiceJob(id, {
       status: "done",
       transcript,
@@ -432,14 +428,15 @@ export function createVoiceJobManager({
     error: string,
     transcript?: string,
   ): Promise<StoredVoiceJob | undefined> {
-    const job = store.getVoiceJob(id);
-    if (!job) return undefined;
-    await cleanupJobArtifacts(job);
+    if (!store.getVoiceJob(id)) return undefined;
     return store.markError(id, error, transcript);
   }
 
   async function performMaintenance(now: number): Promise<VoiceJobMaintenanceResult> {
+    const audioCutoff = now - VOICE_JOB_AUDIO_RETENTION_MS;
     for (const job of store.listTerminalVoiceJobs()) {
+      const finishedAt = Date.parse(job.updatedAt);
+      if (Number.isFinite(finishedAt) && finishedAt > audioCutoff) continue;
       await cleanupJobArtifacts(job);
     }
 
