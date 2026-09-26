@@ -132,6 +132,22 @@ describe("deriveModelStateFromEventsContent", () => {
     expect(state.model).toBe("claude-opus-4.7");
     expect(state.reasoningEffort).toBe("low");
   });
+
+  it("ignores model changes logged by sub-agents", () => {
+    const lines = [
+      JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-5.5", reasoningEffort: "high", contextTier: "long_context" } }),
+      JSON.stringify({
+        type: "session.model_change",
+        agentId: "03e76a42-284f-4b30-b2e9-e108fd047aaa",
+        data: { source: "agent", newModel: "gpt-6-sol", reasoningEffort: "xhigh", contextTier: "default" },
+      }),
+    ];
+    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
+      model: "claude-opus-5.5",
+      reasoningEffort: "high",
+      contextTier: "long_context",
+    });
+  });
 });
 
 describe("deriveModelStateFromEventsFile", () => {
@@ -469,5 +485,16 @@ describe("deriveModelStateFromEventsFileAsync", () => {
 
     expect(result).toEqual({ model: "gpt-5.5", reasoningEffort: "medium" });
     expect(yieldCount).toBeGreaterThan(2);
+  });
+
+  it("streams past a tail that only holds sub-agent model changes", async () => {
+    const dir = makeTestDir("events-model-async-subagent");
+    const path = join(dir, "events.jsonl");
+    writeFileSync(path,
+      line("session.start", { selectedModel: "claude-opus-5.5", reasoningEffort: "high" })
+      + filler(20_000)
+      + `${JSON.stringify({ type: "session.model_change", agentId: "agent-1", data: { newModel: "gpt-6-sol", reasoningEffort: "high" } })}\n`
+      + filler(50));
+    expect(await deriveModelStateFromEventsFileAsync(path)).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high" });
   });
 });

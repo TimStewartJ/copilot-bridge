@@ -1221,6 +1221,41 @@ describe("readCopilotUsageSummary", () => {
     ]);
   });
 
+  it("keeps sub-agent model changes from re-attributing the parent's usage", async () => {
+    const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "session-subagent-switch", [
+      {
+        type: "session.start",
+        timestamp: "2026-02-02T09:00:00.000Z",
+        data: { selectedModel: "claude-opus-5.5", contextTier: "long_context" },
+      },
+      {
+        type: "session.model_change",
+        timestamp: "2026-02-02T09:00:05.000Z",
+        agentId: "agent-1",
+        data: { source: "agent", newModel: "gpt-6-sol", contextTier: "default" },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:10.000Z",
+        agentId: "agent-1",
+        data: { requestId: "request-sub", outputTokens: 4 },
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-02-02T09:00:15.000Z",
+        data: { model: "claude-opus-5.5", requestId: "request-main", outputTokens: 9 },
+      },
+    ]);
+
+    const summary = await readCopilotUsageSummary({ copilotHome });
+
+    expect(summary.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model: "claude-opus-5.5", contextTier: "long_context", outputTokens: 9 }),
+      expect.objectContaining({ model: "gpt-6-sol", contextTier: "default", outputTokens: 4 }),
+    ]));
+  });
+
   it("uses assistant message model metadata when live usage events include it", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-live-message-model", [
