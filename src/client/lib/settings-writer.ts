@@ -82,6 +82,7 @@ const MESSAGE_LABELS: Partial<Record<SettingsKey, string>> = {
   favicon: "app icon",
   identity: "identity",
   responseStyle: "response style",
+  promptProfile: "default profile",
   customInstructions: "custom instructions",
   providers: "providers",
   computerUse: "computer use",

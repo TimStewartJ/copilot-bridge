@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
+import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
 import { hydrateRowSafely, type RowHydrationContext } from "./store-row-hydration.js";
 
 const BRIDGE_SESSION_STATE_HYDRATION: RowHydrationContext<any> = {
@@ -25,6 +26,7 @@ export interface BridgeSessionState {
   terminalOverlay?: SyntheticTerminalOverlay;
   pendingAutoName: boolean;
   pendingAutoNameReplaceTitle?: string;
+  promptProfile?: PromptProfileId;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +75,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       terminalOverlay: parseTerminalOverlay(row),
       pendingAutoName: row.pendingAutoName === 1,
       pendingAutoNameReplaceTitle: row.pendingAutoNameReplaceTitle ?? undefined,
+      promptProfile: isPromptProfileId(row.promptProfile) ? row.promptProfile : undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -123,6 +126,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND terminalOverlayJson IS NULL
         AND pendingAutoName = 0
         AND pendingAutoNameReplaceTitle IS NULL
+        AND promptProfile IS NULL
     `).run(sessionId);
   }
 
@@ -203,6 +207,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND terminalOverlayJson IS NULL
         AND pendingAutoName = 0
         AND pendingAutoNameReplaceTitle IS NULL
+        AND promptProfile IS NULL
     `).run();
   }
 
@@ -259,6 +264,29 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       UPDATE bridge_session_state
       SET pinnedCwd = NULL,
           pinnedCwdUpdatedAt = NULL,
+          updatedAt = ?
+      WHERE sessionId = ?
+    `).run(now, sessionId);
+    pruneIfDefault(sessionId);
+  }
+
+  function setPromptProfile(sessionId: string, promptProfile: PromptProfileId): BridgeSessionState {
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO bridge_session_state (sessionId, promptProfile, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(sessionId) DO UPDATE SET
+        promptProfile = excluded.promptProfile,
+        updatedAt = excluded.updatedAt
+    `).run(sessionId, promptProfile, now, now);
+    return getState(sessionId)!;
+  }
+
+  function clearPromptProfile(sessionId: string): void {
+    const now = nowIso();
+    db.prepare(`
+      UPDATE bridge_session_state
+      SET promptProfile = NULL,
           updatedAt = ?
       WHERE sessionId = ?
     `).run(now, sessionId);
@@ -438,6 +466,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     clearAllTitleOverrides,
     setPinnedCwd,
     clearPinnedCwd,
+    setPromptProfile,
+    clearPromptProfile,
     setScheduleMeta,
     setLastVisibleActivityAt,
     replaceLastVisibleActivityAt,

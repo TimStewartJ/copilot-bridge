@@ -190,7 +190,7 @@ describe("SessionManager native Bridge tools", () => {
       });
       const options = { expectedSessionId, onCreateStarting: () => { recorded = true; } };
       const operation = scope === "global" ? manager.createSession(options)
-        : manager.createTaskSession("task-1", "Task", [], [], "", undefined, undefined, undefined, options);
+        : manager.createTaskSession("task-1", "Task", [], "", undefined, undefined, options);
       await entered.promise;
       expect(await manager.getSessionCreationState(expectedSessionId)).toBe("pending");
       await expect(manager.createSession({ expectedSessionId })).rejects.toThrow("already being created");
@@ -828,9 +828,7 @@ describe("SessionManager native Bridge tools", () => {
         "task-1",
         "Task one",
         [],
-        [],
         "",
-        undefined,
         undefined,
         undefined,
         { background: true },

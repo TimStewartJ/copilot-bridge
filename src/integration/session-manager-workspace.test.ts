@@ -250,7 +250,7 @@ describe("SessionManager workspace resolution", () => {
         makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
-    await manager.createTaskSession(task.id, task.title, task.workItems, [], task.notes, task.cwd);
+    await manager.createTaskSession(task.id, task.title, task.workItems, task.notes, task.cwd);
 
     expect(sessionWorkspaceStore.getWorkspace("task-session")).toMatchObject({ cwd: taskWorkspace });
   });
@@ -269,7 +269,7 @@ describe("SessionManager workspace resolution", () => {
         makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
     };
 
-    await manager.createTaskSession(task.id, task.title, task.workItems, [], task.notes, task.cwd);
+    await manager.createTaskSession(task.id, task.title, task.workItems, task.notes, task.cwd);
     taskStore.updateTask(task.id, { cwd: taskWorkspaceV2 });
 
     expect(sessionWorkspaceStore.getWorkspace("task-session")).toMatchObject({ cwd: taskWorkspaceV1 });

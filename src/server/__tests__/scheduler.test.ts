@@ -183,7 +183,7 @@ describe("scheduler restart gating", () => {
 
     expect(result).toEqual({ sessionId: "sched-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.createTaskSession.mock.calls[0][6]).toMatchObject({
+    expect(sessionManager.createTaskSession.mock.calls[0][5]).toMatchObject({
       name: "Restart gated schedule",
       model: "claude-sonnet-5",
       reasoningEffort: "high",

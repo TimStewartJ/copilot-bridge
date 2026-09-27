@@ -1,13 +1,16 @@
 import { useCallback, useEffect } from "react";
 import { useOverlayParam } from "./useOverlayParam";
 
-/** Manages notes sheet open/close/edit state via URL params, resetting on task change. */
-export function useNotesSheet(taskId: string | undefined) {
-  const { isOpen: notesSheetOpen, value, open, close: overlayClose } = useOverlayParam("sheet");
+/**
+ * Manages a task text sheet's open/close/edit state via the `sheet` URL param, resetting on task
+ * change. `name` picks the sheet: `?sheet=<name>` views it and `?sheet=<name>-edit` edits it.
+ */
+export function useNotesSheet(taskId: string | undefined, name: "notes" | "instructions" | "history" = "notes") {
+  const { isOpen: sheetParamOpen, value, open, close: overlayClose } = useOverlayParam("sheet");
+  const editValue = `${name}-edit`;
 
-  // The sheet is open when ?sheet=notes or ?sheet=notes-edit
-  const isOpen = notesSheetOpen && (value === "notes" || value === "notes-edit");
-  const notesStartEdit = value === "notes-edit";
+  const isOpen = sheetParamOpen && (value === name || value === editValue);
+  const notesStartEdit = value === editValue;
 
   // Reset when task changes
   useEffect(() => {
@@ -16,12 +19,12 @@ export function useNotesSheet(taskId: string | undefined) {
   }, [taskId]);
 
   const openToView = useCallback(() => {
-    open("notes");
-  }, [open]);
+    open(name);
+  }, [open, name]);
 
   const openToEdit = useCallback(() => {
-    open("notes-edit");
-  }, [open]);
+    open(editValue);
+  }, [open, editValue]);
 
   const close = useCallback(() => {
     overlayClose();

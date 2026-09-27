@@ -3,6 +3,7 @@ import { Loader2, RotateCw } from "lucide-react";
 import {
   fetchModels,
   patchSessionModel,
+  patchSessionProfile,
   refreshModels,
   type CopilotContextTier,
   type ModelInfo,
@@ -29,6 +30,19 @@ import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
 import ModelSwitchCompactionPrompt, { MODEL_SWITCH_COMPACTION_TITLE } from "./ModelSwitchCompactionPrompt";
+import {
+  getPromptProfileInfo,
+  PROMPT_PROFILES,
+  type PromptProfileId,
+} from "../../shared/prompt-profiles.js";
+import type { LaunchOption } from "../lib/new-session-launch";
+
+const DIALOG_TITLE = "Change model and profile";
+
+const PROFILE_OPTIONS: LaunchOption<PromptProfileId>[] = PROMPT_PROFILES.map((profile) => ({
+  value: profile.id,
+  label: profile.label,
+}));
 
 interface ModelSwitchRequest {
   model: string;
@@ -71,8 +85,8 @@ export function canKeepCurrentReasoningEffortForModel({
 }
 
 /**
- * Changes one session's model, reasoning effort and context tier. Mount it only while it is open:
- * its drafts start from the session's cached model state each time it mounts.
+ * Changes one session's model, reasoning effort, context tier and profile. Mount it only while it
+ * is open: its drafts start from the session's cached state each time it mounts.
  */
 export default function SessionModelDialog({
   sessionId,
@@ -95,10 +109,12 @@ export default function SessionModelDialog({
   const [modelPresetDraft, setModelPresetDraft] = useState<ModelPresetSlot | undefined>();
   const [reasoningDraft, setReasoningDraft] = useState<"" | ReasoningEffort>("");
   const [contextTierDraft, setContextTierDraft] = useState<"" | CopilotContextTier>(initialState?.contextTier ?? "");
+  const [promptProfileDraft, setPromptProfileDraft] = useState<"" | PromptProfileId>(initialState?.promptProfile ?? "");
   const [modelSwitchSaving, setModelSwitchSaving] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [modelSwitchConfirmation, setModelSwitchConfirmation] = useState<PendingModelSwitchConfirmation | null>(null);
   const modelDialogTouchedRef = useRef(false);
+  const profileTouchedRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -185,6 +201,15 @@ export default function SessionModelDialog({
     && !modelOptionsLoading
     && !busy
     && (canKeepCurrentReasoningEffort || reasoningDraftCanBeSubmitted || !supportedReasoningEfforts);
+  const currentPromptProfile = modelDialogQuery.data?.promptProfile;
+  const profileDirty = !!promptProfileDraft && promptProfileDraft !== currentPromptProfile;
+  // A profile-only change skips the model request, so it saves even without the model list.
+  const modelSaveRequested = !profileDirty
+    || modelDialogTouchedRef.current
+    || (currentEffortLookupReady && !canKeepCurrentReasoningEffort);
+  const canSave = !busy
+    && !modelSwitchSaving
+    && (modelSaveRequested ? canSaveModelSwitch : true);
 
   const loadModelOptions = useCallback(async (forceRefresh = false) => {
     setModelOptionsLoading(true);
@@ -207,7 +232,10 @@ export default function SessionModelDialog({
   }, [loadModelOptions, modelOptions, modelOptionsError, modelOptionsLoading]);
 
   useEffect(() => {
-    if (modelDialogTouchedRef.current || !modelDialogQuery.data) return;
+    if (!modelDialogQuery.data) return;
+    // Follow the server until the user picks a profile, so a stale cached value is never saved back.
+    if (!profileTouchedRef.current) setPromptProfileDraft(modelDialogQuery.data.promptProfile ?? "");
+    if (modelDialogTouchedRef.current) return;
     setModelDraft(modelDialogQuery.data.model ?? "");
     setModelPresetDraft(undefined);
     setContextTierDraft(modelDialogQuery.data.contextTier ?? "");
@@ -241,8 +269,30 @@ export default function SessionModelDialog({
     onDismiss: closeModelDialog,
     open: true,
     dismissible: !modelSwitchSaving,
-    label: modelSwitchConfirmation ? MODEL_SWITCH_COMPACTION_TITLE : "Change session model",
+    label: modelSwitchConfirmation ? MODEL_SWITCH_COMPACTION_TITLE : DIALOG_TITLE,
   });
+
+  /** Saves a changed profile. Returns false and shows why when it fails, so the dialog stays open. */
+  const saveProfile = useCallback(async (afterModelSwitch: boolean): Promise<boolean> => {
+    if (!profileDirty || !promptProfileDraft) return true;
+    try {
+      const result = await patchSessionProfile(sessionId, promptProfileDraft);
+      queryClient.setQueryData<SessionModelState>(queryKeys.sessionModel(sessionId), (current) => (
+        current ? { ...current, promptProfile: result.promptProfile } : current
+      ));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessionModel(sessionId) });
+      return true;
+    } catch (error) {
+      if (mountedRef.current) {
+        setModelSwitchError(afterModelSwitch
+          ? `The model changed, but the profile did not: ${getErrorMessage(error)}`
+          : getErrorMessage(error));
+      }
+      return false;
+    }
+  }, [profileDirty, promptProfileDraft, sessionId]);
+
+  const saveProfileAfterModel = useCallback(() => saveProfile(true), [saveProfile]);
 
   const submitModelSwitch = useCallback(async (
     request: ModelSwitchRequest,
@@ -282,6 +332,7 @@ export default function SessionModelDialog({
         model: savedModelId,
         ...(nextReasoningEffort ? { reasoningEffort: nextReasoningEffort } : {}),
         ...(nextContextTier ? { contextTier: nextContextTier } : {}),
+        ...(currentPromptProfile ? { promptProfile: currentPromptProfile } : {}),
         source: "live",
       };
       queryClient.setQueryData(queryKeys.sessionModel(sessionId), nextState);
@@ -295,7 +346,7 @@ export default function SessionModelDialog({
           contextTier: nextContextTier,
         });
       }
-      closeAfterSave = true;
+      closeAfterSave = await saveProfileAfterModel();
     } catch (error) {
       if (mountedRef.current) setModelSwitchError(getErrorMessage(error));
       // A long compaction can outlive the request, so re-read what the session is actually on.
@@ -307,13 +358,23 @@ export default function SessionModelDialog({
   }, [
     sessionId,
     modelDialogQuery.data?.reasoningEffort,
+    currentPromptProfile,
     dialogPresetSlot,
     modelPresetMemory,
     onClose,
     selectedDialogDisablesReasoning,
+    saveProfileAfterModel,
   ]);
 
   const handleSaveModelSwitch = useCallback(async () => {
+    if (!modelSaveRequested) {
+      setModelSwitchSaving(true);
+      setModelSwitchError(null);
+      const saved = await saveProfile(false);
+      if (mountedRef.current) setModelSwitchSaving(false);
+      if (saved && mountedRef.current) onClose();
+      return;
+    }
     const model = modelDraft.trim();
     if (!model) return;
 
@@ -332,6 +393,9 @@ export default function SessionModelDialog({
     });
   }, [
     contextTierDraft,
+    modelSaveRequested,
+    saveProfile,
+    onClose,
     modelDraft,
     reasoningDraft,
     reasoningDraftCanBeSubmitted,
@@ -377,7 +441,7 @@ export default function SessionModelDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <div>
-          <div className={DS.text.title}>Change session model</div>
+          <div className={DS.text.title}>{DIALOG_TITLE}</div>
           <p className={`mt-1 ${DS.text.prose}`}>
             Changes apply only to this session.
             {sessionSummary ? ` ${sessionSummary}` : ""}
@@ -471,6 +535,26 @@ export default function SessionModelDialog({
               disabled={modelSwitchSaving}
             />
           )}
+
+          <div className="space-y-1.5">
+            <LaunchOptionRow
+              ariaLabel="Profile for this session"
+              options={PROFILE_OPTIONS}
+              selectedValue={promptProfileDraft || undefined}
+              onChange={(value) => {
+                if (!value) return;
+                profileTouchedRef.current = true;
+                setPromptProfileDraft(value);
+              }}
+              disabled={modelSwitchSaving || !currentPromptProfile}
+            />
+            {promptProfileDraft && (
+              <p className={DS.field.help}>
+                {getPromptProfileInfo(promptProfileDraft).description}
+                {profileDirty ? " The next message starts with this profile's instructions." : ""}
+              </p>
+            )}
+          </div>
         </div>
 
         {modelSwitchError && (
@@ -500,7 +584,7 @@ export default function SessionModelDialog({
             onClick={() => {
               void handleSaveModelSwitch();
             }}
-            disabled={!canSaveModelSwitch}
+            disabled={!canSave}
             title={busy ? "This session is busy" : undefined}
           >
             {modelSwitchSaving && <Loader2 size={14} className="animate-spin" />}

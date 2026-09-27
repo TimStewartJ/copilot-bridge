@@ -11,6 +11,7 @@ import {
   modelSupportsLongContext,
   type CopilotContextTier,
 } from "../../shared/copilot-context.js";
+import { getPromptProfileInfo, PROMPT_PROFILES, type PromptProfileId } from "../../shared/prompt-profiles.js";
 import {
   X,
   Clock,
@@ -186,6 +187,9 @@ function ViewMode({
     ? getContextTierLabel(selectedModel, schedule.contextTier)
       ?? (schedule.contextTier === "long_context" ? "Long context" : "Standard context")
     : "Bridge default";
+  const promptProfileLabel = schedule.promptProfile
+    ? getPromptProfileInfo(schedule.promptProfile).label
+    : "Bridge default";
 
   const seenRunIds = new Set<number>();
   const sessions = (sessionData?.pages ?? [])
@@ -277,6 +281,12 @@ function ViewMode({
               <span className="text-text-faint block mb-0.5">Context size</span>
               <span className="text-text-secondary" title={schedule.contextTier}>
                 {contextTierLabel}
+              </span>
+            </div>
+            <div>
+              <span className="text-text-faint block mb-0.5">Profile</span>
+              <span className="text-text-secondary" title={schedule.promptProfile}>
+                {promptProfileLabel}
               </span>
             </div>
             {taskTitle && (
@@ -497,6 +507,7 @@ function EditMode({
   const [model, setModel] = useState(schedule?.model ?? "");
   const [reasoningEffort, setReasoningEffort] = useState(schedule?.reasoningEffort ?? "");
   const [contextTier, setContextTier] = useState<"" | CopilotContextTier>(schedule?.contextTier ?? "");
+  const [promptProfile, setPromptProfile] = useState<"" | PromptProfileId>(schedule?.promptProfile ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
   const [saving, setSaving] = useState(false);
@@ -523,6 +534,7 @@ function EditMode({
     setModel(schedule?.model ?? "");
     setReasoningEffort(schedule?.reasoningEffort ?? "");
     setContextTier(schedule?.contextTier ?? "");
+    setPromptProfile(schedule?.promptProfile ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
     setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");
   }, [schedule]);
@@ -567,6 +579,7 @@ function EditMode({
           ...(model ? { model } : {}),
           ...(reasoningEffort ? { reasoningEffort } : {}),
           ...(contextTier ? { contextTier } : {}),
+          ...(promptProfile ? { promptProfile } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
           ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
@@ -592,6 +605,7 @@ function EditMode({
             : contextTierChanged
               ? { contextTier: contextTier || null }
               : {}),
+          ...(promptProfile !== (schedule?.promptProfile ?? "") ? { promptProfile: promptProfile || null } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
           autoArchiveKeep: parsedAutoArchiveKeep,
         });
@@ -784,6 +798,29 @@ function EditMode({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="col-span-2">
+              <label className="text-text-faint block mb-1" htmlFor="schedule-prompt-profile-select">
+                Profile
+              </label>
+              <select
+                id="schedule-prompt-profile-select"
+                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
+                value={promptProfile}
+                onChange={(e) => setPromptProfile(e.target.value as "" | PromptProfileId)}
+              >
+                <option value="">Bridge default</option>
+                {PROMPT_PROFILES.map((profile) => (
+                  <option key={profile.id} value={profile.id}>{profile.label}</option>
+                ))}
+              </select>
+              <div className="text-[10px] text-text-faint mt-1">
+                {promptProfile
+                  ? getPromptProfileInfo(promptProfile).description
+                  : "Uses the default profile from Settings for each run."}
+                {promptProfile === "monitor" ? " Each run receives the previous run's report." : ""}
+              </div>
             </div>
 
             {/* Max runs */}

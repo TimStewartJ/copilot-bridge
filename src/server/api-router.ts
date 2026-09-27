@@ -2,7 +2,6 @@ import { registerDashboardArchiveRoutes } from "./dashboard-archive.js";
 // API route handlers — extracted from index.ts for modularity
 
 import express from "express";
-import { formatLinkedPullRequest } from "./session-formatting.js";
 import multer from "multer";
 import { randomUUID, createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, mkdirSync, mkdtempSync } from "node:fs";
@@ -102,6 +101,8 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { InvalidTaskHistoryEntryError } from "./task-history-store.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
 import { isSendMode } from "../shared/send-mode.js";
@@ -357,6 +358,7 @@ function getSchedulerModule(ctx: AppContext): typeof scheduler {
       globalBus: ctx.globalBus,
       deferredPromptStore: ctx.deferredPromptStore,
       deferLoopStore: ctx.deferLoopStore,
+      taskHistoryStore: ctx.taskHistoryStore,
     });
     ctx.scheduler = scheduler;
   }
@@ -867,6 +869,7 @@ const SCHEDULE_CREATE_FIELDS = [
   "model",
   "reasoningEffort",
   "contextTier",
+  "promptProfile",
   "maxRuns",
   "expiresAt",
   "autoArchiveKeep",
@@ -880,6 +883,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "model",
   "reasoningEffort",
   "contextTier",
+  "promptProfile",
   "enabled",
   "maxRuns",
   "expiresAt",
@@ -1404,16 +1408,13 @@ export function createApiRouter(
       }
       const task = ctx.taskStore.getTask(taskId);
       if (!task) throw new Error("Task not found");
-      const group = task.groupId ? ctx.taskGroupStore.getGroup(task.groupId) : undefined;
       const result = await ctx.sessionManager.createTaskSession(
         task.id,
         task.title,
         task.workItems,
-        task.pullRequests.map(formatLinkedPullRequest),
         task.notes,
         task.cwd,
         undefined,
-        group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null,
         { background: true, ...creation.options },
       );
       invalidateEnrichedCache("helm:task-session:create");
@@ -3078,6 +3079,7 @@ export function createApiRouter(
       model?: string;
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
+      promptProfile?: PromptProfileId;
       agent?: string;
     };
     error?: string;
@@ -3102,6 +3104,10 @@ export function createApiRouter(
     if (payload.agent !== undefined && payload.agent !== null && typeof payload.agent !== "string") {
       return { error: "agent must be a string", status: 400 };
     }
+    if (payload.promptProfile !== undefined && payload.promptProfile !== null && !isPromptProfileId(payload.promptProfile)) {
+      return { error: "promptProfile must be engineer, assistant, or monitor", status: 400 };
+    }
+    const promptProfile = isPromptProfileId(payload.promptProfile) ? payload.promptProfile : undefined;
     const model = typeof payload.model === "string" ? payload.model.trim() : "";
     const reasoningEffort = typeof payload.reasoningEffort === "string"
       ? payload.reasoningEffort.trim()
@@ -3133,7 +3139,12 @@ export function createApiRouter(
       }
     }
     if (!model && !reasoningEffort && !contextTier) {
-      return { options: agent ? { agent } : {} };
+      return {
+        options: {
+          ...(agent ? { agent } : {}),
+          ...(promptProfile ? { promptProfile } : {}),
+        },
+      };
     }
 
     const targetModelId = model || ctx.settingsStore.getSettings().model;
@@ -3157,6 +3168,7 @@ export function createApiRouter(
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(contextTier ? { contextTier } : {}),
         ...(agent ? { agent } : {}),
+        ...(promptProfile ? { promptProfile } : {}),
       },
     };
   }
@@ -3193,7 +3205,8 @@ export function createApiRouter(
     }
     try {
       const result = await ctx.sessionManager.getSessionModelState(sessionId);
-      res.json(result);
+      const promptProfile = ctx.sessionManager.getSessionPromptProfile(sessionId);
+      res.json({ ...result, ...(promptProfile ? { promptProfile } : {}) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -3220,6 +3233,28 @@ export function createApiRouter(
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // PATCH /sessions/:id/profile — change one chat's system prompt profile
+  router.patch("/sessions/:id/profile", async (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const promptProfile = req.body?.promptProfile;
+    if (!isPromptProfileId(promptProfile)) {
+      return res.status(400).json({ error: "promptProfile must be engineer, assistant, or monitor" });
+    }
+    try {
+      const result = await ctx.sessionManager.setSessionPromptProfile(sessionId, promptProfile);
+      invalidateEnrichedCache("route:session-profile:set");
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/not found/i.test(message)) return res.status(404).json({ error: message });
+      if (/busy|do not apply/i.test(message)) return res.status(409).json({ error: message });
+      res.status(500).json({ error: message });
     }
   });
 
@@ -4537,6 +4572,7 @@ export function createApiRouter(
       if (unknownFields.length > 0) {
         return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
       }
+      const previousInstructions = ctx.taskStore.getTask(req.params.id)?.instructions ?? "";
       const task = ctx.taskStore.updateTask(req.params.id, {
         title: req.body?.title,
         kind: req.body?.kind,
@@ -4545,6 +4581,7 @@ export function createApiRouter(
         status: req.body?.status,
         completionAction: req.body?.completionAction,
         notes: req.body?.notes,
+        instructions: req.body?.instructions,
         priority: req.body?.priority,
         cwd: req.body?.cwd,
         groupId: req.body?.groupId,
@@ -4553,6 +4590,10 @@ export function createApiRouter(
         waitingOn: req.body?.waitingOn,
         nextTouchAt: req.body?.nextTouchAt,
       }, { source: "user" });
+      // Instructions are part of the system prompt, which cached chats only rebuild on resume.
+      if ((task.instructions ?? "") !== previousInstructions) {
+        ctx.sessionManager.invalidateTaskSessionConfig(task.id, "task instructions changed");
+      }
       res.json({ task });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -4573,6 +4614,48 @@ export function createApiRouter(
       return res.status(400).json({ error: "limit must be a positive integer" });
     }
     res.json({ events: ctx.taskStore.listMomentumEvents(task.id, rawLimit) });
+  });
+
+  router.get("/tasks/:id/history", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!ctx.taskHistoryStore) return res.status(503).json({ error: "Task history is not available" });
+    const limit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
+    const before = typeof req.query.before === "string" ? Number(req.query.before) : undefined;
+    if (!Number.isInteger(limit) || limit < 1) return res.status(400).json({ error: "limit must be a positive integer" });
+    if (before !== undefined && (!Number.isInteger(before) || before < 1)) {
+      return res.status(400).json({ error: "before must be a positive integer" });
+    }
+    const query = typeof req.query.query === "string" ? req.query.query : undefined;
+    res.json({
+      entries: ctx.taskHistoryStore.listEntries(task.id, { limit, ...(before ? { before } : {}), ...(query ? { query } : {}) }),
+      total: ctx.taskHistoryStore.countEntries(task.id),
+    });
+  });
+
+  router.post("/tasks/:id/history", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!ctx.taskHistoryStore) return res.status(503).json({ error: "Task history is not available" });
+    try {
+      const entry = ctx.taskHistoryStore.addEntry(task.id, req.body?.text, { source: "user" });
+      ctx.globalBus.emit({ type: "task:changed", taskId: task.id });
+      res.status(201).json({ entry });
+    } catch (err) {
+      const status = err instanceof InvalidTaskHistoryEntryError ? 400 : 500;
+      res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/tasks/:id/history/:entryId", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!ctx.taskHistoryStore) return res.status(503).json({ error: "Task history is not available" });
+    const entryId = Number(req.params.entryId);
+    if (!Number.isInteger(entryId) || entryId < 1) return res.status(400).json({ error: "entryId must be a positive integer" });
+    if (!ctx.taskHistoryStore.deleteEntry(task.id, entryId)) return res.status(404).json({ error: "History entry not found" });
+    ctx.globalBus.emit({ type: "task:changed", taskId: task.id });
+    res.json({ ok: true });
   });
 
   router.get("/tasks/:id/deletion-preview", (req, res) => {
@@ -4670,6 +4753,8 @@ export function createApiRouter(
       switch (type) {
         case "session":
           task = ctx.taskStore.linkSession(req.params.id, sessionId);
+          // The system prompt names the task and carries its instructions.
+          ctx.sessionManager.invalidateSessionConfig(sessionId, "task link changed");
           break;
         case "workItem": {
           const link = resolveWorkItemLink(request);
@@ -4700,6 +4785,7 @@ export function createApiRouter(
       switch (type) {
         case "session":
           task = ctx.taskStore.unlinkSession(req.params.id, sessionId);
+          ctx.sessionManager.invalidateSessionConfig(sessionId, "task link changed");
           break;
         case "workItem": {
           const unlink = resolveWorkItemUnlink(request);
@@ -4739,18 +4825,13 @@ export function createApiRouter(
       if (creationResult.error) {
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
-      const prDescriptions = task.pullRequests.map(formatLinkedPullRequest);
-      const group = task.groupId ? ctx.taskGroupStore.getGroup(task.groupId) : undefined;
-      const groupNotes = group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null;
       const result = await ctx.sessionManager.createTaskSession(
         task.id,
         task.title,
         task.workItems,
-        prDescriptions,
         task.notes,
         task.cwd,
         undefined,
-        groupNotes,
         {
           background: true,
           ...creationResult.options,
@@ -5155,6 +5236,7 @@ export function createApiRouter(
         model: launchOptions.updates.model ?? undefined,
         reasoningEffort: launchOptions.updates.reasoningEffort ?? undefined,
         contextTier: launchOptions.updates.contextTier ?? undefined,
+        promptProfile: launchOptions.updates.promptProfile ?? undefined,
         maxRuns,
         expiresAt,
         autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,

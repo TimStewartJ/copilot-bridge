@@ -411,6 +411,10 @@ export interface SessionRunnerDeps {
   notifySessionCapacityChanged(): void;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
+  /** The bridge_context block for the next user message; commit once the SDK accepted it. */
+  prepareTurnContext?(sessionId: string): { block?: string; commit(): void };
+  /** Forget what was delivered because the conversation may have lost it. */
+  resetTurnContext?(sessionId: string): void;
   persistAndRouteAttachments(
     sessionId: string,
     attachments?: StartWorkAttachment[],
@@ -495,6 +499,7 @@ export class SessionRunner {
   private routeSessionEvent(sessionId: string, feed: SessionFeed, event: any): void {
     const mainAgent = !getSdkAgentId(event);
     const at = getEventTimestampMs(event) ?? Date.now();
+    if (mainAgent && event?.type === "session.compaction_complete") this.deps.resetTurnContext?.(sessionId);
     if (mainAgent) this.noteWhatMainAgentHeard(feed, event, at);
     if (feed.run && !feed.run.controller.isCompleted()) {
       feed.run.handleEvent(event);
@@ -882,12 +887,17 @@ export class SessionRunner {
           await this.deps.applyTurnReasoningEffort?.(sessionId, session, options.reasoningEffort);
         }
         await setSessionModeForSend(session, mode);
+        // Built per attempt from the original prompt: a stale-session retry resends it whole.
+        const turnContext = this.deps.prepareTurnContext?.(sessionId);
+        const turnPrompt = turnContext?.block ? `${turnContext.block}\n\n${sendPrompt}` : sendPrompt;
+        const turnDisplayPrompt = turnContext?.block ? displayPrompt ?? sendPrompt : displayPrompt;
         await session.send({
-          prompt: sendPrompt,
-          ...(displayPrompt ? { displayPrompt } : {}),
+          prompt: turnPrompt,
+          ...(turnDisplayPrompt ? { displayPrompt: turnDisplayPrompt } : {}),
           ...(options.promptSource ? { source: options.promptSource } : {}),
           ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
         });
+        turnContext?.commit();
       },
     });
   }
@@ -914,7 +924,6 @@ export class SessionRunner {
     const resumeConfig = this.deps.buildSessionConfig({
       sessionId,
       task: linkedTask,
-      groupNotes: this.deps.lookupGroupNotes(linkedTask?.groupId),
       forResume: true,
     });
     const configuredMcpServerNames = new Set(
@@ -2179,6 +2188,7 @@ export class SessionRunner {
         recordSpan: (name, duration, spanSessionId, metadata) => this.recordSpan(name, duration, spanSessionId, metadata),
       });
       if (result.status !== "truncated") return;
+      this.deps.resetTurnContext?.(sessionId);
       publishContextSummary(this.deps.sessionContextStore?.recordContextEvent(createSessionContextTruncationMarker({
         sessionId,
         provider: contextTelemetryProvider,

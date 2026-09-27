@@ -19,6 +19,8 @@ interface TaskPanelSummaryRowProps {
   /** A control beside the row, such as an add button. */
   trailing?: ReactNode;
   titleClassName?: string;
+  /** The row names something not set yet, so its title is a quiet prompt rather than a value. */
+  placeholder?: boolean;
   expanded?: boolean;
 }
 
@@ -35,6 +37,7 @@ export default function TaskPanelSummaryRow({
   onClick,
   trailing,
   titleClassName,
+  placeholder = false,
   expanded,
 }: TaskPanelSummaryRowProps) {
   const meta = chips.length > 0 ? (
@@ -58,7 +61,7 @@ export default function TaskPanelSummaryRow({
       <span className="sr-only shrink-0 @[18rem]/task-details:not-sr-only">
         <span className="block w-[5.25rem] truncate text-xs text-text-muted">{label}</span>
       </span>
-      <span className={cx("min-w-0 flex-1 truncate text-[13px] text-text-primary", titleClassName)}>
+      <span className={cx("min-w-0 flex-1 truncate text-[13px]", placeholder ? "text-text-muted" : "text-text-primary", titleClassName)}>
         {title}
       </span>
       {(meta || onClick) && (

@@ -3,9 +3,11 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { createSessionPromptProfileStore } from "../session-prompt-profile-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
 import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readSessionLaunchContext } from "../session-launch-context.js";
 import type { AgentBackendDisconnect } from "../agent-backend/types.js";
 import { AppliedPromptFingerprints } from "../session-prompt-fingerprint.js";
@@ -74,6 +76,7 @@ function createManager(options: { telemetry?: boolean } = {}): {
       getSettings: () => ({ model: "claude-opus-4.7" }),
     } as any,
     telemetryStore,
+    sessionPromptProfileStore: createSessionPromptProfileStore(db),
     config: { sessionMcpServers: {} },
     clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
   }) as any;
@@ -382,7 +385,7 @@ describe("SessionManager bounded session lifecycle", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.useRealTimers());
 
-  it("persists launch context and renders the same PR and schedule prompt on resume", async () => {
+  it("persists launch context and renders the same schedule prompt on resume", async () => {
     const { manager } = createManager();
     const task = {
       id: "task-1", title: "New Task", kind: "task", muted: false, status: "active",
@@ -391,17 +394,136 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.deps.taskStore.getTask.mockReturnValue(task);
     const createSession = vi.fn(async (_config: unknown) => fakeSession("launch-test"));
     manager.backend = { createSession };
-    await manager.createTaskSession("task-1", "New Task", [], ["owner/repo PR #42"], "", undefined,
+    await manager.createTaskSession("task-1", "New Task", [], "", undefined,
       { name: "Daily", type: "cron", runCount: 2 });
     const initial = createSession.mock.calls[0]?.[0] as any;
     const persisted = readSessionLaunchContext(manager.getSessionStateDir("launch-test"));
     expect(persisted).toEqual({ isNewTask: true, scheduleContext: { name: "Daily", type: "cron", runCount: 2 } });
+    // A folder-less chat under the automatic default is pinned as Assistant before its first resume.
+    expect(manager.getSessionPromptProfile("launch-test")).toBe("assistant");
     const resumed = manager.buildSessionConfig({ sessionId: "launch-test", task, forResume: true });
     expect(resumed.systemMessage).toEqual(initial.systemMessage);
-    expect(resumed.systemMessage.content).toContain("Currently linked PRs: owner/repo #42.");
+    // Links are task state: they travel in bridge_context with user messages, not in the prompt.
+    expect(resumed.systemMessage.content).not.toContain("owner/repo");
     expect(resumed.systemMessage.content).toContain("run #3");
     expect(resumed.systemMessage.content).toContain("use the task update tool");
+    manager.findLinkedTask = () => task;
+    expect(manager.prepareTurnContext("launch-test").block).toContain("Linked PRs: owner/repo #42");
     await manager.evictAllCachedSessions();
+  });
+
+  describe("prompt profiles", () => {
+    const baseTask = { id: "task-1", title: "Profile task", kind: "task", muted: false, status: "active", notes: "", workItems: [], pullRequests: [] };
+
+    async function createTaskSessionConfig(
+      manager: any,
+      sessionId: string,
+      task: Record<string, unknown>,
+      scheduleContext?: Record<string, unknown>,
+      options: Record<string, unknown> = {},
+    ) {
+      manager.deps.taskStore.getTask.mockReturnValue(task);
+      const createSession = vi.fn(async (_config: unknown) => fakeSession(sessionId));
+      manager.backend = { createSession };
+      await manager.createTaskSession("task-1", String(task.title), [], "", task.cwd, scheduleContext, options);
+      return createSession.mock.calls[0]?.[0] as any;
+    }
+
+    it("pins Engineer for a project folder, and prefers the chat's choice over the schedule's and the default", async () => {
+      const { manager } = createManager();
+      const project = makeTestDir("profile-project");
+      await createTaskSessionConfig(manager, "with-folder", { ...baseTask, cwd: project });
+      expect(manager.getSessionPromptProfile("with-folder")).toBe("engineer");
+
+      const scheduled = await createTaskSessionConfig(manager, "scheduled", { ...baseTask, cwd: project },
+        { name: "Watch", type: "cron", runCount: 0, promptProfile: "monitor" });
+      expect(manager.getSessionPromptProfile("scheduled")).toBe("monitor");
+      expect(scheduled.systemMessage.sections.guidelines.content).toContain("<monitor_approach>");
+
+      await createTaskSessionConfig(manager, "explicit", { ...baseTask, cwd: project },
+        { name: "Watch", type: "cron", runCount: 0, promptProfile: "monitor" }, { promptProfile: "assistant" });
+      expect(manager.getSessionPromptProfile("explicit")).toBe("assistant");
+
+      manager.deps.settingsStore = { getMcpServers: () => ({}), getSettings: () => ({ promptProfile: "monitor" }) };
+      await createTaskSessionConfig(manager, "defaulted", { ...baseTask, cwd: project });
+      expect(manager.getSessionPromptProfile("defaulted")).toBe("monitor");
+      // Chats created before profiles existed keep the Engineer prompt they already had.
+      expect(manager.getSessionPromptProfile("legacy")).toBe("engineer");
+      await manager.evictAllCachedSessions();
+    });
+
+    it("gives a scheduled Monitor run the previous run's final report and keeps it for resume", async () => {
+      const { manager } = createManager();
+      const previousDir = manager.getSessionStateDir("previous-run");
+      mkdirSync(previousDir, { recursive: true });
+      writeFileSync(join(previousDir, "events.jsonl"), [
+        { type: "assistant.message", data: { content: "Checking listings.", toolRequests: [{ name: "web_fetch" }] } },
+        { type: "assistant.turn_end", data: {} },
+        { type: "assistant.message", timestamp: "2026-09-25T15:00:00.000Z", data: { content: "Three units open at Maple Court.", toolRequests: [] } },
+        { type: "assistant.message", agentId: "child", data: { content: "Sub-agent notes" } },
+        { type: "assistant.turn_end", data: {} },
+      ].map((event) => JSON.stringify(event)).join("\n"));
+
+      const config = await createTaskSessionConfig(manager, "monitor-run", baseTask,
+        { name: "Watch", type: "cron", runCount: 3, promptProfile: "monitor", previousSessionId: "previous-run" });
+      expect(config.systemMessage.content).toContain('<previous_run_report completed_at="2026-09-25T15:00:00.000Z">');
+      expect(config.systemMessage.content).toContain("Three units open at Maple Court.");
+      expect(config.systemMessage.content).not.toContain("Sub-agent notes");
+
+      const resumed = manager.buildSessionConfig({ sessionId: "monitor-run", task: baseTask, forResume: true });
+      expect(resumed.systemMessage).toEqual(config.systemMessage);
+
+      const assistantConfig = await createTaskSessionConfig(manager, "assistant-run", baseTask,
+        { name: "Digest", type: "cron", runCount: 3, previousSessionId: "previous-run" });
+      expect(assistantConfig.systemMessage.content).not.toContain("<previous_run_report");
+      await manager.evictAllCachedSessions();
+    });
+
+    it("never treats an unfinished previous run as a finished report", async () => {
+      const { manager } = createManager();
+      const unfinishedDir = manager.getSessionStateDir("unfinished-run");
+      mkdirSync(unfinishedDir, { recursive: true });
+      writeFileSync(join(unfinishedDir, "events.jsonl"), [
+        { type: "assistant.message", data: { content: "Interim: two of five sites checked.", toolRequests: [] } },
+      ].map((event) => JSON.stringify(event)).join("\n"));
+      await expect(manager.readPreviousRunReport("unfinished-run")).resolves.toEqual({ status: "running" });
+
+      const busy = vi.spyOn(manager, "isSessionBusy").mockReturnValue(true);
+      await expect(manager.readPreviousRunReport("previous-busy")).resolves.toEqual({ status: "running" });
+      busy.mockRestore();
+      await expect(manager.readPreviousRunReport("never-ran")).resolves.toBeUndefined();
+    });
+
+    it("refuses unknown chats, failed creations, and chats with their own replace-mode prompt", async () => {
+      const { manager } = createManager();
+      await expect(manager.setSessionPromptProfile("missing", "monitor")).rejects.toThrow("Session not found");
+
+      const failed = Promise.reject(new Error("create failed"));
+      failed.catch(() => undefined);
+      manager.pendingSessionCreations.set("failed-create", failed);
+      await expect(manager.setSessionPromptProfile("failed-create", "monitor")).rejects.toThrow(/creation failed/);
+      manager.pendingSessionCreations.delete("failed-create");
+      expect(manager.getSessionPromptProfile("failed-create")).toBe("engineer");
+
+      mkdirSync(manager.getSessionStateDir("helm-chat"), { recursive: true });
+      manager.deps.resolveSessionProfile = (sessionId: string) => (sessionId === "helm-chat" ? { apply: (cfg: unknown) => cfg } : undefined);
+      await expect(manager.setSessionPromptProfile("helm-chat", "monitor")).rejects.toThrow(/do not apply/);
+      expect(manager.getSessionPromptProfile("helm-chat")).toBeUndefined();
+    });
+
+    it("refuses to change a busy chat's profile and evicts an idle chat before confirming", async () => {
+      const { manager } = createManager();
+      mkdirSync(manager.getSessionStateDir("chat"), { recursive: true });
+      const busy = vi.spyOn(manager, "isSessionBusy").mockReturnValue(true);
+      await expect(manager.setSessionPromptProfile("chat", "monitor")).rejects.toThrow(/busy/);
+      expect(manager.getSessionPromptProfile("chat")).toBe("engineer");
+
+      busy.mockReturnValue(false);
+      const evict = vi.spyOn(manager, "evictCachedSession");
+      await expect(manager.setSessionPromptProfile("chat", "monitor")).resolves.toEqual({ promptProfile: "monitor" });
+      expect(manager.getSessionPromptProfile("chat")).toBe("monitor");
+      expect(evict).toHaveBeenCalledWith("chat", undefined, "prompt profile changed");
+    });
   });
 
   it("records only accepted applied configs and retains comparison across handle eviction", async () => {
@@ -663,9 +785,9 @@ describe("SessionManager bounded session lifecycle", () => {
       }),
     };
 
-    await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
-    await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
-    await manager.createTaskSession("task-1", "Scheduled task", [], [], "");
+    await manager.createTaskSession("task-1", "Scheduled task", [], "");
+    await manager.createTaskSession("task-1", "Scheduled task", [], "");
+    await manager.createTaskSession("task-1", "Scheduled task", [], "");
     await vi.waitFor(() => expect(sessions[0].disconnect).toHaveBeenCalledTimes(1));
 
     expect([...manager.sessionObjects.keys()]).toEqual(["scheduled-1", "scheduled-2"]);
@@ -792,7 +914,7 @@ describe("SessionManager bounded session lifecycle", () => {
     const createSession = vi.fn().mockResolvedValue(fakeSession("created"));
     manager.maxCachedSessions = 16;
     manager.backend = { createSession };
-    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], ""))
       .rejects.toThrow("reconnecting");
     expect(createSession).not.toHaveBeenCalled();
   });
@@ -833,7 +955,7 @@ describe("SessionManager bounded session lifecycle", () => {
     });
     const createSession = vi.fn();
     manager.backend = { createSession };
-    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], ""))
       .rejects.toThrow("reconnecting");
     expect(createSession).not.toHaveBeenCalled();
   });
@@ -876,7 +998,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
     const createSession = vi.fn();
     manager.backend = { createSession };
-    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], ""))
       .rejects.toMatchObject({ reason: "cleanup-demand" });
     expect(createSession).not.toHaveBeenCalled();
 
@@ -903,7 +1025,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
     const createSession = vi.fn();
     manager.backend = { createSession };
-    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], ""))
       .rejects.toMatchObject({ reason: "context-limit" });
     expect(createSession).not.toHaveBeenCalled();
 
@@ -1208,9 +1330,9 @@ describe("SessionManager bounded session lifecycle", () => {
     }));
     manager.backend = { createSession };
 
-    const first = manager.createTaskSession("task-1", "Scheduled task", [], [], "");
+    const first = manager.createTaskSession("task-1", "Scheduled task", [], "");
     await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
-    await expect(manager.createTaskSession("task-1", "Scheduled task", [], [], ""))
+    await expect(manager.createTaskSession("task-1", "Scheduled task", [], ""))
       .rejects.toMatchObject({ reason: "cleanup-demand" });
 
     resolveCreate(fakeSession("created") as FakeSession & { sessionId: string });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import { installApiRouteTestHooks, request, scheduler } from "../test-support/api-routes.js";
 import { deleteTaskWithOwnedState } from "../server/task-deletion.js";
@@ -181,12 +181,15 @@ describe("task deletion session disposition", () => {
     const task = ctx.taskStore.createTask("Archive me");
     ctx.taskStore.linkSession(task.id, "session-a");
     ctx.taskStore.linkSession(task.id, "session-b");
+    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
 
     const res = await request(app)
       .delete(`/api/tasks/${task.id}?sessionDisposition=archive`)
       .expect(200);
 
     expect(res.body.archivedSessionIds).toEqual(["session-a", "session-b"]);
+    // Kept chats rebuild their prompt, which named the deleted task.
+    expect(invalidate.mock.calls).toEqual([["session-a", "task deleted"], ["session-b", "task deleted"]]);
     expect(isArchived("session-a")).toBe(true);
     expect(isArchived("session-b")).toBe(true);
     expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
@@ -234,6 +237,7 @@ describe("task deletion session disposition", () => {
     ctx.taskStore.linkSession(otherTask.id, "shared-session");
     const deleted: string[] = [];
     ctx.sessionManager.deleteSession = (async (id: string) => { deleted.push(id); }) as any;
+    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
 
     const res = await request(app)
       .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
@@ -244,6 +248,7 @@ describe("task deletion session disposition", () => {
     expect(deleted).toEqual(["exclusive-session"]);
     expect(res.body.unlinkedSharedSessionIds).toEqual(["shared-session"]);
     expect(ctx.taskStore.getTask(otherTask.id)!.sessionIds).toEqual(["shared-session"]);
+    expect(invalidate.mock.calls).toEqual([["shared-session", "task deleted"]]);
   });
 
   it("refuses to delete while a linked session is busy, keeping the task", async () => {
