@@ -353,6 +353,7 @@ function initSchema(db: DatabaseSync): void {
       groupId TEXT,
       cwd TEXT,
       notes TEXT NOT NULL DEFAULT '',
+      instructions TEXT NOT NULL DEFAULT '',
       doneWhen TEXT,
       nextAction TEXT,
       waitingOn TEXT,
@@ -384,6 +385,19 @@ function initSchema(db: DatabaseSync): void {
       changesJson TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_task_momentum_events_task ON task_momentum_events(taskId, id);
+
+    -- Append-only record of what happened in a task; read on demand, never injected in full.
+    CREATE TABLE IF NOT EXISTS task_history_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      taskId TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      at TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('agent', 'user', 'system')),
+      sessionId TEXT,
+      scheduleId TEXT,
+      scheduleName TEXT,
+      text TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_history_entries_task ON task_history_entries(taskId, id);
 
     -- Task ↔ Work Item links
     CREATE TABLE IF NOT EXISTS task_work_items (
@@ -434,6 +448,7 @@ function initSchema(db: DatabaseSync): void {
       terminalOverlayJson TEXT,
       pendingAutoName INTEGER NOT NULL DEFAULT 0,
       pendingAutoNameReplaceTitle TEXT,
+      promptProfile TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );
@@ -488,7 +503,8 @@ function initSchema(db: DatabaseSync): void {
       runCount INTEGER NOT NULL DEFAULT 0,
       maxRuns INTEGER,
       expiresAt TEXT,
-      autoArchiveKeep INTEGER
+      autoArchiveKeep INTEGER,
+      promptProfile TEXT
     );
 
     -- Read state
@@ -845,9 +861,29 @@ function initSchema(db: DatabaseSync): void {
       ON bridge_session_state(lastAttentionAt);
   `);
 
+  for (const table of ["bridge_session_state", "schedules"] as const) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "promptProfile")) {
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN promptProfile TEXT`);
+      } catch (error) {
+        // The management job runner opens the same database and may have added it first.
+        if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      }
+    }
+  }
+
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {
     db.exec("ALTER TABLE tasks ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!taskColumns.some(column => column.name === "instructions")) {
+    try {
+      db.exec("ALTER TABLE tasks ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
+    } catch (error) {
+      // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
   }
 
   const managementJobColumns = db.prepare("PRAGMA table_info(management_jobs)").all() as Array<{ name: string }>;

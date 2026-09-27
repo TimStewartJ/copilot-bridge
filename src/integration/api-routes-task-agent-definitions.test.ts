@@ -59,11 +59,9 @@ describe("task agent definition routes", () => {
       task.id,
       task.title,
       task.workItems,
-      [],
       task.notes,
       task.cwd,
       undefined,
-      null,
       expect.objectContaining({
         background: true,
         agent: "implementation-planner",

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import type { AppContext } from "../app-context.js";
 import { validateToolArguments } from "../agent-tools-mcp/validate-args.js";
@@ -487,6 +487,55 @@ describe("session manager task tools", () => {
       waitingOn: undefined,
       nextTouchAt: undefined,
     }));
+  });
+
+  it("task_history_add records attributed entries that task_history_list pages and searches", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("History tools");
+    ctx.sessionMetaStore.setScheduleMeta("session-1", "sched-1", "Daily rental search");
+    const add = getTool(ctx, "task_history_add");
+    const list = getTool(ctx, "task_history_list");
+
+    const first = await add.handler({ taskId: task.id, text: "Toured 2040 Main" }, createInvocation("task_history_add"));
+    expect(first).toMatchObject({ success: true, id: expect.any(Number) });
+    await add.handler({ taskId: task.id, text: "Applied for 2040 Main" }, { ...createInvocation("task_history_add"), sessionId: "session-2" });
+    expect(await add.handler({ taskId: task.id, text: "  " }, createInvocation("task_history_add"))).toEqual(toolFailure("text must not be empty"));
+    expect(await add.handler({ taskId: "missing", text: "x" }, createInvocation("task_history_add"))).toMatchObject({ resultType: "failure" });
+
+    const all = await list.handler({ taskId: task.id }, createInvocation("task_history_list"));
+    expect(all.total).toBe(2);
+    expect(all.entries).toEqual([
+      expect.objectContaining({ text: "Applied for 2040 Main", source: "agent", sessionId: "session-2" }),
+      expect.objectContaining({ text: "Toured 2040 Main", sessionId: "session-1", scheduleId: "sched-1", scheduleName: "Daily rental search" }),
+    ]);
+    expect(all.entries[0].scheduleId).toBeUndefined();
+    expect((await list.handler({ taskId: task.id, query: "toured" }, createInvocation("task_history_list"))).entries).toHaveLength(1);
+    expect((await list.handler({ taskId: task.id, before: all.entries[0].id }, createInvocation("task_history_list"))).entries)
+      .toEqual([expect.objectContaining({ text: "Toured 2040 Main" })]);
+    expect(await list.handler({ taskId: task.id, limit: 0 }, createInvocation("task_history_list"))).toMatchObject({ resultType: "failure" });
+
+    const info = await getTool(ctx, "task_get_info").handler({ taskId: task.id }, createInvocation("task_get_info"));
+    expect(info.historyCount).toBe(2);
+    expect(info).not.toHaveProperty("recentHistory");
+  });
+
+  it("task_update saves an agent's change to the instructions and rebuilds the task's chats", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Instruction tools");
+    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateTaskSessionConfig");
+    const update = getTool(ctx, "task_update");
+
+    await update.handler({ taskId: task.id, instructions: "Ask before emailing anyone." }, createInvocation("task_update"));
+    expect(ctx.taskStore.getTask(task.id)?.instructions).toBe("Ask before emailing anyone.");
+    expect(invalidate).toHaveBeenCalledWith(task.id, "task instructions changed");
+
+    invalidate.mockClear();
+    await update.handler({ taskId: task.id, notes: "Just state" }, createInvocation("task_update"));
+    expect(invalidate).not.toHaveBeenCalled();
+    await update.handler({ taskId: task.id, instructions: "" }, createInvocation("task_update"));
+    expect(ctx.taskStore.getTask(task.id)?.instructions).toBe("");
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(ctx.taskHistoryStore!.countEntries(task.id)).toBe(0);
   });
 
   it("task_get_info includes momentum fields", async () => {

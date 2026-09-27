@@ -23,7 +23,7 @@ import {
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createTaskStore } from "./task-store.js";
@@ -51,6 +51,12 @@ import type { TaskStore } from "./task-store.js";
 import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
+import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import type { TaskHistoryStore } from "./task-history-store.js";
+import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeContextBlock, type BridgeContextSectionName } from "./session-context-block.js";
+import { resolvePromptProfile, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isRecord } from "../shared/is-record.js";
+import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
 import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
@@ -118,6 +124,7 @@ import {
   listSessionsFromDisk as listSessionsFromDiskWithDeps,
   readRecentUserMessages,
   readMessagesFromDisk as readMessagesFromDiskWithDeps,
+  readSessionEventsTail,
   resolveSessionEventsPath,
   type ReadMessagesFromDiskResult,
 } from "./session-disk-reader.js";
@@ -554,6 +561,8 @@ export interface SessionManagerDeps {
   eventBusRegistry: EventBusRegistry;
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
+  sessionPromptProfileStore?: SessionPromptProfileStore;
+  taskHistoryStore?: TaskHistoryStore;
   sessionMetaStore?: SessionMetaStore;
   interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
   cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
@@ -704,6 +713,8 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     eventBusRegistry: ctx.eventBusRegistry,
     sessionTitles: ctx.sessionTitles,
     sessionWorkspaceStore: ctx.sessionWorkspaceStore,
+    sessionPromptProfileStore: ctx.sessionPromptProfileStore,
+    taskHistoryStore: ctx.taskHistoryStore,
     sessionMetaStore: ctx.sessionMetaStore,
     interruptedRunStore: ctx.interruptedRunStore,
     cliSessionCatalog: ctx.cliSessionCatalog,
@@ -1057,6 +1068,8 @@ export class SessionManager {
       awaitPendingSessionCreation: (sessionId) => this.awaitPendingSessionCreation(sessionId),
       findLinkedTask: (sessionId) => this.findLinkedTask(sessionId),
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
+      prepareTurnContext: (sessionId) => this.prepareTurnContext(sessionId),
+      resetTurnContext: (sessionId) => this.resetTurnContext(sessionId),
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
       beginSessionResume: (sessionId, sessionConfig, isCancelled) =>
         this.beginSessionResume(sessionId, sessionConfig, {
@@ -1548,6 +1561,7 @@ export class SessionManager {
     }
     this.mcpStatus.delete(sessionId);
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+    this.deps.sessionPromptProfileStore?.clearPromptProfile(sessionId);
     this.invalidateSessionListCache("session:create:failed");
     this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
   }
@@ -1588,6 +1602,7 @@ export class SessionManager {
     logMessage: (sessionId: string, duration: number) => string;
     cleanupLabel: string;
     launchContext?: SessionLaunchContext;
+    promptProfile?: PromptProfileId;
     onCreateStarting?: () => void;
   }): Promise<AgentSession> {
     const {
@@ -1625,6 +1640,10 @@ export class SessionManager {
       try {
         if (options.launchContext) {
           writeSessionLaunchContext(this.getSessionStateDir(session.sessionId), options.launchContext);
+        }
+        // Pinned before the handle is cached so every resume rebuilds the same profile.
+        if (options.promptProfile) {
+          this.deps.sessionPromptProfileStore?.setPromptProfile(session.sessionId, options.promptProfile);
         }
         await this.cacheSession(session.sessionId, session, sessionConfig, "create");
       } catch (error) {
@@ -2204,6 +2223,13 @@ export class SessionManager {
 
   private findLinkedTask(sessionId: string): Task | undefined {
     return this.workspaceController.findLinkedTask(sessionId);
+  }
+
+  /** Rebuild one chat's system prompt at its next turn (or when its current turn ends). */
+  invalidateSessionConfig(sessionId: string, reason: string): boolean {
+    if (!this.sessionObjects.has(sessionId)) return false;
+    this.markCachedSessionForEviction(sessionId, reason);
+    return true;
   }
 
   invalidateTaskSessionConfig(taskId: string, reason: string): number {
@@ -4318,7 +4344,6 @@ export class SessionManager {
     const resumeConfig = this.buildSessionConfig({
       sessionId,
       task: linkedTask,
-      groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
       forResume: true,
     });
     const configuredServerName = Object.keys(resumeConfig.mcpServers ?? {})
@@ -4528,6 +4553,7 @@ export class SessionManager {
     model?: string;
     reasoningEffort?: string;
     contextTier?: CopilotContextTier;
+    promptProfile?: PromptProfileId;
     expectedSessionId?: string;
     onCreateStarting?: () => void;
   } = {}): Promise<{ sessionId: string }> {
@@ -4545,11 +4571,13 @@ export class SessionManager {
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
+      const promptProfile = this.resolveNewSessionPromptProfile(options.promptProfile, bridgeSessionId);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
+        promptProfile,
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -4561,6 +4589,7 @@ export class SessionManager {
         startedAt: t0,
         ...(modelMetadata ? { modelMetadata } : {}),
         ...(options.contextTier ? { requestedContextTier: options.contextTier } : {}),
+        promptProfile,
         cacheReason: "session:create",
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
@@ -4601,12 +4630,13 @@ export class SessionManager {
     const duration = Date.now() - t0;
     // Pin before the first resume so the fork starts in the source's effective workspace.
     this.persistSessionWorkspace(result.sessionId, sourceCwd);
+    const sourcePromptProfile = this.deps.sessionPromptProfileStore?.getPromptProfile(sourceSessionId);
+    if (sourcePromptProfile) this.deps.sessionPromptProfileStore?.setPromptProfile(result.sessionId, sourcePromptProfile);
     if (this.deps.bridgeToolsMcpServer && typeof backend.resumeSession === "function") {
       try {
         const forkResumeConfig = this.buildSessionConfig({
           sessionId: result.sessionId,
           task: sourceTask,
-          groupNotes: this.lookupGroupNotes(sourceTask?.groupId),
           forResume: true,
         });
         await this.withSessionResumeLifecycle({
@@ -4617,6 +4647,7 @@ export class SessionManager {
         });
       } catch (error) {
         this.deps.sessionWorkspaceStore?.deleteWorkspace(result.sessionId);
+        this.deps.sessionPromptProfileStore?.clearPromptProfile(result.sessionId);
         try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
         throw error;
       }
@@ -4679,7 +4710,6 @@ export class SessionManager {
         const resumeConfig = this.buildSessionConfig({
           sessionId,
           task: linkedTask,
-          groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
         });
         session = await this.withSessionResumeLifecycle({
@@ -4736,6 +4766,8 @@ export class SessionManager {
         throw error;
       }
 
+      // Whatever the outcome, the removed turns may have carried the last bridge_context block.
+      this.resetTurnContext(sessionId);
       const eventsRemoved = truncateResult?.eventsRemoved;
       if (typeof eventsRemoved !== "number") {
         throw new SessionHistoryUndoError(
@@ -4836,16 +4868,15 @@ export class SessionManager {
     taskId: string,
     taskTitle: string,
     workItems: WorkItemRef[],
-    prDescriptions: string[],
     notes: string,
     cwd?: string,
     scheduleContext?: ScheduleContext,
-    groupNotes?: { groupName: string; notes: string } | null,
     options: {
       background?: boolean;
       model?: string;
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
+      promptProfile?: PromptProfileId;
       agent?: string;
       expectedSessionId?: string;
       onCreateStarting?: () => void;
@@ -4877,6 +4908,7 @@ export class SessionManager {
         groupId: fullTask?.groupId,
         cwd: fullTask?.cwd ?? cwd,
         notes: notes || "",
+        instructions: fullTask?.instructions ?? "",
         doneWhen: fullTask?.doneWhen,
         nextAction: fullTask?.nextAction,
         waitingOn: fullTask?.waitingOn,
@@ -4893,17 +4925,29 @@ export class SessionManager {
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
+      const promptProfile = this.resolveNewSessionPromptProfile(
+        options.promptProfile ?? scheduleContext?.promptProfile,
+        bridgeSessionId,
+        task,
+      );
+      // Only a Monitor run compares against the previous run, so only it reads that report.
+      const runScheduleContext = scheduleContext && promptProfile === "monitor"
+        && scheduleContext.previousSessionId && !scheduleContext.previousRunReport
+        ? {
+          ...scheduleContext,
+          previousRunReport: await this.readPreviousRunReport(scheduleContext.previousSessionId),
+        }
+        : scheduleContext;
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         task,
         isNewTask: isPlaceholder,
-        ...(!fullTask ? { prDescriptions } : {}),
-        scheduleContext,
+        promptProfile,
+        scheduleContext: runScheduleContext,
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
         ...(options.agent ? { agentOverride: options.agent } : {}),
-        groupNotes: groupNotes ?? this.lookupGroupNotes(fullTask?.groupId),
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -4923,7 +4967,8 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
-        launchContext: { isNewTask: isPlaceholder, scheduleContext },
+        launchContext: { isNewTask: isPlaceholder, scheduleContext: runScheduleContext },
+        promptProfile,
         onCreateStarting: options.onCreateStarting,
       });
       if (bridgeSessionId && (options.background || options.expectedSessionId)) {
@@ -5251,7 +5296,7 @@ export class SessionManager {
     console.log(`[sdk] [${sid}] Warming session...`);
 
     const linkedTask = this.findLinkedTask(sessionId);
-    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, forResume: true });
     const suppressResumeEvent = options.source === "chat-open"
       && this.suppressPassiveResumeEvents
       && client.id === "copilot";
@@ -5331,6 +5376,7 @@ export class SessionManager {
         }
       }
       this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
+      this.deliveredTurnContext.delete(sessionId);
 
       // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
       const copilotHome = this.getCopilotHome();
@@ -5367,7 +5413,7 @@ export class SessionManager {
 
     const sid = sessionId.slice(0, 8);
     const linkedTask = this.findLinkedTask(sessionId);
-    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, groupNotes: this.lookupGroupNotes(linkedTask?.groupId), forResume: true });
+    const resumeConfig = this.buildSessionConfig({ sessionId, task: linkedTask, forResume: true });
 
     return this.withSessionResumeLifecycle({
       backend: client,
@@ -5384,6 +5430,138 @@ export class SessionManager {
         console.log(`[sdk] [${sid}] Reloading session with fresh config...`);
       },
     }, () => this.getMcpStatus(sessionId));
+  }
+
+  /**
+   * What a chat has already been told through bridge_context sections, by section hash. The
+   * generation changes whenever the conversation may have lost a delivered block (compaction,
+   * truncation, undo), so a send prepared before that point cannot mark it delivered. A cold
+   * resume keeps the ledger: the conversation still holds the blocks, and compaction only runs
+   * during turns, whose events the runner routes here. The ledger lives in memory, so the first
+   * message after a Bridge restart resends every section once.
+   */
+  private readonly deliveredTurnContext = new Map<string, { generation: number; hashes: Map<BridgeContextSectionName, string> }>();
+
+  /** The bridge_context block to put in front of this user message, if anything changed. */
+  prepareTurnContext(sessionId: string): { block?: string; commit(): void } {
+    const none = { commit: () => {} };
+    // Chats with their own replace-mode prompt (Helm) take no Bridge task context.
+    if (this.deps.resolveSessionProfile?.(sessionId)) return none;
+    const task = this.findLinkedTask(sessionId) ?? null;
+    const sections = buildBridgeContextSections(this.deps, task, this.lookupGroupNotes(task?.groupId));
+    const delivered = this.deliveredTurnContext.get(sessionId) ?? { generation: 0, hashes: emptyBridgeContextHashes() };
+    this.deliveredTurnContext.set(sessionId, delivered);
+    const changed = sections.filter((section) => delivered.hashes.get(section.name) !== section.hash);
+    const block = renderBridgeContextBlock(changed);
+    if (!block) return none;
+    const generation = delivered.generation;
+    return {
+      block,
+      commit: () => {
+        const current = this.deliveredTurnContext.get(sessionId);
+        if (!current || current.generation !== generation) return;
+        for (const section of changed) current.hashes.set(section.name, section.hash);
+      },
+    };
+  }
+
+  /** The conversation may no longer contain the last block, so the next message resends everything. */
+  resetTurnContext(sessionId: string): void {
+    const current = this.deliveredTurnContext.get(sessionId);
+    this.deliveredTurnContext.set(sessionId, { generation: (current?.generation ?? 0) + 1, hashes: emptyBridgeContextHashes() });
+  }
+
+  /** A new chat's profile: the explicit choice, else the settings default for its working directory. */
+  private resolveNewSessionPromptProfile(
+    explicit: PromptProfileId | undefined,
+    sessionId: string | undefined,
+    task?: Pick<Task, "cwd"> | null,
+  ): PromptProfileId {
+    if (explicit) return explicit;
+    const cwd = this.resolveEffectiveSessionCwd({ sessionId, task });
+    return resolvePromptProfile({
+      defaultSetting: this.deps.settingsStore?.getSettings().promptProfile,
+      hasProjectFolder: !!cwd && !this.workspaceController.isNeutralWorkspaceCwd(cwd),
+    }).id;
+  }
+
+  /** Undefined for chats whose own replace-mode prompt ignores profiles, such as Helm. */
+  getSessionPromptProfile(sessionId: string): PromptProfileId | undefined {
+    if (this.deps.resolveSessionProfile?.(sessionId)) return undefined;
+    return this.deps.sessionPromptProfileStore?.getPromptProfile(sessionId) ?? LEGACY_PROMPT_PROFILE;
+  }
+
+  /**
+   * Changes a chat's profile. The system prompt is rebuilt on resume, so the cached handle is
+   * evicted before this returns and the next turn starts with the new profile.
+   */
+  async setSessionPromptProfile(sessionId: string, promptProfile: PromptProfileId): Promise<{ promptProfile: PromptProfileId }> {
+    const store = this.deps.sessionPromptProfileStore;
+    if (!store) throw new Error("Session profiles are not available");
+    if (this.deps.resolveSessionProfile?.(sessionId)) {
+      throw new Error("This chat uses its own instructions, so profiles do not apply");
+    }
+    if (this.isSessionBusy(sessionId)) throw new Error("Cannot change the profile of a busy session");
+    // Creation pins the launch profile; wait so this choice is not overwritten, and fail
+    // with the creation instead of storing a profile its cleanup would remove.
+    const pendingCreation = this.pendingSessionCreations.get(sessionId);
+    if (pendingCreation) {
+      try {
+        await pendingCreation;
+      } catch {
+        throw new Error("Session not found: its creation failed");
+      }
+    }
+    await this.warmSessionPromises.get(sessionId)?.catch(() => undefined);
+    const known = this.sessionObjects.has(sessionId)
+      || await stat(this.getSessionStateDir(sessionId)).then(() => true, () => false);
+    if (!known) throw new Error("Session not found");
+    if (this.isSessionBusy(sessionId)) throw new Error("Cannot change the profile of a busy session");
+    store.setPromptProfile(sessionId, promptProfile);
+    await this.evictCachedSession(sessionId, undefined, "prompt profile changed");
+    this.invalidateSessionListCache("prompt-profile:changed");
+    return { promptProfile };
+  }
+
+  /**
+   * What a previous scheduled run left for the next one: its final report once the run finished
+   * (the last main-agent reply without tool requests, followed by the end of that turn).
+   */
+  async readPreviousRunReport(sessionId: string): Promise<PreviousRunReport | undefined> {
+    if (this.isSessionBusy(sessionId) || this.pendingSessionCreations.has(sessionId)) return { status: "running" };
+    const isMainReply = (event: unknown): event is { type: string; timestamp?: string; data: { content: string } } => {
+      if (!isRecord(event) || event.type !== "assistant.message" || event.agentId) return false;
+      const data = event.data;
+      return isRecord(data)
+        && !data.parentToolCallId
+        && (!Array.isArray(data.toolRequests) || data.toolRequests.length === 0)
+        && typeof data.content === "string"
+        && data.content.trim() !== "";
+    };
+    const isMainTurnEnd = (event: unknown) => isRecord(event) && event.type === "assistant.turn_end" && !event.agentId;
+    let events: unknown[];
+    try {
+      events = (await readSessionEventsTail(this.getSessionEventsPath(sessionId), {
+        maxBytes: 4 * 1024 * 1024,
+        hasEnough: (tail) => tail.some(isMainReply),
+      })).events;
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT") return undefined;
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[scheduler] Could not read the previous run report from ${sessionId.slice(0, 8)}: ${reason}`);
+      return { status: "unavailable", reason };
+    }
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!isMainReply(event)) continue;
+      if (!events.slice(index + 1).some(isMainTurnEnd)) return { status: "running" };
+      return {
+        status: "completed",
+        content: event.data.content,
+        ...(typeof event.timestamp === "string" ? { completedAt: event.timestamp } : {}),
+      };
+    }
+    return undefined;
   }
 
   isSessionBusy(sessionId: string): boolean {
@@ -5646,7 +5824,6 @@ export class SessionManager {
         const resumeConfig = this.buildSessionConfig({
           sessionId,
           task: linkedTask,
-          groupNotes: this.lookupGroupNotes(linkedTask?.groupId),
           forResume: true,
           ...(modelMetadata ? { modelMetadata } : {}),
         });

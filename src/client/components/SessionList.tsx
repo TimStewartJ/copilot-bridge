@@ -26,6 +26,7 @@ import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
 import DeferredWorkSheet from "./DeferredWorkSheet";
 import SessionModelDialog, { canKeepCurrentReasoningEffortForModel } from "./SessionModelDialog";
+import { getPromptProfileInfo } from "../../shared/prompt-profiles.js";
 
 /** A session log this large is worth noticing; smaller ones keep their size in the tooltip only. */
 export const LARGE_SESSION_LOG_BYTES = 50 * 1024 * 1024;
@@ -791,7 +792,7 @@ export default function SessionList({
               <div className="px-3 py-2 flex items-start gap-2 text-xs">
                 <Bot size={14} className="shrink-0 text-text-muted mt-0.5" />
                 <div className="min-w-0">
-                  <div className="text-text-faint">Session model</div>
+                  <div className="text-text-faint">Session model and profile</div>
                   <div
                     className={`truncate ${ctxModelQuery.error ? "text-error" : "text-text-secondary"}`}
                     title={ctxModelQuery.error ? getErrorMessage(ctxModelQuery.error) : undefined}
@@ -800,6 +801,11 @@ export default function SessionList({
                       ? "Unable to load model"
                       : formatSessionModelLabel(ctxModelQuery.data, cachedModelsQuery.data)}
                   </div>
+                  {ctxModelQuery.data?.promptProfile && (
+                    <div className="truncate text-text-secondary">
+                      {getPromptProfileInfo(ctxModelQuery.data.promptProfile).label} profile
+                    </div>
+                  )}
                   <div className="text-[10px] text-text-faint">
                     {ctxModelQuery.isFetching && ctxModelQuery.data
                       ? "Refreshing..."
@@ -809,9 +815,9 @@ export default function SessionList({
               </div>
               <CtxItem
                 icon={<Bot size={14} />}
-                label="Change Model..."
+                label="Change Model or Profile..."
                 disabled={isSessionActive(ctxSession)}
-                title={isSessionActive(ctxSession) ? "This session is busy" : "Change only this session's model"}
+                title={isSessionActive(ctxSession) ? "This session is busy" : "Change only this session's model or profile"}
                 onClick={() => {
                   openModelDialog(ctxSession.sessionId);
                 }}

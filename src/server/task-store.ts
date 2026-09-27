@@ -39,7 +39,10 @@ export interface Task {
   /** When Tim last opened the task in the UI. Not a task change: it never bumps updatedAt. */
   groupId?: string;
   cwd?: string;
+  /** Current state of the work, delivered with user messages. */
   notes: string;
+  /** Standing rules for every session of this task, part of the system prompt. */
+  instructions?: string;
   doneWhen?: string;
   nextAction?: string;
   waitingOn?: string;
@@ -115,6 +118,7 @@ export const TASK_UPDATE_FIELDS = [
   "deferred",
   "status",
   "notes",
+  "instructions",
   "priority",
   "cwd",
   "groupId",
@@ -132,6 +136,7 @@ type TaskUpdate = {
   deferred?: boolean;
   status?: Task["status"];
   notes?: string;
+  instructions?: string;
   priority?: number;
   cwd?: string | null;
   groupId?: string | null;
@@ -380,6 +385,7 @@ export function createTaskStore(
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
       notes: row.notes,
+      instructions: row.instructions ?? "",
       doneWhen: normalizeOptionalText(row.doneWhen),
       nextAction: normalizeOptionalText(row.nextAction),
       waitingOn: normalizeOptionalText(row.waitingOn),
@@ -497,6 +503,11 @@ export function createTaskStore(
   function updateTask(id: string, updates: TaskUpdate, actor: TaskChangeActor = { source: "system" }): Task {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
     if (!row) throw new Error(`Task ${id} not found`);
+    for (const field of ["notes", "instructions"] as const) {
+      if (updates[field] !== undefined && typeof updates[field] !== "string") {
+        throw new InvalidTaskUpdateError(`${field} must be a string`);
+      }
+    }
 
     const oldStatus = normalizeStoredTaskStatus(row.status);
     const oldCompletedAt = normalizeOptionalTimestamp(row.completedAt);
@@ -566,6 +577,7 @@ export function createTaskStore(
     }
     if (shouldPersistStatus) { fields.push("status = ?"); values.push(targetStatus); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
+    if (updates.instructions !== undefined) { fields.push("instructions = ?"); values.push(updates.instructions); }
     if (priority !== undefined) { fields.push("priority = ?"); values.push(priority); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
     if (groupId !== undefined) { fields.push("groupId = ?"); values.push(groupId); }

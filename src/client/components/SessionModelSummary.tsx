@@ -25,7 +25,7 @@ export default function SessionModelSummary({
   loading: boolean;
   error?: string;
   onRetry: () => void;
-  /** Opens the editor for this chat's model, effort and context. Without it the label is plain text. */
+  /** Opens the editor for this chat's model, effort, context and profile. Without it the label is plain text. */
   onEdit?: () => void;
   /** Why editing is unavailable right now, such as a working session. Disables the label. */
   editDisabledReason?: string;
@@ -84,8 +84,8 @@ export default function SessionModelSummary({
           type="button"
           onClick={onEdit}
           disabled={!!editDisabledReason}
-          title={editDisabledReason ?? "Change model, effort, and context for this chat"}
-          aria-label={`Change model, effort, and context: ${label}`}
+          title={editDisabledReason ?? "Change model, effort, context, and profile for this chat"}
+          aria-label={`Change model, effort, context, and profile: ${label}`}
           className={cx(
             "-mx-1.5 inline-flex h-10 min-w-0 items-center gap-1 rounded-md px-1.5 text-left transition-colors md:h-6",
             "hover:bg-bg-hover/60 hover:text-text-primary disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-inherit",

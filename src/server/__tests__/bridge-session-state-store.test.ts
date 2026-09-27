@@ -25,6 +25,22 @@ describe("bridge session state store", () => {
     expect(store.getState("session-1")).toBeUndefined();
   });
 
+  it("keeps a chat's profile through other clears and prunes the row once it is the last field", () => {
+    const store = createBridgeSessionStateStore(setupTestDb());
+
+    store.setPromptProfile("session-1", "monitor");
+    store.setTitleOverride("session-1", "Manual title");
+    store.clearAllTitleOverrides();
+    store.setPinnedCwd("session-1", "/repo");
+    store.clearPinnedCwd("session-1");
+    expect(store.getState("session-1")?.promptProfile).toBe("monitor");
+
+    store.setPromptProfile("session-1", "assistant");
+    expect(store.getState("session-1")?.promptProfile).toBe("assistant");
+    store.clearPromptProfile("session-1");
+    expect(store.getState("session-1")).toBeUndefined();
+  });
+
   it("lists only rows with a pinned cwd for the session-list workspace preload", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
 

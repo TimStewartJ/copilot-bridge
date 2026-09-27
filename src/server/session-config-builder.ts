@@ -8,7 +8,7 @@ import type { SettingsStore } from "./settings-store.js";
 import { resolveSubagentSettings, type ResolvedSubagentSettings } from "../shared/subagent-settings.js";
 import type { TagStore } from "./tag-store.js";
 import type { DocsIndex } from "./docs-index.js";
-import type { DocsStore, DocTreeNode } from "./docs-store.js";
+import type { DocsStore } from "./docs-store.js";
 import {
   toRuntimeMcpServerConfigs,
   type McpServerConfig,
@@ -37,14 +37,9 @@ import {
   STAGING_INSTRUCTIONS,
   TOOL_NAMING_GUIDANCE,
   WORK_REFERENCE_GUIDANCE,
+  WRITING_GUIDANCE,
 } from "./session-instructions.js";
 import { renderResponseStyle } from "../shared/response-style.js";
-import {
-  formatPromptTagList,
-  formatLinkedPullRequest,
-  formatRelatedDocManifestEntry,
-} from "./session-formatting.js";
-import { formatTaskMomentumContext } from "./session-task-momentum.js";
 import {
   buildGitHubCopilotMcpToolConfig,
   buildGitHubCopilotSearchMcpServer,
@@ -58,6 +53,14 @@ import {
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import { pathsEqual } from "./path-utils.js";
+import type { PromptProfileId } from "../shared/prompt-profiles.js";
+import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import {
+  formatPreviousRunReport,
+  LEGACY_PROMPT_PROFILE,
+  PROMPT_PROFILE_DEFINITIONS,
+  type PreviousRunReport,
+} from "./prompt-profiles.js";
 import { resolveComputerUsePlugin, type ComputerUsePluginStatus } from "./computer-use-plugin.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -71,20 +74,27 @@ export interface ScheduleContext {
   model?: string;
   reasoningEffort?: string;
   contextTier?: CopilotContextTier;
+  promptProfile?: PromptProfileId;
+  /** The session of the schedule's previous run. */
+  previousSessionId?: string;
+  /** What the previous run left; Monitor compares against it. */
+  previousRunReport?: PreviousRunReport;
 }
 
 export interface SessionConfigOptions {
   sessionId?: string;
   task?: Task | null;
   isNewTask?: boolean;
-  prDescriptions?: string[];
   scheduleContext?: ScheduleContext;
   modelOverride?: string;
   reasoningEffortOverride?: string;
   contextTierOverride?: CopilotContextTier;
   agentOverride?: string;
-  /** Group notes to inject into context (looked up by caller) */
-  groupNotes?: { groupName: string; notes: string } | null;
+  /**
+   * The chat's profile. Session creation resolves and passes it; resume reads the stored choice.
+   * Chats created before profiles existed have none and keep the legacy (Engineer) prompt.
+   */
+  promptProfile?: PromptProfileId;
   /**
    * When true, omit `model` and `reasoningEffort` from the config.
    * The SDK silently overwrites _selectedModel via updateOptions() without sanitizing
@@ -112,6 +122,7 @@ export interface SessionConfigBuilderDeps {
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
   resolveComputerUsePlugin?: () => ComputerUsePluginStatus;
+  sessionPromptProfileStore?: Pick<SessionPromptProfileStore, "getPromptProfile">;
 }
 
 export interface SessionConfigBuilderCallbacks {
@@ -123,37 +134,6 @@ export interface BuildSessionConfigParams {
   deps: SessionConfigBuilderDeps;
   options?: SessionConfigOptions;
   callbacks: SessionConfigBuilderCallbacks;
-}
-
-function renderDocsTree(nodes: DocTreeNode[], depth = 0): string {
-  return nodes.map((n) => {
-    const indent = "  ".repeat(depth);
-    if (n.type === "folder") {
-      const label = n.isDb
-        ? `${n.name}/ (collection)`
-        : n.hasIndex ? `${n.name}/ (page: docs_read "${n.path}")` : `${n.name}/`;
-      const children = n.isDb ? "" : depth < 1 && n.children?.length
-        ? "\n" + renderDocsTree(n.children, depth + 1)
-        : n.children?.length ? ` (${n.children.length} items)` : "";
-      return `${indent}- 📁 ${label}${children}`;
-    }
-    return `${indent}- ${n.name}`;
-  }).join("\n");
-}
-
-function collectDocsDatabaseSummaries(docsStore: DocsStore, nodes: DocTreeNode[], summaries: string[] = []): string[] {
-  for (const n of nodes) {
-    if (n.type !== "folder") continue;
-    if (n.isDb) {
-      const schema = docsStore.readSchema(n.path);
-      if (schema) {
-        const fields = schema.fields.map((f) => `${f.name} (${f.type})`).join(", ");
-        summaries.push(`- ${n.path}/ "${schema.name}": ${fields}`);
-      }
-    }
-    if (n.children?.length) collectDocsDatabaseSummaries(docsStore, n.children, summaries);
-  }
-  return summaries;
 }
 
 function resolveSessionMcpServers(
@@ -234,13 +214,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     sessionId,
     task,
     isNewTask,
-    prDescriptions,
     scheduleContext,
     modelOverride,
     reasoningEffortOverride,
     contextTierOverride,
     agentOverride,
-    groupNotes,
     forResume,
   } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
@@ -390,9 +368,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   if (task) {
     contextParts.push(
-      `You are helping with task "${task.title}" (taskId: ${task.id}).`,
-      `Task status: ${task.status}.`,
-      `Task kind: ${task.kind}.`,
+      `You are helping with a Bridge task (taskId: ${task.id}). Its latest state (title, status, links, where things stand, notes, checklist and recent history) arrives in <bridge_context> blocks at the start of user messages.`,
       "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
     );
     if (isNewTask) {
@@ -400,22 +376,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         "This task was just created without a title. After reading the user's first message, use the task update tool to set a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.",
       );
     }
-    if (task.workItems.length > 0) {
-      contextParts.push(`Currently linked work items: ${task.workItems.map((w) => `#${w.id} (${w.provider})`).join(", ")}.`);
-    }
-    const prStrings = prDescriptions
-      ?? (task.pullRequests.length > 0
-        ? task.pullRequests.map(formatLinkedPullRequest)
-        : []);
-    if (prStrings.length > 0) {
-      contextParts.push(`Currently linked PRs: ${prStrings.join(", ")}.`);
-    }
-    const momentumContext = formatTaskMomentumContext(task);
-    if (momentumContext) {
-      contextParts.push(momentumContext);
-    }
-    if (task.notes.trim()) {
-      contextParts.push(`Task notes:\n${task.notes}`);
+    if (task.instructions?.trim()) {
+      contextParts.push(`<task_instructions>\nStanding rules for this task. Follow them in every session.\n${task.instructions.trim()}\n</task_instructions>`);
     }
     if (taskAgentDefinitions.length > 0) {
       const definitions = taskAgentDefinitions.map((definition) => {
@@ -432,22 +394,12 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         `Task agent definitions available through Copilot's native task/custom-agent surface:\n${definitions}`,
       );
     }
-    // Inject group notes if provided
-    if (groupNotes?.notes?.trim()) {
-      contextParts.push(`Group notes (from task group "${groupNotes.groupName}" that this task belongs to):\n${groupNotes.notes}`);
-    }
-    const checklistItems = deps.checklistStore?.listChecklistItems(task.id) ?? [];
-    if (checklistItems.length > 0) {
-      const checklistItemLines = checklistItems.map((t) => {
-        let line = `- [${t.done ? "x" : " "}] ${t.text} [id: ${t.id}]`;
-        if (t.deadline) {
-          line += ` (due ${t.deadline})`;
-        }
-        return line;
-      }).join("\n");
-      contextParts.push(`Task checklist:\n${checklistItemLines}`);
-    }
   }
+
+  const promptProfileId = params.options?.promptProfile
+    ?? (sessionId ? deps.sessionPromptProfileStore?.getPromptProfile(sessionId) : undefined)
+    ?? LEGACY_PROMPT_PROFILE;
+  const promptProfile = PROMPT_PROFILE_DEFINITIONS[promptProfileId];
 
   if (scheduleContext) {
     const kind = scheduleContext.type === "cron" ? "recurring" : "one-time";
@@ -457,24 +409,40 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     contextParts.push(
       `\nThis session was triggered by schedule "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
     );
+    if (promptProfileId === "monitor") {
+      contextParts.push(formatPreviousRunReport(scheduleContext.previousRunReport));
+    }
   }
 
   // Staging rules — only when working on the bridge repo itself. A session without a
   // resolved cwd is not evidence of Bridge work.
   const isSelfRepo = !!workingDirectory && pathsEqual(workingDirectory, REPO_ROOT);
   const sections: Partial<Record<string, AgentSectionOverride>> = {};
-  if (isSelfRepo && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT)) {
-    sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
+  // The staging workflow is an operational rule of this repository, so it applies whatever
+  // the profile; only the CLI's general coding rules depend on the profile.
+  const stagingApplies = isSelfRepo
+    && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT);
+  if (promptProfile.keepCodingRules) {
+    if (stagingApplies) sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
+  } else {
+    sections.code_change_rules = stagingApplies
+      ? { action: "replace", content: STAGING_INSTRUCTIONS }
+      : { action: "remove" };
   }
 
   // `identity` is a section group that also carries tone, tool efficiency, search
   // guidance and the model self-identification, so only the preamble is replaced.
   // Child overrides apply before the group transform sees the rendered group.
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
-  sections.identity = { action: createCodingModeStatementRemover(identityText) };
-  sections.preamble = { action: "replace", content: identityText };
+  const preambleText = `${identityText}\n\n${promptProfile.role}`;
+  sections.identity = { action: createCodingModeStatementRemover(preambleText) };
+  sections.preamble = { action: "replace", content: preambleText };
   // The CLI's tone differs by model family and conflicts with the Bridge style setting.
-  sections.tone = { action: "replace", content: renderResponseStyle(settings?.responseStyle) };
+  sections.tone = {
+    action: "replace",
+    content: `${renderResponseStyle(settings?.responseStyle)}\n\n${WRITING_GUIDANCE}\n\n${promptProfile.communication}`,
+  };
+  sections.guidelines = { action: "append", content: promptProfile.approach };
   sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
   sections.last_instructions = { action: removeConciseReplyDirective };
 
@@ -498,32 +466,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         resolveSessionMcpServers(deps, resolved.mcpServerIds),
         sessionId,
       );
-    }
-
-    // Inject related docs manifest — tell the AI which docs are available
-    if (resolved.tags.length > 0 && deps.docsIndex) {
-      const tagNames = resolved.tags.map((t) => t.name);
-      const relatedDocs = deps.docsIndex.findDocsByTagNames(tagNames, 20);
-      if (relatedDocs.length > 0) {
-        const manifest = relatedDocs.map((d) => formatRelatedDocManifestEntry(d)).join("\n");
-        contextParts.push(
-          `\n<related_docs>\nThese knowledge base docs are related to your current task's tags (${formatPromptTagList(tagNames)}). Use docs_read to access them when relevant:\n${manifest}\n</related_docs>`,
-        );
-      }
-    }
-  }
-
-  // Inject 2-level docs tree so the AI knows the knowledge base structure
-  if (deps.docsStore) {
-    const tree = deps.docsStore.listTree();
-    if (tree.length > 0) {
-      contextParts.push(`\n<docs_tree>\nKnowledge base structure (use docs_read/docs_search to access). Folder entries marked as pages are readable with docs_read using the shown folder path; index.md is hidden because it is represented by the folder path.\n${renderDocsTree(tree)}\n</docs_tree>`);
-
-      // Collect all DB collections from the full tree and inject schema summaries
-      const dbSummaries = collectDocsDatabaseSummaries(deps.docsStore, tree);
-      if (dbSummaries.length > 0) {
-        contextParts.push(`\n<docs_databases>\nDatabase collections (use docs_db_query/docs_db_add to interact, docs_db_schema for full field options):\n${dbSummaries.join("\n")}\n</docs_databases>`);
-      }
     }
   }
 

@@ -276,6 +276,7 @@ export function createMockSessionManager() {
     gracefulShutdown: async () => {},
     evictAllCachedSessions: async () => {},
     invalidateTaskSessionConfig: () => 0,
+    invalidateSessionConfig: () => false,
     evictIdleCachedSessions: async () => ({ evictedSessions: 0, protectedSessions: 0 }),
     setSessionModel: async (_id: string, model: string, reasoningEffort?: string, contextTier?: string) => ({
       model,
@@ -283,6 +284,8 @@ export function createMockSessionManager() {
       ...(contextTier ? { contextTier } : {}),
     }),
     getSessionModelState: async () => ({ source: "unknown" as const }),
+    getSessionPromptProfile: () => "engineer" as const,
+    setSessionPromptProfile: async (_id: string, promptProfile: string) => ({ promptProfile }),
     getMcpStatus: async () => [],
     getCachedMcpStatus: () => [],
     getSessionToolReadiness: () => undefined,

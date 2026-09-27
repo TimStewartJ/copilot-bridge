@@ -16,11 +16,14 @@ function requiredProps() {
     selectedModelId: "",
     reasoningEffortOptions: [],
     contextOptions: [],
+    selectedPromptProfile: "engineer" as const,
+    defaultPromptProfile: { id: "engineer" as const, source: "automatic" as const },
     mode: "interactive" as const,
     onPresetChange: vi.fn(),
     onModelChange: vi.fn(),
     onReasoningEffortChange: vi.fn(),
     onContextTierChange: vi.fn(),
+    onPromptProfileChange: vi.fn(),
     onModeChange: vi.fn(),
   };
 }
@@ -75,16 +78,56 @@ describe("NewSessionLaunchPanel", () => {
     const hiddenLabels = [...findAllByTag(container, "LABEL"), ...findAllByTag(container, "DIV")]
       .filter((element) => getReactProps(element)?.className === "sr-only")
       .map((element) => element.textContent);
-    expect(hiddenLabels).toEqual(["Agent", "Model", "Effort", "Context", "Mode"]);
+    expect(hiddenLabels).toEqual(["Agent", "Model", "Effort", "Context", "Profile", "Mode"]);
     const agentLabel = findAllByTag(container, "LABEL")[0];
     expect(getReactProps(agentLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
     const groupLabels = findAllByTag(container, "DIV")
       .filter((element) => getReactProps(element)?.role === "group")
       .map((element) => getReactProps(element)?.["aria-label"]);
-    expect(groupLabels).toEqual(["Model presets", "Effort for new session", "Context for new session", "Run mode for new session"]);
-    for (const choice of ["Default Copilot agent", "GPT-5.6", "High", "Standard context", "Interactive", "Autopilot"]) {
+    expect(groupLabels).toEqual([
+      "Model presets",
+      "Effort for new session",
+      "Context for new session",
+      "Profile for new session",
+      "Run mode for new session",
+    ]);
+    for (const choice of ["Default Copilot agent", "GPT-5.6", "High", "Standard context", "Engineer", "Assistant", "Monitor", "Interactive", "Autopilot"]) {
       expect(container.textContent).toContain(choice);
     }
+  });
+
+  it("offers the three profiles, explains the default, and reports a choice", async () => {
+    const onPromptProfileChange = vi.fn();
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      selectedPromptProfile: "assistant",
+      defaultPromptProfile: { id: "assistant", source: "automatic" },
+      onPromptProfileChange,
+    }));
+    const container = harness!.dom.container;
+    const profileGroup = findAllByTag(container, "DIV")
+      .find((element) => getReactProps(element)?.["aria-label"] === "Profile for new session");
+    const buttons = findAllByTag(profileGroup, "BUTTON");
+    expect(buttons.map((button) => button.textContent)).toEqual(["Engineer", "Assistant", "Monitor"]);
+    expect(buttons.map((button) => getReactProps(button)?.["aria-pressed"])).toEqual([false, true, false]);
+    expect(container.textContent).toContain("Picked because this chat has no project folder.");
+
+    await harness!.act(() => {
+      getReactProps(buttons[2])?.onClick?.();
+    });
+    expect(onPromptProfileChange).toHaveBeenCalledWith("monitor");
+  });
+
+  it("names an explicit profile choice without claiming it is the default", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      selectedPromptProfile: "monitor",
+      defaultPromptProfile: { id: "engineer", source: "default" },
+    }));
+    const text = harness!.dom.container.textContent ?? "";
+    expect(text).toContain("Recurring checks: compares with the last run and reports only what changed.");
+    expect(text).not.toContain("default profile");
+    expect(text).not.toContain("Picked because");
   });
 
   it("starts the three presets with GPT, Claude, and Other defaults", async () => {

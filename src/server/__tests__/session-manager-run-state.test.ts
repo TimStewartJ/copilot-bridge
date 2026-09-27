@@ -913,6 +913,53 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("puts changed bridge_context in front of the prompt, shows only the user's text and marks it delivered after the send", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    const commit = vi.fn();
+    manager.prepareTurnContext = vi.fn(() => ({ block: "<bridge_context>\n<task_state>x</task_state>\n</bridge_context>", commit }));
+    const reset = vi.spyOn(manager, "resetTurnContext");
+
+    manager.startWork("session-1", "hello there");
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(session.send).toHaveBeenCalledWith({
+      prompt: "<bridge_context>\n<task_state>x</task_state>\n</bridge_context>\n\nhello there",
+      displayPrompt: "hello there",
+    });
+    expect(commit).not.toHaveBeenCalled();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    expect(commit).toHaveBeenCalledTimes(1);
+
+    // Compaction may summarize the block away, so the next message resends it.
+    reset.mockClear();
+    getHandler()?.({ type: "session.compaction_complete", data: {}, timestamp: "2026-04-24T12:00:00.500Z" });
+    expect(reset).toHaveBeenCalledWith("session-1");
+
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
+    await flushMicrotasks();
+  });
+
+  it("sends the prompt unchanged when bridge_context has nothing new", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    manager.prepareTurnContext = vi.fn(() => ({ commit: vi.fn() }));
+
+    manager.startWork("session-1", "hello there");
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(session.send).toHaveBeenCalledWith({ prompt: "hello there" });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
+    await flushMicrotasks();
+  });
+
   it("completes text-only slash commands without sending an agent prompt", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session } = makeSession();

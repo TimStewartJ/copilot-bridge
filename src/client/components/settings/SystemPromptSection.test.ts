@@ -17,6 +17,11 @@ async function renderSection(draft: AppSettings) {
   return { harness, container: harness.dom.container, setDraft, render };
 }
 
+function radiosNamed(container: unknown, suffix: string) {
+  return findAllByTag(container, "INPUT")
+    .filter((input) => String(getReactProps(input)?.name ?? "").endsWith(suffix));
+}
+
 function styleTextarea(container: unknown) {
   return findAllByTag(container, "TEXTAREA")[0];
 }
@@ -47,12 +52,12 @@ describe("SystemPromptSection", () => {
     const { container } = await renderSection({ mcpServers: {} });
     expect(getReactProps(styleTextarea(container))?.value).toBe(DEFAULT_RESPONSE_STYLE_GUIDANCE);
     expect(getReactProps(styleTextarea(container))?.maxLength).toBe(MAX_RESPONSE_STYLE_GUIDANCE_LENGTH);
-    const radios = findAllByTag(container, "INPUT");
+    const radios = radiosNamed(container, "-detail");
     expect(radios.map((radio) => getReactProps(radio)?.value)).toEqual(["adaptive", "concise", "detailed"]);
     expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false]);
     expect(container.textContent).toContain("Response quality (always on)");
     expect(container.textContent).toContain("new chats and fresh session resumes");
-    expect(getReactProps(findAllByTag(container, "BUTTON")[0])?.disabled).toBe(true);
+    expect(getReactProps(buttonWithText(container, "Reset to default"))?.disabled).toBe(true);
   });
 
   it("uses associated labels and an accessible native radio group", async () => {
@@ -65,9 +70,10 @@ describe("SystemPromptSection", () => {
       expect(props?.["aria-describedby"]).toBeTruthy();
     }
     const radios = findAllByTag(container, "INPUT");
-    expect(new Set(radios.map((radio) => getReactProps(radio)?.name)).size).toBe(1);
+    expect(new Set(radios.map((radio) => getReactProps(radio)?.name)).size).toBe(2);
     expect(radios.every((radio) => getReactProps(radio)?.type === "radio")).toBe(true);
-    expect(findAllByTag(container, "LEGEND")[0].textContent).toBe("Default detail");
+    expect(findAllByTag(container, "LEGEND").map((legend) => legend.textContent))
+      .toEqual(["Default profile for new chats", "Default detail"]);
     for (const element of [...labels, ...findAllByTag(container, "LEGEND"), ...findAllByTag(container, "P")]) {
       const className = getReactProps(element)?.className ?? "";
       expect(className).not.toContain("text-text-faint");
@@ -79,8 +85,22 @@ describe("SystemPromptSection", () => {
     const disclosures = findAllByTag(container, "DETAILS");
     expect(disclosures).toHaveLength(4);
     expect(disclosures.every((element) => !getReactProps(element)?.open)).toBe(true);
-    expect(findAllByTag(container, "FIELDSET")).toHaveLength(1);
+    expect(findAllByTag(container, "FIELDSET")).toHaveLength(2);
     expect(container.textContent).toContain("Configured");
+  });
+
+  it("offers Automatic and the three profiles as the default for new chats", async () => {
+    const draft: AppSettings = { mcpServers: {}, theme: "dark" };
+    const { harness, container, setDraft } = await renderSection(draft);
+    const radios = radiosNamed(container, "-profile");
+    expect(radios.map((radio) => getReactProps(radio)?.value)).toEqual(["auto", "engineer", "assistant", "monitor"]);
+    expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false, false]);
+    expect(container.textContent).toContain("Engineer when the chat has a project folder, Assistant otherwise.");
+    expect(container.textContent).toContain("Tools and permissions are the same in every profile.");
+    await harness.act(async () => {
+      getReactProps(radios[3])?.onChange?.();
+    });
+    expect(setDraft).toHaveBeenCalledWith({ ...draft, promptProfile: "monitor" });
   });
 
   it("changes the detail level without overwriting guidance or unrelated settings", async () => {
@@ -90,7 +110,7 @@ describe("SystemPromptSection", () => {
     };
     const { harness, container, setDraft } = await renderSection(draft);
     await harness.act(async () => {
-      getReactProps(findAllByTag(container, "INPUT")[2])?.onChange?.();
+      getReactProps(radiosNamed(container, "-detail")[2])?.onChange?.();
     });
     expect(setDraft).toHaveBeenCalledWith({ ...draft, responseStyle: { detail: "detailed", guidance: "Use plain prose." } });
     expect(draft.responseStyle?.detail).toBe("adaptive");

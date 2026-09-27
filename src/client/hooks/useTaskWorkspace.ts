@@ -35,6 +35,8 @@ export function useTaskWorkspace(
 
   // ── Notes ───────────────────────────────────────────────────
   const notes = useNotesSheet(task?.id);
+  const instructionsSheet = useNotesSheet(task?.id, "instructions");
+  const historySheet = useNotesSheet(task?.id, "history");
 
   // ── Checklist items ──────────────────────────────────────────
   const {
@@ -117,6 +119,8 @@ export function useTaskWorkspace(
     schedDetail,
     // Notes
     notes,
+    instructionsSheet,
+    historySheet,
     // Checklist items
     checklistItems,
     checklistItemsReady,

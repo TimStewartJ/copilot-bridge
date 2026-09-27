@@ -13,7 +13,7 @@ afterEach(() => {
 
 function findEditButton(container: unknown) {
   return findAllByTag(container, "BUTTON")
-    .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Change model, effort, and context"));
+    .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Change model, effort, context, and profile"));
 }
 
 describe("SessionModelSummary editing", () => {

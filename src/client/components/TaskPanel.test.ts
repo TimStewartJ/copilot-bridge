@@ -10,6 +10,7 @@ const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
 const sessionListMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 const taskPanelSummaryRowMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
+const taskNotesSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const agentDefinitionsSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const fetchTaskGitStatusMock = vi.hoisted(() => vi.fn());
 const patchTaskMock = vi.hoisted(() => vi.fn());
@@ -36,6 +37,14 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 vi.mock("./TaskMomentumHistory", () => ({ default: () => null, LatestMomentumChange: () => null }));
+const taskHistoryMock = vi.hoisted(() => vi.fn((_taskId: string, _limit?: number, _enabled?: boolean) => ({
+  data: undefined as undefined | { entries: Array<{ id: number; taskId: string; at: string; source: "agent" | "user" | "system"; text: string }>; total: number },
+})));
+vi.mock("./TaskHistorySheet", () => ({
+  default: () => null,
+  describeHistoryActor: (entry: { source: string }) => (entry.source === "user" ? "You" : "Agent"),
+  useTaskHistory: (taskId: string, limit?: number, enabled?: boolean) => taskHistoryMock(taskId, limit, enabled),
+}));
 
 const taskArchivedSessionsQueryMock = vi.hoisted(() => vi.fn((_taskId: string | undefined, _enabled: boolean) => ({
   data: undefined as { pages: Array<{ sessions: Session[]; total: number; offset: number }> } | undefined,
@@ -119,7 +128,7 @@ vi.mock("./task-sections", () => ({
   WorkItemList: () => null,
   PullRequestList: () => null,
   TaskChecklistSection: () => null,
-  TaskNotesSection: () => null,
+  TaskNotesSection: (props: unknown) => taskNotesSectionMock(props),
   RelatedDocsSection: () => null,
   ScheduleSection: () => null,
   AgentDefinitionsSection: (props: unknown) => agentDefinitionsSectionMock(props),
@@ -186,6 +195,20 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
       notesStartEdit: false,
       close: () => {},
     },
+    instructionsSheet: {
+      openToView: () => {},
+      openToEdit: () => {},
+      notesSheetOpen: false,
+      notesStartEdit: false,
+      close: () => {},
+    },
+    historySheet: {
+      openToView: () => {},
+      openToEdit: () => {},
+      notesSheetOpen: false,
+      notesStartEdit: false,
+      close: () => {},
+    },
     taskGitStatus: null,
     checklistItems: [],
     checklistItemsReady: true,
@@ -210,6 +233,7 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   taskPanelSummaryRowMock.mockClear();
+  taskNotesSectionMock.mockClear();
   agentDefinitionsSectionMock.mockClear();
   queryClientMock.fetchQuery.mockReset();
   queryClientMock.fetchQuery.mockResolvedValue(null);
@@ -437,6 +461,38 @@ describe("TaskPanel", () => {
       definitions,
       onPreview: expect.any(Function),
     }));
+  });
+
+  it("shows Instructions and History rows in Details, prompting when they are empty", async () => {
+    taskHistoryMock.mockReturnValueOnce({ data: undefined }).mockReturnValue({ data: undefined });
+    await renderTaskPanelHtml(createTask());
+    const rows = taskPanelSummaryRowMock.mock.calls.map(([props]) => props as { label: string; title: string; placeholder?: boolean; chips?: Array<{ label: string }> });
+    expect(taskNotesSectionMock).toHaveBeenCalledWith(expect.objectContaining({
+      label: "Instructions",
+      notes: undefined,
+      emptyTitle: "Add standing rules for agents",
+      variant: "summary",
+    }));
+    expect(rows.find((row) => row.label === "History")).toMatchObject({ title: "Nothing recorded yet", placeholder: true, chips: [] });
+
+    taskPanelSummaryRowMock.mockClear();
+    taskNotesSectionMock.mockClear();
+    taskHistoryMock.mockReturnValue({
+      data: {
+        entries: [{ id: 7, taskId: "task-1", at: "2026-09-26T10:00:00.000Z", source: "user", text: "Signed the lease" }],
+        total: 4,
+      },
+    });
+    try {
+      const html = await renderTaskPanelHtml(createTask({ instructions: "Never email the landlord." }));
+      const filled = taskPanelSummaryRowMock.mock.calls.map(([props]) => props as { label: string; title: string; placeholder?: boolean; chips?: Array<{ label: string }> });
+      expect(taskNotesSectionMock).toHaveBeenCalledWith(expect.objectContaining({ label: "Instructions", notes: "Never email the landlord." }));
+      expect(filled.find((row) => row.label === "History")).toMatchObject({ title: "Signed the lease", placeholder: false, chips: [{ label: "4" }] });
+      expect(taskHistoryMock).toHaveBeenCalledWith("task-1", 1, true);
+      expect(html).not.toContain("Nothing recorded yet");
+    } finally {
+      taskHistoryMock.mockReturnValue({ data: undefined });
+    }
   });
 
   it("loads the task's archived sessions a page at a time only once Archived is opened", async () => {

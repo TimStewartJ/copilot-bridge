@@ -39,7 +39,7 @@ describe("useModalDialog", () => {
   it("names the dialog from its heading, or from an explicit label", async () => {
     const { harness } = await renderDialogs(createElement("div", null, [
       dialog({ onDismiss: vi.fn(), heading: "Session Plan", key: "headed" }),
-      dialog({ onDismiss: vi.fn(), label: "Change session model", key: "labelled" }),
+      dialog({ onDismiss: vi.fn(), label: "Change model and profile", key: "labelled" }),
     ]));
     try {
       const [headed, labelled] = findDialogElements(harness.dom.container);
@@ -48,7 +48,7 @@ describe("useModalDialog", () => {
       expect(resolveAccessibleName(harness.dom.container, headed)).toBe("Session Plan");
 
       expect(labelled.getAttribute("aria-labelledby")).toBeNull();
-      expect(resolveAccessibleName(harness.dom.container, labelled)).toBe("Change session model");
+      expect(resolveAccessibleName(harness.dom.container, labelled)).toBe("Change model and profile");
     } finally {
       await harness.cleanup();
     }

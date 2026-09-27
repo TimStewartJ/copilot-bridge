@@ -17,6 +17,7 @@ import {
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
+import { isPromptProfileSetting, type PromptProfileSetting } from "../shared/prompt-profiles.js";
 import {
   SUBAGENT_EFFORT_PATTERN,
   SUBAGENT_NAME_PATTERN,
@@ -95,6 +96,8 @@ export interface AppSettings {
   identity?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
+  /** Default profile for new chats; unset is "auto". */
+  promptProfile?: PromptProfileSetting;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -536,6 +539,16 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
     normalized.customInstructions = normalizeOptionalString(value.customInstructions, "customInstructions");
   }
   if ("responseStyle" in value) normalized.responseStyle = normalizeResponseStyle(value.responseStyle);
+  if ("promptProfile" in value) {
+    const promptProfile = value.promptProfile;
+    if (promptProfile === undefined || promptProfile === null || promptProfile === "") {
+      delete normalized.promptProfile;
+    } else if (isPromptProfileSetting(promptProfile)) {
+      normalized.promptProfile = promptProfile;
+    } else {
+      validationError("promptProfile must be auto, engineer, assistant, or monitor");
+    }
+  }
   if ("model" in value) {
     normalized.model = normalizeOptionalString(value.model, "model", { trim: true, emptyAsUndefined: true });
   }

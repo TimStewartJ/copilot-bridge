@@ -96,6 +96,64 @@ describe("Task routes", () => {
     expect((await request(app).get("/api/tasks/missing-task/momentum-events")).status).toBe(404);
   });
 
+  it("records, lists, searches and deletes task history entries", async () => {
+    const task = ctx.taskStore.createTask("History entries");
+    const emit = vi.spyOn(ctx.globalBus, "emit");
+    ctx.taskHistoryStore!.addEntry(task.id, "Agent toured the unit", { source: "agent", sessionId: "run-1", scheduleId: "s-1", scheduleName: "Daily" });
+    const created = await request(app).post(`/api/tasks/${task.id}/history`).send({ text: "  Signed the lease  " });
+    expect(created.status).toBe(201);
+    expect(created.body.entry).toMatchObject({ taskId: task.id, source: "user", text: "Signed the lease" });
+    expect(emit).toHaveBeenCalledWith({ type: "task:changed", taskId: task.id });
+
+    const listed = await request(app).get(`/api/tasks/${task.id}/history?limit=10`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.total).toBe(2);
+    expect(listed.body.entries.map((entry: { text: string }) => entry.text)).toEqual(["Signed the lease", "Agent toured the unit"]);
+    expect(listed.body.entries[1]).toMatchObject({ source: "agent", sessionId: "run-1", scheduleName: "Daily" });
+    const searched = await request(app).get(`/api/tasks/${task.id}/history?query=toured`);
+    expect(searched.body.entries.map((entry: { text: string }) => entry.text)).toEqual(["Agent toured the unit"]);
+    const paged = await request(app).get(`/api/tasks/${task.id}/history?before=${created.body.entry.id}`);
+    expect(paged.body.entries.map((entry: { text: string }) => entry.text)).toEqual(["Agent toured the unit"]);
+
+    expect((await request(app).post(`/api/tasks/${task.id}/history`).send({ text: "   " })).status).toBe(400);
+    expect((await request(app).post(`/api/tasks/${task.id}/history`).send({ text: 5 })).status).toBe(400);
+    expect((await request(app).get(`/api/tasks/${task.id}/history?limit=0`)).status).toBe(400);
+    expect((await request(app).get(`/api/tasks/${task.id}/history?before=x`)).status).toBe(400);
+    expect((await request(app).get("/api/tasks/missing-task/history")).status).toBe(404);
+    expect((await request(app).post("/api/tasks/missing-task/history").send({ text: "x" })).status).toBe(404);
+
+    const other = ctx.taskStore.createTask("Other");
+    expect((await request(app).delete(`/api/tasks/${other.id}/history/${created.body.entry.id}`)).status).toBe(404);
+    expect((await request(app).delete(`/api/tasks/${task.id}/history/abc`)).status).toBe(400);
+    expect((await request(app).delete(`/api/tasks/${task.id}/history/${created.body.entry.id}`)).status).toBe(200);
+    expect(ctx.taskHistoryStore!.countEntries(task.id)).toBe(1);
+  });
+
+  it("rebuilds a chat's prompt when it is linked to or unlinked from a task", async () => {
+    const task = ctx.taskStore.createTask("Link target");
+    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
+    expect((await request(app).post(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "chat-1" })).status).toBe(200);
+    expect(invalidate).toHaveBeenLastCalledWith("chat-1", "task link changed");
+    invalidate.mockClear();
+    expect((await request(app).delete(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "chat-1" })).status).toBe(200);
+    expect(invalidate).toHaveBeenLastCalledWith("chat-1", "task link changed");
+  });
+
+  it("PATCH saves task instructions and rebuilds the task's chats only when they change", async () => {
+    const task = ctx.taskStore.createTask("Instructions task");
+    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateTaskSessionConfig");
+    const saved = await request(app).patch(`/api/tasks/${task.id}`).send({ instructions: "Never email the landlord." });
+    expect(saved.status).toBe(200);
+    expect(saved.body.task.instructions).toBe("Never email the landlord.");
+    expect(invalidate).toHaveBeenCalledWith(task.id, "task instructions changed");
+
+    invalidate.mockClear();
+    expect((await request(app).patch(`/api/tasks/${task.id}`).send({ notes: "State only" })).status).toBe(200);
+    expect((await request(app).patch(`/api/tasks/${task.id}`).send({ instructions: "Never email the landlord." })).status).toBe(200);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect((await request(app).patch(`/api/tasks/${task.id}`).send({ instructions: 7 })).status).toBe(400);
+  });
+
   it("GET /api/tasks/:id/session-storage returns recursive size for linked sessions only", async () => {
     const task = ctx.taskStore.createTask("Storage task");
     const linkedSessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";

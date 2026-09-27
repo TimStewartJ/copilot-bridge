@@ -1,10 +1,10 @@
 // Scheduler — in-process cron scheduler for scheduled sessions
 // Registers node-cron jobs, handles triggering, missed-run catch-up
-import { formatLinkedPullRequest } from "./session-formatting.js";
 
 import cron, { type ScheduledTask } from "node-cron";
 import type { AutomaticRunClaim, Schedule, ScheduleStore, ScheduleTriggerSource } from "./schedule-store.js";
 import type { TaskStore } from "./task-store.js";
+import type { TaskHistoryStore } from "./task-history-store.js";
 import { resolveScheduleRunsKeep, type SessionMetaStore } from "./session-meta-store.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionManager } from "./session-manager.js";
@@ -29,6 +29,7 @@ let busUnsubscribe: (() => void) | undefined;
 let scheduleStore: ScheduleStore;
 let taskStore: TaskStore;
 let sessionMetaStore: SessionMetaStore;
+let taskHistoryStore: Pick<TaskHistoryStore, "attributeToSchedule"> | undefined;
 let bus: GlobalBus;
 let deferredPromptStore: DeferredPromptStore | undefined;
 let deferLoopStore: DeferLoopStore | undefined;
@@ -67,6 +68,7 @@ export interface SchedulerDeps {
   globalBus: GlobalBus;
   deferredPromptStore?: DeferredPromptStore;
   deferLoopStore?: DeferLoopStore;
+  taskHistoryStore?: Pick<TaskHistoryStore, "attributeToSchedule">;
 }
 
 export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
@@ -74,6 +76,7 @@ export function initialize(manager: SessionManager, deps: SchedulerDeps): void {
   scheduleStore = deps.scheduleStore;
   taskStore = deps.taskStore;
   sessionMetaStore = deps.sessionMetaStore;
+  taskHistoryStore = deps.taskHistoryStore;
   bus = deps.globalBus;
   deferredPromptStore = deps.deferredPromptStore;
   deferLoopStore = deps.deferLoopStore;
@@ -476,16 +479,12 @@ export async function triggerSchedule(
     let sessionId: string;
     let createdSession = false;
 
-    const prDescriptions = task.pullRequests.map(
-      formatLinkedPullRequest,
-    );
     let result: Awaited<ReturnType<SessionManager["createTaskSession"]>>;
     try {
       result = await sessionMgr.createTaskSession(
         task.id,
         task.title,
         task.workItems,
-        prDescriptions,
         task.notes,
         task.cwd,
         {
@@ -496,6 +495,8 @@ export async function triggerSchedule(
           model: schedule.model,
           reasoningEffort: schedule.reasoningEffort,
           contextTier: schedule.contextTier,
+          ...(schedule.promptProfile ? { promptProfile: schedule.promptProfile } : {}),
+          ...(schedule.lastSessionId ? { previousSessionId: schedule.lastSessionId } : {}),
         },
       );
     } catch (err) {
@@ -590,6 +591,11 @@ export async function triggerSchedule(
       taskStore.attributeMomentumEventsToSchedule(sessionId, scheduleId, schedule.name);
     } catch (err) {
       console.warn(`[scheduler] Could not attribute early momentum changes to "${schedule.name}":`, err instanceof Error ? err.message : err);
+    }
+    try {
+      taskHistoryStore?.attributeToSchedule(sessionId, scheduleId, schedule.name);
+    } catch (err) {
+      console.warn(`[scheduler] Could not attribute early history entries to "${schedule.name}":`, err instanceof Error ? err.message : err);
     }
     try {
       const retention = await enforceScheduleSessionRetention({
