@@ -12,6 +12,11 @@ import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
+  InvalidTaskHistoryEntryError,
+  MAX_TASK_HISTORY_LIST_LIMIT,
+  MAX_TASK_HISTORY_TEXT_LENGTH,
+} from "../task-history-store.js";
+import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
   type BridgeToolDefinition,
@@ -123,7 +128,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_update", {
-    description: "Update a task's title, kind, muted state, priority, notes, working directory, group, definition of done, and/or tags. Only provided fields are changed. Task completion and archival are controlled by the UI.",
+    description: "Update a task's title, kind, muted state, priority, instructions, notes, working directory, group, definition of done, and/or tags. Only provided fields are changed. Instructions hold standing rules for every session of the task; notes hold the current state of the work; record what happened with task_history_add instead. Task completion and archival are controlled by the UI.",
     parameters: {
       type: "object",
       properties: {
@@ -132,7 +137,8 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
         muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
         priority: { type: "integer", description: "Task priority" },
-        notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." },
+        instructions: { type: "string", description: "Standing rules for every session of this task, such as approval requirements or how to verify work (markdown). Overwrites existing instructions. Keep it short." },
+        notes: { type: "string", description: "Current state of the work: open items, the latest known facts, what to do next (markdown). Overwrites existing notes. Do not keep a log of past work here; use task_history_add." },
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Task group ID to assign to. Empty string or null ungroups the task." },
         doneWhen: { anyOf: [{ type: "string" }, { type: "null" }], description: "Definition of done for this task. Null clears it." },
@@ -153,11 +159,12 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       }
       if (args.priority !== undefined) updates.priority = args.priority;
       if (args.notes !== undefined) updates.notes = args.notes;
+      if (args.instructions !== undefined) updates.instructions = args.instructions;
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId;
       if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, notes, cwd, groupId, doneWhen, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, instructions, notes, cwd, groupId, doneWhen, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;
@@ -174,6 +181,10 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
           if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
           throw error;
         }
+      }
+      // Instructions are part of the system prompt, which cached chats only rebuild on resume.
+      if ((updatedTask.instructions ?? "") !== (task.value.instructions ?? "")) {
+        ctx.sessionManager.invalidateTaskSessionConfig(args.taskId, "task instructions changed");
       }
       if (hasTags && tagStore) {
         const tagIds = args.tags.map((name: string) => {
@@ -339,7 +350,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_get_info", {
-    description: "Get task details including title, kind, status, tags, linked session counts/previews, work items, PRs, notes, and task agent definitions",
+    description: "Get task details including title, kind, status, tags, linked session counts/previews, work items, PRs, instructions, notes, the number of history entries (read them with task_history_list), and task agent definitions",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The exact task ID, copied verbatim from task_list or from injected task context. Never guess, infer, or reconstruct an ID from a task title." } }, required: ["taskId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
@@ -363,7 +374,66 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         ...compactTaskInfoSessionIds(task.value.sessionIds),
         tags,
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),
+        historyCount: ctx.taskHistoryStore?.countEntries(args.taskId) ?? 0,
         agentDefinitions,
+      };
+    },
+  }),
+  defineBridgeTool("task_history_add", {
+    description: "Record something that happened in a task: a finished piece of work, a decision, a check's outcome, or a lesson worth keeping. Entries are kept in order. Each session sees only the latest few, one line each; task_history_list reads the rest. Write one self-contained entry per event, including identifiers such as commits, links, or dates.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The task ID" },
+        text: { type: "string", description: `What happened, in plain words (at most ${MAX_TASK_HISTORY_TEXT_LENGTH} characters).` },
+      },
+      required: ["taskId", "text"],
+    },
+    handler: async (args: any, invocation) => {
+      const task = ensureTask(ctx, args.taskId);
+      if (!task.ok) return toolFailure(task.error);
+      if (!ctx.taskHistoryStore) return toolFailure("Task history is not available");
+      try {
+        const entry = ctx.taskHistoryStore.addEntry(args.taskId, args.text, agentTaskChangeActor(ctx, invocation?.sessionId));
+        ctx.globalBus.emit({ type: "task:changed", taskId: args.taskId });
+        return { success: true, id: entry.id, at: entry.at };
+      } catch (error) {
+        if (error instanceof InvalidTaskHistoryEntryError) return toolFailure(error.message);
+        throw error;
+      }
+    },
+  }),
+  defineBridgeTool("task_history_list", {
+    description: "Read a task's history entries, newest first. Use it when earlier work, past decisions, or previous check results matter to the current request.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The task ID" },
+        limit: { type: "integer", minimum: 1, maximum: MAX_TASK_HISTORY_LIST_LIMIT, description: "How many entries to return (default 20)" },
+        before: { type: "integer", minimum: 1, description: "Return entries older than this entry ID, for paging" },
+        query: { type: "string", description: "Only entries whose text contains this phrase (case-insensitive)" },
+      },
+      required: ["taskId"],
+    },
+    handler: async (args: any) => {
+      const task = ensureTask(ctx, args.taskId);
+      if (!task.ok) return toolFailure(task.error);
+      if (!ctx.taskHistoryStore) return toolFailure("Task history is not available");
+      const limit = args.limit === undefined ? 20 : Number(args.limit);
+      if (!Number.isInteger(limit) || limit < 1) return toolFailure("limit must be a positive integer");
+      const before = args.before === undefined ? undefined : Number(args.before);
+      if (before !== undefined && (!Number.isInteger(before) || before < 1)) return toolFailure("before must be a positive integer");
+      const query = typeof args.query === "string" ? args.query : undefined;
+      return {
+        entries: ctx.taskHistoryStore.listEntries(args.taskId, { limit, ...(before ? { before } : {}), ...(query ? { query } : {}) })
+          .map(({ id, at, source, sessionId, scheduleId, scheduleName, text }) => ({
+            id, at, source,
+            ...(sessionId ? { sessionId } : {}),
+            ...(scheduleId ? { scheduleId } : {}),
+            ...(scheduleName ? { scheduleName } : {}),
+            text,
+          })),
+        total: ctx.taskHistoryStore.countEntries(args.taskId),
       };
     },
   }),

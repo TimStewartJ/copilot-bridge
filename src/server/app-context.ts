@@ -8,6 +8,8 @@ import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
+import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import type { TaskHistoryStore } from "./task-history-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
@@ -59,6 +61,8 @@ export interface AppContext {
   settingsStore: SettingsStore;
   sessionMetaStore: SessionMetaStore;
   sessionWorkspaceStore: SessionWorkspaceStore;
+  sessionPromptProfileStore?: SessionPromptProfileStore;
+  taskHistoryStore?: TaskHistoryStore;
   sessionTitles: SessionTitlesStore;
   bridgeSessionStateStore: BridgeSessionStateStore;
   cliSessionCatalog?: CopilotCliSessionCatalog;

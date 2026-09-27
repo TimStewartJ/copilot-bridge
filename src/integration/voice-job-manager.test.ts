@@ -8,7 +8,6 @@ import { openMemoryDatabase } from "../server/db.js";
 import { createGlobalBus } from "../server/global-bus.js";
 import { writeRestartState } from "../server/restart-state.js";
 
-import { createTaskGroupStore } from "../server/task-group-store.js";
 import { createTaskStore } from "../server/task-store.js";
 import {
   createVoiceJobManager,
@@ -50,7 +49,6 @@ function createManagerHarness(transcribe = vi.fn()) {
     },
     sessionManager,
     taskStore: createTaskStore(db, globalBus, { runtimePaths }),
-    taskGroupStore: createTaskGroupStore(db, globalBus),
   });
   return { runtimePaths, store, sessionManager, manager };
 }
@@ -91,7 +89,6 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
 
     const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
@@ -149,7 +146,6 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
     const sourceFilePath = join(runtimePaths.dataDir, "task-input.wav");
     writeFileSync(sourceFilePath, "test-audio");
@@ -165,11 +161,9 @@ describe("voice job restart gating", () => {
       task.id,
       task.title,
       task.workItems,
-      [],
       task.notes,
       task.cwd,
       undefined,
-      null,
       { agent: "api-reviewer" },
     );
   });
@@ -338,7 +332,6 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
-      taskGroupStore: createTaskGroupStore(db, globalBus),
     });
 
     const audioPath = join(runtimePaths.dataDir, "voice-jobs", "persisted", "recording.wav");

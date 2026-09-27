@@ -57,6 +57,7 @@ import {
   type StartSessionForkResponse,
 } from "../shared/session-fork.js";
 import type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
+import type { PromptProfileId, PromptProfileSetting } from "../shared/prompt-profiles.js";
 export type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
 export type { SessionForkJob, SessionForkJobStatus, StartSessionForkResponse } from "../shared/session-fork.js";
 export type { McpServerConfig };
@@ -485,6 +486,8 @@ export interface Task {
   status: "active" | "archived";
   groupId?: string;
   cwd?: string;
+  /** Standing rules every agent session for this task follows. */
+  instructions?: string;
   notes: string;
   doneWhen?: string;
   nextAction?: string;
@@ -529,6 +532,7 @@ export interface TaskPatch {
   deferred?: Task["deferred"];
   status?: Task["status"];
   notes?: Task["notes"];
+  instructions?: string;
   priority?: Task["priority"];
   cwd?: Task["cwd"];
   groupId?: Task["groupId"];
@@ -942,10 +946,44 @@ export async function fetchTaskMomentumEvents(
   return result.events;
 }
 
+export interface TaskHistoryEntry {
+  id: number;
+  taskId: string;
+  at: string;
+  source: "agent" | "user" | "system";
+  sessionId?: string;
+  scheduleId?: string;
+  scheduleName?: string;
+  text: string;
+}
+
+export async function fetchTaskHistory(
+  taskId: string,
+  options?: { signal?: AbortSignal; limit?: number; before?: number },
+): Promise<{ entries: TaskHistoryEntry[]; total: number }> {
+  const limit = options?.limit ?? 50;
+  const before = options?.before ? `&before=${options.before}` : "";
+  return apiFetch<{ entries: TaskHistoryEntry[]; total: number }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/history?limit=${limit}${before}`,
+    undefined,
+    { signal: options?.signal },
+  );
+}
+
+export async function addTaskHistoryEntry(taskId: string, text: string): Promise<TaskHistoryEntry> {
+  const data = await apiFetch<{ entry: TaskHistoryEntry }>(`/api/tasks/${encodeURIComponent(taskId)}/history`, { text });
+  return data.entry;
+}
+
+export async function deleteTaskHistoryEntry(taskId: string, entryId: number): Promise<void> {
+  await requestDelete(`/api/tasks/${encodeURIComponent(taskId)}/history/${entryId}`);
+}
+
 export interface CreateSessionOptions {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
+  promptProfile?: PromptProfileId;
   agent?: string;
 }
 
@@ -954,6 +992,7 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
     ...(options.model ? { model: options.model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.contextTier ? { contextTier: options.contextTier } : {}),
+    ...(options.promptProfile ? { promptProfile: options.promptProfile } : {}),
   });
   return data.sessionId;
 }
@@ -979,6 +1018,8 @@ export interface SessionModelState {
   model?: string;
   reasoningEffort?: string;
   contextTier?: CopilotContextTier;
+  /** The chat's system prompt profile; the server always reports one. */
+  promptProfile?: PromptProfileId;
   source: SessionModelSource;
 }
 
@@ -1004,6 +1045,23 @@ export type SessionModelSwitchResult =
     }
   | { status: "confirmation_required"; model: string; confirmation: SessionModelSwitchConfirmation }
   | { status: "cancelled"; model: string; warning?: string };
+
+/** Changes one chat's profile; the next turn starts with the new system prompt. */
+export async function patchSessionProfile(
+  sessionId: string,
+  promptProfile: PromptProfileId,
+): Promise<{ promptProfile: PromptProfileId }> {
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ promptProfile }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
 
 /** Derive the current model / reasoning effort for a session on demand. */
 export async function fetchSessionModelState(sessionId: string): Promise<SessionModelState> {
@@ -1574,6 +1632,7 @@ export async function createTaskSession(
       ...(options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
       ...(options.contextTier ? { contextTier: options.contextTier } : {}),
+      ...(options.promptProfile ? { promptProfile: options.promptProfile } : {}),
       ...(options.agent ? { agent: options.agent } : {}),
     },
   );
@@ -2220,6 +2279,8 @@ export interface AppSettings {
   identity?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
+  /** Default profile for new chats; unset means "auto". */
+  promptProfile?: PromptProfileSetting;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -2805,6 +2866,7 @@ export interface Schedule {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
+  promptProfile?: PromptProfileId;
   enabled: boolean;
   lastSessionId?: string;
   createdAt: string;
@@ -2819,7 +2881,7 @@ export interface Schedule {
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
   Partial<Pick<Schedule,
-    "cron" | "runAt" | "timezone" | "model" | "reasoningEffort" | "contextTier"
+    "cron" | "runAt" | "timezone" | "model" | "reasoningEffort" | "contextTier" | "promptProfile"
     | "maxRuns" | "expiresAt" | "autoArchiveKeep"
   >>;
 
@@ -2829,6 +2891,7 @@ export type ScheduleUpdateInput = Partial<Pick<Schedule,
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   contextTier?: CopilotContextTier | null;
+  promptProfile?: PromptProfileId | null;
   autoArchiveKeep?: number | null;
 };
 

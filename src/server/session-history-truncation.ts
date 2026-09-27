@@ -64,6 +64,7 @@ const TRUNCATION_BLOCKED_TOOL_NAMES = new Set([
   "task_create",
   "task_update",
   "task_update_momentum",
+  "task_history_add",
   "task_link_work_item",
   "task_unlink_work_item",
   "task_link_pr",

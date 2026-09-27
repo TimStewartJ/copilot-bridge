@@ -11,6 +11,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createTaskStore } from "../task-store.js";
+import { createTaskHistoryStore } from "../task-history-store.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createScheduleStore } from "../schedule-store.js";
@@ -103,6 +104,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
     taskStore,
+    taskHistoryStore: createTaskHistoryStore(db),
     taskAgentDefinitionStore,
     taskGroupStore,
     scheduleStore: createScheduleStore(db),
@@ -159,7 +161,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     transcriptionService: ctx.transcriptionService,
     sessionManager: ctx.sessionManager,
     taskStore: ctx.taskStore,
-    taskGroupStore: ctx.taskGroupStore,
   });
 
   const app = express();

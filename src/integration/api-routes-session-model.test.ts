@@ -46,11 +46,12 @@ describe("GET /api/sessions/:id/model route", () => {
           reasoningEffort: "high",
           source: "events" as const,
         }),
+        getSessionPromptProfile: () => "engineer",
       } as any,
     });
     const res = await request(app).get(`/api/sessions/${sessionId}/model`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events" });
+    expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events", promptProfile: "engineer" });
   });
 
   it("returns 500 on internal error", async () => {

@@ -8,6 +8,8 @@ import { createTaskAgentDefinitionStore } from "./task-agent-definition-store.js
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createSessionMetaStore } from "./session-meta-store.js";
 import { createSessionWorkspaceStore } from "./session-workspace-store.js";
+import { createSessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import { createTaskHistoryStore } from "./task-history-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
@@ -90,6 +92,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const settingsStore = createSettingsStore(db);
   const sessionMetaStore = createSessionMetaStore(db);
   const sessionWorkspaceStore = createSessionWorkspaceStore(db);
+  const sessionPromptProfileStore = createSessionPromptProfileStore(db);
+  const taskHistoryStore = createTaskHistoryStore(db);
   const sessionTitles = createSessionTitlesStore(db);
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
@@ -160,6 +164,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     settingsStore,
     sessionMetaStore,
     sessionWorkspaceStore,
+    sessionPromptProfileStore,
+    taskHistoryStore,
     sessionTitles,
     bridgeSessionStateStore,
     cliSessionCatalog,
@@ -266,7 +272,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     transcriptionService: ctx.transcriptionService,
     sessionManager,
     taskStore,
-    taskGroupStore,
   });
   ctx.pushNotificationService = createPushNotificationService({
     subscriptionStore: pushSubscriptionStore,
@@ -310,6 +315,7 @@ export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
     globalBus: ctx.globalBus,
     deferredPromptStore: ctx.deferredPromptStore,
     deferLoopStore: ctx.deferLoopStore,
+    taskHistoryStore: ctx.taskHistoryStore,
   });
   try {
     ctx.managementJobStore?.reconcileResultDeliveries();

@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { formatLinkedPullRequest } from "./session-formatting.js";
 import { mkdirSync } from "node:fs";
 import { copyFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isBridgeRestartingError } from "./backend-availability.js";
 import type { SessionManager } from "./session-manager.js";
-import type { TaskGroupStore } from "./task-group-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
@@ -39,7 +37,6 @@ interface CreateVoiceJobManagerOptions {
   transcriptionService: TranscriptionService;
   sessionManager: SessionManager;
   taskStore: TaskStore;
-  taskGroupStore: TaskGroupStore;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -64,7 +61,6 @@ export function createVoiceJobManager({
   transcriptionService,
   sessionManager,
   taskStore,
-  taskGroupStore,
 }: CreateVoiceJobManagerOptions) {
   const voiceJobsDir = join(dataDir, "voice-jobs");
   mkdirSync(voiceJobsDir, { recursive: true });
@@ -394,20 +390,13 @@ export function createVoiceJobManager({
       throw new Error("Task not found");
     }
 
-    const prDescriptions = task.pullRequests.map(
-      formatLinkedPullRequest,
-    );
-    const group = task.groupId ? taskGroupStore.getGroup(task.groupId) : undefined;
-    const groupNotes = group?.notes?.trim() ? { groupName: group.name, notes: group.notes } : null;
     const result = await sessionManager.createTaskSession(
       task.id,
       task.title,
       task.workItems,
-      prDescriptions,
       task.notes,
       task.cwd,
       undefined,
-      groupNotes,
       sessionOptions,
     );
     taskStore.linkSession(task.id, result.sessionId);

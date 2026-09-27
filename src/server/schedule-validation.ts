@@ -1,3 +1,4 @@
+import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
 import {
   isCopilotContextTier,
   modelSupportsLongContext,
@@ -29,7 +30,21 @@ export interface ScheduleLaunchOptionState {
   contextTier?: CopilotContextTier;
 }
 
+export type NormalizedSchedulePromptProfile =
+  | { ok: true; value: PromptProfileId | null | undefined }
+  | { ok: false; error: string };
+
+export function normalizeSchedulePromptProfile(value: unknown): NormalizedSchedulePromptProfile {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null || value === "") return { ok: true, value: null };
+  if (!isPromptProfileId(value)) {
+    return { ok: false, error: "promptProfile must be engineer, assistant, monitor, or null" };
+  }
+  return { ok: true, value };
+}
+
 export interface ScheduleLaunchOptionUpdates {
+  promptProfile?: PromptProfileId | null;
   model?: string | null;
   reasoningEffort?: string | null;
   contextTier?: CopilotContextTier | null;
@@ -127,11 +142,15 @@ export async function validateScheduleLaunchOptionUpdates({
   if (!normalizedReasoningEffort.ok) return { ...normalizedReasoningEffort, status: 400 };
   const normalizedContextTier = normalizeScheduleContextTier(input.contextTier);
   if (!normalizedContextTier.ok) return { ...normalizedContextTier, status: 400 };
+  const promptProfileProvided = Object.prototype.hasOwnProperty.call(input, "promptProfile");
+  const normalizedPromptProfile = normalizeSchedulePromptProfile(input.promptProfile);
+  if (!normalizedPromptProfile.ok) return { ...normalizedPromptProfile, status: 400 };
 
   const updates: ScheduleLaunchOptionUpdates = {
     ...(modelProvided ? { model: normalizedModel.value } : {}),
     ...(reasoningEffortProvided ? { reasoningEffort: normalizedReasoningEffort.value } : {}),
     ...(contextTierProvided ? { contextTier: normalizedContextTier.value } : {}),
+    ...(promptProfileProvided ? { promptProfile: normalizedPromptProfile.value } : {}),
   };
   const nextModel = modelProvided ? normalizedModel.value ?? undefined : existing?.model;
   let nextReasoningEffort = reasoningEffortProvided

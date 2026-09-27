@@ -15,6 +15,7 @@ import TaskSessionList from "./TaskSessionList";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
+import TaskHistorySheet, { describeHistoryActor, useTaskHistory } from "./TaskHistorySheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
 import TaskKindBadge from "./TaskKindBadge";
@@ -27,6 +28,8 @@ import {
   MoreHorizontal,
   Plus,
   RotateCcw,
+  History,
+  ScrollText,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
@@ -179,6 +182,8 @@ export default function TaskPanel({
     sched,
     schedDetail,
     notes,
+    instructionsSheet,
+    historySheet,
     taskGitStatus,
     checklistItems,
     checklistItemsReady,
@@ -199,6 +204,7 @@ export default function TaskPanel({
   } = ws;
   const activeSession = linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
   const sessionWorkspaceQuery = useSessionWorkspaceQuery(activeSession?.sessionId, task?.id);
+  const { data: historySummary } = useTaskHistory(task?.id ?? "", 1, Boolean(task));
 
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
@@ -339,6 +345,9 @@ export default function TaskPanel({
     );
   }
   const hasNotesSummary = Boolean(task.notes?.trim());
+  const hasInstructions = Boolean(task.instructions?.trim());
+  const latestHistoryEntry = historySummary?.entries[0];
+  const historyTotal = historySummary?.total ?? 0;
   const openTaskOverview = () => {
     onViewDashboard?.(task.id);
   };
@@ -370,7 +379,9 @@ export default function TaskPanel({
   const detailsSummary: Array<{ label: string; tone?: "warning" | "danger" }> = [
     task.workItems.length > 0 ? { label: pluralize(task.workItems.length, "work item") } : null,
     task.pullRequests.length > 0 ? { label: pluralize(task.pullRequests.length, "PR") } : null,
+    hasInstructions ? { label: "instructions" } : null,
     hasNotesSummary ? { label: "notes" } : null,
+    historyTotal > 0 ? { label: `${historyTotal} history ${historyTotal === 1 ? "entry" : "entries"}` } : null,
     relatedDocs.length > 0 ? { label: pluralize(relatedDocs.length, "doc") } : null,
     agentDefinitions.length > 0 ? { label: pluralize(agentDefinitions.length, "agent") } : null,
     sched.schedules.length > 0 ? { label: pluralize(sched.schedules.length, "schedule") } : null,
@@ -655,6 +666,15 @@ export default function TaskPanel({
                     onTasksChanged={onTasksChanged}
                   />
                 )}
+                <TaskNotesSection
+                  notes={task.instructions || undefined}
+                  onView={instructionsSheet.openToView}
+                  onEdit={instructionsSheet.openToEdit}
+                  variant="summary"
+                  label="Instructions"
+                  icon={<ScrollText size={14} />}
+                  emptyTitle="Add standing rules for agents"
+                />
                 {hasNotesSummary && (
                   <TaskNotesSection
                     notes={task.notes || undefined}
@@ -663,6 +683,15 @@ export default function TaskPanel({
                     variant="summary"
                   />
                 )}
+                <TaskPanelSummaryRow
+                  label="History"
+                  icon={<History size={14} />}
+                  title={latestHistoryEntry ? latestHistoryEntry.text : "Nothing recorded yet"}
+                  subtitle={latestHistoryEntry ? `${describeHistoryActor(latestHistoryEntry)} · ${new Date(latestHistoryEntry.at).toLocaleString()}` : undefined}
+                  placeholder={!latestHistoryEntry}
+                  chips={historyTotal > 0 ? [{ label: String(historyTotal) }] : []}
+                  onClick={historySheet.openToView}
+                />
                 {relatedDocs.length > 0 && (
                   <RelatedDocsSection
                     docs={relatedDocs}
@@ -739,6 +768,34 @@ export default function TaskPanel({
             />
           )}
 
+          {instructionsSheet.notesSheetOpen && (
+            <NotesSheet
+              notes={task.instructions ?? ""}
+              startInEditMode={instructionsSheet.notesStartEdit}
+              title="Instructions"
+              icon={<ScrollText size={14} className="text-text-muted" />}
+              description="Standing rules every agent session for this task follows, such as hard requirements, boundaries and how to report. They are part of the system prompt, so keep them short and stable; put changing state in notes."
+              placeholder="Rules for agents working on this task, in markdown..."
+              emptyMessage="No instructions yet"
+              emptySub="Add the rules every session for this task should follow"
+              emptyActionLabel="Add instructions"
+              onSave={async (next) => {
+                await patchTask(task.id, { instructions: next });
+                onTasksChanged?.();
+              }}
+              onClose={instructionsSheet.close}
+            />
+          )}
+          {historySheet.notesSheetOpen && (
+            <TaskHistorySheet
+              taskId={task.id}
+              onClose={historySheet.close}
+              onSelectSession={(sessionId) => {
+                historySheet.close();
+                onSelectSession(sessionId);
+              }}
+            />
+          )}
           {notes.notesSheetOpen && (
             <NotesSheet
               notes={task.notes}

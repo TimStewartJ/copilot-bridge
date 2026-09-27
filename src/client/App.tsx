@@ -78,6 +78,7 @@ import type { ModelPresetSelection } from "./lib/model-presets";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
+import { resolvePromptProfile, type PromptProfileId, type PromptProfileSetting } from "../shared/prompt-profiles.js";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
@@ -2190,6 +2191,7 @@ function AppShell() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
+                  defaultPromptProfile={settings?.promptProfile}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2269,6 +2271,7 @@ function AppShell() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
+                  defaultPromptProfile={settings?.promptProfile}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2564,6 +2567,7 @@ function SessionRoute({
   defaultModelId,
   defaultReasoningEffort,
   defaultContextTier,
+  defaultPromptProfile,
   launchDefaultsLoading,
 }: {
   sessions: Session[];
@@ -2597,6 +2601,7 @@ function SessionRoute({
   defaultModelId?: string;
   defaultReasoningEffort?: string;
   defaultContextTier?: CopilotContextTier;
+  defaultPromptProfile?: PromptProfileSetting;
   launchDefaultsLoading: boolean;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
@@ -2615,6 +2620,8 @@ function SessionRoute({
   const isDraft = sessionId === null;
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
   const taskAgentDefinitionsQuery = useTaskAgentDefinitionsQuery(taskId);
+  const tasksQuery = useTasksQuery();
+  const launchTaskCwd = taskId ? tasksQuery.data?.find((task) => task.id === taskId)?.cwd : undefined;
   const sessionModelQuery = useSessionModelQuery(sessionId);
   const sessionReloadToken = sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
@@ -2672,16 +2679,26 @@ function SessionRoute({
   const activePresetSlot = selectedPresetSlot
     ?? modelPresetMemory.findSlotForModel(launchState.modelKey, launchState.availableModels);
   const rememberModelPreset = modelPresetMemory.remember;
+  const launchPromptProfileDefault = resolvePromptProfile({
+    defaultSetting: defaultPromptProfile,
+    hasProjectFolder: Boolean(launchTaskCwd?.trim()),
+  });
+  const selectedLaunchPromptProfile = draftLaunch?.promptProfile ?? launchPromptProfileDefault.id;
+  // Only an explicit choice is sent. The server resolves the default from the chat's actual
+  // working directory, so a stale or still-loading task list can never pin the wrong profile.
+  const launchPromptProfileForCreate = draftLaunch?.promptProfile;
   const launchCreateOptions = useMemo(
     () => ({
       ...buildNewSessionCreateOptions(launchState),
       ...(taskId && draftLaunch?.agent ? { agent: draftLaunch.agent } : {}),
+      ...(launchPromptProfileForCreate ? { promptProfile: launchPromptProfileForCreate } : {}),
     }),
     [
       launchState.modelForCreate,
       launchState.selectedContextTier,
       launchState.selectedReasoningEffort,
       draftLaunch?.agent,
+      launchPromptProfileForCreate,
       taskId,
     ],
   );
@@ -2817,6 +2834,10 @@ function SessionRoute({
     setDraftLaunchOptions,
   ]);
 
+  const handleLaunchPromptProfileChange = useCallback((promptProfile: PromptProfileId) => {
+    setDraftLaunchOptions(composerKey, (current) => ({ ...(current ?? {}), promptProfile }));
+  }, [composerKey, setDraftLaunchOptions]);
+
   const handleLaunchAgentChange = useCallback((agent?: string) => {
     setDraftLaunchOptions(composerKey, (current) => {
       const next = { ...(current ?? {}) };
@@ -2945,6 +2966,8 @@ function SessionRoute({
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
       selectedContextTier={launchState.selectedContextTier}
+      selectedPromptProfile={selectedLaunchPromptProfile}
+      defaultPromptProfile={launchPromptProfileDefault}
       mode={launchMode}
       agentDefinitions={taskId ? taskAgentDefinitionsQuery.data ?? [] : undefined}
       agentDefinitionsLoading={taskId ? taskAgentDefinitionsQuery.isLoading : undefined}
@@ -2953,6 +2976,7 @@ function SessionRoute({
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={handleLaunchReasoningEffortChange}
       onContextTierChange={handleLaunchContextTierChange}
+      onPromptProfileChange={handleLaunchPromptProfileChange}
       onModeChange={setLaunchMode}
       onAgentChange={handleLaunchAgentChange}
       onModelSelectionCommitted={requestComposerFocus}

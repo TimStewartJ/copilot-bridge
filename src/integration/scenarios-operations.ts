@@ -196,7 +196,7 @@ export const operationScenarios: IntegrationScenario[] = [
       const create = vi.spyOn(world.ctx.sessionManager, "createTaskSession").mockResolvedValue({ sessionId: "agent-session" });
       const launched = await request(world.app).post(`/api/tasks/${task.id}/session`).send({ agent: "planner" });
       expect(launched.status).toBe(200);
-      expect(create).toHaveBeenCalledWith(task.id, task.title, task.workItems, [], task.notes, task.cwd, undefined, null, expect.objectContaining({ agent: "planner", background: true }));
+      expect(create).toHaveBeenCalledWith(task.id, task.title, task.workItems, task.notes, task.cwd, undefined, expect.objectContaining({ agent: "planner", background: true }));
       expect(world.ctx.taskStore.getTask(task.id)?.sessionIds).toContain("agent-session");
     },
   },

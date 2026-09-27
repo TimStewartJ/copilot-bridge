@@ -19,6 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   refreshModels: vi.fn(),
   fetchSessionModelState: vi.fn(),
   patchSessionModel: vi.fn(),
+  patchSessionProfile: vi.fn(),
   fetchSettings: vi.fn(),
   patchSettings: vi.fn(),
 }));
@@ -69,6 +70,7 @@ beforeEach(() => {
   apiMocks.refreshModels.mockResolvedValue([]);
   apiMocks.fetchSessionModelState.mockResolvedValue({ source: "unknown" });
   apiMocks.patchSessionModel.mockResolvedValue({ model: "gpt-5.6" });
+  apiMocks.patchSessionProfile.mockImplementation(async (_id: string, promptProfile: string) => ({ promptProfile }));
   apiMocks.fetchSettings.mockResolvedValue({ mcpServers: {} });
   apiMocks.patchSettings.mockImplementation(async (updates: Partial<AppSettings>) => ({
     mcpServers: {},
@@ -515,14 +517,14 @@ describe("SessionList change model dialog", () => {
     });
 
     await harness.act(async () => {
-      getReactProps(findButton(harness.dom.container, "Change Model..."))?.onClick?.({
+      getReactProps(findButton(harness.dom.container, "Change Model or Profile..."))?.onClick?.({
         preventDefault: vi.fn(),
         stopPropagation: vi.fn(),
       });
     });
     await waitUntilAct(
       harness.act,
-      () => (harness.dom.container.textContent ?? "").includes("Change session model"),
+      () => (harness.dom.container.textContent ?? "").includes("Change model and profile"),
       { label: "change model dialog" },
     );
 
@@ -694,6 +696,104 @@ describe("SessionList change model dialog", () => {
     }
   });
 
+  function findProfileButton(root: any, label: string): any {
+    const group = findAllByTag(root, "DIV")
+      .find((element) => getReactProps(element)?.["aria-label"] === "Profile for this session");
+    const button = findAllByTag(group, "BUTTON").find((candidate) => candidate.textContent === label);
+    if (!button) throw new Error(`Profile button not found: ${label}`);
+    return button;
+  }
+
+  it("saves a profile-only change without a model request, even when the model list fails", async () => {
+    apiMocks.fetchModels.mockRejectedValue(new Error("models offline"));
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "high", promptProfile: "engineer", source: "live" },
+      [],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => getReactProps(findProfileButton(harness.dom.container, "Engineer"))?.["aria-pressed"] === true,
+        { label: "current profile" },
+      );
+      await harness.act(async () => {
+        getReactProps(findProfileButton(harness.dom.container, "Monitor"))?.onClick?.();
+      });
+      expect(harness.dom.container.textContent).toContain("The next message starts with this profile's instructions.");
+      await clickButton(harness, "Save");
+      await waitUntilAct(harness.act, () => apiMocks.patchSessionProfile.mock.calls.length > 0, { label: "profile patch" });
+
+      expect(apiMocks.patchSessionProfile).toHaveBeenCalledWith("session-1", "monitor");
+      expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
+      await waitUntilAct(
+        harness.act,
+        () => !(harness.dom.container.textContent ?? "").includes("Change model and profile"),
+        { label: "dialog closed" },
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("follows a newer server profile instead of saving back a stale cached one", async () => {
+    queryClient.setQueryData(queryKeys.sessionModel("session-1"), {
+      model: "gpt-5.6", promptProfile: "engineer", source: "live",
+    } satisfies SessionModelState);
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "high", promptProfile: "monitor", source: "live" },
+      [TIERED_MODEL],
+    );
+    try {
+      // Another client changed the profile; the next refetch brings the new value.
+      await harness.act(async () => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessionModel("session-1") });
+      });
+      await waitUntilAct(
+        harness.act,
+        () => getReactProps(findProfileButton(harness.dom.container, "Monitor"))?.["aria-pressed"] === true,
+        { label: "refreshed profile" },
+      );
+      await clickButton(harness, "Save");
+      expect(apiMocks.patchSessionProfile).not.toHaveBeenCalled();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("switches the model first, then the profile, and keeps the dialog open when the profile fails", async () => {
+    apiMocks.patchSessionModel.mockResolvedValue({ model: "claude-opus-5" });
+    apiMocks.patchSessionProfile.mockRejectedValue(new Error("Cannot change the profile of a busy session"));
+    const harness = await openModelDialog(
+      { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", promptProfile: "engineer", source: "live" },
+      [TIERED_MODEL, { id: "claude-opus-5", name: "Claude Opus 5" }],
+    );
+    try {
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
+        { label: "model metadata" },
+      );
+      await clickPresetTile(harness, "Preset 2");
+      await harness.act(async () => {
+        getReactProps(findProfileButton(harness.dom.container, "Assistant"))?.onClick?.();
+      });
+      await clickButton(harness, "Save");
+      await waitUntilAct(harness.act, () => apiMocks.patchSessionProfile.mock.calls.length > 0, { label: "profile patch" });
+
+      expect(apiMocks.patchSessionModel.mock.invocationCallOrder[0])
+        .toBeLessThan(apiMocks.patchSessionProfile.mock.invocationCallOrder[0]!);
+      expect(apiMocks.patchSessionProfile).toHaveBeenCalledWith("session-1", "assistant");
+      await waitUntilAct(
+        harness.act,
+        () => (harness.dom.container.textContent ?? "").includes("The model changed, but the profile did not"),
+        { label: "partial failure" },
+      );
+      expect(harness.dom.container.textContent).toContain("Change model and profile");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("keeps the current effort when the selected model has no effort metadata", async () => {
     const harness = await openModelDialog(
       { model: "mystery-model", reasoningEffort: "high", source: "events" },
@@ -743,7 +843,7 @@ describe("SessionList change model dialog", () => {
 
       expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
       expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(originalState);
-      expect(harness.dom.container.textContent).not.toContain("Change session model");
+      expect(harness.dom.container.textContent).not.toContain("Change model and profile");
     } finally {
       await harness.cleanup();
     }
@@ -782,10 +882,10 @@ describe("SessionList change model dialog", () => {
       await harness.act(async () => {
         getReactProps(row)?.onContextMenu?.({ preventDefault: vi.fn(), clientX: 10, clientY: 10 });
       });
-      await clickButton(harness, "Change Model...");
+      await clickButton(harness, "Change Model or Profile...");
       await waitUntilAct(
         harness.act,
-        () => (harness.dom.container.textContent ?? "").includes("Change session model"),
+        () => (harness.dom.container.textContent ?? "").includes("Change model and profile"),
         { label: "change model dialog" },
       );
 
@@ -845,7 +945,7 @@ describe("SessionList change model dialog", () => {
         expect(text(harness)).toContain(
           `Your conversation is using ~${(156_169).toLocaleString()} tokens, which exceeds GPT-5.6's prompt limit of ${(128_000).toLocaleString()} tokens. Compact the conversation before switching?`,
         );
-        expect(text(harness)).not.toContain("Change session model");
+        expect(text(harness)).not.toContain("Change model and profile");
 
         await clickButton(harness, "Compact and switch");
         expect(apiMocks.patchSessionModel).toHaveBeenNthCalledWith(
@@ -888,7 +988,7 @@ describe("SessionList change model dialog", () => {
         await clickButton(harness, "Keep current model");
 
         expect(text(harness)).not.toContain(PROMPT_TITLE);
-        expect(text(harness)).not.toContain("Change session model");
+        expect(text(harness)).not.toContain("Change model and profile");
         expect(apiMocks.patchSessionModel).toHaveBeenCalledTimes(1);
         expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(CURRENT_STATE);
       } finally {
@@ -913,7 +1013,7 @@ describe("SessionList change model dialog", () => {
           { label: "cancelled message" },
         );
 
-        expect(text(harness)).toContain("Change session model");
+        expect(text(harness)).toContain("Change model and profile");
         expect(text(harness)).not.toContain(PROMPT_TITLE);
         expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(CURRENT_STATE);
       } finally {

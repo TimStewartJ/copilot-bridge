@@ -19,6 +19,7 @@ import type { Schedule, Task, VisualArtifact } from "../api";
 import DocPreviewSheet from "./DocPreviewSheet";
 import DeferredWorkSheet from "./DeferredWorkSheet";
 import NotesSheet from "./NotesSheet";
+import TaskHistorySheet from "./TaskHistorySheet";
 import PlanSheet from "./PlanSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import SessionList from "./SessionList";
@@ -105,6 +106,21 @@ const overlayCases: OverlayCase[] = [
       onSave: vi.fn(),
       onClose,
     }),
+  },
+  {
+    name: "NotesSheet as task instructions",
+    accessibleName: "Instructions",
+    element: (onClose) => createElement(NotesSheet, {
+      notes: "Never email the landlord.",
+      title: "Instructions",
+      onSave: vi.fn(),
+      onClose,
+    }),
+  },
+  {
+    name: "TaskHistorySheet",
+    accessibleName: "History",
+    element: (onClose) => createElement(TaskHistorySheet, { taskId: "task-1", onClose }),
   },
   {
     name: "DocPreviewSheet",
@@ -338,7 +354,7 @@ describe("SessionList change-model dialog", () => {
       const dialogs = findDialogElements(harness.dom.container);
       expect(dialogs).toHaveLength(1);
       expect(dialogs[0].getAttribute("aria-modal")).toBe("true");
-      expect(resolveAccessibleName(harness.dom.container, dialogs[0])).toBe("Change session model");
+      expect(resolveAccessibleName(harness.dom.container, dialogs[0])).toBe("Change model and profile");
 
       await harness.act(async () => {
         keyEventDom.dispatchKeyDown("Escape");

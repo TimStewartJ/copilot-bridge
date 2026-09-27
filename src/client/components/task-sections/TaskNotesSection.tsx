@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import type { ReactNode } from "react";
 import { StickyNote } from "lucide-react";
 import TaskPanelSummaryRow from "../TaskPanelSummaryRow";
 
@@ -12,6 +13,11 @@ export interface TaskNotesSectionProps {
   onEdit: () => void;
   truncate?: boolean;
   variant?: "default" | "summary";
+  /** Summary row label; the same row shows a task's instructions. */
+  label?: string;
+  icon?: ReactNode;
+  /** When set, an empty summary row still shows, with this title, and opens the editor. */
+  emptyTitle?: string;
 }
 
 function getNotesPreview(notes: string): string {
@@ -31,19 +37,39 @@ function getNotesPreview(notes: string): string {
 
 // ── Component ────────────────────────────────────────────────────
 
-export default function TaskNotesSection({ notes, onView, onEdit, truncate = false, variant = "default" }: TaskNotesSectionProps) {
+export default function TaskNotesSection({
+  notes,
+  onView,
+  onEdit,
+  truncate = false,
+  variant = "default",
+  label = "Notes",
+  icon = <StickyNote size={14} />,
+  emptyTitle,
+}: TaskNotesSectionProps) {
   const trimmedNotes = notes?.trim();
 
   if (variant === "summary") {
-    if (!trimmedNotes) return null;
+    if (!trimmedNotes) {
+      if (!emptyTitle) return null;
+      return (
+        <TaskPanelSummaryRow
+          label={label}
+          icon={icon}
+          title={emptyTitle}
+          placeholder
+          onClick={onEdit}
+        />
+      );
+    }
 
     const preview = getNotesPreview(trimmedNotes);
 
     return (
       <TaskPanelSummaryRow
-        label="Notes"
-        icon={<StickyNote size={14} />}
-        title={preview || "View notes"}
+        label={label}
+        icon={icon}
+        title={preview || `View ${label.toLowerCase()}`}
         onClick={onView}
       />
     );

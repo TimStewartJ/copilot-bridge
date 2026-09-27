@@ -7,6 +7,12 @@ import ModelPresetPicker from "./shared/ModelPresetPicker";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
+import {
+  getPromptProfileInfo,
+  PROMPT_PROFILES,
+  type PromptProfileId,
+  type ResolvedPromptProfile,
+} from "../../shared/prompt-profiles.js";
 import { DS } from "../design/tokens";
 import { FormRow, Select } from "../design/primitives";
 
@@ -22,6 +28,9 @@ interface NewSessionLaunchPanelProps {
   selectedReasoningEffort?: string;
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
   selectedContextTier?: CopilotContextTier;
+  selectedPromptProfile: PromptProfileId;
+  /** What the chat gets without a choice, for the help text. */
+  defaultPromptProfile: ResolvedPromptProfile;
   mode: SendMode;
   agentDefinitions?: readonly TaskAgentDefinitionSummary[];
   agentDefinitionsLoading?: boolean;
@@ -30,10 +39,28 @@ interface NewSessionLaunchPanelProps {
   onModelChange: (slot: ModelPresetSlot, modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort?: string) => void;
   onContextTierChange: (contextTier?: CopilotContextTier) => void;
+  onPromptProfileChange: (promptProfile: PromptProfileId) => void;
   onModeChange: (mode: SendMode) => void;
   onAgentChange?: (agentName?: string) => void;
   /** Called after a preset or model is chosen so the composer can take focus. */
   onModelSelectionCommitted?: () => void;
+}
+
+const PROFILE_OPTIONS: LaunchOption<PromptProfileId>[] = PROMPT_PROFILES.map((profile) => ({
+  value: profile.id,
+  label: profile.label,
+}));
+
+export function describeLaunchPromptProfile(
+  selected: PromptProfileId,
+  defaultProfile: ResolvedPromptProfile,
+): string {
+  const description = getPromptProfileInfo(selected).description;
+  if (selected !== defaultProfile.id) return description;
+  if (defaultProfile.source !== "automatic") return `${description} This is your default profile.`;
+  return selected === "engineer"
+    ? `${description} Picked because this chat has a project folder.`
+    : `${description} Picked because this chat has no project folder.`;
 }
 
 const MODE_OPTIONS: LaunchOption<SendMode>[] = [
@@ -53,6 +80,8 @@ export default function NewSessionLaunchPanel({
   selectedReasoningEffort,
   contextOptions,
   selectedContextTier,
+  selectedPromptProfile,
+  defaultPromptProfile,
   mode,
   agentDefinitions,
   agentDefinitionsLoading,
@@ -61,6 +90,7 @@ export default function NewSessionLaunchPanel({
   onModelChange,
   onReasoningEffortChange,
   onContextTierChange,
+  onPromptProfileChange,
   onModeChange,
   onAgentChange,
   onModelSelectionCommitted,
@@ -171,6 +201,20 @@ export default function NewSessionLaunchPanel({
               />
             </FormRow>
           )}
+
+          <FormRow label="Profile" hideLabel>
+            <LaunchOptionRow
+              ariaLabel="Profile for new session"
+              options={PROFILE_OPTIONS}
+              selectedValue={selectedPromptProfile}
+              onChange={(value) => {
+                if (value) onPromptProfileChange(value);
+              }}
+            />
+            <p className={DS.field.help}>
+              {describeLaunchPromptProfile(selectedPromptProfile, defaultPromptProfile)}
+            </p>
+          </FormRow>
 
           <FormRow label="Mode" hideLabel>
             <LaunchOptionRow

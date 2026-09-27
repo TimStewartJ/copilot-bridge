@@ -84,6 +84,8 @@ export async function deleteTaskWithOwnedState(
       onSessionsChanged?.("task-deletion:sessions-archived");
       ctx.globalBus.emit({ type: "sessions:changed" });
     }
+    // Kept chats lose the task their system prompt names.
+    for (const sessionId of archivedSessionIds) ctx.sessionManager.invalidateSessionConfig(sessionId, "task deleted");
     finishTaskDeletion(ctx, taskId, deletedScheduleIds);
     return {
       deletedScheduleIds,
@@ -162,6 +164,7 @@ export async function deleteTaskWithOwnedState(
   }
 
   const { deletedScheduleIds } = ctx.taskStore.deleteTaskCascade(taskId);
+  for (const sessionId of unlinkedSharedSessionIds) ctx.sessionManager.invalidateSessionConfig(sessionId, "task deleted");
   finishTaskDeletion(ctx, taskId, deletedScheduleIds);
 
   return {
