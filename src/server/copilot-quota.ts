@@ -66,6 +66,8 @@ export interface CreateCopilotQuotaReaderOptions {
    * without this a refresh keeps returning the same numbers.
    */
   getLiveUser?: () => Promise<unknown>;
+  /** Told about each new live-fetch failure; a repeat of the last one is not reported again. */
+  onLiveUserError?: (message: string) => void;
   now?: () => number;
   cacheTtlMs?: number;
 }
@@ -80,11 +82,29 @@ export function createCopilotQuotaReader({
   getQuota,
   getAuth,
   getLiveUser,
+  onLiveUserError = (message) => console.warn(`[quota] Live Copilot quota fetch failed; showing the backend's startup copy: ${message}`),
   now = Date.now,
   cacheTtlMs = DEFAULT_QUOTA_CACHE_TTL_MS,
 }: CreateCopilotQuotaReaderOptions): CopilotQuotaReader {
   let cached: { status: CopilotQuotaStatus; fetchedAtMs: number } | null = null;
   let inflight: Promise<CopilotQuotaStatus> | null = null;
+  let lastLiveUserError: string | null = null;
+
+  // A failed live fetch silently falls back to numbers that never change, so say so once.
+  async function fetchLiveUser(fetchUser: () => Promise<unknown>): Promise<unknown> {
+    try {
+      const user = await fetchUser();
+      lastLiveUserError = null;
+      return user;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastLiveUserError) {
+        lastLiveUserError = message;
+        onLiveUserError(message);
+      }
+      return undefined;
+    }
+  }
 
   async function fetchStatus(): Promise<CopilotQuotaStatus> {
     const fetchedAtMs = now();
@@ -95,7 +115,7 @@ export function createCopilotQuotaReader({
       const [quota, auth, liveUser] = await Promise.all([
         getQuota(),
         getAuth ? getAuth().catch(() => undefined) : Promise.resolve(undefined),
-        getLiveUser ? Promise.resolve().then(getLiveUser).catch(() => undefined) : Promise.resolve(undefined),
+        getLiveUser ? fetchLiveUser(getLiveUser) : Promise.resolve(undefined),
       ]);
       status = buildCopilotQuotaStatus(quota, withLiveUser(auth, liveUser), fetchedAt);
     } catch (error) {

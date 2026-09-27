@@ -1276,10 +1276,10 @@ export class CopilotBackend implements AgentBackend {
       this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account)),
       this.rpc("backend.getAccountUsers", () => getAllUsers.call(account)),
     ]) as [any, unknown];
-    const login = auth?.authInfo?.login;
+    const login = accountLogin(auth?.authInfo);
     const host = auth?.authInfo?.host;
-    const current = Array.isArray(users)
-      ? users.find((user: any) => user?.authInfo?.login === login && user?.authInfo?.host === host)
+    const current = login && Array.isArray(users)
+      ? users.find((user: any) => accountLogin(user?.authInfo) === login && user?.authInfo?.host === host)
       : undefined;
     const token = typeof current?.token === "string" ? current.token : null;
     if (!login || !token) throw new Error("No token for the current Copilot account");
@@ -1290,6 +1290,12 @@ export class CopilotBackend implements AgentBackend {
     if (!response.ok) throw new Error(`Copilot user lookup failed with HTTP ${response.status}`);
     return response.json();
   }
+}
+
+/** Token auth (`--auth-token-env`) omits `authInfo.login`; the login is only on the Copilot user. */
+function accountLogin(authInfo: any): string | null {
+  const login = authInfo?.login ?? authInfo?.copilotUser?.login;
+  return typeof login === "string" && login.trim() ? login.trim() : null;
 }
 
 function githubApiBase(host: unknown): string {

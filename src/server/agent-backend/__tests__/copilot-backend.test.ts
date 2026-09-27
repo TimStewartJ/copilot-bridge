@@ -1009,6 +1009,28 @@ describe("CopilotBackend fetchAccountCopilotUser", () => {
     }
   });
 
+  it("finds the token under token auth, where authInfo carries no login", async () => {
+    // Shape recorded from CLI 1.0.88 started with --auth-token-env.
+    const tokenAuth = (login: string) => ({ type: "token", host: "https://github.com", copilotUser: { login } });
+    const client: any = createFakeClient();
+    client.rpc.account = {
+      getCurrentAuth: vi.fn(async () => ({ authInfo: tokenAuth("me") })),
+      getAllUsers: vi.fn(async () => [
+        { authInfo: tokenAuth("other"), selectionId: "a", token: "other-token" },
+        { authInfo: tokenAuth("me"), selectionId: "b", token: "my-token" },
+      ]),
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ login: "me", quota_snapshots: {} }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await new CopilotBackend(client).fetchAccountCopilotUser();
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect((init.headers as Record<string, string>).Authorization).toBe("token my-token");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("rejects when GitHub refuses the request", async () => {
     const client: any = createFakeClient();
     client.rpc.account = {
