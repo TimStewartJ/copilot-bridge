@@ -71,6 +71,7 @@ describe("voice-job-store retention", () => {
     createJob("old-error");
     voiceJobs.markError("old-error", "failed");
     createJob("old-recovered");
+    voiceJobs.markError("old-recovered", "failed");
     voiceJobs.markRecovered("old-recovered");
     createJob("old-active");
     createJob("recent-error");
@@ -95,5 +96,73 @@ describe("voice-job-store retention", () => {
       status: "error",
       error: "still visible",
     });
+  });
+});
+
+describe("voice-job-store composer recovery", () => {
+  function createJob(voiceJobs: ReturnType<typeof createVoiceJobStore>, id: string, createdAt: string, composerKey = "session-1") {
+    voiceJobs.createVoiceJob({
+      id,
+      composerKey,
+      targetSessionId: "session-1",
+      audioPath: join(audioDir, id, "recording.wav"),
+    });
+    db.prepare("UPDATE voice_jobs SET createdAt = ?, updatedAt = ? WHERE id = ?").run(createdAt, createdAt, id);
+  }
+
+  it("stops surfacing a failed job without a transcript once a newer job exists", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    createJob(voiceJobs, "silent", "2026-09-27T19:03:00.000Z");
+    voiceJobs.markError("silent", "No speech was detected in the recording.");
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")?.id).toBe("silent");
+
+    createJob(voiceJobs, "later", "2026-09-27T19:13:00.000Z");
+    voiceJobs.updateVoiceJob("later", { status: "done", transcript: "hello" });
+    db.prepare("UPDATE voice_jobs SET updatedAt = ? WHERE id = 'silent'").run("2026-09-27T20:00:00.000Z");
+
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")).toBeUndefined();
+  });
+
+  it("breaks a createdAt tie by insertion order", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    createJob(voiceJobs, "first", "2026-09-27T19:03:00.000Z");
+    createJob(voiceJobs, "second", "2026-09-27T19:03:00.000Z");
+    voiceJobs.markError("first", "No speech was detected in the recording.");
+    voiceJobs.updateVoiceJob("second", { status: "done", transcript: "hello" });
+
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")).toBeUndefined();
+  });
+
+  it("keeps surfacing a failed job whose transcript has not been recovered, even after a newer job", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    createJob(voiceJobs, "unsent", "2026-09-27T19:03:00.000Z", "draft:quickchat");
+    voiceJobs.markError("unsent", "Auto-send failed.", "dictated words");
+    createJob(voiceJobs, "later", "2026-09-27T19:13:00.000Z");
+    voiceJobs.updateVoiceJob("later", { status: "done", transcript: "hello" });
+
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")).toMatchObject({
+      id: "unsent",
+      transcript: "dictated words",
+    });
+  });
+
+  it("still reports an in-flight job regardless of newer jobs", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    createJob(voiceJobs, "active", "2026-09-27T19:03:00.000Z");
+    voiceJobs.updateVoiceJob("active", { status: "sending", transcript: "hi" });
+
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")?.id).toBe("active");
+  });
+
+  it("recovers only failed jobs so an in-flight job stays resumable", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    createJob(voiceJobs, "active", "2026-09-27T19:03:00.000Z");
+    createJob(voiceJobs, "failed", "2026-09-27T19:04:00.000Z", "session-2");
+    voiceJobs.markError("failed", "No speech was detected in the recording.");
+
+    expect(voiceJobs.markRecovered("active")?.status).toBe("accepted");
+    expect(voiceJobs.listPendingVoiceJobs().map((job) => job.id)).toEqual(["active"]);
+    expect(voiceJobs.markRecovered("failed")).toMatchObject({ status: "recovered", error: undefined });
+    expect(voiceJobs.markRecovered("missing")).toBeUndefined();
   });
 });
