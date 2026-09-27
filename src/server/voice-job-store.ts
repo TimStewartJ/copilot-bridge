@@ -114,7 +114,10 @@ export function createVoiceJobStore(db: DatabaseSync) {
     });
   }
 
+  /** Only a failed job can be recovered; an in-flight one must stay resumable after a restart. */
   function markRecovered(id: string): StoredVoiceJob | undefined {
+    const existing = getVoiceJob(id);
+    if (!existing || existing.status !== "error") return existing;
     return updateVoiceJob(id, {
       status: "recovered",
       error: undefined,
@@ -155,15 +158,30 @@ export function createVoiceJobStore(db: DatabaseSync) {
     return Number(result.changes ?? 0);
   }
 
+  /**
+   * A failed job with no transcript has nothing left to recover, so any newer job for the same
+   * composer supersedes it. A failed job that still holds a transcript stays visible until the
+   * client puts the transcript back and marks it recovered.
+   */
   function findLatestRelevantForComposer(composerKey: string): StoredVoiceJob | undefined {
     const placeholders = RELEVANT_STATUSES.map(() => "?").join(", ");
     const row = db.prepare(`
-      SELECT * FROM voice_jobs
-      WHERE (composerKey = ? OR targetSessionId = ?)
-        AND status IN (${placeholders})
-      ORDER BY updatedAt DESC, createdAt DESC
+      SELECT * FROM voice_jobs AS job
+      WHERE (job.composerKey = ? OR job.targetSessionId = ?)
+        AND job.status IN (${placeholders})
+        AND NOT (
+          job.status = 'error'
+          AND job.transcript IS NULL
+          AND EXISTS (
+            SELECT 1 FROM voice_jobs AS newer
+            WHERE (newer.composerKey = ? OR newer.targetSessionId = ?)
+              AND (newer.createdAt > job.createdAt
+                OR (newer.createdAt = job.createdAt AND newer.rowid > job.rowid))
+          )
+        )
+      ORDER BY job.updatedAt DESC, job.createdAt DESC
       LIMIT 1
-    `).get(composerKey, composerKey, ...RELEVANT_STATUSES) as any;
+    `).get(composerKey, composerKey, ...RELEVANT_STATUSES, composerKey, composerKey) as any;
     return row ? hydrate(row) : undefined;
   }
 

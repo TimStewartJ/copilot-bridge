@@ -64,6 +64,11 @@ export interface VoiceBackgroundJob {
   uploadPercent?: number;
   /** Session configuration captured when a draft autosend recording started. */
   sessionOptions?: CreateSessionOptions;
+  /**
+   * The server job failed without a transcript, so it holds nothing to recover and dismissing the
+   * error can retire it on the server. Unset while a transcript may still need to reach the draft.
+   */
+  serverFailedWithoutTranscript?: boolean;
 }
 
 /** A voice job that is still in flight, narrowed away from the terminal `error` status. */
@@ -288,11 +293,20 @@ export function useBackgroundVoiceJobs({
     hydratedComposerKeysRef.current.add(toComposerKey);
   }, []);
 
+  // Without this the server keeps reporting the failure and it reappears on the next visit.
+  const retireFailedServerJob = useCallback((job: VoiceBackgroundJob | undefined) => {
+    if (job?.status !== "error" || !job.serverJobId || job.serverFailedWithoutTranscript !== true) return;
+    void markVoiceJobRecovered(job.serverJobId).catch((error) => {
+      console.warn("[voice] Could not clear the failed voice job on the server:", error);
+    });
+  }, []);
+
   const clearVoiceJobError = useCallback((composerKey: string) => {
     const existing = jobsRef.current[composerKey];
     if (existing?.status !== "error") return;
     // Never silently drop audio that has not been delivered yet — that needs an explicit discard.
     if (existing.retryable === true) return;
+    retireFailedServerJob(existing);
     clearUploadTracking(composerKey);
     retryingComposerKeysRef.current.delete(composerKey);
     setJobsState((prev) => {
@@ -302,9 +316,10 @@ export function useBackgroundVoiceJobs({
       delete next[composerKey];
       return next;
     });
-  }, [clearUploadTracking, setJobsState]);
+  }, [clearUploadTracking, retireFailedServerJob, setJobsState]);
 
   const discardVoiceRecording = useCallback((composerKey: string) => {
+    retireFailedServerJob(jobsRef.current[composerKey]);
     clearUploadTracking(composerKey);
     retryingComposerKeysRef.current.delete(composerKey);
     delete pendingRecordingIdsRef.current[composerKey];
@@ -319,7 +334,7 @@ export function useBackgroundVoiceJobs({
       delete next[composerKey];
       return next;
     });
-  }, [clearUploadTracking, setJobsState]);
+  }, [clearUploadTracking, retireFailedServerJob, setJobsState]);
 
   const stopPolling = useCallback((jobId: string) => {
     const timer = pollTimersRef.current[jobId];
@@ -401,7 +416,7 @@ export function useBackgroundVoiceJobs({
   const markError = useCallback((
     composerKey: string,
     message: string,
-    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning" | "sessionOptions">>,
+    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning" | "sessionOptions" | "serverFailedWithoutTranscript">>,
   ) => {
     const nextJob: VoiceBackgroundJob = {
       composerKey,
@@ -578,6 +593,7 @@ export function useBackgroundVoiceJobs({
         targetSessionId: snapshot.targetSessionId,
         safeToLeave: snapshot.safeToLeave,
         persistWarning: persistWarningsRef.current[displayKey],
+        serverFailedWithoutTranscript: snapshot.transcript ? undefined : true,
       }, claimedOriginServerJobId));
       if (claimedOriginServerJobIdsRef.current[originComposerKey] === snapshot.id) {
         delete claimedOriginServerJobIdsRef.current[originComposerKey];
@@ -843,6 +859,10 @@ export function useBackgroundVoiceJobs({
             retryable: true,
             serverOwned: existing.serverOwned,
             serverJobId: knownServerJobId,
+            // A failed server job cannot change again except to recovered, so an inconclusive check keeps what was confirmed.
+            ...(existing.serverJobId === knownServerJobId && existing.serverFailedWithoutTranscript
+              ? { serverFailedWithoutTranscript: true }
+              : {}),
             ...((record?.sessionOptions ?? existing.sessionOptions)
               ? { sessionOptions: record?.sessionOptions ?? existing.sessionOptions }
               : {}),
