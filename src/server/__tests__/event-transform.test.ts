@@ -1488,3 +1488,29 @@ describe("event-transform tool calls that outlive someone else's turn", () => {
     expect(toolStates(aborted)["bg-view"]).toEqual({ success: false, completedAt: "2026-09-20T10:00:05.000Z" });
   });
 });
+describe("event-transform autopilot", () => {
+  it("marks messages sent with autopilot and turns the CLI's continuations into markers", () => {
+    const entries = transformEventsToMessages([
+      { id: "u1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "Fix the tests", agentMode: "autopilot" } },
+      { id: "a1", type: "assistant.message", timestamp: "2026-09-27T10:00:05.000Z", data: { content: "Working on it" } },
+      { id: "c1", type: "user.message", timestamp: "2026-09-27T10:01:00.000Z", data: { content: "", agentMode: "autopilot", isAutopilotContinuation: true, source: "autopilot" } },
+      { id: "c2", type: "user.message", timestamp: "2026-09-27T10:02:00.000Z", data: { content: "  ", agentMode: "autopilot" } },
+      { id: "u2", type: "user.message", timestamp: "2026-09-27T10:03:00.000Z", data: { content: "Thanks" } },
+    ]);
+
+    expect(entries.map((entry) => entry.type)).toEqual(["message", "message", "continuation", "continuation", "message"]);
+    expect(entries[0]).toMatchObject({ role: "user", agentMode: "autopilot", sourceEventId: "u1" });
+    expect(entries[2]).toMatchObject({ type: "continuation", sourceEventId: "c1", timestamp: "2026-09-27T10:01:00.000Z" });
+    expect(entries[4]).not.toHaveProperty("agentMode");
+    // A continuation is not something the user wrote, so it never becomes an undo point.
+    expect(entries[2]).not.toHaveProperty("undoEventId");
+  });
+
+  it("does not mistake runtime or sub-agent messages for continuations", () => {
+    const entries = transformEventsToMessages([
+      { id: "s1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "", agentMode: "autopilot", source: "system" } },
+      { id: "g1", type: "user.message", agentId: "agent-1", timestamp: "2026-09-27T10:00:01.000Z", data: { content: "", isAutopilotContinuation: true } },
+    ]);
+    expect(entries).toEqual([]);
+  });
+});

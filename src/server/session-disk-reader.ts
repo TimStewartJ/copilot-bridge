@@ -8,6 +8,7 @@ import {
   getLastVisibleActivityAt,
   getVisibleReasoningText,
   getVisualArtifactFromToolCompletion,
+  isAutopilotContinuationEvent,
   isVisibleMessageEvent,
   transformEventsToMessages,
   type TransformedEntry,
@@ -529,6 +530,11 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
 
     // Thinking is an entry of its own, ahead of the message entry the same event may also yield.
     if (getVisibleReasoningText(event)) state.totalEntries += 1;
+    // An autopilot continuation is shown as a marker but is not visible activity.
+    if (isAutopilotContinuationEvent(event)) {
+      state.totalEntries += 1;
+      return;
+    }
 
     if (isVisibleMessageEvent(event, sessionId)) {
       state.totalEntries += 1;

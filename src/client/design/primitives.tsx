@@ -531,7 +531,48 @@ export const STATUS_LABEL: Record<DsStatusKind, string> = {
   closed: "Closed",
   paused: "Paused",
   on: "On",
+  autopilot: "Autopilot working",
 };
+
+/** Two arrows chasing each other: the agent keeps going on its own. */
+function AutopilotGlyphPaths() {
+  const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+  return (
+    <>
+      <path d="M3.5 8a4.5 4.5 0 0 1 7.7-3.2M12.5 8a4.5 4.5 0 0 1-7.7 3.2" {...stroke} />
+      <path d="M11.6 2.3v2.8H8.8M4.4 13.7v-2.8h2.8" {...stroke} />
+    </>
+  );
+}
+
+/**
+ * The Autopilot mark, still. For a finished or chosen autopilot run (a badge, a transcript marker,
+ * the composer toggle); a run in progress uses `StatusIcon kind="autopilot"`, which turns.
+ */
+export function AutopilotIcon({ size = 14, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      className={cx("shrink-0 overflow-visible", className)}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <AutopilotGlyphPaths />
+    </svg>
+  );
+}
+
+/** Says a message or run used Autopilot, in the agent colour. */
+export function AutopilotBadge({ children = "Autopilot", title, className }: { children?: ReactNode; title?: string; className?: string }) {
+  return (
+    <Badge tone="agent" title={title} className={className}>
+      <AutopilotIcon size={12} />
+      {children}
+    </Badge>
+  );
+}
 
 function StatusGlyph({ kind }: { kind: DsStatusKind }) {
   const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round" } as const;
@@ -594,6 +635,8 @@ function StatusGlyph({ kind }: { kind: DsStatusKind }) {
       );
     case "on":
       return <circle cx="8" cy="8" r="4.5" fill="currentColor" />;
+    case "autopilot":
+      return <AutopilotGlyphPaths />;
   }
 }
 
@@ -627,7 +670,11 @@ export function StatusIcon({
     >
       <svg
         viewBox="0 0 16 16"
-        className={cx("size-full overflow-visible", kind === "working" && "animate-spin motion-reduce:animate-none")}
+        className={cx(
+          "size-full overflow-visible",
+          kind === "working" && "animate-spin motion-reduce:animate-none",
+          kind === "autopilot" && "animate-[spin_2.4s_linear_infinite] motion-reduce:animate-none",
+        )}
         aria-hidden="true"
         focusable="false"
       >

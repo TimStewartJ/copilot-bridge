@@ -14,6 +14,7 @@ import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChat
 import { MessageAttachments, OutboundAttachment, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
 import { APP_PROSE } from "./shared/prose-classes";
 import { DS, cx } from "../design/tokens";
+import { AutopilotBadge } from "../design/primitives";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -199,6 +200,7 @@ export default memo(function MessageBubble({
     const isFailed = message.delivery?.failed === true;
     const isPending = Boolean(message.delivery) && !isFailed;
     const deliveryState = isFailed ? "failed" : isPending ? "sending" : "sent";
+    const sentWithAutopilot = message.agentMode === "autopilot" || message.delivery?.mode === "autopilot";
     return (
       <div className="flex justify-end">
         <div
@@ -226,6 +228,9 @@ export default memo(function MessageBubble({
               }`}>
                 {message.content}
               </div>
+            )}
+            {sentWithAutopilot && (
+              <AutopilotBadge title="Sent with Autopilot: Copilot keeps going on its own until the task is done" />
             )}
           </div>
           {isFailed && (

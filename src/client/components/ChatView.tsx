@@ -46,6 +46,7 @@ import { writeClipboardText } from "../lib/clipboard";
 import { getAppAbsoluteUrl } from "../lib/app-url";
 import { textMatchesSearchQuery } from "../lib/search-text";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
+import { summarizeAutopilotRuns } from "../lib/autopilot-runs";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import { buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
 import { groupActivitySegments } from "../lib/chat-activity";
@@ -77,9 +78,10 @@ import AskUserRecordBlock from "./chat/AskUserRecord";
 import ActivityBlock from "./chat/ActivityBlock";
 import { ChatRunActiveProvider } from "./chat/chat-run-context";
 import LiveStatusLine from "./chat/LiveStatusLine";
+import AutopilotRunLine from "./chat/AutopilotRunLine";
 import PromptMarkdown from "./chat/PromptMarkdown";
 import { DS, cx } from "../design/tokens";
-import { Button, ChoiceButton, EmptyHint, Notice, Panel, TextInput } from "../design/primitives";
+import { AutopilotIcon, Button, ChoiceButton, EmptyHint, Notice, Panel, TextInput } from "../design/primitives";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
@@ -2286,6 +2288,7 @@ export default function ChatView({
    * While the run is between steps, the block at the end of the transcript is where the next step
    * will land, so it carries the "still working" state instead of a separate indicator below it.
    */
+  const autopilotRuns = useMemo(() => summarizeAutopilotRuns(renderBlocks), [renderBlocks]);
   const liveActivityKey = useMemo(() => {
     if (!isStreaming || hasStreamingText) return null;
     const trailing = renderBlocks[renderBlocks.length - 1];
@@ -2416,6 +2419,7 @@ export default function ChatView({
             label={attaching ? "Thinking" : runHeaderState.label}
             detail={intentText || undefined}
             description={attaching ? undefined : `${runHeaderState.title}. ${runHeaderState.detail}`}
+            autopilot={!attaching && runMode === "autopilot"}
           />
         </div>,
       );
@@ -2465,6 +2469,7 @@ export default function ChatView({
     pendingUserInputRequests,
     reconnectIsSlow,
     runHeaderState,
+    runMode,
     runNotice,
     showStatusLine,
   ]);
@@ -2759,7 +2764,31 @@ export default function ChatView({
         const { entry } = segment;
         result.push(
           <div key={entry.id ?? `completion-${index}`} className={`${CHAT_RAIL_CLASS} pt-3`}>
-            <CompletionCard entry={entry} />
+            <CompletionCard entry={entry} autopilot={autopilotRuns.get(entry)} />
+          </div>,
+        );
+        return;
+      }
+
+      if (segment.type === "continuation-segment") {
+        const { entry, count } = segment;
+        result.push(
+          <div
+            key={entry.id ?? `continuation-${index}`}
+            className={`${CHAT_RAIL_CLASS} pt-3`}
+            data-autopilot-continuation={count}
+          >
+            <div
+              className="flex items-center gap-2 text-xs"
+              title="Autopilot started the next turn itself to keep working toward the task"
+            >
+              <span className="h-px flex-1 bg-border-subtle" aria-hidden="true" />
+              <span className="inline-flex shrink-0 items-center gap-1.5 font-medium text-agent">
+                <AutopilotIcon size={12} />
+                {count > 1 ? `Continued on its own ×${count}` : "Continued on its own"}
+              </span>
+              <span className="h-px flex-1 bg-border-subtle" aria-hidden="true" />
+            </div>
           </div>,
         );
         return;
@@ -2844,6 +2873,7 @@ export default function ChatView({
     return result;
   }, [
     activityExpansion,
+    autopilotRuns,
     bindMessageMenu,
     copiedMessageKey,
     handleToggleActivity,
@@ -3092,6 +3122,11 @@ export default function ChatView({
         </div>
       )}
       {!historicalMode && composerAccessory}
+      {!historicalMode && isStreaming && runMode === "autopilot" && (
+        <AutopilotRunLine
+          waitingForAnswer={pendingUserInputRequests.length > 0 || pendingElicitationRequests.length > 0}
+        />
+      )}
       {!historicalMode && <ChatInput
         onSend={handleSend}
         onAbort={isStreaming ? abortSession : undefined}

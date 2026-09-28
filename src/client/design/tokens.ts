@@ -199,6 +199,8 @@ export const DS = {
       success: "bg-success-surface text-success",
       warning: "bg-warning-surface text-warning",
       danger: "bg-error-surface text-error",
+      /** Work the agent does on its own, such as a message sent with Autopilot. */
+      agent: "bg-agent-muted text-agent",
     },
   },
 
@@ -261,6 +263,7 @@ export const DS = {
       closed: "text-text-faint",
       paused: "text-text-faint",
       on: "text-icon-success",
+      autopilot: "text-agent",
     },
     /** A glyph pinned to the corner of an icon or tile, on a disc so it reads over anything. */
     corner: "absolute -right-1 -top-1 flex items-center justify-center rounded-full bg-surface-pane p-px",
@@ -304,6 +307,8 @@ export const DS = {
     success: "text-success",
     warning: "text-warning",
     danger: "text-error",
+    /** Work the agent does on its own (Autopilot). */
+    agent: "text-agent",
   },
 
   /**

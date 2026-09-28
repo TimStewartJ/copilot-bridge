@@ -10,7 +10,7 @@ import type {
 } from "./api";
 import { API_BASE, reportTiming, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
-import type { SendMode } from "../shared/send-mode.js";
+import { isSendMode, type SendMode } from "../shared/send-mode.js";
 import type { RunNotice } from "../shared/session-stream.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
@@ -671,7 +671,10 @@ export function useSessionStream(
             runNotice: normalizeRunNotice(event.runNotice) ?? (complete ? null : current.runNotice),
             hadVisibleOutput: hasLiveOutput,
             pendingOrigin: complete ? null : current.pendingOrigin,
-            runMode: current.runMode,
+            // The server knows the mode of the run it is streaming; a new run it cannot name is unknown.
+            runMode: isSendMode(event.runMode)
+              ? event.runMode
+              : snapshotRunId === previousRunId ? current.runMode : undefined,
             // A snapshot from a different run means committed history moved while disconnected.
             historyEpoch: snapshotRunId === previousRunId
               ? current.historyEpoch
@@ -690,6 +693,12 @@ export function useSessionStream(
 
       if (eventType === "history_advanced") {
         setStreamState((current) => ({ ...current, historyEpoch: current.historyEpoch + 1 }));
+        return;
+      }
+
+      if (eventType === "run_mode") {
+        const runMode = event.runMode;
+        if (isSendMode(runMode)) setStreamState((current) => ({ ...current, runMode }));
         return;
       }
 

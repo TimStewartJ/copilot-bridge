@@ -541,6 +541,11 @@ function AppShell() {
         }
         invalidateDashboard();
         break;
+      case "session:mode":
+        if (event.sessionId) {
+          patchSessionInCache(event.sessionId, { agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
+        }
+        break;
       case "session:idle":
         if (event.sessionId) {
           clearSessionBusyHint(event.sessionId);

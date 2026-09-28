@@ -31,6 +31,7 @@ import {
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
+import type { SendMode } from "../shared/send-mode.js";
 
 export type {
   NativeUserInputRequest,
@@ -188,6 +189,8 @@ export interface BusSnapshot {
   /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
   pendingElicitations: PendingElicitationRequestView[];
   runNotice?: RunNotice;
+  /** The CLI mode this run is in, when Bridge knows it. */
+  runMode?: SendMode;
   terminalType?: "done" | "error" | "aborted" | "shutdown";
   terminalTimestamp?: string;
   [key: string]: unknown;
@@ -407,6 +410,7 @@ export class SessionEventBus {
   private liveCompletion?: LiveCompletion;
   private intentText = "";
   private runNotice?: RunNotice;
+  private runMode?: SendMode;
   /**
    * Runtime-owned pending interactions this run, keyed by the runtime's own
    * request id. Deliberately NOT reset on turn boundaries: an `ask_user` prompt
@@ -444,6 +448,17 @@ export class SessionEventBus {
 
   getIntentText(): string {
     return this.intentText;
+  }
+
+  getRunMode(): SendMode | undefined {
+    return this.runMode;
+  }
+
+  /** Records the CLI mode of the current run and tells connected clients when it changes. */
+  setRunMode(mode: SendMode | undefined): void {
+    if (this.runMode === mode) return;
+    this.runMode = mode;
+    if (mode) this.broadcast({ type: "run_mode", runMode: mode });
   }
 
   /** Last assistant text observed on this run, including text not yet persisted to disk. */
@@ -983,6 +998,7 @@ export class SessionEventBus {
       pendingUserInputs: pending.pendingUserInputs.map((request) => structuredClone(request)),
       pendingElicitations: pending.pendingElicitations.map((request) => structuredClone(request)),
       ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
+      ...(this.runMode ? { runMode: this.runMode } : {}),
       ...(this.terminalType ? { terminalType: this.terminalType } : {}),
       ...(this.terminalTimestamp ? { terminalTimestamp: this.terminalTimestamp } : {}),
       ...(turnId ? { turnId } : {}),
@@ -1034,6 +1050,7 @@ export class SessionEventBus {
   /** Reset ephemeral state for a new turn (defense-in-depth) */
   reset(): void {
     this.runId = randomUUID();
+    this.runMode = undefined;
     this.resetLiveTurnState();
     this.clearPendingInteractionIndex();
     this.userMessages = [];

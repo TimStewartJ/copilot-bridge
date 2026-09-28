@@ -388,6 +388,9 @@ export interface AgentSession {
   /** Switch the session's send mode. */
   setSendMode(opts: { mode: string }): Promise<unknown>;
 
+  /** The session's current send mode. Resolves `undefined` when the runtime cannot say. */
+  getSendMode?(): Promise<string | undefined>;
+
   /** Invoke a session-scoped slash command. */
   invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult>;
 

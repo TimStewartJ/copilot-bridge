@@ -1,4 +1,4 @@
-import type { ChatCompletionEntry, ChatEntry, ChatMessage, ChatReasoningEntry, ChatSkillEntry, ChatToolEntry, ChatVisualEntry, ToolCall } from "../api";
+import type { ChatCompletionEntry, ChatContinuationEntry, ChatEntry, ChatMessage, ChatReasoningEntry, ChatSkillEntry, ChatToolEntry, ChatVisualEntry, ToolCall } from "../api";
 import { getToolCallStatus, type ToolCallStatus } from "./tool-call-status";
 
 export interface ToolCallTreeNode {
@@ -36,7 +36,9 @@ export type ChatRenderSegment =
   | { type: "visual-segment"; entry: ChatVisualEntry }
   | { type: "skill-segment"; entry: ChatSkillEntry }
   | { type: "completion-segment"; entry: ChatCompletionEntry }
-  | { type: "reasoning-segment"; entry: ChatReasoningEntry };
+  | { type: "reasoning-segment"; entry: ChatReasoningEntry }
+  /** Autopilot continuing on its own; `count` merges continuations with nothing shown between them. */
+  | { type: "continuation-segment"; entry: ChatContinuationEntry; count: number };
 
 export function buildToolCallForest(toolCalls: ToolCall[]): ToolCallForest {
   const mutableNodes = new Map<string, MutableToolCallNode>();
@@ -234,6 +236,16 @@ export function segmentChatEntries(entries: ChatEntry[]): ChatRenderSegment[] {
     if ((!entry.type || entry.type === "message") && entry.role === "user") {
       flushInteraction();
       segments.push({ type: "message", entry });
+      continue;
+    }
+    if (entry.type === "continuation") {
+      flushInteraction();
+      const previous = segments[segments.length - 1];
+      if (previous?.type === "continuation-segment") {
+        previous.count += 1;
+      } else {
+        segments.push({ type: "continuation-segment", entry, count: 1 });
+      }
       continue;
     }
     interactionEntries.push(entry);

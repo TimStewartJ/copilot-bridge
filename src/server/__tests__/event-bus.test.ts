@@ -919,3 +919,21 @@ describe("event-bus", () => {
     });
   });
 });
+
+describe("event-bus run mode", () => {
+  it("puts the run mode in the snapshot, announces changes once, and forgets it on reset", () => {
+    const bus = getOrCreateBus("test-run-mode-1");
+    bus.reset();
+    const events: StreamEvent[] = [];
+    const unsubscribe = bus.subscribe((event) => events.push(event));
+
+    bus.setRunMode("autopilot");
+    bus.setRunMode("autopilot");
+    expect(events.filter((event) => event.type === "run_mode")).toEqual([{ type: "run_mode", runMode: "autopilot" }]);
+    expect(bus.getSnapshot().runMode).toBe("autopilot");
+
+    bus.reset();
+    expect(bus.getSnapshot()).not.toHaveProperty("runMode");
+    unsubscribe();
+  });
+});

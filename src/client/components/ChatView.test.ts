@@ -209,7 +209,7 @@ function RouteLocationProbe() {
 }
 
 function getMessageContent(entry: ChatEntry | undefined): string | undefined {
-  if (!entry || entry.type === "tool" || entry.type === "visual" || entry.type === "completion") return undefined;
+  if (!entry || entry.type === "tool" || entry.type === "visual" || entry.type === "completion" || entry.type === "continuation") return undefined;
   return entry.content;
 }
 
@@ -408,7 +408,7 @@ async function renderChatView(
   const initialSearchMessages = fetchMessagesFastResult instanceof Promise
     ? []
     : fetchMessagesFastResult.messages.flatMap((entry) => {
-        if (entry.type === "tool" || entry.type === "visual" || entry.type === "completion" || entry.type === "skill" || entry.type === "reasoning") return [];
+        if (entry.type === "tool" || entry.type === "visual" || entry.type === "completion" || entry.type === "skill" || entry.type === "reasoning" || entry.type === "continuation") return [];
         const sourceEventId = entry.sourceEventId ?? entry.id;
         return sourceEventId ? [{
           sourceEventId,

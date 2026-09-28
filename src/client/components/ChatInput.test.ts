@@ -459,6 +459,47 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("finish the task", undefined, "autopilot");
   });
 
+  it("turns Autopilot on for one message from the composer toggle", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({ onSend });
+    const container = getHarness().dom.container;
+
+    const typeAndEnter = async (value: string) => {
+      const textarea = findTextarea(getHarness().dom.container);
+      await getHarness().act(async () => {
+        getReactProps(textarea)?.onChange?.({ target: { value, style: { height: "" }, scrollHeight: 48 } });
+      });
+      await getHarness().act(async () => {
+        getReactProps(findTextarea(getHarness().dom.container))?.onKeyDown?.({ key: "Enter", shiftKey: false, preventDefault: vi.fn() });
+      });
+    };
+
+    const toggle = findButtonByAriaLabel(container, "Autopilot");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    await getHarness().act(async () => {
+      getReactProps(toggle)?.onClick?.();
+    });
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("true");
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot")).toBeDefined();
+    expect(getHarness().dom.container.textContent).toContain("Questions still wait for you");
+
+    await typeAndEnter("fix the flaky tests");
+    expect(onSend).toHaveBeenLastCalledWith("fix the flaky tests", undefined, "autopilot");
+
+    // The choice is for one message; the next one goes back to interactive.
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("false");
+    await typeAndEnter("and thanks");
+    expect(onSend).toHaveBeenLastCalledWith("and thanks", undefined, "interactive");
+  });
+
+  it("hides the Autopilot toggle while steering and in a new chat", async () => {
+    await renderChatInput({ onAbort: vi.fn() });
+    expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.getAttribute("aria-label") === "Autopilot")).toBe(false);
+
+    await renderChatInput({ isDraft: true, defaultSendMode: "autopilot" });
+    expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.getAttribute("aria-label") === "Autopilot")).toBe(false);
+  });
+
   it("uses the selected Autopilot mode when Enter submits the draft", async () => {
     const onSend = vi.fn();
     await renderChatInput({
