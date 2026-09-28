@@ -355,6 +355,24 @@ describe("settings-store", () => {
     })).toThrow("browser.headed must be a boolean");
   });
 
+  it("stores only the image budget fields that differ from the defaults and validates them", () => {
+    expect(store.getSettings().imageBudget).toBeUndefined();
+    expect(store.updateSettings({ imageBudget: { enabled: true } }).imageBudget).toBeUndefined();
+    expect(store.updateSettings({ imageBudget: { enabled: false } }).imageBudget).toEqual({ enabled: false });
+    expect(store.updateSettings({ imageBudget: { ceilingsMb: { "claude-*": 25, "gpt-5.4-mini": 40 } } }).imageBudget)
+      .toEqual({ ceilingsMb: { "claude-*": 25, "gpt-5.4-mini": 40 } });
+    expect(store.updateSettings({ imageBudget: { ceilingsMb: {} } }).imageBudget).toEqual({ ceilingsMb: {} });
+    expect(store.updateSettings({ imageBudget: null as any }).imageBudget).toBeUndefined();
+
+    expect(() => store.updateSettings({ imageBudget: { ceilingsMb: { "claude opus": 30 } } }))
+      .toThrow("imageBudget.ceilingsMb has an invalid model pattern: claude opus");
+    expect(() => store.updateSettings({ imageBudget: { ceilingsMb: { "claude-*": 0 } } }))
+      .toThrow("imageBudget.ceilingsMb.claude-* must be a number of MB above 0 and at most 1000");
+    expect(() => store.updateSettings({ imageBudget: { enabled: "no" } as any }))
+      .toThrow("imageBudget.enabled must be a boolean");
+    expect(() => store.updateSettings({ imageBudget: [] as any })).toThrow("imageBudget must be an object");
+  });
+
   it("keeps computer use off unless it is explicitly enabled", () => {
     expect(store.getSettings().computerUse).toBeUndefined();
 

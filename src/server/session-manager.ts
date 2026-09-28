@@ -151,6 +151,7 @@ import {
   type SessionResumeLease,
   type StartWorkOptions,
 } from "./session-runner.js";
+import { ImageBudgetController } from "./image-budget.js";
 import { SessionAgentRegistry } from "./session-agent-registry.js";
 import type {
   AgentCountsSource,
@@ -504,7 +505,7 @@ type ModelMetadataRequest = {
   promise: Promise<ModelMetadataFetchResult>;
 };
 
-type SessionOverlayBusyReason = "model-switching" | "history-undo";
+type SessionOverlayBusyReason = "model-switching" | "history-undo" | "image-compaction";
 
 /**
  * Outcome of an explicit session model switch. Mirrors the Copilot CLI's model
@@ -862,6 +863,7 @@ export class SessionManager {
   private readonly sessionNameAutogenerator: SessionNameAutogenerator;
   private readonly deferWorker: DisposableDeferWorker;
   private readonly sessionRunner: SessionRunner;
+  private readonly imageBudget: ImageBudgetController;
   readonly sessionRuns: Map<string, SessionRunRecord>;
 
   private sessionDiskListCache = new Map<string, { data: any[]; timestamp: number; generation: number }>();
@@ -967,7 +969,11 @@ export class SessionManager {
     this.runStateController = new SessionRunStateController({
       globalBus: deps.globalBus,
       cancelPendingInteractions: (sessionId) => this.cancelPendingInteractions(sessionId),
-      onRunIdle: (sessionId, at) => this.touchSessionTree(sessionId, at),
+      onRunIdle: (sessionId, at) => {
+        this.touchSessionTree(sessionId, at);
+        // The run state clears after the runtime's idle event, so the budget looks again once it has.
+        setImmediate(() => this.imageBudget.sessionIdle(sessionId));
+      },
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
       promptDeliveryShutdownMessage: PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
       persistTerminalOverlay: (sessionId, overlay) => {
@@ -1047,6 +1053,7 @@ export class SessionManager {
         this.deps.recordCopilotUsage?.(sessionId, result),
       logger: console,
     });
+    this.imageBudget = this.createImageBudget();
     this.sessionRunner = new SessionRunner({
       getBackend: () => this.backend,
       getBackendUnavailableReason: () => this.getBackendUnavailableReason(),
@@ -1071,6 +1078,7 @@ export class SessionManager {
       lookupGroupNotes: (groupId) => this.lookupGroupNotes(groupId),
       prepareTurnContext: (sessionId) => this.prepareTurnContext(sessionId),
       resetTurnContext: (sessionId) => this.resetTurnContext(sessionId),
+      imageBudget: this.imageBudget,
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
       beginSessionResume: (sessionId, sessionConfig, isCancelled) =>
         this.beginSessionResume(sessionId, sessionConfig, {
@@ -4769,6 +4777,7 @@ export class SessionManager {
 
       // Whatever the outcome, the removed turns may have carried the last bridge_context block.
       this.resetTurnContext(sessionId);
+      this.imageBudget.reload(sessionId);
       const eventsRemoved = truncateResult?.eventsRemoved;
       if (typeof eventsRemoved !== "number") {
         throw new SessionHistoryUndoError(
@@ -5011,8 +5020,14 @@ export class SessionManager {
   // absolute deadline so a hung SDK abort is finalized locally and cannot
   // block the remainder of process teardown. Every other caller gets a
   // bounded default so an HTTP abort never waits on a dead backend channel.
-  async abortSession(sessionId: string, deadline: Deadline = createDeadline(ABORT_REQUEST_TIMEOUT_MS)): Promise<boolean> {
-    if (!this.runStateController.hasSessionRun(sessionId)) return false;
+  async abortSession(
+    sessionId: string,
+    deadline: Deadline = createDeadline(ABORT_REQUEST_TIMEOUT_MS),
+    options: { forImageBudget?: boolean } = {},
+  ): Promise<boolean> {
+    // Anyone else's stop means an image-budget pause must not continue the turn.
+    const cancelledPause = !options.forImageBudget && this.imageBudget.cancelPause(sessionId);
+    if (!this.runStateController.hasSessionRun(sessionId)) return cancelledPause;
 
     const runController = this.activeRunControllers.get(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
@@ -5212,6 +5227,10 @@ export class SessionManager {
     attachments?: StartWorkAttachment[],
     clientMessageId?: string,
   ): Promise<void> {
+    // A message steered into the turn being paused would be lost with it.
+    if (this.imageBudget.isPausing(sessionId)) {
+      throw new Error("Bridge is summarizing the images in this chat. Send your message again in a minute.");
+    }
     await this.sessionRunner.steerSession(sessionId, prompt, attachments, clientMessageId);
     this.noteUserPrompt(sessionId);
   }
@@ -5353,6 +5372,7 @@ export class SessionManager {
     }
     try {
       this.deletingSessions.add(sessionId);
+      this.imageBudget.forget(sessionId);
       const pendingCreation = this.pendingSessionCreations.get(sessionId);
       if (pendingCreation) {
         await pendingCreation.catch(() => undefined);
@@ -5464,6 +5484,54 @@ export class SessionManager {
         for (const section of changed) current.hashes.set(section.name, section.hash);
       },
     };
+  }
+
+  /** See image-budget.ts: the budget's pause runs through these, so it cannot race other work on the session. */
+  private createImageBudget(): ImageBudgetController {
+    return new ImageBudgetController({
+      getSettings: () => this.deps.settingsStore?.getSettings().imageBudget,
+      getEventsPath: (sessionId) => this.getSessionEventsPath(sessionId),
+      hold: (sessionId) => {
+        if (this.shuttingDown || this.deletingSessions.has(sessionId) || this.isSessionResuming(sessionId)) return false;
+        if (this.sessionOverlayBusyReasons.has(sessionId)) return false;
+        this.sessionOverlayBusyReasons.set(sessionId, "image-compaction");
+        return true;
+      },
+      runningTurn: (sessionId) => {
+        if (!this.runStateController.hasSessionRun(sessionId)) return "none";
+        if (this.runStateController.getSessionRunAttentionMode(sessionId) === "quiet") return "keep";
+        try {
+          return this.deps.resolveSessionProfile?.(sessionId) ? "keep" : "stoppable";
+        } catch {
+          return "keep";
+        }
+      },
+      stopTurn: async (sessionId) => {
+        const run = this.activeRunControllers.get(sessionId);
+        await this.abortSession(sessionId, undefined, { forImageBudget: true });
+        if (run) await settleByDeadline(() => run.completion, createDeadline(30_000));
+      },
+      finish: (sessionId, session, { stopped, continuation, attention }) => {
+        if (stopped) this.sessionRunner.discardHeldTurn(sessionId);
+        this.sessionOverlayBusyReasons.delete(sessionId);
+        let needsAttention = attention === true;
+        if (continuation && this.sessionObjects.get(sessionId) === session && !this.shuttingDown) {
+          try {
+            const mode = this.sessionRunner.getSessionAgentMode(sessionId);
+            this.startWork(sessionId, continuation.prompt, undefined, { promptSource: "system", ...(mode ? { mode } : {}) });
+          } catch (error) {
+            console.warn(`[image-budget] [${sessionId.slice(0, 8)}] Could not continue the paused turn:`, error instanceof Error ? error.message : error);
+            needsAttention = true;
+          }
+        } else if (continuation) {
+          needsAttention = true;
+        }
+        if (needsAttention) this.markSessionAttention(sessionId);
+        this.sessionRunner.followRuntimeTurn(sessionId);
+        this.flushPendingSessionEviction(sessionId);
+      },
+      recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
+    });
   }
 
   /** The conversation may no longer contain the last block, so the next message resends everything. */
@@ -5939,6 +6007,8 @@ export class SessionManager {
       };
     } finally {
       this.sessionOverlayBusyReasons.delete(sessionId);
+      // A switch to a model with an image ceiling may leave the conversation over it.
+      setImmediate(() => this.imageBudget.sessionIdle(sessionId));
       this.sessionRunner.followRuntimeTurn(sessionId);
       this.flushPendingSessionEviction(sessionId);
       this.scheduleCacheOperation(

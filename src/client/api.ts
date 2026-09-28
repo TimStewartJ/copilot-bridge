@@ -1,4 +1,5 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
+import type { ImageBudgetSettings } from "../shared/image-budget.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SubagentSettings } from "../shared/subagent-settings.js";
@@ -2310,6 +2311,7 @@ export interface AppSettings {
   subagents?: SubagentSettings;
   computerUse?: ComputerUseSettings;
   helm?: HelmSettings;
+  imageBudget?: ImageBudgetSettings;
 }
 
 export type AppSettingsUpdates = Partial<AppSettings>;
