@@ -205,9 +205,11 @@ function assertBridgePrompt(prompt: string, model: string, promptProfile: Prompt
   expect(prompt).not.toMatch(/Co-authored-by/i);
 
   const lifecycle = prompt.indexOf("**Sub-agent lifecycle**");
+  const askUserContext = prompt.indexOf("<ask_user_context>");
   const browser = prompt.indexOf("<browser_escalation>");
   expect(lifecycle).toBeGreaterThan(-1);
-  expect(browser).toBeGreaterThan(lifecycle);
+  expect(askUserContext).toBeGreaterThan(lifecycle);
+  expect(browser).toBeGreaterThan(askUserContext);
   expect(browser).toBeLessThan(prompt.indexOf("<system_notifications>"));
 
   expect(prompt).not.toContain("Respond concisely to the user");

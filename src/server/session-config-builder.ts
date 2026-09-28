@@ -24,6 +24,7 @@ import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import {
   AGENT_LIFECYCLE_GUIDANCE,
   ASK_OR_PROCEED_GUIDANCE,
+  ASK_USER_CONTEXT_GUIDANCE,
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
   COMPUTER_USE_OFF_GUIDANCE,
@@ -446,11 +447,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
   sections.last_instructions = { action: removeConciseReplyDirective };
 
-  // Tighten the SDK's native task/write_agent contract and teach web_fetch escalation
-  // without replacing the broader per-tool guidance.
+  // Tighten the SDK's native task/write_agent contract, make ask_user forms carry their own
+  // context, and teach web_fetch escalation without replacing the broader per-tool guidance.
   sections.tool_instructions = {
     action: "append",
-    content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
+    content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
   };
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers

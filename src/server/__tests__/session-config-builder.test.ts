@@ -387,6 +387,8 @@ describe("session-config-builder", () => {
       content: expect.stringContaining('mode "sync" are one-shot'),
     });
     expect(cfg.systemMessage.sections.tool_instructions.content).toContain("<browser_escalation>");
+    expect(cfg.systemMessage.sections.tool_instructions.content).toContain("<ask_user_context>");
+    expect(cfg.systemMessage.sections.tool_instructions.content).toContain("The user cannot see your thinking.");
     // Only real SDK section IDs: unknown IDs are appended wherever the runtime chooses.
     expect(Object.keys(cfg.systemMessage.sections).every((id) => id in SYSTEM_MESSAGE_SECTIONS)).toBe(true);
     expect(cfg.coauthorEnabled).toBe(false);
