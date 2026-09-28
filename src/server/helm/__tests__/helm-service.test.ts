@@ -1,6 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
+import { createSettingsStore, SettingsValidationError } from "../../settings-store.js";
+import { HELM_SETTINGS_DEFAULTS } from "../../../shared/helm-settings.js";
+import { createHelmRouter } from "../helm-router.js";
 import type { AppContext } from "../../app-context.js";
 import { createTestBus, makeTestDir, setupTestDb } from "../../__tests__/helpers.js";
 import { HELM_POLICY, HelmError, HelmService } from "../helm-service.js";
@@ -68,6 +73,91 @@ function createHarness() {
 }
 
 describe("HelmService conversations", () => {
+  it("keeps settings and static voices available when optional model metadata fails", async () => {
+    const { helm, ctx, sessionManager } = createHarness();
+    ctx.settingsStore = createSettingsStore(setupTestDb());
+    await helm.patchSettings({ model: "claude-opus-5" });
+    sessionManager.listModels.mockRejectedValue(new Error("SDK unavailable"));
+    const app = express().use(express.json()).use("/api/helm", createHelmRouter(helm));
+    const read = await request(app).get("/api/helm/settings").expect(200);
+    expect(read.body.settings.model).toBe("claude-opus-5");
+    expect(read.body.voices).toContainEqual(expect.objectContaining({ id: "af_heart", name: expect.any(String) }));
+    expect(read.body).not.toHaveProperty("models");
+    expect(read.body.modelsError).toContain("unavailable");
+    const saved = await request(app).patch("/api/helm/settings").send({ ...read.body.settings, patience: 0.7 }).expect(200);
+    expect(saved.body.settings.patience).toBe(0.7);
+    await request(app).patch("/api/helm/settings").send({ model: "gpt-6-luna" }).expect(503);
+    expect((await helm.getSettings()).settings.model).toBe("claude-opus-5");
+    await request(app).patch("/api/helm/settings").send({ model: "" }).expect(200);
+    helm.dispose();
+  });
+
+  it("accepts the hub's exact eleven-field fixture and returns it unchanged", async () => {
+    const { helm, ctx } = createHarness();
+    ctx.settingsStore = createSettingsStore(setupTestDb());
+    const app = express().use(express.json()).use("/api/helm", createHelmRouter(helm));
+    const fixture = {
+      model: "", typedReasoningEffort: "high", spokenReasoningEffort: "low",
+      glossary: "SELFTEST names", voice: "af_heart", speed: 1.15, patience: 0.7,
+      bargeIn: false, announce: "off", echoSafe: true, transport: "http",
+    };
+    expect(Object.keys(fixture)).toHaveLength(11);
+    const saved = await request(app).patch("/api/helm/settings").send(fixture).expect(200);
+    expect(saved.body.settings).toEqual(fixture);
+    expect(saved.body.schemaVersion).toBe(1);
+    expect((await request(app).get("/api/helm/settings").expect(200)).body.settings).toEqual(fixture);
+    helm.dispose();
+  });
+
+  it("round-trips the complete dedicated settings contract without touching unrelated settings", async () => {
+    const { helm, ctx, sessionManager } = createHarness();
+    const db = setupTestDb();
+    ctx.settingsStore = createSettingsStore(db);
+    ctx.settingsStore.updateSettings({ model: "claude-opus-5", theme: "dark", helm: { glossary: "existing names" } });
+    const app = express().use(express.json()).use("/api/helm", createHelmRouter(helm));
+    const state = await request(app).get("/api/helm").expect(200);
+    expect(state.body.settingsSchemaVersion).toBe(1);
+    expect(sessionManager.listModels).not.toHaveBeenCalled();
+    const initial = await request(app).get("/api/helm/settings").expect(200);
+    expect(initial.body).toMatchObject({ schemaVersion: 1, settings: { ...HELM_SETTINGS_DEFAULTS, glossary: "existing names" } });
+    const desired = {
+      model: "claude-opus-5", typedReasoningEffort: "high", spokenReasoningEffort: "low",
+      glossary: "Exact names\nTether", voice: "bm_george", speed: 1.4, patience: 0.85,
+      bargeIn: false, announce: "all", echoSafe: false, transport: "http",
+    };
+    const saved = await request(app).patch("/api/helm/settings").send(desired).expect(200);
+    expect(saved.body).toMatchObject({ schemaVersion: 1, settings: desired });
+    ctx.settingsStore = createSettingsStore(db);
+    expect((await request(app).get("/api/helm/settings").expect(200)).body).toEqual(saved.body);
+    await request(app).patch("/api/helm/settings").send({ patience: 0 }).expect(200);
+    expect((await helm.getSettings()).settings).toEqual({ ...desired, patience: 0 });
+    expect(ctx.settingsStore.getSettings()).toMatchObject({ model: "claude-opus-5", theme: "dark" });
+    expect(() => ctx.settingsStore.updateSettings({ helm: { speed: 9 } })).toThrow(SettingsValidationError);
+    await helm.createConversation();
+    expect(sessionManager.createSession).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-opus-5", reasoningEffort: "high" }));
+    expect(helm.getTurnReasoningEffort("spoken")).toBe("low");
+    helm.dispose();
+  });
+
+  it("rejects invalid flat patches atomically", async () => {
+    const { helm, ctx } = createHarness();
+    ctx.settingsStore = createSettingsStore(setupTestDb());
+    const app = express().use(express.json()).use("/api/helm", createHelmRouter(helm));
+    const invalid = [
+      [], { settings: {} }, { unknown: true }, { schemaVersion: 1 }, { configured: true },
+      { speed: 0.74 }, { speed: 1.41 }, { patience: -0.1 }, { patience: 1.01 },
+      { echoSafe: "false" }, { bargeIn: 1 }, { announce: "none" }, { transport: "udp" },
+      { voice: "missing_voice" }, { model: "missing-model" }, { glossary: "x".repeat(2001) },
+      { typedReasoningEffort: "" }, { spokenReasoningEffort: null }, { voice: "bm_george", speed: "1" },
+    ];
+    for (const patch of invalid) {
+      const response = await request(app).patch("/api/helm/settings").send(patch).expect(400);
+      expect(response.body.error).toBeTruthy();
+      expect(ctx.settingsStore.getSettings().helm).toBeUndefined();
+    }
+    helm.dispose();
+  });
+
   it("asks for max effort when typing and medium when speaking, until settings say otherwise", async () => {
     const { helm, ctx } = createHarness();
     expect(helm.getTurnReasoningEffort("typed")).toBe("max");

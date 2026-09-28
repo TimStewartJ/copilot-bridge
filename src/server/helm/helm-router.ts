@@ -19,6 +19,24 @@ function optionalString(value: unknown): string | undefined {
 export function createHelmRouter(helm: HelmService): express.Router {
   const router = express.Router();
 
+  router.get("/settings", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    try {
+      res.json(await helm.getSettings());
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  router.patch("/settings", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    try {
+      res.json(await helm.patchSettings(req.body));
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
   router.get("/", async (_req, res) => {
     try {
       res.json(await helm.getState());

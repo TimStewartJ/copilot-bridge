@@ -229,7 +229,7 @@ loaded/empty/error states, both themes and phone/container widths before publish
   one tap away in the mobile header. Row actions stay in the shared overflow menu or the opened
   row instead of crowding phone layouts.
 - Settings save as they change, through the one settings writer (`lib/settings-writer.ts`) that
-  Settings, Helm and model presets share. It sends one PATCH at a time with only the changed
+  Settings and model presets share. It sends one PATCH at a time with only the changed
   top-level keys, shows the change at once, puts a value back when the server rejects it, asks the
   server what it holds after a lost response, and offers Undo for the last save and Retry for a
   failure that can be retried. The header says Saving…, Saved or what failed; a control whose value
@@ -240,6 +240,8 @@ loaded/empty/error states, both themes and phone/container widths before publish
   metadata arriving is a read, never an implicit edit. Missing/error states offer a real retry.
 - Labels must be associated with their input, select or textarea. Field errors are described by the
   affected control, and native dropdown affordances remain visible.
+- Helm settings use their own endpoint (`helm/helm-settings.ts`), shared with Tether: flat partial
+  patches sent one at a time, the server's answer shown, and read/save errors shown in the sheet.
 
 ## Copilot usage presentation
 

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "../api";
+import { patchHelmSettings, useHelmPreferences } from "./helm-settings";
 
 export interface HelmConversation {
   sessionId: string;
@@ -18,6 +19,7 @@ export interface HelmConversation {
 export type HelmTurnMode = "typed" | "spoken";
 
 export interface HelmState {
+  settingsSchemaVersion?: 1;
   current: HelmConversation | null;
   /** Offered when Helm opened fresh: the most recent conversation with history. */
   resumable: HelmConversation | null;
@@ -66,28 +68,12 @@ export function useInvalidateHelmState() {
   return useCallback(() => queryClient.invalidateQueries({ queryKey: helmStateQueryKey }), [queryClient]);
 }
 
-const HELM_MODEL_STORAGE_KEY = "bridge.helm.model";
-
-/** Model for new Helm conversations; empty means let the server pick a fast one. */
-export function useHelmModelPreference(): [string, (model: string) => void] {
-  const [model, setModel] = useState("");
-  useEffect(() => {
-    try {
-      setModel(window.localStorage.getItem(HELM_MODEL_STORAGE_KEY) ?? "");
-    } catch {
-      // Storage may be unavailable; Auto is a fine default.
-    }
-  }, []);
-  const update = useCallback((next: string) => {
-    setModel(next);
-    try {
-      if (next) window.localStorage.setItem(HELM_MODEL_STORAGE_KEY, next);
-      else window.localStorage.removeItem(HELM_MODEL_STORAGE_KEY);
-    } catch {
-      // Ignore storage failures.
-    }
-  }, []);
-  return [model, update];
+/** Model for new Helm conversations, saved on this Bridge; empty means let the server pick a fast one. */
+export function useHelmModelPreference(): [string, (model: string) => void, string | null] {
+  const preferences = useHelmPreferences();
+  // Save failures reach the caller through preferences.error.
+  const update = useCallback((next: string) => void patchHelmSettings({ model: next }).catch(() => undefined), []);
+  return [preferences.data?.settings.model ?? "", update, preferences.error];
 }
 
 /** "in 13d", "today": how long until retention removes a conversation. */
