@@ -109,6 +109,8 @@ export interface AgentTurnHandle {
 
 export interface VoiceAgentApi {
   startTurn(input: AgentTurnInput, listener: AgentTurnListener): AgentTurnHandle;
+  /** A short spoken lead-in for a user turn while it runs, or undefined to say nothing. */
+  leadIn?(text: string): Promise<string | undefined>;
 }
 
 export type VoiceServerEvent =
@@ -206,6 +208,8 @@ interface GenerationState {
   chunkCount: number;
   textChunkCount: number;
   fillerChunkId?: number;
+  /** A lead-in is being written; tool starts don't speak a canned filler meanwhile. */
+  leadInPending?: boolean;
   firstSpeechAudioSent: boolean;
   chunks: Map<number, string>;
   queue: Array<{ chunkId: number; text: string }>;
@@ -772,6 +776,17 @@ export class VoiceConversation {
         gen.fillerTimer = undefined;
         if (this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen, "slow reply");
       }, delay);
+      if (this.agent.leadIn) {
+        gen.leadInPending = true;
+        const startedAt = this.timers.now();
+        this.agent.leadIn(input.text).then((text) => {
+          gen.leadInPending = false;
+          this.log("lead_in", { genId: gen.id, text: text ?? null, ms: Math.round(this.timers.now() - startedAt) });
+          if (text && this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen, "lead-in", text);
+        }, () => {
+          gen.leadInPending = false;
+        });
+      }
     }
     try {
       gen.handle = this.agent.startTurn(input, {
@@ -781,7 +796,7 @@ export class VoiceConversation {
         onToolStart: ({ toolCallId, name }) => {
           if (this.gen === gen && !gen.cancelled) {
             this.sink.send({ type: "tool", genId: gen.id, toolCallId, name, status: "running" });
-            this.maybeSpeakFiller(gen, name);
+            if (!gen.leadInPending) this.maybeSpeakFiller(gen, name);
           }
         },
         onToolEnd: ({ toolCallId, name, success }) => {
@@ -862,11 +877,11 @@ export class VoiceConversation {
     if (!gen.messageSpoke && gen.speech.withheld) this.enqueueChunk(gen, ON_SCREEN_PHRASE);
   }
 
-  private maybeSpeakFiller(gen: GenerationState, toolName: string): void {
+  private maybeSpeakFiller(gen: GenerationState, toolName: string, text?: string): void {
     if (gen.held || gen.fillerChunkId !== undefined || gen.chunkCount > 0 || gen.text.trim()) return;
     if (gen.kind !== "user" && gen.kind !== "continuation" && gen.kind !== "interrupted") return;
     if (INSTANT_TOOLS.has(toolName)) return;
-    const text = FILLER_PHRASES[this.fillerSeq++ % FILLER_PHRASES.length]!;
+    text ??= FILLER_PHRASES[this.fillerSeq++ % FILLER_PHRASES.length]!;
     gen.fillerChunkId = gen.chunkCount + 1;
     this.enqueueChunk(gen, text, { filler: true });
   }

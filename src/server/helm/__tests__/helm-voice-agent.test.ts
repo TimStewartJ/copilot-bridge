@@ -6,7 +6,12 @@ import { HelmVoiceAgent } from "../helm-voice-agent.js";
 
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 
-function createHarness(options: { busy?: boolean; snapshot?: () => Promise<string | undefined>; reasoningEffort?: () => string | undefined } = {}) {
+function createHarness(options: {
+  busy?: boolean;
+  snapshot?: () => Promise<string | undefined>;
+  reasoningEffort?: (userText?: string) => string | undefined;
+  talker?: { warm(): void; leadIn(text: string, lastReply?: string): Promise<string | undefined>; close(): Promise<void> };
+} = {}) {
   const listeners = new Set<(event: StreamEvent) => void>();
   let busy = options.busy ?? false;
   const sessionManager = {
@@ -33,6 +38,7 @@ function createHarness(options: { busy?: boolean; snapshot?: () => Promise<strin
     snapshot: options.snapshot ?? (async () => "nothing waiting on you; nothing running; no unread replies"),
     timeZone: "UTC",
     ...(options.reasoningEffort ? { resolveReasoningEffort: options.reasoningEffort } : {}),
+    ...(options.talker ? { talker: options.talker } : {}),
     busyWaitMs: 20,
     pollMs: 1,
   });
@@ -144,6 +150,48 @@ describe("HelmVoiceAgent", () => {
     expect(sessionManager.startWork.mock.calls[1]![3]).toEqual({ reasoningEffort: "high", promptSource: "system" });
     emit({ type: "done" });
     await announced.done;
+  });
+
+  it("chooses effort from what the user said, and not from Bridge updates", async () => {
+    const reasoningEffort = vi.fn((userText?: string) => (userText ? "medium" : "none"));
+    const { agent, sessionManager, emit } = createHarness({ reasoningEffort });
+    const spoken = createListener();
+    agent.startTurn({ kind: "user", text: "start a session" }, spoken.listener);
+    await vi.waitFor(() => expect(sessionManager.startWork).toHaveBeenCalledTimes(1));
+    emit({ type: "done" });
+    await spoken.done;
+    const announced = createListener();
+    agent.startTurn({ kind: "event", text: 'Session "Tellus" finished.' }, announced.listener);
+    await vi.waitFor(() => expect(sessionManager.startWork).toHaveBeenCalledTimes(2));
+    emit({ type: "done" });
+    await announced.done;
+    expect(reasoningEffort.mock.calls).toEqual([["start a session"], [undefined]]);
+  });
+
+  it("treats the runtime's empty-reply error as the silent answer it is", async () => {
+    const { agent, sessionManager, emit } = createHarness();
+    const { listener, done } = createListener();
+    agent.startTurn({ kind: "user", text: "okay" }, listener);
+    await vi.waitFor(() => expect(sessionManager.startWork).toHaveBeenCalledTimes(1));
+    emit({ type: "error", message: "No response was returned. Send your message again to retry." });
+    expect(await done).toEqual({ aborted: false });
+  });
+
+  it("asks the talker for a lead-in with Helm's last reply, and closes it on detach", async () => {
+    const talker = { warm: vi.fn(), leadIn: vi.fn(async () => "Let me check the car task."), close: vi.fn(async () => undefined) };
+    const { agent, sessionManager, emit } = createHarness({ talker });
+    void agent.warm();
+    expect(talker.warm).toHaveBeenCalled();
+    const first = createListener();
+    agent.startTurn({ kind: "user", text: "hi" }, first.listener);
+    await vi.waitFor(() => expect(sessionManager.startWork).toHaveBeenCalledTimes(1));
+    emit({ type: "delta", content: "Hello there." });
+    emit({ type: "done" });
+    await first.done;
+    expect(await agent.leadIn("anything from the car task?")).toBe("Let me check the car task.");
+    expect(talker.leadIn).toHaveBeenCalledWith("anything from the car task?", "Hello there.");
+    agent.detach();
+    expect(talker.close).toHaveBeenCalled();
   });
 
   it("passes a typed message's identity through so the chat can reconcile it", async () => {

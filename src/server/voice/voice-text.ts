@@ -180,7 +180,7 @@ export const ON_SCREEN_PHRASE = "I've put that on screen.";
 const SENTENCE_END_RE = /[.!?\u2026]+["')\]]*(?=\s)|\n+/g;
 const MIN_SENTENCE_CHARS = 12;
 const FIRST_CLAUSE_MIN = 15;
-const FIRST_CLAUSE_MAX = 90;
+const FIRST_CLAUSE_MAX = 45;
 const MAX_CHUNK_CHARS = 240;
 
 function splitAtClause(text: string, minChars: number, maxChars: number): [string, string] | undefined {
@@ -235,7 +235,7 @@ export function takeSpeechChunks(
       const split = splitAtClause(sentences[0]!, FIRST_CLAUSE_MIN, FIRST_CLAUSE_MAX);
       if (split) sentences.splice(0, 1, split[0], split[1]);
     } else if (sentences.length === 0 && rest.length >= 60) {
-      const clause = rest.match(/^([\s\S]{15,90}?[,;:\u2014\u2013])\s+/);
+      const clause = rest.match(/^([\s\S]{15,45}?[,;:\u2014\u2013])\s+/);
       if (clause) {
         sentences.push(clause[1]!.trim());
         rest = rest.slice(clause[0].length);
