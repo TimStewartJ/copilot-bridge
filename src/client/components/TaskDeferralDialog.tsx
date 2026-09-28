@@ -6,6 +6,7 @@ import { Button, FormRow, Notice, TextInput } from "../design/primitives";
 import { DS } from "../design/tokens";
 import { invalidateTaskChangeQueries } from "../lib/task-change-invalidation";
 import { toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
+import { haptic } from "../lib/haptics";
 
 export type DeferralTask = Pick<Task, "id" | "title" | "deferred" | "nextTouchAt">;
 
@@ -37,10 +38,12 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
     setPending(true);
     try {
       const updated = await patchTask(task.id, updates);
+      haptic("success");
       invalidateTaskChangeQueries(client, task.id);
       onSaved?.(updated);
       onClose();
     } catch (cause) {
+      haptic("error");
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPending(false);

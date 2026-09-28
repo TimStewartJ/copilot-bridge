@@ -11,10 +11,16 @@ import {
   type ReactNode,
 } from "react";
 import Toast, { type ToastData } from "./components/Toast";
+import { haptic } from "./lib/haptics";
 
 export type ToastInput = Omit<ToastData, "id" | "tone"> & {
   id?: string;
   tone?: ToastData["tone"];
+  /**
+   * Success and error toasts report the outcome of something you did, so on a phone app that offers
+   * haptics they come with the matching feedback. Pass false for a toast about something you did not do.
+   */
+  haptic?: boolean;
 };
 
 export interface ToastContextValue {
@@ -79,11 +85,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const showToast = useCallback((input: ToastInput) => {
     const id = input.id ?? nextToastId();
+    const { haptic: withHaptic = true, ...data } = input;
     const toast: ToastData = {
-      ...input,
+      ...data,
       id,
-      tone: input.tone ?? "success",
+      tone: data.tone ?? "success",
     };
+    if (withHaptic && !toast.loading && toast.tone !== "info") haptic(toast.tone);
     setToasts((prev) => {
       const withoutDuplicate = prev.filter((entry) => entry.id !== id);
       const next = [...withoutDuplicate, toast];

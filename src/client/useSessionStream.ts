@@ -25,6 +25,7 @@ import {
   type LiveReasoningBlock,
 } from "../shared/live-reasoning.js";
 import { keepEndingTurnItems } from "../shared/live-turn-retention.js";
+import { haptic } from "./lib/haptics";
 
 export type { LiveReasoningBlock };
 
@@ -963,6 +964,10 @@ export function useSessionStream(
       }
       if (eventType === "user_input_requested") {
         const request = normalizePendingUserInputRequest(event, optionalString(event.timestamp));
+        // A new question in the chat you are watching is felt, so you can look away while it works.
+        if (request && !streamStateRef.current.pendingUserInputs.some((entry) => entry.requestId === request.requestId)) {
+          haptic("warning");
+        }
         if (request) setStreamState((current) => ({
           ...current,
           pendingUserInputs: upsertByRequestId(current.pendingUserInputs, request),
@@ -981,6 +986,9 @@ export function useSessionStream(
       }
       if (eventType === "elicitation_requested") {
         const request = normalizePendingElicitationRequest(event, optionalString(event.timestamp));
+        if (request && !streamStateRef.current.pendingElicitations.some((entry) => entry.requestId === request.requestId)) {
+          haptic("warning");
+        }
         if (request) setStreamState((current) => ({
           ...current,
           pendingElicitations: upsertByRequestId(current.pendingElicitations, request),
@@ -1076,6 +1084,10 @@ export function useSessionStream(
           });
         });
         report("stream.terminal", { terminalType: eventType, source: "event" });
+        // The run you are watching ending is felt: done as success, a failure as an error. Stopping it
+        // yourself was already felt on the stop button, and a shutdown is not about this chat.
+        if (eventType === "done") haptic("success");
+        else if (eventType === "error") haptic("error");
         onSettledRef.current();
         if (eventType === "done") onTitleChangedRef.current();
       }

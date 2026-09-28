@@ -83,6 +83,26 @@ A `StatusIcon` names itself to assistive technology; pass `decorative` when adja
 says the state. Counts on navigation use `CountBadge` with `accent` when something needs an answer
 and `unread` otherwise, matching the glyphs.
 
+## Haptics
+
+Inside a phone app that offers haptic feedback (Tether on iPhone hosts the Bridge in a web view and
+listens for a `bridgeHaptic` WebKit message), `haptic(kind)` from `lib/haptics.ts` asks the phone to
+buzz. Everywhere else it does nothing. Follow iOS: feedback marks something happening, not a tap.
+
+| Kind | For |
+| --- | --- |
+| `selection` | A held value changes: `Switch`, `SegmentedControl`, a `ChoiceButton` with `selected`, the Autopilot toggle, unchecking an item, the microphone stopping |
+| `light` | Something leaves or lands: Send, checking an item off, a copy, the microphone starting, declining a form |
+| `medium` | A gesture reaches its trigger: pull-to-refresh armed, a long press opening its menu, Stop |
+| `success` | An outcome you asked for: a question answered, a run you are watching finishing, a success toast, a task finished or set aside |
+| `warning` | The chat you are watching asks you a question |
+| `error` | Something failed: an error toast, a message that did not send, a run error, a failed answer, save or check-off |
+
+The primitives above already tick, and `showToast` gives success and error toasts their feedback
+(`haptic: false` opts a toast out when it reports something the reader did not do). Give none to
+navigation, opening sheets, links, scrolling, typing, streaming output or background refreshes.
+Calls made in one task merge into the strongest, so a copy and its "Copied" toast buzz once.
+
 ## Surface hierarchy
 
 | Level | Purpose | Recipe |

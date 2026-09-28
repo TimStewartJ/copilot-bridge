@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from "react";
+import { haptic } from "../lib/haptics";
 
 interface MenuState<T> {
   x: number;
@@ -88,6 +89,7 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
         timer.current = setTimeout(() => {
           timer.current = null;
           triggered.current = true;
+          haptic("medium");
           setLongPressTarget(null);
           setMenu({ x: touch.clientX, y: touch.clientY, id });
         }, LONG_PRESS_MS);

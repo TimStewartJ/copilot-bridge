@@ -4,6 +4,7 @@ import { patchTask, type TaskPatch } from "../api";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { outcomePatches, OUTCOME_DONE, setAsidePatches, type TaskOutcome } from "../lib/task-state-ui";
 import { claimTaskCompletionFeedback } from "../lib/task-completion-feedback";
+import { haptic } from "../lib/haptics";
 
 export interface OutcomeReceipt { message: string; undo: Array<{ id: string; patch: TaskPatch }> }
 
@@ -32,8 +33,10 @@ export function useTaskOutcomes() {
         undo.push({ id: row.id, patch: patches.undo });
       }
       const subject = rows.length === 1 ? `“${rows[0].title}”` : `${rows.length} tasks`;
+      haptic("success");
       setReceipt({ message: `${OUTCOME_DONE[outcome]}: ${subject}`, undo });
     } catch (cause) {
+      haptic("error");
       setError(`${cause instanceof Error ? cause.message : String(cause)}${undo.length ? ` (${undo.length} of ${rows.length} changed)` : ""}`);
       if (undo.length) setReceipt({ message: `${OUTCOME_DONE[outcome]}: ${undo.length} of ${rows.length} tasks`, undo });
     } finally {
