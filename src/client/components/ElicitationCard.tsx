@@ -11,6 +11,7 @@ import type {
 import PromptMarkdown from "./chat/PromptMarkdown";
 import { DS, cx } from "../design/tokens";
 import { Button, ChoiceButton, Panel, TextArea, TextInput } from "../design/primitives";
+import { haptic } from "../lib/haptics";
 
 const CHAT_RAIL_CLASS = DS.layout.readingColumn;
 
@@ -222,9 +223,11 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
     setError(null);
     try {
       await onSubmit(request.requestId, payload);
+      haptic(payload.action === "accept" ? "success" : "light");
       setSubmitted(true);
     } catch (submitError) {
       submittingRef.current = false;
+      haptic("error");
       setError(getSubmitError(submitError));
     } finally {
       setSubmitting(false);

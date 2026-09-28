@@ -18,6 +18,7 @@ import {
 import { DS, cx } from "../design/tokens";
 import { IdentitySwatch } from "../design/primitives";
 import { prefersReducedMotion } from "../lib/motion";
+import { haptic } from "../lib/haptics";
 
 // ── Variant-specific props ──────────────────────────────────────
 
@@ -116,6 +117,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
   }, [editText, checklistItem, onUpdate]);
 
   const handleToggle = useCallback(async () => {
+    haptic(checklistItem.done ? "selection" : "light");
     if (props.onToggle) {
       props.onToggle();
     } else {
@@ -124,6 +126,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
       try {
         await patchChecklistItem(checklistItem.id, { done: !checklistItem.done });
       } catch {
+        haptic("error");
         onUpdate(snapshot);
       }
     }

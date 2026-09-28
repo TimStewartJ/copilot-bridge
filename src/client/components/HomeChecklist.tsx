@@ -4,6 +4,7 @@ import { patchChecklistItem } from "../api";
 import type { HomeAction, HomeActionCounts } from "../../shared/home";
 import { Button, EmptyHint, IconButton, IdentitySwatch, Section, StatusIcon } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
+import { haptic } from "../lib/haptics";
 
 /** How long a completed item stays on screen, ticked, with an Undo. */
 export const CHECKLIST_UNDO_MS = 6000;
@@ -99,7 +100,7 @@ export default function HomeChecklist({ mode, grouping = "task", items, counts, 
   const run = useCallback(async (id: string, work: () => Promise<void>) => {
     setBusy(set => new Set(set).add(id));
     try { await work(); }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    catch (error) { haptic("error"); onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(set => { const copy = new Set(set); copy.delete(id); return copy; }); }
   }, [onError]);
 
@@ -107,6 +108,7 @@ export default function HomeChecklist({ mode, grouping = "task", items, counts, 
   const doneIds = new Set(recent.map(entry => entry.item.id));
 
   function complete(item: HomeAction) {
+    haptic("light");
     const index = shown.findIndex(candidate => candidate.id === item.id);
     setRecent(list => [...list.filter(entry => entry.item.id !== item.id), { item, index, expires: Date.now() + CHECKLIST_UNDO_MS }]);
     void run(item.id, async () => {
@@ -116,6 +118,7 @@ export default function HomeChecklist({ mode, grouping = "task", items, counts, 
     });
   }
   function undo(item: HomeAction) {
+    haptic("selection");
     void run(item.id, async () => {
       await patchChecklistItem(item.id, { done: false });
       setRecent(list => list.filter(entry => entry.item.id !== item.id));

@@ -31,6 +31,7 @@ import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
 import { DS, cx } from "../design/tokens";
 import { AutopilotIcon } from "../design/primitives";
+import { haptic } from "../lib/haptics";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 pb-3 pt-1 sm:px-4 md:px-6 md:pb-4 lg:px-8";
@@ -290,6 +291,24 @@ export default function ChatInput({
     }
   }, [activeVoiceJob, updateRecordingStartMode, voice.phase]);
 
+  // The microphone starting and stopping is felt, so you know it is listening without looking.
+  const recording = voice.phase === "recording";
+  const wasRecordingRef = useRef(recording);
+  useEffect(() => {
+    if (recording === wasRecordingRef.current) return;
+    wasRecordingRef.current = recording;
+    haptic(recording ? "light" : "selection");
+  }, [recording]);
+
+  // A voice error that appears is felt too; one that was already there when you open a chat is not.
+  const voiceFailed = Boolean(voiceJobError || voice.error);
+  const voiceFailedRef = useRef({ composerKey, failed: voiceFailed });
+  useEffect(() => {
+    const previous = voiceFailedRef.current;
+    voiceFailedRef.current = { composerKey, failed: voiceFailed };
+    if (voiceFailed && !previous.failed && previous.composerKey === composerKey) haptic("error");
+  }, [composerKey, voiceFailed]);
+
   useEffect(() => {
     const pendingAcceptedHandoff = updateAcceptedFlashHandoff(
       previousComposerKeyRef.current,
@@ -543,6 +562,7 @@ export default function ChatInput({
     const selectedMode = onAbort ? undefined : mode;
 
     onClearVoiceJobError?.(composerKey);
+    haptic("light");
     if (selectedMode) {
       onSend(text || "(attachment)", cleanAttachmentsOrUndefined, selectedMode);
     } else {
@@ -635,7 +655,7 @@ export default function ChatInput({
   const submitControlTitle = showAbortControl ? "Stop generating" : sendTitle;
   const modeMenuBindings = bindSendModeMenu(
     "send-mode",
-    showAbortControl ? () => onAbort?.() : () => handleSend(nextSendMode),
+    showAbortControl ? () => { haptic("medium"); onAbort?.(); } : () => handleSend(nextSendMode),
   );
   const handleMenuSend = useCallback((mode: SendMode) => {
     closeSendModeMenu();
@@ -833,7 +853,10 @@ export default function ChatInput({
           {showAutopilotToggle && (
             <button
               type="button"
-              onClick={() => setChosenSendMode(autopilotNext ? "interactive" : "autopilot")}
+              onClick={() => {
+                haptic("selection");
+                setChosenSendMode(autopilotNext ? "interactive" : "autopilot");
+              }}
               aria-pressed={autopilotNext}
               aria-label="Autopilot"
               title={autopilotNext
