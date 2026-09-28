@@ -17,6 +17,8 @@ import { KOKORO_VOICES } from "../voice/voice-catalog.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import type { SessionConfigProfile } from "../session-manager.js";
 import { parseWorkspaceYamlSessionName } from "../session-workspace-yaml.js";
+import { REASONING_EFFORT_LEVELS } from "../../shared/reasoning-effort.js";
+import { isActionRequest } from "./helm-prompt.js";
 import { applyHelmSessionProfile, selectHelmModel } from "./helm-session-profile.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
 import {
@@ -44,11 +46,15 @@ export type HelmTurnMode = "typed" | "spoken";
  * Reasoning effort per mode, used when Settings don't say otherwise. Typed turns can afford to
  * think; spoken turns keep someone waiting in silence, so they think less. At xhigh the wait from
  * the end of speech to the first spoken word was 5.3 s at the median and up to 19 s (24 Sep 2026).
+ * Replays on 28 Sep 2026 (gpt-6-luna): about 1.4 s per model step at none, 3.1 s at medium, but
+ * below medium Helm acted on an ambiguous task name instead of asking which one. So spoken
+ * questions think at none and spoken requests to change something at least at medium.
  */
 export const HELM_DEFAULT_REASONING_EFFORTS: Record<HelmTurnMode, string> = {
   typed: HELM_SETTINGS_DEFAULTS.typedReasoningEffort,
   spoken: HELM_SETTINGS_DEFAULTS.spokenReasoningEffort,
 };
+export const HELM_ACTION_REASONING_EFFORT = "medium";
 
 export interface HelmConversationView {
   sessionId: string;
@@ -213,11 +219,17 @@ export class HelmService implements HelmToolRuntime {
     return this.profile;
   }
 
-  /** The effort a turn in this mode asks for. Read per turn, so a settings change applies to the next message. */
-  getTurnReasoningEffort(mode: HelmTurnMode): string {
+  /**
+   * The effort a turn in this mode asks for. Read per turn, so a settings change applies to the next
+   * message. A spoken request to change something thinks at least at HELM_ACTION_REASONING_EFFORT.
+   */
+  getTurnReasoningEffort(mode: HelmTurnMode, userText?: string): string {
     const settings = this.ctx.settingsStore.getSettings().helm;
-    const configured = mode === "spoken" ? settings?.spokenReasoningEffort : settings?.typedReasoningEffort;
-    return configured ?? HELM_DEFAULT_REASONING_EFFORTS[mode];
+    const configured = (mode === "spoken" ? settings?.spokenReasoningEffort : settings?.typedReasoningEffort) ?? HELM_DEFAULT_REASONING_EFFORTS[mode];
+    const rank = (level: string) => (REASONING_EFFORT_LEVELS as readonly string[]).indexOf(level);
+    return mode === "spoken" && userText && isActionRequest(userText) && rank(configured) < rank(HELM_ACTION_REASONING_EFFORT)
+      ? HELM_ACTION_REASONING_EFFORT
+      : configured;
   }
 
   // ── Hands-free binding and watched sessions (HelmToolRuntime) ──

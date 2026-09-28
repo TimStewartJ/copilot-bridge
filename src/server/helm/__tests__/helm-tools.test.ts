@@ -224,6 +224,31 @@ describe("Helm tools", () => {
     expect(result.sessions[0]).toMatchObject({ ref: "aaaaaaaa", task: "Helm Task Stats and Talk", matched: "Apple integration", matchCount: 3 });
   });
 
+  it("find drops filler words before retrying, so \"car related task\" searches for car", async () => {
+    const { ctx } = createContext();
+    const empty = { items: [], total: 0 };
+    const search = vi.fn(async (_request: { q: string; anyWord?: boolean }) => ({
+      tasks: empty, chats: empty, docs: empty, coverage: { state: "ready" as const, indexedSessions: 1, totalSessions: 1, errors: [] },
+    }));
+    (ctx as { searchIndex?: unknown }).searchIndex = { search };
+    await tool(ctx, createFacade(), "find").run({ query: "the car related task" });
+    expect(search.mock.calls.map(([request]) => [request.q, request.anyWord ?? false])).toEqual([["the car related task", false], ["car", false]]);
+  });
+
+  it("reads a task's most recent session in one step", async () => {
+    const { ctx } = createContext();
+    const search = vi.fn(async () => ({
+      tasks: { items: [{ taskId: "task-1", title: "Tellus Expeditions", snippet: "", archived: false }], total: 1 },
+      chats: { items: [], total: 0 }, docs: { items: [], total: 0 },
+      coverage: { state: "ready" as const, indexedSessions: 1, totalSessions: 1, errors: [] },
+    }));
+    (ctx as { searchIndex?: unknown }).searchIndex = { search };
+    const result = await tool(ctx, createFacade(), "read_session").run({ task: "the tellus task" });
+    expect(search.mock.calls[0]).toEqual([expect.objectContaining({ q: "tellus", kind: "task" })]);
+    expect(result).toMatchObject({ task: "Tellus Expeditions", taskLink: "bridge://task/task-1", title: "Tellus worldgen transition fix", latestReply: "Fixed the quantization bug and added tests." });
+    expect((await tool(ctx, createFacade(), "read_session").run({ task: "task-1" })).title).toBe("Tellus worldgen transition fix");
+  });
+
   it("find fails clearly when this Bridge has no search index", async () => {
     const { ctx } = createContext();
     const result = await tool(ctx, createFacade(), "find").run({ query: "tellus" });

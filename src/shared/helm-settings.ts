@@ -15,7 +15,7 @@ export interface UnifiedHelmSettings {
 export const HELM_SETTINGS_DEFAULTS: UnifiedHelmSettings = {
   model: "",
   typedReasoningEffort: "max",
-  spokenReasoningEffort: "medium",
+  spokenReasoningEffort: "none",
   glossary: "",
   voice: "af_heart",
   speed: 1.05,

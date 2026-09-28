@@ -45,6 +45,11 @@ describe("takeSpeechChunks", () => {
     expect(result.rest).toBe("starting with the deploy check that");
   });
 
+  it("keeps the first spoken clause short so audio starts sooner", () => {
+    const result = takeSpeechChunks("I checked the Tether task for you, and both sessions are still running. ", { firstChunk: true });
+    expect(result.chunks[0]).toBe("I checked the Tether task for you,");
+  });
+
   it("flushes the tail", () => {
     expect(takeSpeechChunks("Sure", { firstChunk: true, flush: true }).chunks).toEqual(["Sure"]);
   });

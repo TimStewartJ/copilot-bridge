@@ -5,6 +5,7 @@ import type { StreamEvent } from "../event-bus.js";
 import type { StartWorkOptions } from "../session-runner.js";
 import type { AgentTurnHandle, AgentTurnInput, AgentTurnListener, VoiceAgentApi } from "../voice/voice-conversation.js";
 import { composeHandsFreePrompt } from "./helm-prompt.js";
+import type { HelmTalker } from "./helm-talker.js";
 
 export interface HelmVoiceSessionManager {
   startWork(sessionId: string, prompt: string, attachments?: undefined, options?: StartWorkOptions): void;
@@ -36,8 +37,10 @@ export interface HelmVoiceAgentOptions {
   snapshot?: () => Promise<string | undefined>;
   /** The user's names list from Helm settings. Read per turn; sent when it is new to this conversation. */
   glossary?: () => string | undefined;
-  /** Reasoning effort for turns answered out loud. Read per turn so a settings change applies at once. */
-  resolveReasoningEffort?: () => string | undefined;
+  /** Reasoning effort for a turn answered out loud, given what the user said. Read per turn so a settings change applies at once. */
+  resolveReasoningEffort?: (userText?: string) => string | undefined;
+  /** Speaks a quick lead-in while the turn runs. */
+  talker?: Pick<HelmTalker, "warm" | "leadIn" | "close">;
   timeZone?: string;
   onTiming?: (timing: HelmVoiceAgentTiming) => void;
   logger?: Pick<Console, "log" | "warn">;
@@ -63,6 +66,7 @@ interface ActiveTurn {
   streamedSinceBoundary: number;
   toolCalls: string[];
   toolNames: Map<string, string>;
+  reply: string;
 }
 
 const DEFAULT_BUSY_WAIT_MS = 4_000;
@@ -78,6 +82,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
   private queue: Promise<void> = Promise.resolve();
   private lastSnapshot?: string;
   private lastGlossary?: string;
+  private lastReply?: string;
   private detached = false;
   readonly sessionId: string;
   readonly timeZone: string;
@@ -89,9 +94,14 @@ export class HelmVoiceAgent implements VoiceAgentApi {
 
   /** Resumes the session ahead of the first turn to cut first-reply latency. */
   warm(): Promise<unknown> {
+    this.options.talker?.warm();
     return this.options.sessionManager.warmSession(this.sessionId).catch((error) => {
       this.options.logger?.warn(`[helm-voice] Warmup failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  leadIn(text: string): Promise<string | undefined> {
+    return this.options.talker?.leadIn(text, this.lastReply) ?? Promise.resolve(undefined);
   }
 
   startTurn(input: AgentTurnInput, listener: AgentTurnListener): AgentTurnHandle {
@@ -112,6 +122,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
       streamedSinceBoundary: 0,
       toolCalls: [],
       toolNames: new Map(),
+      reply: "",
     };
     const previous = this.queue;
     this.queue = previous.then(() => this.runTurn(turn)).catch(() => undefined);
@@ -124,6 +135,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
    */
   detach(): void {
     this.detached = true;
+    void this.options.talker?.close();
     const turn = this.active;
     if (turn && !turn.done) this.finishTurn(turn, { aborted: true });
   }
@@ -146,6 +158,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
     turn.unsubscribe?.();
     turn.unsubscribe = undefined;
     if (this.active === turn) this.active = undefined;
+    if (turn.reply.trim()) this.lastReply = turn.reply.trim();
     turn.settle();
     const now = performance.now();
     const runAt = turn.runAt ?? now;
@@ -230,7 +243,8 @@ export class HelmVoiceAgent implements VoiceAgentApi {
 
     this.active = turn;
     try {
-      const reasoningEffort = this.options.resolveReasoningEffort?.();
+      const fromUser = turn.input.kind !== "event" && turn.input.kind !== "greeting";
+      const reasoningEffort = this.options.resolveReasoningEffort?.(fromUser ? turn.input.text : undefined);
       this.options.sessionManager.startWork(this.sessionId, composed.prompt, undefined, {
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(composed.hidden ? { promptSource: "system" as const } : {}),
@@ -259,6 +273,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
         if (typeof event.content === "string" && event.content && !turn.aborting) {
           turn.firstTextAt ??= performance.now();
           turn.streamedSinceBoundary += event.content.length;
+          turn.reply += event.content;
           turn.listener.onDelta(event.content);
         }
         break;
@@ -267,6 +282,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
           // Models that don't stream deliver the whole message here.
           if (turn.streamedSinceBoundary === 0 && typeof event.content === "string" && event.content && event.bridgeNative !== true) {
             turn.firstTextAt ??= performance.now();
+            turn.reply += event.content;
             turn.listener.onDelta(event.content);
           }
           turn.listener.onMessageEnd?.();
@@ -298,9 +314,13 @@ export class HelmVoiceAgent implements VoiceAgentApi {
       case "resync_required":
         this.finishTurn(turn, { aborted: true });
         break;
-      case "error":
-        this.finishTurn(turn, { aborted: turn.aborting, error: typeof event.message === "string" && event.message ? event.message : "Copilot session error" });
+      case "error": {
+        const message = typeof event.message === "string" && event.message ? event.message : "Copilot session error";
+        // The runtime reports a deliberately empty reply (asked for after "okay" or "thanks") as an error.
+        const emptyReply = turn.firstTextAt === undefined && message.startsWith("No response was returned");
+        this.finishTurn(turn, { aborted: turn.aborting, ...(emptyReply ? {} : { error: message }) });
         break;
+      }
       default:
         break;
     }

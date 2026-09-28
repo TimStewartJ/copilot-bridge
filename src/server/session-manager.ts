@@ -199,6 +199,7 @@ import {
   type PersistedSessionModelState,
 } from "./session-model-state-sidecar.js";
 import {
+  buildSessionNameHelperBaseConfig,
   buildSessionNameResumeConfig,
   createSessionNameRpc,
   type SetSessionNameOptions,
@@ -224,7 +225,7 @@ import {
 } from "./copilot-usage.js";
 import { createRetainedCopilotUsageEntry } from "./copilot-usage-store.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
-import { DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
+import { createDisposableTitleSessionId, DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
@@ -3343,6 +3344,32 @@ export class SessionManager {
 
   private captureRuntimeOwner(backend: AgentBackend | null = this.backend): SessionRuntimeOwner {
     return { backend, generation: this.backendGeneration, lease: randomUUID() };
+  }
+
+  /**
+   * A throwaway model session for Bridge's own quick prompts: no tools, hidden from session lists
+   * like title helpers, never kept, and swept at startup if a crash leaks it. dispose() removes it.
+   */
+  async createHelperSession(config: AgentSessionConfig): Promise<{ session: AgentSession; dispose(): Promise<void> }> {
+    const backend = await this.getBackendAfterRotation();
+    const sessionId = createDisposableTitleSessionId();
+    const session = await this.createOwnedSession(backend, {
+      ...buildSessionNameHelperBaseConfig(),
+      infiniteSessions: { enabled: false },
+      enableSessionTelemetry: false,
+      enableSessionStore: false,
+      ...config,
+      sessionId,
+    });
+    return {
+      session,
+      dispose: async () => {
+        try { await session.disconnect?.(); } catch { /* best-effort */ }
+        try { await backend.deleteSession(sessionId); } catch { /* already gone */ }
+        await rm(join(this.getCopilotHome(), "session-state", sessionId), { recursive: true, force: true }).catch(() => undefined);
+        await deleteCliSessionStoreRows(this.getCopilotHome(), sessionId).catch(() => undefined);
+      },
+    };
   }
 
   private async createOwnedSession(backend: AgentBackend, config: AgentSessionConfig): Promise<AgentSession> {
