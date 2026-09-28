@@ -8,6 +8,9 @@ import {
   type ReactDomHarness,
 } from "./test-react-harness";
 import { MAX_VISIBLE_TOASTS, ToastProvider, useToast, type ToastContextValue, type ToastInput } from "./useToast";
+import { haptic } from "./lib/haptics";
+
+vi.mock("./lib/haptics", () => ({ haptic: vi.fn() }));
 
 let api: ToastContextValue | null = null;
 
@@ -44,6 +47,19 @@ describe("ToastProvider", () => {
   beforeEach(() => {
     api = null;
     vi.useFakeTimers();
+    vi.mocked(haptic).mockClear();
+  });
+
+  it("gives success and error toasts their haptic, and leaves info, loading and opted-out toasts quiet", async () => {
+    const harness = await mountProvider();
+
+    await show(harness, { title: "Saved" });
+    await show(harness, { tone: "error", title: "Could not save" });
+    await show(harness, { tone: "info", title: "Heads up" });
+    await show(harness, { tone: "success", title: "Working", loading: true });
+    await show(harness, { tone: "success", title: "Someone else did this", haptic: false });
+
+    expect(vi.mocked(haptic).mock.calls).toEqual([["success"], ["error"]]);
   });
 
   it("renders a shown toast and dismisses it by id", async () => {

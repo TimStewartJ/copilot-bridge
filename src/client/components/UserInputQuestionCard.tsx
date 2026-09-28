@@ -4,6 +4,7 @@ import type { PendingUserInputRequestView, UserInputAnswerEndpointPayload } from
 import PromptMarkdown from "./chat/PromptMarkdown";
 import { DS, cx } from "../design/tokens";
 import { Button, ChoiceButton, EmptyHint, Panel, TextInput } from "../design/primitives";
+import { haptic } from "../lib/haptics";
 const CHAT_RAIL_CLASS = DS.layout.readingColumn;
 
 function getUserInputSubmitError(err: unknown): string {
@@ -33,9 +34,11 @@ export default function UserInputQuestionCard({ request, onSubmit }: UserInputQu
     setError(null);
     try {
       await onSubmit(request.requestId, payload);
+      haptic("success");
       setSubmitted(true);
     } catch (err) {
       submittingRef.current = false;
+      haptic("error");
       setError(getUserInputSubmitError(err));
     } finally {
       setSubmitting(false);

@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, type ReactNode } from "react";
 import { Loader2, ArrowDown } from "lucide-react";
 import useElementScrollRestoration, { type UseElementScrollRestorationOptions } from "../hooks/useElementScrollRestoration";
+import { haptic } from "../lib/haptics";
 
 export type PullToRefreshScrollRestoration = Omit<UseElementScrollRestorationOptions, "key"> & {
   key: string;
@@ -30,6 +31,7 @@ export default function PullToRefresh({ onRefresh, children, className = "", scr
   const startYRef = useRef(0);
   const pullingRef = useRef(false);
   const pullDistRef = useRef(0);          // always-current pull distance (no stale closure)
+  const armedRef = useRef(false);         // pulled past the threshold; letting go now refreshes
   const onRefreshRef = useRef(onRefresh); // avoid re-attaching listeners when callback changes
   onRefreshRef.current = onRefresh;
 
@@ -55,6 +57,7 @@ export default function PullToRefresh({ onRefresh, children, className = "", scr
       if (el.scrollTop > SCROLL_TOP_EPSILON) return;
       startYRef.current = e.touches[0].clientY;
       pullingRef.current = true;
+      armedRef.current = false;
     };
 
     const onTouchMove = (e: TouchEvent) => {
@@ -77,6 +80,11 @@ export default function PullToRefresh({ onRefresh, children, className = "", scr
       const distance = deltaY > THRESHOLD
         ? THRESHOLD + (deltaY - THRESHOLD) * RESISTANCE
         : deltaY;
+
+      // Like iOS lists, a bump marks the point where letting go will refresh.
+      const armed = distance >= THRESHOLD;
+      if (armed && !armedRef.current) haptic("medium");
+      armedRef.current = armed;
 
       setPullDistance(Math.min(distance, MAX_PULL));
     };

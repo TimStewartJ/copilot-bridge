@@ -9,6 +9,7 @@ import {
 import { ChevronRight } from "lucide-react";
 import { DS, cx, type DsButtonSize, type DsButtonVariant, type DsStatusKind, type DsTone } from "./tokens";
 import { IDENTITY_FILL, identityColor } from "./identity";
+import { haptic } from "../lib/haptics";
 
 /**
  * Bridge design system: the components screens are assembled from. README.md in this folder holds
@@ -127,8 +128,12 @@ export function SegmentedControl<T extends string>({
             title={option.title}
             onClick={() => {
               if (option.value === null || disabled || option.disabled) return;
-              if (selected) onReselect?.(option.value);
-              else onChange(option.value);
+              if (selected) {
+                onReselect?.(option.value);
+                return;
+              }
+              haptic("selection");
+              onChange(option.value);
             }}
             className={cx(
               DS.segmented.option,
@@ -156,12 +161,16 @@ export function ChoiceButton({
   className,
   children,
   type = "button",
+  onClick,
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { selected?: boolean }) {
+  // Changing a held choice ticks; an option that is the answer leaves feedback to the submit.
+  const tick = selected !== undefined && onClick;
   return (
     <button
       type={type}
       aria-pressed={selected}
+      onClick={tick ? (event) => { haptic("selection"); onClick(event); } : onClick}
       className={cx(DS.choice.option, selected ? DS.choice.selected : DS.choice.unselected, className)}
       {...rest}
     >
@@ -283,12 +292,19 @@ export function SettingList({ children, className }: { children: ReactNode; clas
  */
 export function Switch({
   className,
+  onChange,
   ...rest
 }: Omit<ComponentProps<"input">, "type" | "role">) {
   // The label around the track gives it a 40px touch target on a phone without growing the track.
   return (
     <label className="-m-2 inline-flex min-h-10 min-w-10 shrink-0 cursor-pointer items-center justify-center p-2 md:m-0 md:min-h-0 md:min-w-0 md:p-0">
-      <input type="checkbox" role="switch" className={cx(DS.setting.switch, className)} {...rest} />
+      <input
+        type="checkbox"
+        role="switch"
+        className={cx(DS.setting.switch, className)}
+        onChange={onChange && ((event) => { haptic("selection"); onChange(event); })}
+        {...rest}
+      />
     </label>
   );
 }

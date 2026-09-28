@@ -43,6 +43,7 @@ import { getCachedChatSnapshot, replaceHistoryWindow, setCachedChatSnapshot } fr
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
+import { haptic } from "../lib/haptics";
 import { getAppAbsoluteUrl } from "../lib/app-url";
 import { textMatchesSearchQuery } from "../lib/search-text";
 import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
@@ -1845,6 +1846,7 @@ export default function ChatView({
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
+      haptic("error");
       updateOptimisticMessageDelivery(messageId, ownerSessionId, {
         failed: true,
         ...(mode === undefined ? {} : { mode }),
