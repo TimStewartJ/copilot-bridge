@@ -17,6 +17,7 @@ const patchTaskMock = vi.hoisted(() => vi.fn());
 const queryClientMock = vi.hoisted(() => ({
   fetchQuery: vi.fn(),
   invalidateQueries: vi.fn(),
+  resetQueries: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
@@ -147,7 +148,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     tags: [],
@@ -390,7 +391,11 @@ describe("TaskPanel", () => {
           MemoryRouter,
           null,
           createElement(TaskPanel, {
-            task: createTask({ sessionIds: linkedSessions.map((session) => session.sessionId) }),
+            task: createTask({
+              activeSessionIds: linkedSessions.filter((session) => !session.archived).map((session) => session.sessionId),
+              sessionCount: linkedSessions.length,
+              archivedSessionCount: 1,
+            }),
             taskGroups: [],
             sessions: linkedSessions,
             activeSessionId: null,
@@ -435,7 +440,7 @@ describe("TaskPanel", () => {
       }),
     ];
     const html = await renderTaskPanelHtml(
-      createTask({ sessionIds: linkedSessions.map((session) => session.sessionId) }),
+      createTask({ activeSessionIds: linkedSessions.map((session) => session.sessionId) }),
       { linkedSessions },
     );
 
@@ -508,11 +513,11 @@ describe("TaskPanel", () => {
 
     try {
       const { default: TaskPanel } = await import("./TaskPanel");
-      const element = () => createElement(
+      const element = (sessionLinksRevision = "links-a") => createElement(
         MemoryRouter,
         null,
         createElement(TaskPanel, {
-          task: createTask({ sessionIds: ["session-1", "archived-session", "archived-2"] }),
+          task: createTask({ activeSessionIds: ["session-1"], sessionCount: 3, archivedSessionCount: 2, sessionLinksRevision }),
           taskGroups: [],
           sessions: loadedSessions,
           activeSessionId: null,
@@ -558,6 +563,13 @@ describe("TaskPanel", () => {
       expect(lastProps().archivedTotal).toBe(2);
       lastProps().onLoadMoreArchived?.();
       expect(fetchNextPage).toHaveBeenCalledOnce();
+
+      // An unlink plus a link elsewhere keeps the count but changes the revision: reload the pages.
+      queryClientMock.resetQueries.mockClear();
+      await harness.render(element("links-a"));
+      expect(queryClientMock.resetQueries).not.toHaveBeenCalled();
+      await harness.render(element("links-b"));
+      expect(queryClientMock.resetQueries).toHaveBeenCalledWith({ queryKey: ["task-archived-sessions", "task-1"] });
     } finally {
       taskArchivedSessionsQueryMock.mockReset();
       await harness.cleanup();
@@ -583,7 +595,7 @@ describe("TaskPanel", () => {
       createSession({ sessionId: "session-2", archived: true }),
     ];
     const html = await renderTaskPanelHtml(
-      createTask({ sessionIds: ["session-1", "session-2", "session-3"] }),
+      createTask({ activeSessionIds: ["session-1", "session-2", "session-3"] }),
       { linkedSessions },
     );
     expect(html).toMatch(/Sessions<span[^>]*>1<\/span>/);
@@ -603,7 +615,7 @@ describe("TaskPanel", () => {
           MemoryRouter,
           null,
           createElement(TaskPanel, {
-            task: createTask({ cwd: "/workspace/copilot-bridge", sessionIds: [linkedSession.sessionId] }),
+            task: createTask({ cwd: "/workspace/copilot-bridge", activeSessionIds: [linkedSession.sessionId] }),
             taskGroups: [],
             sessions: [linkedSession],
             activeSessionId: linkedSession.sessionId,

@@ -242,7 +242,7 @@ export const operationScenarios: IntegrationScenario[] = [
       expect(response.status).toBe(200);
       expect(response.body.sessionId).toBe("linked-session");
       expect(world.ctx.taskStore.getTask(task.id)?.sessionIds).toContain("linked-session");
-      expect((await world.getTask(task.id)).sessionIds).toContain("linked-session");
+      expect((await world.getTask(task.id)).activeSessionIds).toContain("linked-session");
     },
   },
   {

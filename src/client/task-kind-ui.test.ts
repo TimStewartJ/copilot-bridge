@@ -93,7 +93,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: NOW,
     updatedAt: NOW,
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     ...overrides,
@@ -451,7 +451,7 @@ describe("kind-aware task UI", () => {
 
 describe("TaskDashboard unique overview", () => {
   it("renders the three dashboard-exclusive sections without cockpit chat controls", () => {
-    const html = renderTaskDashboard(createTask({ sessionIds: [] }));
+    const html = renderTaskDashboard(createTask({ activeSessionIds: [] }));
 
     expect(html).toContain("Task brief");
     expect(html).toContain("Completion checks");
@@ -468,7 +468,7 @@ describe("TaskDashboard unique overview", () => {
       nextAction: "Review dashboard",
       waitingOn: "Design feedback",
       cwd: "/repo",
-      sessionIds: ["session-1"],
+      activeSessionIds: ["session-1"],
       workItems: [{ provider: "github", id: "123" }],
       pullRequests: [{ provider: "github", repoId: "repo", repoName: "bridge", prId: 42 }],
     }), {
@@ -821,7 +821,7 @@ describe("TaskDashboard unique overview", () => {
     }) } as any);
 
     const html = renderTaskDashboard(createTask({
-      sessionIds: ["session-1", "session-2", "session-pending"],
+      activeSessionIds: ["session-1", "session-2", "session-pending"],
     }), {
       linkedSessions: [
         { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", archived: false },
@@ -870,7 +870,7 @@ describe("TaskDashboard unique overview", () => {
     } satisfies CopilotUsageSessionRow;
 
     const analytics = buildSessionUsageAnalytics({
-      taskSessionIds: ["session-1"],
+      taskSessionCount: 1,
       linkedSessions: [],
       usageSessions: [usageSession],
       totalDiskSizeBytes: 0,
@@ -906,7 +906,7 @@ describe("TaskDashboard unique overview", () => {
     } satisfies CopilotUsageSessionRow;
 
     const analytics = buildSessionUsageAnalytics({
-      taskSessionIds: [session.sessionId],
+      taskSessionCount: 1,
       linkedSessions: [],
       usageSessions: [session],
       totalDiskSizeBytes: 0,
@@ -922,6 +922,29 @@ describe("TaskDashboard unique overview", () => {
     ]);
   });
 
+  it("counts usage from archived runs the task no longer lists as active", () => {
+    const archivedRun = {
+      sessionId: "archived-run",
+      shutdownAt: "2026-05-10T20:00:00.000Z",
+      ...createUsageTotals({ totalTokens: 2_500 }),
+      ...createZeroCostEstimate(),
+      models: [],
+      days: [],
+      unpricedModels: [],
+    } satisfies CopilotUsageSessionRow;
+
+    const analytics = buildSessionUsageAnalytics({
+      taskSessionCount: 3,
+      linkedSessions: [],
+      usageSessions: [archivedRun],
+      totalDiskSizeBytes: 0,
+    });
+
+    expect(analytics.totals.totalTokens).toBe(2_500);
+    expect(analytics.includedSessions.map((row) => row.sessionId)).toEqual(["archived-run"]);
+    expect(analytics.sessionsWithoutUsage).toBe(2);
+  });
+
   it("shows a skeleton while session usage is loading from the backend", () => {
     vi.mocked(useCopilotUsageQuery).mockReturnValue({
       data: undefined,
@@ -930,7 +953,7 @@ describe("TaskDashboard unique overview", () => {
     } as any);
 
     const html = renderTaskDashboard(createTask({
-      sessionIds: ["session-1"],
+      activeSessionIds: ["session-1"],
     }), {
       linkedSessions: [
         { sessionId: "session-1", summary: "Loading usage", modifiedTime: "2026-05-01T13:00:00.000Z", archived: false },

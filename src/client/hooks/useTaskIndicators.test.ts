@@ -3,6 +3,7 @@ import type { Session, Task } from "../api";
 import {
   countTaskUnread,
   describeTabAttention,
+  getArchivedActivityByTask,
   getTaskIndicator,
   summarizeChatTabAttention,
   summarizeTaskTabAttention,
@@ -25,7 +26,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: NOW,
     updatedAt: NOW,
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     ...overrides,
@@ -84,7 +85,7 @@ describe("summarizeTaskTabAttention", () => {
 
   it("does not double-count a task with unread and needs-answer sessions", () => {
     const task = createTask({
-      sessionIds: ["unread-session", "needs-answer-session"],
+      activeSessionIds: ["unread-session", "needs-answer-session"],
     });
     const sessionMap = new Map<string, Session>([
       ["unread-session", createSession({ sessionId: "unread-session" })],
@@ -182,7 +183,7 @@ describe("describeTabAttention", () => {
 
 describe("countTaskUnread", () => {
   it("excludes stalled sessions from unread counts", () => {
-    const task = createTask({ sessionIds: ["idle-1", "stalled-1"] });
+    const task = createTask({ activeSessionIds: ["idle-1", "stalled-1"] });
     const sessionMap = new Map<string, Session>([
       ["idle-1", createSession({ sessionId: "idle-1" })],
       ["stalled-1", createSession({ sessionId: "stalled-1", runState: "stalled" })],
@@ -194,7 +195,7 @@ describe("countTaskUnread", () => {
   });
 
   it("keeps pending user input out of mark-read counts", () => {
-    const task = createTask({ sessionIds: ["needs-answer"] });
+    const task = createTask({ activeSessionIds: ["needs-answer"] });
     const sessionMap = new Map<string, Session>([
       ["needs-answer", createSession({
         sessionId: "needs-answer",
@@ -212,7 +213,7 @@ describe("countTaskUnread", () => {
 
 describe("getTaskIndicator", () => {
   it("marks a task unread when any linked session needs user input", () => {
-    const task = createTask({ sessionIds: ["needs-answer"] });
+    const task = createTask({ activeSessionIds: ["needs-answer"] });
     const sessionMap = new Map<string, Session>([
       ["needs-answer", createSession({
         sessionId: "needs-answer",
@@ -233,7 +234,7 @@ describe("getTaskIndicator", () => {
   });
 
   it("keeps unread counts but suppresses the task-level unread indicator for muted tasks", () => {
-    const task = createTask({ muted: true, sessionIds: ["unread-1"] });
+    const task = createTask({ muted: true, activeSessionIds: ["unread-1"] });
     const sessionMap = new Map<string, Session>([
       ["unread-1", createSession({ sessionId: "unread-1" })],
     ]);
@@ -262,5 +263,24 @@ describe("getTaskIndicator", () => {
         .toEqual({ kind: "unread", label: "Unread conversations" });
       expect(getTaskStatus(createIndicator())).toBeNull();
     });
+  });
+});
+
+describe("archived session activity", () => {
+  it("counts loaded archived sessions through their own links, since tasks list only active ones", () => {
+    const task = createTask({ updatedAt: "2026-04-17T10:00:00.000Z" });
+    const archived = createSession({
+      sessionId: "archived-run",
+      archived: true,
+      linkedTaskIds: ["task-1"],
+      modifiedTime: "2026-04-17T12:00:00.000Z",
+      lastVisibleActivityAt: "2026-04-17T12:00:00.000Z",
+    });
+    const sessionMap = new Map([[archived.sessionId, archived]]);
+
+    const indicator = getTaskIndicator(task, sessionMap, undefined, null, getArchivedActivityByTask([archived]));
+
+    expect(indicator.lastActivity).toBe("2026-04-17T12:00:00.000Z");
+    expect(indicator.unreadCount).toBe(0);
   });
 });

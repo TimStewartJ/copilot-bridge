@@ -13,6 +13,7 @@ import {
 } from "./queries/useChecklistItems";
 import { useTaskGitStatusQuery } from "./queries/useTaskGitStatus";
 import { useTaskAgentDefinitionsQuery } from "./queries/useTaskAgentDefinitions";
+import { isSessionLinkedToTask } from "../lib/task-session-links";
 
 /**
  * Consolidates shared setup for TaskPanel and TaskDashboard:
@@ -73,9 +74,7 @@ export function useTaskWorkspace(
   );
 
   // ── Linked sessions ─────────────────────────────────────────
-  const linkedSessions = sessions.filter((s) =>
-    task?.sessionIds.includes(s.sessionId),
-  );
+  const linkedSessions = task ? sessions.filter((s) => isSessionLinkedToTask(task, s)) : [];
 
   // ── Effective tags (own + group, deduplicated) ──────────────
   const taskOwnTags = task?.tags ?? [];

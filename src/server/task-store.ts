@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -55,6 +56,36 @@ export interface Task {
   sessionIds: string[];
   workItems: WorkItemRef[];
   pullRequests: PRRef[];
+}
+
+/**
+ * What the browser gets about a task's linked sessions. A task can link thousands of archived
+ * scheduled runs, so the full ID list stays on the server.
+ */
+export interface TaskSessionSummary {
+  /** Linked sessions that are not archived, oldest link first. */
+  activeSessionIds: string[];
+  sessionCount: number;
+  archivedSessionCount: number;
+  /** Changes whenever a session is linked or unlinked, even when the count does not. */
+  sessionLinksRevision: string;
+}
+
+export type ClientTask<T extends Task = Task> = Omit<T, "sessionIds"> & TaskSessionSummary;
+
+const EMPTY_SESSION_LINKS_REVISION = createHash("sha1").digest("hex").slice(0, 16);
+
+export function toClientTask<T extends Task>(task: T, summary: TaskSessionSummary | undefined): ClientTask<T> {
+  const { sessionIds: _sessionIds, ...rest } = task;
+  return {
+    ...rest,
+    ...(summary ?? {
+      activeSessionIds: [],
+      sessionCount: 0,
+      archivedSessionCount: 0,
+      sessionLinksRevision: EMPTY_SESSION_LINKS_REVISION,
+    }),
+  };
 }
 
 export type TaskCompletionAction = "complete-and-archive";
@@ -688,6 +719,35 @@ export function createTaskStore(
     };
   }
 
+  /** Per-task session summaries for the browser, in one query. Pass a task ID to read just that task. */
+  function listTaskSessionSummaries(taskId?: string): Map<string, TaskSessionSummary> {
+    const rows = db.prepare(`
+      SELECT ts.taskId, ts.sessionId, COALESCE(b.archived, 0) AS archived
+      FROM task_sessions ts
+      LEFT JOIN bridge_session_state b ON b.sessionId = ts.sessionId
+      ${taskId === undefined ? "" : "WHERE ts.taskId = ?"}
+      ORDER BY ts.taskId, ts.linkedAt ASC, ts.sessionId ASC
+    `).all(...(taskId === undefined ? [] : [taskId])) as Array<{ taskId: string; sessionId: string; archived: number }>;
+    const summaries = new Map<string, TaskSessionSummary>();
+    const hashes = new Map<string, ReturnType<typeof createHash>>();
+    for (const row of rows) {
+      let summary = summaries.get(row.taskId);
+      let hash = hashes.get(row.taskId);
+      if (!summary || !hash) {
+        summary = { activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "" };
+        hash = createHash("sha1");
+        summaries.set(row.taskId, summary);
+        hashes.set(row.taskId, hash);
+      }
+      summary.sessionCount += 1;
+      hash.update(`${row.sessionId}\n`);
+      if (Number(row.archived) === 1) summary.archivedSessionCount += 1;
+      else summary.activeSessionIds.push(row.sessionId);
+    }
+    for (const [id, hash] of hashes) summaries.get(id)!.sessionLinksRevision = hash.digest("hex").slice(0, 16);
+    return summaries;
+  }
+
   /**
    * Session IDs linked to this task and to no other task.
    *
@@ -959,7 +1019,7 @@ export function createTaskStore(
   return {
     listTasks, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
-    getTaskSessionCounts,
+    getTaskSessionCounts, listTaskSessionSummaries,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
     findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, recordUserMessage, listMomentumSignals,
   };

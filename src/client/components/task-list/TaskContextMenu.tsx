@@ -81,7 +81,7 @@ export default function TaskContextMenu({
   const completionState = useMemo(() => {
     const checklistItems = checklistItemsQuery.data ?? [];
     const enriched = queryClient.getQueryData<EnrichedTaskData>(queryKeys.taskEnriched(task.id));
-    const linkedSessions = task.sessionIds
+    const linkedSessions = task.activeSessionIds
       .map((sessionId) => sessionMap.get(sessionId))
       .filter((session): session is Session => Boolean(session));
 
@@ -119,7 +119,7 @@ export default function TaskContextMenu({
           label={`Mark all as read${unreadCount > 0 ? ` (${unreadCount})` : ""}`}
           disabled={unreadCount === 0}
           onClick={() => {
-            for (const sid of task.sessionIds) {
+            for (const sid of task.activeSessionIds) {
               const session = sessionMap.get(sid);
               if (session && !session.archived && isUnread?.(sid, getSessionActivityTime(session))) {
                 markRead(sid, getSessionActivityTime(session));

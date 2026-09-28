@@ -112,7 +112,7 @@ import {
   emptyBackgroundAgentsSummary,
 } from "../shared/session-agents.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
-import { InvalidTaskUpdateError, TASK_UPDATE_FIELDS, type Task } from "./task-store.js";
+import { InvalidTaskUpdateError, TASK_UPDATE_FIELDS, toClientTask, type Task } from "./task-store.js";
 import {
   resolvePullRequestLink,
   resolvePullRequestUnlink,
@@ -839,11 +839,15 @@ async function readWorkspaceYamlForList(sessionStateDir: string, sessionId: stri
 async function listSessionsFromCliCatalog(
   ctx: AppContext,
   preloadedMeta?: ReturnType<AppContext["sessionMetaStore"]["listMeta"]>,
+  opts: { includeArchived?: boolean } = {},
 ): Promise<any[] | undefined> {
   const catalogSessions = await ctx.cliSessionCatalog?.listSessions();
   if (!catalogSessions) return undefined;
   const meta = preloadedMeta ?? ctx.sessionMetaStore.listMeta();
-  return catalogSessions.map((session) => {
+  const listed = opts.includeArchived === false
+    ? catalogSessions.filter((session) => meta[session.sessionId]?.archived !== true)
+    : catalogSessions;
+  return listed.map((session) => {
     const sessionMeta = meta[session.sessionId];
     const lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt;
     const lastAttentionAt = sessionMeta?.lastAttentionAt;
@@ -1628,6 +1632,16 @@ export function createApiRouter(
     ctx.globalBus.emit({ type: "session:archived", sessionId, archived });
   }
 
+  // Every task the browser receives goes through these, so it never sees the full session ID list.
+  function toClientTaskResponse<T extends Task>(task: T) {
+    return toClientTask(task, ctx.taskStore.listTaskSessionSummaries(task.id).get(task.id));
+  }
+
+  function toClientTasks<T extends Task>(tasks: T[]) {
+    const summaries = ctx.taskStore.listTaskSessionSummaries();
+    return tasks.map((task) => toClientTask(task, summaries.get(task.id)));
+  }
+
   /**
    * Counts and busy state backing the task delete-confirmation dialog. Also
    * polled during a long delete so the dialog can show progress: `sessionCount`
@@ -1773,22 +1787,33 @@ export function createApiRouter(
     flushPendingEnrichedCacheInvalidation("before:getEnrichedSessionList");
     const now = Date.now();
     const cacheKind = getSessionListCacheKind(includeArchived);
+    const allCache = enrichedSessionCaches.all;
+    const reusedAllCache = !includeArchived
+      && !isEnrichedSessionCacheValid(enrichedSessionCaches.active, now)
+      && isEnrichedSessionCacheValid(allCache, now);
+    if (reusedAllCache) {
+      // Keep only the superset's active entries, once, so active callers never walk archived runs.
+      enrichedSessionCaches.active = {
+        data: allCache.data.filter((session: any) => session.archived !== true),
+        timestamp: allCache.timestamp,
+        includesArchived: false,
+        generation: allCache.generation,
+      };
+    }
     const directCache = enrichedSessionCaches[cacheKind];
-    const reusableAllCache = !includeArchived && isEnrichedSessionCacheValid(enrichedSessionCaches.all, now)
-      ? enrichedSessionCaches.all
-      : null;
-    const reusableCache = isEnrichedSessionCacheValid(directCache, now) ? directCache : reusableAllCache;
 
-    if (reusableCache) {
+    const validCache = isEnrichedSessionCacheValid(directCache, now) ? directCache : null;
+
+    if (validCache) {
       recordSessionCacheSpan("session.enrichedList.cache", 0, {
         result: "hit",
         includeArchived,
         cacheKind,
-        cacheIncludesArchived: reusableCache.includesArchived,
-        reusedAllCache: reusableCache === reusableAllCache,
-        count: reusableCache.data.length,
+        cacheIncludesArchived: validCache.includesArchived,
+        reusedAllCache,
+        count: validCache.data.length,
       });
-      return reusableCache.data;
+      return validCache.data;
     }
 
     const existingBuild = getReusableSessionCacheBuild(cacheKind);
@@ -1843,7 +1868,7 @@ export function createApiRouter(
     const tBuild = Date.now();
     const build = (async () => {
       const meta = ctx.sessionMetaStore.listMeta();
-      const catalogSessions = await listSessionsFromCliCatalog(ctx, meta);
+      const catalogSessions = await listSessionsFromCliCatalog(ctx, meta, { includeArchived: buildIncludesArchived });
       const usingCliCatalog = catalogSessions !== undefined;
       const diskSessions = await ctx.sessionManager.listSessionsFromDisk({ includeArchived: buildIncludesArchived });
       const catalogSessionIds = new Set(catalogSessions?.map((session) => session.sessionId));
@@ -4329,7 +4354,7 @@ export function createApiRouter(
       ...t,
       tags: ctx.tagStore?.getEntityTags("task", t.id) ?? [],
     }));
-    res.json({ tasks: tasksWithTags });
+    res.json({ tasks: toClientTasks(tasksWithTags) });
   });
 
   // Static path: registered before /tasks/:id so "overview" is never read as a task ID.
@@ -4349,7 +4374,7 @@ export function createApiRouter(
     if (!Array.isArray(taskIds)) return res.status(400).json({ error: "taskIds array is required" });
     try {
       const tasks = ctx.taskStore.reorderTasks(taskIds);
-      res.json({ tasks });
+      res.json({ tasks: toClientTasks(tasks) });
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -4384,7 +4409,7 @@ export function createApiRouter(
           throw error;
         }
       }
-      res.json({ task });
+      res.json({ task: toClientTaskResponse(task) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(err instanceof InvalidTaskUpdateError ? 400 : 500).json({ error: message });
@@ -4429,7 +4454,7 @@ export function createApiRouter(
     const task = ctx.taskStore.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
     const tags = ctx.tagStore?.getEntityTags("task", task.id) ?? [];
-    res.json({ task: { ...task, tags } });
+    res.json({ task: toClientTaskResponse({ ...task, tags }) });
   });
 
   // A task's archived sessions, newest first, one page at a time. The task panel reads these
@@ -4448,13 +4473,23 @@ export function createApiRouter(
         () => getEnrichedSessionList(true, { scheduleRefresh: scheduleAfterResponse(res) }),
         { taskId: task.id },
       );
-      const archived = materializeSessionList(
-        enriched.filter((session: any) => linkedSessionIds.has(session.sessionId)),
-        true,
-      ).filter((session: any) => session.archived === true);
+      // Page before materializing: a task can link thousands of archived runs. Sort by the same
+      // current activity time materializeSessionList returns.
+      const meta = ctx.sessionMetaStore.listMeta();
+      const currentModifiedTime = (session: any): string => maxIsoTime(
+        meta[session.sessionId]?.lastVisibleActivityAt ?? session.lastVisibleActivityAt,
+        meta[session.sessionId]?.lastAttentionAt ?? session.lastAttentionAt,
+      ) ?? session.modifiedTime ?? "";
+      const archived = enriched
+        .filter((session: any) =>
+          linkedSessionIds.has(session.sessionId)
+          && (meta[session.sessionId]?.archived ?? session.archived) === true)
+        .map((session: any) => ({ session, modifiedTime: currentModifiedTime(session) }))
+        .sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime))
+        .map(({ session }) => session);
 
       res.json({
-        sessions: archived.slice(offset, offset + limit),
+        sessions: materializeSessionList(archived.slice(offset, offset + limit), true),
         total: archived.length,
         offset,
       });
@@ -4502,10 +4537,10 @@ export function createApiRouter(
         enrichWorkItems(task.workItems),
         enrichPullRequests(task.pullRequests),
       ]);
-      res.json({ task, workItems, pullRequests });
+      res.json({ task: toClientTaskResponse(task), workItems, pullRequests });
     } catch (err) {
       console.error("[enriched] Error:", err);
-      res.json({ task, workItems: [], pullRequests: [] });
+      res.json({ task: toClientTaskResponse(task), workItems: [], pullRequests: [] });
     }
   });
 
@@ -4596,7 +4631,7 @@ export function createApiRouter(
       if ((task.instructions ?? "") !== previousInstructions) {
         ctx.sessionManager.invalidateTaskSessionConfig(task.id, "task instructions changed");
       }
-      res.json({ task });
+      res.json({ task: toClientTaskResponse(task) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = err instanceof InvalidTaskUpdateError
@@ -4773,7 +4808,7 @@ export function createApiRouter(
         default:
           return res.status(400).json({ error: `Unknown link type: ${type}` });
       }
-      res.json({ task });
+      res.json({ task: toClientTaskResponse(task) });
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }
@@ -4808,7 +4843,7 @@ export function createApiRouter(
         default:
           return res.status(400).json({ error: `Unknown link type: ${type}` });
       }
-      res.json({ task });
+      res.json({ task: toClientTaskResponse(task) });
     } catch (err) {
       res.status(400).json({ error: String(err) });
     }

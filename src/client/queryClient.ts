@@ -45,8 +45,8 @@ export const queryKeys = {
   taskMomentumEvents: (id: string) => ["task", id, "momentum-events"] as const,
   taskHistory: (id: string) => ["task", id, "history"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
-  taskSessionStorage: (id: string, sessionIds: readonly string[]) =>
-    ["task", id, "session-storage", ...sessionIds] as const,
+  taskSessionStorage: (id: string, sessionLinksRevision: string) =>
+    ["task", id, "session-storage", sessionLinksRevision] as const,
   taskSchedules: (id: string) => ["task", id, "schedules"] as const,
   scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,
   /** Kept outside ["sessions"]: those caches hold Session[] and are patched in place. */
@@ -66,7 +66,8 @@ export const queryKeys = {
   copilotUsage: (scope?: {
     taskId?: string;
     includeSessions?: boolean;
-    sessionIds?: readonly string[];
+    /** Task link revision: the task's usage covers a different set of sessions when it changes. */
+    sessionLinksRevision?: string;
     range?: string;
   }) =>
     [
@@ -74,7 +75,7 @@ export const queryKeys = {
       scope?.taskId ?? null,
       scope?.includeSessions ?? true,
       scope?.range ?? "all",
-      ...(scope?.sessionIds ?? []),
+      ...(scope?.sessionLinksRevision ? [scope.sessionLinksRevision] : []),
     ] as const,
   copilotQuota: ["copilot-usage", "quota"] as const,
   updates: (channel?: string) => ["updates", channel ?? "default"] as const,
