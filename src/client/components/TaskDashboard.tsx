@@ -275,15 +275,15 @@ export default function TaskDashboard({
     isLoading: copilotUsageLoading,
     error: copilotUsageError,
     refresh: refreshCopilotUsage,
-  } = useCopilotUsageQuery({ taskId: task.id, sessionIds: task.sessionIds });
+  } = useCopilotUsageQuery({ taskId: task.id, sessionLinksRevision: task.sessionLinksRevision });
   const {
     data: sessionStorage,
     isLoading: sessionStorageLoading,
     refetch: refetchSessionStorage,
   } = useTaskSessionStorageQuery(
     task.id,
-    task.sessionIds,
-    task.sessionIds.length > 0,
+    task.sessionLinksRevision,
+    task.sessionCount > 0,
   );
 
   const completionCounts = useMemo(() => getTaskCompletionCounts({
@@ -315,16 +315,16 @@ export default function TaskDashboard({
   }), [checklistLoaded, completionCounts, completionState, task]);
 
   const sessionUsage = useMemo(() => buildSessionUsageAnalytics({
-    taskSessionIds: task.sessionIds,
+    taskSessionCount: task.sessionCount,
     linkedSessions,
     usageSessions: copilotUsage?.sessions ?? [],
     totalDiskSizeBytes: sessionStorage?.totalDiskSizeBytes ?? 0,
-  }), [copilotUsage?.sessions, linkedSessions, sessionStorage?.totalDiskSizeBytes, task.sessionIds]);
+  }), [copilotUsage?.sessions, linkedSessions, sessionStorage?.totalDiskSizeBytes, task.sessionCount]);
   const isSessionUsageLoading = (copilotUsageLoading && !copilotUsage)
     || Boolean(
       copilotUsage?.index.state === "scanning"
       && (copilotUsage.index.requestedSessionsCached ?? 0)
-        < (copilotUsage.index.requestedSessions ?? task.sessionIds.length),
+        < (copilotUsage.index.requestedSessions ?? task.sessionCount),
     );
 
   const inheritedTagSet = inheritedTagIds instanceof Set
@@ -332,7 +332,7 @@ export default function TaskDashboard({
     : new Set<string>(inheritedTagIds ?? []);
   const notesExcerpt = summarizeMarkdown(task.notes);
   const contextStats = [
-    { label: "Sessions", value: task.sessionIds.length },
+    { label: "Sessions", value: task.sessionCount },
     { label: "Checklist", value: checklistItems.length > 0 ? `${completionCounts.completedChecklistItems}/${checklistItems.length}` : "0" },
     { label: "PRs", value: task.pullRequests.length },
     { label: "Work items", value: task.workItems.length },
@@ -344,7 +344,7 @@ export default function TaskDashboard({
     await Promise.all([
       refresh(),
       refreshCopilotUsage(),
-      task.sessionIds.length > 0 ? refetchSessionStorage() : undefined,
+      task.sessionCount > 0 ? refetchSessionStorage() : undefined,
       onRefresh?.(),
     ]);
   };
@@ -500,7 +500,7 @@ export default function TaskDashboard({
             label="Session usage"
             count={isSessionUsageLoading
               ? undefined
-              : `${sessionUsage.includedSessions.length}/${Math.max(task.sessionIds.length, sessionUsage.includedSessions.length)} tokenized`}
+              : `${sessionUsage.includedSessions.length}/${Math.max(task.sessionCount, sessionUsage.includedSessions.length)} tokenized`}
           >
             {copilotUsageError && (
               <Notice tone="danger" icon={<AlertTriangle size={14} />} className="mb-3">
@@ -873,20 +873,20 @@ interface SessionUsageDayBucket extends CopilotUsageTotals, CopilotUsageCostEsti
   hasCostEstimate: boolean;
 }
 
+/** `usageSessions` must be the task-scoped usage response: the server limits it to every linked session, archived ones included. */
 export function buildSessionUsageAnalytics({
-  taskSessionIds,
+  taskSessionCount,
   linkedSessions,
   usageSessions,
   totalDiskSizeBytes,
 }: {
-  taskSessionIds: string[];
+  taskSessionCount: number;
   linkedSessions: Session[];
   usageSessions: CopilotUsageSessionRow[];
   totalDiskSizeBytes: number;
 }) {
-  const taskSessionIdSet = new Set(taskSessionIds);
   const linkedSessionMap = new Map(linkedSessions.map((session) => [session.sessionId, session]));
-  const includedSessions = usageSessions.filter((row) => taskSessionIdSet.has(row.sessionId));
+  const includedSessions = usageSessions;
   const includedSessionIds = new Set(includedSessions.map((row) => row.sessionId));
   const totals = { ...ZERO_USAGE_TOTALS };
   const costTotals = createSessionUsageCostFields();
@@ -962,7 +962,7 @@ export function buildSessionUsageAnalytics({
     (latest, row) => row.shutdownAt ? maxNullableTimestamp(latest, row.shutdownAt) : latest,
     null,
   );
-  const sessionsWithoutUsage = Math.max(0, taskSessionIdSet.size - includedSessionIds.size);
+  const sessionsWithoutUsage = Math.max(0, taskSessionCount - includedSessionIds.size);
 
   return {
     totals,

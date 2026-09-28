@@ -64,31 +64,29 @@ export default function TaskSessionList({
   const sortedSessions = useMemo(() => {
     const active = linkedSessions.filter((session) => !session.archived);
     const activeIds = new Set(active.map((session) => session.sessionId));
-    const linkedIds = new Set(task.sessionIds);
     const seenArchivedIds = new Set<string>();
     const archived = (archivedPages ?? [])
       .flatMap((page) => page.sessions)
       .filter((session) => {
-        // A page can outlive an unlink made elsewhere; only the task's current links are shown.
-        if (!linkedIds.has(session.sessionId)) return false;
         if (activeIds.has(session.sessionId) || seenArchivedIds.has(session.sessionId)) return false;
         seenArchivedIds.add(session.sessionId);
         return true;
       })
       .map((session) => ({ ...session, archived: true }));
     return [...sortTaskSessions(active), ...archived];
-  }, [archivedPages, linkedSessions, task.sessionIds]);
-  // A link made elsewhere (another tab, an agent) can add an archived session the pages lack.
-  const linkedCount = task.sessionIds.length;
-  const previousLinkedCountRef = useRef(linkedCount);
+  }, [archivedPages, linkedSessions]);
+  // A link or unlink made elsewhere (another tab, an agent) changes which archived sessions the
+  // task has. The server pages only current links, so drop the old pages and load them again.
+  const linksRevision = task.sessionLinksRevision;
+  const previousLinksRevisionRef = useRef(linksRevision);
   useEffect(() => {
-    const previous = previousLinkedCountRef.current;
-    previousLinkedCountRef.current = linkedCount;
-    if (!archivedRequested || linkedCount <= previous) return;
-    void queryClient.invalidateQueries({ queryKey: queryKeys.taskArchivedSessions(task.id) });
-  }, [archivedRequested, linkedCount, queryClient, task.id]);
+    const previous = previousLinksRevisionRef.current;
+    previousLinksRevisionRef.current = linksRevision;
+    if (!archivedRequested || linksRevision === previous) return;
+    void queryClient.resetQueries({ queryKey: queryKeys.taskArchivedSessions(task.id) });
+  }, [archivedRequested, linksRevision, queryClient, task.id]);
   const archivedLoaded = archivedRequested && archivedQuery.isSuccess;
-  const hasArchivedCandidates = task.sessionIds.length > linkedSessions.filter((session) => !session.archived).length;
+  const hasArchivedCandidates = task.sessionCount > linkedSessions.filter((session) => !session.archived).length;
 
   return (
     <SessionList

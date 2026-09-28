@@ -13,7 +13,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task-1", title: "Design migration", kind: "task", muted: false, deferred: false, status: "active",
     notes: "", priority: 0, order: 0, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
-    sessionIds: [], workItems: [], pullRequests: [], tags: [], ...overrides,
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [], tags: [], ...overrides,
   };
 }
 

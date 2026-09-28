@@ -10,7 +10,7 @@ const COPILOT_USAGE_INDEX_POLL_INTERVAL = 2_000;
 export interface CopilotUsageQueryScope {
   taskId?: string;
   includeSessions?: boolean;
-  sessionIds?: readonly string[];
+  sessionLinksRevision?: string;
   range?: CopilotUsageRangeKey;
 }
 
@@ -55,7 +55,7 @@ export function useCopilotUsageQuery(scope?: CopilotUsageQueryScope) {
 
   const refresh = useCallback(async () => {
     return refreshCopilotUsageQuery(queryClient, scope);
-  }, [queryClient, scope?.includeSessions, scope?.sessionIds, scope?.taskId, scope?.range]);
+  }, [queryClient, scope?.includeSessions, scope?.sessionLinksRevision, scope?.taskId, scope?.range]);
 
   return {
     ...query,

@@ -7,10 +7,10 @@ import {
   getTaskDraftSessionPath,
 } from "./session-path";
 
-function task(sessionIds: string[]): Pick<Task, "id" | "sessionIds"> {
+function task(activeSessionIds: string[]): Pick<Task, "id" | "activeSessionIds"> {
   return {
     id: "task-123",
-    sessionIds,
+    activeSessionIds,
   };
 }
 

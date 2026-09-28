@@ -8,6 +8,7 @@ import {
   type Task,
 } from "./api";
 import { updateTaskInQueryCaches } from "./lib/task-query-cache";
+import { removeActiveSessionFromTask } from "./lib/task-session-links";
 import type { SendMode } from "../shared/send-mode.js";
 
 type DeleteSession = (sessionId: string) => Promise<void>;
@@ -46,11 +47,7 @@ export interface SendMaterializedFirstPromptOptions {
 }
 
 function removeSessionFromTask(task: Task, sessionId: string, taskId: string): Task {
-  if (task.id !== taskId || !task.sessionIds.includes(sessionId)) return task;
-  return {
-    ...task,
-    sessionIds: task.sessionIds.filter((candidate) => candidate !== sessionId),
-  };
+  return task.id === taskId ? removeActiveSessionFromTask(task, sessionId) : task;
 }
 
 export function removeFailedFirstSendSessionFromCache(

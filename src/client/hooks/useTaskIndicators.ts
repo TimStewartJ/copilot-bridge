@@ -70,13 +70,33 @@ export function describeTabAttention(
   return `${attention}; ${summary.needsUserInputCount} ${answerVerb} an answer`;
 }
 
-/** Max of task.updatedAt and the latest session activity across all linked sessions (including archived). */
+/**
+ * Latest activity of loaded archived sessions, per linked task. Tasks list only their active
+ * sessions, so archived ones are matched through their own links.
+ */
+export function getArchivedActivityByTask(sessions: Iterable<Session>): Map<string, string> {
+  const latestByTask = new Map<string, string>();
+  for (const session of sessions) {
+    if (!session.archived || !session.linkedTaskIds?.length) continue;
+    const t = getSessionActivityTime(session);
+    if (!t) continue;
+    for (const taskId of session.linkedTaskIds) {
+      const current = latestByTask.get(taskId);
+      if (!current || t > current) latestByTask.set(taskId, t);
+    }
+  }
+  return latestByTask;
+}
+
+/** Max of task.updatedAt and the latest session activity across its loaded linked sessions (including archived). */
 export function getTaskLastActivity(
   task: Task,
   sessionMap: Map<string, Session>,
+  archivedActivityByTask?: Map<string, string>,
 ): string {
-  let latest = task.updatedAt;
-  for (const sid of task.sessionIds) {
+  const archivedActivity = archivedActivityByTask?.get(task.id);
+  let latest = archivedActivity && archivedActivity > task.updatedAt ? archivedActivity : task.updatedAt;
+  for (const sid of task.activeSessionIds) {
     const session = sessionMap.get(sid);
     if (!session) continue;
     const t = getSessionActivityTime(session);
@@ -94,13 +114,14 @@ export function getTaskIndicator(
   sessionMap: Map<string, Session>,
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
   activeSessionId?: string | null,
+  archivedActivityByTask?: Map<string, string>,
 ): TaskIndicator {
   let busyCount = 0;
   let stalledCount = 0;
   let unreadCount = 0;
   let needsUserInputCount = 0;
 
-  for (const sid of task.sessionIds) {
+  for (const sid of task.activeSessionIds) {
     const session = sessionMap.get(sid);
     if (!session || session.archived) continue;
 
@@ -115,7 +136,7 @@ export function getTaskIndicator(
     if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
   }
 
-  const lastActivity = getTaskLastActivity(task, sessionMap);
+  const lastActivity = getTaskLastActivity(task, sessionMap, archivedActivityByTask);
   const hasUnreadActivity = unreadCount > 0 || needsUserInputCount > 0;
   return {
     busy: busyCount > 0,
@@ -144,13 +165,15 @@ export default function useTaskIndicators(
     return map;
   }, [sessions]);
 
+  const archivedActivityByTask = useMemo(() => getArchivedActivityByTask(sessions), [sessions]);
+
   const indicators = useMemo(() => {
     const result = new Map<string, TaskIndicator>();
     for (const task of tasks) {
-      result.set(task.id, getTaskIndicator(task, sessionMap, isUnread, activeSessionId));
+      result.set(task.id, getTaskIndicator(task, sessionMap, isUnread, activeSessionId, archivedActivityByTask));
     }
     return result;
-  }, [tasks, sessionMap, isUnread, activeSessionId]);
+  }, [tasks, sessionMap, isUnread, activeSessionId, archivedActivityByTask]);
 
   return indicators;
 }
@@ -162,7 +185,7 @@ export function countTaskUnread(
   isUnread: (sessionId: string, modifiedTime?: string) => boolean,
   activeSessionId?: string | null,
 ): number {
-  return task.sessionIds.filter((sid) => {
+  return task.activeSessionIds.filter((sid) => {
     if (sid === activeSessionId) return false;
     const session = sessionMap.get(sid);
     return !!session && !session.archived && !isSessionActive(session) && isUnread(sid, getSessionActivityTime(session));

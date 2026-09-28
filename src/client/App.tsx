@@ -56,6 +56,7 @@ import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
+import { addActiveSessionToTask, findTaskForSession, isSessionLinkedToTask } from "./lib/task-session-links";
 import { buildOptimisticSessionModelState } from "./lib/session-model";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 
@@ -498,7 +499,7 @@ function AppShell() {
       task,
       previousStatus,
       checklistItems,
-      linkedSessions: sessions.filter((session) => task.sessionIds.includes(session.sessionId)),
+      linkedSessions: sessions.filter((session) => isSessionLinkedToTask(task, session)),
       pullRequests: enriched?.pullRequests,
     });
   }, [queryClient, sessions]);
@@ -575,6 +576,8 @@ function AppShell() {
           patchSessionInCache(event.sessionId, { archived: event.archived });
         }
         invalidateAllSessionQueries();
+        // Tasks list only their active sessions, so archiving changes their lists and counts.
+        void invalidateTasks();
         break;
       case "session:agents":
         if (event.sessionId && event.backgroundAgents) {
@@ -850,9 +853,7 @@ function AppShell() {
 
   const linkOptimisticTaskSession = useCallback((taskId: string, sessionId: string) => {
     const addSessionToTask = (task: Task): Task =>
-      task.id === taskId && !task.sessionIds.includes(sessionId)
-        ? { ...task, sessionIds: [...task.sessionIds, sessionId] }
-        : task;
+      task.id === taskId ? addActiveSessionToTask(task, sessionId) : task;
 
     updateTaskInQueryCaches(queryClient, taskId, addSessionToTask);
   }, [queryClient]);
@@ -946,8 +947,9 @@ function AppShell() {
   const getNextSessionId = useCallback((removedId: string): string | null => {
     // Determine the right scope: task-linked sessions or orphan sessions
     const activeTask = location.pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
+    const scopedTask = activeTask ? tasks.find((t) => t.id === activeTask) : undefined;
     const scopedSessions = activeTask
-      ? sessions.filter((s) => tasks.find((t) => t.id === activeTask)?.sessionIds.includes(s.sessionId))
+      ? sessions.filter((s) => !!scopedTask && isSessionLinkedToTask(scopedTask, s))
       : globalSessions;
     const visible = scopedSessions.filter((s) => !s.archived && !archivingIds.has(s.sessionId) && s.sessionId !== removedId);
     if (visible.length === 0) return null;
@@ -982,7 +984,7 @@ function AppShell() {
     // Validate the remembered chat still exists as an orphan (not linked to a task)
     const isValidQuickChat = lastChatId &&
       globalSessions.some((s) => s.sessionId === lastChatId && !s.archived) &&
-      !tasks.some((t) => t.sessionIds.includes(lastChatId));
+      !findTaskForSession(tasks, lastChatId, sessions.find((s) => s.sessionId === lastChatId));
 
     if (isValidQuickChat) {
       navigate(`/sessions/${lastChatId}`);
@@ -1131,7 +1133,7 @@ function AppShell() {
       const sessionId = await createTaskSession(taskId, options);
       addPendingPromptSession(sessionId);
       const addSession = (t: Task) =>
-        t.id === taskId ? { ...t, sessionIds: [...t.sessionIds, sessionId] } : t;
+        t.id === taskId ? addActiveSessionToTask(t, sessionId) : t;
       updateTaskInQueryCaches(queryClient, taskId, addSession);
       return sessionId;
     } else {
@@ -1594,7 +1596,7 @@ function AppShell() {
   };
 
   const handleForkSession = async (sessionId: string, opts?: { toEventId?: string }) => {
-    const linkedTaskId = tasks.find((task) => task.sessionIds.includes(sessionId))?.id;
+    const linkedTaskId = findTaskForSession(tasks, sessionId, sessions.find((s) => s.sessionId === sessionId))?.id;
     try {
       const accepted = await startSessionFork(sessionId, opts);
       const toastId = `session-fork-${accepted.job.id}`;
@@ -1725,7 +1727,7 @@ function AppShell() {
       const nextId = (() => {
         // Find the next sibling session not in the bulk set
         const pool = activeTaskId
-          ? sessions.filter((s) => !s.archived && selectedTask?.sessionIds.includes(s.sessionId))
+          ? sessions.filter((s) => !s.archived && selectedTask?.activeSessionIds.includes(s.sessionId))
           : globalSessions.filter((s) => !s.archived);
         const remaining = pool.filter((s) => !bulkSet.has(s.sessionId));
         return remaining.length > 0 ? remaining[remaining.length - 1].sessionId : null;

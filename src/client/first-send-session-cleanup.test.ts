@@ -40,7 +40,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: "2026-05-21T12:00:00.000Z",
     updatedAt: "2026-05-21T12:00:00.000Z",
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     ...overrides,
@@ -65,11 +65,11 @@ describe("first-send session cleanup", () => {
     );
     queryClient.setQueryData<Task[]>(
       queryKeys.tasks,
-      [createTask({ sessionIds: ["session-existing", "session-new"] })],
+      [createTask({ activeSessionIds: ["session-existing", "session-new"] })],
     );
     queryClient.setQueryData<Task>(
       queryKeys.task("task-1"),
-      createTask({ sessionIds: ["session-new"] }),
+      createTask({ activeSessionIds: ["session-new"] }),
     );
     const sendError = new Error("send failed");
     const sendChatMessage = vi.fn(async () => {
@@ -126,9 +126,9 @@ describe("first-send session cleanup", () => {
     for (const [, sessions] of sessionQueries) {
       expect(sessions?.some((session) => session.sessionId === "session-new")).toBe(false);
     }
-    expect(queryClient.getQueryData<Task[]>(queryKeys.tasks)?.[0]?.sessionIds)
+    expect(queryClient.getQueryData<Task[]>(queryKeys.tasks)?.[0]?.activeSessionIds)
       .toEqual(["session-existing"]);
-    expect(queryClient.getQueryData<Task>(queryKeys.task("task-1"))?.sessionIds).toEqual([]);
+    expect(queryClient.getQueryData<Task>(queryKeys.task("task-1"))?.activeSessionIds).toEqual([]);
     expect(invalidateAllSessionQueries).toHaveBeenCalledTimes(1);
     expect(invalidateTasks).toHaveBeenCalledTimes(1);
   });

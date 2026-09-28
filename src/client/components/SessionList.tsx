@@ -27,6 +27,7 @@ import { formatSessionModelLabel } from "../lib/session-model";
 import DeferredWorkSheet from "./DeferredWorkSheet";
 import SessionModelDialog, { canKeepCurrentReasoningEffortForModel } from "./SessionModelDialog";
 import { getPromptProfileInfo } from "../../shared/prompt-profiles.js";
+import { findTaskForSession } from "../lib/task-session-links";
 
 /** A session log this large is worth noticing; smaller ones keep their size in the tooltip only. */
 export const LARGE_SESSION_LOG_BYTES = 50 * 1024 * 1024;
@@ -302,7 +303,7 @@ export default function SessionList({
 
   // Find which task (if any) the context-menu'd session is linked to
   const ctxLinkedTask = ctxMenu && tasks
-    ? tasks.find((t) => t.sessionIds.includes(ctxMenu.id))
+    ? findTaskForSession(tasks, ctxMenu.id, ctxSession)
     : null;
   const canSelectFromMenu = !!onBulkAction && !!ctxSession && !ctxSession.archived;
   const canReloadFromMenu = !!onReloadSession && !!ctxSession;

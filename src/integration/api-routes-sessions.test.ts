@@ -440,6 +440,36 @@ describe("Session routes (mocked)", () => {
     expect((await request(app).get(`/api/tasks/${task.id}/archived-sessions?limit=0`)).status).toBe(400);
   });
 
+  it("task routes send active session IDs and counts, never the full link list", async () => {
+    ({ app, ctx } = createTestApp());
+    const task = ctx.taskStore.createTask("Scheduled task");
+    ctx.taskStore.createTask("Empty task");
+    for (const id of ["run-1", "run-2", "run-3"]) ctx.taskStore.linkSession(task.id, id);
+    for (const id of ["run-1", "run-2"]) {
+      expect((await request(app).patch(`/api/sessions/${id}`).send({ archived: true })).status).toBe(200);
+    }
+
+    const list = await request(app).get("/api/tasks");
+    expect(list.status).toBe(200);
+    const listed = list.body.tasks.find((candidate: any) => candidate.id === task.id);
+    expect(listed).toMatchObject({ activeSessionIds: ["run-3"], sessionCount: 3, archivedSessionCount: 2 });
+    expect(listed).not.toHaveProperty("sessionIds");
+    expect(list.body.tasks.find((candidate: any) => candidate.title === "Empty task"))
+      .toMatchObject({ activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0 });
+
+    const single = await request(app).get(`/api/tasks/${task.id}`);
+    expect(single.body.task).toMatchObject({ activeSessionIds: ["run-3"], sessionCount: 3, sessionLinksRevision: listed.sessionLinksRevision });
+    expect(single.body.task).not.toHaveProperty("sessionIds");
+
+    // Swapping one link for another keeps the count but must change the revision.
+    await request(app).delete(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "run-1" });
+    const linked = await request(app).post(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "run-4" });
+    expect(linked.status).toBe(200);
+    expect(linked.body.task).toMatchObject({ activeSessionIds: ["run-3", "run-4"], sessionCount: 3, archivedSessionCount: 1 });
+    expect(linked.body.task.sessionLinksRevision).not.toBe(listed.sessionLinksRevision);
+    expect(linked.body.task).not.toHaveProperty("sessionIds");
+  });
+
   it("GET /api/sessions keeps sessions visible when any linked task is active", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([

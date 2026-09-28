@@ -29,7 +29,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: "2026-08-11T12:00:00.000Z",
     updatedAt: "2026-08-11T12:00:00.000Z",
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     ...overrides,
@@ -91,11 +91,11 @@ describe("useActiveTask", () => {
         updateTaskInQueryCaches(queryClient, "deep-task", (task) => ({
           ...task,
           title: "Updated from cache",
-          sessionIds: ["session-1"],
+          activeSessionIds: ["session-1"],
         }));
       });
       await waitUntilAct(harness.act, () => getSelected()?.title === "Updated from cache");
-      expect(getSelected()?.sessionIds).toEqual(["session-1"]);
+      expect(getSelected()?.activeSessionIds).toEqual(["session-1"]);
     } finally {
       queryClient.clear();
       await harness.cleanup();

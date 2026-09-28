@@ -53,7 +53,7 @@ function createTaskHelper(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: NOW_HELPERS,
     updatedAt: NOW_HELPERS,
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     ...overrides,

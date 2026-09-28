@@ -156,7 +156,7 @@ describe("refreshCopilotUsageQuery", () => {
 
     const options = getCopilotUsageQueryOptions({
       taskId: "task-1",
-      sessionIds: ["session-1", "session-2"],
+      sessionLinksRevision: "links-1",
     });
     await queryClient.fetchQuery(options);
 
@@ -165,8 +165,7 @@ describe("refreshCopilotUsageQuery", () => {
       "task-1",
       true,
       "all",
-      "session-1",
-      "session-2",
+      "links-1",
     ]);
     expect(vi.mocked(fetchCopilotUsage)).toHaveBeenCalledWith(expect.objectContaining({
       taskId: "task-1",

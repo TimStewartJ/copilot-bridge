@@ -4,7 +4,7 @@ import { isSetAsideTask, mergeVisibleOrder } from "./task-helpers";
 
 const task = (id: string, order: number, extra: Partial<Task> = {}): Task => ({
   id, title: id, kind: "task", muted: false, deferred: false, status: "active", notes: "", priority: 0, order,
-  createdAt: "", updatedAt: "", sessionIds: [], workItems: [], pullRequests: [], ...extra,
+  createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [], ...extra,
 });
 
 describe("sidebar ordering around set-aside tasks", () => {
