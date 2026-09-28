@@ -15,7 +15,7 @@ import TaskRail from "./TaskRail";
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task-1", title: "Current work", kind: "task", muted: false, deferred: false, status: "active",
-    notes: "", priority: 0, order: 0, createdAt: NOW, updatedAt: NOW, sessionIds: [], workItems: [], pullRequests: [],
+    notes: "", priority: 0, order: 0, createdAt: NOW, updatedAt: NOW, activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [],
     ...overrides,
   };
 }

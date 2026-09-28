@@ -112,6 +112,22 @@ describe("persisted session discovery", () => {
     ]);
   });
 
+  it("keeps archived catalog sessions out of the active list, also when it reuses the archived-inclusive list", async () => {
+    const { app } = createDiscoveryApp();
+    expect((await request(app).patch("/api/sessions/shared").send({ archived: true })).status).toBe(200);
+    const ids = (res: { body: { sessions: Array<{ sessionId: string }> } }) =>
+      res.body.sessions.map((session) => session.sessionId).sort();
+
+    const all = await request(app).get("/api/sessions?includeArchived=true");
+    expect(ids(all)).toEqual(["catalog-only", "shared"]);
+    const activeFromAll = await request(app).get("/api/sessions");
+    expect(ids(activeFromAll)).toEqual(["catalog-only"]);
+
+    expect((await request(app).patch("/api/sessions/shared").send({ archived: false })).status).toBe(200);
+    const activeAfterRestore = await request(app).get("/api/sessions");
+    expect(ids(activeAfterRestore)).toEqual(["catalog-only", "shared"]);
+  });
+
   it("retains disk-only sessions beyond the optimistic grace period and discovers later creations", async () => {
     const { app, ctx, copilotHome } = createDiscoveryApp();
     let now = Date.now();

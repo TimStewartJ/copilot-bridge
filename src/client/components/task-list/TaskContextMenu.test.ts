@@ -27,7 +27,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     order: 0,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
-    sessionIds: [],
+    activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
     workItems: [],
     pullRequests: [],
     tags: [],

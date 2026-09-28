@@ -46,7 +46,7 @@ function task(overrides: Partial<Task>): Task {
     order: 0,
     createdAt: "2026-09-01T00:00:00.000Z",
     updatedAt: "2026-09-01T00:00:00.000Z",
-    sessionIds: [SESSION_ID],
+    activeSessionIds: [SESSION_ID], sessionCount: 1, archivedSessionCount: 0, sessionLinksRevision: "rev-1",
     workItems: [],
     pullRequests: [],
     ...overrides,
@@ -118,7 +118,7 @@ describe("resolveBridgeReference", () => {
       session({ sessionId: "bbbbbbbb-2222-4000-8000-000000000002", runState: "busy" }),
       session({ sessionId: "cccccccc-3333-4000-8000-000000000003", runState: "busy", archived: true }),
     ];
-    const tasks = [task({ sessionIds: sessions.map((entry) => entry.sessionId), nextAction: "Review biome blend" })];
+    const tasks = [task({ activeSessionIds: sessions.map((entry) => entry.sessionId), nextAction: "Review biome blend" })];
     expect(reference.resolveBridgeReference({ kind: "task", taskId: "task-1" }, { sessions, tasks })).toMatchObject({
       title: "Tellus Expeditions",
       tone: "waiting",
@@ -182,7 +182,7 @@ describe("Bridge references in chat messages", () => {
   });
 
   it("turns a link alone on its line into a card, including plain app routes", async () => {
-    data.tasks = [task({ nextAction: "Review biome blend", sessionIds: [] })];
+    data.tasks = [task({ nextAction: "Review biome blend", activeSessionIds: [] })];
     const harness = await createReactDomHarness();
     try {
       await harness.render(createElement(MessageBubble, {

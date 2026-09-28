@@ -337,7 +337,8 @@ describe("Task routes", () => {
     expect(res.body.task).toEqual(expect.objectContaining({
       title: "New Task",
       workItems: [{ id: "30000015", provider: "ado" }],
-      sessionIds: [],
+      activeSessionIds: [],
+      sessionCount: 0,
     }));
   });
 

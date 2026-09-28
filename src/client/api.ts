@@ -514,7 +514,13 @@ export interface Task {
   createdAt: string;
   completedAt?: string;
   updatedAt: string;
-  sessionIds: string[];
+  /** Linked sessions that are not archived. Archived links are only counted; page them from the task. */
+  activeSessionIds: string[];
+  /** Every linked session, archived ones included. */
+  sessionCount: number;
+  archivedSessionCount: number;
+  /** Changes whenever a session is linked or unlinked. Use it to key task-scoped session queries. */
+  sessionLinksRevision: string;
   workItems: WorkItemRef[];
   pullRequests: PRRef[];
   tags?: Tag[];

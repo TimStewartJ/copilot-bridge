@@ -128,7 +128,7 @@ export function resolveBridgeReference(
       if (!task) {
         return { kind: "task", path: bridgeLinkToAppPath(target), title: label || "Task", found: false, tone: "unknown" };
       }
-      const linked = data.sessions.filter((session) => task.sessionIds.includes(session.sessionId) && !session.archived);
+      const linked = data.sessions.filter((session) => task.activeSessionIds.includes(session.sessionId) && !session.archived);
       const waiting = linked.filter((session) => session.needsUserInput).length;
       const running = linked.filter((session) => !session.needsUserInput && getSessionRunState(session) !== "idle").length;
       const unread = linked.filter((session) => (

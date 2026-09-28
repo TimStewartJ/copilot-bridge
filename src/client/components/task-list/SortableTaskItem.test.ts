@@ -28,7 +28,7 @@ vi.mock("@dnd-kit/sortable", async (importOriginal) => {
 const task: Task = {
   id: "task-1", title: "Ship it", kind: "task", muted: false, deferred: false, status: "active",
   notes: "", priority: 0, order: 0, createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
-  sessionIds: [], workItems: [], pullRequests: [],
+  activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [],
 };
 
 function indicator(overrides: Partial<TaskIndicator> = {}): TaskIndicator {

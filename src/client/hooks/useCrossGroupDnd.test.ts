@@ -27,7 +27,7 @@ function collide(boxes: Record<string, Box & { group?: boolean }>, dragged: stri
 
 function task(id: string, groupId?: string): Task {
   return { id, title: id, kind: "task", muted: false, deferred: false, status: "active", notes: "", priority: 0, order: 0,
-    createdAt: "", updatedAt: "", sessionIds: [], workItems: [], pullRequests: [], groupId };
+    createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [], groupId };
 }
 
 const groupA: TaskGroup = { id: "a", name: "A", order: 0 } as TaskGroup;

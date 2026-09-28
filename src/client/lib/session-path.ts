@@ -12,7 +12,7 @@ export function getSessionPath({ sessionId, taskId }: SessionNavigationTarget): 
 }
 
 export interface TaskChatNavigationTarget {
-  task: Pick<Task, "id" | "sessionIds">;
+  task: Pick<Task, "id" | "activeSessionIds">;
   sessions: Session[];
   lastViewedSessionId?: string | null;
 }
@@ -26,7 +26,7 @@ export function getTaskActiveChatSessionId({
   sessions,
   lastViewedSessionId,
 }: TaskChatNavigationTarget): string | null {
-  const linkedSessionIds = new Set(task.sessionIds);
+  const linkedSessionIds = new Set(task.activeSessionIds);
   if (linkedSessionIds.size === 0) return null;
 
   const activeLinkedSessions = sessions.filter((session) =>
