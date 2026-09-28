@@ -22,6 +22,8 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   "session.getActivity": 30_000,
   "session.getContextInfo": 30_000,
   "session.truncateHistory": 60_000,
+  // A summary of a long conversation can take minutes.
+  "session.compactHistory": 10 * 60_000,
   "session.listMcpServers": 60_000,
   "session.initializeTools": 5 * 60_000,
   "session.getCurrentToolMetadata": 60_000,

@@ -349,6 +349,10 @@ export class SessionRunStateController {
     return this.sessionRuns.has(sessionId);
   }
 
+  getSessionRunAttentionMode(sessionId: string): "normal" | "quiet" | undefined {
+    return this.sessionRuns.get(sessionId)?.attentionMode;
+  }
+
   isSessionBusy(sessionId: string): boolean {
     return this.getSessionRunState(sessionId) !== "idle";
   }

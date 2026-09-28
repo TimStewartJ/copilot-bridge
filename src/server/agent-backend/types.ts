@@ -149,6 +149,11 @@ type CopilotModelSwitchTo = CopilotSession["rpc"]["model"]["switchTo"];
 /** Copilot runtime `session.model.switchTo` result, including the compaction preflight projection. */
 export type AgentModelSwitchResult = Awaited<ReturnType<CopilotModelSwitchTo>>;
 
+type CopilotHistoryCompact = CopilotSession["rpc"]["history"]["compact"];
+
+/** Copilot runtime `session.history.compact` result. `success: false` means nothing changed. */
+export type AgentCompactionResult = Awaited<ReturnType<CopilotHistoryCompact>>;
+
 export type AgentModelSwitchConfirmation = NonNullable<AgentModelSwitchResult["confirmation"]>;
 
 export interface AgentSlashCommandInvocation {
@@ -418,6 +423,12 @@ export interface AgentSession {
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;
+
+  /**
+   * Summarizes the conversation with the current model. Safe while a turn runs: the runtime compacts in
+   * the background and keeps what was added after compaction started. Resolves `undefined` when unsupported.
+   */
+  compactHistory?(opts?: { customInstructions?: string }): Promise<AgentCompactionResult | undefined>;
 
   /** List MCP servers configured for the session. Resolves `undefined` when unsupported. */
   listMcpServers(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined>;

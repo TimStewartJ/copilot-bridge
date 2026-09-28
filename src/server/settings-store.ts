@@ -19,6 +19,11 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { isPromptProfileSetting, type PromptProfileSetting } from "../shared/prompt-profiles.js";
 import {
+  IMAGE_BUDGET_MAX_CEILING_MB,
+  IMAGE_BUDGET_MODEL_PATTERN,
+  type ImageBudgetSettings,
+} from "../shared/image-budget.js";
+import {
   SUBAGENT_EFFORT_PATTERN,
   SUBAGENT_NAME_PATTERN,
   type SubagentAgentSetting,
@@ -112,6 +117,8 @@ export interface AppSettings {
   subagents?: SubagentSettings;
   computerUse?: ComputerUseSettings;
   helm?: HelmSettings;
+  /** Early compaction for models whose provider rejects large requests; unset uses the defaults. */
+  imageBudget?: ImageBudgetSettings;
 }
 
 export type AppSettingsUpdates = Partial<AppSettings>;
@@ -323,6 +330,29 @@ function normalizeComputerUseSettings(value: unknown): ComputerUseSettings | und
     validationError("computerUse.enabled must be a boolean");
   }
   return enabled === true ? { enabled: true } : undefined;
+}
+
+function normalizeImageBudgetSettings(value: unknown): ImageBudgetSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("imageBudget must be an object");
+  const result: ImageBudgetSettings = {};
+  if (value.enabled !== undefined && value.enabled !== null) {
+    if (typeof value.enabled !== "boolean") validationError("imageBudget.enabled must be a boolean");
+    if (value.enabled === false) result.enabled = false;
+  }
+  if (value.ceilingsMb !== undefined && value.ceilingsMb !== null) {
+    if (!isRecord(value.ceilingsMb)) validationError("imageBudget.ceilingsMb must be an object");
+    const ceilings: Record<string, number> = {};
+    for (const [pattern, mb] of Object.entries(value.ceilingsMb)) {
+      if (!IMAGE_BUDGET_MODEL_PATTERN.test(pattern)) validationError(`imageBudget.ceilingsMb has an invalid model pattern: ${pattern}`);
+      if (typeof mb !== "number" || !Number.isFinite(mb) || mb <= 0 || mb > IMAGE_BUDGET_MAX_CEILING_MB) {
+        validationError(`imageBudget.ceilingsMb.${pattern} must be a number of MB above 0 and at most ${IMAGE_BUDGET_MAX_CEILING_MB}`);
+      }
+      ceilings[pattern] = mb;
+    }
+    result.ceilingsMb = ceilings;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
@@ -580,6 +610,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("subagents" in value) normalized.subagents = normalizeSubagentSettings(value.subagents);
   if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
+  if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
   const legacy = migrateLegacyResponseQualityBlock(normalized.customInstructions);
   if (legacy.migrated) {
     normalized.customInstructions = legacy.customInstructions;

@@ -11,6 +11,7 @@ import {
   DeferWorkerSection,
   SubagentModelsSection,
   ComputerUseSection,
+  ImageBudgetSection,
   AppearanceSection,
   NotificationsSection,
   DeviceManagementSection,
@@ -315,6 +316,7 @@ export default function SettingsView() {
               <ModelSection draft={draft} setDraft={setDraft} />
               <DeferWorkerSection draft={draft} setDraft={setDraft} />
               <SubagentModelsSection draft={draft} setDraft={setDraft} />
+              <ImageBudgetSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>
 
             <CategoryPanel category="responses" activeCategory={activeCategory}>

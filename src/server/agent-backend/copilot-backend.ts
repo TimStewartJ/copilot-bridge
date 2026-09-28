@@ -52,6 +52,7 @@ import type {
   AgentCurrentModel,
   AgentElicitationResponse,
   AgentMcpOauthLoginOptions,
+  AgentCompactionResult,
   AgentMcpServerStatus,
   AgentModelSwitchResult,
   AgentToolMetadata,
@@ -548,6 +549,12 @@ class CopilotAgentSession implements AgentSession {
     const truncate = this.session?.rpc?.history?.truncate;
     if (typeof truncate !== "function") return undefined;
     return this.rpc("session.truncateHistory", () => truncate.call(this.session.rpc.history, opts));
+  }
+
+  async compactHistory(opts?: { customInstructions?: string }): Promise<AgentCompactionResult | undefined> {
+    const compact = this.session?.rpc?.history?.compact;
+    if (typeof compact !== "function") return undefined;
+    return this.rpc("session.compactHistory", () => compact.call(this.session.rpc.history, opts ?? {}));
   }
 
   async listMcpServers(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined> {
