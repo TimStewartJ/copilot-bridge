@@ -25,8 +25,8 @@ import { sendMaterializedFirstPrompt } from "../first-send-session-cleanup";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { useSettingsMutation, useSettingsQuery } from "../hooks/queries/useSettings";
-import type { StartBackgroundVoiceJobOptions, VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
-import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
+import type { UseBackgroundVoiceJobsResult, VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import type { VoiceCaptureSubmission } from "../lib/voice-submit-mode";
 import { timeAgo } from "../time";
 import type { Draft } from "../useDrafts";
 import { useHandsFree } from "../voice/HandsFreeProvider";
@@ -65,7 +65,7 @@ export interface HelmViewProps {
   setDraft: (composerKey: string, text: string, attachments?: Attachment[]) => void;
   clearDraft: (composerKey: string) => void;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
-  startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
+  startBackgroundVoiceJob: UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"];
   retryVoiceJobUpload: (composerKey: string) => void;
   reviewVoiceJob: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
@@ -481,9 +481,9 @@ export default function HelmView({
   }, [ensureConversation, handleMessageSent]);
 
   /** A recording made before any conversation exists still belongs to Helm, not to a new quick chat. */
-  const handleSubmitVoiceCapture = useCallback(async (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => {
+  const handleSubmitVoiceCapture = useCallback(async (capture: VoiceCaptureSubmission) => {
     const target = await ensureConversation();
-    await startBackgroundVoiceJob({ ...capture, composerKey: target });
+    return startBackgroundVoiceJob({ ...capture, composerKey: target });
   }, [ensureConversation, startBackgroundVoiceJob]);
 
   const showResumable = !current || current.turnCount === 0;

@@ -1,5 +1,6 @@
 import type { VoiceSubmitMode } from "./voice-submit-mode";
 import type { CreateSessionOptions } from "../api";
+import type { SendMode } from "../../shared/send-mode.js";
 
 const DB_NAME = "copilot-bridge-voice";
 const DB_VERSION = 1;
@@ -19,6 +20,7 @@ export interface PendingVoiceRecording {
   serverJobId?: string;
   lastError?: string;
   sessionOptions?: CreateSessionOptions;
+  sendMode?: SendMode;
 }
 
 export type VoicePersistFailureReason = "too-large" | "unavailable" | "conflict" | "quota";
@@ -35,6 +37,7 @@ export interface SavePendingVoiceRecordingInput {
   audio: ArrayBuffer;
   mimeType: string;
   sessionOptions?: CreateSessionOptions;
+  sendMode?: SendMode;
 }
 
 type PendingRecordingPatch = Partial<Pick<PendingVoiceRecording, "submitMode" | "serverJobId" | "lastError">>;
@@ -176,6 +179,7 @@ export async function savePendingVoiceRecording(
     createdAt: now,
     updatedAt: now,
     ...(input.sessionOptions ? { sessionOptions: input.sessionOptions } : {}),
+    ...(input.sendMode ? { sendMode: input.sendMode } : {}),
   };
 
   const memoryConflict = memoryFallback.get(record.composerKey);

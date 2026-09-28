@@ -44,7 +44,7 @@ import {
 import { useReadState } from "./useReadState";
 import { TASK_OVERVIEW_KEY } from "./hooks/queries/useTaskOverview";
 import { usePageAttention } from "./usePageAttention";
-import { useBackgroundVoiceJobs, type StartBackgroundVoiceJobOptions, type VoiceBackgroundJob, type VoiceSessionActivity, type VoiceSessionSettled } from "./hooks/useBackgroundVoiceJobs";
+import { useBackgroundVoiceJobs, type UseBackgroundVoiceJobsResult, type VoiceBackgroundJob, type VoiceSessionActivity, type VoiceSessionSettled } from "./hooks/useBackgroundVoiceJobs";
 import {
   useDrafts,
   type DraftLaunchOptions,
@@ -2595,7 +2595,7 @@ function SessionRoute({
   materializeSession: (taskId?: string, options?: CreateSessionOptions) => Promise<string>;
   cleanupFailedFirstSendSession: (sessionId: string, taskId?: string) => Promise<void>;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
-  startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
+  startBackgroundVoiceJob: UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"];
   retryVoiceJobUpload: (composerKey: string) => void;
   reviewVoiceJob: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
@@ -2614,7 +2614,13 @@ function SessionRoute({
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [launchMode, setLaunchMode] = useState<SendMode>(DEFAULT_SEND_MODE);
+  const [launchMode, setLaunchModeState] = useState<SendMode>(DEFAULT_SEND_MODE);
+  /** Counts launch-mode choices, so a voice first message finishing late never undoes a newer one. */
+  const launchModeChoiceRef = useRef(0);
+  const setLaunchMode = useCallback((mode: SendMode) => {
+    launchModeChoiceRef.current += 1;
+    setLaunchModeState(mode);
+  }, []);
 
   const draftRouteKey = getDraftComposerKey(taskId);
   const isDraftRoute = rawSessionId === "new";
@@ -2718,7 +2724,7 @@ function SessionRoute({
 
   const resetLaunchOptions = useCallback(() => {
     setLaunchMode(DEFAULT_SEND_MODE);
-  }, []);
+  }, [setLaunchMode]);
 
   /**
    * A model choice is explicit draft state. Effort and context selections follow
@@ -2949,16 +2955,22 @@ function SessionRoute({
     taskId,
   ]);
 
-  const handleSubmitVoiceCapture = useCallback((capture: {
-    composerKey: string;
-    audio: Blob;
-    submitMode: import("./lib/voice-submit-mode").VoiceSubmitMode;
-  }) => startBackgroundVoiceJob({
-    ...capture,
-    ...(isDraft && Object.keys(launchCreateOptions).length > 0
-      ? { sessionOptions: launchCreateOptions }
-      : {}),
-  }), [isDraft, launchCreateOptions, startBackgroundVoiceJob]);
+  const handleSubmitVoiceCapture = useCallback(async (
+    capture: import("./lib/voice-submit-mode").VoiceCaptureSubmission,
+  ) => {
+    const launchModeChoice = launchModeChoiceRef.current;
+    const delivered = await startBackgroundVoiceJob({
+      ...capture,
+      ...(isDraft && Object.keys(launchCreateOptions).length > 0
+        ? { sessionOptions: launchCreateOptions }
+        : {}),
+    });
+    // An auto-sent recording starts the new chat, so its launch mode is used up like a typed first send's.
+    if (isDraft && delivered === "autosend" && launchModeChoice === launchModeChoiceRef.current) {
+      resetLaunchOptions();
+    }
+    return delivered;
+  }, [isDraft, launchCreateOptions, resetLaunchOptions, startBackgroundVoiceJob]);
 
   const draftEmptyState = isDraft ? (
     <NewSessionLaunchPanel

@@ -121,6 +121,21 @@ describe("fresh database schema", () => {
     reopened.close();
   });
 
+  it("adds the send mode column to existing voice jobs without inventing one", () => {
+    const dataDir = makeTestDir("voice-job-mode-migration");
+    const legacy = openDatabase(dataDir);
+    legacy.exec(`
+      ALTER TABLE voice_jobs DROP COLUMN mode;
+      INSERT INTO voice_jobs(id,composerKey,status,audioPath,createdAt,updatedAt)
+      VALUES('old-voice','session-1','accepted','old.wav','2026-01-01','2026-01-01');
+    `);
+    legacy.close();
+    const migrated = openDatabase(dataDir);
+    expect(migrated.prepare("SELECT id, mode FROM voice_jobs").get())
+      .toEqual({ id: "old-voice", mode: null });
+    migrated.close();
+  });
+
   it("adds the checkpoint column to an existing defer loop table", () => {
     const dataDir = makeTestDir("db-defer-checkpoint-migration");
     const legacy = new DatabaseSync(join(dataDir, "bridge.db"));
