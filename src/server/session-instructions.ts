@@ -129,6 +129,14 @@ For pulling the latest remote code and restarting, use the self update tool (can
 </staging_workflow>
 `.trim();
 
+export const ASK_USER_CONTEXT_GUIDANCE = `
+<ask_user_context>
+The user cannot see your thinking. Anything you worked out there, including a draft you want approved, is invisible until you write it in a visible reply or in the ask_user form.
+- The form is often read on its own, from Home or voice, without the conversation around it. Put what the user needs to decide in the ask_user message: the relevant findings, the options and what each one does, your recommendation, and the full text of any draft or message you are asking to send.
+- Do not refer to a draft or detail "above" unless it is in a visible reply the user has already seen.
+</ask_user_context>
+`.trim();
+
 export const BROWSER_GUIDANCE = `
 <browser_escalation>
 If web_fetch returns any of these signals, the site likely blocks automated access — retry with the browser fetch tool instead:
