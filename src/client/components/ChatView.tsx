@@ -51,7 +51,7 @@ import { summarizeAutopilotRuns } from "../lib/autopilot-runs";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import { buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
 import { groupActivitySegments } from "../lib/chat-activity";
-import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
+import type { SubmitVoiceCapture } from "../lib/voice-submit-mode";
 import { useSessionStream, type LiveReasoningBlock } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
 import { holdPageReload } from "../lib/voice-capture-guard";
@@ -145,7 +145,7 @@ interface ChatViewProps {
   emptyState?: ReactNode;
   defaultSendMode?: SendMode;
   voiceJob?: VoiceBackgroundJob | null;
-  onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
+  onSubmitVoiceCapture: SubmitVoiceCapture;
   onReviewVoiceJob?: (composerKey: string) => void;
   onClearVoiceJobError?: (composerKey: string) => void;
   onRetryVoiceJobUpload?: (composerKey: string) => void;

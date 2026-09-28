@@ -13,6 +13,7 @@ import {
   canAutoSendVoiceTranscript,
   resolveVoiceSubmitMode,
   resolveVoiceSubmitModeAfterRecording,
+  type SubmitVoiceCapture,
   type VoiceSubmitMode,
 } from "../lib/voice-submit-mode";
 import { isDraftComposerKey } from "../lib/composer-key";
@@ -97,7 +98,7 @@ interface ChatInputProps {
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
   voiceJob?: VoiceBackgroundJob | null;
-  onSubmitVoiceCapture: (capture: { composerKey: string; audio: Blob; submitMode: VoiceSubmitMode }) => Promise<void>;
+  onSubmitVoiceCapture: SubmitVoiceCapture;
   onReviewVoiceJob?: (composerKey: string) => void;
   onClearVoiceJobError?: (composerKey: string) => void;
   onRetryVoiceJobUpload?: (composerKey: string) => void;
@@ -150,8 +151,11 @@ export default function ChatInput({
   const attachmentsRef = useRef<Attachment[]>(attachments);
   const uploadingRef = useRef(uploading);
   const sendBlockedRef = useRef(Boolean(disabled || onAbort));
-  /** Voice auto-send goes out without Autopilot, so while it is on a transcript waits in the composer. */
-  const autopilotNextRef = useRef(false);
+  /** The send mode an auto-sent transcript uses, so dictating with Autopilot on starts an Autopilot run. */
+  const nextSendModeRef = useRef<SendMode>(defaultSendMode);
+  const pendingCaptureSendModeRef = useRef<{ mode: SendMode; choice: number } | null>(null);
+  /** Counts send-mode choices, so a recording finishing late never undoes a newer one. */
+  const sendModeChoiceRef = useRef(0);
   const restoredForRef = useRef<string | null>(null);
   const recordingStartModeRef = useRef<VoiceSubmitMode | null>(null);
   const pendingCaptureSubmitModeRef = useRef<VoiceSubmitMode | null>(null);
@@ -261,8 +265,25 @@ export default function ChatInput({
       const submitMode = contextKey === composerKey
         ? (pendingCaptureSubmitModeRef.current ?? "insert")
         : "insert";
+      const capturedSendMode = submitMode === "autosend" ? pendingCaptureSendModeRef.current : null;
+      const sendMode = capturedSendMode?.mode;
       pendingCaptureSubmitModeRef.current = null;
-      await onSubmitVoiceCapture({ composerKey: contextKey, audio, submitMode });
+      pendingCaptureSendModeRef.current = null;
+      const delivered = await onSubmitVoiceCapture({
+        composerKey: contextKey,
+        audio,
+        submitMode,
+        ...(sendMode ? { sendMode } : {}),
+      });
+      // Like a typed send, an auto-sent recording uses up this message's mode choice.
+      if (
+        delivered === "autosend"
+        && capturedSendMode
+        && capturedSendMode.mode !== defaultSendMode
+        && capturedSendMode.choice === sendModeChoiceRef.current
+      ) {
+        chooseSendMode(defaultSendMode);
+      }
     },
     onMaxDurationReached: () => stopVoiceRecordingRef.current(),
   });
@@ -271,9 +292,10 @@ export default function ChatInput({
     pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
       text: inputRef.current,
       attachmentCount: attachmentsRef.current.length,
-      sendBlocked: sendBlockedRef.current || autopilotNextRef.current,
+      sendBlocked: sendBlockedRef.current,
       uploadingCount: uploadingRef.current,
     });
+    pendingCaptureSendModeRef.current = { mode: nextSendModeRef.current, choice: sendModeChoiceRef.current };
     void voice.stopRecording();
   };
 
@@ -288,6 +310,7 @@ export default function ChatInput({
     if (voice.phase === "idle" && !activeVoiceJob) {
       updateRecordingStartMode(null);
       pendingCaptureSubmitModeRef.current = null;
+      pendingCaptureSendModeRef.current = null;
     }
   }, [activeVoiceJob, updateRecordingStartMode, voice.phase]);
 
@@ -532,12 +555,16 @@ export default function ChatInput({
    * each message interactive and the Autopilot toggle switches just that message.
    */
   const [chosenSendMode, setChosenSendMode] = useState<SendMode>(defaultSendMode);
+  const chooseSendMode = useCallback((mode: SendMode) => {
+    sendModeChoiceRef.current += 1;
+    setChosenSendMode(mode);
+  }, []);
   useEffect(() => {
-    setChosenSendMode(defaultSendMode);
-  }, [composerKey, defaultSendMode]);
+    chooseSendMode(defaultSendMode);
+  }, [chooseSendMode, composerKey, defaultSendMode]);
   const nextSendMode: SendMode = isDraft ? defaultSendMode : chosenSendMode;
   const autopilotNext = nextSendMode === "autopilot";
-  autopilotNextRef.current = autopilotNext;
+  nextSendModeRef.current = nextSendMode;
 
   const handleSend = useCallback((mode: SendMode = nextSendMode) => {
     if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
@@ -569,12 +596,12 @@ export default function ChatInput({
       onSend(text || "(attachment)", cleanAttachmentsOrUndefined);
     }
     clearComposer();
-    if (selectedMode) setChosenSendMode(defaultSendMode);
+    if (selectedMode) chooseSendMode(defaultSendMode);
 
     if (textareaRef.current && usesSoftKeyboard()) {
       textareaRef.current.blur();
     }
-  }, [clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, nextSendMode, onAbort, onClearVoiceJobError, onSend, uploading]);
+  }, [chooseSendMode, clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, nextSendMode, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e as any).isComposing || (e as any).keyCode === 229) return;
@@ -609,7 +636,7 @@ export default function ChatInput({
   const canAutoSendNewVoiceTranscript = canAutoSendVoiceTranscript({
     text: input,
     attachmentCount: attachments.length,
-    sendBlocked: Boolean(disabled || onAbort) || autopilotNext,
+    sendBlocked: Boolean(disabled || onAbort),
     uploadingCount: uploading,
   });
   const canAutoSendStoppedRecording =
@@ -803,7 +830,7 @@ export default function ChatInput({
                   updateRecordingStartMode(resolveVoiceSubmitMode({
                     text: inputRef.current,
                     attachmentCount: attachmentsRef.current.length,
-                    sendBlocked: sendBlockedRef.current || autopilotNextRef.current,
+                    sendBlocked: sendBlockedRef.current,
                     uploadingCount: uploadingRef.current,
                   }));
                   pendingCaptureSubmitModeRef.current = null;
@@ -855,7 +882,7 @@ export default function ChatInput({
               type="button"
               onClick={() => {
                 haptic("selection");
-                setChosenSendMode(autopilotNext ? "interactive" : "autopilot");
+                chooseSendMode(autopilotNext ? "interactive" : "autopilot");
               }}
               aria-pressed={autopilotNext}
               aria-label="Autopilot"

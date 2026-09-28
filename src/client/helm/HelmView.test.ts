@@ -123,7 +123,7 @@ function createProps() {
     setDraft: vi.fn(),
     clearDraft: vi.fn(),
     getVoiceJob: vi.fn(() => null),
-    startBackgroundVoiceJob: vi.fn(async () => undefined),
+    startBackgroundVoiceJob: vi.fn(async () => null),
     retryVoiceJobUpload: vi.fn(),
     reviewVoiceJob: vi.fn(),
     clearVoiceJobError: vi.fn(),

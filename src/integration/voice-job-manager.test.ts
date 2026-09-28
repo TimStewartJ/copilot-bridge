@@ -355,6 +355,53 @@ describe("voice job restart gating", () => {
     expect(store.getVoiceJob("job-1")?.status).toBe("done");
   });
 
+  it("starts an Autopilot recording's run in Autopilot, including after a restart", async () => {
+    const transcribe = vi.fn().mockResolvedValue({ text: "fix the flaky tests", provider: "speech-engine" });
+    const { runtimePaths, store, sessionManager, manager } = createManagerHarness(transcribe);
+    sessionManager.readMessagesFromDisk.mockResolvedValue({
+      messages: [{ type: "message", role: "user", content: "fix the flaky tests", timestamp: new Date().toISOString() }],
+      total: 1,
+      hasMore: false,
+    });
+    const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
+    writeFileSync(sourceFilePath, "test-audio");
+
+    const accepted = await manager.acceptVoiceJob({
+      composerKey: "existing-session",
+      targetSessionId: "existing-session",
+      sourceFilePath,
+      originalFilename: "recording.wav",
+      mode: "autopilot",
+    });
+    await vi.waitFor(() => expect(store.getVoiceJob(accepted.id)?.status).toBe("done"));
+    expect(accepted.mode).toBe("autopilot");
+    expect(sessionManager.startWork).toHaveBeenCalledWith(
+      "existing-session",
+      "fix the flaky tests",
+      undefined,
+      { mode: "autopilot" },
+    );
+
+    const id = randomUUID();
+    const audioPath = join(runtimePaths.dataDir, "voice-jobs", id, "recording.wav");
+    mkdirSync(dirname(audioPath), { recursive: true });
+    writeFileSync(audioPath, "test-audio");
+    store.createVoiceJob({ id, composerKey: "existing-session", targetSessionId: "existing-session", audioPath, mode: "autopilot" });
+    store.updateVoiceJob(id, { transcript: "fix the flaky tests" });
+    sessionManager.startWork.mockClear();
+
+    manager.resumePendingJobs();
+    await manager.shutdown();
+
+    expect(sessionManager.startWork).toHaveBeenCalledWith(
+      "existing-session",
+      "fix the flaky tests",
+      undefined,
+      { mode: "autopilot" },
+    );
+    expect(store.getVoiceJob(id)).toMatchObject({ status: "done", mode: "autopilot" });
+  });
+
   it("keeps restart-pending processing failures retryable instead of marking them terminal", async () => {
     vi.useFakeTimers();
     const { runtimePaths, store, manager } = createManagerHarness();

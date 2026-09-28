@@ -7,6 +7,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
+import type { SendMode } from "../shared/send-mode.js";
 import {
   type StoredVoiceJob,
   type VoiceJob,
@@ -23,6 +24,7 @@ interface AcceptVoiceJobInput {
   targetSessionId?: string;
   sourceFilePath: string;
   originalFilename?: string;
+  mode?: SendMode;
   sessionOptions?: {
     model?: string;
     reasoningEffort?: string;
@@ -95,6 +97,7 @@ export function createVoiceJobManager({
     targetSessionId,
     sourceFilePath,
     originalFilename,
+    mode,
     sessionOptions,
   }: AcceptVoiceJobInput): Promise<VoiceJobSnapshot> {
     const id = randomUUID();
@@ -114,6 +117,7 @@ export function createVoiceJobManager({
         taskId,
         targetSessionId: resolvedTargetSessionId,
         audioPath,
+        ...(mode ? { mode } : {}),
       });
 
       startVoiceJobProcessing(id);
@@ -302,7 +306,11 @@ export function createVoiceJobManager({
         }) ?? job);
 
     try {
-      sessionManager.startWork(targetSessionId, transcript);
+      if (job.mode) {
+        sessionManager.startWork(targetSessionId, transcript, undefined, { mode: job.mode });
+      } else {
+        sessionManager.startWork(targetSessionId, transcript);
+      }
       await waitForTranscriptAcceptance(targetSessionId, transcript, sendingJob.updatedAt);
       // A dictated message is Tim's own words, like a typed one: it counts toward task states.
       try { taskStore.recordUserMessage?.(targetSessionId); } catch (error) { console.warn("[voice] Could not record a sent message:", error); }

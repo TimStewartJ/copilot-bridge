@@ -1265,10 +1265,16 @@ export function createApiRouter(
       const taskId = String(req.body?.taskId ?? "").trim() || undefined;
       const sessionId = String(req.body?.sessionId ?? "").trim() || undefined;
       const rawSessionOptions = String(req.body?.sessionOptions ?? "").trim();
+      const rawMode = String(req.body?.mode ?? "").trim();
       if (!composerKey) {
         await cleanupTranscriptionUpload(req);
         return res.status(400).json({ error: "composerKey is required" });
       }
+      if (rawMode && !isSendMode(rawMode)) {
+        await cleanupTranscriptionUpload(req);
+        return res.status(400).json({ error: "mode must be one of: interactive, autopilot" });
+      }
+      const mode = rawMode && isSendMode(rawMode) ? rawMode : undefined;
 
       try {
         let sessionOptions: {
@@ -1309,6 +1315,7 @@ export function createApiRouter(
           targetSessionId: sessionId,
           sourceFilePath: req.file.path,
           originalFilename: req.file.originalname,
+          ...(mode ? { mode } : {}),
           ...(sessionOptions && Object.keys(sessionOptions).length > 0 ? { sessionOptions } : {}),
         });
         return res.status(202).json(job);
