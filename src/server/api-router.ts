@@ -429,6 +429,7 @@ function getSessionStatus(
   pendingUserInputCount: number;
   needsUserInput: boolean;
   backgroundAgents: BackgroundAgentsSummary;
+  agentMode?: "autopilot";
 } {
   const runState = ctx.sessionManager.getSessionRunState(sessionId);
   const pendingUserInputCount = ctx.sessionManager.getPendingUserInputCount(sessionId);
@@ -437,6 +438,7 @@ function getSessionStatus(
     pendingUserInputCount,
     needsUserInput: pendingUserInputCount > 0,
     backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(sessionId),
+    ...(ctx.sessionManager.getSessionAgentMode(sessionId) === "autopilot" ? { agentMode: "autopilot" as const } : {}),
   };
 }
 

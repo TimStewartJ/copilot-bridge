@@ -371,6 +371,68 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("tracks the run's autopilot mode for the session list and the live stream", async () => {
+    const { manager, globalBus, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+    const modeEvents: any[] = [];
+    globalBus.subscribe((event: any) => {
+      if (event.type === "session:mode") modeEvents.push(event);
+    });
+
+    manager.startWork("session-1", "hello", undefined, { mode: "autopilot" });
+    await flushMicrotasks();
+
+    expect(manager.getSessionAgentMode("session-1")).toBe("autopilot");
+    expect(modeEvents).toEqual([{ type: "session:mode", sessionId: "session-1", agentMode: "autopilot" }]);
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().runMode).toBe("autopilot");
+
+    // The CLI can change the mode on its own; the stream and the list follow it.
+    getHandler()?.({
+      type: "session.mode_changed",
+      data: { previousMode: "autopilot", newMode: "interactive" },
+      timestamp: "2026-04-24T12:00:00.000Z",
+    });
+    expect(manager.getSessionAgentMode("session-1")).toBe("interactive");
+    expect(eventBusRegistry.getBus("session-1")?.getSnapshot().runMode).toBe("interactive");
+    expect(modeEvents.at(-1)).toEqual({ type: "session:mode", sessionId: "session-1", agentMode: "interactive" });
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
+    await flushMicrotasks();
+  });
+
+  it("announces the mode again when the next run uses the same mode", async () => {
+    const { manager, globalBus } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+    const modeEvents: any[] = [];
+    globalBus.subscribe((event: any) => {
+      if (event.type === "session:mode") modeEvents.push(event);
+    });
+
+    manager.startWork("session-1", "first", undefined, { mode: "autopilot" });
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:00.000Z" });
+    await flushMicrotasks();
+
+    manager.startWork("session-1", "second", undefined, { mode: "autopilot" });
+    await flushMicrotasks();
+
+    expect(modeEvents.filter((event) => event.agentMode === "autopilot")).toHaveLength(2);
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
+    await flushMicrotasks();
+  });
+
   it("emits a tool_loop_candidate telemetry span when an obvious no-op shell tool starts (observe only)", async () => {
     const { manager, telemetryStore, sessionMetaStore } = createManager({ telemetry: true });
     const { session, getHandler, getReleaseSend } = makeSession();

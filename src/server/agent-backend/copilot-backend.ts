@@ -436,6 +436,13 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.setSendMode", () => setMode.call(this.session.rpc.mode, opts));
   }
 
+  async getSendMode(): Promise<string | undefined> {
+    const getMode = this.session?.rpc?.mode?.get;
+    if (typeof getMode !== "function") return undefined;
+    const mode: unknown = await this.rpc("session.getSendMode", () => getMode.call(this.session.rpc.mode));
+    return typeof mode === "string" ? mode : undefined;
+  }
+
   invokeSlashCommand(command: AgentSlashCommandInvocation): Promise<AgentSlashCommandResult> {
     return this.withToolPermissions(async () => {
       const invoke = this.session?.rpc?.commands?.invoke;

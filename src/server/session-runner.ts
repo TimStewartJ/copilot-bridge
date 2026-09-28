@@ -47,7 +47,7 @@ import {
   truncateQuietIntervalDeferTail,
   type QuietIntervalDeferTailTruncationRequest,
 } from "./session-history-truncation.js";
-import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
 import {
   extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
@@ -456,6 +456,11 @@ export interface SessionRunnerDeps {
 export class SessionRunner {
   private readonly watchdogPromises = new Map<string, Promise<void>>();
   private readonly sessionFeeds = new Map<string, SessionFeed>();
+  /**
+   * The CLI mode each loaded session's runs use. The CLI keeps a session's mode after a run, so a
+   * turn it starts on its own runs in the mode of the last send. Absent means unknown.
+   */
+  private readonly agentModes = new Map<string, SendMode>();
   private readonly mcpSessionRecoveryAttempts = new Map<string, {
     count: number;
     windowStartedAt: number;
@@ -485,7 +490,41 @@ export class SessionRunner {
     };
     this.sessionFeeds.set(sessionId, feed);
     feed.unsubscribe = session.on((event) => this.routeSessionEvent(sessionId, feed, event));
+    this.readAgentModeOnAttach(sessionId, session);
     return feed;
+  }
+
+  getSessionAgentMode(sessionId: string): SendMode | undefined {
+    return this.agentModes.get(sessionId);
+  }
+
+  /**
+   * Records the mode a session's runs use, puts it on the open run's stream, and tells session
+   * lists. `announce` publishes it even when unchanged, because each run start is a new fact for a
+   * list that forgot the previous run.
+   */
+  private noteAgentMode(sessionId: string, mode: SendMode | undefined, announce = false): void {
+    const previous = this.agentModes.get(sessionId);
+    if (mode) this.agentModes.set(sessionId, mode);
+    else this.agentModes.delete(sessionId);
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    if (bus && !bus.complete) bus.setRunMode(mode);
+    if (mode && (announce || previous !== mode)) {
+      this.deps.globalBus.emit({ type: "session:mode", sessionId, agentMode: mode });
+    }
+  }
+
+  /**
+   * A resumed session keeps the mode it had, with no event to say so. Ask once, and only use the
+   * answer if nothing has set the mode meanwhile (a send sets it before it resumes the session).
+   */
+  private readAgentModeOnAttach(sessionId: string, session: AgentSession): void {
+    if (this.agentModes.has(sessionId) || typeof session.getSendMode !== "function") return;
+    void session.getSendMode().then((value) => {
+      if (this.sessionFeeds.get(sessionId)?.session !== session || this.agentModes.has(sessionId)) return;
+      const mode = toSendMode(value);
+      if (mode) this.noteAgentMode(sessionId, mode);
+    }, () => { /* unknown stays unknown */ });
   }
 
   /** Ends the subscription as the session leaves the cache. */
@@ -494,12 +533,16 @@ export class SessionRunner {
     if (feed?.session !== session) return;
     feed.unsubscribe();
     this.sessionFeeds.delete(sessionId);
+    this.agentModes.delete(sessionId);
   }
 
   private routeSessionEvent(sessionId: string, feed: SessionFeed, event: any): void {
     const mainAgent = !getSdkAgentId(event);
     const at = getEventTimestampMs(event) ?? Date.now();
     if (mainAgent && event?.type === "session.compaction_complete") this.deps.resetTurnContext?.(sessionId);
+    if (mainAgent && event?.type === "session.mode_changed") {
+      this.noteAgentMode(sessionId, toSendMode(event?.data?.newMode));
+    }
     if (mainAgent) this.noteWhatMainAgentHeard(feed, event, at);
     if (feed.run && !feed.run.controller.isCompleted()) {
       feed.run.handleEvent(event);
@@ -562,6 +605,7 @@ export class SessionRunner {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
+    this.noteAgentMode(sessionId, this.agentModes.get(sessionId), true);
     const attentionMode = feed.attentionMode;
     this.startBackgroundRun(
       sessionId,
@@ -690,6 +734,7 @@ export class SessionRunner {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
+    this.noteAgentMode(sessionId, options.mode ?? DEFAULT_SEND_MODE, true);
     const hiddenPrompt = options.promptSource === "system";
     const visiblePrompt = options.displayPrompt ?? prompt;
     if (!hiddenPrompt) bus.setPendingPrompt(visiblePrompt, attachments, options.clientMessageId);
@@ -878,6 +923,7 @@ export class SessionRunner {
           sendPrompt = commandResult.prompt;
           displayPrompt = commandResult.displayPrompt;
           mode = commandResult.mode ?? mode;
+          this.noteAgentMode(sessionId, toSendMode(mode) ?? DEFAULT_SEND_MODE);
           bus.replacePendingPrompt(displayPrompt ?? sendPrompt);
           this.deps.runStateController.setSessionRunMetadata(sessionId, {
             pendingPrompt: displayPrompt ?? sendPrompt,

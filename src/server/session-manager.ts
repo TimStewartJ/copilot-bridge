@@ -56,6 +56,7 @@ import type { TaskHistoryStore } from "./task-history-store.js";
 import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeContextBlock, type BridgeContextSectionName } from "./session-context-block.js";
 import { resolvePromptProfile, type PromptProfileId } from "../shared/prompt-profiles.js";
 import { isRecord } from "../shared/is-record.js";
+import type { SendMode } from "../shared/send-mode.js";
 import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
@@ -5578,6 +5579,11 @@ export class SessionManager {
 
   isSessionStalled(sessionId: string): boolean {
     return this.runStateController.isSessionStalled(sessionId);
+  }
+
+  /** The CLI mode a loaded session's runs use; undefined when the session is not loaded or unknown. */
+  getSessionAgentMode(sessionId: string): SendMode | undefined {
+    return this.sessionRunner.getSessionAgentMode(sessionId);
   }
 
   /**

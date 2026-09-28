@@ -57,6 +57,10 @@ function cloneChatEntry(entry: ChatEntry): ChatEntry {
     return { ...entry, reasoning: { ...entry.reasoning } };
   }
 
+  if (entry.type === "continuation") {
+    return { ...entry };
+  }
+
   return {
     ...entry,
     attachments: entry.attachments?.map((attachment) => cloneAttachment(attachment)),

@@ -12,6 +12,7 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   "session.setPermissionMode": 30_000,
   "session.destroy": 60_000,
   "session.setSendMode": 30_000,
+  "session.getSendMode": 30_000,
   "session.respondToUserInput": 30_000,
   "session.respondToElicitation": 30_000,
   "session.invokeSlashCommand": 120_000,

@@ -76,6 +76,7 @@ One vocabulary everywhere. Each kind has one meaning, and a row shows at most on
 | `done` | check in a ring | faint | Finished; it steps back |
 | `open` / `closed` | ring / cross in a ring | neutral / faint | A pull request or similar object's state |
 | `paused` / `on` | bars in a ring / solid dot | faint / success | A schedule or switch, always beside its word |
+| `autopilot` | two chasing arrows, turning | agent | A run on Autopilot is working on its own; it stops under reduced motion |
 | idle | nothing | none | An absent state is not drawn |
 
 A `StatusIcon` names itself to assistive technology; pass `decorative` when adjacent text already
@@ -121,6 +122,7 @@ hover/selected rows and constrained panes.
 | Labelled values | `FieldList` + `Field`, not one box per value |
 | Headline figures | `StatRow`, not tiles |
 | A state in a word or two | `Badge` (put the matching `StatusIcon decorative` inside it) |
+| A message or run that used Autopilot | `AutopilotBadge`; `AutopilotIcon` where only the mark fits |
 | A state with no room for words: a row, a tile corner, a nav icon | `StatusIcon` (`DS.status.corner` on a tile) |
 | A group's or tag's colour beside its name | `IdentitySwatch`; tag names use `IDENTITY_TINT` + `IDENTITY_TEXT` |
 | How many things want attention | `CountBadge` |
