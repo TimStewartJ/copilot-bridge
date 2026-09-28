@@ -10,6 +10,7 @@ import type { StatusEvent } from "../global-bus.js";
 import type { HelmService } from "../helm/helm-service.js";
 import { buildBridgeSnapshotLine, countBridgeSessions, type HelmBridgeFacade } from "../helm/helm-tools.js";
 import { HelmVoiceAgent } from "../helm/helm-voice-agent.js";
+import { HelmTalker } from "../helm/helm-talker.js";
 import {
   DEFAULT_VOICE_SETTINGS,
   KOKORO_VOICES,
@@ -139,7 +140,8 @@ class ConversationSession implements VoiceClientSink {
       getBus: (sessionId) => gateway.ctx.eventBusRegistry.getOrCreateBus(sessionId),
       snapshot: async () => buildBridgeSnapshotLine(await gateway.facade.listSessions()),
       // Everything hands-free answers is spoken, including a message typed while it is on.
-      resolveReasoningEffort: () => gateway.helm.getTurnReasoningEffort("spoken"),
+      resolveReasoningEffort: (userText) => gateway.helm.getTurnReasoningEffort("spoken", userText),
+      talker: new HelmTalker({ listModels: () => gateway.ctx.sessionManager.listModels(), createHelperSession: (config) => gateway.ctx.sessionManager.createHelperSession(config), logger: console }),
       glossary: () => gateway.ctx.settingsStore.getSettings().helm?.glossary,
       logger: console,
       onTiming: (timing) => this.log.write("agent_timing", { ...timing }),

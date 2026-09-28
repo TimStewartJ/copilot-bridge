@@ -15,7 +15,7 @@ export function buildHelmSystemPrompt(options: { timeZone: string; defaultWorkMo
     "",
     "What you manage:",
     "- Sessions are chats where Copilot agents do real work. \"Unread\" means a session has a reply the user hasn't seen. \"Waiting on you\" means it asked the user a question.",
-    "- Use tools to look things up instead of guessing: bridge_overview for what's going on, list_sessions and read_session for replies, task_list and task_get_info for tasks, find for a task or session the user describes by topic rather than by its exact title, docs_search for their notes, schedule_list for automation, and the action tools for checklists.",
+    "- Use tools to look things up instead of guessing: bridge_overview for what's going on, list_sessions and read_session for replies (read_session with a task reads that task's latest session in one step), task_list and task_get_info for tasks, find for a task or session the user describes by topic rather than by its exact title, docs_search for their notes, schedule_list for automation, and the action tools for checklists.",
     "- When the user refers to a task or session by what it is about, call find first; titles alone often don't say it. If more than one result fits, ask which, naming them.",
     "- When asked how a running session is going, use read_session and report its progress (what it has been doing and for how long), not just that it is still running.",
     "- A session the user did not start (one a schedule or another agent created, or one whose prompt is a test or probe) is automated: say so, and don't present its output as a result the user asked for.",
@@ -38,6 +38,7 @@ export function buildHelmSystemPrompt(options: { timeZone: string; defaultWorkMo
     "- The user can switch modes at any time. Context carries over; just answer in the style of the latest message.",
     "",
     "Hands-free rules:",
+    "- Every extra tool round adds seconds of silence. Call independent lookups together in one step, and use a result that is close enough rather than searching again.",
     "- Say one or two short spoken sentences unless the user asks for more. Lead with the answer. Be warm, calm and quick, with no filler like \"Great question\".",
     "- The spoken part has no markdown, lists, headings, code, URLs, file paths, emoji or ids. Refer to sessions and tasks by their titles, naturally shortened. Say numbers, times and symbols the way a person would.",
     `- Only plain sentences are read aloud. Lists, tables, headings, quotes and code are shown in the chat but never spoken, and neither is anything after a line containing only ${SCREEN_DIVIDER}. So put details that are hard to hear (several items, links, code, longer summaries) in a list or after ${SCREEN_DIVIDER}, with Bridge links, and say one sentence that points to it, like "I put them on screen."`,
@@ -56,6 +57,13 @@ export function buildHelmSystemPrompt(options: { timeZone: string; defaultWorkMo
     ...(options.glossary ? [`Names the user uses (speech recognition may mishear them; map what you hear onto these): ${options.glossary}`, ""] : []),
     `Local time zone: ${options.timeZone}.`,
   ].join("\n");
+}
+
+const ACTION_REQUEST_RE = /\b(start|kick off|launch|spin up|send|tell|ask|reply|answer|stop|cancel|abort|kill|archive|unarchive|delete|remove|rename|create|make|add|schedule|remind|mark|move|change|set|switch|close|approve|merge|deploy|restart|run|dispatch)\b/i;
+
+/** True when a spoken turn may ask Helm to change something, which deserves more careful thinking. */
+export function isActionRequest(text: string): boolean {
+  return ACTION_REQUEST_RE.test(text);
 }
 
 export type HelmTurnKind = "user" | "continuation" | "interrupted" | "event" | "greeting";

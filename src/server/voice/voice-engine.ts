@@ -62,7 +62,8 @@ function clampThreads(value: number): number {
 export function defaultEngineThreads(logicalCpus = cpus().length): Pick<VoiceEngineInitOptions, "asrThreads" | "ttsThreads" | "turnThreads"> {
   return {
     asrThreads: clampThreads(logicalCpus / 5),
-    ttsThreads: clampThreads(logicalCpus / 3),
+    // First audio waits on synthesis: on 8 logical CPUs a 78-character sentence took 1.7 s on 3 threads, 1.4 s on 4 (28 Sep 2026).
+    ttsThreads: clampThreads(logicalCpus / 2),
     turnThreads: clampThreads(logicalCpus / 5),
   };
 }

@@ -263,6 +263,21 @@ describe("VoiceConversation", () => {
     expect(metrics?.metrics.speechEndToFirstAudioMs).toBeTypeOf("number");
   });
 
+  it("speaks the agent's own lead-in instead of a canned one, holding tool fillers while it is written", async () => {
+    const ctx = setup();
+    let resolveLeadIn!: (text: string | undefined) => void;
+    const leadIn = vi.fn(() => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }));
+    Object.assign(ctx.agent, { leadIn });
+    await speakTurn(ctx, "Anything from the car task?");
+    expect(leadIn).toHaveBeenCalledWith("Anything from the car task?");
+    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "read_session" });
+    await advance(10);
+    expect(ctx.engine.synthCalls).toHaveLength(0);
+    resolveLeadIn("Let me check the car task.");
+    await advance(10);
+    expect(ctx.engine.synthCalls[0]!.text).toBe("Let me check the car task.");
+  });
+
   it("removes a held answer from the transcript when the user's continuation replaces it", async () => {
     const ctx = setup();
     await speakTurn(ctx, "So I was thinking um", 0.9);

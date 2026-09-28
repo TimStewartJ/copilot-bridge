@@ -152,7 +152,7 @@ export function VoiceSettingsSheet({
                   </select>
                   {selectArrow}
                 </div>
-                <div id="helm-spoken-effort-help" className={help}>Replies spoken aloud, including anything you type while hands-free is on. Lower keeps the silence short.{describeEffort(helmEfforts.spoken)}</div>
+                <div id="helm-spoken-effort-help" className={help}>Questions answered aloud, including anything you type while hands-free is on. Requests to start, send or change something think at medium or above. Lower keeps the silence short.{describeEffort(helmEfforts.spoken)}</div>
               </div>
               <div className={help.replace("mt-1 ", "")}>Helm sets the effort at the start of each turn, so a change applies to your next message in the same conversation.</div>
               {helmEfforts.error && <div role="alert" className="text-[11px] text-error">{helmEfforts.error}</div>}

@@ -115,6 +115,13 @@ function referenceTokens(text: string): string[] {
   return meaningful.length > 0 ? meaningful : tokens;
 }
 
+const TOPIC_FILLER_WORDS = new Set(["task", "tasks", "related", "regarding", "thing", "things", "stuff", "any", "anything", "from", "latest", "update", "updates", "news"]);
+
+/** The words that say what something is about: "the car related task" is "car". */
+function topicWords(text: string): string[] {
+  return referenceTokens(text).filter((token) => !TOPIC_FILLER_WORDS.has(token));
+}
+
 export type SessionResolution =
   | { ok: true; session: HelmSessionSummary }
   | { ok: false; error: string; candidates?: HelmSessionSummary[] };
@@ -271,6 +278,17 @@ export function createHelmToolDefinitions(
     const sessions = await facade.listSessions(options);
     return resolveSession(sessions, reference);
   };
+  /** Finds tasks by id, link or topic: every topic word first, then any of them. */
+  const searchTasks = async (reference: string, limit: number) => {
+    const exact = ctx.taskStore.getTask(reference.replace(/^bridge:\/\/tasks?\//i, ""));
+    if (exact) return [exact];
+    const topic = topicWords(reference);
+    if (!ctx.searchIndex || topic.length === 0) return [];
+    const request = { q: topic.join(" "), scope: "global" as const, kind: "task" as const, limit, offset: 0, refreshOnly: true };
+    let result = await ctx.searchIndex.search(request);
+    if (result.tasks.total === 0 && topic.length > 1) result = await ctx.searchIndex.search({ ...request, anyWord: true });
+    return result.tasks.items.map((item) => ctx.taskStore.getTask(item.taskId)).filter((task) => task !== undefined);
+  };
   const resolutionFailure = (resolution: Extract<SessionResolution, { ok: false }>) => toolFailure(resolution.error, {
     ...(resolution.candidates
       ? { detail: `Candidates: ${resolution.candidates.map((session) => `"${session.title}" (${sessionRef(session.sessionId)})`).join(", ")}` }
@@ -342,8 +360,13 @@ export function createHelmToolDefinitions(
         let result = await ctx.searchIndex.search(request);
         let matchedAnyWord = false;
         const found = (value: typeof result) => value.tasks.total + value.chats.total + value.docs.total;
-        if (found(result) === 0 && query.split(/\s+/).length > 1) {
-          result = await ctx.searchIndex.search({ ...request, anyWord: true });
+        const topic = topicWords(query);
+        const topicQuery = topic.join(" ");
+        if (found(result) === 0 && topicQuery && topicQuery !== normalizeTitle(query)) {
+          result = await ctx.searchIndex.search({ ...request, q: topicQuery });
+        }
+        if (found(result) === 0 && topic.length > 1) {
+          result = await ctx.searchIndex.search({ ...request, q: topicQuery, anyWord: true });
           matchedAnyWord = true;
         }
         return {
@@ -419,18 +442,35 @@ export function createHelmToolDefinitions(
       },
     }),
     defineBridgeTool("read_session", {
-      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Marks it read by default. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked.",
+      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Give a task instead of a session to read that task's most recently active session in one step (\"anything from the car task?\"). Marks it read by default. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked.",
       parameters: {
         type: "object",
         properties: {
           session: { type: "string", description: "Session ref, id, link, or title words." },
+          task: { type: "string", description: "Instead of session: a task id, link, or topic words." },
           markRead: { type: "boolean", description: "Mark the session read after reading. Defaults to true." },
           history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
         },
-        required: ["session"],
       },
       handler: async (args: any) => {
-        const resolution = await withSession(args.session);
+        let taskInfo: Record<string, unknown> | undefined;
+        let resolution: SessionResolution;
+        if (!args.session && typeof args.task === "string" && args.task.trim()) {
+          const [task, ...others] = await searchTasks(args.task.trim(), 3);
+          if (!task) return toolFailure(`No task matches "${args.task}".`, { detail: "Try find or task_list." });
+          const latest = (await facade.listSessions())
+            .filter((candidate) => candidate.linkedTaskIds.includes(task.id))
+            .sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""))[0];
+          taskInfo = {
+            taskLink: formatBridgeLink({ kind: "task", taskId: task.id }),
+            ...(task.nextAction ? { taskNextAction: task.nextAction } : {}),
+            ...(others.length ? { otherMatchingTasks: others.map((other) => other.title) } : {}),
+          };
+          if (!latest) return { task: task.title, ...taskInfo, latestReply: null, note: "This task has no sessions." };
+          resolution = { ok: true, session: latest };
+        } else {
+          resolution = await withSession(args.session);
+        }
         if (!resolution.ok) return resolutionFailure(resolution);
         const { session } = resolution;
         // Thinking entries roughly double the non-message entries of an agentic run.
@@ -445,6 +485,7 @@ export function createHelmToolDefinitions(
         if (args.markRead !== false && session.unread) facade.markRead([session.sessionId]);
         return {
           ...describeSession(ctx, session),
+          ...taskInfo,
           ...(latestPrompt ? { lastPrompt: truncate(latestPrompt.content, 500) } : {}),
           ...(latestReply ? { latestReply: truncate(latestReply.content, MAX_REPLY_CHARS), repliedAt: latestReply.timestamp } : { latestReply: null }),
           ...(live?.content ? { liveProgress: truncate(live.content, 800) } : {}),

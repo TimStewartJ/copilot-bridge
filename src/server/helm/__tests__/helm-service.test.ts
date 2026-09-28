@@ -158,19 +158,28 @@ describe("HelmService conversations", () => {
     helm.dispose();
   });
 
-  it("asks for max effort when typing and medium when speaking, until settings say otherwise", async () => {
+  it("asks for max effort when typing and none when speaking, until settings say otherwise", async () => {
     const { helm, ctx } = createHarness();
     expect(helm.getTurnReasoningEffort("typed")).toBe("max");
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("medium");
-    expect((await helm.getState()).reasoningEfforts).toEqual({ typed: "max", spoken: "medium" });
+    expect(helm.getTurnReasoningEffort("spoken")).toBe("none");
+    expect((await helm.getState()).reasoningEfforts).toEqual({ typed: "max", spoken: "none" });
     // Anything that isn't a hands-free turn is answered in the chat.
     expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("max");
 
     (ctx.settingsStore as { getSettings(): unknown }).getSettings = () => ({ model: "claude-opus-5", helm: { typedReasoningEffort: "high" } });
     expect(helm.getTurnReasoningEffort("typed")).toBe("high");
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("medium");
+    expect(helm.getTurnReasoningEffort("spoken")).toBe("none");
     // Read per turn: the profile built earlier follows the change.
     expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("high");
+  });
+
+  it("thinks at least at medium when a spoken turn asks to change something", () => {
+    const { helm, ctx } = createHarness();
+    expect(helm.getTurnReasoningEffort("spoken", "anything from the car task?")).toBe("none");
+    expect(helm.getTurnReasoningEffort("spoken", "start a session in the Tether task")).toBe("medium");
+    expect(helm.getTurnReasoningEffort("typed", "start a session in the Tether task")).toBe("max");
+    (ctx.settingsStore as { getSettings(): unknown }).getSettings = () => ({ helm: { spokenReasoningEffort: "high" } });
+    expect(helm.getTurnReasoningEffort("spoken", "archive the finished ones")).toBe("high");
   });
 
   it("creates a conversation on GPT-6 Luna with the Helm profile registered first", async () => {
