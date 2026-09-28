@@ -22,6 +22,7 @@ export type {
   AgentModelInfo,
   AgentModelSwitchConfirmation,
   AgentModelSwitchResult,
+  AgentCompactionResult,
   AgentPendingInteractionEvent,
   AgentPermissionDecision,
   AgentPermissionPolicy,

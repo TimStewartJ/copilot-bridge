@@ -69,6 +69,7 @@ import {
 } from "./sdk-event-identity.js";
 import { readPersistedRunEnding, type PersistedRunEnding } from "./session-run-ending-reader.js";
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
+import type { ImageBudgetController } from "./image-budget.js";
 import { normalizePromptCacheBreak, promptProcessMetadata } from "./session-prompt-fingerprint.js";
 
 
@@ -415,6 +416,8 @@ export interface SessionRunnerDeps {
   prepareTurnContext?(sessionId: string): { block?: string; commit(): void };
   /** Forget what was delivered because the conversation may have lost it. */
   resetTurnContext?(sessionId: string): void;
+  /** Starts compaction early for models whose provider rejects large requests. */
+  imageBudget?: Pick<ImageBudgetController, "attach" | "detach" | "observe" | "reload">;
   persistAndRouteAttachments(
     sessionId: string,
     attachments?: StartWorkAttachment[],
@@ -481,6 +484,7 @@ export class SessionRunner {
     const current = this.sessionFeeds.get(sessionId);
     if (current?.session === session) return current;
     current?.unsubscribe();
+    this.deps.imageBudget?.attach(sessionId, session);
     const feed: SessionFeed = {
       session,
       unsubscribe: () => {},
@@ -527,6 +531,12 @@ export class SessionRunner {
     }, () => { /* unknown stays unknown */ });
   }
 
+  /** Drops a held runtime turn that belongs to a turn Bridge stopped on purpose (an image-budget pause). */
+  discardHeldTurn(sessionId: string): void {
+    const feed = this.sessionFeeds.get(sessionId);
+    if (feed?.heldTurn && !feed.heldTurn.claimed) feed.heldTurn = undefined;
+  }
+
   /** Ends the subscription as the session leaves the cache. */
   detachSession(sessionId: string, session: AgentSession): void {
     const feed = this.sessionFeeds.get(sessionId);
@@ -534,6 +544,7 @@ export class SessionRunner {
     feed.unsubscribe();
     this.sessionFeeds.delete(sessionId);
     this.agentModes.delete(sessionId);
+    this.deps.imageBudget?.detach(sessionId, session);
   }
 
   private routeSessionEvent(sessionId: string, feed: SessionFeed, event: any): void {
@@ -542,6 +553,11 @@ export class SessionRunner {
     if (mainAgent && event?.type === "session.compaction_complete") this.deps.resetTurnContext?.(sessionId);
     if (mainAgent && event?.type === "session.mode_changed") {
       this.noteAgentMode(sessionId, toSendMode(event?.data?.newMode));
+    }
+    try {
+      this.deps.imageBudget?.observe(sessionId, feed.session, event);
+    } catch (error) {
+      console.warn(`[image-budget] [${sessionId.slice(0, 8)}] Event not counted:`, error instanceof Error ? error.message : error);
     }
     if (mainAgent) this.noteWhatMainAgentHeard(feed, event, at);
     if (feed.run && !feed.run.controller.isCompleted()) {
@@ -2235,6 +2251,7 @@ export class SessionRunner {
       });
       if (result.status !== "truncated") return;
       this.deps.resetTurnContext?.(sessionId);
+      this.deps.imageBudget?.reload(sessionId);
       publishContextSummary(this.deps.sessionContextStore?.recordContextEvent(createSessionContextTruncationMarker({
         sessionId,
         provider: contextTelemetryProvider,
