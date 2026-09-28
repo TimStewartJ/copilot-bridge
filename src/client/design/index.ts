@@ -1,6 +1,6 @@
 export { DS, cx, type DsTone, type DsButtonVariant, type DsButtonSize, type DsStatusKind } from "./tokens";
 export {
-  Badge, Button, ChoiceButton, CountBadge, Details, DisclosureRow, EmptyHint,
+  AutopilotBadge, AutopilotIcon, Badge, Button, ChoiceButton, CountBadge, Details, DisclosureRow, EmptyHint,
   Field, FieldList, FormRow, IconButton, IdentitySwatch, MetaLine, Notice, Panel, Section,
   SegmentedControl, Select, SettingList, SettingRow, StatRow, StatusIcon, STATUS_LABEL, Switch, TextArea, TextInput, type SegmentedOption,
 } from "./primitives";

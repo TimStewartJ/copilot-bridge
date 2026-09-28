@@ -981,3 +981,19 @@ describe("stream helpers", () => {
     expect(normalizeRunNotice(null)).toBeNull();
   });
 });
+
+describe("useSessionStream run mode", () => {
+  it("takes the run mode from the server so a reload still knows the run is on Autopilot", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      source.open();
+      await emitAndWait(act, source, snapshot({ runMode: "autopilot" }), () => getState().runMode === "autopilot");
+
+      await emitAndWait(act, source, { type: "run_mode", runMode: "interactive" }, () => getState().runMode === "interactive");
+
+      // A snapshot of a different run that cannot name its mode leaves it unknown.
+      await emitAndWait(act, source, snapshot({ runId: "run-2" }), () => getState().runMode === undefined);
+    });
+  });
+});

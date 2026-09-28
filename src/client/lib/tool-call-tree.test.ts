@@ -602,3 +602,21 @@ describe("tool call status helpers", () => {
     expect(getToolCallStatus({ result: "Agent summary" })).toBe("running");
   });
 });
+
+describe("segmentChatEntries autopilot continuations", () => {
+  it("gives continuations their own segment and merges ones with nothing between them", () => {
+    const segments = segmentChatEntries([
+      { type: "message", role: "user", content: "go", agentMode: "autopilot", id: "u1" },
+      { type: "message", role: "assistant", content: "step one", id: "a1" },
+      { type: "continuation", id: "c1" },
+      { type: "continuation", id: "c2" },
+      { type: "message", role: "assistant", content: "step two", id: "a2" },
+      { type: "continuation", id: "c3" },
+    ]);
+    expect(segments.map((segment) => segment.type)).toEqual([
+      "message", "message", "continuation-segment", "message", "continuation-segment",
+    ]);
+    expect(segments[2]).toMatchObject({ count: 2, entry: { id: "c1" } });
+    expect(segments[4]).toMatchObject({ count: 1, entry: { id: "c3" } });
+  });
+});

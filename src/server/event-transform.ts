@@ -43,7 +43,7 @@ export interface TransformedVisual {
 
 export interface TransformedEntry {
   id: string;
-  type: "message" | "tool" | "visual" | "completion" | "skill" | "reasoning";
+  type: "message" | "tool" | "visual" | "completion" | "skill" | "reasoning" | "continuation";
   turnId?: string;
   turnInstanceId?: string;
   sourceEventId?: string;
@@ -54,6 +54,8 @@ export interface TransformedEntry {
   forkBoundaryEventId?: string;
   undoEventId?: string;
   attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
+  /** Set on a user message sent in autopilot; absent for interactive sends. */
+  agentMode?: "autopilot";
   // Skill fields (when type === "skill") — agent-injected skill context, shown as a collapsed card
   skill?: { id: string; label: string };
   // Tool fields (when type === "tool")
@@ -168,6 +170,23 @@ function isAgentInjectedSystemMessage(event: any): boolean {
   if (event?.type !== "user.message") return false;
   const source = event?.data?.source;
   return typeof source === "string" && source.trim().toLowerCase() === "system";
+}
+
+/**
+ * A turn the Copilot CLI started itself to keep an autopilot run going. It arrives as an empty
+ * `user.message`; this is the same test the CLI's own rewind list uses.
+ */
+export function isAutopilotContinuationEvent(event: any): boolean {
+  if (event?.type !== "user.message" || isSdkAgentUserMessage(event) || isAgentInjectedSystemMessage(event)) {
+    return false;
+  }
+  const data = event?.data;
+  if (data?.isAutopilotContinuation === true) return true;
+  const content = data?.content ?? data?.prompt ?? "";
+  return data?.agentMode === "autopilot"
+    && typeof content === "string"
+    && !content.trim()
+    && !data?.attachments?.length;
 }
 
 export function getUndoBoundaryEventId(event: any): string | undefined {
@@ -610,6 +629,15 @@ export function transformEventsToMessages(
     } else if (event.type === "user.message") {
       if (isAgentInjectedSystemMessage(event)) continue;
       if (isSdkAgentUserMessage(event)) continue;
+      if (isAutopilotContinuationEvent(event)) {
+        entries.push({
+          id: `entry-${idx++}`,
+          type: "continuation",
+          ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+          timestamp: data?.timestamp ?? (event as any).timestamp,
+        });
+        continue;
+      }
       const content = data?.content ?? data?.prompt ?? "";
       if (!content.trim() && !data?.attachments?.length) continue;
       const skillSource = getSkillSource(event);
@@ -643,6 +671,7 @@ export function transformEventsToMessages(
         timestamp: data.timestamp ?? (event as any).timestamp,
         ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         ...(allAttachments.length ? { attachments: allAttachments } : {}),
+        ...(data?.agentMode === "autopilot" ? { agentMode: "autopilot" as const } : {}),
       });
     } else if (event.type === "assistant.message") {
       if (data?.parentToolCallId) continue; // sub-agent response text, not a top-level message

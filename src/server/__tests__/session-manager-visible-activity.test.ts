@@ -175,4 +175,23 @@ describe("SessionManager visible activity cache", () => {
     expect(result.lastVisibleActivityAt).toBe("2026-04-10T10:10:05.000Z");
     expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt).toBe("2026-04-10T10:10:05.000Z");
   });
+
+  it("counts autopilot continuation markers in the page total without treating them as activity", async () => {
+    writeSession([
+      { id: "u1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Fix it", agentMode: "autopilot" } },
+      { id: "a1", type: "assistant.message", timestamp: "2026-04-10T10:00:05.000Z", data: { content: "Step one" } },
+      { id: "c1", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "", agentMode: "autopilot", isAutopilotContinuation: true, source: "autopilot" } },
+      { id: "a2", type: "assistant.message", timestamp: "2026-04-10T10:01:05.000Z", data: { content: "Step two" } },
+      { id: "c2", type: "user.message", timestamp: "2026-04-10T10:02:00.000Z", data: { content: "", agentMode: "autopilot", isAutopilotContinuation: true, source: "autopilot" } },
+    ]);
+    const { manager } = createManager();
+
+    const latest = await manager.readMessagesFromDisk("session-1", { limit: 10 });
+    const full = await manager.readMessagesFromDisk("session-1");
+
+    expect(full.messages.map((entry) => entry.type)).toEqual(["message", "message", "continuation", "message", "continuation"]);
+    expect(latest.total).toBe(5);
+    expect(full.total).toBe(5);
+    expect(latest.lastVisibleActivityAt).toBe("2026-04-10T10:01:05.000Z");
+  });
 });

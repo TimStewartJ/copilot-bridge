@@ -2,10 +2,12 @@ import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
 import type { BackgroundAgentsSummary, DeferSummary } from "./api";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
+import type { SendMode } from "../shared/send-mode.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
 
 export type StatusEvent =
   | { type: "session:busy" | "session:stalled" | "session:idle"; sessionId?: string }
+  | { type: "session:mode"; sessionId?: string; agentMode?: SendMode }
   | { type: "session:title"; sessionId?: string; title?: string }
   | { type: "session:intent"; sessionId?: string; intent?: string }
   | { type: "session:archived"; sessionId?: string; archived?: boolean }

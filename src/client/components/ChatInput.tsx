@@ -29,7 +29,8 @@ import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
-import { DS } from "../design/tokens";
+import { DS, cx } from "../design/tokens";
+import { AutopilotIcon } from "../design/primitives";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 pb-3 pt-1 sm:px-4 md:px-6 md:pb-4 lg:px-8";
@@ -148,6 +149,8 @@ export default function ChatInput({
   const attachmentsRef = useRef<Attachment[]>(attachments);
   const uploadingRef = useRef(uploading);
   const sendBlockedRef = useRef(Boolean(disabled || onAbort));
+  /** Voice auto-send goes out without Autopilot, so while it is on a transcript waits in the composer. */
+  const autopilotNextRef = useRef(false);
   const restoredForRef = useRef<string | null>(null);
   const recordingStartModeRef = useRef<VoiceSubmitMode | null>(null);
   const pendingCaptureSubmitModeRef = useRef<VoiceSubmitMode | null>(null);
@@ -267,7 +270,7 @@ export default function ChatInput({
     pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
       text: inputRef.current,
       attachmentCount: attachmentsRef.current.length,
-      sendBlocked: sendBlockedRef.current,
+      sendBlocked: sendBlockedRef.current || autopilotNextRef.current,
       uploadingCount: uploadingRef.current,
     });
     void voice.stopRecording();
@@ -505,7 +508,19 @@ export default function ChatInput({
     setSelectedSlashCommandIndex(0);
   }, [slashDraft?.query, slashSuggestions.length]);
 
-  const handleSend = useCallback((mode: SendMode = defaultSendMode) => {
+  /**
+   * The mode the next send uses. A new chat takes it from its launch panel; an open chat starts
+   * each message interactive and the Autopilot toggle switches just that message.
+   */
+  const [chosenSendMode, setChosenSendMode] = useState<SendMode>(defaultSendMode);
+  useEffect(() => {
+    setChosenSendMode(defaultSendMode);
+  }, [composerKey, defaultSendMode]);
+  const nextSendMode: SendMode = isDraft ? defaultSendMode : chosenSendMode;
+  const autopilotNext = nextSendMode === "autopilot";
+  autopilotNextRef.current = autopilotNext;
+
+  const handleSend = useCallback((mode: SendMode = nextSendMode) => {
     if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
 
     const text = inputRef.current.trim();
@@ -534,11 +549,12 @@ export default function ChatInput({
       onSend(text || "(attachment)", cleanAttachmentsOrUndefined);
     }
     clearComposer();
+    if (selectedMode) setChosenSendMode(defaultSendMode);
 
     if (textareaRef.current && usesSoftKeyboard()) {
       textareaRef.current.blur();
     }
-  }, [clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, onAbort, onClearVoiceJobError, onSend, uploading]);
+  }, [clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, nextSendMode, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e as any).isComposing || (e as any).keyCode === 229) return;
@@ -573,7 +589,7 @@ export default function ChatInput({
   const canAutoSendNewVoiceTranscript = canAutoSendVoiceTranscript({
     text: input,
     attachmentCount: attachments.length,
-    sendBlocked: Boolean(disabled || onAbort),
+    sendBlocked: Boolean(disabled || onAbort) || autopilotNext,
     uploadingCount: uploading,
   });
   const canAutoSendStoppedRecording =
@@ -613,19 +629,21 @@ export default function ChatInput({
     ? (disabledHint ?? "Warming up…")
     : onAbort
       ? "Send steering note"
-      : isDraft && defaultSendMode === "autopilot"
+      : autopilotNext
         ? "Start Autopilot"
         : "Send message";
   const submitControlTitle = showAbortControl ? "Stop generating" : sendTitle;
   const modeMenuBindings = bindSendModeMenu(
     "send-mode",
-    showAbortControl ? () => onAbort?.() : () => handleSend(defaultSendMode),
+    showAbortControl ? () => onAbort?.() : () => handleSend(nextSendMode),
   );
   const handleMenuSend = useCallback((mode: SendMode) => {
     closeSendModeMenu();
     handleSend(mode);
   }, [closeSendModeMenu, handleSend]);
   const modeMenuEnabled = !showAbortControl;
+  // Steering goes into the run already going, and a new chat picks its mode on the launch panel.
+  const showAutopilotToggle = !isDraft && !onAbort;
 
   return (
     <div className="shrink-0">
@@ -718,6 +736,15 @@ export default function ChatInput({
           </div>
         )}
 
+        {showAutopilotToggle && autopilotNext && (
+          <div className="mb-2 flex min-w-0 items-center gap-1.5 px-1 text-xs text-text-secondary" data-autopilot-hint>
+            <AutopilotIcon size={12} className="text-agent" />
+            <span className="min-w-0">
+              <span className="font-medium text-agent">Autopilot</span>
+              {" keeps going until the task is done. Questions still wait for you, and you can stop it anytime."}
+            </span>
+          </div>
+        )}
         <div
           className={`relative flex flex-col ${DS.surface.composer} ${dragActive ? "ring-1 ring-text-secondary" : ""}`}
           onDrop={handleDrop}
@@ -756,7 +783,7 @@ export default function ChatInput({
                   updateRecordingStartMode(resolveVoiceSubmitMode({
                     text: inputRef.current,
                     attachmentCount: attachmentsRef.current.length,
-                    sendBlocked: sendBlockedRef.current,
+                    sendBlocked: sendBlockedRef.current || autopilotNextRef.current,
                     uploadingCount: uploadingRef.current,
                   }));
                   pendingCaptureSubmitModeRef.current = null;
@@ -803,6 +830,28 @@ export default function ChatInput({
             rows={1}
             className="min-h-[48px] max-h-[200px] flex-1 resize-none bg-transparent py-3 pl-1 pr-2 text-base leading-6 text-text-primary placeholder:text-text-faint focus:outline-none md:text-sm"
           />
+          {showAutopilotToggle && (
+            <button
+              type="button"
+              onClick={() => setChosenSendMode(autopilotNext ? "interactive" : "autopilot")}
+              aria-pressed={autopilotNext}
+              aria-label="Autopilot"
+              title={autopilotNext
+                ? "Autopilot is on for this message: Copilot keeps going until the task is done. Click to turn it off."
+                : "Turn on Autopilot for this message: Copilot keeps going on its own until the task is done"}
+              data-autopilot-toggle={autopilotNext ? "on" : "off"}
+              className={cx(
+                "mb-1 flex h-10 flex-shrink-0 items-center justify-center gap-1.5 rounded-full transition-colors md:mb-2 md:h-8",
+                DS.focus,
+                autopilotNext
+                  ? "px-2.5 text-agent hover:bg-bg-hover/60"
+                  : "w-10 text-text-muted hover:text-text-primary md:w-8",
+              )}
+            >
+              <AutopilotIcon size={17} />
+              {autopilotNext && <span className="hidden text-xs font-medium sm:inline">Autopilot</span>}
+            </button>
+          )}
           <div
             className={`mb-1 mr-1 flex-shrink-0 select-none touch-manipulation md:mb-2 md:mr-2 ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
             style={{ WebkitTouchCallout: "none" } as React.CSSProperties}
@@ -829,6 +878,8 @@ export default function ChatInput({
             >
               {showAbortControl ? (
                 <Square size={11} fill="currentColor" />
+              ) : autopilotNext ? (
+                <AutopilotIcon size={16} />
               ) : (
                 <ArrowUp size={17} strokeWidth={2.25} />
               )}

@@ -408,15 +408,18 @@ export default function SessionList({
         }`
       : undefined;
     const runState = getSessionRunState(session);
+    const autopilotRun = runState === "busy" && session.agentMode === "autopilot";
     const status = needsUserInput
       ? { kind: "needs-input" as const, label: "Needs your input" }
       : runState === "stalled"
         ? { kind: "warning" as const, label: "Stalled" }
-        : runState === "busy"
-          ? { kind: "working" as const, label: "Working" }
-          : unread
-            ? { kind: "unread" as const, label: "New results" }
-            : null;
+        : autopilotRun
+          ? { kind: "autopilot" as const, label: "Autopilot working" }
+          : runState === "busy"
+            ? { kind: "working" as const, label: "Working" }
+            : unread
+              ? { kind: "unread" as const, label: "New results" }
+              : null;
     const { onClick: guardedClick, ...longPressBindings } = bindLongPress(id, () => onSelectSession(id));
 
     const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -533,6 +536,12 @@ export default function SessionList({
           </div>
           <div className={`${s.metaClass} ${selectMode ? "pl-5" : s.metaIndent} truncate`}>
             {isArchiving ? "Archiving…" : needsUserInput ? "Needs answer" : timeAgo(getSessionActivityTime(session))}
+            {autopilotRun && !needsUserInput && !isArchiving && (
+              <>
+                {" · "}
+                <span className="font-medium text-agent">Autopilot</span>
+              </>
+            )}
             {session.externallyInUse && (
               <>
                 {" · "}

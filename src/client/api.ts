@@ -240,6 +240,8 @@ export interface Session {
   eventLogSizeBytes?: number;
   runState?: SessionRunState;
   backgroundAgents?: BackgroundAgentsSummary;
+  /** Set while the session is loaded and its runs use Autopilot. */
+  agentMode?: "autopilot" | null;
   pendingUserInputCount?: number;
   needsUserInput?: boolean;
   hasPlan?: boolean;
@@ -366,6 +368,8 @@ export interface ChatMessage {
   timestamp?: string;
   toolCalls?: ToolCall[];
   attachments?: Attachment[];
+  /** A user message sent with Autopilot. */
+  agentMode?: "autopilot";
   /** Client-only state for optimistic messages awaiting server acceptance. */
   delivery?: ChatMessageDelivery;
 }
@@ -420,6 +424,16 @@ export interface ChatCompletionEntry {
   completion: TerminalCompletion;
 }
 
+/** A turn the Copilot CLI started on its own to keep an autopilot run going. */
+export interface ChatContinuationEntry {
+  id?: string;
+  type: "continuation";
+  turnId?: string;
+  turnInstanceId?: string;
+  sourceEventId?: string;
+  timestamp?: string;
+}
+
 /** An agent-injected skill context, rendered as a collapsed/labeled card */
 export interface ChatSkillEntry {
   id?: string;
@@ -461,7 +475,8 @@ export type ChatEntry =
   | ChatVisualEntry
   | ChatCompletionEntry
   | ChatSkillEntry
-  | ChatReasoningEntry;
+  | ChatReasoningEntry
+  | ChatContinuationEntry;
 
 export type ProviderName = "ado" | "github" | "linear";
 

@@ -105,6 +105,26 @@ describe("SessionList input-required indicator", () => {
   });
 });
 
+describe("SessionList autopilot indicator", () => {
+  it("marks a session whose run is on Autopilot, and lets stalled and waiting states win", async () => {
+    const { dom, cleanup } = await renderSessionList([
+      createSession({ sessionId: "session-ap", summary: "Autopilot session", runState: "busy", agentMode: "autopilot" }),
+      createSession({ sessionId: "session-stalled", summary: "Stalled session", runState: "stalled", agentMode: "autopilot" }),
+      createSession({ sessionId: "session-idle", summary: "Idle session", runState: "idle", agentMode: "autopilot" }),
+    ]);
+
+    try {
+      const icons = findAllByTag(dom.container, "SPAN").filter((node) => node.getAttribute?.("data-status"));
+      const statuses = icons.map((node) => node.getAttribute("data-status"));
+      expect(statuses.filter((kind) => kind === "autopilot")).toHaveLength(1);
+      expect(statuses).toContain("warning");
+      expect(icons.find((node) => node.getAttribute("data-status") === "autopilot")?.getAttribute("aria-label")).toBe("Autopilot working");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 describe("SessionList external-use indicator", () => {
   it("shows that a session is open in another Copilot client", async () => {
     const { dom, cleanup } = await renderSessionList([
