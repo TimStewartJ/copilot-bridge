@@ -9,6 +9,7 @@ import { DS, cx } from "../design/tokens";
 export interface HelmModelPreference {
   value: string;
   onChange(model: string): void;
+  error?: string | null;
 }
 
 export interface HelmEffortPreference {
@@ -97,6 +98,8 @@ export function VoiceSettingsSheet({
           </button>
         </div>
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
+          <p className="text-xs text-text-muted">Saved on this Bridge, for Helm on the web and in Tether.</p>
+          {(controller.error || helmModel?.error) && <div role="alert" className="text-xs text-error">{controller.error || helmModel?.error}</div>}
           {helmModel && (
             <div>
               <label htmlFor="helm-setting-model" className={label}>Helm model</label>
@@ -173,7 +176,7 @@ export function VoiceSettingsSheet({
               </div>
               <div>
                 <div className={label}>Speaking speed · {settings.speed.toFixed(2)}×</div>
-                <input aria-label="Speaking speed" className="mt-2 w-full" type="range" min={0.8} max={1.3} step={0.05} value={settings.speed} onChange={(event) => update({ speed: Number(event.target.value) })} />
+                <input aria-label="Speaking speed" className="mt-2 w-full" type="range" min={0.75} max={1.4} step={0.05} value={settings.speed} onChange={(event) => update({ speed: Number(event.target.value) })} />
               </div>
               <div>
                 <div className={label}>Patience</div>
@@ -200,7 +203,7 @@ export function VoiceSettingsSheet({
               </div>
               <label className="flex items-start gap-2 text-sm">
                 <input type="checkbox" className="mt-1" checked={controller.echoSafe} onChange={(event) => controller.setEchoSafe(event.target.checked)} />
-                <span>Echo-safe playback<span className="block text-[11px] text-text-faint">Lets it hear you over its own voice without headphones. Applies the next time hands-free starts.</span></span>
+                <span>Echo-safe playback<span className="block text-[11px] text-text-faint">Helm browser playback only. Lets it hear you over its own voice without headphones. Applies the next time hands-free starts.</span></span>
               </label>
               <div>
                 <label htmlFor="voice-setting-connection" className={label}>Connection</label>
@@ -212,7 +215,7 @@ export function VoiceSettingsSheet({
                   </select>
                   {selectArrow}
                 </div>
-                <div id="voice-connection-help" className={help}>Automatic tries WebSocket, then HTTP. Use HTTP streaming for strict proxies.</div>
+                <div id="voice-connection-help" className={help}>Helm browser connection only; Tether uses its native relay. Automatic tries WebSocket, then HTTP. Use HTTP streaming for strict proxies.</div>
               </div>
             </>
           ) : (

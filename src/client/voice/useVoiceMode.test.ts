@@ -17,6 +17,15 @@ const voiceApi = vi.hoisted(() => ({
   createVoiceConversation: vi.fn(),
   startVoiceInstall: vi.fn(),
 }));
+const preferences = vi.hoisted(() => ({
+  data: { schemaVersion: 1, settings: { model: "", typedReasoningEffort: "max", spokenReasoningEffort: "medium", glossary: "", voice: "af_heart", speed: 1.05, patience: 0.5, bargeIn: true, announce: "watched", echoSafe: true, transport: "auto" } },
+  patch: vi.fn(),
+}));
+vi.mock("../helm/helm-settings", () => ({
+  useHelmPreferences: () => ({ data: preferences.data, error: null }),
+  refreshHelmSettings: async () => preferences.data,
+  patchHelmSettings: preferences.patch,
+}));
 
 const transport = vi.hoisted(() => ({
   sendControl: vi.fn(),
@@ -110,12 +119,26 @@ describe("useVoiceMode", () => {
     await waitUntilAct(harness.act, () => controller.phase === "active");
 
     expect(order).toEqual(["audio", "target", "conversation"]);
-    expect(voiceApi.createVoiceConversation).toHaveBeenCalledWith(HELM_SESSION_ID, DEFAULTS);
+    expect(voiceApi.createVoiceConversation).toHaveBeenCalledWith(HELM_SESSION_ID, expect.objectContaining(DEFAULTS));
     expect(transport.sendControl).toHaveBeenCalledWith({ type: "start", greet: true });
     expect(controller).toMatchObject({ active: true, helmSessionId: HELM_SESSION_ID, error: null });
+    expect(controller.echoSafe).toBe(true);
+    expect(controller.transportPreference).toBe("auto");
 
     await harness.act(() => controller.stop());
     expect(transport.sendControl).toHaveBeenCalledWith({ type: "control", action: "end" });
     expect(controller).toMatchObject({ phase: "ended", active: false, helmSessionId: null });
+  });
+
+  it("persists voice and playback settings on the server, applying live config only after success", async () => {
+    preferences.patch.mockResolvedValueOnce({ ...preferences.data, settings: { ...preferences.data.settings, voice: "bm_george", patience: 0.9 } });
+    await harness.act(() => controller.updateSettings({ voice: "bm_george", patience: 0.9 }));
+    expect(preferences.patch).toHaveBeenCalledWith({ voice: "bm_george", patience: 0.9 });
+    expect(controller.settings).toMatchObject({ voice: "bm_george", patience: 0.9 });
+    preferences.patch.mockRejectedValueOnce(new Error("Settings disk unavailable"));
+    await harness.act(() => controller.setEchoSafe(false));
+    expect(controller.echoSafe).toBe(true);
+    expect(controller.error).toBe("Settings disk unavailable");
+    expect(preferences.patch).toHaveBeenLastCalledWith({ echoSafe: false });
   });
 });

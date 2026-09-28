@@ -1,6 +1,7 @@
 // Pinned assets, voices and defaults for the local speech engine and hands-free voice.
 import { join } from "node:path";
 import type { RuntimePaths } from "../runtime-paths.js";
+import { HELM_SETTINGS_DEFAULTS } from "../../shared/helm-settings.js";
 
 /** Bump when the on-disk layout or pinned asset set changes incompatibly. */
 export const VOICE_ENGINE_LAYOUT_VERSION = 1;
@@ -234,11 +235,11 @@ export interface VoiceSettings {
 }
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
-  voice: "af_heart",
-  speed: 1.05,
-  patience: 0.5,
-  bargeIn: true,
-  announce: "watched",
+  voice: HELM_SETTINGS_DEFAULTS.voice,
+  speed: HELM_SETTINGS_DEFAULTS.speed,
+  patience: HELM_SETTINGS_DEFAULTS.patience,
+  bargeIn: HELM_SETTINGS_DEFAULTS.bargeIn,
+  announce: HELM_SETTINGS_DEFAULTS.announce,
 };
 
 export function normalizeVoiceSettings(input: unknown, previous: VoiceSettings = DEFAULT_VOICE_SETTINGS): VoiceSettings {

@@ -99,43 +99,4 @@ export function buildVoiceWebSocketUrl(ticket: VoiceConversationTicket, location
   return `${protocol}//${location.host}${API_BASE}/api/voice/ws?${params.toString()}`;
 }
 
-const SETTINGS_STORAGE_KEY = "bridge.voice.settings";
-
-export function loadStoredVoiceSettings(defaults: VoiceSettings): VoiceSettings {
-  try {
-    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!raw) return defaults;
-    const { model: _legacyModel, ...parsed } = JSON.parse(raw) as Partial<VoiceSettings> & { model?: unknown };
-    return { ...defaults, ...parsed };
-  } catch {
-    return defaults;
-  }
-}
-
-export function storeVoiceSettings(settings: VoiceSettings): void {
-  try {
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // Private browsing or quota errors should not break hands-free.
-  }
-}
-
 export type VoiceTransportPreference = "auto" | "websocket" | "http";
-const TRANSPORT_STORAGE_KEY = "bridge.voice.transport";
-
-export function loadTransportPreference(): VoiceTransportPreference {
-  try {
-    const value = window.localStorage.getItem(TRANSPORT_STORAGE_KEY);
-    return value === "websocket" || value === "http" ? value : "auto";
-  } catch {
-    return "auto";
-  }
-}
-
-export function storeTransportPreference(value: VoiceTransportPreference): void {
-  try {
-    window.localStorage.setItem(TRANSPORT_STORAGE_KEY, value);
-  } catch {
-    // Ignore storage failures.
-  }
-}

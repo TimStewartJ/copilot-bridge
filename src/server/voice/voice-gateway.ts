@@ -567,7 +567,7 @@ export class VoiceGateway {
       install: this.installer.getStatus(),
       engine: this.engine.status,
       voices: KOKORO_VOICES,
-      defaults: DEFAULT_VOICE_SETTINGS,
+      defaults: normalizeVoiceSettings(this.ctx.settingsStore.getSettings().helm, DEFAULT_VOICE_SETTINGS),
       activeConversations: this.conversations.size,
     };
   }
@@ -578,7 +578,8 @@ export class VoiceGateway {
     for (const existing of this.conversations.values()) {
       if (existing.helmSessionId === helmSessionId) void existing.end("hands-free started somewhere else");
     }
-    const session = new ConversationSession(this, helmSessionId, normalizeVoiceSettings(settings));
+    const defaults = normalizeVoiceSettings(this.ctx.settingsStore.getSettings().helm, DEFAULT_VOICE_SETTINGS);
+    const session = new ConversationSession(this, helmSessionId, normalizeVoiceSettings(settings, defaults));
     const ended = this.recentEnds.get(helmSessionId);
     this.recentEnds.delete(helmSessionId);
     if (ended && Date.now() - ended.at <= RESUME_NOTE_WINDOW_MS) {

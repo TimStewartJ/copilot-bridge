@@ -12,6 +12,8 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "../app-context.js";
+import { HELM_SETTINGS_DEFAULTS, validateHelmSettingsPatch, type HelmSettingsResponse, type UnifiedHelmSettings } from "../../shared/helm-settings.js";
+import { KOKORO_VOICES } from "../voice/voice-catalog.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import type { SessionConfigProfile } from "../session-manager.js";
 import { parseWorkspaceYamlSessionName } from "../session-workspace-yaml.js";
@@ -43,7 +45,10 @@ export type HelmTurnMode = "typed" | "spoken";
  * think; spoken turns keep someone waiting in silence, so they think less. At xhigh the wait from
  * the end of speech to the first spoken word was 5.3 s at the median and up to 19 s (24 Sep 2026).
  */
-export const HELM_DEFAULT_REASONING_EFFORTS: Record<HelmTurnMode, string> = { typed: "max", spoken: "medium" };
+export const HELM_DEFAULT_REASONING_EFFORTS: Record<HelmTurnMode, string> = {
+  typed: HELM_SETTINGS_DEFAULTS.typedReasoningEffort,
+  spoken: HELM_SETTINGS_DEFAULTS.spokenReasoningEffort,
+};
 
 export interface HelmConversationView {
   sessionId: string;
@@ -59,6 +64,8 @@ export interface HelmConversationView {
 }
 
 export interface HelmStateView {
+  /** The gateway uses persistent Helm voice settings when startup overrides are omitted. */
+  settingsSchemaVersion: 1;
   current: HelmConversationView | null;
   /** The conversation to offer when Helm opened fresh: the most recent one with history. */
   resumable: HelmConversationView | null;
@@ -132,6 +139,43 @@ export class HelmService implements HelmToolRuntime {
 
   isHelmSession(sessionId: string | undefined | null): boolean {
     return this.store.isHelmSession(sessionId);
+  }
+
+  async getSettings(): Promise<HelmSettingsResponse> {
+    const [models, modelsError] = await this.listHelmModels();
+    return {
+      schemaVersion: 1,
+      settings: { ...HELM_SETTINGS_DEFAULTS, ...this.ctx.settingsStore.getSettings().helm },
+      voices: KOKORO_VOICES.map(({ id, name }) => ({ id, name })),
+      ...(models ? { models } : { modelsError }),
+    };
+  }
+
+  async patchSettings(input: unknown): Promise<HelmSettingsResponse> {
+    let patch: Partial<UnifiedHelmSettings>;
+    try {
+      patch = validateHelmSettingsPatch(input);
+    } catch (error) {
+      throw new HelmError(error instanceof Error ? error.message : String(error), 400);
+    }
+    if (patch.voice !== undefined && !KOKORO_VOICES.some(({ id }) => id === patch.voice)) throw new HelmError("Unknown Helm voice", 400);
+    const stored = this.ctx.settingsStore.getSettings().helm;
+    if (patch.model && patch.model !== stored?.model) {
+      const [models] = await this.listHelmModels();
+      if (!models) throw new HelmError("Cannot validate a new Helm model while model choices are unavailable", 503);
+      if (!models.some(({ id }) => id === patch.model)) throw new HelmError("Unknown or disabled Helm model", 400);
+    }
+    this.ctx.settingsStore.updateSettings({ helm: { ...stored, ...patch } });
+    return this.getSettings();
+  }
+
+  private async listHelmModels(): Promise<[{ id: string; name: string }[] | undefined, string | undefined]> {
+    try {
+      const models = await this.ctx.sessionManager.listModels();
+      return [models.filter((model) => !model.policy || model.policy.state === "enabled").map(({ id, name }) => ({ id, name: name || id })), undefined];
+    } catch {
+      return [undefined, "Model choices are temporarily unavailable. Try again later."];
+    }
   }
 
   // ── Session profile ────────────────────────────────────────────
@@ -256,6 +300,7 @@ export class HelmService implements HelmToolRuntime {
     const others = records.filter((record) => record !== current);
     const resumable = current ? undefined : others.find((record) => record.turnCount > 0);
     return {
+      settingsSchemaVersion: 1,
       current: current ? await this.view(current) : null,
       resumable: resumable ? await this.view(resumable) : null,
       recent: await Promise.all(others.map((record) => this.view(record))),
@@ -282,7 +327,8 @@ export class HelmService implements HelmToolRuntime {
   async createConversation(options: { model?: string } = {}): Promise<HelmConversationView> {
     const previous = this.store.getCurrent();
     const models = await this.ctx.sessionManager.listModels().catch(() => []);
-    const selection = selectHelmModel(models, options.model?.trim() || undefined, this.getTurnReasoningEffort("typed"));
+    const model = options.model ?? this.ctx.settingsStore.getSettings().helm?.model;
+    const selection = selectHelmModel(models, model?.trim() || undefined, this.getTurnReasoningEffort("typed"));
     const sessionId = randomUUID();
     // Registered before creation so the session is built with the Helm profile from its first config.
     this.store.create(sessionId, new Date(this.now()).toISOString());

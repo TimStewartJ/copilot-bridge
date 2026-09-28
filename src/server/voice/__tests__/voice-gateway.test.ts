@@ -90,7 +90,7 @@ function createGateway(options: { installed?: boolean; turnCount?: number } = {}
   } satisfies VoiceGatewayHelm;
   const gateway = new VoiceGateway({ ctx, facade, helm, runtime: { paths, engine, installer } });
   const emitBus = (event: { type: string; [key: string]: unknown }) => [...busListeners].forEach((listener) => listener(event));
-  return { gateway, engine, pushed, installer, sessionManager, helm, bound, emitBus };
+  return { gateway, engine, pushed, installer, sessionManager, helm, bound, emitBus, ctx };
 }
 
 class CollectingSink implements HttpEventSink {
@@ -125,6 +125,20 @@ describe("voice audio framing", () => {
 });
 
 describe("VoiceGateway HTTP transport", () => {
+  it("starts from the saved Helm voice settings, with any per-start overrides on top", async () => {
+    const { gateway, ctx } = createGateway();
+    const saved = { voice: "bm_george", speed: 1.2, patience: 0.65, announce: "off" as const, bargeIn: false };
+    ctx.settingsStore.getSettings = () => ({ mcpServers: {}, helm: saved });
+    expect(gateway.getStatus().defaults).toEqual(saved);
+    for (const [overrides, expected] of [[undefined, saved], [{ patience: 0.8 }, { ...saved, patience: 0.8 }]] as const) {
+      const { conversationId, token } = gateway.createConversation(HELM_SESSION_ID, overrides);
+      const sink = new CollectingSink();
+      gateway.attachHttpEvents(conversationId, token, sink);
+      expect(sink.events[0]).toMatchObject({ type: "hello", settings: expected });
+    }
+    await gateway.shutdown();
+  });
+
   it("creates a conversation, starts it and streams audio in order", async () => {
     const { gateway, engine, pushed } = createGateway();
     const { conversationId, token } = gateway.createConversation(HELM_SESSION_ID, { voice: "bm_george" });

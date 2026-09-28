@@ -1,6 +1,7 @@
 // Settings store — SQLite persistence
 
 import type { DatabaseSync } from "./db.js";
+import { validateHelmSettingsPatch, type UnifiedHelmSettings } from "../shared/helm-settings.js";
 
 import type { ProvidersConfig } from "./providers/types.js";
 import { assertMcpServerConfig, type McpServerConfig } from "./mcp-config.js";
@@ -61,7 +62,7 @@ export interface ComputerUseSettings {
   enabled?: boolean;
 }
 
-export interface HelmSettings {
+export interface HelmSettings extends Partial<UnifiedHelmSettings> {
   /** Reasoning effort for Helm turns answered in the chat. */
   typedReasoningEffort?: ReasoningEffort;
   /** Reasoning effort for Helm turns answered out loud in hands-free. */
@@ -358,6 +359,14 @@ function normalizeImageBudgetSettings(value: unknown): ImageBudgetSettings | und
 function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) validationError("helm must be an object");
+  const { model, voice, speed, patience, bargeIn, announce, echoSafe, transport } = value;
+  let extra: Partial<UnifiedHelmSettings>;
+  try {
+    extra = validateHelmSettingsPatch(Object.fromEntries(Object.entries({ model, voice, speed, patience, bargeIn, announce, echoSafe, transport })
+      .filter(([, item]) => item !== undefined)));
+  } catch (error) {
+    validationError(error instanceof Error ? error.message : String(error));
+  }
   const readEffort = (key: keyof HelmSettings): string | undefined => {
     const raw = value[key];
     if (raw === undefined || raw === null) return undefined;
@@ -372,8 +381,9 @@ function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
     validationError(`helm.glossary must be text of at most ${HELM_GLOSSARY_MAX_LENGTH} characters`);
   }
   const glossary = typeof rawGlossary === "string" ? rawGlossary.trim() || undefined : undefined;
-  if (!typedReasoningEffort && !spokenReasoningEffort && !glossary) return undefined;
+  if (!typedReasoningEffort && !spokenReasoningEffort && !glossary && !Object.keys(extra).length) return undefined;
   return {
+    ...extra,
     ...(typedReasoningEffort ? { typedReasoningEffort } : {}),
     ...(spokenReasoningEffort ? { spokenReasoningEffort } : {}),
     ...(glossary ? { glossary } : {}),
