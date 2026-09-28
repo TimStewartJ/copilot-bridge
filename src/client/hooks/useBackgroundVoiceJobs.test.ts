@@ -156,6 +156,52 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     expect(transcribeAudioMock).not.toHaveBeenCalled();
   });
 
+  it("sends an Autopilot recording with its mode and keeps the mode through a retry", async () => {
+    const audio = new Blob(["voice"], { type: "audio/wav" });
+    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+    let delivered: Awaited<ReturnType<UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"]>> | undefined;
+    await getHarness().act(async () => {
+      delivered = await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio,
+        submitMode: "autosend",
+        sendMode: "autopilot",
+      });
+    });
+
+    expect(delivered).toBe("autosend");
+    expect(createVoiceJobMock.mock.calls[0][0]).toMatchObject({ composerKey: "session-1", mode: "autopilot" });
+    expect(await getPendingVoiceRecording("session-1")).toMatchObject({ sendMode: "autopilot" });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
+    expect(result?.getJobForComposer("session-1")).toMatchObject({ sendMode: "autopilot", retryable: true });
+
+    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
+    await getHarness().act(async () => {
+      result?.retryVoiceJobUpload("session-1");
+    });
+    await waitUntilAct(getHarness().act, () => createVoiceJobMock.mock.calls.length === 2);
+    expect(createVoiceJobMock.mock.calls[1][0]).toMatchObject({ composerKey: "session-1", mode: "autopilot" });
+  });
+
+  it("drops the send mode when a recording is put in the composer instead of sent", async () => {
+    getDraftMock.mockReturnValue({ text: "Already typing" });
+    transcribeAudioMock.mockResolvedValueOnce({ text: "more words", provider: "speech-engine" });
+
+    let delivered: Awaited<ReturnType<UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"]>> | undefined;
+    await getHarness().act(async () => {
+      delivered = await result?.startBackgroundVoiceJob({
+        composerKey: "session-1",
+        audio: new Blob(["voice"], { type: "audio/wav" }),
+        submitMode: "autosend",
+        sendMode: "autopilot",
+      });
+    });
+
+    expect(delivered).toBe("insert");
+    expect(createVoiceJobMock).not.toHaveBeenCalled();
+  });
+
   it("notifies existing target session activity immediately when autosend upload starts", async () => {
     const audio = new Blob(["voice"], { type: "audio/wav" });
     createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());

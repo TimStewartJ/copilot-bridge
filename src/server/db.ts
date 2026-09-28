@@ -544,6 +544,7 @@ function initSchema(db: DatabaseSync): void {
       audioPath TEXT NOT NULL,
       transcript TEXT,
       error TEXT,
+      mode TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );
@@ -890,6 +891,16 @@ function initSchema(db: DatabaseSync): void {
   if (!managementJobColumns.some((column) => column.name === "originSessionId")) {
     try {
       db.exec("ALTER TABLE management_jobs ADD COLUMN originSessionId TEXT");
+    } catch (error) {
+      // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+
+  const voiceJobColumns = db.prepare("PRAGMA table_info(voice_jobs)").all() as Array<{ name: string }>;
+  if (!voiceJobColumns.some((column) => column.name === "mode")) {
+    try {
+      db.exec("ALTER TABLE voice_jobs ADD COLUMN mode TEXT");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;

@@ -293,6 +293,52 @@ describe("Voice job routes", () => {
     expect(jobRes.body.status).toBe("done");
   });
 
+  it("POST /api/voice-jobs sends the transcript with the requested mode and rejects unknown modes", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.startWork = vi.fn();
+    sessionManager.readMessagesFromDisk = vi.fn().mockImplementation(async () => ({
+      messages: [{ type: "message", role: "user", content: "Keep going", timestamp: new Date().toISOString() }],
+      total: 1,
+      hasMore: false,
+    }));
+    const transcribe = vi.fn().mockResolvedValue({ text: "Keep going", provider: "speech-engine" });
+    ({ app, ctx } = createTestApp({
+      sessionManager,
+      transcriptionService: createMockTranscriptionService({
+        getStatus: () => ({
+          available: true,
+          provider: "speech-engine",
+          label: "Parakeet v3 (local)",
+          maxDurationSeconds: 120,
+        }),
+        transcribe,
+      }),
+    }));
+
+    const rejected = await request(app)
+      .post("/api/voice-jobs")
+      .field("composerKey", "existing-session")
+      .field("sessionId", "existing-session")
+      .field("mode", "turbo")
+      .attach("audio", createWavBuffer(1), { filename: "recording.wav", contentType: "audio/wav" });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toMatch(/mode must be one of/);
+
+    const res = await request(app)
+      .post("/api/voice-jobs")
+      .field("composerKey", "existing-session")
+      .field("sessionId", "existing-session")
+      .field("mode", "autopilot")
+      .attach("audio", createWavBuffer(1), { filename: "recording.wav", contentType: "audio/wav" });
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ status: "accepted", mode: "autopilot" });
+
+    await ctx.voiceJobManager.shutdown();
+
+    expect(transcribe).toHaveBeenCalledOnce();
+    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Keep going", undefined, { mode: "autopilot" });
+  });
+
   it("POST /api/voice-jobs accepts draft-session autosend while restart is active in persisted state", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });

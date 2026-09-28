@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "./db.js";
+import { toSendMode, type SendMode } from "../shared/send-mode.js";
 
 export type VoiceJobStatus =
   | "accepted"
@@ -16,6 +17,8 @@ export interface VoiceJob {
   status: VoiceJobStatus;
   transcript?: string;
   error?: string;
+  /** How the transcript is sent; unset sends it the way a plain message goes. */
+  mode?: SendMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -30,6 +33,7 @@ interface VoiceJobCreate {
   taskId?: string;
   targetSessionId?: string;
   audioPath: string;
+  mode?: SendMode;
 }
 
 const RELEVANT_STATUSES: readonly VoiceJobStatus[] = ["accepted", "transcribing", "sending", "error"];
@@ -46,6 +50,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
       audioPath: row.audioPath,
       transcript: row.transcript ?? undefined,
       error: row.error ?? undefined,
+      mode: toSendMode(row.mode),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -55,14 +60,15 @@ export function createVoiceJobStore(db: DatabaseSync) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO voice_jobs (
-        id, composerKey, taskId, targetSessionId, status, audioPath, transcript, error, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, 'accepted', ?, NULL, NULL, ?, ?)
+        id, composerKey, taskId, targetSessionId, status, audioPath, transcript, error, mode, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, 'accepted', ?, NULL, NULL, ?, ?, ?)
     `).run(
       input.id,
       input.composerKey,
       input.taskId ?? null,
       input.targetSessionId ?? null,
       input.audioPath,
+      input.mode ?? null,
       now,
       now,
     );

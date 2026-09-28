@@ -25,6 +25,7 @@ import {
   type VoicePersistResult,
 } from "../lib/voice-recording-store";
 import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
+import type { SendMode } from "../../shared/send-mode.js";
 import type { Draft } from "../useDrafts";
 
 export type VoiceBackgroundJobStatus = "uploading" | "accepted" | "transcribing" | "sending" | "error";
@@ -64,6 +65,8 @@ export interface VoiceBackgroundJob {
   uploadPercent?: number;
   /** Session configuration captured when a draft autosend recording started. */
   sessionOptions?: CreateSessionOptions;
+  /** The send mode (such as Autopilot) an autosend recording goes out with. */
+  sendMode?: SendMode;
   /**
    * The server job failed without a transcript, so it holds nothing to recover and dismissing the
    * error can retire it on the server. Unset while a transcript may still need to reach the draft.
@@ -87,6 +90,8 @@ export interface StartBackgroundVoiceJobOptions {
   audio: Blob;
   submitMode: VoiceSubmitMode;
   sessionOptions?: CreateSessionOptions;
+  /** Applies only when the recording is auto-sent. */
+  sendMode?: SendMode;
 }
 
 interface UseBackgroundVoiceJobsOptions {
@@ -108,7 +113,8 @@ interface UseBackgroundVoiceJobsOptions {
 
 export interface UseBackgroundVoiceJobsResult {
   getJobForComposer: (composerKey: string) => VoiceBackgroundJob | null;
-  startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<void>;
+  /** Resolves to how the recording is being delivered, or null when it was refused. */
+  startBackgroundVoiceJob: (options: StartBackgroundVoiceJobOptions) => Promise<VoiceSubmitMode | null>;
   retryVoiceJobUpload: (composerKey: string) => void;
   reviewInstead: (composerKey: string) => void;
   clearVoiceJobError: (composerKey: string) => void;
@@ -416,7 +422,7 @@ export function useBackgroundVoiceJobs({
   const markError = useCallback((
     composerKey: string,
     message: string,
-    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning" | "sessionOptions" | "serverFailedWithoutTranscript">>,
+    extras?: Partial<Pick<VoiceBackgroundJob, "submitMode" | "retryable" | "serverOwned" | "serverJobId" | "originComposerKey" | "targetSessionId" | "safeToLeave" | "restored" | "persistWarning" | "sessionOptions" | "sendMode" | "serverFailedWithoutTranscript">>,
   ) => {
     const nextJob: VoiceBackgroundJob = {
       composerKey,
@@ -670,6 +676,7 @@ export function useBackgroundVoiceJobs({
     audio: Blob,
     recordingId?: string,
     sessionOptions?: CreateSessionOptions,
+    sendMode?: SendMode,
   ) => {
     clearUploadTracking(composerKey);
     const controller = new AbortController();
@@ -689,6 +696,7 @@ export function useBackgroundVoiceJobs({
       originComposerKey: composerKey,
       persistWarning: persistWarningsRef.current[composerKey],
       ...(sessionOptions ? { sessionOptions } : {}),
+      ...(sendMode ? { sendMode } : {}),
     });
     if (existingSessionComposer) {
       optionsRef.current.onVoiceSessionActivity?.({
@@ -706,6 +714,7 @@ export function useBackgroundVoiceJobs({
             sessionId: isDraftComposerKey(composerKey) ? undefined : composerKey,
             taskId: getTaskIdFromDraftComposerKey(composerKey),
             ...(isDraftComposerKey(composerKey) && sessionOptions ? { sessionOptions } : {}),
+            ...(sendMode ? { mode: sendMode } : {}),
           },
           audio,
           { signal: controller.signal, onUploadProgress: (fraction) => noteUploadProgress(composerKey, fraction) },
@@ -739,6 +748,7 @@ export function useBackgroundVoiceJobs({
           serverOwned: true,
           originComposerKey: composerKey,
           ...(sessionOptions ? { sessionOptions } : {}),
+          ...(sendMode ? { sendMode } : {}),
         });
       }
     };
@@ -755,12 +765,14 @@ export function useBackgroundVoiceJobs({
     audio,
     submitMode,
     sessionOptions,
-  }: StartBackgroundVoiceJobOptions) => {
+    sendMode,
+  }: StartBackgroundVoiceJobOptions): Promise<VoiceSubmitMode | null> => {
     const effectiveSubmitMode = resolveBackgroundVoiceSubmitMode({
       submitMode,
       hasDraftContent: draftHasContent(optionsRef.current.getDraft(composerKey)),
       targetBusy: !isDraftComposerKey(composerKey) && optionsRef.current.isSessionBusy(composerKey),
     });
+    const effectiveSendMode = effectiveSubmitMode === "autosend" ? sendMode : undefined;
 
     // Save the audio before touching the network so a crash, reload, or failed upload can never
     // destroy the only copy of the recording.
@@ -774,6 +786,7 @@ export function useBackgroundVoiceJobs({
         audio: await audio.arrayBuffer(),
         mimeType: audio.type || "audio/wav",
         ...(sessionOptions ? { sessionOptions } : {}),
+        ...(effectiveSendMode ? { sendMode: effectiveSendMode } : {}),
       });
     } catch {
       persistResult = { durable: false, reason: "unavailable" };
@@ -785,7 +798,7 @@ export function useBackgroundVoiceJobs({
         submitMode: effectiveSubmitMode,
         retryable: true,
       });
-      return;
+      return null;
     }
 
     pendingRecordingIdsRef.current[composerKey] = recordingId;
@@ -799,8 +812,9 @@ export function useBackgroundVoiceJobs({
     if (effectiveSubmitMode === "insert") {
       startLocalInsertJob(composerKey, audio, recordingId);
     } else {
-      startServerAutoSendJob(composerKey, audio, recordingId, sessionOptions);
+      startServerAutoSendJob(composerKey, audio, recordingId, sessionOptions, effectiveSendMode);
     }
+    return effectiveSubmitMode;
   }, [draftHasContent, markError, startLocalInsertJob, startServerAutoSendJob]);
 
   const retryVoiceJobUpload = useCallback((composerKey: string) => {
@@ -866,6 +880,9 @@ export function useBackgroundVoiceJobs({
             ...((record?.sessionOptions ?? existing.sessionOptions)
               ? { sessionOptions: record?.sessionOptions ?? existing.sessionOptions }
               : {}),
+            ...((record?.sendMode ?? existing.sendMode)
+              ? { sendMode: record?.sendMode ?? existing.sendMode }
+              : {}),
           });
           return;
         }
@@ -890,6 +907,7 @@ export function useBackgroundVoiceJobs({
           retainedAudio,
           recordingId,
           record?.sessionOptions ?? existing.sessionOptions,
+          record?.sendMode ?? existing.sendMode,
         );
       } else {
         startLocalInsertJob(composerKey, retainedAudio, recordingId);
@@ -958,6 +976,7 @@ export function useBackgroundVoiceJobs({
               retryable: true,
               restored: true,
               ...(record.sessionOptions ? { sessionOptions: record.sessionOptions } : {}),
+              ...(record.sendMode ? { sendMode: record.sendMode } : {}),
             });
           }
           return;

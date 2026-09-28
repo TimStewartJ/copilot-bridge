@@ -2580,6 +2580,8 @@ export interface CreateVoiceJobRequest {
   sessionId?: string;
   taskId?: string;
   sessionOptions?: CreateSessionOptions;
+  /** The send mode the transcript goes out with, like a typed message's. */
+  mode?: SendMode;
 }
 
 export async function fetchTranscriptionStatus(): Promise<TranscriptionStatus> {
@@ -2656,6 +2658,7 @@ export async function createVoiceJob(
   if (request.sessionId) form.append("sessionId", request.sessionId);
   if (request.taskId) form.append("taskId", request.taskId);
   if (request.sessionOptions) form.append("sessionOptions", JSON.stringify(request.sessionOptions));
+  if (request.mode) form.append("mode", request.mode);
   return uploadRecording<VoiceJobStatusResponse>("/api/voice-jobs", form, options);
 }
 
