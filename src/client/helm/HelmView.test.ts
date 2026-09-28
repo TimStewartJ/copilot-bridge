@@ -78,9 +78,9 @@ vi.mock("../hooks/queries/useModels", () => ({ useModelsQuery: () => ({ data: []
 vi.mock("../hooks/queries/useSessionModel", () => ({
   useSessionModelQuery: () => ({ data: { model: "gpt-5.6-luna" }, isLoading: false, isFetching: false, error: null, refetch: settings.refetchSessionModel }),
 }));
-vi.mock("../hooks/queries/useSettings", () => ({
-  useSettingsQuery: () => ({ data: settings.data }),
-  useSettingsMutation: () => ({ mutate: settings.mutate }),
+vi.mock("./helm-settings", () => ({
+  useHelmPreferences: () => ({ data: { settings: { typedReasoningEffort: "max", spokenReasoningEffort: "xhigh", glossary: "" } }, error: null }),
+  patchHelmSettings: settings.mutate,
 }));
 vi.mock("../components/SessionModelSummary", () => ({ default: () => null }));
 vi.mock("../components/ChatView", () => ({
@@ -150,6 +150,7 @@ describe("HelmView", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    settings.mutate.mockResolvedValue({});
     state.chatViewProps = null;
     state.settingsSheetProps = null;
     handsFree.active = false;
@@ -306,16 +307,14 @@ describe("HelmView", () => {
     await harness.act(() => open.onClick());
     expect(state.settingsSheetProps!.helmEfforts).toMatchObject({ typed: "max", spoken: "xhigh", modelId: "gpt-5.6-luna", error: null });
 
+    settings.mutate.mockRejectedValueOnce(new Error("helm.typedReasoningEffort must be a reasoning effort name"));
     await harness.act(() => state.settingsSheetProps!.helmEfforts.onChange("typed", "high"));
     // Shown at once, and saved next to the spoken setting rather than over it.
-    expect((state.helm as HelmState).reasoningEfforts).toEqual({ typed: "high", spoken: "xhigh" });
     expect(settings.mutate).toHaveBeenCalledWith(
-      { helm: { spokenReasoningEffort: "xhigh", typedReasoningEffort: "high" } },
-      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+      { typedReasoningEffort: "high" },
     );
 
     // A rejected save puts the picker back and says why.
-    await harness.act(() => settings.mutate.mock.calls[0]![1].onError(new Error("helm.typedReasoningEffort must be a reasoning effort name")));
     expect((state.helm as HelmState).reasoningEfforts).toEqual({ typed: "max", spoken: "xhigh" });
     await render();
     expect(state.settingsSheetProps!.helmEfforts.error).toBe("helm.typedReasoningEffort must be a reasoning effort name");

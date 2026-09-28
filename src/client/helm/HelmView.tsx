@@ -24,7 +24,7 @@ import SessionModelSummary from "../components/SessionModelSummary";
 import { sendMaterializedFirstPrompt } from "../first-send-session-cleanup";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
-import { useSettingsMutation, useSettingsQuery } from "../hooks/queries/useSettings";
+import { patchHelmSettings, useHelmPreferences } from "./helm-settings";
 import type { UseBackgroundVoiceJobsResult, VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import type { VoiceCaptureSubmission } from "../lib/voice-submit-mode";
 import { timeAgo } from "../time";
@@ -266,7 +266,7 @@ export default function HelmView({
   const queryClient = useQueryClient();
   const helmQuery = useHelmStateQuery();
   const handsFree = useHandsFree();
-  const [helmModel, setHelmModel] = useHelmModelPreference();
+  const [helmModel, setHelmModel, modelError] = useHelmModelPreference();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
@@ -283,8 +283,7 @@ export default function HelmView({
 
   const modelsQuery = useModelsQuery({ enabled: Boolean(sessionId) });
   const sessionModelQuery = useSessionModelQuery(sessionId);
-  const settingsQuery = useSettingsQuery();
-  const settingsMutation = useSettingsMutation();
+  const settingsQuery = useHelmPreferences();
   const [effortError, setEffortError] = useState<string | null>(null);
 
   // Typed and spoken turns think at different efforts, so the model summary goes stale with
@@ -336,26 +335,19 @@ export default function HelmView({
     setEffortError(null);
     const previous = state?.reasoningEfforts;
     setHelmState((helm) => ({ ...helm, reasoningEfforts: { ...helm.reasoningEfforts, [mode]: effort } }));
-    settingsMutation.mutate(
-      { helm: { ...settingsQuery.data?.helm, [mode === "typed" ? "typedReasoningEffort" : "spokenReasoningEffort"]: effort } },
-      {
-        onSuccess: () => void refreshHelm(),
-        onError: (error) => {
+    void patchHelmSettings(
+      { [mode === "typed" ? "typedReasoningEffort" : "spokenReasoningEffort"]: effort },
+    ).then(() => void refreshHelm()).catch((error: unknown) => {
           if (previous) setHelmState((helm) => ({ ...helm, reasoningEfforts: previous }));
           setEffortError(error instanceof Error ? error.message : String(error));
-        },
-      },
-    );
-  }, [refreshHelm, setHelmState, settingsMutation, settingsQuery.data?.helm, state?.reasoningEfforts]);
+    });
+  }, [refreshHelm, setHelmState, state?.reasoningEfforts]);
 
   const [glossaryError, setGlossaryError] = useState<string | null>(null);
   const handleGlossarySave = useCallback((glossary: string) => {
     setGlossaryError(null);
-    settingsMutation.mutate(
-      { helm: { ...settingsQuery.data?.helm, glossary } },
-      { onError: (error) => setGlossaryError(error instanceof Error ? error.message : String(error)) },
-    );
-  }, [settingsMutation, settingsQuery.data?.helm]);
+    void patchHelmSettings({ glossary }).catch((error: unknown) => setGlossaryError(error instanceof Error ? error.message : String(error)));
+  }, []);
 
   // ── Hands-free ─────────────────────────────────────────────────
 
@@ -630,15 +622,16 @@ export default function HelmView({
       {settingsOpen && (
         <VoiceSettingsSheet
           controller={handsFree}
-          helmModel={{ value: helmModel, onChange: setHelmModel }}
+          helmModel={{ value: helmModel, onChange: setHelmModel, error: modelError ?? settingsQuery.error ?? settingsQuery.data?.modelsError }}
           helmEfforts={state ? {
-            ...state.reasoningEfforts,
+            typed: settingsQuery.data?.settings.typedReasoningEffort ?? state.reasoningEfforts.typed,
+            spoken: settingsQuery.data?.settings.spokenReasoningEffort ?? state.reasoningEfforts.spoken,
             modelId: sessionModelQuery.data?.model ?? (helmModel || undefined),
             error: effortError,
             onChange: handleEffortChange,
           } : undefined}
           helmGlossary={settingsQuery.data ? {
-            value: settingsQuery.data.helm?.glossary ?? "",
+            value: settingsQuery.data.settings.glossary,
             onSave: handleGlossarySave,
             error: glossaryError,
           } : undefined}

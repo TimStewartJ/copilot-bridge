@@ -1,5 +1,6 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
+import type { UnifiedHelmSettings } from "../shared/helm-settings.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SubagentSettings } from "../shared/subagent-settings.js";
@@ -2283,7 +2284,7 @@ export interface ModelPreset {
 
 export type ModelPresets = Partial<Record<ModelPresetSlot, ModelPreset>>;
 
-export interface HelmSettings {
+export interface HelmSettings extends Partial<UnifiedHelmSettings> {
   /** Reasoning effort for Helm turns answered in the chat. */
   typedReasoningEffort?: ReasoningEffort;
   /** Reasoning effort for Helm turns answered out loud in hands-free. */

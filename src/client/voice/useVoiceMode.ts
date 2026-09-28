@@ -2,11 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   createVoiceConversation,
   fetchVoiceStatus,
-  loadStoredVoiceSettings,
-  loadTransportPreference,
   startVoiceInstall,
-  storeTransportPreference,
-  storeVoiceSettings,
   type VoiceConversationTicket,
   type VoiceSettings,
   type VoiceStatus,
@@ -16,6 +12,8 @@ import { describeVoiceCaptureError } from "../hooks/useVoiceInput";
 import { VoiceAudio, type VoiceAudioStartResult } from "./voice-audio";
 import { connectVoiceTransport, type VoiceTransport, type VoiceTransportHandlers } from "./voice-transport";
 import { initialVoiceViewState, reduceVoiceEvent, type VoiceViewState } from "./voice-view-model";
+import { patchHelmSettings, refreshHelmSettings, useHelmPreferences } from "../helm/helm-settings";
+import { HELM_SETTINGS_DEFAULTS, type HelmSettingsResponse, type UnifiedHelmSettings } from "../../shared/helm-settings";
 
 export type VoiceSessionPhase = "loading" | "setup" | "ready" | "connecting" | "active" | "reconnecting" | "ended" | "error";
 
@@ -27,28 +25,20 @@ function viewReducer(state: VoiceViewState, action: ViewAction): VoiceViewState 
 }
 
 const RECONNECT_DELAYS_MS = [500, 1_500, 3_000, 6_000, 10_000, 15_000];
-const ECHO_SAFE_STORAGE_KEY = "bridge.voice.echoSafe";
-
-function loadEchoSafe(): boolean {
-  try {
-    return window.localStorage.getItem(ECHO_SAFE_STORAGE_KEY) !== "false";
-  } catch {
-    return true;
-  }
-}
 
 /**
  * Controller for hands-free voice. It attaches to one Helm conversation at a time and holds
  * no conversation context itself, so starting and stopping it never loses anything.
  */
 export function useVoiceMode() {
+  const preferences = useHelmPreferences();
   const [status, setStatus] = useState<VoiceStatus | null>(null);
   const [phase, setPhase] = useState<VoiceSessionPhase>("loading");
   const [helmSessionId, setHelmSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
-  const [transportPreference, setTransportPreferenceState] = useState<VoiceTransportPreference>(() => loadTransportPreference());
-  const [echoSafe, setEchoSafeState] = useState<boolean>(() => loadEchoSafe());
+  const [transportPreference, setTransportPreferenceState] = useState<VoiceTransportPreference>(HELM_SETTINGS_DEFAULTS.transport);
+  const [echoSafe, setEchoSafeState] = useState(HELM_SETTINGS_DEFAULTS.echoSafe);
   const [micMuted, setMicMuted] = useState(false);
   const [echoWarning, setEchoWarning] = useState<string | null>(null);
   const [view, dispatch] = useReducer(viewReducer, initialVoiceViewState);
@@ -63,6 +53,23 @@ export function useVoiceMode() {
   const wakeLockRef = useRef<{ release(): Promise<void> } | null>(null);
   const settingsRef = useRef<VoiceSettings | null>(null);
   const handlersRef = useRef<VoiceTransportHandlers | null>(null);
+  // Read at Start and on reconnect, which can run before React re-renders with fresh settings.
+  const playbackPreferences = useRef({ echoSafe, transport: transportPreference });
+
+  const applyPreferences = useCallback((data: HelmSettingsResponse) => {
+    const { voice, speed, patience, bargeIn, announce, echoSafe: nextEchoSafe, transport } = data.settings;
+    const next = { voice, speed, patience, bargeIn, announce };
+    settingsRef.current = next;
+    setSettings(next);
+    playbackPreferences.current = { echoSafe: nextEchoSafe, transport };
+    setTransportPreferenceState(transport);
+    setEchoSafeState(nextEchoSafe);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    if (preferences.data) applyPreferences(preferences.data);
+  }, [preferences.data, applyPreferences]);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -70,9 +77,9 @@ export function useVoiceMode() {
 
   const refreshStatus = useCallback(async () => {
     try {
-      const next = await fetchVoiceStatus();
+      const [next, unified] = await Promise.all([fetchVoiceStatus(), refreshHelmSettings()]);
       setStatus(next);
-      setSettings((current) => current ?? loadStoredVoiceSettings(next.defaults));
+      applyPreferences(unified);
       setPhase((current) => {
         if (current === "loading" || current === "setup" || current === "ready") {
           return next.install.installed ? "ready" : "setup";
@@ -85,7 +92,7 @@ export function useVoiceMode() {
       setPhase((current) => (current === "loading" ? "error" : current));
       return null;
     }
-  }, []);
+  }, [applyPreferences]);
 
   useEffect(() => {
     if (!status?.install.installing) return;
@@ -135,11 +142,11 @@ export function useVoiceMode() {
         if (transport && transportRef.current === transport) handlersRef.current?.onClose(reason);
       },
     };
-    transport = await connectVoiceTransport(ticket, scoped, transportPreference);
+    transport = await connectVoiceTransport(ticket, scoped, playbackPreferences.current.transport);
     transportRef.current = transport;
     reconnectAttemptRef.current = 0;
     return transport;
-  }, [transportPreference]);
+  }, []);
 
   const scheduleReconnect = useCallback(() => {
     if (endedRef.current || !ticketRef.current) return;
@@ -202,7 +209,8 @@ export function useVoiceMode() {
    * for it (iOS will not resume an AudioContext after a network wait), so that happens first.
    */
   const start = useCallback(async (target: string | (() => Promise<string>)) => {
-    const currentSettings = settingsRef.current ?? (await refreshStatus())?.defaults ?? null;
+    if (!settingsRef.current) await refreshStatus();
+    const currentSettings = settingsRef.current;
     if (!currentSettings) return;
     setError(null);
     setEchoWarning(null);
@@ -210,8 +218,9 @@ export function useVoiceMode() {
     dispatch({ type: "reset" });
     setHelmSessionId(typeof target === "string" ? target : null);
     setPhase("connecting");
+    const startEchoSafe = playbackPreferences.current.echoSafe;
     const audio = new VoiceAudio({
-      echoSafe,
+      echoSafe: startEchoSafe,
       onFrame: (pcm, level) => {
         micLevelRef.current = level;
         transportRef.current?.sendAudio(pcm);
@@ -229,7 +238,7 @@ export function useVoiceMode() {
         // ("The object can not be found here."); say what it means instead.
         throw new Error(describeVoiceCaptureError(err));
       }
-      if (echoSafe && !result.echoSafe) {
+      if (startEchoSafe && !result.echoSafe) {
         setEchoWarning(`Echo-safe playback isn't available (${result.echoSafeError ?? "unsupported"}). Headphones will work best.`);
       }
       audio.earcon("start");
@@ -265,29 +274,28 @@ export function useVoiceMode() {
     transportRef.current?.sendControl({ type: "control", action });
   }, []);
 
+  const savePreferences = useCallback(async (patch: Partial<UnifiedHelmSettings>, live = false) => {
+    try {
+      const data = await patchHelmSettings(patch);
+      const next = applyPreferences(data);
+      if (live) transportRef.current?.sendControl({ type: "config", settings: next });
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [applyPreferences]);
+
   const updateSettings = useCallback((patch: Partial<VoiceSettings>) => {
-    setSettings((current) => {
-      if (!current) return current;
-      const next = { ...current, ...patch };
-      storeVoiceSettings(next);
-      transportRef.current?.sendControl({ type: "config", settings: next });
-      return next;
-    });
-  }, []);
+    void savePreferences(patch, true);
+  }, [savePreferences]);
 
   const setTransportPreference = useCallback((value: VoiceTransportPreference) => {
-    storeTransportPreference(value);
-    setTransportPreferenceState(value);
-  }, []);
+    void savePreferences({ transport: value });
+  }, [savePreferences]);
 
   const setEchoSafe = useCallback((value: boolean) => {
-    try {
-      window.localStorage.setItem(ECHO_SAFE_STORAGE_KEY, String(value));
-    } catch {
-      // Ignore storage failures.
-    }
-    setEchoSafeState(value);
-  }, []);
+    void savePreferences({ echoSafe: value });
+  }, [savePreferences]);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -321,7 +329,7 @@ export function useVoiceMode() {
     active,
     /** The Helm conversation hands-free is speaking for. */
     helmSessionId,
-    error,
+    error: error ?? preferences.error,
     settings,
     view,
     echoSafe,
