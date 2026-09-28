@@ -481,6 +481,10 @@ describe("ChatInput voice retry", () => {
     });
     expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("true");
     expect(findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot")).toBeDefined();
+    // The toggle already shows Autopilot, so the send button keeps its arrow instead of repeating the mark.
+    const sendIcons = findAllByTag(findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot"), "svg")
+      .map((svg) => svg.getAttribute("class") ?? "").join(" ");
+    expect(sendIcons).toContain("lucide-arrow-up");
     expect(getHarness().dom.container.textContent).toContain("Questions still wait for you");
 
     await typeAndEnter("fix the flaky tests");

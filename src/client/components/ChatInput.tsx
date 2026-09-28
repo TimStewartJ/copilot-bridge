@@ -901,8 +901,6 @@ export default function ChatInput({
             >
               {showAbortControl ? (
                 <Square size={11} fill="currentColor" />
-              ) : autopilotNext ? (
-                <AutopilotIcon size={16} />
               ) : (
                 <ArrowUp size={17} strokeWidth={2.25} />
               )}
