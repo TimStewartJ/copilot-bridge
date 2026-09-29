@@ -138,6 +138,7 @@ import {
   scheduleHibernate,
 } from "./device-hibernate.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
+import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
 import { createHelmRouter } from "./helm/helm-router.js";
 import { HELM_DEFAULT_REASONING_EFFORTS, HelmService } from "./helm/helm-service.js";
@@ -3715,68 +3716,112 @@ export function createApiRouter(
       );
     };
 
-    const bus = ctx.eventBusRegistry.getBus(sessionId);
+    const attach = async (): Promise<void> => {
+      if (connection.closed) return;
+      const bus = ctx.eventBusRegistry.getBus(sessionId);
 
-    if (!bus) {
-      const terminalOverlay = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
-      const runNotice = terminalOverlay?.notice;
-      sendEvent({
-        type: "snapshot",
-        runId: terminalOverlay?.runId ?? sessionId,
-        complete: true,
-        streamingContent: "",
-        liveAssistantSegments: [],
-        liveReasoning: [],
-        pendingUserMessages: [],
-        liveTools: [],
-        liveVisuals: [],
-        intentText: "",
-        contextSummary: null,
-        pendingUserInputs: [],
-        pendingElicitations: [],
-        ...(terminalOverlay?.turnId ? { turnId: terminalOverlay.turnId } : {}),
-        ...(terminalOverlay?.turnInstanceId
-          ? { turnInstanceId: terminalOverlay.turnInstanceId }
-          : {}),
-        ...(terminalOverlay?.type ? { terminalType: terminalOverlay.type } : {}),
-        ...(terminalOverlay?.timestamp ? { terminalTimestamp: terminalOverlay.timestamp } : {}),
-        ...(runNotice ? { runNotice } : {}),
-      });
-      return;
-    }
-
-    const bufferedEvents: any[] = [];
-    let hydrated = false;
-    const subscription = bus.subscribeWithSnapshot((event) => {
-      if (hydrated) {
-        sendEvent(event);
-      } else {
-        bufferedEvents.push(event);
+      // Bridge is working on the session outside any run (image summary, model switch, undo). There
+      // is no run to stream, but reporting the session finished would send the client straight back
+      // here, so stay open and follow the hold until it ends.
+      if ((!bus || bus.complete) && ctx.sessionManager.getSessionHold(sessionId)) {
+        const sendHold = () => {
+          const reason = ctx.sessionManager.getSessionHold(sessionId);
+          if (!reason) return false;
+          sendEvent({
+            type: "snapshot",
+            runId: `hold:${sessionId}`,
+            complete: false,
+            streamingContent: "",
+            liveAssistantSegments: [],
+            liveReasoning: [],
+            pendingUserMessages: [],
+            liveTools: [],
+            liveVisuals: [],
+            intentText: SESSION_HOLD_INTENT[reason],
+            contextSummary: null,
+            pendingUserInputs: [],
+            pendingElicitations: [],
+            hold: reason,
+          });
+          return true;
+        };
+        const unsubscribeHold = ctx.sessionManager.subscribeSessionHold(sessionId, () => {
+          if (sendHold()) return;
+          unsubscribeHold();
+          unsub = null;
+          void attach();
+        });
+        unsub = unsubscribeHold;
+        if (!sendHold()) {
+          unsubscribeHold();
+          unsub = null;
+          await attach();
+        }
+        return;
       }
-    });
-    unsub = subscription.unsubscribe;
 
-    // `subscribeWithSnapshot` is the linearization barrier: it registers the
-    // listener before capturing state, so anything after it is buffered. The
-    // barrier's copy of the pending prompts is the one buffered cancellations
-    // refer to, and it is drawn from the same listing index the manager reads —
-    // so it is authoritative and nothing may overwrite it here. Settling the
-    // manager first only ensures a draining terminal cleanup has finished
-    // before the client sees the snapshot.
-    try {
-      await ctx.sessionManager.hydratePendingInteractions(sessionId);
-    } catch (error) {
-      console.warn(
-        `[sessions] Failed to settle pending interactions for ${sessionId}:`,
-        error instanceof Error ? error.message : error,
-      );
-    }
-    if (connection.closed) return;
-    sendEvent(subscription.snapshot);
-    hydrated = true;
-    for (const event of bufferedEvents) {
-      sendEvent(event);
-    }
+      if (!bus) {
+        const terminalOverlay = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
+        const runNotice = terminalOverlay?.notice;
+        sendEvent({
+          type: "snapshot",
+          runId: terminalOverlay?.runId ?? sessionId,
+          complete: true,
+          streamingContent: "",
+          liveAssistantSegments: [],
+          liveReasoning: [],
+          pendingUserMessages: [],
+          liveTools: [],
+          liveVisuals: [],
+          intentText: "",
+          contextSummary: null,
+          pendingUserInputs: [],
+          pendingElicitations: [],
+          ...(terminalOverlay?.turnId ? { turnId: terminalOverlay.turnId } : {}),
+          ...(terminalOverlay?.turnInstanceId
+            ? { turnInstanceId: terminalOverlay.turnInstanceId }
+            : {}),
+          ...(terminalOverlay?.type ? { terminalType: terminalOverlay.type } : {}),
+          ...(terminalOverlay?.timestamp ? { terminalTimestamp: terminalOverlay.timestamp } : {}),
+          ...(runNotice ? { runNotice } : {}),
+        });
+        return;
+      }
+
+      const bufferedEvents: any[] = [];
+      let hydrated = false;
+      const subscription = bus.subscribeWithSnapshot((event) => {
+        if (hydrated) {
+          sendEvent(event);
+        } else {
+          bufferedEvents.push(event);
+        }
+      });
+      unsub = subscription.unsubscribe;
+
+      // `subscribeWithSnapshot` is the linearization barrier: it registers the
+      // listener before capturing state, so anything after it is buffered. The
+      // barrier's copy of the pending prompts is the one buffered cancellations
+      // refer to, and it is drawn from the same listing index the manager reads —
+      // so it is authoritative and nothing may overwrite it here. Settling the
+      // manager first only ensures a draining terminal cleanup has finished
+      // before the client sees the snapshot.
+      try {
+        await ctx.sessionManager.hydratePendingInteractions(sessionId);
+      } catch (error) {
+        console.warn(
+          `[sessions] Failed to settle pending interactions for ${sessionId}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      if (connection.closed) return;
+      sendEvent(subscription.snapshot);
+      hydrated = true;
+      for (const event of bufferedEvents) {
+        sendEvent(event);
+      }
+    };
+    await attach();
   });
 
   // GET /sessions/:id/plan — read plan.md from session state directory

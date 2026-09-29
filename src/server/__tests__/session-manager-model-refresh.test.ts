@@ -162,7 +162,7 @@ describe("SessionManager model refresh", () => {
     const { manager } = createManager([oldBackend, freshBackend]);
 
     await manager.initialize();
-    (manager as any).sessionOverlayBusyReasons.set("active-session", "model-switching");
+    (manager as any).sessionHolds.start("active-session", "model-switching");
 
     await expect(manager.refreshModels()).rejects.toBeInstanceOf(ModelRefreshBlockedError);
     expect(oldBackend.stop).not.toHaveBeenCalled();
