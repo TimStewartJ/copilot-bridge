@@ -30,9 +30,14 @@ const PROCESS_TABLE_MAX_BUFFER = 16 * 1024 * 1024;
 const TASKKILL_TIMEOUT_MS = 5_000;
 const PROCESS_TREE_DEADLINE_OVERHEAD_MS = 3_000;
 const PROCESS_TABLE_VERIFICATION_RESERVE_MS = PROCESS_TABLE_READ_TIMEOUT_MS;
-// Initial snapshot, taskkill, and verification snapshot, plus process spawn overhead.
+// taskkill /F and SIGKILL return before the OS drops every killed process from the process table,
+// so a process that is still listed right after the kill is usually on its way out. Verification
+// keeps looking this long before it reports survivors (measured: gone within ~50 ms on Windows).
+export const PROCESS_TREE_EXIT_SETTLE_MS = 2_000;
+const PROCESS_TREE_EXIT_POLL_MS = 25;
+// Initial snapshot, taskkill, and verification snapshot, plus the exit settle window and process spawn overhead.
 export const PROCESS_TREE_TERMINATION_BUDGET_MS =
-  (PROCESS_TABLE_READ_TIMEOUT_MS * 2) + TASKKILL_TIMEOUT_MS + PROCESS_TREE_DEADLINE_OVERHEAD_MS;
+  (PROCESS_TABLE_READ_TIMEOUT_MS * 2) + TASKKILL_TIMEOUT_MS + PROCESS_TREE_EXIT_SETTLE_MS + PROCESS_TREE_DEADLINE_OVERHEAD_MS;
 type ProcessTableEntry = { ppid: number; startMarker: string };
 type ProcessTableReadResult =
   | { ok: true; table: Map<number, ProcessTableEntry> }
@@ -529,14 +534,25 @@ export async function terminateProcessTree(
     await sleepUntilDeadline(25, deadline);
   }
   const verificationStartedAt = performance.now();
-  const verificationDeadline = capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS);
   const capturedIdentities = [root, ...descendants];
-  let verification = await readProcessTable(verificationDeadline);
-  // Native snapshots can catch a terminated process before Windows removes its unqueryable entry.
-  while (isWindows() && verification.ok && hasUnqueryableIdentities(capturedIdentities, verification.table)
-    && await sleepUntilDeadline(25, verificationDeadline)) {
-    if (deadlineExpired(verificationDeadline)) break;
-    verification = await readProcessTable(verificationDeadline);
+  const readVerification = async (): Promise<ProcessTableReadResult> => {
+    const verificationDeadline = capDeadline(deadline, PROCESS_TABLE_READ_TIMEOUT_MS);
+    let read = await readProcessTable(verificationDeadline);
+    // Native snapshots can catch a terminated process before Windows removes its unqueryable entry.
+    while (isWindows() && read.ok && hasUnqueryableIdentities(capturedIdentities, read.table)
+      && await sleepUntilDeadline(25, verificationDeadline)) {
+      if (deadlineExpired(verificationDeadline)) break;
+      read = await readProcessTable(verificationDeadline);
+    }
+    return read;
+  };
+  let verification = await readVerification();
+  const settleDeadline = capDeadline(deadline, PROCESS_TREE_EXIT_SETTLE_MS);
+  while (verification.ok && matchingIdentities(verification.table, capturedIdentities).length > 0
+    && await sleepUntilDeadline(PROCESS_TREE_EXIT_POLL_MS, settleDeadline)) {
+    const next = await readVerification();
+    if (!next.ok) break;
+    verification = next;
   }
   if (!verification.ok) {
     onPhase?.({ phase: "verify", durationMs: performance.now() - verificationStartedAt,

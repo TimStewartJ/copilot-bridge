@@ -20,6 +20,7 @@ import {
   getProcessIdentityStatus,
   getProcessIdentityStatuses,
   PROCESS_TABLE_READ_TIMEOUT_MS,
+  PROCESS_TREE_EXIT_SETTLE_MS,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
   removeDirectoryLink,
   sampleProcessTree,
@@ -111,6 +112,18 @@ afterEach(() => {
   windowsSnapshotMock.mockReset();
   restorePlatform();
 });
+
+/** Runs a termination whose verification keeps finding survivors, on fake timers past the exit settle window. */
+async function withExitSettleElapsed<T>(run: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+  try {
+    const result = run();
+    await vi.advanceTimersByTimeAsync(PROCESS_TREE_EXIT_SETTLE_MS + 100);
+    return await result;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 describe("process tree platform helpers", () => {
   it("selects supported hibernate commands and detached process groups", () => {
@@ -388,13 +401,94 @@ describe("process tree platform helpers", () => {
       if (command === "mock-native-process-snapshot") callback(null, "100 1 1000", "");
       else callback(new Error("access denied"), "", "");
     });
-    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000), onPhase))
+    expect(await withExitSettleElapsed(() =>
+      terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000), onPhase)))
       .toMatchObject({ ok: false, status: "kill-failed" });
     expect(onPhase.mock.calls.map(([phase]) => [phase.phase, phase.outcome])).toEqual([
       ["snapshot", "completed"], ["terminate", "failed"], ["verify", "failed"],
     ]);
     for (const [phase] of onPhase.mock.calls) expect(phase.durationMs).toBeGreaterThanOrEqual(0);
-    expect(execFileMock).toHaveBeenCalledTimes(3);
+    expect(execFileMock.mock.calls.filter(([command]) => command === "taskkill")).toHaveLength(1);
+  });
+
+  it("waits for processes that are still exiting after taskkill instead of reporting them as survivors", async () => {
+    setPlatform("win32");
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      let snapshots = 0;
+      mockExec((command, _args, _options, callback) => {
+        if (command === "mock-native-process-snapshot") {
+          snapshots++;
+          // Before the kill, the tree; right after it, the root and one leaf are still listed; then gone.
+          callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001\r\n102 100 1002"
+            : snapshots === 2 ? "100 1 1000\r\n102 100 1002" : "", "");
+          return;
+        }
+        callback(null, "", "");
+      });
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000));
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(result).resolves.toMatchObject({ ok: true, status: "terminated" });
+      expect(snapshots).toBe(3);
+      expect(execFileMock.mock.calls.filter(([command]) => command === "taskkill")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a taskkill error raced by an exiting child once the tree has left the process table", async () => {
+    setPlatform("win32");
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      let snapshots = 0;
+      mockExec((command, _args, _options, callback) => {
+        if (command === "mock-native-process-snapshot") {
+          snapshots++;
+          callback(null, snapshots <= 2 ? "100 1 1000" : "", "");
+          return;
+        }
+        callback(new Error("The process \"103\" not found."), "", "");
+      });
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000));
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(result).resolves.toMatchObject({
+        ok: true,
+        status: "terminated",
+        commandError: expect.stringContaining("not found"),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a process that is still listed after the exit settle window as a survivor", async () => {
+    setPlatform("win32");
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    try {
+      let snapshots = 0;
+      mockExec((command, _args, _options, callback) => {
+        if (command === "mock-native-process-snapshot") {
+          snapshots++;
+          callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001" : "101 1 1001", "");
+          return;
+        }
+        callback(null, "", "");
+      });
+      let settled = false;
+      const result = terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(15_000));
+      void result.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(PROCESS_TREE_EXIT_SETTLE_MS - 100);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(result).resolves.toMatchObject({
+        ok: false,
+        status: "survivors",
+        survivors: [{ pid: 101, startMarker: "1001" }],
+      });
+      expect(snapshots).toBeGreaterThan(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("accepts a raced taskkill error only when verification proves the original tree is gone", async () => {
@@ -430,16 +524,16 @@ describe("process tree platform helpers", () => {
       callback(new Error("access denied"), "", "");
     });
 
-    const result = await terminateProcessTree(
+    const result = await withExitSettleElapsed(() => terminateProcessTree(
       { pid: 100, startMarker: "1000" },
       createDeadline(15_000),
-    );
+    ));
     expect(result).toMatchObject({
       ok: false,
       status: "kill-failed",
       survivors: [{ pid: 100, startMarker: "1000" }],
     });
-    expect(execFileMock).toHaveBeenCalledTimes(3);
+    expect(execFileMock.mock.calls.filter(([command]) => command === "taskkill")).toHaveLength(1);
   });
 
   it("threads the remaining aggregate deadline through taskkill without a fallback", async () => {
@@ -454,10 +548,10 @@ describe("process tree platform helpers", () => {
       callback(new Error("timed out"), "", "");
     });
 
-    const result = await terminateProcessTree(
+    const result = await withExitSettleElapsed(() => terminateProcessTree(
       { pid: 100, startMarker: "1000" },
       createDeadline(PROCESS_TABLE_READ_TIMEOUT_MS + 50),
-    );
+    ));
 
     expect(result).toMatchObject({ ok: false, status: "kill-failed" });
     expect(result).not.toHaveProperty("commandTimedOut");
@@ -482,7 +576,8 @@ describe("process tree platform helpers", () => {
       expect(Number(options.timeout)).toBeGreaterThan(0);
     });
 
-    expect(await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS)))
+    expect(await withExitSettleElapsed(() =>
+      terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(PROCESS_TREE_TERMINATION_BUDGET_MS))))
       .toMatchObject({
         ok: false,
         status: "kill-failed",
