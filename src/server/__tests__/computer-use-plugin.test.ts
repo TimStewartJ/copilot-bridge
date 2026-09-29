@@ -7,9 +7,9 @@ import { makeTestDir } from "./helpers.js";
 function makePackageRoot(manifest?: string): string {
   const packageRoot = makeTestDir("computer-use-plugin");
   if (manifest !== undefined) {
-    const manifestDir = join(packageRoot, "plugins", "computer-use", ".plugin");
-    mkdirSync(manifestDir, { recursive: true });
-    writeFileSync(join(manifestDir, "plugin.json"), manifest);
+    const pluginDir = join(packageRoot, "plugins", "computer-use");
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(join(pluginDir, "plugin.json"), manifest);
   }
   return packageRoot;
 }

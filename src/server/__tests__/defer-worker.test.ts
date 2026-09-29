@@ -695,7 +695,7 @@ describe("defer worker", () => {
     third?.release();
   });
 
-  it("does not reintroduce a stale global model when automatic selection has no economy model", async () => {
+  it("does not reintroduce a stale global model when automatic selection finds no priced model", async () => {
     const createSession = vi.fn(async (config: Record<string, unknown>) =>
       createNaturalSession(
         config.sessionId as string,
@@ -714,9 +714,9 @@ describe("defer worker", () => {
         deferWorker: { model: "removed-worker-model" },
       }),
       listModels: async () => [{
-        id: "expensive-model",
+        id: "router-model",
         policy: { state: "enabled" },
-        billing: { multiplier: 2 },
+        billing: {},
       }] as any,
       buildSessionConfig: () => ({
         model: "removed-global-model",
