@@ -226,7 +226,7 @@ export default memo(function MessageBubble({
           <div className="flex flex-col items-end gap-1.5">
             {hasAttachments && <MessageAttachments attachments={message.attachments!} align="end" sessionId={sessionId} />}
             {hasText && (
-              <div className={`rounded-3xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap break-words ${
+              <div className={`rounded-3xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere] ${
                 isFailed ? "border border-error/40 bg-bg-elevated" : "bg-bg-elevated"
               }`}>
                 {message.content}
@@ -287,7 +287,7 @@ export default memo(function MessageBubble({
 
   return (
     <div className="flex justify-start min-w-0">
-      <div className="group/message-bubble relative w-full max-w-full min-w-0 break-words space-y-2">
+      <div className="group/message-bubble relative w-full max-w-full min-w-0 [overflow-wrap:anywhere] space-y-2">
         {selectingText && onFinishSelectingText && (
           <TextSelectionControls side="left" onDone={onFinishSelectingText} />
         )}
