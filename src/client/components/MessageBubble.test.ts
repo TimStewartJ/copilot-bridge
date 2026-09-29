@@ -54,6 +54,28 @@ describe("MessageBubble pending user messages", () => {
       await harness.cleanup();
     }
   });
+
+ it("says a queued message is waiting to send", async () => {
+   const harness = await createReactDomHarness();
+   const message = {
+     role: "user",
+     content: "Later",
+     delivery: { failed: false, queued: true },
+   } satisfies ChatMessage;
+
+   try {
+     await harness.render(createElement(MessageBubble, { message }));
+
+     const bubble = findAllByTag(harness.dom.container, "DIV").find((candidate) => (
+       candidate.getAttribute?.("data-delivery-state") === "queued"
+     ));
+     expect(bubble?.getAttribute("aria-busy")).toBe("true");
+     expect(harness.dom.container.textContent).toContain("Waiting to send");
+     expect(harness.dom.container.textContent).not.toContain("Failed to send");
+   } finally {
+     await harness.cleanup();
+   }
+ });
 });
 
 describe("MessageBubble failed user messages", () => {

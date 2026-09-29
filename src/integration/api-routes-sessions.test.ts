@@ -939,32 +939,64 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("POST /api/chat reports when a busy session cannot accept steering yet", async () => {
+  it("POST /api/chat keeps a message a busy session cannot take yet and sends it later", async () => {
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));
+    const poke = vi.fn();
+    ctx.deferredPromptRunner = { poke } as any;
+
+    const send = () => request(app)
+      .post("/api/chat")
+      .send({ sessionId: "busy-session", prompt: "adjust course", clientMessageId: "client-1" });
+    const res = await send();
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "queued" });
+    expect(ctx.deferredPromptStore?.get("chat-message:client-1")).toMatchObject({
+      sessionId: "busy-session",
+      prompt: "adjust course",
+      purpose: "delivery",
+      status: "pending",
+    });
+    expect(poke).toHaveBeenCalled();
+
+    // A retry of the same message does not queue it twice.
+    expect((await send()).status).toBe(202);
+    expect(ctx.deferredPromptStore?.listDeliveriesForSession("busy-session")).toHaveLength(1);
+  });
+
+  it("POST /api/chat still rejects what it cannot keep for later", async () => {
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));
 
-    const res = await request(app)
-      .post("/api/chat")
-      .send({ sessionId: "busy-session", prompt: "adjust course" });
-
-    expect(res.status).toBe(409);
-    expect(res.body.error).toContain("reconnecting");
+    for (const body of [
+      { prompt: "adjust course", mode: "autopilot" },
+      { prompt: "adjust course", attachments: [{ type: "file", path: "D:/a.txt" }] },
+      { prompt: "/goal finish" },
+      { prompt: "adjust course", waitForDelivery: true },
+    ]) {
+      const res = await request(app).post("/api/chat").send({ sessionId: "busy-session", ...body });
+      expect(res.status, JSON.stringify(body)).toBe(409);
+    }
+    expect(ctx.deferredPromptStore?.listDeliveriesForSession("busy-session")).toEqual([]);
   });
 
-  it("POST /api/chat reports a reconnecting backend without exposing resume-settling internals", async () => {
+  it("POST /api/chat keeps a message sent while the backend reconnects", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn(() => {
       throw new Error("Agent backend is reconnecting; try again shortly.");
     });
-    ({ app } = createTestApp({ sessionManager }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
 
     const res = await request(app)
       .post("/api/chat")
       .send({ sessionId: "test-session", prompt: "hello" });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toContain("reconnecting");
-    expect(res.body.error).not.toContain("Session resume timed out and is still settling");
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "queued" });
+    expect(ctx.deferredPromptStore?.listDeliveriesForSession("test-session")).toEqual([
+      expect.objectContaining({ prompt: "hello", status: "pending" }),
+    ]);
   });
 
   it("POST /api/chat rejects invalid client message ids", async () => {
@@ -979,7 +1011,7 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("POST /api/chat answers 503 only once the server itself is stopping", async () => {
+  it("POST /api/chat keeps a message that reaches a stopping server for the next one", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn(() => {
       throw new Error(BRIDGE_RESTARTING_MESSAGE);
@@ -989,6 +1021,21 @@ describe("Session routes (mocked)", () => {
     const res = await request(app)
       .post("/api/chat")
       .send({ sessionId: "test-session", prompt: "hello" });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "queued" });
+  });
+
+  it("POST /api/chat answers 503 once the server is stopping and the message cannot be kept", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.startWork = vi.fn(() => {
+      throw new Error(BRIDGE_RESTARTING_MESSAGE);
+    });
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello", mode: "autopilot" });
 
     expect(res.status).toBe(503);
     expect(res.body.error).toBe(BRIDGE_RESTARTING_MESSAGE);

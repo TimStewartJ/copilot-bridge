@@ -15,6 +15,9 @@ export type DeferredPromptPurpose = "defer" | "delivery";
 /** Delivery ids for management job results sent back to the session that queued the job. */
 export const MANAGEMENT_JOB_DELIVERY_ID_PREFIX = "management-job:";
 
+/** Delivery ids for chat messages the session could not take when they were sent (see chat-message-outbox.ts). */
+export const CHAT_MESSAGE_DELIVERY_ID_PREFIX = "chat-message:";
+
 /** Upper bound on rows removed by a single terminal-row prune pass. */
 export const DEFAULT_TERMINAL_PRUNE_LIMIT = 500;
 

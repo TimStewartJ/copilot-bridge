@@ -1797,7 +1797,8 @@ export default function ChatView({
   }, []);
 
   // A message still being delivered, or one that failed and can be retried, exists only in this page.
-  const hasUndeliveredMessage = pendingSends.some((send) => send.delivery !== undefined);
+  // A queued one is kept by the server.
+  const hasUndeliveredMessage = pendingSends.some((send) => send.delivery !== undefined && !send.delivery.queued);
   useEffect(() => (hasUndeliveredMessage ? holdPageReload() : undefined), [hasUndeliveredMessage]);
 
   const updateOptimisticMessageDelivery = useCallback((
@@ -1838,6 +1839,12 @@ export default function ChatView({
       }
       if (response?.mode === "command") {
         removeOptimisticMessage(messageId, ownerSessionId);
+      } else if (response?.mode === "queued") {
+        updateOptimisticMessageDelivery(messageId, ownerSessionId, {
+          failed: false,
+          queued: true,
+          ...(mode === undefined ? {} : { mode }),
+        });
       } else {
         updateOptimisticMessageDelivery(messageId, ownerSessionId, undefined);
       }
@@ -2157,14 +2164,12 @@ export default function ChatView({
 
   useEffect(() => {
     const projectedUserMessageIds = new Set(pendingUserMessages.map((message) => message.id));
-    if (!pendingSendsRef.current.some((send) => (
-      send.delivery === undefined && projectedUserMessageIds.has(send.id)
-    ))) {
-      return;
-    }
-    updatePendingSends((current) => current.filter((send) => (
-      send.delivery !== undefined || !projectedUserMessageIds.has(send.id)
-    )));
+    // A queued message is done waiting once the server starts its turn under the same id.
+    const handedOff = (send: PendingSend) => (
+      (send.delivery === undefined || send.delivery.queued === true) && projectedUserMessageIds.has(send.id)
+    );
+    if (!pendingSendsRef.current.some(handedOff)) return;
+    updatePendingSends((current) => current.filter((send) => !handedOff(send)));
   }, [pendingUserMessages, updatePendingSends]);
   const committedEntries = useMemo(() => {
     const visibleEntries = clientOwnedCommittedSourceEventIds.size === 0
