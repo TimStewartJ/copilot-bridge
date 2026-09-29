@@ -94,6 +94,10 @@ export const TASK_MOMENTUM_FIELDS = ["nextAction", "waitingOn", "nextTouchAt", "
 export type TaskMomentumField = typeof TASK_MOMENTUM_FIELDS[number];
 export type TaskChangeSource = "agent" | "user" | "system";
 
+/** Title the client gives a task created without one. */
+export const PLACEHOLDER_TASK_TITLE = "New Task";
+const TITLE_HISTORY_PREVIEW_CHARS = 300;
+
 /** Who is changing a task, recorded on momentum audit events. */
 export interface TaskChangeActor {
   source: TaskChangeSource;
@@ -373,6 +377,39 @@ function recordMomentumEvent(
       SELECT id FROM task_momentum_events WHERE taskId = ? ORDER BY id DESC LIMIT ?
     )
   `).run(taskId, taskId, TASK_MOMENTUM_EVENTS_KEEP);
+}
+
+function quoteTitle(title: string): string {
+  const flat = title.replace(/\s+/g, " ").trim();
+  return `"${flat.length > TITLE_HISTORY_PREVIEW_CHARS ? `${flat.slice(0, TITLE_HISTORY_PREVIEW_CHARS - 1)}…` : flat}"`;
+}
+
+/**
+ * A rename lands in task history so a wrong one is easy to spot and undo, and agents see recent
+ * renames in their context. Naming a placeholder task is setup, not a rename, so it is skipped.
+ */
+function recordTitleChange(
+  db: DatabaseSync,
+  taskId: string,
+  at: string,
+  actor: TaskChangeActor,
+  before: string,
+  after: string,
+): void {
+  if (before === after || before === PLACEHOLDER_TASK_TITLE) return;
+  const by = actor.source === "user" ? "the user" : actor.source === "agent" ? "an agent" : "Bridge";
+  db.prepare(`
+    INSERT INTO task_history_entries (taskId, at, source, sessionId, scheduleId, scheduleName, text)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    taskId,
+    at,
+    actor.source,
+    normalizeActorText(actor.sessionId),
+    normalizeActorText(actor.scheduleId),
+    normalizeActorText(actor.scheduleName),
+    `Renamed by ${by} from ${quoteTitle(before)} to ${quoteTitle(after)}.`,
+  );
 }
 
 function parseMomentumChanges(raw: unknown, eventId: unknown): TaskMomentumChange[] {
@@ -668,6 +705,7 @@ export function createTaskStore(
         db.prepare(`UPDATE tasks SET "order" = "order" + 1 WHERE status = ? AND id != ?`).run(targetStatus, id);
       }
       db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+      if (updates.title !== undefined) recordTitleChange(db, id, now, actor, String(row.title), updates.title);
       const momentumAfter = readMomentumSnapshot(db, id);
       if (momentumBefore && momentumAfter) {
         const changes = diffMomentumSnapshots(momentumBefore, momentumAfter);
