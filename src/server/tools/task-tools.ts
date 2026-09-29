@@ -204,8 +204,8 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       type: "object",
       properties: {
         taskId: { type: "string", description: "The task ID" },
-        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "One short, concrete step (a sentence) that the user or an agent will take next. Never results, evidence, progress, a run log or saved state for a later run. Leave empty when there is no useful step yet. Null clears it." },
-        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "An outside dependency: a person, reply, event or prerequisite. Leave empty when nothing external is pending; never put findings or status here. Waiting does not mean the whole task is blocked. Null clears it." },
+        nextAction: { anyOf: [{ type: "string" }, { type: "null" }], description: "The one action that moves the task forward, in one sentence for the user. Never a queue, a multi-step plan, a list of future runs, results, evidence, progress, a run log or saved state for a later run. Leave empty when there is no useful step yet. Null clears it." },
+        waitingOn: { anyOf: [{ type: "string" }, { type: "null" }], description: "Only a person or outside system being waited on, such as \"Reply from the landlord\". Never results, what was already sent or contacted, or your own next check (for example post-deploy verification). Clear it when nothing outside is pending. Waiting does not mean the whole task is blocked. Null clears it." },
         deferred: { type: "boolean", description: "True sets the task aside without archiving or muting it; false explicitly resumes it. Due revisits, live questions, replies and checklist deadlines remain visible under their usual rules." },
         followUp: {
           type: "object",
