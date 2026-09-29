@@ -12,7 +12,7 @@ The server's main thread serves HTTP, health probes, and session event acknowled
 - **No synchronous process calls.** Never use `execSync`, `execFileSync`, or `spawnSync`. The launcher's synchronous helpers (`src/launcher-git.ts`, `src/server/sync-command-runner.ts`) must not be imported by the server.
 - **Directory trees.** Never delete or copy a tree synchronously (`rmSync` with `recursive`, `cpSync`, `rmdirSync`). Use `getProcessHost().removeTree(path)`, which deletes on a worker thread. Prefer it to `fs.promises.rm` for large trees, which crowds the thread pool that other async file reads share.
 - **Files other programs write.** Never open such a file synchronously. On Windows an antivirus scan can hold the open of a recently written file, and `node:sqlite` is synchronous. The Copilot CLI's `session-store.db` is read and written only through `src/server/cli-session-store.ts`, which uses a worker thread (`cli-session-store-worker.ts`). For plain files outside the data directory use `fs.promises`.
-- Prefer in-process bindings over helper processes for small OS calls (see `loadWindowsKeepAwakeApi` in `src/server/platform.ts`).
+- Prefer in-process bindings over helper processes for small OS calls (see `loadWindowsSchedulingApi` in `src/server/platform.ts`).
 
 ## Enforcement and testing
 

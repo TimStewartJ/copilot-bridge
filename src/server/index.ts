@@ -21,7 +21,6 @@ import {
   registerExpressApp,
   startStagingPreviewDiscovery,
 } from "./staging-tools.js";
-import { initKeepAlive } from "./keep-alive.js";
 import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { prepareNeutralWorkspaceDir } from "./neutral-workspace.js";
@@ -267,9 +266,6 @@ async function main(): Promise<void> {
   } catch (error) {
     console.error("[session-overlay] Initial maintenance failed:", error);
   }
-
-  // Initialize mouse-jiggle keep-alive (prevent idle timeout while sessions active)
-  initKeepAlive(defaultContext.globalBus);
 
   // Watch active management jobs before scanning disk: a preview finishing between
   // the scan and the resume would otherwise never be observed.

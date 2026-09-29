@@ -756,32 +756,6 @@ export function resolveNpmInvocation(options: {
   return undefined;
 }
 
-export interface WindowsKeepAwakeApi {
-  /** SetThreadExecutionState. ES_CONTINUOUS state belongs to the calling thread. */
-  setThreadExecutionState(flags: number): number;
-  /** Relative mouse movement in pixels. */
-  moveMouse(dx: number, dy: number): void;
-}
-
-/** In-process Win32 bindings, so keeping the machine awake never starts a helper process. */
-export async function loadWindowsKeepAwakeApi(): Promise<WindowsKeepAwakeApi> {
-  const imported = await import("koffi");
-  const koffi = ((imported as { default?: unknown }).default ?? imported) as {
-    load(name: string): { func(signature: string): (...args: unknown[]) => unknown };
-  };
-  const setThreadExecutionState = koffi.load("kernel32.dll").func("uint32 __stdcall SetThreadExecutionState(uint32 esFlags)");
-  const mouseEvent = koffi.load("user32.dll").func(
-    "void __stdcall mouse_event(uint32 dwFlags, int32 dx, int32 dy, uint32 dwData, uintptr_t dwExtraInfo)",
-  );
-  const MOUSEEVENTF_MOVE = 0x0001;
-  return {
-    setThreadExecutionState: (flags) => Number(setThreadExecutionState(flags)),
-    moveMouse: (dx, dy) => {
-      mouseEvent(MOUSEEVENTF_MOVE, dx, dy, 0, 0);
-    },
-  };
-}
-
 /**
  * The OS tar binary used to unpack runtime-downloaded archives. Windows ships bsdtar in
  * System32 (gzip and bzip2 support); prefer it over any GNU tar earlier on PATH, which
