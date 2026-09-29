@@ -47,7 +47,7 @@ export function resolveComputerUsePlugin(options: ResolveComputerUsePluginOption
     if (!packageRoot) continue;
 
     const pluginDirectory = join(packageRoot, "plugins", COMPUTER_USE_PLUGIN_NAME);
-    const manifestPath = join(pluginDirectory, ".plugin", "plugin.json");
+    const manifestPath = join(pluginDirectory, "plugin.json");
     if (!existsSync(manifestPath)) {
       return { available: false, reason: `${packageName} does not include the Computer Use plugin.` };
     }

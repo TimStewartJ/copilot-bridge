@@ -4,11 +4,9 @@
 import type { AgentModelInfo } from "../agent-backend/types.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import { createNativeBridgeTools } from "../bridge-native-tools.js";
+import { selectHelperModel } from "../helper-model.js";
 import { resolveSupportedReasoningEffort } from "../../shared/reasoning-effort.js";
 import { buildHelmSystemPrompt } from "./helm-prompt.js";
-
-/** Cheap, fast models preferred for Helm, in order. Real work goes to worker sessions. */
-export const PREFERRED_HELM_MODELS = ["gpt-6-luna", "gpt-5.6-luna", "mai-code-1.1-flash", "gpt-5.4-mini", "gpt-5-mini", "claude-haiku-4.5"];
 
 export interface HelmModelSelection {
   model?: string;
@@ -21,14 +19,16 @@ function isModelEnabled(model: AgentModelInfo): boolean {
 }
 
 /**
- * Picks Helm's model: the requested one when available, otherwise the first preferred fast model.
- * The session starts at the wanted effort (or the nearest the model supports) so its first turn
- * doesn't need a switch; every later turn sets its own.
+ * Picks Helm's model: the requested one when available, otherwise the Bridge's helper model (the
+ * cheapest one that can skip reasoning). Real work goes to worker sessions. The session starts at
+ * the wanted effort (or the nearest the model supports) so its first turn doesn't need a switch;
+ * every later turn sets its own.
  */
 export function selectHelmModel(models: AgentModelInfo[], requested?: string, wantedEffort?: string): HelmModelSelection {
   const enabled = models.filter(isModelEnabled);
-  const chosen = (requested ? enabled.find((model) => model.id === requested) : undefined)
-    ?? PREFERRED_HELM_MODELS.map((id) => enabled.find((model) => model.id === id)).find(Boolean);
+  const requestedModel = requested ? enabled.find((model) => model.id === requested) : undefined;
+  const helperId = requestedModel ? undefined : selectHelperModel(enabled)?.model;
+  const chosen = requestedModel ?? enabled.find((model) => model.id === helperId);
   if (!chosen) return requested ? { model: requested } : {};
   const reasoningEffort = resolveSupportedReasoningEffort(wantedEffort, chosen.supportedReasoningEfforts);
   return { model: chosen.id, ...(reasoningEffort ? { reasoningEffort } : {}) };

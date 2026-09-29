@@ -79,21 +79,24 @@ describe("composeHandsFreePrompt", () => {
 });
 
 describe("selectHelmModel", () => {
+  const priced = (inputPrice: number, outputPrice: number) => ({
+    tokenPrices: { inputPrice, outputPrice, cachePrice: 0, batchSize: 1_000_000 },
+  });
   const models = [
-    { id: "claude-opus-5", supportedReasoningEfforts: ["low", "medium", "high"] },
-    { id: "gpt-5-mini", supportedReasoningEfforts: ["low", "medium"] },
-    { id: "gpt-5.6-luna", supportedReasoningEfforts: ["none", "low"], policy: { state: "disabled" } },
-    { id: "gpt-6-luna", supportedReasoningEfforts: ["none", "low"] },
+    { id: "claude-opus-5", billing: priced(500, 2500), supportedReasoningEfforts: ["low", "medium", "high"] },
+    { id: "gpt-5-mini", billing: priced(25, 200), supportedReasoningEfforts: ["low", "medium"] },
+    { id: "gpt-5.6-luna", billing: priced(1, 1), supportedReasoningEfforts: ["none", "low"], policy: { state: "disabled" } },
+    { id: "gpt-6-luna", billing: priced(10, 50), supportedReasoningEfforts: ["none", "low"] },
   ] as any;
 
-  it("prefers GPT-6 Luna and starts it at the wanted effort, clamped to what it has", () => {
+  it("uses the helper model and starts it at the wanted effort, clamped to what it has", () => {
     expect(selectHelmModel(models, undefined, "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
     expect(selectHelmModel(models, undefined, "low")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
     // Without a wanted effort the model keeps its own default.
     expect(selectHelmModel(models)).toEqual({ model: "gpt-6-luna" });
   });
 
-  it("falls back to another fast model when GPT-6 Luna is unavailable or disabled", () => {
+  it("falls back to the next helper model when the cheapest one is unavailable or disabled", () => {
     const withoutLunaSix = models.filter((model: { id: string }) => model.id !== "gpt-6-luna");
     const disabledLunaSix = models.map((model: { id: string; policy?: { state: string } }) =>
       model.id === "gpt-6-luna" ? { ...model, policy: { state: "disabled" } } : model,

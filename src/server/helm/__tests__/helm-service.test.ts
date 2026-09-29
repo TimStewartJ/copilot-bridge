@@ -24,9 +24,9 @@ function createHarness() {
   const sessionManager = {
     isSessionBusy: vi.fn((sessionId: string) => busy.has(sessionId)),
     listModels: vi.fn(async () => [
-      { id: "claude-opus-5", supportedReasoningEfforts: ["low", "high"] },
-      { id: "gpt-6-luna", supportedReasoningEfforts: ["none", "low"] },
-      { id: "gpt-5.6-luna", supportedReasoningEfforts: ["none", "low"] },
+      { id: "claude-opus-5", billing: { tokenPrices: { inputPrice: 500, outputPrice: 2500, cachePrice: 50, batchSize: 1_000_000 } }, supportedReasoningEfforts: ["low", "high"] },
+      { id: "gpt-6-luna", billing: { tokenPrices: { inputPrice: 10, outputPrice: 50, cachePrice: 1, batchSize: 1_000_000 } }, supportedReasoningEfforts: ["none", "low"] },
+      { id: "gpt-5.6-luna", billing: { tokenPrices: { inputPrice: 20, outputPrice: 120, cachePrice: 2, batchSize: 1_000_000 } }, supportedReasoningEfforts: ["none", "low"] },
     ]),
     createSession: vi.fn(async (options: { expectedSessionId?: string }) => ({ sessionId: options.expectedSessionId! })),
   };

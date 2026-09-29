@@ -13,12 +13,15 @@ import { imageCompactAtBytes, type ImageBudgetSettings } from "../shared/image-b
  * from growing past it with images.
  *
  * Why: Copilot sometimes serves Claude through Google Vertex, which rejects requests over about 30 MB with a
- * bodyless 400. Copilot CLI 1.0.88 compacts and retries only on a 413, so the chat is stuck for good; even /compact
- * fails, because the summary request carries the same images.
+ * bodyless 400. Since CLI 1.0.89 the CLI shrinks images in Claude requests to stay under about 32 MiB, the direct
+ * Anthropic limit, so a request between 30 MB and 33.5 MB still goes out. It compacts and retries only on a 413; a
+ * 400 ends the turn, so the chat is stuck for good. Even /compact fails, because the summary request carries the same
+ * images.
  *
  * Remove this module (and its hooks in SessionManager and SessionRunner) once Copilot returns a 413 for these
- * requests, or the CLI counts image bytes when it decides to compact. `image-budget.native.test.ts` starts failing
- * when the CLI recovers by itself.
+ * requests, or the CLI keeps Claude requests under the backend's real limit. The two "cannot get past" tests in
+ * `image-budget.native.test.ts` (OpenAI completions wire and Claude messages wire) start failing when the CLI
+ * recovers by itself.
  *
  * How: estimate the images in the main conversation from session events. The runtime does not report which images
  * are still in context, so the estimate errs high: it adds every image a main-agent tool result or user message
