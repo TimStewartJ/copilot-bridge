@@ -105,7 +105,7 @@ import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profil
 import { InvalidTaskHistoryEntryError } from "./task-history-store.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
-import { isSendMode } from "../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, isSendMode } from "../shared/send-mode.js";
 import {
   type BackgroundAgentsSummary,
   type SessionAgentTask,
@@ -203,7 +203,8 @@ import {
   enqueueManagementJob,
 } from "./management-job-enqueue.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
-import { isBridgeRestartingError } from "./backend-availability.js";
+import { isBackendUnavailableError, isBridgeRestartingError } from "./backend-availability.js";
+import { queueChatMessageDelivery } from "./chat-message-outbox.js";
 import { requestRestart } from "./restart-signal.js";
 import { isRestartPending } from "./restart-state.js";
 import { getRestartBlockers, readRestartStatus } from "./restart-status.js";
@@ -3586,8 +3587,9 @@ export function createApiRouter(
       // Hands-free is off, or it ended before the message got through: deliver it as plain chat.
     }
 
+    const busyAtSend = ctx.sessionManager.isSessionBusy(sessionId);
     try {
-      if (ctx.sessionManager.isSessionBusy(sessionId)) {
+      if (busyAtSend) {
         if (clientMessageId) {
           await ctx.sessionManager.steerSession(sessionId, prompt, attachments, clientMessageId);
         } else {
@@ -3622,6 +3624,34 @@ export function createApiRouter(
       noteUserMessage(sessionId);
       res.status(202).json({ status: "accepted" });
     } catch (err) {
+      // The session could not take a plain text message right now: keep it and send it once it can.
+      const store = ctx.deferredPromptStore;
+      const canQueue = store
+        && !waitForDelivery
+        && attachCount === 0
+        && (mode === undefined || mode === DEFAULT_SEND_MODE)
+        && !parseSlashCommandPrompt(prompt)
+        && (busyAtSend || ctx.sessionManager.isSessionBusy(sessionId) || isBackendUnavailableError(err));
+      if (canQueue) {
+        try {
+          queueChatMessageDelivery(store, sessionId, prompt, clientMessageId);
+          console.log(`[web] [${sessionId.slice(0, 8)}] Queued message until the session is free: ${err instanceof Error ? err.message : String(err)}`);
+          // The runner retries when a run goes idle; a hold ends without one, so wake it then too.
+          if (ctx.sessionManager.getSessionHold(sessionId)) {
+            const unsubscribe = ctx.sessionManager.subscribeSessionHold(sessionId, () => {
+              if (ctx.sessionManager.getSessionHold(sessionId)) return;
+              unsubscribe();
+              ctx.deferredPromptRunner?.poke();
+            });
+          }
+          ctx.deferredPromptRunner?.poke();
+          noteUserMessage(sessionId);
+          res.status(202).json({ status: "accepted", mode: "queued" });
+          return;
+        } catch (queueError) {
+          console.warn(`[web] [${sessionId.slice(0, 8)}] Could not queue message:`, queueError instanceof Error ? queueError.message : queueError);
+        }
+      }
       res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

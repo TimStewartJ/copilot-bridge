@@ -17,6 +17,7 @@ import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import { createReturnedDeferDelivery } from "../defer-result-message.js";
+import { queueChatMessageDelivery } from "../chat-message-outbox.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
@@ -199,6 +200,33 @@ describe("deferred-prompt-runner", () => {
         { sessionId: "session-1", prompt: delivery.prompt },
       ]);
       expect(store.get(delivery.id)?.status).toBe("completed");
+      runner.shutdown();
+    });
+
+    it("sends a queued chat message under its client id even when the same text is already on disk", async () => {
+      const store = createDeferredPromptStore(db);
+      const id = queueChatMessageDelivery(store, "session-1", "yes", "client-1");
+      const sm = makeMockSessionManager({
+        sessions: ["session-1"],
+        busySessions: new Set(["session-1"]),
+        persistedUserMessage: true,
+      });
+      const bus = createGlobalBus();
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+
+      runner.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sm._started).toEqual([]);
+      expect(store.get(id)?.status).toBe("pending");
+
+      sm.isSessionBusy = () => false;
+      bus.emit({ type: "session:idle", sessionId: "session-1" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm.hasPersistedUserMessage).not.toHaveBeenCalled();
+      expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "yes" }]);
+      expect(sm._deliveryOptions[0]).toEqual({ completionAttention: true, clientMessageId: "client-1" });
+      expect(store.get(id)?.status).toBe("completed");
       runner.shutdown();
     });
 

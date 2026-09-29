@@ -279,13 +279,13 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
-  it("does not replace the active EventSource for steered sends", async () => {
+  it.each(["steered", "queued"])("does not replace the active EventSource for %s sends", async (mode) => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const original = getSource();
       vi.spyOn(globalThis, "fetch").mockResolvedValue({
         ok: true,
-        json: async () => ({ status: "steered", mode: "steered" }),
+        json: async () => ({ status: "accepted", mode }),
       } as Response);
 
       await act(async () => {
