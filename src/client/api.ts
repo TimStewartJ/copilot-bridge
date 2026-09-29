@@ -354,6 +354,8 @@ export interface ChatMessageDelivery {
   failed: boolean;
   mode?: SendMode;
   error?: string;
+  /** The server kept the message and sends it once the session is free. */
+  queued?: boolean;
 }
 
 export interface ChatMessage {
@@ -1197,8 +1199,11 @@ export async function undoSessionTurn(
 
 export interface ChatMessageAcceptedResponse {
   status: "accepted";
-  /** "hands-free": a Helm message that will also be answered out loud. */
-  mode?: "steered" | "command" | "hands-free";
+  /**
+   * "queued": the session could not take the message yet; the server sends it once it can.
+   * "hands-free": a Helm message that will also be answered out loud.
+   */
+  mode?: "steered" | "queued" | "command" | "hands-free";
 }
 
 export interface ChatMessageSendOptions {

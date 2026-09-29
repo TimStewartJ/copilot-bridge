@@ -23,6 +23,7 @@ import {
 } from "./defer-result-message.js";
 import type { DeferWorkerInput, DeferWorkerLease, DeferWorkerResult } from "./defer-worker.js";
 import { isRestartRecoveryPrompt } from "./restart-resume.js";
+import { chatMessageDeliveryClientId, isChatMessageDeliveryId } from "./chat-message-outbox.js";
 
 // Re-export the shared timing/lease constants so existing importers keep working.
 export {
@@ -65,6 +66,8 @@ export function createDeferredPromptRunner(
 
       if (
         isDelivery
+        // A chat message never tried cannot be on disk yet, and a short one ("yes") would match an older copy.
+        && !(isChatMessageDeliveryId(item.id) && item.attempts === 0)
         && await sessionManager.hasPersistedUserMessage?.(item.sessionId, item.prompt)
       ) {
         return store.markCompletedById(id) ? "changed" : "unchanged";
@@ -187,7 +190,11 @@ export function createDeferredPromptRunner(
       let shouldProcessNextDuePrompt = false;
       try {
         if (item.purpose === "delivery" || isRestartRecoveryPrompt(item.prompt)) {
-          await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, { completionAttention: true });
+          const clientMessageId = chatMessageDeliveryClientId(id);
+          await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, {
+            completionAttention: true,
+            ...(clientMessageId ? { clientMessageId } : {}),
+          });
         } else {
           const workerInput: DeferWorkerInput = {
             deferId: item.deferId,

@@ -99,7 +99,7 @@ vi.mock("./MessageBubble", () => ({
       "data-streaming": isStreaming ? "true" : "false",
       "data-selecting-text": selectingText ? "true" : "false",
       "data-delivery-state": message.delivery
-        ? message.delivery.failed ? "failed" : "sending"
+        ? message.delivery.failed ? "failed" : message.delivery.queued ? "queued" : "sending"
         : "sent",
       "data-delivery-error": message.delivery?.error,
     },
@@ -1903,6 +1903,47 @@ describe("ChatView steering sends", () => {
       sendAccepted.resolve({ status: "accepted", mode: "steered" });
       await cleanup();
       vi.useRealTimers();
+    }
+  });
+
+  it("shows a queued message as waiting until the server starts its turn", async () => {
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1")],
+        runState: "busy",
+        total: 1,
+        warm: true,
+        hasMore: false,
+      },
+    });
+    sendMessageMock.mockResolvedValueOnce({ status: "accepted", mode: "queued" });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        await props.onSend("where do we stand?");
+        await waitTick();
+      });
+
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
+      const findBubbles = () => findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("where do we stand?")
+      ));
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("queued");
+
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [{ id: clientMessageId, content: "where do we stand?" }],
+          isStreaming: true,
+          streamStatus: "streaming",
+        },
+      });
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
+    } finally {
+      await cleanup();
     }
   });
 

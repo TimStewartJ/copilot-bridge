@@ -2,7 +2,7 @@ import { memo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { CircleAlert, RotateCcw, TextSelect } from "lucide-react";
+import { CircleAlert, Clock, RotateCcw, TextSelect } from "lucide-react";
 import { parseAdoWorkReferenceUrl, type AdoWorkReference } from "../../shared/ado-work-reference";
 import { isRecord } from "../../shared/is-record";
 import type { ChatMessage } from "../api";
@@ -198,8 +198,9 @@ export default memo(function MessageBubble({
     const hasAttachments = message.attachments && message.attachments.length > 0;
     const hasText = message.content !== "(image)" && message.content !== "(attachment)" && message.content.length > 0;
     const isFailed = message.delivery?.failed === true;
+    const isQueued = !isFailed && message.delivery?.queued === true;
     const isPending = Boolean(message.delivery) && !isFailed;
-    const deliveryState = isFailed ? "failed" : isPending ? "sending" : "sent";
+    const deliveryState = isFailed ? "failed" : isQueued ? "queued" : isPending ? "sending" : "sent";
     const sentWithAutopilot = message.agentMode === "autopilot" || message.delivery?.mode === "autopilot";
     return (
       <div className="flex justify-end">
@@ -210,11 +211,13 @@ export default memo(function MessageBubble({
           aria-busy={isPending || undefined}
           aria-invalid={isFailed || undefined}
           data-delivery-state={deliveryState}
-          title={isPending
-            ? "Sending to server..."
-            : isFailed
-              ? `Failed to send${message.delivery?.error ? `: ${message.delivery.error}` : ""}`
-              : undefined}
+          title={isQueued
+            ? "Bridge will send this once the session is free"
+            : isPending
+              ? "Sending to server..."
+              : isFailed
+                ? `Failed to send${message.delivery?.error ? `: ${message.delivery.error}` : ""}`
+                : undefined}
         >
           {selectingText && onFinishSelectingText && (
             <TextSelectionControls side="right" onDone={onFinishSelectingText} />
@@ -233,6 +236,12 @@ export default memo(function MessageBubble({
               <AutopilotBadge title="Sent with Autopilot: Copilot keeps going on its own until the task is done" />
             )}
           </div>
+          {isQueued && (
+            <div className="mt-1.5 flex items-center justify-end gap-1.5 text-xs text-text-muted" role="status">
+              <Clock size={12} aria-hidden="true" />
+              <span>Waiting to send</span>
+            </div>
+          )}
           {isFailed && (
             <div
               className="mt-1.5 flex items-center justify-end gap-2 text-xs text-error"
