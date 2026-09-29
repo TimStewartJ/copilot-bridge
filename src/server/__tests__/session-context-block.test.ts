@@ -7,9 +7,11 @@ import {
   BRIDGE_CONTEXT_HISTORY_ENTRIES,
   buildBridgeContextSections,
   emptyBridgeContextHashes,
+  PLACEHOLDER_TITLE_GUIDANCE,
   renderBridgeContextBlock,
   type BridgeContextDeps,
 } from "../session-context-block.js";
+import { PLACEHOLDER_TASK_TITLE } from "../task-store.js";
 import { makeTestDir } from "./helpers.js";
 
 function createTask(overrides: Partial<Task> = {}): Task {
@@ -91,6 +93,16 @@ describe("bridge context sections", () => {
     expect(lines[0]!.endsWith("…")).toBe(true);
     expect(content).not.toContain("Fourth");
     expect(sectionContent({ taskHistoryStore: historyStore([]) }, createTask(), "task_state")).not.toContain("History:");
+  });
+
+  it("asks for a title only while the task still has the placeholder title", () => {
+    const placeholder = buildBridgeContextSections({}, createTask({ title: PLACEHOLDER_TASK_TITLE }))[0]!;
+    const named = buildBridgeContextSections({}, createTask({ title: "Find a rental" }))[0]!;
+
+    expect(placeholder.content).toContain(PLACEHOLDER_TITLE_GUIDANCE);
+    expect(named.content).not.toContain(PLACEHOLDER_TITLE_GUIDANCE);
+    // Renaming changes the section, so the next block replaces the one that carried the guidance.
+    expect(named.hash).not.toBe(placeholder.hash);
   });
 
   it("hashes each section independently so only the changed one is resent", () => {

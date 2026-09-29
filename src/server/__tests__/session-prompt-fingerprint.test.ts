@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { AppliedPromptFingerprints, fingerprintPromptConfig, normalizePromptCacheBreak } from "../session-prompt-fingerprint.js";
 import { readSessionLaunchContext, writeSessionLaunchContext } from "../session-launch-context.js";
 import { makeTestDir, setupTestDb } from "./helpers.js";
@@ -102,10 +104,13 @@ describe("Bridge prompt fingerprints", () => {
   it("persists only prompt-relevant launch fields and reads legacy sessions without a sidecar", () => {
     const directory = makeTestDir("launch-context");
     expect(readSessionLaunchContext(directory)).toEqual({});
-    writeSessionLaunchContext(directory, { isNewTask: true, scheduleContext: { name: "Daily", type: "cron", runCount: 5 } });
+    writeSessionLaunchContext(directory, { scheduleContext: { name: "Daily", type: "cron", runCount: 5 } });
     expect(readSessionLaunchContext(directory)).toEqual({
-      isNewTask: true, scheduleContext: { name: "Daily", type: "cron", runCount: 5 },
+      scheduleContext: { name: "Daily", type: "cron", runCount: 5 },
     });
+    // Older sidecars still carry isNewTask; it is ignored so resumed chats stop asking for a title.
+    writeFileSync(join(directory, "bridge-launch-context.json"), JSON.stringify({ isNewTask: true }));
+    expect(readSessionLaunchContext(directory)).toEqual({});
   });
 
   it("allowlists cache-break diagnostics without leaking opaque requests or raw strings", () => {

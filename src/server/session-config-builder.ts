@@ -85,7 +85,6 @@ export interface ScheduleContext {
 export interface SessionConfigOptions {
   sessionId?: string;
   task?: Task | null;
-  isNewTask?: boolean;
   scheduleContext?: ScheduleContext;
   modelOverride?: string;
   reasoningEffortOverride?: string;
@@ -214,7 +213,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   const {
     sessionId,
     task,
-    isNewTask,
     scheduleContext,
     modelOverride,
     reasoningEffortOverride,
@@ -372,11 +370,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       `You are helping with a Bridge task (taskId: ${task.id}). Its latest state (title, status, links, where things stand, notes, checklist and recent history) arrives in <bridge_context> blocks at the start of user messages.`,
       "Use the task tools to manage linked resources when you discover relevant work items or PRs.",
     );
-    if (isNewTask) {
-      contextParts.push(
-        "This task was just created without a title. After reading the user's first message, use the task update tool to set a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.",
-      );
-    }
     if (task.instructions?.trim()) {
       contextParts.push(`<task_instructions>\nStanding rules for this task. Follow them in every session.\n${task.instructions.trim()}\n</task_instructions>`);
     }

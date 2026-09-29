@@ -3,7 +3,7 @@ import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore, DocTreeNode } from "./docs-store.js";
 import type { TagStore } from "./tag-store.js";
-import type { Task } from "./task-store.js";
+import { PLACEHOLDER_TASK_TITLE, type Task } from "./task-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
 import {
   formatLinkedPullRequest,
@@ -36,6 +36,11 @@ export interface BridgeContextDeps {
 }
 
 export const BRIDGE_CONTEXT_HISTORY_ENTRIES = 3;
+/**
+ * Lives in task_state rather than the system prompt so it disappears once the task has a real
+ * title: the renamed state replaces this section, and sub-agents never receive it.
+ */
+export const PLACEHOLDER_TITLE_GUIDANCE = `This task still has the placeholder title "${PLACEHOLDER_TASK_TITLE}". After reading the user's message, use task_update to give it a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.`;
 const HISTORY_LINE_LENGTH = 200;
 
 export function renderDocsTree(nodes: DocTreeNode[], depth = 0): string {
@@ -91,6 +96,7 @@ function buildTaskState(
 ): BridgeContextSection {
   if (!task) return section("task_state", [], "This chat is not linked to a Bridge task.");
   const lines: string[] = [`Task: "${task.title}" (taskId: ${task.id}, status: ${task.status}, kind: ${task.kind})`];
+  if (task.title === PLACEHOLDER_TASK_TITLE) lines.push(PLACEHOLDER_TITLE_GUIDANCE);
   if (task.workItems.length > 0) {
     lines.push(`Linked work items: ${task.workItems.map((w) => `#${w.id} (${w.provider})`).join(", ")}`);
   }

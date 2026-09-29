@@ -133,7 +133,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       type: "object",
       properties: {
         taskId: { type: "string", description: "The task ID" },
-        title: { type: "string", description: "New title" },
+        title: { type: "string", description: "New title. Rename on your own judgment when the title no longer describes the task as a whole: its goal was rescoped, or the title is wrong or misleading. The title names the overall task, not the current step, a delegated sub-task, or its status or outcome (those belong in notes and momentum), so do not rename to follow each turn or to reword a title that is still accurate. Keep it short. A delegated sub-agent never changes the title of the task it is helping with. Every rename is recorded in task history." },
         kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind" },
         muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
         priority: { type: "integer", description: "Task priority" },
