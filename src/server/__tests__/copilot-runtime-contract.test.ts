@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { COMPUTER_USE_PLUGIN_NAME, resolveComputerUsePlugin } from "../computer-use-plugin.js";
 
-const EXPECTED_CLI_VERSION = "1.0.88";
-const EXPECTED_SDK_VERSION = "1.0.14";
+const EXPECTED_CLI_VERSION = "1.0.89";
+const EXPECTED_SDK_VERSION = "1.0.15";
 
 // Launching the pinned CLI lives in copilot-cli-launch.native.test.ts.
 describe("installed Copilot package contract", () => {
@@ -67,12 +67,14 @@ describe("installed Copilot package contract", () => {
     expect(status.available).toBe(true);
 
     const pluginDirectory = status.pluginDirectory!;
-    const mcpConfig = JSON.parse(readFileSync(join(pluginDirectory, ".mcp.json"), "utf-8")) as {
-      mcpServers?: Record<string, { type?: string; command?: string }>;
+    expect(existsSync(join(pluginDirectory, "plugin.json")), "plugin.json is missing from the plugin root").toBe(true);
+    const mcpConfig = JSON.parse(readFileSync(join(pluginDirectory, "mcp.json"), "utf-8")) as {
+      mcpServers?: Record<string, { type?: string; command?: string; cwd?: string }>;
     };
     const server = mcpConfig.mcpServers?.[COMPUTER_USE_PLUGIN_NAME];
     expect(server?.type).toBe("stdio");
-    const command = server!.command!.replace("${PLUGIN_ROOT}", pluginDirectory);
+    const cwd = (server!.cwd ?? "${PLUGIN_ROOT}").replace("${PLUGIN_ROOT}", pluginDirectory);
+    const command = resolve(cwd, server!.command!.replace("${PLUGIN_ROOT}", pluginDirectory));
     expect(existsSync(command), `${command} is missing`).toBe(true);
   });
 

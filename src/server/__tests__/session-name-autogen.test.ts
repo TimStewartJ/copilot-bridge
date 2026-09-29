@@ -439,7 +439,7 @@ describe("session name autogenerator", () => {
       disconnect: vi.fn(),
     }));
     const generator = createSessionNameAutogenerator({
-      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
+      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 }, supportedReasoningEfforts: ["none", "low"] }] as any,
       createSession,
       deleteSession: vi.fn(async () => {}),
       getCopilotHome: () => copilotHome,
@@ -469,6 +469,7 @@ describe("session name autogenerator", () => {
 
     expect(config.clientName).toBe("Copilot Bridge Title Helper");
     expect(config.model).toBe("gpt-5-mini");
+    expect(config.reasoningEffort).toBe("none");
     expect(config.infiniteSessions).toEqual({ enabled: false });
     expect(config.enableSessionTelemetry).toBe(false);
     expect(config.enableSessionStore).toBe(false);

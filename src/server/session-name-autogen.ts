@@ -8,8 +8,8 @@ import {
   createDisposableTitleSessionId,
   extractGeneratedSessionTitle,
   isDisposableTitleSessionId,
-  selectSessionTitleModel,
 } from "./session-name-generator.js";
+import { selectHelperModel } from "./helper-model.js";
 import {
   type WorkspaceSessionNameMetadata,
 } from "./session-workspace-yaml.js";
@@ -221,8 +221,8 @@ export class SessionNameAutogenerator {
   }
 
   private async generateSessionName(userMessages: string[]): Promise<string | undefined> {
-    const model = selectSessionTitleModel(await this.deps.listModels());
-    if (!model) return undefined;
+    const selection = selectHelperModel(await this.deps.listModels());
+    if (!selection) return undefined;
 
     const helperSessionId = createDisposableTitleSessionId();
     let helperSession: any | undefined;
@@ -231,7 +231,8 @@ export class SessionNameAutogenerator {
         ...buildSessionNameHelperBaseConfig(),
         sessionId: helperSessionId,
         clientName: "Copilot Bridge Title Helper",
-        model,
+        model: selection.model,
+        ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
         systemMessage: { mode: "replace", content: buildSessionTitleSystemPrompt() },
         infiniteSessions: { enabled: false },
         enableSessionTelemetry: false,

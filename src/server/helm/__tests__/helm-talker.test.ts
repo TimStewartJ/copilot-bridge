@@ -12,7 +12,11 @@ describe("parseLeadIn", () => {
 });
 
 describe("HelmTalker", () => {
-  const models = [{ id: "gpt-6-luna", supportedReasoningEfforts: ["none", "low", "medium"] }] as never;
+  const models = [{
+    id: "gpt-6-luna",
+    billing: { tokenPrices: { inputPrice: 10, outputPrice: 50, cachePrice: 1, batchSize: 1_000_000 } },
+    supportedReasoningEfforts: ["none", "low", "medium"],
+  }] as never;
 
   it("opens one low-effort helper session, reuses it, and disposes it on close", async () => {
     const session = { sendAndWait: vi.fn(async (_args: unknown, _timeout?: number) => ({ data: { content: "Let me look." } })), abort: vi.fn(async () => undefined) };

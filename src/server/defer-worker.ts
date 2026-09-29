@@ -12,7 +12,7 @@ import {
 } from "./defer-checkpoint.js";
 import { BRIDGE_RESTARTING_MESSAGE } from "./backend-availability.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
-import { selectCheapHelperModel } from "./session-name-generator.js";
+import { selectHelperModel } from "./helper-model.js";
 import type { AppSettings } from "./settings-store.js";
 import {
   buildCopilotUsageSummaryFromSessionResults,
@@ -414,7 +414,7 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
           )
         : undefined;
       model = configuredModel?.id
-        ?? selectCheapHelperModel(models)
+        ?? selectHelperModel(models)?.model
         ?? defaultModel?.id;
       const selectedModel = model
         ? models.find((candidate) => candidate.id === model)
