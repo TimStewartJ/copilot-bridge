@@ -4,6 +4,7 @@ import { setupTestDb, createTestBus } from "./helpers.js";
 import {
   areSessionUnreadBubblesMuted,
   createTaskStore,
+  PLACEHOLDER_TASK_TITLE,
   TASK_MOMENTUM_EVENT_PREVIEW_CHARS,
   TASK_MOMENTUM_EVENTS_KEEP,
   TASK_MOMENTUM_EVENTS_MAX_LIMIT,
@@ -630,6 +631,36 @@ describe("task-store", () => {
       expect(orders.find((o) => o.id === t1.id)!.order).toBe(0);
       expect(orders.find((o) => o.id === t3.id)!.order).toBe(1);
       expect(orders.find((o) => o.id === t2.id)!.order).toBe(2);
+    });
+  });
+
+  describe("title history", () => {
+    function historyTexts(taskId: string) {
+      return (db.prepare("SELECT source, sessionId, text FROM task_history_entries WHERE taskId = ? ORDER BY id")
+        .all(taskId) as Array<{ source: string; sessionId: string | null; text: string }>);
+    }
+
+    it("records renames with who made them, but not naming a placeholder task or an unchanged title", () => {
+      const task = store.createTask(PLACEHOLDER_TASK_TITLE);
+      store.updateTask(task.id, { title: "Fix the gate" }, { source: "agent", sessionId: "session-1" });
+      store.updateTask(task.id, { title: "Fix the gate", notes: "same title" }, { source: "agent", sessionId: "session-1" });
+      store.updateTask(task.id, { title: "Fix the E2E gate" }, { source: "agent", sessionId: "session-2" });
+      store.updateTask(task.id, { title: "Gate fix" }, { source: "user" });
+
+      expect(historyTexts(task.id)).toEqual([
+        { source: "agent", sessionId: "session-2", text: 'Renamed by an agent from "Fix the gate" to "Fix the E2E gate".' },
+        { source: "user", sessionId: null, text: 'Renamed by the user from "Fix the E2E gate" to "Gate fix".' },
+      ]);
+    });
+
+    it("keeps long titles on one bounded line", () => {
+      const task = store.createTask("Short");
+      store.updateTask(task.id, { title: `Long\n${"x".repeat(1000)}` }, { source: "agent" });
+
+      const [entry] = historyTexts(task.id);
+      expect(entry!.text).not.toContain("\n");
+      expect(entry!.text.length).toBeLessThan(400);
+      expect(entry!.text).toContain("…");
     });
   });
 

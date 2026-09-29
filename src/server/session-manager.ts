@@ -4929,8 +4929,6 @@ export class SessionManager {
     try {
       const client = this.getBackend();
 
-      const isPlaceholder = taskTitle === "New Task";
-
       // Look up the full task so the initial session context matches later resumes.
       const fullTask = this.deps.taskStore.getTask(taskId);
 
@@ -4977,7 +4975,6 @@ export class SessionManager {
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         task,
-        isNewTask: isPlaceholder,
         promptProfile,
         scheduleContext: runScheduleContext,
         ...(options.model ? { modelOverride: options.model } : {}),
@@ -5003,7 +5000,7 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
-        launchContext: { isNewTask: isPlaceholder, scheduleContext: runScheduleContext },
+        launchContext: { scheduleContext: runScheduleContext },
         promptProfile,
         onCreateStarting: options.onCreateStarting,
       });

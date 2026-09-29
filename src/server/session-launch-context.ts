@@ -8,7 +8,6 @@ import { MAX_PREVIOUS_RUN_REPORT_LENGTH, type PreviousRunReport } from "./prompt
 const FILE_NAME = "bridge-launch-context.json";
 
 export interface SessionLaunchContext {
-  isNewTask?: boolean;
   scheduleContext?: Pick<ScheduleContext, "name" | "type" | "runCount" | "previousRunReport">;
 }
 
@@ -39,7 +38,8 @@ export function readSessionLaunchContext(directory: string): SessionLaunchContex
     throw error;
   }
   const value: unknown = JSON.parse(text);
-  if (!isRecord(value) || (value.isNewTask !== undefined && typeof value.isNewTask !== "boolean")) {
+  // Older files may carry an isNewTask flag; the placeholder-title guidance now follows the live title.
+  if (!isRecord(value)) {
     throw new Error("Invalid Bridge session launch context");
   }
   const schedule = value.scheduleContext;
@@ -52,7 +52,6 @@ export function readSessionLaunchContext(directory: string): SessionLaunchContex
     || schedule.runCount < 0
   )) throw new Error("Invalid Bridge session schedule launch context");
   return {
-    ...(typeof value.isNewTask === "boolean" ? { isNewTask: value.isNewTask } : {}),
     ...(isRecord(schedule) ? {
       scheduleContext: {
         name: String(schedule.name),
@@ -70,7 +69,6 @@ export function writeSessionLaunchContext(directory: string, context: SessionLau
   mkdirSync(directory, { recursive: true });
   const schedule = context.scheduleContext;
   const value: SessionLaunchContext = {
-    isNewTask: context.isNewTask,
     ...(schedule ? {
       scheduleContext: {
         name: schedule.name,

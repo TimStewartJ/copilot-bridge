@@ -9,6 +9,7 @@ import { createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub, makeTest
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { readSessionLaunchContext } from "../session-launch-context.js";
+import { PLACEHOLDER_TITLE_GUIDANCE } from "../session-context-block.js";
 import type { AgentBackendDisconnect } from "../agent-backend/types.js";
 import { AppliedPromptFingerprints } from "../session-prompt-fingerprint.js";
 import { BACKEND_DISCONNECTED_MESSAGE, BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE } from "../backend-availability.js";
@@ -398,7 +399,7 @@ describe("SessionManager bounded session lifecycle", () => {
       { name: "Daily", type: "cron", runCount: 2 });
     const initial = createSession.mock.calls[0]?.[0] as any;
     const persisted = readSessionLaunchContext(manager.getSessionStateDir("launch-test"));
-    expect(persisted).toEqual({ isNewTask: true, scheduleContext: { name: "Daily", type: "cron", runCount: 2 } });
+    expect(persisted).toEqual({ scheduleContext: { name: "Daily", type: "cron", runCount: 2 } });
     // A folder-less chat under the automatic default is pinned as Assistant before its first resume.
     expect(manager.getSessionPromptProfile("launch-test")).toBe("assistant");
     const resumed = manager.buildSessionConfig({ sessionId: "launch-test", task, forResume: true });
@@ -406,9 +407,17 @@ describe("SessionManager bounded session lifecycle", () => {
     // Links are task state: they travel in bridge_context with user messages, not in the prompt.
     expect(resumed.systemMessage.content).not.toContain("owner/repo");
     expect(resumed.systemMessage.content).toContain("run #3");
-    expect(resumed.systemMessage.content).toContain("use the task update tool");
+    // The naming request follows the live title, so it never outlives the placeholder.
+    expect(resumed.systemMessage.content).not.toContain(PLACEHOLDER_TITLE_GUIDANCE);
     manager.findLinkedTask = () => task;
-    expect(manager.prepareTurnContext("launch-test").block).toContain("Linked PRs: owner/repo #42");
+    const first = manager.prepareTurnContext("launch-test");
+    expect(first.block).toContain("Linked PRs: owner/repo #42");
+    expect(first.block).toContain(PLACEHOLDER_TITLE_GUIDANCE);
+    first.commit();
+    manager.findLinkedTask = () => ({ ...task, title: "Weekly report" });
+    const afterRename = manager.prepareTurnContext("launch-test").block;
+    expect(afterRename).toContain('Task: "Weekly report"');
+    expect(afterRename).not.toContain(PLACEHOLDER_TITLE_GUIDANCE);
     await manager.evictAllCachedSessions();
   });
 

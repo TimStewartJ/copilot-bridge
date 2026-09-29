@@ -1349,7 +1349,6 @@ describe("session-config-builder", () => {
       options: {
         sessionId: "session-1",
         task,
-        isNewTask: true,
         scheduleContext: { name: "Daily check", type: "cron", runCount: 2 },
       },
       callbacks: createCallbacks({
@@ -1365,7 +1364,7 @@ describe("session-config-builder", () => {
     const content = cfg.systemMessage.content;
     expect(content).toContain("You are helping with a Bridge task (taskId: task-1).");
     expect(content).toContain("<bridge_context>");
-    expect(content).toContain("use the task update tool");
+    expect(content).not.toContain("use task_update to give it");
     expect(content).toContain("<task_instructions>\nStanding rules for this task. Follow them in every session.\nNever email the landlord.\n</task_instructions>");
     expect(content).toContain('triggered by schedule "Daily check" (recurring, run #3)');
     expect(content).not.toContain("call `session_rename`");
