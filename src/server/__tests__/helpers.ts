@@ -205,6 +205,8 @@ export function createMockSessionManager() {
     }),
     getSessionActivity: () => [],
     isSessionBusy: () => false,
+    getSessionHold: () => undefined,
+    subscribeSessionHold: () => () => {},
     getSessionRunState: () => "idle",
     getBackgroundAgentsSummary: () => ({ running: 0, idle: 0, failed: 0, total: 0, source: "unknown" as const }),
     getSessionAgentMode: () => undefined,

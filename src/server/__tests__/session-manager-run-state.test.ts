@@ -1174,18 +1174,43 @@ describe("SessionManager run state", () => {
     manager.backend = {
       resumeSession: vi.fn(),
     };
-    (manager as any).sessionOverlayBusyReasons.set("session-1", "model-switching");
+    (manager as any).sessionHolds.start("session-1", "model-switching");
 
     await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("not accepting steering");
   });
 
   it("derives busy and active state from the owned overlay reason", () => {
     const { manager } = createManager();
-    (manager as any).sessionOverlayBusyReasons.set("session-1", "history-undo");
+    (manager as any).sessionHolds.start("session-1", "history-undo");
 
     expect(manager.isSessionBusy("session-1")).toBe(true);
     expect(manager.getSessionRunState("session-1")).toBe("busy");
     expect(manager.getActiveSessions()).toContain("session-1");
+  });
+
+  it("starts the holder's follow-up turn before telling hold watchers the hold ended", async () => {
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    manager.sessionHolds.start("session-1", "image-compaction");
+
+    const seen: Array<{ held: unknown; runComplete: boolean | undefined }> = [];
+    const unsubscribe = manager.subscribeSessionHold("session-1", () => {
+      seen.push({ held: manager.getSessionHold("session-1"), runComplete: eventBusRegistry.getBus("session-1")?.complete });
+    });
+
+    manager.endSessionHold("session-1", () => manager.startWork("session-1", "continue", undefined, { promptSource: "system" }));
+    expect(seen).toEqual([{ held: undefined, runComplete: false }]);
+
+    manager.endSessionHold("session-1");
+    expect(seen).toHaveLength(1);
+    unsubscribe();
+
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
+    await flushMicrotasks();
   });
 
   it("rejects steering if the active run completes before the immediate send returns", async () => {

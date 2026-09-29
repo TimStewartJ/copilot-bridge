@@ -152,6 +152,7 @@ import {
   type StartWorkOptions,
 } from "./session-runner.js";
 import { ImageBudgetController } from "./image-budget.js";
+import { SessionHolds, type SessionHoldReason } from "./session-holds.js";
 import { SessionAgentRegistry } from "./session-agent-registry.js";
 import type {
   AgentCountsSource,
@@ -506,8 +507,6 @@ type ModelMetadataRequest = {
   promise: Promise<ModelMetadataFetchResult>;
 };
 
-type SessionOverlayBusyReason = "model-switching" | "history-undo" | "image-compaction";
-
 /**
  * Outcome of an explicit session model switch. Mirrors the Copilot CLI's model
  * picker: `confirmation_required` means the conversation exceeds the target
@@ -814,7 +813,7 @@ export class SessionManager {
   private readonly inFlightSessionCreations = new Set<Promise<void>>();
   private readonly deletingSessions = new Set<string>();
   private shuttingDown = false;
-  private sessionOverlayBusyReasons = new Map<string, SessionOverlayBusyReason>();
+  private readonly sessionHolds = new SessionHolds();
   private sessionObjects = new Map<string, AgentSession>();
   private readonly appliedPromptFingerprints = new AppliedPromptFingerprints({
     querySpans: (options) => this.deps.telemetryStore?.querySpans(options) ?? [],
@@ -4471,7 +4470,7 @@ export class SessionManager {
       this.sessionObjects.has(sessionId)
       || this.runStateController.hasSessionRun(sessionId)
       || this.isSessionResuming(sessionId)
-      || this.sessionOverlayBusyReasons.has(sessionId)
+      || this.sessionHolds.has(sessionId)
       || this.getPendingInteractionCount(sessionId) > 0
     ) {
       return true;
@@ -4737,7 +4736,7 @@ export class SessionManager {
 
     const backend = this.getBackend();
     const startedAt = Date.now();
-    this.sessionOverlayBusyReasons.set(sessionId, "history-undo");
+    this.sessionHolds.start(sessionId, "history-undo");
 
     try {
       let session = this.sessionObjects.get(sessionId);
@@ -4895,7 +4894,7 @@ export class SessionManager {
       });
       throw error;
     } finally {
-      this.sessionOverlayBusyReasons.delete(sessionId);
+      this.endSessionHold(sessionId);
       this.sessionRunner.followRuntimeTurn(sessionId);
       this.flushPendingSessionEviction(sessionId);
     }
@@ -5325,7 +5324,7 @@ export class SessionManager {
       return;
     }
 
-    const skipReason = this.sessionOverlayBusyReasons.get(sessionId)
+    const skipReason = this.sessionHolds.get(sessionId)
       ?? (
         this.isSessionResuming(sessionId)
           ? "resuming"
@@ -5520,8 +5519,8 @@ export class SessionManager {
       getEventsPath: (sessionId) => this.getSessionEventsPath(sessionId),
       hold: (sessionId) => {
         if (this.shuttingDown || this.deletingSessions.has(sessionId) || this.isSessionResuming(sessionId)) return false;
-        if (this.sessionOverlayBusyReasons.has(sessionId)) return false;
-        this.sessionOverlayBusyReasons.set(sessionId, "image-compaction");
+        if (this.sessionHolds.has(sessionId)) return false;
+        this.sessionHolds.start(sessionId, "image-compaction");
         return true;
       },
       runningTurn: (sessionId) => {
@@ -5540,19 +5539,20 @@ export class SessionManager {
       },
       finish: (sessionId, session, { stopped, continuation, attention }) => {
         if (stopped) this.sessionRunner.discardHeldTurn(sessionId);
-        this.sessionOverlayBusyReasons.delete(sessionId);
         let needsAttention = attention === true;
-        if (continuation && this.sessionObjects.get(sessionId) === session && !this.shuttingDown) {
-          try {
-            const mode = this.sessionRunner.getSessionAgentMode(sessionId);
-            this.startWork(sessionId, continuation.prompt, undefined, { promptSource: "system", ...(mode ? { mode } : {}) });
-          } catch (error) {
-            console.warn(`[image-budget] [${sessionId.slice(0, 8)}] Could not continue the paused turn:`, error instanceof Error ? error.message : error);
+        this.endSessionHold(sessionId, () => {
+          if (continuation && this.sessionObjects.get(sessionId) === session && !this.shuttingDown) {
+            try {
+              const mode = this.sessionRunner.getSessionAgentMode(sessionId);
+              this.startWork(sessionId, continuation.prompt, undefined, { promptSource: "system", ...(mode ? { mode } : {}) });
+            } catch (error) {
+              console.warn(`[image-budget] [${sessionId.slice(0, 8)}] Could not continue the paused turn:`, error instanceof Error ? error.message : error);
+              needsAttention = true;
+            }
+          } else if (continuation) {
             needsAttention = true;
           }
-        } else if (continuation) {
-          needsAttention = true;
-        }
+        });
         if (needsAttention) this.markSessionAttention(sessionId);
         this.sessionRunner.followRuntimeTurn(sessionId);
         this.flushPendingSessionEviction(sessionId);
@@ -5661,15 +5661,34 @@ export class SessionManager {
   }
 
   isSessionBusy(sessionId: string): boolean {
-    return this.sessionOverlayBusyReasons.has(sessionId)
+    return this.sessionHolds.has(sessionId)
       || this.isSessionResuming(sessionId)
       || this.runStateController.isSessionBusy(sessionId);
   }
 
   /** Returns user-visible agent work state, excluding passive session lifecycle operations such as warmup. */
   getSessionRunState(sessionId: string): SessionRunState {
-    if (this.sessionOverlayBusyReasons.has(sessionId)) return "busy";
+    if (this.sessionHolds.has(sessionId)) return "busy";
     return this.runStateController.getSessionRunState(sessionId);
+  }
+
+  /** Why Bridge is holding the session outside a run (see session-holds.ts); undefined when it is not held. */
+  getSessionHold(sessionId: string): SessionHoldReason | undefined {
+    return this.sessionHolds.get(sessionId);
+  }
+
+  subscribeSessionHold(sessionId: string, listener: () => void): () => void {
+    return this.sessionHolds.subscribe(sessionId, listener);
+  }
+
+  /**
+   * Ends a hold. `resume` runs before watchers hear about it, so a stream waiting on the hold
+   * finds the turn the holder starts (an image-budget continuation) instead of reporting the session finished.
+   */
+  private endSessionHold(sessionId: string, resume?: () => void): void {
+    const ended = this.sessionHolds.end(sessionId);
+    resume?.();
+    if (ended) this.sessionHolds.notify(sessionId);
   }
 
   isSessionStalled(sessionId: string): boolean {
@@ -5823,7 +5842,7 @@ export class SessionManager {
     return Array.from(new Set([
       ...this.runStateController.getActiveSessions(),
       ...this.resumingSessions.keys(),
-      ...this.sessionOverlayBusyReasons.keys(),
+      ...this.sessionHolds.sessionIds(),
     ]));
   }
 
@@ -5915,7 +5934,7 @@ export class SessionManager {
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot switch model on a busy session");
 
     const sid = sessionId.slice(0, 8);
-    this.sessionOverlayBusyReasons.set(sessionId, "model-switching");
+    this.sessionHolds.start(sessionId, "model-switching");
 
     try {
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
@@ -6033,7 +6052,7 @@ export class SessionManager {
         ...(currentAfterSwitch?.modelId ? { modelId: currentAfterSwitch.modelId } : {}),
       };
     } finally {
-      this.sessionOverlayBusyReasons.delete(sessionId);
+      this.endSessionHold(sessionId);
       // A switch to a model with an image ceiling may leave the conversation over it.
       setImmediate(() => this.imageBudget.sessionIdle(sessionId));
       this.sessionRunner.followRuntimeTurn(sessionId);

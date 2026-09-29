@@ -127,6 +127,63 @@ describe("Session manager routes", () => {
     expect(res.text).toContain("\"kind\":\"stopped\"");
   });
 
+  it("GET /api/sessions/:id/stream follows a hold instead of reporting the session finished", async () => {
+    let hold: "image-compaction" | undefined = "image-compaction";
+    ctx.sessionManager.getSessionHold = vi.fn(() => hold) as any;
+    ctx.sessionManager.subscribeSessionHold = vi.fn((_sessionId: string, listener: () => void) => {
+      setImmediate(() => {
+        hold = undefined;
+        listener();
+      });
+      return () => {};
+    });
+
+    const res = await request(app).get("/api/sessions/held-session/stream");
+
+    expect(res.status).toBe(200);
+    const snapshots = res.text.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => JSON.parse(line.slice("data:".length)))
+      .filter((event) => event.type === "snapshot");
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        complete: false,
+        hold: "image-compaction",
+        intentText: "Summarizing the images in this chat",
+      }),
+      expect.objectContaining({ complete: true }),
+    ]);
+  });
+
+  it("GET /api/sessions/:id/stream continues into the turn that starts when a hold ends", async () => {
+    let hold: "image-compaction" | undefined = "image-compaction";
+    ctx.sessionManager.getSessionHold = vi.fn(() => hold) as any;
+    ctx.sessionManager.subscribeSessionHold = vi.fn((sessionId: string, listener: () => void) => {
+      setImmediate(() => {
+        hold = undefined;
+        const bus = ctx.eventBusRegistry.getOrCreateBus(sessionId);
+        bus.reset();
+        listener();
+        setImmediate(() => bus.emit({ type: "done", content: "Continued", sourceEventId: "terminal-1" }));
+      });
+      return () => {};
+    });
+
+    const res = await request(app).get("/api/sessions/held-then-run/stream");
+
+    expect(res.status).toBe(200);
+    const events = res.text.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => JSON.parse(line.slice("data:".length)));
+    expect(events.map((event) => [event.type, event.complete])).toEqual([
+      ["snapshot", false],
+      ["snapshot", false],
+      ["done", undefined],
+    ]);
+    expect(events[0].hold).toBe("image-compaction");
+    expect(events[1].hold).toBeUndefined();
+  });
+
   it("POST /api/sessions/:id/fork accepts immediately and passes safe event boundaries to the session manager", async () => {
     let resolveFork: ((result: { sessionId: string }) => void) | undefined;
     const sessionManager = createMockSessionManager();
