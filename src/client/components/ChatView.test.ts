@@ -249,7 +249,6 @@ function createSnapshot(
     entries,
     firstItemIndex: 0,
     total: entries.length,
-    hasMore: false,
     fetchedAt: Date.now(),
   };
 }
@@ -1323,108 +1322,182 @@ describe("ChatView navigation landing position", () => {
 });
 
 describe("ChatView history pagination", () => {
-  it("manual load-more leaves bottom-follow mode before prepending older messages", async () => {
-    vi.useFakeTimers();
-    const tailEntries = [
-      createMessage("entry-3"),
-      createMessage("entry-4"),
-    ];
-    const olderEntries = [
-      createMessage("entry-0"),
-      createMessage("entry-1"),
-      createMessage("entry-2"),
-    ];
-    const olderMessages = createDeferred<{
-      messages: ChatEntry[];
-      hasMore: boolean;
-      total: number;
-      lastVisibleActivityAt?: string;
-    }>();
-    const { dom, act, cleanup } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: tailEntries,
-        runState: "idle",
-        total: 5,
-        warm: true,
-        hasMore: true,
-      },
+  function createMessages(from: number, to: number): ChatEntry[] {
+    return Array.from({ length: to - from }, (_, index) => createMessage(`entry-${from + index}`));
+  }
+
+  /** A rect whose top follows the scroller, so tests can move content by changing its layout top. */
+  function placeInScroller(element: any, scroller: any, layoutTop: () => number, height: number) {
+    element.getBoundingClientRect = () => {
+      const top = layoutTop() - scroller.scrollTop;
+      return { x: 0, y: top, width: 0, height, top, left: 0, right: 0, bottom: top + height, toJSON: () => ({}) };
+    };
+  }
+
+  function scroll(scroller: any) {
+    getReactProps(scroller)!.onScroll();
+  }
+
+  async function renderPaginatedSession(tail: ChatEntry[], total: number) {
+    const view = await renderChatView({
+      fetchMessagesFastResult: { messages: tail, runState: "idle", total, warm: true, hasMore: true },
       streamOverrides: { isStreaming: false, pendingOrigin: null },
     });
+    await waitUntilAct(view.act, () => view.dom.container.textContent?.includes("Load older messages") ?? false);
+    return { ...view, scrollContainer: findScrollContainer(view.dom.container) };
+  }
+
+  it("keeps the first visible message in place when older messages are prepended", async () => {
+    const olderMessages = createDeferred<{ messages: ChatEntry[]; hasMore: boolean; total: number }>();
+    const view = await renderPaginatedSession(createMessages(3, 5), 5);
     fetchOlderMessagesFastMock.mockReturnValueOnce(olderMessages.promise);
 
     try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-      const scrollContainer = findScrollContainer(dom.container);
-      setScrollGeometry(scrollContainer, { scrollHeight: 300, clientHeight: 600, scrollTop: 0 });
+      const { scrollContainer, dom, act } = view;
+      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 50 });
+      // Once the older page renders it sits above the message being read and pushes it 700px down.
+      const olderPageRendered = () => dom.container.textContent?.includes("entry-0") ?? false;
+      placeInScroller(
+        findMessageWrapperByAnchorKey(dom.container, "entry-4"),
+        scrollContainer,
+        () => 170 + (olderPageRendered() ? 700 : 0),
+        300,
+      );
 
       await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Scroll up for more"));
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
         await waitTick();
       });
+      expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 200, before: 3 });
+      expect(dom.container.textContent).toContain("Loading older messages");
 
-      expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", {
-        limit: 200,
-        before: 3,
-      });
-      // Older pages must go through the disk-backed fast reader, not the SDK-resume path.
-      expect(fetchMessagesFastMock).toHaveBeenCalledWith("session-1", {
-        limit: 200,
-        before: 3,
-      });
-
-      setScrollGeometry(scrollContainer, {
-        scrollHeight: 1200,
-        clientHeight: 600,
-        scrollTop: scrollContainer.scrollTop,
-      });
       await act(async () => {
-        olderMessages.resolve({
-          messages: olderEntries,
-          hasMore: false,
-          total: 5,
-        });
+        setScrollGeometry(scrollContainer, { scrollHeight: 1700, clientHeight: 600, scrollTop: scrollContainer.scrollTop });
+        olderMessages.resolve({ messages: createMessages(0, 3), hasMore: false, total: 5 });
         await waitTick();
       });
-      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-0") ?? false);
+      await waitUntilAct(act, olderPageRendered);
 
-      expect(scrollContainer.scrollTop).toBe(0);
+      expect(scrollContainer.scrollTop).toBe(750);
+      expect(dom.container.textContent).not.toContain("Load older messages");
     } finally {
-      olderMessages.resolve({
-        messages: olderEntries,
-        hasMore: false,
-        total: 5,
-      });
-      await cleanup();
+      olderMessages.resolve({ messages: [], hasMore: false, total: 5 });
+      await view.cleanup();
     }
   });
 
-  it("shows a load-more error when older history fails", async () => {
-    vi.useFakeTimers();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { dom, act, cleanup } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [createMessage("entry-1")],
-        runState: "idle",
-        total: 2,
-        warm: true,
-        hasMore: true,
-      },
-      streamOverrides: { isStreaming: false, pendingOrigin: null },
-    });
+  it("prefetches the previous page once the reader scrolls within a screen of the top", async () => {
+    const view = await renderPaginatedSession(createMessages(3, 5), 5);
+
+    try {
+      const { scrollContainer, act } = view;
+      setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 900 });
+      await act(async () => {
+        scroll(scrollContainer);
+        await waitTick();
+      });
+      expect(fetchOlderMessagesFastMock).not.toHaveBeenCalled();
+
+      scrollContainer.scrollTop = 500;
+      await act(async () => {
+        scroll(scrollContainer);
+        await waitTick();
+      });
+      expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 200, before: 3 });
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("waits for Retry after an older page fails instead of refetching on every scroll", async () => {
+    const view = await renderPaginatedSession([createMessage("entry-1")], 2);
     fetchOlderMessagesFastMock.mockRejectedValueOnce(new Error("network unavailable"));
 
     try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-
+      const { scrollContainer, dom, act } = view;
       await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Scroll up for more"));
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Could not load older messages: network unavailable") ?? false);
+
+      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 0 });
+      await act(async () => {
+        scroll(scrollContainer);
+        await waitTick();
+      });
+      expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(1);
+
+      fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: [createMessage("entry-0")], hasMore: false, total: 2 });
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Retry"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-0") ?? false);
+      expect(dom.container.textContent).not.toContain("Could not load older messages");
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("re-reads every loaded page when a finished run replaces the window", async () => {
+    const view = await renderPaginatedSession(createMessages(250, 300), 300);
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(50, 250), hasMore: true, total: 300 });
+
+    try {
+      const { dom, act } = view;
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-50") ?? false);
+
+      const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as () => void;
+      await act(async () => {
+        onSettled();
         await waitTick();
       });
 
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Could not load older messages: network unavailable") ?? false);
+      // Capping this read would drop the pages the reader scrolled back through.
+      expect(fetchMessagesFastMock).toHaveBeenLastCalledWith("session-1", { limit: 250 });
     } finally {
-      errorSpy.mockRestore();
-      await cleanup();
+      await view.cleanup();
+    }
+  });
+
+  it("keeps paginated history when a refresh window starts after the loaded window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { dom, act, cleanup, render } = await renderPaginatedSession(
+        [createMessage("entry-2", "newest"), createMessage("entry-3", "newer")],
+        4,
+      );
+
+      try {
+        fetchOlderMessagesFastMock.mockResolvedValue({
+          messages: [createMessage("entry-0", "oldest"), createMessage("entry-1", "older")],
+          hasMore: false,
+          total: 4,
+        });
+        await act(async () => {
+          clickButton(findButtonContainingText(dom.container, "Load older messages"));
+          await waitTick();
+        });
+        await waitUntilAct(act, () => dom.container.textContent?.includes("oldest") ?? false);
+
+        // A tail refresh that only covers the newest entries must not drop the paginated prefix.
+        await render({ streamOverrides: { historyEpoch: 1, isStreaming: false, pendingOrigin: null } });
+        await advanceTimersByTimeAct(act, 300);
+        await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 2);
+
+        const renderedText = dom.container.textContent ?? "";
+        expect(renderedText).toContain("oldest");
+        expect(renderedText).toContain("newest");
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
@@ -3715,50 +3788,6 @@ describe("ChatView disk-authoritative synchronization", () => {
       expect(renderedText.indexOf("run blew up")).toBeGreaterThan(renderedText.indexOf("assistant reply"));
     } finally {
       await cleanup();
-    }
-  });
-
-  it("keeps paginated history when a refresh window starts after the loaded window", async () => {
-    vi.useFakeTimers();
-    try {
-      const { dom, act, cleanup, render } = await renderChatView({
-        fetchMessagesFastResult: {
-          messages: [createMessage("entry-2", "newest"), createMessage("entry-3", "newer")],
-          runState: "idle",
-          total: 4,
-          warm: true,
-          hasMore: true,
-        },
-      });
-
-      try {
-        await waitUntilAct(act, () => dom.container.textContent?.includes("newest") ?? false);
-        fetchOlderMessagesFastMock.mockResolvedValue({
-          messages: [createMessage("entry-0", "oldest"), createMessage("entry-1", "older")],
-          hasMore: false,
-          total: 4,
-        });
-
-        await waitUntilAct(act, () => dom.container.textContent?.includes("Scroll up for more") ?? false);
-        await act(async () => {
-          clickButton(findButtonContainingText(dom.container, "Scroll up for more"));
-          await waitTick();
-        });
-        await waitUntilAct(act, () => dom.container.textContent?.includes("oldest") ?? false);
-
-        // A tail refresh that only covers the newest entries must not drop the paginated prefix.
-        await render({ streamOverrides: { historyEpoch: 1 } });
-        await advanceTimersByTimeAct(act, 300);
-        await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 1);
-
-        const renderedText = dom.container.textContent ?? "";
-        expect(renderedText).toContain("oldest");
-        expect(renderedText).toContain("newest");
-      } finally {
-        await cleanup();
-      }
-    } finally {
-      vi.useRealTimers();
     }
   });
 
