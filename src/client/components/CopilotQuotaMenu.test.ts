@@ -197,8 +197,84 @@ describe("CopilotQuotaMenu", () => {
 
       expect(harness.dom.container.textContent).toContain("Current run rate");
       expect(harness.dom.container.textContent).toContain("6.67 AI credits/day");
-      expect(harness.dom.container.textContent).toContain("To exhaust by month end");
+      expect(harness.dom.container.textContent).toContain("To exhaust before reset");
       expect(harness.dom.container.textContent).toContain("60 AI credits/day");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  async function openDetailsAt(now: string, primary: Partial<NonNullable<CopilotQuotaStatus["primary"]>>): Promise<string> {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(now));
+    useCopilotQuotaQueryMock.mockReturnValue({
+      data: createQuotaStatus({ primary: { ...createQuotaStatus().primary!, ...primary } }),
+      error: null,
+      isLoading: false,
+      refresh: vi.fn(),
+    });
+    harness = await createReactDomHarness();
+    await harness.render(createElement(CopilotQuotaMenu));
+    const trigger = findAllByTag(harness.dom.container, "BUTTON")[0];
+    await harness.act(async () => {
+      getReactProps(trigger)?.onClick?.();
+    });
+    return harness.dom.container.textContent ?? "";
+  }
+
+  it("measures run rates against the reported quota reset instead of local month end", async () => {
+    try {
+      const text = await openDetailsAt("2026-09-29T00:00:00.000Z", {
+        entitlement: 1_000,
+        used: 100,
+        remaining: 900,
+        remainingPercentage: 90,
+        resetAt: "2026-10-01T00:00:00.000Z",
+      });
+      expect(text).toContain("3.57 AI credits/day");
+      expect(text).toContain("450 AI credits/day");
+      expect(text).toContain("93% of month");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never reports an exhaustion rate above what is left in the final day", async () => {
+    try {
+      const text = await openDetailsAt("2026-09-30T18:45:00.000Z", {
+        entitlement: 1_000_000,
+        used: 416_142.1,
+        remaining: 583_857.9,
+        remainingPercentage: 58.3,
+        resetAt: "2026-10-01T00:00:00.000Z",
+      });
+      expect(text).toContain("583,857.9 AI credits in the next 5 hr");
+      expect(text).not.toMatch(/To exhaust before reset[^/]*\/day/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts minutes when the reset is under an hour away and says when the quota is used up", async () => {
+    try {
+      let text = await openDetailsAt("2026-09-30T23:40:00.000Z", {
+        entitlement: 1_000,
+        used: 400,
+        remaining: 600,
+        remainingPercentage: 60,
+        resetAt: "2026-10-01T00:00:00.000Z",
+      });
+      expect(text).toContain("600 AI credits in the next 20 min");
+      await harness?.cleanup();
+      harness = null;
+      text = await openDetailsAt("2026-09-20T00:00:00.000Z", {
+        entitlement: 1_000,
+        used: 1_000,
+        remaining: 0,
+        remainingPercentage: 0,
+        resetAt: "2026-10-01T00:00:00.000Z",
+      });
+      expect(text).toContain("Exhausted");
     } finally {
       vi.useRealTimers();
     }
@@ -338,7 +414,7 @@ describe("CopilotQuotaCard", () => {
     expect(findAllByTag(harness.dom.container, "DIV").some((candidate) => (
       getReactProps(candidate)?.role === "dialog"
     ))).toBe(true);
-    expect(harness.dom.container.textContent).toContain("To exhaust by month end");
+    expect(harness.dom.container.textContent).toContain("To exhaust before reset");
   });
 
   it("says why when the account quota cannot be read", async () => {

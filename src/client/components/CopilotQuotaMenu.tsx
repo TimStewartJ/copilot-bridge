@@ -54,7 +54,7 @@ function useQuotaDetails() {
     isLoading,
     error: quota.error,
     usedPercent: getUsedPercent(snapshot),
-    monthElapsedPercent: getMonthElapsedPercent(new Date()),
+    monthElapsedPercent: getQuotaPeriod(snapshot, new Date()).elapsedPercent,
     accessibleLabel: snapshot
       ? `${quota.error ? "Cached" : "Live"} Copilot quota, ${formatUsedAmount(snapshot)} ${getUnitLabel(snapshot)} used`
       : "Live Copilot quota",
@@ -311,7 +311,7 @@ function QuotaHoverSummary({
   }
 
   const usedPercent = getUsedPercent(snapshot);
-  const monthElapsedPercent = getMonthElapsedPercent(new Date());
+  const monthElapsedPercent = getQuotaPeriod(snapshot, new Date()).elapsedPercent;
   return (
     <>
       <div className="flex items-center gap-2 font-medium text-text-secondary">
@@ -435,8 +435,8 @@ function QuotaDetailsCard({
   }
 
   const usedPercent = getUsedPercent(snapshot);
-  const monthElapsedPercent = getMonthElapsedPercent(new Date());
-  const monthTimeline = getMonthTimeline(new Date());
+  const period = getQuotaPeriod(snapshot, new Date());
+  const monthElapsedPercent = period.elapsedPercent;
   const identity = status.identity;
   const identityLabel = [identity?.login, identity?.plan]
     .filter((part): part is string => Boolean(part))
@@ -468,13 +468,13 @@ function QuotaDetailsCard({
         </Field>
         <Field label="Resets">{snapshot.resetAt ? formatDateTime(snapshot.resetAt) : "Not reported"}</Field>
         <Field label="Current run rate">
-          <span className="tabular-nums">{formatDailyRate(snapshot.used, snapshot, monthTimeline.elapsedDays)}</span>
+          <span className="tabular-nums">{formatDailyRate(snapshot.used, snapshot, period.elapsedDays)}</span>
         </Field>
-        <Field label="To exhaust by month end">
-          <span className="tabular-nums">{formatExhaustionRate(snapshot, monthTimeline.remainingDays)}</span>
+        <Field label="To exhaust before reset">
+          <span className="tabular-nums">{formatExhaustionRate(snapshot, period.remainingDays)}</span>
         </Field>
       </FieldList>
-      <p className={DS.usage.prose}>Quota covers this account across clients. Pace compares usage with the calendar month; it is not a spending forecast.</p>
+      <p className={DS.usage.prose}>Quota covers this account across clients. Pace compares usage with time elapsed until the quota resets; it is not a spending forecast.</p>
       <MetaLine items={[identityLabel || "Signed-in account", `Updated ${formatDateTime(status.fetchedAt)}`]} />
     </div>
   );
@@ -516,7 +516,10 @@ function formatExhaustionRate(
   if (snapshot.isUnlimitedEntitlement) return "Unlimited allowance";
   const remaining = getRemainingAmount(snapshot);
   if (remaining === null) return "Unknown";
-  if (remainingDays <= 0) return remaining > 0 ? "No days left" : "Exhausted";
+  if (remaining <= 0) return "Exhausted";
+  if (remainingDays <= 0) return "Resetting now";
+  // A per-day figure over less than a day would exceed what is left, so say what is left and when.
+  if (remainingDays < 1) return `${formatQuotaAmount(remaining)} ${getUnitLabel(snapshot)} in the next ${formatTimeLeft(remainingDays)}`;
   return formatDailyRate(remaining, snapshot, remainingDays);
 }
 
@@ -531,12 +534,65 @@ function getRemainingAmount(snapshot: NonNullable<CopilotQuotaStatus["primary"]>
   return null;
 }
 
-function getMonthTimeline(now: Date): { elapsedDays: number; remainingDays: number } {
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const elapsedDays = Math.max(1, (now.getTime() - monthStart.getTime()) / 86_400_000);
-  const remainingDays = Math.max(0, (nextMonthStart.getTime() - now.getTime()) / 86_400_000);
-  return { elapsedDays, remainingDays };
+interface QuotaPeriod {
+  elapsedDays: number;
+  remainingDays: number;
+  elapsedPercent: number;
+}
+
+const DAY_MS = 86_400_000;
+const MAX_PERIOD_MS = 32 * DAY_MS;
+
+/**
+ * The quota period ends at the reported reset, which is midnight UTC on the 1st and so lands hours before
+ * local month end west of UTC. Without a usable reset time, fall back to the local calendar month measured
+ * in wall-clock time so DST changes do not skew it.
+ */
+function getQuotaPeriod(snapshot: CopilotQuotaStatus["primary"], now: Date): QuotaPeriod {
+  const resetMs = snapshot?.resetAt ? new Date(snapshot.resetAt).getTime() : Number.NaN;
+  const nowMs = now.getTime();
+  if (Number.isFinite(resetMs) && resetMs > nowMs && resetMs - nowMs <= MAX_PERIOD_MS) {
+    const reset = new Date(resetMs);
+    const startMs = Date.UTC(
+      reset.getUTCFullYear(),
+      reset.getUTCMonth() - 1,
+      reset.getUTCDate(),
+      reset.getUTCHours(),
+      reset.getUTCMinutes(),
+      reset.getUTCSeconds(),
+      reset.getUTCMilliseconds(),
+    );
+    return toQuotaPeriod(Math.min(startMs, nowMs), nowMs, resetMs);
+  }
+  const wallNowMs = Date.UTC(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  );
+  return toQuotaPeriod(
+    Date.UTC(now.getFullYear(), now.getMonth(), 1),
+    wallNowMs,
+    Date.UTC(now.getFullYear(), now.getMonth() + 1, 1),
+  );
+}
+
+function toQuotaPeriod(startMs: number, nowMs: number, endMs: number): QuotaPeriod {
+  return {
+    elapsedDays: Math.max(1, (nowMs - startMs) / DAY_MS),
+    remainingDays: Math.max(0, (endMs - nowMs) / DAY_MS),
+    elapsedPercent: Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100)),
+  };
+}
+
+function formatTimeLeft(days: number): string {
+  const minutes = Math.max(1, Math.round(days * 24 * 60));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  return `${hours} hr`;
 }
 
 function formatQuotaAmount(value: number | null): string {
@@ -550,21 +606,6 @@ function formatPercent(value: number): string {
 
 function formatWholePercent(value: number): string {
   return `${Math.round(value)}%`;
-}
-
-function getMonthElapsedPercent(now: Date): number {
-  const current = Date.UTC(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-    now.getSeconds(),
-    now.getMilliseconds(),
-  );
-  const monthStart = Date.UTC(now.getFullYear(), now.getMonth(), 1);
-  const nextMonthStart = Date.UTC(now.getFullYear(), now.getMonth() + 1, 1);
-  return Math.min(100, Math.max(0, ((current - monthStart) / (nextMonthStart - monthStart)) * 100));
 }
 
 function formatDateTime(value: string): string {
