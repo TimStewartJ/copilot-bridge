@@ -30,6 +30,7 @@ describe("Work Map filter persistence", () => {
   it("round-trips every filter", () => {
     const storage = stubLocalStorage();
     const filters = {
+      view: "clusters" as const,
       search: "bridge",
       assignedToMeOnly: true,
       openAdoOnly: true,
@@ -54,6 +55,7 @@ describe("Work Map filter persistence", () => {
   it("keeps valid fields while defaulting unsupported values", () => {
     stubLocalStorage({
       [WORK_MAP_FILTERS_STORAGE_KEY]: JSON.stringify({
+        view: "graph",
         search: "ADO",
         assignedToMeOnly: "yes",
         openAdoOnly: true,
@@ -64,6 +66,7 @@ describe("Work Map filter persistence", () => {
     });
 
     expect(loadWorkMapFilters()).toEqual({
+      view: "tree",
       search: "ADO",
       assignedToMeOnly: false,
       openAdoOnly: true,

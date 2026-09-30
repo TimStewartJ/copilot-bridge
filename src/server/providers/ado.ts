@@ -7,6 +7,9 @@ import type {
   EnrichedPR,
   WorkItemPullRequestLink,
   WorkItemPullRequestLinksResult,
+  WorkItemRelation,
+  WorkItemRelationType,
+  WorkItemRelationsResult,
   WorkTrackingIdentity,
   AssignedWorkItemsResult,
   WorkTrackingProvider,
@@ -162,9 +165,26 @@ async function adoFetchAttempt(url: string, isRetry: boolean): Promise<any> {
 
 // ── Enrichment cache ──────────────────────────────────────────────
 
+interface WorkItemLinks {
+  pullRequests: WorkItemPullRequestLink[];
+  relations: WorkItemRelation[];
+}
+
+const EMPTY_WORK_ITEM_LINKS: WorkItemLinks = { pullRequests: [], relations: [] };
+
+const WORK_ITEM_RELATION_TYPES: Record<string, WorkItemRelationType> = {
+  "system.linktypes.hierarchy-reverse": "parent",
+  "system.linktypes.hierarchy-forward": "child",
+  "system.linktypes.related": "related",
+  "system.linktypes.dependency-reverse": "predecessor",
+  "system.linktypes.dependency-forward": "successor",
+  "system.linktypes.duplicate-forward": "duplicate",
+  "system.linktypes.duplicate-reverse": "duplicateOf",
+};
+
 const workItemCache = createProviderCache<EnrichedWorkItem>();
 const prCache = createProviderCache<EnrichedPR>();
-const workItemLinkCache = createProviderCache<WorkItemPullRequestLink[]>();
+const workItemLinkCache = createProviderCache<WorkItemLinks>();
 const prLinkCache = createProviderCache<WorkItemPullRequestLink[]>();
 const currentUserCache = createProviderCache<WorkTrackingIdentity>();
 const assignedWorkItemIdsCache = createProviderCache<string[]>();
@@ -403,14 +423,33 @@ export class AdoProvider implements WorkTrackingProvider {
     return { workItemId, repoId, prId };
   }
 
-  private linksFromWorkItemPayload(item: any): WorkItemPullRequestLink[] {
+  private parseWorkItemRelation(workItemId: string, relation: any): WorkItemRelation | null {
+    const type = typeof relation?.rel === "string"
+      ? WORK_ITEM_RELATION_TYPES[relation.rel.toLowerCase()]
+      : undefined;
+    if (!type || typeof relation.url !== "string") return null;
+    const match = /\/_apis\/wit\/workItems\/(\d+)$/i.exec(relation.url);
+    if (!match || match[1] === workItemId) return null;
+    return { workItemId, type, targetId: match[1] };
+  }
+
+  private linksFromWorkItemPayload(item: any): WorkItemLinks {
     const workItemId = String(item.id);
-    const links = Array.isArray(item.relations)
-      ? item.relations
-          .map((relation: any) => this.parsePullRequestArtifactLink(workItemId, relation))
-          .filter((link: WorkItemPullRequestLink | null): link is WorkItemPullRequestLink => link !== null)
-      : [];
-    return links;
+    if (!Array.isArray(item.relations)) return { pullRequests: [], relations: [] };
+    const pullRequests: WorkItemPullRequestLink[] = [];
+    const relations = new Map<string, WorkItemRelation>();
+    for (const relation of item.relations) {
+      const pullRequest = this.parsePullRequestArtifactLink(workItemId, relation);
+      if (pullRequest) {
+        pullRequests.push(pullRequest);
+        continue;
+      }
+      const workItemRelation = this.parseWorkItemRelation(workItemId, relation);
+      if (workItemRelation) {
+        relations.set(`${workItemRelation.type}:${workItemRelation.targetId}`, workItemRelation);
+      }
+    }
+    return { pullRequests, relations: [...relations.values()] };
   }
 
   private linksFromPullRequestPayload(data: any, pr: PRRef): WorkItemPullRequestLink[] {
@@ -428,8 +467,8 @@ export class AdoProvider implements WorkTrackingProvider {
   private async fetchLinksFromWorkItems(
     ids: string[],
     now: number,
-  ): Promise<{ links: WorkItemPullRequestLink[]; warning: boolean }> {
-    const resultMap = new Map<string, WorkItemPullRequestLink[]>();
+  ): Promise<{ links: WorkItemPullRequestLink[]; relations: WorkItemRelation[]; warning: boolean }> {
+    const resultMap = new Map<string, WorkItemLinks>();
     const toFetch: string[] = [];
     for (const id of [...new Set(ids)]) {
       const cached = workItemLinkCache.read(this.workItemCacheKey(id), now);
@@ -454,8 +493,8 @@ export class AdoProvider implements WorkTrackingProvider {
         }
         for (const id of requestedIds) {
           if (returnedIds.has(id)) continue;
-          workItemLinkCache.write(this.workItemCacheKey(id), [], now);
-          resultMap.set(id, []);
+          workItemLinkCache.write(this.workItemCacheKey(id), EMPTY_WORK_ITEM_LINKS, now);
+          resultMap.set(id, EMPTY_WORK_ITEM_LINKS);
         }
       },
       (failedIds, error) => {
@@ -471,13 +510,14 @@ export class AdoProvider implements WorkTrackingProvider {
       if (resultMap.has(id)) continue;
       const fetchError = errorById.get(id);
       const fallback = fetchError && shouldUseStaleFallback(fetchError)
-        ? workItemLinkCache.read(this.workItemCacheKey(id), now, true) ?? []
-        : [];
+        ? workItemLinkCache.read(this.workItemCacheKey(id), now, true) ?? EMPTY_WORK_ITEM_LINKS
+        : EMPTY_WORK_ITEM_LINKS;
       resultMap.set(id, fallback);
     }
 
     return {
-      links: ids.flatMap((id) => resultMap.get(id) ?? []),
+      links: ids.flatMap((id) => resultMap.get(id)?.pullRequests ?? []),
+      relations: [...new Set(ids)].flatMap((id) => resultMap.get(id)?.relations ?? []),
       warning: errorById.size > 0,
     };
   }
@@ -545,7 +585,15 @@ export class AdoProvider implements WorkTrackingProvider {
     if (fromPullRequests.warning) {
       warnings.push("Some ADO pull request relationships could not be refreshed.");
     }
-    return { links, warnings };
+    return { links, workItemRelations: fromWorkItems.relations, warnings };
+  }
+
+  async fetchWorkItemRelations(workItemIds: string[]): Promise<WorkItemRelationsResult> {
+    const result = await this.fetchLinksFromWorkItems(workItemIds, Date.now());
+    return {
+      relations: result.relations,
+      warnings: result.warning ? ["Some ADO work item relationships could not be refreshed."] : [],
+    };
   }
 
   async fetchCurrentUser(): Promise<WorkTrackingIdentity | null> {

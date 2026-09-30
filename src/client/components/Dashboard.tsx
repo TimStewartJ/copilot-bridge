@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import type { Task, TaskGroup, WorkMapWorkItem } from "../api";
+import type { EnrichedWorkItem, Task, TaskGroup } from "../api";
 import { useSettingsQuery } from "../hooks/queries/useSettings";
 import { useWorkMapQuery } from "../hooks/queries/useWorkMap";
 import { loadWorkMapFilters } from "../work-map-filter-state";
@@ -15,7 +15,7 @@ import type { PullToRefreshScrollRestoration } from "./PullToRefresh";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
-  onCreateTaskForWorkItem: (workItem: WorkMapWorkItem) => Promise<void>;
+  onCreateTaskForWorkItems: (workItems: EnrichedWorkItem[]) => Promise<void>;
   onSelectSession: (sessionId: string, taskId?: string) => void;
   onStartPromptSession: (prompt: string, taskId?: string, options?: { navigateOnError?: boolean }) => Promise<string>;
   tasks?: Task[]; taskGroups?: TaskGroup[];
@@ -36,11 +36,11 @@ export default function Dashboard(props: DashboardProps) {
       <Button variant="ghost" size="sm" aria-current={tasksActive ? "page" : undefined} onClick={() => navigate(ALL_TASKS_PATH)}>All tasks</Button>
       <Button id="dashboard-work-map-tab" aria-controls="dashboard-work-map-panel" variant="ghost" size="sm" aria-current={mapActive ? "page" : undefined} onClick={() => navigate("/dashboard/work-map")}>Work map</Button>
     </nav>}
-    {mapActive ? <div className="flex-1 min-h-0 overflow-auto"><div className={cx(DS.layout.pageColumn, "max-w-6xl")}>
+    {mapActive ? <div className="flex-1 min-h-0 overflow-auto"><div className={cx(DS.layout.pageColumn, "max-w-7xl")}>
       <DashboardWorkMap active data={map.data} isLoading={map.isLoading} error={map.error} isRefreshing={map.isRefreshing}
         onRefresh={map.refresh} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived}
         assignedToMeOnly={assignedToMe} onAssignedToMeChange={setAssignedToMe}
-        onSelectTask={props.onSelectTask} onCreateTaskForWorkItem={props.onCreateTaskForWorkItem} />
+        onSelectTask={props.onSelectTask} onCreateTaskForWorkItems={props.onCreateTaskForWorkItems} />
     </div></div> : tasksActive ? <AllTasks compact={isMobile} onBack={() => navigate("/dashboard/home")} onSelectTask={id => props.onSelectTask(id)} scrollRestoration={props.scrollRestoration} /> : <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
   </div>;
 }

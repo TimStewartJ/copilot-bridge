@@ -1,6 +1,9 @@
 export const WORK_MAP_FILTERS_STORAGE_KEY = "bridge-work-map-filters";
 
+export type WorkMapView = "tree" | "clusters";
+
 export interface WorkMapFilters {
+  view: WorkMapView;
   search: string;
   assignedToMeOnly: boolean;
   openAdoOnly: boolean;
@@ -9,6 +12,7 @@ export interface WorkMapFilters {
 }
 
 export const DEFAULT_WORK_MAP_FILTERS: WorkMapFilters = {
+  view: "tree",
   search: "",
   assignedToMeOnly: false,
   openAdoOnly: false,
@@ -27,6 +31,7 @@ export function loadWorkMapFilters(): WorkMapFilters {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return { ...DEFAULT_WORK_MAP_FILTERS };
     return {
+      view: parsed.view === "clusters" ? "clusters" : "tree",
       search: typeof parsed.search === "string" ? parsed.search : "",
       assignedToMeOnly: parsed.assignedToMeOnly === true,
       openAdoOnly: parsed.openAdoOnly === true,

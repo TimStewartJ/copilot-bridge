@@ -297,6 +297,20 @@ describe("Dashboard work map route", () => {
             ? [{ workItemId: "13", repoId: "repo-two", prId: 30 }]
             : []),
         ],
+        workItemRelations: ids.includes("10")
+          ? [
+              { workItemId: "10", type: "parent" as const, targetId: "50" },
+              { workItemId: "10", type: "predecessor" as const, targetId: "70" },
+            ]
+          : [],
+        warnings: [],
+      }));
+    const hierarchyParents: Record<string, string> = { "11": "50", "50": "60" };
+    const workItemRelationsSpy = vi.spyOn(providers, "fetchAdoWorkItemRelations")
+      .mockImplementation(async (ids) => ({
+        relations: ids.flatMap((id) => hierarchyParents[id]
+          ? [{ workItemId: id, type: "parent" as const, targetId: hierarchyParents[id] }]
+          : []),
         warnings: [],
       }));
     const currentUserSpy = vi.spyOn(providers, "fetchAdoCurrentUser").mockResolvedValue({
@@ -365,6 +379,19 @@ describe("Dashboard work map route", () => {
           workItemIds: ["10", "11"],
         }),
       ]);
+      expect(workItemRelationsSpy).toHaveBeenNthCalledWith(1, ["11"]);
+      expect(workItemRelationsSpy).toHaveBeenNthCalledWith(2, ["50"]);
+      expect(workItemRelationsSpy).toHaveBeenNthCalledWith(3, ["60"]);
+      expect(res.body.workItems[0].relations).toEqual([
+        { type: "parent", workItemId: "50" },
+        { type: "predecessor", workItemId: "70" },
+      ]);
+      expect(res.body.workItems[1].relations).toEqual([{ type: "parent", workItemId: "50" }]);
+      expect(res.body.contextWorkItems).toEqual([
+        expect.objectContaining({ id: "50", title: "Work item 50", relations: [{ type: "parent", workItemId: "60" }] }),
+        expect.objectContaining({ id: "60", relations: [] }),
+        expect.objectContaining({ id: "70", relations: [] }),
+      ]);
 
       const assignedRes = await request(app).get("/api/dashboard/work-map?assignedToMe=1");
 
@@ -420,6 +447,7 @@ describe("Dashboard work map route", () => {
       enrichWorkItemsSpy.mockRestore();
       enrichPullRequestsSpy.mockRestore();
       relationshipSpy.mockRestore();
+      workItemRelationsSpy.mockRestore();
       currentUserSpy.mockRestore();
       assignedWorkItemsSpy.mockRestore();
     }

@@ -6,7 +6,20 @@ import type {
   AssignedWorkItemsResult,
   WorkTrackingIdentity,
   WorkItemPullRequestLinksResult,
+  WorkItemRelation,
+  WorkItemRelationType,
+  WorkItemRelationsResult,
 } from "./providers/types.js";
+
+/** How far above the linked work the hierarchy is followed, e.g. Task, Feature, Epic, Objective. */
+const MAX_ANCESTOR_LEVELS = 5;
+/** Related, dependency and duplicate targets that are not on the map get titles, up to this many. */
+const MAX_LINKED_CONTEXT_ITEMS = 150;
+
+export interface WorkMapRelation {
+  type: WorkItemRelationType;
+  workItemId: string;
+}
 
 export interface WorkMapTask {
   id: string;
@@ -23,6 +36,12 @@ export interface WorkMapWorkItem extends EnrichedWorkItem {
   taskIds: string[];
   pullRequestKeys: string[];
   assignedToCurrentUser: boolean;
+  relations: WorkMapRelation[];
+}
+
+/** A work item that is not linked to Bridge work but places it: an ancestor or a linked item. */
+export interface WorkMapContextWorkItem extends EnrichedWorkItem {
+  relations: WorkMapRelation[];
 }
 
 export interface WorkMapPullRequest extends EnrichedPR {
@@ -41,6 +60,7 @@ export interface WorkMapData {
   generatedAt: string;
   tasks: WorkMapTask[];
   workItems: WorkMapWorkItem[];
+  contextWorkItems: WorkMapContextWorkItem[];
   pullRequests: WorkMapPullRequest[];
   warnings: string[];
 }
@@ -66,6 +86,7 @@ interface BuildWorkMapOptions {
       provider: "ado";
     }>,
   ) => Promise<WorkItemPullRequestLinksResult>;
+  fetchWorkItemRelations: (workItemIds: string[]) => Promise<WorkItemRelationsResult>;
   fetchCurrentUser: () => Promise<WorkTrackingIdentity | null>;
   fetchAssignedWorkItemIds: () => Promise<AssignedWorkItemsResult>;
   now?: () => string;
@@ -105,6 +126,83 @@ function buildPullRequestFallback(
   };
 }
 
+const PARENT_RELATION: ReadonlySet<WorkItemRelationType> = new Set(["parent"]);
+const NON_HIERARCHY_RELATIONS: ReadonlySet<WorkItemRelationType> = new Set([
+  "related",
+  "predecessor",
+  "successor",
+  "duplicate",
+  "duplicateOf",
+]);
+
+/**
+ * Reads the links of every work item on the map, then follows parent links upward so the client
+ * can place Bridge work in the ADO hierarchy. Ancestors and linked items become context items.
+ */
+async function discoverHierarchy(input: {
+  mapIds: string[];
+  alreadyFetched: string[];
+  initialRelations: WorkItemRelation[];
+  fetchWorkItemRelations: (workItemIds: string[]) => Promise<WorkItemRelationsResult>;
+}): Promise<{
+  relationsByItem: Map<string, WorkMapRelation[]>;
+  contextIds: string[];
+  warnings: string[];
+}> {
+  const relations = new Map<string, Map<string, WorkMapRelation>>();
+  const addRelations = (list: WorkItemRelation[]) => {
+    for (const relation of list) {
+      const byKey = relations.get(relation.workItemId) ?? new Map<string, WorkMapRelation>();
+      byKey.set(`${relation.type}:${relation.targetId}`, {
+        type: relation.type,
+        workItemId: relation.targetId,
+      });
+      relations.set(relation.workItemId, byKey);
+    }
+  };
+  const targetsOf = (id: string, types: ReadonlySet<WorkItemRelationType>) =>
+    [...(relations.get(id)?.values() ?? [])]
+      .filter((relation) => types.has(relation.type))
+      .map((relation) => relation.workItemId);
+
+  addRelations(input.initialRelations);
+  const warnings: string[] = [];
+  const fetched = new Set(input.alreadyFetched);
+  const fetchRelations = async (ids: string[]) => {
+    const pending = ids.filter((id) => !fetched.has(id));
+    if (pending.length === 0) return;
+    for (const id of pending) fetched.add(id);
+    const result = await input.fetchWorkItemRelations(pending);
+    addRelations(result.relations);
+    warnings.push(...result.warnings);
+  };
+
+  // Work items found only through a pull request have not had their own links read yet.
+  await fetchRelations(input.mapIds);
+
+  const known = new Set(input.mapIds);
+  const ancestorIds: string[] = [];
+  let frontier = input.mapIds;
+  for (let level = 0; level < MAX_ANCESTOR_LEVELS && frontier.length > 0; level++) {
+    const parents = uniqueInOrder(frontier.flatMap((id) => targetsOf(id, PARENT_RELATION)))
+      .filter((id) => !known.has(id));
+    for (const id of parents) known.add(id);
+    ancestorIds.push(...parents);
+    await fetchRelations(parents);
+    frontier = parents;
+  }
+
+  const linkedIds = uniqueInOrder(input.mapIds.flatMap((id) => targetsOf(id, NON_HIERARCHY_RELATIONS)))
+    .filter((id) => !known.has(id))
+    .slice(0, MAX_LINKED_CONTEXT_ITEMS);
+
+  return {
+    relationsByItem: new Map([...relations].map(([id, byKey]) => [id, [...byKey.values()]])),
+    contextIds: [...ancestorIds, ...linkedIds],
+    warnings,
+  };
+}
+
 export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<WorkMapData> {
   const generatedAt = (options.now ?? (() => new Date().toISOString()))();
   if (!options.adoConfig) {
@@ -118,6 +216,7 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
       generatedAt,
       tasks: [],
       workItems: [],
+      contextWorkItems: [],
       pullRequests: [],
       warnings: [],
     };
@@ -195,9 +294,18 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     ? allPullRequestRefs.filter((pr) =>
         (taskIdsByPullRequest.get(prKey(pr.repoId, pr.prId))?.size ?? 0) > 0)
     : allPullRequestRefs;
-  const [enrichedWorkItems, enrichedPullRequestDetails] = await Promise.all([
+  const hierarchy = await discoverHierarchy({
+    mapIds: allWorkItemIds,
+    alreadyFetched: workItemIdsForDiscovery,
+    initialRelations: relationshipResult.workItemRelations ?? [],
+    fetchWorkItemRelations: options.fetchWorkItemRelations,
+  });
+  const [enrichedWorkItems, enrichedPullRequestDetails, enrichedContextItems] = await Promise.all([
     options.enrichWorkItems(allWorkItemIds.map((id) => ({ id, provider: "ado" as const }))),
     options.enrichPullRequests(pullRequestRefsForEnrichment),
+    hierarchy.contextIds.length > 0
+      ? options.enrichWorkItems(hierarchy.contextIds.map((id) => ({ id, provider: "ado" as const })))
+      : Promise.resolve([]),
   ]);
   const enrichedPullRequestByKey = new Map(
     enrichedPullRequestDetails.map((pr) => [prKey(pr.repoId, pr.prId), pr]),
@@ -208,6 +316,11 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     taskIds: uniqueSorted(taskIdsByWorkItem.get(item.id) ?? []),
     pullRequestKeys: uniqueSorted(pullRequestKeysByWorkItem.get(item.id) ?? []),
     assignedToCurrentUser: assignedWorkItemIds.has(item.id),
+    relations: hierarchy.relationsByItem.get(item.id) ?? [],
+  }));
+  const contextWorkItems = enrichedContextItems.map((item) => ({
+    ...item,
+    relations: hierarchy.relationsByItem.get(item.id) ?? [],
   }));
   const pullRequests = allPullRequestRefs.map((ref) => {
     const key = prKey(ref.repoId, ref.prId);
@@ -240,7 +353,12 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     generatedAt,
     tasks,
     workItems,
+    contextWorkItems,
     pullRequests,
-    warnings: [...assignedResult.warnings, ...relationshipResult.warnings],
+    warnings: uniqueInOrder([
+      ...assignedResult.warnings,
+      ...relationshipResult.warnings,
+      ...hierarchy.warnings,
+    ]),
   };
 }

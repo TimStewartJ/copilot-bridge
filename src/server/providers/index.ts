@@ -13,6 +13,7 @@ import type {
   WorkTrackingIdentity,
   AssignedWorkItemsResult,
   WorkItemPullRequestLinksResult,
+  WorkItemRelationsResult,
 } from "./types.js";
 import type { WorkItemRef, PRRef } from "../task-store.js";
 
@@ -23,6 +24,9 @@ export type {
   ProviderName,
   WorkItemPullRequestLink,
   WorkItemPullRequestLinksResult,
+  WorkItemRelation,
+  WorkItemRelationType,
+  WorkItemRelationsResult,
   WorkTrackingIdentity,
   AssignedWorkItemsResult,
 } from "./types.js";
@@ -181,6 +185,22 @@ export async function fetchAdoWorkItemPullRequestLinks(
       links: [],
       warnings: ["ADO relationships could not be loaded."],
     };
+  }
+}
+
+export async function fetchAdoWorkItemRelations(
+  workItemIds: string[],
+): Promise<WorkItemRelationsResult> {
+  if (workItemIds.length === 0) return { relations: [], warnings: [] };
+  const provider = getProvider("ado");
+  if (!provider.fetchWorkItemRelations) {
+    return { relations: [], warnings: ["ADO work item hierarchy is unavailable."] };
+  }
+  try {
+    return await provider.fetchWorkItemRelations(workItemIds);
+  } catch (err) {
+    console.error("[providers] ADO work item relation discovery failed:", err);
+    return { relations: [], warnings: ["ADO work item hierarchy could not be loaded."] };
   }
 }
 

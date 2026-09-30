@@ -681,10 +681,31 @@ export interface WorkMapTask {
   waitingOn: string | null;
 }
 
+export type WorkMapRelationType =
+  | "parent"
+  | "child"
+  | "related"
+  | "predecessor"
+  | "successor"
+  | "duplicate"
+  | "duplicateOf";
+
+export interface WorkMapRelation {
+  type: WorkMapRelationType;
+  workItemId: string;
+}
+
 export interface WorkMapWorkItem extends EnrichedWorkItem {
   taskIds: string[];
   pullRequestKeys: string[];
   assignedToCurrentUser: boolean;
+  /** Links to other work items. Absent from responses of servers older than the hierarchy view. */
+  relations?: WorkMapRelation[];
+}
+
+/** An ancestor or linked work item that places Bridge work in the ADO hierarchy. */
+export interface WorkMapContextWorkItem extends EnrichedWorkItem {
+  relations: WorkMapRelation[];
 }
 
 export interface WorkMapPullRequest extends EnrichedPR {
@@ -703,6 +724,7 @@ export interface WorkMapData {
   generatedAt: string;
   tasks: WorkMapTask[];
   workItems: WorkMapWorkItem[];
+  contextWorkItems?: WorkMapContextWorkItem[];
   pullRequests: WorkMapPullRequest[];
   warnings: string[];
 }
@@ -1519,6 +1541,8 @@ export async function createTask(
     groupId?: string;
     kind?: Task["kind"];
     workItem?: { workItemId: string; provider?: ProviderName };
+    /** Links the new task to each of these work items. */
+    workItems?: Array<{ workItemId: string; provider?: ProviderName }>;
   } = {},
 ): Promise<Task> {
   const data = await apiFetch<{ task: Task }>("/api/tasks", { title, ...options });
