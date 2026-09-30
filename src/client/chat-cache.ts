@@ -15,7 +15,6 @@ export interface ChatHistorySnapshot {
   entries: ChatEntry[];
   firstItemIndex: number;
   total: number;
-  hasMore: boolean;
   fetchedAt: number;
 }
 

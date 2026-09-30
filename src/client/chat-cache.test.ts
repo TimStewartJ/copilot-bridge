@@ -25,7 +25,6 @@ describe("chat cache", () => {
         entries: [message(`entry-${index}`)],
         firstItemIndex: 0,
         total: 1,
-        hasMore: false,
         fetchedAt: index,
       });
     }
@@ -44,7 +43,6 @@ describe("chat cache", () => {
       entries: [message("older")],
       firstItemIndex: 0,
       total: 1,
-      hasMore: false,
       fetchedAt: 1,
     });
     setCachedChatSnapshot(client, {
@@ -52,7 +50,6 @@ describe("chat cache", () => {
       entries: [message("newer")],
       firstItemIndex: 0,
       total: 1,
-      hasMore: false,
       fetchedAt: 2,
     });
 
