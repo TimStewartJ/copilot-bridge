@@ -39,8 +39,35 @@ export interface WorkItemPullRequestLink {
   prId: number;
 }
 
+/**
+ * A link between two work items, as the source item reports it. Parent/child come from the ADO
+ * hierarchy; predecessor/successor from dependency links; duplicate names the item that duplicates
+ * this one and duplicateOf the item this one duplicates.
+ */
+export type WorkItemRelationType =
+  | "parent"
+  | "child"
+  | "related"
+  | "predecessor"
+  | "successor"
+  | "duplicate"
+  | "duplicateOf";
+
+export interface WorkItemRelation {
+  workItemId: string;
+  type: WorkItemRelationType;
+  targetId: string;
+}
+
 export interface WorkItemPullRequestLinksResult {
   links: WorkItemPullRequestLink[];
+  /** Work item to work item links of the requested work items, when the provider reports them. */
+  workItemRelations?: WorkItemRelation[];
+  warnings: string[];
+}
+
+export interface WorkItemRelationsResult {
+  relations: WorkItemRelation[];
   warnings: string[];
 }
 
@@ -64,6 +91,7 @@ export interface WorkTrackingProvider {
     workItemIds: string[],
     pullRequests: PRRef[],
   ): Promise<WorkItemPullRequestLinksResult>;
+  fetchWorkItemRelations?(workItemIds: string[]): Promise<WorkItemRelationsResult>;
   fetchCurrentUser?(): Promise<WorkTrackingIdentity | null>;
   fetchAssignedWorkItemIds?(): Promise<AssignedWorkItemsResult>;
 

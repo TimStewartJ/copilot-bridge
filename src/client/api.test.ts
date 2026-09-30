@@ -249,6 +249,36 @@ describe("serializeSettingsPatch", () => {
       })));
 
       await createTask("New Task", {
+        workItems: [
+          { workItemId: "37655015", provider: "ado" },
+          { workItemId: "37655016", provider: "ado" },
+        ],
+      });
+
+      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
+        "/api/tasks",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            title: "New Task",
+            workItems: [
+              { workItemId: "37655015", provider: "ado" },
+              { workItemId: "37655016", provider: "ado" },
+            ],
+          }),
+        }),
+      ]);
+    });
+
+    it("creates a task with a single initial work item link", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ task: { id: "task-1" } }),
+      })));
+
+      await createTask("New Task", {
         workItem: { workItemId: "37655015", provider: "ado" },
       });
 

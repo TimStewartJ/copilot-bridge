@@ -10,6 +10,7 @@ import {
   Workflow,
 } from "lucide-react";
 import type {
+  EnrichedWorkItem,
   WorkMapData,
   WorkMapPullRequest,
   WorkMapTask,
@@ -24,8 +25,11 @@ import {
   DEFAULT_WORK_MAP_FILTERS,
   loadWorkMapFilters,
   saveWorkMapFilters,
+  type WorkMapView,
 } from "../work-map-filter-state";
 import { DS, cx } from "../design/tokens";
+import { SegmentedControl } from "../design/primitives";
+import WorkMapTree from "./WorkMapTree";
 
 interface DashboardWorkMapProps {
   active: boolean;
@@ -39,7 +43,7 @@ interface DashboardWorkMapProps {
   assignedToMeOnly: boolean;
   onAssignedToMeChange: (assignedToMeOnly: boolean) => void;
   onSelectTask: (taskId: string) => void;
-  onCreateTaskForWorkItem: (workItem: WorkMapWorkItem) => Promise<void>;
+  onCreateTaskForWorkItems: (workItems: EnrichedWorkItem[]) => Promise<void>;
 }
 
 interface WorkItemCluster {
@@ -57,6 +61,8 @@ const CLOSED_WORK_ITEM_STATES = new Set([
   "resolved",
 ]);
 const VISIBLE_RELATIONSHIP_STEP = 20;
+/** Marks a task being created for a multi-row selection rather than for one work item. */
+const CREATING_FOR_SELECTION = "selection";
 
 function isClosedWorkItem(item: WorkMapWorkItem): boolean {
   return item.state ? CLOSED_WORK_ITEM_STATES.has(item.state.toLowerCase()) : false;
@@ -244,9 +250,10 @@ export default function DashboardWorkMap({
   assignedToMeOnly,
   onAssignedToMeChange,
   onSelectTask,
-  onCreateTaskForWorkItem,
+  onCreateTaskForWorkItems,
 }: DashboardWorkMapProps) {
   const [search, setSearch] = useState(() => loadWorkMapFilters().search);
+  const [view, setView] = useState<WorkMapView>(() => loadWorkMapFilters().view);
   const [openAdoOnly, setOpenAdoOnly] = useState(() => loadWorkMapFilters().openAdoOnly);
   const [gapsOnly, setGapsOnly] = useState(() => loadWorkMapFilters().gapsOnly);
   const [visibleRelationshipCount, setVisibleRelationshipCount] = useState(VISIBLE_RELATIONSHIP_STEP);
@@ -295,7 +302,7 @@ export default function DashboardWorkMap({
   }, [data]);
 
   const normalizedSearch = search.trim().toLowerCase();
-  const visibleClusters = model.clusters.filter((cluster) => {
+  const visibleClusters = useMemo(() => model.clusters.filter((cluster) => {
     if (assignedToMeOnly && !cluster.workItem.assignedToCurrentUser) {
       return false;
     }
@@ -305,12 +312,16 @@ export default function DashboardWorkMap({
     }
     if (gapsOnly && cluster.attention.length === 0) return false;
     return matchesCluster(cluster, normalizedSearch);
-  });
-  const visibleOrphans = model.orphanPullRequests.filter(({ pullRequest, tasks }) => {
+  }), [assignedToMeOnly, gapsOnly, model.clusters, normalizedSearch, openAdoOnly]);
+  const visibleOrphans = useMemo(() => model.orphanPullRequests.filter(({ pullRequest, tasks }) => {
     if (assignedToMeOnly) return false;
     if (openAdoOnly && pullRequest.status !== "active") return false;
     return matchesOrphanPullRequest(pullRequest, tasks, normalizedSearch);
-  });
+  }), [assignedToMeOnly, model.orphanPullRequests, normalizedSearch, openAdoOnly]);
+  const visibleWorkItemIds = useMemo(
+    () => new Set(visibleClusters.map((cluster) => cluster.workItem.id)),
+    [visibleClusters],
+  );
   const visibleMetrics = useMemo(() => {
     const pullRequestKeys = new Set(visibleOrphans.map(({ pullRequest }) => pullRequest.key));
     const taskIds = new Set(visibleOrphans.flatMap(({ tasks }) => tasks.map((task) => task.id)));
@@ -338,13 +349,14 @@ export default function DashboardWorkMap({
 
   useEffect(() => {
     saveWorkMapFilters({
+      view,
       search,
       assignedToMeOnly,
       openAdoOnly,
       gapsOnly,
       includeArchived,
     });
-  }, [assignedToMeOnly, gapsOnly, includeArchived, openAdoOnly, search]);
+  }, [assignedToMeOnly, gapsOnly, includeArchived, openAdoOnly, search, view]);
 
   const hasActiveFilters = Boolean(
     search || assignedToMeOnly || openAdoOnly || gapsOnly || includeArchived,
@@ -356,13 +368,16 @@ export default function DashboardWorkMap({
     setGapsOnly(DEFAULT_WORK_MAP_FILTERS.gapsOnly);
     onIncludeArchivedChange(DEFAULT_WORK_MAP_FILTERS.includeArchived);
   };
-  const createTaskForWorkItem = async (workItem: WorkMapWorkItem) => {
-    setCreatingTaskForWorkItemId(workItem.id);
+  const createTaskForWorkItems = async (workItems: EnrichedWorkItem[]): Promise<boolean> => {
+    if (workItems.length === 0) return false;
+    setCreatingTaskForWorkItemId(workItems.length === 1 ? workItems[0].id : CREATING_FOR_SELECTION);
     setCreateTaskError(null);
     try {
-      await onCreateTaskForWorkItem(workItem);
+      await onCreateTaskForWorkItems(workItems);
+      return true;
     } catch (error) {
       setCreateTaskError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setCreatingTaskForWorkItemId(null);
     }
@@ -386,7 +401,7 @@ export default function DashboardWorkMap({
           </div>
           <h2 className="mt-1 text-xl font-semibold text-text-primary">Work map</h2>
           <p className="mt-1 text-xs text-text-muted">
-            ADO work items and pull requests connected to their Bridge tasks.
+            ADO work items in their ADO hierarchy, with the pull requests and Bridge tasks linked to them.
           </p>
         </div>
         <button
@@ -460,7 +475,17 @@ export default function DashboardWorkMap({
                 className={cx(DS.field.input, DS.field.inputSize.md, "min-w-0 flex-1 bg-transparent outline-none")}
               />
             </label>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap items-center gap-1">
+              <SegmentedControl<WorkMapView>
+                ariaLabel="Work map layout"
+                size="sm"
+                value={view}
+                onChange={setView}
+                options={[
+                  { value: "tree", label: "Tree", title: "ADO hierarchy with Bridge task lanes" },
+                  { value: "clusters", label: "Clusters", title: "One card per work item" },
+                ]}
+              />
               <button
                 type="button"
                 aria-pressed={assignedToMeOnly}
@@ -518,6 +543,15 @@ export default function DashboardWorkMap({
               message="No relationships match these filters"
               sub="Clear the search or turn off a filter to see more connected work."
             />
+          ) : view === "tree" ? (
+            <WorkMapTree
+              data={data}
+              visibleWorkItemIds={visibleWorkItemIds}
+              orphanPullRequests={visibleOrphans}
+              creatingTaskForWorkItemId={creatingTaskForWorkItemId}
+              onSelectTask={onSelectTask}
+              onCreateTaskForWorkItems={createTaskForWorkItems}
+            />
           ) : (
             <div className="space-y-3">
               {renderedClusters.map((cluster) => (
@@ -570,7 +604,7 @@ export default function DashboardWorkMap({
                             type="button"
                             aria-label={`Create Bridge task for work item ${cluster.workItem.id}`}
                             disabled={creatingTaskForWorkItemId !== null}
-                            onClick={() => { void createTaskForWorkItem(cluster.workItem); }}
+                            onClick={() => { void createTaskForWorkItems([cluster.workItem]); }}
                             className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "w-full gap-1.5 disabled:opacity-50")}
                           >
                             <Plus size={13} />
