@@ -342,6 +342,35 @@ describe("Task routes", () => {
     }));
   });
 
+  it("POST /api/tasks links several work items at once and skips duplicates", async () => {
+    const res = await request(app)
+      .post("/api/tasks")
+      .send({
+        title: "New Task",
+        workItems: [
+          { workItemId: "100", provider: "ado" },
+          { workItemId: "101", provider: "ado" },
+          { workItemId: "100", provider: "ado" },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.task.workItems).toEqual([
+      { id: "100", provider: "ado" },
+      { id: "101", provider: "ado" },
+    ]);
+  });
+
+  it("POST /api/tasks rejects a workItems value that is not an array", async () => {
+    const beforeIds = ctx.taskStore.listTasks().map((task) => task.id);
+    const res = await request(app)
+      .post("/api/tasks")
+      .send({ title: "New Task", workItems: { workItemId: "100", provider: "ado" } });
+
+    expect(res.status).toBe(400);
+    expect(ctx.taskStore.listTasks().map((task) => task.id)).toEqual(beforeIds);
+  });
+
   it("POST /api/tasks does not leave an empty task when the initial link fails", async () => {
     const beforeIds = ctx.taskStore.listTasks().map((task) => task.id);
     const linkSpy = vi.spyOn(ctx.taskStore, "linkWorkItem")

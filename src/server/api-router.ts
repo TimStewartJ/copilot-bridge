@@ -45,6 +45,7 @@ import {
   fetchAdoAssignedWorkItemIds,
   fetchAdoCurrentUser,
   fetchAdoWorkItemPullRequestLinks,
+  fetchAdoWorkItemRelations,
   clearProviderCache,
   setSettingsGetter,
 } from "./providers/index.js";
@@ -226,6 +227,8 @@ const HIBERNATE_IDLE_GRACE_MINUTES = [0, 1, 2, 5, 15, 30, 60] as const;
 const DEFAULT_HIBERNATE_IDLE_GRACE_MINUTES = 2;
 const SEARCH_SCOPES = new Set<SearchScope>(["global", "task", "session"]);
 const SEARCH_KINDS = new Set<SearchKind>(["all", "chat", "task", "doc"]);
+/** Work items a new task can be linked to in one request, as when several are selected on the work map. */
+const MAX_INITIAL_WORK_ITEMS = 100;
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 50;
 
@@ -4463,33 +4466,39 @@ export function createApiRouter(
   });
 
   router.post("/tasks", (req, res) => {
-    const { title, groupId, kind, workItem } = req.body;
+    const { title, groupId, kind, workItem, workItems } = req.body;
     if (!title) return res.status(400).json({ error: "title is required" });
-    let initialWorkItem: { workItemId: string; provider: "ado" | "github" | "linear" } | undefined;
-    if (workItem !== undefined) {
-      if (!isRecord(workItem)) {
-        return res.status(400).json({ error: "workItem must be an object" });
+    if (workItems !== undefined && (!Array.isArray(workItems) || workItems.length > MAX_INITIAL_WORK_ITEMS)) {
+      return res.status(400).json({ error: `workItems must be an array of at most ${MAX_INITIAL_WORK_ITEMS} work items` });
+    }
+    const initialWorkItems: Array<{ workItemId: string; provider: "ado" | "github" | "linear" }> = [];
+    for (const candidate of [...(workItem !== undefined ? [workItem] : []), ...(workItems ?? [])]) {
+      if (!isRecord(candidate)) {
+        return res.status(400).json({ error: "each work item must be an object" });
       }
       const resolved = resolveWorkItemLink({
-        ...workItem,
+        ...candidate,
         providers: ctx.settingsStore.getSettings().providers,
       });
       if (!resolved.ok) return res.status(400).json({ error: resolved.error });
-      initialWorkItem = resolved.value;
+      if (!initialWorkItems.some((item) =>
+        item.workItemId === resolved.value.workItemId && item.provider === resolved.value.provider)) {
+        initialWorkItems.push(resolved.value);
+      }
     }
     try {
       let task = ctx.taskStore.createTask(title, groupId, kind);
-      if (initialWorkItem) {
-        try {
+      try {
+        for (const initialWorkItem of initialWorkItems) {
           task = ctx.taskStore.linkWorkItem(
             task.id,
             initialWorkItem.workItemId,
             initialWorkItem.provider,
           );
-        } catch (error) {
-          ctx.taskStore.deleteTask(task.id);
-          throw error;
         }
+      } catch (error) {
+        ctx.taskStore.deleteTask(task.id);
+        throw error;
       }
       res.json({ task: toClientTaskResponse(task) });
     } catch (err) {
@@ -5272,6 +5281,7 @@ export function createApiRouter(
         enrichWorkItems,
         enrichPullRequests,
         fetchRelationships: fetchAdoWorkItemPullRequestLinks,
+        fetchWorkItemRelations: fetchAdoWorkItemRelations,
         fetchCurrentUser: fetchAdoCurrentUser,
         fetchAssignedWorkItemIds: fetchAdoAssignedWorkItemIds,
       });
@@ -5283,6 +5293,7 @@ export function createApiRouter(
         metadata: {
           enabled: data.enabled,
           workItemCount: data.workItems.length,
+          contextWorkItemCount: data.contextWorkItems.length,
           pullRequestCount: data.pullRequests.length,
           taskCount: data.tasks.length,
           warningCount: data.warnings.length,

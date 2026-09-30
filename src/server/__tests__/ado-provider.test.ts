@@ -427,11 +427,59 @@ describe("AdoProvider", () => {
         { workItemId: "123", repoId: "repo-id", prId: 42 },
         { workItemId: "456", repoId: "repo-id", prId: 42 },
       ],
+      workItemRelations: [],
       warnings: [],
     });
     expect((await provider.fetchWorkItems(["123"]))[0]?.title).toBe("Bridge work map");
     expect((await provider.fetchPullRequests([pr]))[0]?.title).toBe("Add work map");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads work item links from the same relations payload and reuses them for hierarchy lookups", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/_apis/wit/workitems?")) {
+        return jsonResponse({
+          value: [{
+            id: 123,
+            fields: { "System.Title": "Child task", "System.State": "Active", "System.WorkItemType": "Task" },
+            relations: [
+              { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/100" },
+              { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/124" },
+              { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/200" },
+              { rel: "System.LinkTypes.Dependency-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/201" },
+              { rel: "System.LinkTypes.Dependency-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/202" },
+              { rel: "System.LinkTypes.Duplicate-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/203" },
+              { rel: "System.LinkTypes.Duplicate-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/204" },
+              { rel: "Microsoft.VSTS.Common.TestedBy-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/205" },
+              { rel: "Hyperlink", url: "https://example.test/_apis/wit/workItems/206" },
+              { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/123" },
+            ],
+          }],
+        });
+      }
+      throw new Error(`Unexpected ADO URL: ${url}`);
+    });
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchWorkItemPullRequestLinks(["123"], []);
+    const relations = await provider.fetchWorkItemRelations(["123"]);
+
+    const expected = [
+      { workItemId: "123", type: "parent", targetId: "100" },
+      { workItemId: "123", type: "child", targetId: "124" },
+      { workItemId: "123", type: "related", targetId: "200" },
+      { workItemId: "123", type: "predecessor", targetId: "201" },
+      { workItemId: "123", type: "successor", targetId: "202" },
+      { workItemId: "123", type: "duplicate", targetId: "203" },
+      { workItemId: "123", type: "duplicateOf", targetId: "204" },
+    ];
+    expect(result.links).toEqual([]);
+    expect(result.workItemRelations).toEqual(expected);
+    expect(relations).toEqual({ relations: expected, warnings: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("fetches pull requests from any project by organization-wide id, including name-only chat links", async () => {
