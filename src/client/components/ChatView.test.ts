@@ -368,6 +368,28 @@ function setElementTop(element: any, top: number) {
   });
 }
 
+/** Stands in for the browser's ResizeObserver. `notify(element)` reports that the element changed size. */
+function stubResizeObserver() {
+  const observers: Array<{ callback: () => void; elements: unknown[] }> = [];
+  vi.stubGlobal("ResizeObserver", class {
+    private readonly observer: { callback: () => void; elements: unknown[] };
+    constructor(callback: () => void) {
+      this.observer = { callback, elements: [] };
+      observers.push(this.observer);
+    }
+    observe(element: unknown) { this.observer.elements.push(element); }
+    disconnect() { this.observer.elements.length = 0; }
+  });
+  return {
+    observed: () => observers.flatMap((observer) => observer.elements),
+    notify: (element: unknown) => {
+      for (const observer of observers) {
+        if (observer.elements.includes(element)) observer.callback();
+      }
+    },
+  };
+}
+
 function findMessageWrapperByAnchorKey(root: any, key: string): any {
   const wrapper = findAllByTag(root, "DIV").find((candidate) => (
     candidate.getAttribute?.("data-chat-message-key") === key
@@ -1361,6 +1383,61 @@ describe("ChatView navigation landing position", () => {
     }
   });
 
+  describe("a scroll event while parked on the newest reply", () => {
+    const newWork = {
+      streamOverrides: { isStreaming: true, streamStatus: "thinking", streamingContent: "", pendingOrigin: "message" },
+    } as const;
+
+    /** Lands on the reply at 900, then reports the view at `scrollTop` with the reply `replyTop` below its top edge. */
+    async function renderParkedThenScrolled(scrollTop: number, replyTop: number) {
+      const messageTops = { "newest-entry": -700 };
+      const view = await renderSettledSession({
+        messages: [createMessage("older-entry"), createMessage("newest-entry")],
+        messageTops,
+      });
+      expect(view.scrollContainer.scrollTop).toBe(900);
+      messageTops["newest-entry"] = replyTop;
+      view.scrollContainer.scrollTop = scrollTop;
+      await view.act(async () => {
+        getReactProps(view.scrollContainer)!.onScroll();
+        await waitTick();
+      });
+      return view;
+    }
+
+    it("still shows new work when the browser moved the view to hold the reply in place", async () => {
+      // Images above the reply loaded and grew by 300px. A browser that anchors scrolling scrolls
+      // by as much, so the reply has not moved for the reader.
+      const view = await renderParkedThenScrolled(1200, 0);
+
+      try {
+        await view.render(newWork);
+
+        await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === BOTTOM_SCROLL_TOP);
+        expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
+      } finally {
+        view.restoreGeometry();
+        await view.cleanup();
+      }
+    });
+
+    it("leaves the reader where they are once they have moved off the reply", async () => {
+      // Dragging the scrollbar down 200px puts the top of the reply 200px above the view.
+      const view = await renderParkedThenScrolled(1100, -200);
+
+      try {
+        await view.render(newWork);
+        // A follow would have started moving the view on the first of these.
+        for (let tick = 0; tick < 5; tick += 1) await view.act(waitTick);
+
+        expect(view.scrollContainer.scrollTop).toBe(1100);
+      } finally {
+        view.restoreGeometry();
+        await view.cleanup();
+      }
+    });
+  });
+
   it("lands on the newest reply when switching to a cached session with the same message ids", async () => {
     // Message ids are per-session, so two sessions routinely share the newest anchor key. Cached
     // navigation must still re-run the landing effect instead of leaving the reader at the tail.
@@ -1572,6 +1649,199 @@ describe("ChatView history pagination", () => {
       }
     });
   });
+
+  it("leaves a row the viewport top cuts through alone once the browser has held a line in it", async () => {
+    // Deep in one long reply, the only row in view. The page puts 700px above it and it grows 60px
+    // itself, above the view. A browser that anchors scrolling follows the line being read: 760px.
+    const view = await renderPaginatedSession(createMessages(4, 5), 5);
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(0, 4), hasMore: false, total: 5 });
+
+    try {
+      const { scrollContainer, dom, act } = view;
+      const olderPageRendered = () => dom.container.textContent?.includes("entry-0") ?? false;
+      let anchored = false;
+      placeInScroller(findMessageWrapperByAnchorKey(dom.container, "entry-4"), scrollContainer, () => {
+        if (olderPageRendered() && !anchored) {
+          anchored = true;
+          scrollContainer.scrollTop += 760;
+        }
+        return olderPageRendered() ? 700 : 0;
+      }, 2000);
+      setScrollGeometry(scrollContainer, { scrollHeight: 2100, clientHeight: 600, scrollTop: 400 });
+
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, olderPageRendered);
+
+      // The reply's own top moved 60px less than the line did. Following it would undo the browser.
+      expect(scrollContainer.scrollTop).toBe(1160);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  describe("content above the reader that changes height long after it rendered", () => {
+    /**
+     * Six rows of 150px, the reader at the top of the fifth, in a browser that does not anchor
+     * scrolling. `grow` makes one row taller, as an image in it finishing loading would, which
+     * pushes the rows after it down.
+     */
+    async function renderSixRows({ growingRow = 2, anchoring = false } = {}) {
+      vi.useFakeTimers();
+      if (anchoring) vi.stubGlobal("CSS", { supports: () => true });
+      const resizes = stubResizeObserver();
+      const view = await renderPaginatedSession(createMessages(1, 7), 7);
+      const { scrollContainer, dom } = view;
+      let grown = 0;
+      const rowOf = (index: number) => findMessageWrapperByAnchorKey(dom.container, `entry-${index}`);
+      for (let index = 1; index <= 6; index += 1) {
+        placeInScroller(rowOf(index), scrollContainer, () => (index - 1) * 150 + (index > growingRow ? grown : 0), 150);
+      }
+      setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 600 });
+      const rows = rowOf(1).parentNode;
+      return {
+        ...view,
+        rows,
+        resizes,
+        /** The row is taller, and the browser has not said so yet. */
+        grow: (by: number) => { grown += by; },
+        /** The browser reports that the rows changed size. */
+        reportResize: () => view.act(async () => resizes.notify(rows)),
+        /** The reader scrolls to where the view is now. */
+        scrollHere: () => view.act(async () => {
+          scroll(scrollContainer);
+          await waitTick();
+        }),
+      };
+    }
+
+    it("holds the row the reader is on when an image above it finishes loading", async () => {
+      const view = await renderSixRows();
+
+      try {
+        // Rendering settles the view, as opening a chat does.
+        await view.render();
+        view.grow(463);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(1063);
+
+        // A second image, measured from where the first one left the view.
+        view.grow(100);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(1163);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("measures from where the reader stopped scrolling", async () => {
+      const view = await renderSixRows();
+
+      try {
+        await view.scrollHere();
+        await advanceTimersByTimeAct(view.act, 120);
+        view.grow(463);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(1063);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("is not thrown off by a scroll event that did not move the view", async () => {
+      const view = await renderSixRows();
+
+      try {
+        await view.render();
+        view.grow(463);
+        // The event for a move made from code arrives a frame late: this time after the image.
+        await view.scrollHere();
+        await advanceTimersByTimeAct(view.act, 120);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(1063);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("does not take a move of the view for a change in height", async () => {
+      const view = await renderSixRows();
+
+      try {
+        await view.render();
+        // Following live output scrolls from code, and the scroll event for it is still on its way.
+        view.scrollContainer.scrollTop = 900;
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(900);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("moves nothing while the reader is scrolling, and does not make up for it later", async () => {
+      const view = await renderSixRows();
+
+      try {
+        await view.scrollHere();
+        await advanceTimersByTimeAct(view.act, 100);
+        view.grow(463);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(600);
+
+        // They have seen the jump by now; moving the view again would be a second one.
+        await advanceTimersByTimeAct(view.act, 500);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(600);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("holds it when the transcript renders again before the browser has reported the change", async () => {
+      const view = await renderSixRows();
+
+      try {
+        await view.render();
+        view.grow(463);
+        // A streamed chunk, say. Settling after it would take the image's shift for granted.
+        await view.render();
+        expect(view.scrollContainer.scrollTop).toBe(1063);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("does not follow something that grows in view", async () => {
+      // The fifth row is the one at the top of the view: opening something in it pushes the sixth down.
+      const view = await renderSixRows({ growingRow: 5 });
+
+      try {
+        await view.render();
+        view.grow(300);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(600);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("leaves it to a browser that anchors scrolling itself", async () => {
+      const view = await renderSixRows({ anchoring: true });
+
+      try {
+        await view.render();
+        expect(view.resizes.observed()).not.toContain(view.rows);
+        view.grow(463);
+        await view.reportResize();
+        expect(view.scrollContainer.scrollTop).toBe(600);
+      } finally {
+        await view.cleanup();
+      }
+    });
+  });
+
   it("prefetches the previous page once the reader scrolls within a screen of the top", async () => {
     const view = await renderPaginatedSession(createMessages(3, 5), 5);
 
@@ -3358,13 +3628,7 @@ describe("ChatView live streaming UX", () => {
   });
 
   it("hangs a reply's hover actions in the margin only while the chat column is wide enough", async () => {
-    let notifyResize: (() => void) | undefined;
-    const observed: unknown[] = [];
-    vi.stubGlobal("ResizeObserver", class {
-      constructor(callback: () => void) { notifyResize = callback; }
-      observe(element: unknown) { observed.push(element); }
-      disconnect() {}
-    });
+    const resizes = stubResizeObserver();
     const { dom, act, cleanup } = await renderChatView({
       streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null },
       fetchMessagesFastResult: {
@@ -3382,17 +3646,17 @@ describe("ChatView live streaming UX", () => {
         String(getReactProps(candidate)?.className ?? "").includes("chat-ui")
       ));
       if (!root) throw new Error("Chat root not found");
-      expect(observed).toContain(root);
+      expect(resizes.observed()).toContain(root);
       // No measurable width (or a narrow column): the actions keep to the reply's own corner.
       expect(root.getAttribute("data-action-gutter")).not.toBe("true");
 
       Object.defineProperty(root, "clientWidth", { configurable: true, value: 1200 });
-      await act(async () => notifyResize?.());
+      await act(async () => resizes.notify(root));
       expect(root.getAttribute("data-action-gutter")).toBe("true");
 
       // The task rail opening, or a side panel, narrows the column without changing the viewport.
       Object.defineProperty(root, "clientWidth", { configurable: true, value: 900 });
-      await act(async () => notifyResize?.());
+      await act(async () => resizes.notify(root));
       expect(root.getAttribute("data-action-gutter")).not.toBe("true");
     } finally {
       await cleanup();
