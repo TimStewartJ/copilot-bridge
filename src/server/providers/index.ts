@@ -10,25 +10,15 @@ import type {
   EnrichedWorkItem,
   EnrichedPR,
   ProviderName,
-  WorkTrackingIdentity,
-  AssignedWorkItemsResult,
-  WorkItemPullRequestLinksResult,
-  WorkItemRelationsResult,
 } from "./types.js";
 import type { WorkItemRef, PRRef } from "../task-store.js";
 
+export { expireAdoProviderData } from "./ado.js";
 export type {
   WorkTrackingProvider,
   EnrichedWorkItem,
   EnrichedPR,
   ProviderName,
-  WorkItemPullRequestLink,
-  WorkItemPullRequestLinksResult,
-  WorkItemRelation,
-  WorkItemRelationType,
-  WorkItemRelationsResult,
-  WorkTrackingIdentity,
-  AssignedWorkItemsResult,
 } from "./types.js";
 export type { WorkItemRef, PRRef } from "../task-store.js";
 
@@ -166,70 +156,8 @@ export async function enrichPullRequests(refs: PRRef[]): Promise<EnrichedPR[]> {
   );
 }
 
-export async function fetchAdoWorkItemPullRequestLinks(
-  workItemIds: string[],
-  pullRequests: PRRef[],
-): Promise<WorkItemPullRequestLinksResult> {
+/** The Azure DevOps provider when it is configured. Only it reads the links the work map is built from. */
+export function getAdoProvider(): AdoProvider | null {
   const provider = getProvider("ado");
-  if (!provider.fetchWorkItemPullRequestLinks) {
-    return {
-      links: [],
-      warnings: ["ADO relationship discovery is unavailable."],
-    };
-  }
-  try {
-    return await provider.fetchWorkItemPullRequestLinks(workItemIds, pullRequests);
-  } catch (err) {
-    console.error("[providers] ADO work item pull request relationship discovery failed:", err);
-    return {
-      links: [],
-      warnings: ["ADO relationships could not be loaded."],
-    };
-  }
-}
-
-export async function fetchAdoWorkItemRelations(
-  workItemIds: string[],
-): Promise<WorkItemRelationsResult> {
-  if (workItemIds.length === 0) return { relations: [], warnings: [] };
-  const provider = getProvider("ado");
-  if (!provider.fetchWorkItemRelations) {
-    return { relations: [], warnings: ["ADO work item hierarchy is unavailable."] };
-  }
-  try {
-    return await provider.fetchWorkItemRelations(workItemIds);
-  } catch (err) {
-    console.error("[providers] ADO work item relation discovery failed:", err);
-    return { relations: [], warnings: ["ADO work item hierarchy could not be loaded."] };
-  }
-}
-
-export async function fetchAdoCurrentUser(): Promise<WorkTrackingIdentity | null> {
-  const provider = getProvider("ado");
-  if (!provider.fetchCurrentUser) return null;
-  try {
-    return await provider.fetchCurrentUser();
-  } catch (err) {
-    console.error("[providers] ADO authenticated user lookup failed:", err);
-    return null;
-  }
-}
-
-export async function fetchAdoAssignedWorkItemIds(): Promise<AssignedWorkItemsResult> {
-  const provider = getProvider("ado");
-  if (!provider.fetchAssignedWorkItemIds) {
-    return {
-      ids: [],
-      warnings: ["Assigned ADO work discovery is unavailable."],
-    };
-  }
-  try {
-    return await provider.fetchAssignedWorkItemIds();
-  } catch (err) {
-    console.error("[providers] ADO assigned work item discovery failed:", err);
-    return {
-      ids: [],
-      warnings: ["Assigned ADO work items could not be loaded."],
-    };
-  }
+  return provider instanceof AdoProvider ? provider : null;
 }

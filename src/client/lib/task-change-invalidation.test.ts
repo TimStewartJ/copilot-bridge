@@ -15,6 +15,7 @@ describe("invalidateTaskChangeQueries", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["sessions"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["dashboard"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openChecklistItems });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.workMapRoot });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskAgentDefinitions("task-123") });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace"] });
@@ -37,11 +38,13 @@ describe("invalidateTaskChangeQueries", () => {
 
     invalidateTaskChangeQueries({ invalidateQueries } as any);
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(4);
+    expect(invalidateQueries).toHaveBeenCalledTimes(5);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: ["dashboard"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
+    // The work map shows tasks and what they link, and sits outside the dashboard prefix.
+    expect(invalidateQueries).toHaveBeenNthCalledWith(5, { queryKey: queryKeys.workMapRoot });
   });
 });
 
@@ -59,16 +62,17 @@ describe("createDeferredTaskChangeInvalidator", () => {
 
     invalidator.endTaskMutation();
 
-    expect(invalidateQueries).toHaveBeenCalledTimes(8);
+    expect(invalidateQueries).toHaveBeenCalledTimes(9);
     expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: queryKeys.tasks });
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(3, { queryKey: ["dashboard"] });
     expect(invalidateQueries).toHaveBeenNthCalledWith(4, { queryKey: queryKeys.openChecklistItems });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(5, { queryKey: queryKeys.taskChecklistItems("task-123") });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(6, { queryKey: queryKeys.taskAgentDefinitions("task-123") });
-    expect(invalidateQueries).toHaveBeenNthCalledWith(7, { queryKey: ["session-workspace"] });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(5, { queryKey: queryKeys.workMapRoot });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(6, { queryKey: queryKeys.taskChecklistItems("task-123") });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(7, { queryKey: queryKeys.taskAgentDefinitions("task-123") });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(8, { queryKey: ["session-workspace"] });
 
-    const predicate = invalidateQueries.mock.calls[7]?.[0]?.predicate;
+    const predicate = invalidateQueries.mock.calls[8]?.[0]?.predicate;
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
     expect(predicate?.({ queryKey: queryKeys.taskGitStatus("task-123") })).toBe(true);

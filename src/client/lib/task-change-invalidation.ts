@@ -8,6 +8,7 @@ export function invalidateSharedTaskChangeQueries(
   void queryClient.invalidateQueries({ queryKey: ["sessions"] });
   void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   void queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.workMapRoot });
 }
 
 export function invalidateTaskScopedChangeQueries(

@@ -106,6 +106,33 @@ describe("task-store", () => {
       expect(store.getTask(first.id)).toMatchObject({ order: 1 });
     });
 
+    it("createTask links the work items it is given, each once", () => {
+      const task = store.createTask("Tracked", undefined, undefined, [
+        { workItemId: "00100", provider: "ado" },
+        { workItemId: "101", provider: "ado" },
+        { workItemId: "100", provider: "ado" },
+        { workItemId: "100", provider: "github" },
+      ]);
+
+      expect(task.workItems).toHaveLength(3);
+      expect(task.workItems).toEqual(expect.arrayContaining([
+        { id: "100", provider: "ado" },
+        { id: "101", provider: "ado" },
+        { id: "100", provider: "github" },
+      ]));
+    });
+
+    it("createTask leaves nothing behind when a link cannot be saved", () => {
+      const first = store.createTask("First");
+      db.exec("CREATE TRIGGER fail_initial_link BEFORE INSERT ON task_work_items BEGIN SELECT RAISE(ABORT, 'link down'); END;");
+
+      expect(() => store.createTask("Tracked", undefined, undefined, [{ workItemId: "100", provider: "ado" }]))
+        .toThrow(/link down/);
+      db.exec("DROP TRIGGER fail_initial_link");
+
+      expect(store.listTasks().map((task) => ({ id: task.id, order: task.order }))).toEqual([{ id: first.id, order: 0 }]);
+    });
+
     it("does not default task cwd from runtime workspace paths", () => {
       const runtimePaths = resolveRuntimePaths({}, {
         dataDir: join("runtime-root"),

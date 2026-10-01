@@ -1,26 +1,30 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { ChevronRight, ClipboardList, ExternalLink, GitPullRequest, Plus } from "lucide-react";
-import type { EnrichedWorkItem, WorkMapData, WorkMapPullRequest, WorkMapTask } from "../api";
+import type { EnrichedWorkItem, WorkMapPullRequest, WorkMapTask } from "../api";
 import { Button, IdentitySwatch, StatusIcon } from "../design/primitives";
 import { IDENTITY_FILL, type IdentityColor } from "../design/identity";
 import { DS, cx } from "../design/tokens";
+import { prefersReducedMotion } from "../lib/motion";
+import { isClosedWorkItemState } from "../../shared/work-map.js";
 import { PR_STATUS_STYLES, WI_TYPE_ICONS } from "../work-item-styles";
 import {
   assignTaskColors,
-  buildWorkItemLookup,
   buildWorkMapTree,
   countTaskPlacements,
   flattenWorkMapTree,
-  isClosedState,
   layoutWorkMapLanes,
-  treeNodeAttention,
+  NO_SELECTION,
+  rowClickSelects,
+  selectRow,
+  UNREADABLE,
   WORK_MAP_RELATION_LABELS,
-  type WorkMapItemLookup,
   type WorkMapLaneCell,
+  type WorkMapModel,
+  type WorkMapOrphan,
   type WorkMapTreeNode,
   type WorkMapTreeRow,
   type WorkMapTreeSection,
-} from "../work-map-tree";
+} from "../work-map-model";
 
 const MAX_LANES = 6;
 const LANE_WIDTH_PX = 14;
@@ -28,39 +32,35 @@ const ROW_STEP = 150;
 const VISIBLE_LINKS = 2;
 
 interface WorkMapTreeProps {
-  data: WorkMapData;
+  model: WorkMapModel;
   visibleWorkItemIds: ReadonlySet<string>;
-  orphanPullRequests: Array<{ pullRequest: WorkMapPullRequest; tasks: WorkMapTask[] }>;
-  creatingTaskForWorkItemId: string | null;
+  orphans: WorkMapOrphan[];
+  /** Where to open a linked work item the map has no details for. */
+  org: string | null;
+  project: string | null;
+  /** A task is being created, so a second one cannot be started. */
+  creating: boolean;
   onSelectTask: (taskId: string) => void;
   /** Resolves true when the task was created. */
   onCreateTaskForWorkItems: (workItems: EnrichedWorkItem[]) => Promise<boolean>;
 }
 
-interface RowSelectGesture {
-  /** Shift: select every row between the last clicked row and this one. */
-  range: boolean;
-  /** Ctrl/Cmd: add to or remove from the current selection instead of replacing it. */
-  additive: boolean;
-}
-
 interface TreeContext {
-  data: WorkMapData;
-  lookup: WorkMapItemLookup;
-  nodeById: Map<string, WorkMapTreeNode>;
-  taskById: Map<string, WorkMapTask>;
+  model: WorkMapModel;
+  workItemUrl: (id: string) => string;
   colors: Map<string, IdentityColor>;
   placements: Map<string, number>;
   collapsed: ReadonlySet<string>;
   expanded: ReadonlySet<string>;
   selected: ReadonlySet<string>;
   highlightTaskId: string | null;
-  creatingTaskForWorkItemId: string | null;
+  creating: boolean;
   /** The desktop row grid; the lane column is as wide as the section's lanes. */
   gridColumns: string;
   toggleCollapsed: (id: string) => void;
   toggleExpanded: (id: string) => void;
-  selectRow: (id: string, gesture: RowSelectGesture) => void;
+  /** Toggles a row in the selection, or with `range` adds every row up to the last clicked one. */
+  selectRow: (id: string, range: boolean) => void;
   setHighlightTaskId: (taskId: string | null) => void;
   onSelectTask: (taskId: string) => void;
   createTaskFor: (workItems: EnrichedWorkItem[]) => void;
@@ -70,43 +70,40 @@ function isSelectGesture(event: { ctrlKey: boolean; metaKey: boolean; shiftKey: 
   return event.ctrlKey || event.metaKey || event.shiftKey;
 }
 
-function workItemUrl(context: TreeContext, id: string): string {
-  const known = context.lookup.get(id);
-  if (known) return known.url;
-  return `https://${context.data.org}.visualstudio.com/${context.data.project}/_workitems/edit/${id}`;
-}
-
 function rowElementId(id: string): string {
   return `work-map-row-${id}`;
 }
 
 function stateStatus(state: string | null): "done" | "closed" | "open" {
-  if (!isClosedState(state)) return "open";
+  if (!isClosedWorkItemState(state)) return "open";
   return state?.toLowerCase() === "removed" ? "closed" : "done";
 }
 
 function titleTone(node: WorkMapTreeNode): string {
-  if (isClosedState(node.item.state)) return "text-text-faint";
+  if (isClosedWorkItemState(node.item.state)) return "text-text-faint";
   return node.mapItem ? "text-text-primary" : "text-text-secondary";
 }
 
 function pullRequestSummary(pullRequests: WorkMapPullRequest[]): ReactNode {
   if (pullRequests.length === 0) return null;
   const active = pullRequests.filter((pr) => pr.status === "active").length;
+  // One element, so the space before the dot survives in a flex row.
   return (
-    <>
+    <span>
       {pullRequests.length} PR{pullRequests.length === 1 ? "" : "s"}
       {active > 0 && <span className="text-text-primary"> · {active} active</span>}
-    </>
+    </span>
   );
 }
 
-function TypeIcon({ item }: { item: EnrichedWorkItem }) {
+/** `decorative` is for an icon beside text that already names the type. */
+function TypeIcon({ item, decorative = false }: { item: EnrichedWorkItem; decorative?: boolean }) {
   const typeInfo = WI_TYPE_ICONS[item.type ?? ""];
+  const type = item.type ?? "Work item";
   return (
-    <span className={cx(DS.row.iconSlot, typeInfo?.color ?? "text-text-muted")} title={item.type ?? "Work item"}>
+    <span aria-hidden={decorative || undefined} className={cx(DS.row.iconSlot, typeInfo?.color ?? "text-text-muted")} title={type}>
       {typeInfo?.icon ?? <ClipboardList size={12} />}
-      <span className="sr-only">{item.type ?? "Work item"}</span>
+      {!decorative && <span className="sr-only">{type}</span>}
     </span>
   );
 }
@@ -122,8 +119,7 @@ function IndentGuides({ depth }: { depth: number }) {
 }
 
 function CollapseToggle({ node, context }: { node: WorkMapTreeNode; context: TreeContext }) {
-  const hasChildren = node.children.length > 0 || node.hiddenChildCount > 0;
-  if (!hasChildren) return <span aria-hidden="true" className="w-4 shrink-0" />;
+  if (node.children.length === 0) return <span aria-hidden="true" className="w-4 shrink-0" />;
   const open = !context.collapsed.has(node.id);
   return (
     <button
@@ -131,7 +127,12 @@ function CollapseToggle({ node, context }: { node: WorkMapTreeNode; context: Tre
       aria-expanded={open}
       aria-label={`${open ? "Collapse" : "Expand"} children of work item ${node.id}`}
       onClick={() => context.toggleCollapsed(node.id)}
-      className={cx(DS.focus, "flex h-6 w-4 shrink-0 items-center justify-center rounded-sm text-text-faint hover:text-text-primary")}
+      // The chevron stays small in the row; on a phone its tap area reaches 40px around it.
+      className={cx(
+        DS.focus,
+        "relative flex h-6 w-4 shrink-0 items-center justify-center rounded-sm text-text-faint hover:text-text-primary",
+        "max-md:before:absolute max-md:before:-bottom-1 max-md:before:-left-2 max-md:before:-right-4 max-md:before:-top-3 max-md:before:content-['']",
+      )}
     >
       <ChevronRight size={12} className={cx(DS.row.chevron, open && DS.row.chevronOpen)} />
     </button>
@@ -147,7 +148,7 @@ function TaskLink({
   context: TreeContext;
   showPlacements: boolean;
 }) {
-  const task = context.taskById.get(taskId);
+  const task = context.model.taskById.get(taskId);
   if (!task) return null;
   const elsewhere = (context.placements.get(taskId) ?? 1) - 1;
   return (
@@ -159,7 +160,7 @@ function TaskLink({
       onFocus={() => context.setHighlightTaskId(taskId)}
       onBlur={() => context.setHighlightTaskId(null)}
       title={task.nextAction ? `${task.title}\nNext: ${task.nextAction}` : task.title}
-      className={cx(DS.row.inline, DS.row.interactive, "max-w-full text-xs")}
+      className={cx(DS.row.inline, DS.row.interactive, "text-xs")}
     >
       <IdentitySwatch color={context.colors.get(taskId)} />
       <span className={cx("min-w-0 truncate", task.status === "archived" ? "text-text-secondary" : "text-text-primary")}>
@@ -182,25 +183,20 @@ function CreateTaskButton({
   /** Rows that place other work, such as a feature above linked tasks, show it only on hover. */
   revealOnHover?: boolean;
 }) {
-  const creating = context.creatingTaskForWorkItemId === item.id;
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
+      icon={<Plus size={12} />}
       aria-label={`Create Bridge task for work item ${item.id}`}
       title={`Create a Bridge task linked to ${item.type ?? "work item"} ${item.id}`}
-      disabled={context.creatingTaskForWorkItemId !== null}
+      disabled={context.creating}
       onClick={() => context.createTaskFor([item])}
-      className={cx(
-        DS.button.base,
-        DS.button.size.sm,
-        DS.button.variant.ghost,
-        "gap-1",
-        revealOnHover && !creating && "opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100",
-      )}
+      className={cx(revealOnHover
+        && "pointer-events-none opacity-0 focus-visible:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100")}
     >
-      <Plus size={12} />
-      {creating ? "Creating..." : "Task"}
-    </button>
+      Task
+    </Button>
   );
 }
 
@@ -213,7 +209,7 @@ function SelectBox({ node, context }: { node: WorkMapTreeNode; context: TreeCont
       onChange={() => undefined}
       onClick={(event) => {
         event.stopPropagation();
-        context.selectRow(node.id, { range: event.shiftKey, additive: true });
+        context.selectRow(node.id, event.shiftKey);
       }}
       aria-label={`Select work item ${node.id}`}
       title="Select. Shift-click selects a range; Ctrl-click a row adds it."
@@ -228,7 +224,7 @@ function SelectBox({ node, context }: { node: WorkMapTreeNode; context: TreeCont
 
 /**
  * What a row says about its neighbours: blocking and duplicate links by name, related links and
- * ADO children that are not on the map as counts. The expanded row lists them in full.
+ * ADO children that are not shown as counts. The expanded row lists the links in full.
  */
 function RowAnnotations({ node, context }: { node: WorkMapTreeNode; context: TreeContext }) {
   const named = node.links.filter((link) => link.type !== "related");
@@ -237,27 +233,28 @@ function RowAnnotations({ node, context }: { node: WorkMapTreeNode; context: Tre
   const unnamed = named.length - shown.length;
   const relatedTitle = related
     .map((link) => {
-      const target = context.lookup.get(link.workItemId);
+      const target = context.model.entries.get(link.workItemId)?.item;
       return target?.title ? `#${link.workItemId} ${target.title}` : `#${link.workItemId}`;
     })
     .join("\n");
   return (
     <>
       {shown.map((link) => {
-        const target = context.lookup.get(link.workItemId);
-        const onTree = context.nodeById.has(link.workItemId);
+        const target = context.model.entries.get(link.workItemId)?.item;
         const label = WORK_MAP_RELATION_LABELS[link.type as keyof typeof WORK_MAP_RELATION_LABELS];
-        const warning = link.type === "predecessor" && Boolean(target) && !isClosedState(target?.state);
+        const warning = link.type === "predecessor" && target?.state != null && !isClosedWorkItemState(target.state);
         return (
           <a
             key={`${link.type}:${link.workItemId}`}
-            href={onTree ? `#${rowElementId(link.workItemId)}` : workItemUrl(context, link.workItemId)}
-            target={onTree ? undefined : "_blank"}
-            rel={onTree ? undefined : "noopener"}
+            href={context.workItemUrl(link.workItemId)}
+            target="_blank"
+            rel="noopener"
             onClick={(event) => {
-              if (!onTree) return;
+              // A link to a row that is on screen scrolls to it; any other opens the work item in ADO.
+              const row = document.getElementById(rowElementId(link.workItemId));
+              if (!row || isSelectGesture(event)) return;
               event.preventDefault();
-              document.getElementById(rowElementId(link.workItemId))?.scrollIntoView({ block: "center", behavior: "smooth" });
+              row.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
             }}
             title={target?.title ? `${label} #${link.workItemId}: ${target.title}${target.state ? ` (${target.state})` : ""}` : `${label} #${link.workItemId}`}
             className={cx(DS.focus, "shrink-0 rounded-sm text-[11px] hover:underline", warning ? DS.tone.warning : "text-text-secondary")}
@@ -278,7 +275,7 @@ function RowAnnotations({ node, context }: { node: WorkMapTreeNode; context: Tre
           href={node.item.url}
           target="_blank"
           rel="noopener"
-          title={`${node.hiddenChildCount} more child item${node.hiddenChildCount === 1 ? "" : "s"} in ADO ${node.hiddenChildCount === 1 ? "is" : "are"} not on the map`}
+          title={`${node.hiddenChildCount} more child item${node.hiddenChildCount === 1 ? "" : "s"} in ADO ${node.hiddenChildCount === 1 ? "is" : "are"} not shown here`}
           className={cx(DS.focus, "shrink-0 rounded-sm text-[11px] text-text-faint hover:underline")}
         >
           +{node.hiddenChildCount} in ADO
@@ -325,35 +322,40 @@ function LaneCells({
   );
 }
 
+/** A pull request on one line: its state, number and title, then the repository. */
+function PullRequestLine({ pullRequest }: { pullRequest: WorkMapPullRequest }) {
+  const status = PR_STATUS_STYLES[pullRequest.status ?? ""];
+  const repository = pullRequest.repoName ?? "";
+  return (
+    <>
+      <span className={DS.row.iconSlot}>
+        {status ? <StatusIcon kind={status.status} label={status.label} /> : <GitPullRequest size={12} className="text-text-faint" />}
+      </span>
+      <a href={pullRequest.url} target="_blank" rel="noopener" className={cx(DS.focus, "min-w-0 flex-1 truncate rounded-sm text-[13px] text-text-primary hover:underline")}>
+        <span className="tabular-nums text-text-secondary">PR {pullRequest.prId} </span>
+        {pullRequest.title ?? <span className={DS.tone.warning}>{UNREADABLE}</span>}
+      </a>
+      {/* Left out on a phone, where the title needs the line. A link saved from another organization names its repository by URL. */}
+      <span className="max-w-[40%] shrink-0 truncate text-xs text-text-faint max-md:hidden" title={repository}>
+        {/\/_git\/([^/]+)\/?$/.exec(repository)?.[1] ?? repository}
+      </span>
+    </>
+  );
+}
+
 function NodeDetail({ node, context }: { node: WorkMapTreeNode; context: TreeContext }) {
-  const tasks = node.taskIds
-    .map((taskId) => context.taskById.get(taskId))
-    .filter((task): task is WorkMapTask => Boolean(task));
+  const tasks = node.taskIds.flatMap((taskId) => context.model.taskById.get(taskId) ?? []);
   const facts = [node.item.type, node.item.assignedTo, node.item.areaPath].filter(Boolean).join(" · ");
   return (
     <div className={cx(DS.rail, "mb-2 space-y-2 text-xs")}>
       {facts && <div className="text-text-secondary">{facts}</div>}
       {node.pullRequests.length > 0 && (
         <div className="space-y-0.5">
-          {node.pullRequests.map((pr) => {
-            const status = PR_STATUS_STYLES[pr.status ?? ""];
-            return (
-              <a
-                key={pr.key}
-                href={pr.url}
-                target="_blank"
-                rel="noopener"
-                className={cx(DS.row.base, DS.row.interactive, "text-xs")}
-              >
-                <span className={DS.row.iconSlot}>
-                  {status ? <StatusIcon kind={status.status} label={status.label} /> : <GitPullRequest size={12} className="text-text-faint" />}
-                </span>
-                <span className="shrink-0 tabular-nums text-text-secondary">PR {pr.prId}</span>
-                <span className="min-w-0 truncate text-text-primary">{pr.title ?? `Pull request ${pr.prId}`}</span>
-                <span className="ml-auto shrink-0 truncate text-text-faint">{pr.repoName ?? ""}</span>
-              </a>
-            );
-          })}
+          {node.pullRequests.map((pr) => (
+            <div key={pr.key} className="flex min-h-6 min-w-0 items-center gap-2">
+              <PullRequestLine pullRequest={pr} />
+            </div>
+          ))}
         </div>
       )}
       {tasks.map((task) => (
@@ -378,11 +380,11 @@ function NodeDetail({ node, context }: { node: WorkMapTreeNode; context: TreeCon
       {node.links.length > 0 && (
         <div className="space-y-0.5">
           {node.links.map((link) => {
-            const target = context.lookup.get(link.workItemId);
+            const target = context.model.entries.get(link.workItemId)?.item;
             return (
               <div key={`${link.type}:${link.workItemId}`} className="flex min-w-0 items-center gap-1.5 text-text-secondary">
                 <span className="shrink-0">{WORK_MAP_RELATION_LABELS[link.type as keyof typeof WORK_MAP_RELATION_LABELS]}</span>
-                <a href={workItemUrl(context, link.workItemId)} target="_blank" rel="noopener" className="shrink-0 tabular-nums text-accent hover:underline">
+                <a href={context.workItemUrl(link.workItemId)} target="_blank" rel="noopener" className="shrink-0 tabular-nums text-accent hover:underline">
                   #{link.workItemId}
                 </a>
                 {target?.title && <span className="min-w-0 truncate">{target.title}</span>}
@@ -392,25 +394,16 @@ function NodeDetail({ node, context }: { node: WorkMapTreeNode; context: TreeCon
           })}
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <a href={node.item.url} target="_blank" rel="noopener" className="inline-flex items-center gap-1 text-accent hover:underline">
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
+        <a href={node.item.url} target="_blank" rel="noopener" className="mr-2 inline-flex items-center gap-1 text-accent hover:underline">
           Open #{node.id} in ADO <ExternalLink size={11} />
         </a>
-        <button
-          type="button"
-          disabled={context.creatingTaskForWorkItemId !== null}
-          onClick={() => context.createTaskFor([node.item])}
-          className={cx(DS.focus, "inline-flex items-center gap-1 rounded-sm text-text-secondary hover:text-text-primary disabled:text-text-faint")}
-        >
-          <Plus size={11} /> New Bridge task for #{node.id}
-        </button>
-        <button
-          type="button"
-          onClick={() => context.selectRow(node.id, { range: false, additive: true })}
-          className={cx(DS.focus, "rounded-sm text-text-secondary hover:text-text-primary")}
-        >
+        <Button variant="ghost" size="sm" icon={<Plus size={12} />} disabled={context.creating} onClick={() => context.createTaskFor([node.item])}>
+          New Bridge task for #{node.id}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => context.selectRow(node.id, false)}>
           {context.selected.has(node.id) ? "Deselect" : "Select"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -428,28 +421,22 @@ function ItemRow({
   context: TreeContext;
 }) {
   const { node, depth } = row;
-  const parent = node.parentId ? context.nodeById.get(node.parentId) : undefined;
-  const attention = treeNodeAttention(node, parent, context.lookup);
   const expanded = context.expanded.has(node.id);
   const dim = context.highlightTaskId !== null && !node.taskIds.includes(context.highlightTaskId);
   const runStarts = lanes.runStarts.get(index) ?? [];
-  const closed = isClosedState(node.item.state);
   const selected = context.selected.has(node.id);
-  // An untracked map item asks for a task outright; a row that only places other work, such as a
+  // Open work with no task asks for one outright; a row that only places other work, such as a
   // feature above linked tasks, offers one on hover.
-  const needsTask = node.mapItem !== null && node.taskIds.length === 0 && !closed;
-  const offersTask = !needsTask && node.taskIds.length === 0 && runStarts.length === 0 && !closed;
-  const hasAnnotations = attention.length > 0 || node.links.length > 0 || node.hiddenChildCount > 0;
+  const offersTask = !node.needsTask && node.taskIds.length === 0 && runStarts.length === 0
+    && node.item.title !== null && !isClosedWorkItemState(node.item.state);
+  const hasAnnotations = node.attention.length > 0 || node.links.length > 0 || node.hiddenChildCount > 0;
   const onRowClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    const selectGesture = isSelectGesture(event);
-    if (target.closest("a, input") || (target.closest("button") && !target.closest("[data-row-title]"))) return;
-    if (selectGesture) {
-      event.preventDefault();
-      context.selectRow(node.id, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey || event.shiftKey });
-    } else if (context.selected.size > 0 && !target.closest("[data-row-title]")) {
-      context.selectRow(node.id, { range: false, additive: true });
-    }
+    const clicked = target.closest("[data-row-title]") ? "title" : target.closest("a, input, button") ? "control" : "row";
+    const select = rowClickSelects(clicked, event, context.selected.size > 0);
+    if (!select) return;
+    event.preventDefault();
+    context.selectRow(node.id, select.range);
   };
   // Shift-click would otherwise select the text between the anchor and this row.
   const onRowMouseDown = (event: MouseEvent<HTMLDivElement>) => {
@@ -496,7 +483,7 @@ function ItemRow({
           {title}
           {hasAnnotations && (
             <span className="flex h-4 min-w-[9rem] flex-1 basis-0 flex-wrap items-center gap-x-1.5 overflow-hidden leading-4">
-              <Attention items={attention} />
+              <Attention items={node.attention} />
               <RowAnnotations node={node} context={context} />
             </span>
           )}
@@ -508,7 +495,7 @@ function ItemRow({
         </div>
         <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-x-1 py-0.5">
           {runStarts.map((taskId) => <TaskLink key={taskId} taskId={taskId} context={context} showPlacements />)}
-          {needsTask && <CreateTaskButton item={node.item} context={context} />}
+          {node.needsTask && <CreateTaskButton item={node.item} context={context} />}
           {offersTask && <CreateTaskButton item={node.item} context={context} revealOnHover />}
         </div>
         {expanded && (
@@ -528,12 +515,12 @@ function ItemRow({
           <span className="ml-auto shrink-0 text-[11px] tabular-nums text-text-secondary">{pullRequestSummary(node.pullRequests)}</span>
         </div>
         <div className="mt-0.5 flex min-w-0 pl-[22px]">{title}</div>
-        {(node.taskIds.length > 0 || node.links.length > 0 || node.hiddenChildCount > 0 || attention.length > 0 || needsTask) && (
+        {(node.taskIds.length > 0 || hasAnnotations || node.needsTask) && (
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 pl-[22px]">
             {node.taskIds.map((taskId) => <TaskLink key={taskId} taskId={taskId} context={context} showPlacements={false} />)}
-            {needsTask && <CreateTaskButton item={node.item} context={context} />}
+            {node.needsTask && <CreateTaskButton item={node.item} context={context} />}
             <RowAnnotations node={node} context={context} />
-            <Attention items={attention} />
+            <Attention items={node.attention} />
           </div>
         )}
         {expanded && <div className="pl-[22px]"><NodeDetail node={node} context={context} /></div>}
@@ -547,32 +534,21 @@ function sectionTitle(section: WorkMapTreeSection): ReactNode {
   const root = section.nodes[0];
   return (
     <span className="flex min-w-0 items-center gap-1.5">
-      <TypeIcon item={root.item} />
+      <TypeIcon item={root.item} decorative />
       <span className="shrink-0">{root.item.type ?? "Work item"} {root.id}</span>
       <span className="min-w-0 truncate font-normal text-text-secondary">{root.item.title}</span>
     </span>
   );
 }
 
-function countItems(nodes: WorkMapTreeNode[]): { onMap: number; context: number } {
-  let onMap = 0;
-  let context = 0;
-  const visit = (node: WorkMapTreeNode) => {
-    if (node.mapItem) onMap++;
-    else context++;
-    node.children.forEach(visit);
-  };
-  nodes.forEach(visit);
-  return { onMap, context };
+/** The work items in a section that are on the map, leaving out the ancestors shown to place them. */
+function countMapItems(nodes: WorkMapTreeNode[]): number {
+  return nodes.reduce((sum, node) => sum + (node.mapItem ? 1 : 0) + countMapItems(node.children), 0);
 }
 
-function OrphanPullRequests({
-  orphans,
-  context,
-}: {
-  orphans: WorkMapTreeProps["orphanPullRequests"];
-  context: TreeContext;
-}) {
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+function OrphanPullRequests({ orphans, context }: { orphans: WorkMapOrphan[]; context: TreeContext }) {
   if (orphans.length === 0) return null;
   return (
     <section aria-label="Pull requests without a work item" className={cx(DS.surface.group, "overflow-hidden")} data-ds-surface="group">
@@ -581,24 +557,17 @@ function OrphanPullRequests({
         <span className="font-normal tabular-nums text-text-faint">{orphans.length}</span>
       </div>
       <div className={DS.surface.divided}>
-        {orphans.map(({ pullRequest, tasks }) => {
-          const status = PR_STATUS_STYLES[pullRequest.status ?? ""];
-          return (
-            <div key={pullRequest.key} className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1">
-              <span className={DS.row.iconSlot}>
-                {status ? <StatusIcon kind={status.status} label={status.label} /> : <GitPullRequest size={12} className="text-text-faint" />}
-              </span>
-              <a href={pullRequest.url} target="_blank" rel="noopener" className="min-w-0 flex-1 truncate text-[13px] text-text-primary hover:underline">
-                <span className="tabular-nums text-text-faint">PR {pullRequest.prId} </span>
-                {pullRequest.title ?? `Pull request ${pullRequest.prId}`}
-              </a>
-              <span className="shrink-0 text-xs text-text-faint">{pullRequest.repoName ?? ""}</span>
-              <span className="flex min-w-0 flex-wrap gap-x-1">
-                {tasks.map((task) => <TaskLink key={task.id} taskId={task.id} context={context} showPlacements={false} />)}
-              </span>
-            </div>
-          );
-        })}
+        {orphans.map(({ pullRequest, tasks }) => (
+          <div key={pullRequest.key} className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1">
+            {/* The title keeps room to be read: tasks that do not fit beside it go on the next line. */}
+            <span className="flex min-w-[min(100%,20rem)] flex-1 items-center gap-2">
+              <PullRequestLine pullRequest={pullRequest} />
+            </span>
+            <span className="flex min-w-0 flex-wrap gap-x-1">
+              {tasks.map((task) => <TaskLink key={task.id} taskId={task.id} context={context} showPlacements={false} />)}
+            </span>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -609,38 +578,23 @@ function OrphanPullRequests({
  * marks a work item the task links; the line joins it to the linked items beneath it.
  */
 export default function WorkMapTree({
-  data,
+  model,
   visibleWorkItemIds,
-  orphanPullRequests,
-  creatingTaskForWorkItemId,
+  orphans,
+  org,
+  project,
+  creating,
   onSelectTask,
   onCreateTaskForWorkItems,
 }: WorkMapTreeProps) {
-  const sections = useMemo(() => buildWorkMapTree(data, visibleWorkItemIds), [data, visibleWorkItemIds]);
-  const colors = useMemo(() => assignTaskColors(sections), [sections]);
+  const sections = useMemo(() => buildWorkMapTree(model, visibleWorkItemIds), [model, visibleWorkItemIds]);
+  const colors = useMemo(() => assignTaskColors(sections, MAX_LANES), [sections]);
   const placements = useMemo(() => countTaskPlacements(sections), [sections]);
-  const lookup = useMemo(() => buildWorkItemLookup(data), [data]);
-  const taskById = useMemo(() => new Map(data.tasks.map((task) => [task.id, task])), [data.tasks]);
-  const nodeById = useMemo(() => {
-    const map = new Map<string, WorkMapTreeNode>();
-    const visit = (node: WorkMapTreeNode) => {
-      map.set(node.id, node);
-      node.children.forEach(visit);
-    };
-    sections.forEach((section) => section.nodes.forEach(visit));
-    return map;
-  }, [sections]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [highlightTaskId, setHighlightTaskId] = useState<string | null>(null);
   const [rowBudget, setRowBudget] = useState(ROW_STEP);
-  const [selection, setSelection] = useState<{ ids: ReadonlySet<string>; anchorId: string | null }>(
-    () => ({ ids: new Set(), anchorId: null }),
-  );
-
-  useEffect(() => {
-    setRowBudget(ROW_STEP);
-  }, [visibleWorkItemIds]);
+  const [selection, setSelection] = useState(NO_SELECTION);
 
   const laidOut = useMemo(() => {
     let remaining = rowBudget;
@@ -656,29 +610,16 @@ export default function WorkMapTree({
     [laidOut],
   );
   // Rows filtered off the map drop out of the selection; rows under a collapsed parent stay in it.
-  const selected = useMemo(
-    () => new Set([...selection.ids].filter((id) => nodeById.has(id))),
-    [selection.ids, nodeById],
-  );
+  const selected = useMemo(() => {
+    const onTree = new Set(sections.flatMap((section) => flattenWorkMapTree(section.nodes, new Set()).map((row) => row.node.id)));
+    return new Set([...selection.ids].filter((id) => onTree.has(id)));
+  }, [selection.ids, sections]);
 
-  const selectRow = useCallback((id: string, gesture: RowSelectGesture) => {
-    setSelection((current) => {
-      const anchorIndex = current.anchorId ? rowOrder.indexOf(current.anchorId) : -1;
-      const index = rowOrder.indexOf(id);
-      if (gesture.range && anchorIndex >= 0 && index >= 0) {
-        const [from, to] = anchorIndex <= index ? [anchorIndex, index] : [index, anchorIndex];
-        return {
-          ids: new Set([...current.ids, ...rowOrder.slice(from, to + 1)]),
-          anchorId: current.anchorId,
-        };
-      }
-      const next = new Set(gesture.additive ? current.ids : []);
-      if (next.has(id) && gesture.additive) next.delete(id);
-      else next.add(id);
-      return { ids: next, anchorId: id };
-    });
-  }, [rowOrder]);
-  const clearSelection = useCallback(() => setSelection({ ids: new Set(), anchorId: null }), []);
+  const select = useCallback(
+    (id: string, range: boolean) => setSelection((current) => selectRow(current, rowOrder, id, range)),
+    [rowOrder],
+  );
+  const clearSelection = useCallback(() => setSelection(NO_SELECTION), []);
 
   useEffect(() => {
     if (selected.size === 0) return;
@@ -694,33 +635,32 @@ export default function WorkMapTree({
       if (created) clearSelection();
     });
   };
+  // In the order the rows are on screen, then any selected row that is under a collapsed parent.
   const selectedItems = [
     ...rowOrder.filter((id) => selected.has(id)),
     ...[...selected].filter((id) => !rowOrder.includes(id)),
-  ].map((id) => nodeById.get(id)!.item);
+  ].map((id) => model.entries.get(id)!.item);
 
   const toggle = (setter: typeof setCollapsed) => (id: string) => setter((current) => {
     const next = new Set(current);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (!next.delete(id)) next.add(id);
     return next;
   });
 
-  const context: Omit<TreeContext, "gridColumns"> = {
-    data,
-    lookup,
-    nodeById,
-    taskById,
+  const context: TreeContext = {
+    model,
+    workItemUrl: (id) => model.entries.get(id)?.item.url ?? `https://${org}.visualstudio.com/${project}/_workitems/edit/${id}`,
     colors,
     placements,
     collapsed,
     expanded,
     selected,
     highlightTaskId,
-    creatingTaskForWorkItemId,
+    creating,
+    gridColumns: "",
     toggleCollapsed: toggle(setCollapsed),
     toggleExpanded: toggle(setExpanded),
-    selectRow,
+    selectRow: select,
     setHighlightTaskId,
     onSelectTask,
     createTaskFor,
@@ -732,7 +672,6 @@ export default function WorkMapTree({
     <div className="space-y-3">
       {laidOut.map(({ section, shownRows, lanes }) => {
         if (shownRows.length === 0) return null;
-        const counts = countItems(section.nodes);
         const laneWidth = Math.max(1, lanes.laneTaskIds.length) * LANE_WIDTH_PX;
         const sectionContext: TreeContext = {
           ...context,
@@ -748,7 +687,7 @@ export default function WorkMapTree({
             <div className={cx(DS.collection.header, "gap-3 px-3 text-xs font-medium text-text-primary")}>
               <span className="min-w-0 flex-1">{sectionTitle(section)}</span>
               <span className="shrink-0 font-normal tabular-nums text-text-faint">
-                {counts.onMap} linked · {section.taskIds.length} Bridge task{section.taskIds.length === 1 ? "" : "s"}
+                {plural(countMapItems(section.nodes), "work item")} · {plural(section.taskIds.length, "Bridge task")}
               </span>
             </div>
             <div className="hidden gap-x-3 border-b border-border-subtle px-3 py-1 text-[11px] text-text-faint md:grid" style={{ gridTemplateColumns: sectionContext.gridColumns }}>
@@ -767,15 +706,11 @@ export default function WorkMapTree({
         );
       })}
       {rowBudget < totalRows && (
-        <button
-          type="button"
-          onClick={() => setRowBudget((budget) => budget + ROW_STEP)}
-          className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary, "mx-auto flex")}
-        >
+        <Button size="sm" className="mx-auto flex" onClick={() => setRowBudget((budget) => budget + ROW_STEP)}>
           Show {Math.min(ROW_STEP, totalRows - rowBudget)} more rows
-        </button>
+        </Button>
       )}
-      <OrphanPullRequests orphans={orphanPullRequests} context={{ ...context, gridColumns: "" }} />
+      <OrphanPullRequests orphans={orphans} context={context} />
       {selected.size > 0 && (
         <div
           role="region"
@@ -783,19 +718,14 @@ export default function WorkMapTree({
           className={cx(DS.surface.floating, "sticky bottom-3 z-10 mx-auto flex w-fit max-w-full flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2")}
         >
           <span className="text-[13px] font-medium tabular-nums text-text-primary">
-            {selected.size} work item{selected.size === 1 ? "" : "s"} selected
+            {selected.size}
+            <span className="max-sm:hidden"> work item{selected.size === 1 ? "" : "s"}</span> selected
           </span>
           <span className="hidden min-w-0 max-w-[24rem] truncate text-xs tabular-nums text-text-faint sm:inline" title={selectedItems.map((item) => `#${item.id} ${item.title ?? ""}`).join("\n")}>
             {selectedItems.map((item) => `#${item.id}`).join(", ")}
           </span>
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<Plus size={12} />}
-            disabled={creatingTaskForWorkItemId !== null}
-            onClick={() => createTaskFor(selectedItems)}
-          >
-            {creatingTaskForWorkItemId !== null ? "Creating..." : "Create Bridge task"}
+          <Button variant="primary" size="sm" icon={<Plus size={12} />} disabled={creating} onClick={() => createTaskFor(selectedItems)}>
+            {creating ? "Creating..." : "Create Bridge task"}
           </Button>
           <Button variant="ghost" size="sm" onClick={clearSelection} title="Clear the selection (Esc)">
             Clear
