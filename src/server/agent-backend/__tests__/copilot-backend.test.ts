@@ -890,7 +890,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
           result: "done",
           latestResponse: "latest",
         },
-        { type: "shell", id: "sh1", status: "running" },
+        { type: "shell", id: "sh1", status: "running", command: "npm run build", attachmentMode: "attached", pid: 4242 },
       ],
     }));
     const session = createFakeSession({ tasks: { list } });
@@ -910,7 +910,13 @@ describe("CopilotAgentSession wrap fidelity", () => {
       result: "done",
       latestResponse: "latest",
     });
-    expect(result?.tasks?.[1]).toMatchObject({ kind: "shell", id: "sh1", status: "running" });
+    expect(result?.tasks?.[1]).toMatchObject({
+      kind: "shell",
+      id: "sh1",
+      status: "running",
+      command: "npm run build",
+      attachmentMode: "attached",
+    });
   });
 
   it("cancelTask and removeTask delegate to rpc.tasks and normalize the result", async () => {

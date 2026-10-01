@@ -30,6 +30,7 @@ import {
   COMPUTER_USE_OFF_GUIDANCE,
   DEFAULT_IDENTITY,
   HOME_GUIDANCE,
+  LONG_RUNNING_WORK_GUIDANCE,
   createCodingModeStatementRemover,
   removeCliOutputSurfaceNote,
   removeConciseReplyDirective,
@@ -440,11 +441,12 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
   sections.last_instructions = { action: removeConciseReplyDirective };
 
-  // Tighten the SDK's native task/write_agent contract, make ask_user forms carry their own
-  // context, and teach web_fetch escalation without replacing the broader per-tool guidance.
+  // Tighten the SDK's native task/write_agent contract, say how to use the time a slow command
+  // takes, make ask_user forms carry their own context, and teach web_fetch escalation without
+  // replacing the broader per-tool guidance.
   sections.tool_instructions = {
     action: "append",
-    content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
+    content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${LONG_RUNNING_WORK_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
   };
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers

@@ -2,6 +2,7 @@ import type { DeferLoop } from "./defer-loop-store.js";
 import type { DeferWorkerAction, DeferWorkerKind } from "./defer-worker.js";
 import type { DeferCheckpoint } from "./defer-checkpoint.js";
 import {
+  BACKGROUND_COMMAND_DELIVERY_ID_PREFIX,
   CHAT_MESSAGE_DELIVERY_ID_PREFIX,
   MANAGEMENT_JOB_DELIVERY_ID_PREFIX,
   type DeferredPrompt,
@@ -231,6 +232,7 @@ export function listDeferActivityDeliveries(
       && !!item.sourceId
       && !item.sourceId.startsWith(MANAGEMENT_JOB_DELIVERY_ID_PREFIX)
       && !item.sourceId.startsWith(CHAT_MESSAGE_DELIVERY_ID_PREFIX)
+      && !item.sourceId.startsWith(BACKGROUND_COMMAND_DELIVERY_ID_PREFIX)
       && (!options.deferId || item.sourceId === options.deferId)
     )
     .slice(0, limit)

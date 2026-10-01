@@ -2433,7 +2433,7 @@ export function createApiRouter(
       res.json({
         ...status,
         pending: status.phase !== "idle",
-        waitingOn: { ...getRestartBlockers(ctx), sessionIds: ctx.sessionManager.getActiveSessions() },
+        waitingOn: { ...getRestartBlockers(ctx), sessionIds: ctx.sessionManager.getLifecycleBlockingSessionIds() },
         serverInstanceId: SERVER_INSTANCE_ID,
       });
     } catch (error) {

@@ -564,6 +564,10 @@ export class SessionRunner {
       feed.run.handleEvent(event);
       return;
     }
+    // No run is open to see it: a command or agent that outlived its run started, finished or was stopped.
+    if (event?.type === "session.background_tasks_changed") {
+      this.refreshSessionAgents(sessionId, "background_tasks_changed");
+    }
     if (feed.heldTurn) {
       feed.heldTurn.events.push(event);
       return;
@@ -2356,7 +2360,8 @@ export class SessionRunner {
      * events.jsonl, and it cannot show whether the main agent will start another turn. A running
      * background agent keeps the run alive because the runtime wakes the main agent when it finishes,
      * and so does one that has finished but whose notice has not reached the main agent yet.
-     * An attached shell does not: a dev server can outlive every run.
+     * An attached shell does not: a dev server can outlive every run. The session manager keeps the
+     * session loaded for a recently started command instead (see background-commands.ts).
      */
     const askRuntime = async (): Promise<RuntimeAnswer> => {
       try {

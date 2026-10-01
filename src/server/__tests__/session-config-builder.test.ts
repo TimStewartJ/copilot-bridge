@@ -790,6 +790,31 @@ describe("session-config-builder", () => {
     }
   });
 
+  it("says how to spend and how to wait out a slow command, in text that never varies", () => {
+    const guidance = (options?: { forResume: boolean }) => buildSessionConfig({
+      deps: createDeps(),
+      ...(options ? { options } : {}),
+      callbacks: createCallbacks(),
+    }).systemMessage.sections.tool_instructions.content as string;
+    const created = guidance();
+
+    // Work alongside the command instead of blocking on it.
+    expect(created).toContain('start it with mode "async" and carry on');
+    expect(created).toContain("start independent slow commands together");
+    // Waits stay under the provider's cache lifetime, and the reason is given so the cap is not read as arbitrary.
+    expect(created).toContain("wait in steps of at most 240 seconds");
+    expect(created).toContain("prompt cache expire");
+    // Long outside waits go to a defer; a command's lifetime is stated as it is.
+    expect(created).toContain("To wait longer than about 45 minutes on something outside this session that your work depends on");
+    expect(created).toContain("create a defer and end the turn instead of polling");
+    expect(created).toContain("holds its own restarts for about 45 minutes after the command started");
+    expect(created.indexOf("**Sub-agent lifecycle**")).toBeLessThan(created.indexOf("**Long-running commands and waiting**"));
+    expect(created.indexOf("**Long-running commands and waiting**")).toBeLessThan(created.indexOf("<ask_user_context>"));
+    // The same bytes on every build keep a session's cached prompt prefix intact.
+    expect(guidance({ forResume: true })).toBe(created);
+    expect(guidance()).toBe(created);
+  });
+
   it("explicitly disables cloud-backed Copilot memory on create and resume", () => {
     const createCfg = buildSessionConfig({
       deps: createDeps(),

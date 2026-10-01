@@ -18,6 +18,8 @@ import { createTelemetryStore } from "../telemetry-store.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import { createReturnedDeferDelivery } from "../defer-result-message.js";
 import { queueChatMessageDelivery } from "../chat-message-outbox.js";
+import { createBackgroundCommandStore } from "../background-command-store.js";
+import { queueStoppedCommandWake } from "../background-commands.js";
 import {
   BACKEND_DISCONNECTED_MESSAGE,
   BACKEND_RECONNECTING_MESSAGE,
@@ -1471,6 +1473,44 @@ describe("deferred-prompt-runner", () => {
 
       expect(store.get(jobDeliveryId)?.status).toBe("cancelled");
       expect(store.get(deferDelivery.id)?.status).toBe("pending");
+      runner.shutdown();
+    });
+  });
+
+  describe("stopped background command notices", () => {
+    it("starts a turn with the notice itself, without a worker, once the session is free", async () => {
+      const store = createDeferredPromptStore(db);
+      const commands = createBackgroundCommandStore(db);
+      const bus = createGlobalBus();
+      const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+      commands.syncRunning("session-1", [{ shellId: "3", startedAt, description: "Test refresh" }]);
+      commands.markSessionStopped("session-1", "unloaded");
+      const busySessions = new Set(["session-1"]);
+      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions }) as any;
+      sm.runDeferWorker = vi.fn();
+      sm.tryAcquireDeferWorker = vi.fn();
+      const runner = createDeferredPromptRunner(store, sm, bus);
+      runner.start();
+
+      // The session's own turn is still settling when the loss is recorded.
+      expect(queueStoppedCommandWake({
+        backgroundCommandStore: commands,
+        deferredPromptStore: store,
+        deferredPromptRunner: runner,
+      }, "session-1")).toBe("queued");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sm._started).toEqual([]);
+
+      busySessions.delete("session-1");
+      bus.emit({ type: "session:idle", sessionId: "session-1" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sm._started).toHaveLength(1);
+      expect(sm._started[0].prompt.startsWith("<bridge_notice>")).toBe(true);
+      expect(sm._started[0].prompt).toContain('shellId 3 "Test refresh"');
+      expect(sm.runDeferWorker).not.toHaveBeenCalled();
+      expect(sm.tryAcquireDeferWorker).not.toHaveBeenCalled();
+      expect(store.listDeliveriesForSession("session-1")[0]?.status).toBe("completed");
       runner.shutdown();
     });
   });
