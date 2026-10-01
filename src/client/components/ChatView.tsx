@@ -33,8 +33,6 @@ import {
   type ChatMessageDelivery,
   type ChatVisualEntry,
   type ElicitationResponseEndpointPayload,
-  type PendingElicitationRequestView,
-  type PendingUserInputRequestView,
   type SlashCommandInfo,
   type ToolCall,
   type UserInputAnswerEndpointPayload,
@@ -80,14 +78,13 @@ import ActivityBlock from "./chat/ActivityBlock";
 import { ChatRunActiveProvider } from "./chat/chat-run-context";
 import LiveStatusLine from "./chat/LiveStatusLine";
 import AutopilotRunLine from "./chat/AutopilotRunLine";
-import PromptMarkdown from "./chat/PromptMarkdown";
 import { DS, cx } from "../design/tokens";
-import { AutopilotIcon, Button, ChoiceButton, EmptyHint, Notice, Panel, TextInput } from "../design/primitives";
+import { AutopilotIcon, Button, Notice } from "../design/primitives";
 import ChatInput from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
-import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Loader2, Terminal } from "lucide-react";
+import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { prefersReducedMotion } from "../lib/motion";
 
@@ -96,12 +93,12 @@ const INITIAL_PAGE_SIZE = 50;
 const OLDER_PAGE_SIZE = 200;
 const STREAM_RENDER_INTERVAL_MS = 60;
 /**
- * Minimum spacing between disk-history refreshes driven by `history_advanced`. The first advance
- * after an idle gap refreshes immediately (leading edge); further advances inside the window
- * coalesce into one trailing refresh, so a burst of tool events cannot storm the reader.
+ * Minimum spacing between background history refreshes. The first request after a quiet period
+ * reads immediately; further ones inside the window collapse into one trailing read, so a burst
+ * of tool events cannot storm the reader.
  */
 const HISTORY_REFRESH_THROTTLE_MS = 250;
-/** Upper bound on entries re-read by an incremental refresh; a replacing refresh re-reads the whole window. */
+/** Most entries a refresh of the newest history re-reads; older loaded entries are kept as they are. */
 const HISTORY_REFRESH_MAX_LIMIT = 200;
 /**
  * Cached history paints instantly, so a sync that lands inside this window never shows an
@@ -154,7 +151,6 @@ interface ChatViewProps {
   busySignal?: number;
   /** Incremented when server history was truncated and the loaded window must be replaced. */
   historySignal?: number;
-  activeSessionActivityAt?: string;
   externallyInUse?: boolean;
   backgroundAgents?: BackgroundAgentsSummary;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
@@ -242,6 +238,21 @@ function useSustained(value: boolean, delayMs: number): boolean {
   return value && sustained;
 }
 
+/**
+ * Runs `onAdvance` when `counter` rises while `scope` stays the same. A new scope only re-bases
+ * the comparison, so a per-session counter never fires for the session being navigated to.
+ */
+function useCounterAdvance(scope: unknown, counter: number, onAdvance: () => void): void {
+  const seenRef = useRef({ scope, counter });
+  const onAdvanceRef = useRef(onAdvance);
+  onAdvanceRef.current = onAdvance;
+  useEffect(() => {
+    const seen = seenRef.current;
+    seenRef.current = { scope, counter };
+    if (seen.scope === scope && counter > seen.counter) onAdvanceRef.current();
+  }, [counter, scope]);
+}
+
 function getDistanceFromBottom(el: HTMLElement): number {
   return Math.max(0, getMaxScrollTop(el) - getSafeScrollTop(el));
 }
@@ -308,6 +319,36 @@ interface PendingSend {
   attachments?: Attachment[];
   delivery?: ChatMessageDelivery;
 }
+
+/** How a background refresh reconciles the loaded history window with disk. */
+interface HistoryRefresh {
+  /** Re-read every loaded entry, not only the newest: what is loaded may no longer match disk. */
+  window?: boolean;
+  /** Routine refreshes are the steady state of a run; they show no strip and disable no actions. */
+  silent?: boolean;
+  /** Replace the run's stream even if it looks healthy; one that died while the tab slept is otherwise kept. */
+  reconnect?: boolean;
+}
+
+/**
+ * What one disk read fetches: "load" the newest page for a navigation, "tail" the newest entries
+ * to splice onto the loaded window, "window" every loaded entry again.
+ */
+type HistoryReadMode = "load" | "tail" | "window";
+
+/** The open session's disk reads. Replaced on every navigation and inert once it is left. */
+interface HistoryReader {
+  /** The navigation's own read, behind the loading skeleton. */
+  load(): void;
+  /** Ask for a background refresh. Requests that arrive before it can start collapse into one read. */
+  refresh(request?: HistoryRefresh): void;
+  /** Drop a visible refresh that is in flight: its result predates the send about to start a run. */
+  abandonVisibleRefresh(): void;
+}
+
+const NO_HISTORY_READER: HistoryReader = { load() {}, refresh() {}, abandonVisibleRefresh() {} };
+/** `applyHistory` options for a transcript that is not a session's disk history: empty, or a load error. */
+const NO_HISTORY = { ownerSessionId: null, firstItemIndex: 0 } as const;
 
 let clientMessageIdCounter = 0;
 
@@ -557,7 +598,6 @@ export default function ChatView({
   reloadToken = 0,
   busySignal = 0,
   historySignal = 0,
-  activeSessionActivityAt,
   externallyInUse = false,
   backgroundAgents,
   onForkSession,
@@ -663,20 +703,16 @@ export default function ChatView({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const firstItemIndex = useRef(0);
-  const totalEntriesRef = useRef(0);
   const historyLastVisibleActivityAtRef = useRef<string | undefined>(undefined);
   /** When the displayed window was last read from disk; drives the "showing messages from…" hint. */
   const historyFetchedAtRef = useRef<number | null>(null);
   const entriesRef = useRef<ChatEntry[]>([]);
   const pendingSendsRef = useRef<PendingSend[]>([]);
-  const historyRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionIdRef = useRef<string | null>(sessionId);
-  const activeSessionActivityAtRef = useRef<string | undefined>(activeSessionActivityAt);
   const loadingMoreRef = useRef(false);
   /** Set by a history apply that must not move what the reader is looking at; consumed on commit. */
   const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
-  const loadRequestIdRef = useRef(0);
-  const refreshingHistoryRef = useRef(false);
+  const historyRef = useRef(NO_HISTORY_READER);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const followScrollFrameRef = useRef<number | null>(null);
   const resetProgrammaticScrollFrameRef = useRef<number | null>(null);
@@ -703,11 +739,6 @@ export default function ChatView({
     attachments?: Attachment[];
     mode?: SendMode;
   } | null>(null);
-  // Exposed for external triggers (e.g. busySignal from scheduled work)
-  const loadAndReconnectRef = useRef<
-    (opts?: { background?: boolean; replace?: boolean; silent?: boolean; forceReconnect?: boolean }) => Promise<void>
-  >(async () => {});
-  activeSessionActivityAtRef.current = activeSessionActivityAt;
 
   useEffect(() => () => {
     if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
@@ -769,7 +800,6 @@ export default function ChatView({
     opts: {
       ownerSessionId?: string | null;
       firstItemIndex?: number;
-      total?: number;
       lastVisibleActivityAt?: string | null;
       /** Disk read time of `nextEntries`; defaults to now. Cached resumes pass the snapshot's. */
       fetchedAt?: number;
@@ -781,8 +811,6 @@ export default function ChatView({
   ) => {
     const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
     const nextFirstItemIndex = opts.firstItemIndex ?? firstItemIndex.current;
-    const nextTotal = opts.total ?? Math.max(totalEntriesRef.current, nextFirstItemIndex + nextEntries.length);
-    const nextHasMore = nextFirstItemIndex > 0;
 
     const scroller = scrollContainerRef.current;
     viewportAnchorRef.current = opts.keepViewport && scroller
@@ -790,14 +818,13 @@ export default function ChatView({
       ? captureViewportAnchor(scroller, messageElementRefs.current)
       : null;
     firstItemIndex.current = nextFirstItemIndex;
-    totalEntriesRef.current = nextTotal;
     const nextLastVisibleActivityAt = opts.lastVisibleActivityAt === null
       ? undefined
       : opts.lastVisibleActivityAt ?? historyLastVisibleActivityAtRef.current;
     historyLastVisibleActivityAtRef.current = ownerSessionId ? nextLastVisibleActivityAt : undefined;
     entriesRef.current = nextEntries;
     setEntries(nextEntries);
-    setHasMore(nextHasMore);
+    setHasMore(nextFirstItemIndex > 0);
 
     const nextReadThrough = maxActivityTimestamp(
       nextLastVisibleActivityAt,
@@ -818,22 +845,10 @@ export default function ChatView({
       sessionId: ownerSessionId,
       entries: nextEntries,
       firstItemIndex: nextFirstItemIndex,
-      total: nextTotal,
       fetchedAt,
     });
   }, [queryClient]);
 
-  const invalidateHistoryRefresh = useCallback(() => {
-    if (!refreshingHistoryRef.current) return;
-    loadRequestIdRef.current += 1;
-    refreshingHistoryRef.current = false;
-    setRefreshingHistory(false);
-  }, []);
-
-  const handleStreamSettled = useCallback(() => {
-    onMessageSent();
-    loadAndReconnectRef.current({ background: true, replace: true, silent: true });
-  }, [onMessageSent]);
   const refreshMcpObservation = useCallback(() => {
     if (!sessionId) return;
     // Runtime events are refresh hints, not a second writer of connection/readiness state.
@@ -867,9 +882,10 @@ export default function ChatView({
     abortSession,
     reconnect,
     ensureConnected,
+    dropFinishedRunOutput,
     activeTurnId,
     activeTurnInstanceId,
-  } = useSessionStream(historicalMode ? null : sessionId, handleStreamSettled, onMessageSent, refreshMcpObservation);
+  } = useSessionStream(historicalMode ? null : sessionId, onMessageSent, onMessageSent, refreshMcpObservation);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
   // disappears from the overlay the moment its persisted entry is present in the loaded window.
@@ -1066,7 +1082,6 @@ export default function ChatView({
       queryKey: queryKeys.sessionUsageMetrics(sessionId),
       exact: true,
     });
-    loadAndReconnectRef.current({ background: true, silent: true });
   }, [historicalMode, isStreaming, queryClient, refreshSessionContext, sessionId]);
 
   const cancelFollowScroll = useCallback(() => {
@@ -1221,262 +1236,225 @@ export default function ChatView({
   }, [cancelFollowScroll, clearProgrammaticScroll]);
 
 
-  // Load history + MCP status when session changes.
+  // Load history when the session, or the saved message being viewed, changes.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
-  const prevComposerKeyRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const prevSession = prevSessionRef.current;
-    const prevComposerKey = prevComposerKeyRef.current;
-    const transitionedFromDraft = prevSession === null;
-    const draftComposerChanged = prevSession === null
-      && prevComposerKey !== undefined
-      && prevComposerKey !== composerKey;
     prevSessionRef.current = sessionId;
-    prevComposerKeyRef.current = composerKey;
     setForkError(null);
     setUndoError(null);
     setUndoingEventId(null);
     setLoadMoreError(null);
     pendingSendsRef.current = [];
     setPendingSends([]);
-    if (!sessionId) {
-      // Clear draft-only state when entering draft mode from an existing
-      // session or when switching between distinct draft composers.
-      if (draftComposerChanged || prevSession !== undefined || !onCreateAndSend) {
-        applyHistory([], {
-          ownerSessionId: null,
-          firstItemIndex: 0,
-          total: 0,
-        });
-      }
-      setLoading(false);
-      refreshingHistoryRef.current = false;
-      setRefreshingHistory(false);
-      setWarming(false);
-      setCreating(false);
-      setLoadingMore(false);
-      setHasMore(false);
-      setShowJumpToLatest(false);
-      cancelFollowScroll();
-      clearProgrammaticScroll();
-      anchoredMessageKeyRef.current = null;
-      latestMessageAnchorKeyRef.current = null;
-      pendingLiveAnchorCarryRef.current = false;
-      pendingInitialAnchorRef.current = false;
-      loadAnchoredMessageKeyRef.current = null;
-      viewportAnchorRef.current = null;
-      messageElementRefs.current.clear();
-      firstItemIndex.current = 0;
-      totalEntriesRef.current = 0;
-      historyLastVisibleActivityAtRef.current = undefined;
-      entriesRef.current = [];
-      loadingMoreRef.current = false;
-      return;
-    }
-
-    if (transitionedFromDraft) {
-      setCreating(false);
-    }
-    // Reset stick-to-bottom so the new session starts following output,
-    // regardless of scroll position in the previous session.
-    stickToBottomRef.current = true;
-    anchoredMessageKeyRef.current = null;
-    latestMessageAnchorKeyRef.current = null;
-    pendingLiveAnchorCarryRef.current = false;
-    if (prevSession !== sessionId) {
-      // Arm the landing anchor per navigation only. Re-running this effect for the same session
-      // (composer or callback identity churn) must not yank an established reading position.
-      pendingInitialAnchorRef.current = !historicalMode;
-      loadAnchoredMessageKeyRef.current = null;
-    }
-    messageElementRefs.current.clear();
+    setCreating(false);
     setShowJumpToLatest(false);
     cancelFollowScroll();
     clearProgrammaticScroll();
+    anchoredMessageKeyRef.current = null;
+    latestMessageAnchorKeyRef.current = null;
+    pendingLiveAnchorCarryRef.current = false;
+    messageElementRefs.current.clear();
+    loadingMoreRef.current = false;
+    setLoadingMore(false);
+    if (prevSession !== sessionId) {
+      // Arm the landing anchor per navigation only. Re-running this effect for the same session
+      // (composer or callback identity churn) must not yank an established reading position.
+      pendingInitialAnchorRef.current = sessionId !== null && !historicalMode;
+      loadAnchoredMessageKeyRef.current = null;
+    }
+    if (!sessionId) {
+      applyHistory([], NO_HISTORY);
+      setLoading(false);
+      setRefreshingHistory(false);
+      setWarming(false);
+      return;
+    }
 
+    // A session starts out following output, wherever the previous one was scrolled to.
+    stickToBottomRef.current = true;
     const controller = new AbortController();
+    const navigatedAt = performance.now();
+    let loadReported = false;
+    let readId = 0;
+    let visibleRefresh = false;
+    const endRead = () => {
+      setLoading(false);
+      visibleRefresh = false;
+      setRefreshingHistory(false);
+    };
 
-    const loadAndReconnect = ({
-      background = false,
-      replace = false,
-      // Routine disk-tail syncs are the steady state now, not an exceptional catch-up, so they
-      // must not flash a progress pill or disable transcript actions.
-      silent = false,
-      // A stream that may have died unnoticed (the tab slept) is replaced; a healthy one is kept.
-      forceReconnect = false,
-    }: { background?: boolean; replace?: boolean; silent?: boolean; forceReconnect?: boolean } = {}): Promise<void> => {
-      const requestId = ++loadRequestIdRef.current;
-      if (background) {
-        if (!silent) {
-          refreshingHistoryRef.current = true;
-          setRefreshingHistory(true);
-        }
-      } else {
-        refreshingHistoryRef.current = false;
+    // Disk is the sole authority for committed transcript ordering, so every read replaces what it covers.
+    const read = async (
+      mode: HistoryReadMode,
+      { silent = false, reconnect: replaceStream = false }: HistoryRefresh = {},
+    ): Promise<void> => {
+      const id = ++readId;
+      const superseded = () => controller.signal.aborted || id !== readId;
+      if (mode === "load") {
         setLoading(true);
-        setRefreshingHistory(false);
         setWarming(false);
         if (historicalMode) {
           setHistoricalUnavailable(false);
           setHistoricalLoadError(null);
         }
       }
-      const pageLoadStart = performance.now();
-
-      // Phase 1: Fast load messages from disk — don't wait for MCP status.
-      // Disk is the sole authority for committed transcript ordering. An incremental refresh reads
-      // the tail and splices it onto the loaded window; a replacing one re-reads the whole window,
-      // so older pages the reader already loaded survive either way.
-      const loadedLength = Math.max(INITIAL_PAGE_SIZE, entriesRef.current.length);
-      const requestLimit = !background
+      visibleRefresh = mode !== "load" && !silent;
+      setRefreshingHistory(visibleRefresh);
+      const loaded = Math.max(INITIAL_PAGE_SIZE, entriesRef.current.length);
+      const limit = mode === "load"
         ? INITIAL_PAGE_SIZE
-        : replace ? loadedLength : Math.min(HISTORY_REFRESH_MAX_LIMIT, loadedLength);
-      const historicalRequest = targetSourceEventId
-        ? { before: 50, after: 50, aroundEventId: targetSourceEventId }
-        : { limit: requestLimit };
-      return fetchMessagesFast(sessionId, historicalRequest)
-        .then(({ messages: msgs, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer }): Promise<void> | void => {
-          const busy = runState !== "idle";
-          if (controller.signal.aborted) return;
-          if (requestId !== loadRequestIdRef.current) {
-            return;
-          }
-          setHistoryRunBusy(busy);
-          if (historicalMode) {
-            const found = !targetSourceEventId || msgs.some((entry) => isChatMessageEntry(entry)
-              && (entry.sourceEventId === targetSourceEventId || entry.id === targetSourceEventId));
-            setHistoricalUnavailable(!found);
-            setHistoricalHasNewer(Boolean(hasNewer));
-            stickToBottomRef.current = false;
-            applyHistory(found ? msgs : [], {
-              ownerSessionId: sessionId,
-              firstItemIndex: startOffset ?? Math.max(0, total - msgs.length),
-              total,
-              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
-              persistSnapshot: false,
-              reportReadThrough: false,
-            });
-          } else if (background && !replace) {
-            const merged = replaceHistoryWindow(
-              entriesRef.current,
-              firstItemIndex.current,
-              msgs,
-              total,
-            );
-            if (merged.hasGap) {
-              // More arrived than one incremental read covers; re-read rather than show a hole.
-              return loadAndReconnect({ background: true, replace: true, silent, forceReconnect });
-            }
-            applyHistory(merged.entries, {
-              ownerSessionId: sessionId,
-              firstItemIndex: merged.firstItemIndex,
-              total: merged.total,
-              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
-              keepViewport: true,
-            });
-          } else {
-            applyHistory(msgs, {
-              ownerSessionId: sessionId,
-              firstItemIndex: Math.max(0, total - msgs.length),
-              total,
-              lastVisibleActivityAt: lastVisibleActivityAt ?? null,
-              keepViewport: background,
-            });
-          }
-          setLoading(false);
-          refreshingHistoryRef.current = false;
-          setRefreshingHistory(false);
+        : mode === "window" ? loaded : Math.min(HISTORY_REFRESH_MAX_LIMIT, loaded);
+      try {
+        const { messages: msgs, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer } = await fetchMessagesFast(
+          sessionId,
+          targetSourceEventId ? { before: 50, after: 50, aroundEventId: targetSourceEventId } : { limit },
+        );
+        if (superseded()) return;
+        const busy = runState !== "idle";
+        setHistoryRunBusy(busy);
+        const disk = { ownerSessionId: sessionId, lastVisibleActivityAt: lastVisibleActivityAt ?? null };
+        if (historicalMode) {
+          const found = !targetSourceEventId || msgs.some((entry) => isChatMessageEntry(entry)
+            && (entry.sourceEventId === targetSourceEventId || entry.id === targetSourceEventId));
+          setHistoricalUnavailable(!found);
+          setHistoricalHasNewer(Boolean(hasNewer));
+          stickToBottomRef.current = false;
+          applyHistory(found ? msgs : [], {
+            ...disk,
+            firstItemIndex: startOffset ?? Math.max(0, total - msgs.length),
+            persistSnapshot: false,
+            reportReadThrough: false,
+          });
+        } else if (mode === "tail") {
+          const merged = replaceHistoryWindow(entriesRef.current, firstItemIndex.current, msgs, total);
+          // More arrived than one tail read covers; re-read rather than show a hole.
+          if (merged.hasGap) return await read("window", { silent, reconnect: replaceStream });
+          applyHistory(merged.entries, { ...disk, firstItemIndex: merged.firstItemIndex, keepViewport: true });
+        } else {
+          applyHistory(msgs, {
+            ...disk,
+            firstItemIndex: Math.max(0, total - msgs.length),
+            keepViewport: mode === "window",
+          });
+        }
+        endRead();
+        if (historicalMode) return;
 
-          if (historicalMode) return;
-
-          // Report time from navigation to messages rendered
-          const loadDuration = Math.round(performance.now() - pageLoadStart);
-          reportTiming("page.sessionLoad", loadDuration, {
+        if (!loadReported) {
+          // Time from navigation to fresh messages on screen.
+          loadReported = true;
+          reportTiming("page.sessionLoad", Math.round(performance.now() - navigatedAt), {
             sessionId,
             metadata: { messageCount: msgs.length, warm, busy },
           }).catch(() => {});
-
-          if (busy) {
-            if (forceReconnect) reconnect(sessionId);
-            else ensureConnected(sessionId);
-            return;
-          }
-
-          // Phase 2: Warm the session in background if needed
-          if (!warm) {
-            setWarming(true);
-            warmSession(sessionId)
-              .then(() => {
-                if (controller.signal.aborted) return;
-                setWarming(false);
-                void queryClient.invalidateQueries({
-                  queryKey: queryKeys.sessionUsageMetrics(sessionId),
-                  exact: true,
-                });
-              })
-              .catch(() => {
-                if (!controller.signal.aborted) setWarming(false);
+        }
+        if (busy) {
+          if (replaceStream) reconnect(sessionId);
+          else ensureConnected(sessionId);
+        } else if (!warm) {
+          setWarming(true);
+          warmSession(sessionId)
+            .then(() => {
+              if (controller.signal.aborted) return;
+              setWarming(false);
+              void queryClient.invalidateQueries({
+                queryKey: queryKeys.sessionUsageMetrics(sessionId),
+                exact: true,
               });
-          }
-        })
-        .catch((err) => {
-          if (controller.signal.aborted) return;
-          if (requestId !== loadRequestIdRef.current) {
-            return;
-          }
-          if (historicalMode) {
-            applyHistory([], {
-              ownerSessionId: null,
-              firstItemIndex: 0,
-              total: 0,
-              persistSnapshot: false,
-              reportReadThrough: false,
+            })
+            .catch(() => {
+              if (!controller.signal.aborted) setWarming(false);
             });
-            if (targetSourceEventId && err instanceof ApiError && err.status === 404) {
-              setHistoricalUnavailable(true);
-            } else {
-              setHistoricalLoadError(`Could not load this saved message: ${getErrorMessage(err)}`);
-            }
-          } else if (!background) {
-            applyHistory([
-              { role: "assistant", content: `Error loading history: ${err.message}` },
-            ], {
-              ownerSessionId: null,
-              firstItemIndex: 0,
-              total: 0,
-            });
+        }
+      } catch (err) {
+        if (superseded()) return;
+        if (historicalMode) {
+          applyHistory([], NO_HISTORY);
+          if (targetSourceEventId && err instanceof ApiError && err.status === 404) {
+            setHistoricalUnavailable(true);
+          } else {
+            setHistoricalLoadError(`Could not load this saved message: ${getErrorMessage(err)}`);
           }
-          setLoading(false);
-          refreshingHistoryRef.current = false;
-          setRefreshingHistory(false);
-        });
+        } else if (mode === "load") {
+          applyHistory(
+            [{ role: "assistant", content: `Error loading history: ${getErrorMessage(err)}` }],
+            NO_HISTORY,
+          );
+        }
+        endRead();
+      }
     };
 
-    loadAndReconnectRef.current = loadAndReconnect;
+    // One read at a time, and refreshes no closer together than the throttle: whatever is asked
+    // for in between collapses into the next read, which sees everything the skipped ones would.
+    let queued: HistoryRefresh | null = null;
+    let inFlight: Promise<void> | null = null;
+    let lastRefreshAt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const start = (mode: HistoryReadMode, request?: HistoryRefresh) => {
+      const reading = read(mode, request).finally(() => {
+        if (inFlight !== reading) return;
+        inFlight = null;
+        pump();
+      });
+      inFlight = reading;
+    };
+    const pump = () => {
+      if (!queued || inFlight || timer != null || controller.signal.aborted) return;
+      // An older page in flight was read against the current window, so let it land first.
+      const wait = loadingMoreRef.current
+        ? HISTORY_REFRESH_THROTTLE_MS
+        : lastRefreshAt + HISTORY_REFRESH_THROTTLE_MS - Date.now();
+      if (wait > 0) {
+        timer = setTimeout(() => {
+          timer = null;
+          pump();
+        }, wait);
+        return;
+      }
+      const request = queued;
+      queued = null;
+      lastRefreshAt = Date.now();
+      start(request.window ? "window" : "tail", request);
+    };
+    const reader: HistoryReader = {
+      load: () => start("load"),
+      refresh: (request = {}) => {
+        queued = queued
+          ? {
+              window: queued.window || request.window,
+              silent: queued.silent && request.silent,
+              reconnect: queued.reconnect || request.reconnect,
+            }
+          : request;
+        // A read that was in flight while the tab slept may never return, so waking does not wait on it.
+        if (request.reconnect) inFlight = null;
+        pump();
+      },
+      abandonVisibleRefresh: () => {
+        if (!visibleRefresh) return;
+        readId += 1;
+        endRead();
+      },
+    };
+    historyRef.current = reader;
 
-    loadingMoreRef.current = false;
-    setLoadingMore(false);
     const cachedSnapshot = historicalMode ? null : getCachedChatSnapshot(queryClient, sessionId);
     if (cachedSnapshot && cachedSnapshot.entries.length > 0) {
-      // Cached windows are always disk-derived, so they can be shown immediately and then
-      // replaced by the background read.
+      // A cached window is disk-derived, so it paints at once. Anything may have happened to the
+      // session since it was cached, so the read behind it covers all of it.
       applyHistory(cachedSnapshot.entries, {
         ownerSessionId: sessionId,
         firstItemIndex: cachedSnapshot.firstItemIndex,
-        total: cachedSnapshot.total,
         fetchedAt: cachedSnapshot.fetchedAt,
       });
       setLoading(false);
-      setRefreshingHistory(false);
       setWarming(false);
-      loadAndReconnect({ background: true, replace: true });
+      reader.refresh({ window: true });
     } else {
-      applyHistory([], {
-        ownerSessionId: null,
-        firstItemIndex: 0,
-        total: 0,
-      });
-      loadAndReconnect();
+      applyHistory([], NO_HISTORY);
+      reader.load();
     }
 
     // Close plan sheet when switching sessions (close is a stable callback)
@@ -1486,19 +1464,20 @@ export default function ChatView({
     // Reconnect when the tab wakes from sleep (mobile screen-off, etc.)
     const onVisible = () => {
       if (historicalMode || document.visibilityState !== "visible") return;
-      loadAndReconnect({ background: true, silent: true, forceReconnect: true });
+      reader.refresh({ silent: true, reconnect: true });
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       controller.abort();
-      refreshingHistoryRef.current = false;
-      loadAndReconnectRef.current = async () => {};
+      if (timer != null) clearTimeout(timer);
+      historyRef.current = NO_HISTORY_READER;
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [
     applyHistory,
     cancelFollowScroll,
     clearProgrammaticScroll,
+    // Switching between two drafts changes nothing else here, and must still clear the first.
     composerKey,
     ensureConnected,
     historicalMode,
@@ -1534,105 +1513,25 @@ export default function ChatView({
       return;
     }
     prevBusySignalRef.current = busySignal;
-    if (action === "reconnect") {
-      loadAndReconnectRef.current({ background: true });
-    }
+    if (action === "reconnect") historyRef.current.refresh();
   }, [busySignal, creating, historicalMode, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
 
-  const prevHistorySignalRef = useRef(historySignal);
-  useEffect(() => {
-    prevHistorySignalRef.current = historySignal;
-  }, [sessionId]);
-  useEffect(() => {
-    const prev = prevHistorySignalRef.current;
-    if (!sessionId || historicalMode || historySignal === prev) return;
-    prevHistorySignalRef.current = historySignal;
-    loadAndReconnectRef.current({ background: true, replace: true });
-  }, [historicalMode, historySignal, sessionId]);
-
-  /**
-   * Committed history advanced on the server: re-read the disk window.
-   *
-   * Single-flight with a queued "latest requested epoch" marker so a long autopilot run emitting
-   * an advance per committed event collapses into a bounded refresh rate, while never losing the
-   * final refresh. Failures and load-more collisions reschedule instead of dropping the request.
-   */
-  const requestedHistoryEpochRef = useRef(0);
-  const refreshedHistoryEpochRef = useRef(0);
-  const historyRefreshInFlightRef = useRef(false);
-
-  const lastHistoryRefreshAtRef = useRef(0);
-
-  const runHistoryRefresh = useCallback(() => {
-    if (historyRefreshTimerRef.current != null) return;
-    if (requestedHistoryEpochRef.current <= refreshedHistoryEpochRef.current) return;
-    if (historyRefreshInFlightRef.current || loadingMoreRef.current) return;
-
-    const dispatch = () => {
-      if (!sessionIdRef.current) return;
-      if (historyRefreshInFlightRef.current || loadingMoreRef.current) {
-        // Retry once the reader is free; the marker keeps the pending request alive.
-        historyRefreshTimerRef.current = setTimeout(() => {
-          historyRefreshTimerRef.current = null;
-          runHistoryRefresh();
-        }, HISTORY_REFRESH_THROTTLE_MS);
-        return;
-      }
-      const targetEpoch = requestedHistoryEpochRef.current;
-      historyRefreshInFlightRef.current = true;
-      lastHistoryRefreshAtRef.current = Date.now();
-      void loadAndReconnectRef.current({ background: true, silent: true })
-        .then(() => {
-          refreshedHistoryEpochRef.current = targetEpoch;
-        })
-        .finally(() => {
-          historyRefreshInFlightRef.current = false;
-          runHistoryRefresh();
-        });
-    };
-
-    // Leading edge: the first advance after a quiet period lands immediately.
-    const sinceLast = Date.now() - lastHistoryRefreshAtRef.current;
-    if (sinceLast >= HISTORY_REFRESH_THROTTLE_MS) {
-      dispatch();
-      return;
-    }
-    historyRefreshTimerRef.current = setTimeout(() => {
-      historyRefreshTimerRef.current = null;
-      dispatch();
-    }, HISTORY_REFRESH_THROTTLE_MS - sinceLast);
-  }, []);
-
-  useEffect(() => {
-    if (!sessionId || historicalMode || historyEpoch === 0) return;
-    requestedHistoryEpochRef.current = historyEpoch;
-    runHistoryRefresh();
-  }, [historicalMode, historyEpoch, runHistoryRefresh, sessionId]);
-
-  useEffect(() => {
-    requestedHistoryEpochRef.current = 0;
-    refreshedHistoryEpochRef.current = 0;
-    historyRefreshInFlightRef.current = false;
-    lastHistoryRefreshAtRef.current = 0;
-    return () => {
-      if (historyRefreshTimerRef.current != null) {
-        clearTimeout(historyRefreshTimerRef.current);
-        historyRefreshTimerRef.current = null;
-      }
-    };
-  }, [sessionId]);
+  // The server truncated this session's history (an undo, or a quiet defer replacing its own
+  // tail), so nothing that is loaded can be trusted, nor anything a finished run left on screen.
+  useCounterAdvance(sessionId, historySignal, () => {
+    if (historicalMode) return;
+    dropFinishedRunOutput();
+    historyRef.current.refresh({ window: true });
+  });
+  // Committed history moved on disk. Reading the newest entries is enough, a finished run
+  // included: re-reading the whole window costs more the further back the reader has scrolled.
+  useCounterAdvance(sessionId, historyEpoch, () => {
+    if (!historicalMode) historyRef.current.refresh({ silent: true });
+  });
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
-
-  useEffect(() => {
-    entriesRef.current = entries;
-  }, [entries]);
-
-  useEffect(() => {
-    refreshingHistoryRef.current = refreshingHistory;
-  }, [refreshingHistory]);
 
   const [showHistorySync, setShowHistorySync] = useState(false);
   useEffect(() => {
@@ -1681,15 +1580,12 @@ export default function ChatView({
         if (isStale()) return;
         if (total < before) {
           // History shrank under the loaded window, so its indexes no longer line up with disk.
-          void loadAndReconnectRef.current({ background: true, replace: true, silent: true });
+          historyRef.current.refresh({ window: true, silent: true });
           return;
         }
-        const nextEntries = [...older, ...entriesRef.current];
-        const nextFirstItemIndex = before - older.length;
-        applyHistory(nextEntries, {
+        applyHistory([...older, ...entriesRef.current], {
           ownerSessionId: requestSessionId,
-          firstItemIndex: nextFirstItemIndex,
-          total: Math.max(total, nextFirstItemIndex + nextEntries.length),
+          firstItemIndex: before - older.length,
           keepViewport: true,
         });
       })
@@ -1800,7 +1696,7 @@ export default function ChatView({
         updateOptimisticMessageDelivery(messageId, ownerSessionId, undefined);
       }
       if (ownerSessionId === null && sessionIdRef.current) {
-        loadAndReconnectRef.current({ background: true, replace: true });
+        historyRef.current.refresh({ window: true });
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
@@ -1866,7 +1762,7 @@ export default function ChatView({
 
     if (!sessionId) return;
     onDraftClear?.();
-    invalidateHistoryRefresh();
+    historyRef.current.abandonVisibleRefresh();
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
     const messageMode = isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE);
@@ -1885,7 +1781,6 @@ export default function ChatView({
     composerKey,
     creating,
     deliverOptimisticMessage,
-    invalidateHistoryRefresh,
     isStreaming,
     loading,
     onCreateAndSend,
@@ -2533,24 +2428,25 @@ export default function ChatView({
     try {
       await undoSessionTurn(targetSessionId, undoEventId);
       if (sessionIdRef.current !== targetSessionId) return;
+      // A turn that just ran is on screen twice over: as history, and as what its run left behind.
+      dropFinishedRunOutput();
       const boundaryIndex = entriesRef.current.findIndex(
         (entry) => isChatMessageEntry(entry) && entry.undoEventId === undoEventId,
       );
       if (boundaryIndex >= 0) {
         const nextEntries = entriesRef.current.slice(0, boundaryIndex);
         applyHistory(nextEntries, {
-          total: firstItemIndex.current + nextEntries.length,
           lastVisibleActivityAt: getLatestEntryActivityTimestamp(nextEntries) ?? null,
         });
       }
-      loadAndReconnectRef.current({ background: true, replace: true });
+      historyRef.current.refresh({ window: true });
     } catch (error) {
       console.error("Failed to undo chat turn:", error);
       setUndoError(`Undo failed: ${getErrorMessage(error)}`);
     } finally {
       setUndoingEventId((current) => current === undoEventId ? null : current);
     }
-  }, [applyHistory, sessionId]);
+  }, [applyHistory, dropFinishedRunOutput, sessionId]);
 
   const handleUndoMessageMenu = useCallback(() => {
     const target = messageMenuTarget;
@@ -2972,7 +2868,7 @@ export default function ChatView({
           <p className="text-base font-medium text-error">{historicalLoadError}</p>
           <p className="max-w-lg text-sm text-text-muted">Bridge did not resume the session or substitute another history window.</p>
           <div className="flex flex-wrap justify-center gap-2">
-            <Button onClick={() => loadAndReconnectRef.current()}>Retry</Button>
+            <Button onClick={() => historyRef.current.load()}>Retry</Button>
             {returnToSearch && <Button variant="ghost" onClick={() => navigate(returnToSearch)}>Back to results</Button>}
           </div>
         </div>

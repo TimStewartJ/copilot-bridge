@@ -24,7 +24,6 @@ describe("chat cache", () => {
         sessionId: `session-${index}`,
         entries: [message(`entry-${index}`)],
         firstItemIndex: 0,
-        total: 1,
         fetchedAt: index,
       });
     }
@@ -42,20 +41,33 @@ describe("chat cache", () => {
       sessionId: "session-1",
       entries: [message("older")],
       firstItemIndex: 0,
-      total: 1,
       fetchedAt: 1,
     });
     setCachedChatSnapshot(client, {
       sessionId: "session-1",
       entries: [message("newer")],
       firstItemIndex: 0,
-      total: 1,
       fetchedAt: 2,
     });
 
     expect(getCachedChatSnapshot(client, "session-1")).toMatchObject({
       entries: [{ content: "newer" }],
     });
+  });
+
+  it("keeps only the newest entries of a long window and moves its start to match", () => {
+    const client = new QueryClient();
+    setCachedChatSnapshot(client, {
+      sessionId: "session-1",
+      entries: Array.from({ length: 250 }, (_, index) => message(`entry-${50 + index}`)),
+      firstItemIndex: 50,
+      fetchedAt: 1,
+    });
+
+    const snapshot = getCachedChatSnapshot(client, "session-1");
+    expect(snapshot?.entries).toHaveLength(200);
+    expect(snapshot?.entries[0]).toEqual(message("entry-100"));
+    expect(snapshot?.firstItemIndex).toBe(100);
   });
 });
 
@@ -75,7 +87,6 @@ describe("replaceHistoryWindow", () => {
       "entry-2",
       "entry-3",
     ]);
-    expect(result.total).toBe(4);
     expect(result.hasGap).toBe(false);
   });
 
