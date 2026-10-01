@@ -144,6 +144,22 @@ describe("TaskRail navigation attention", () => {
     expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-accent");
   });
 
+  it("pads the list inside its scroller, so sticky edge controls reach the scroller's edges", async () => {
+    await renderRail({ expanded: true, tasks: [createTask()] });
+    const className = (node: any): string => getReactProps(node)?.className ?? "";
+    const newTask = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.trim() === "New task");
+    const content = newTask?.parentNode;
+    let scroller = content;
+    while (scroller && !/\boverflow-y-auto\b/.test(className(scroller))) scroller = scroller.parentNode;
+
+    // A sticky box stops at its scroller's top and bottom padding, which leaves a strip of rows
+    // showing past the unread band or the reorder bar.
+    expect(className(scroller)).toMatch(/\boverflow-y-auto\b/);
+    expect(className(scroller)).not.toMatch(/(^|[\s:])(p|py|pt|pb)-/);
+    expect(content).not.toBe(scroller);
+    expect(className(content)).toMatch(/(^|\s)(p|py)-\S/);
+  });
+
   it("offers All tasks as navigation and keeps set-aside tasks out of the working list", async () => {
     const onOpenAllTasks = vi.fn();
     await renderRail({
