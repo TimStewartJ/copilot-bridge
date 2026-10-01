@@ -371,12 +371,10 @@ describe("Task routes", () => {
     expect(ctx.taskStore.listTasks().map((task) => task.id)).toEqual(beforeIds);
   });
 
-  it("POST /api/tasks does not leave an empty task when the initial link fails", async () => {
-    const beforeIds = ctx.taskStore.listTasks().map((task) => task.id);
-    const linkSpy = vi.spyOn(ctx.taskStore, "linkWorkItem")
-      .mockImplementationOnce(() => {
-        throw new Error("link failed");
-      });
+  it("POST /api/tasks creates the task and its links together or not at all", async () => {
+    ctx.taskStore.createTask("Already here");
+    const before = ctx.taskStore.listTasks().map((task) => [task.id, task.order]);
+    const restore = failOnStatement("INTO task_work_items");
     try {
       const res = await request(app)
         .post("/api/tasks")
@@ -386,11 +384,12 @@ describe("Task routes", () => {
         });
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toContain("link failed");
-      expect(ctx.taskStore.listTasks().map((task) => task.id)).toEqual(beforeIds);
+      expect(res.body.error).toContain("injected write failure");
     } finally {
-      linkSpy.mockRestore();
+      restore();
     }
+    // No task without the work it was created for, and no other task moved to make room for it.
+    expect(ctx.taskStore.listTasks().map((task) => [task.id, task.order])).toEqual(before);
   });
 
   it("POST /api/tasks/:id/link links a work item", async () => {

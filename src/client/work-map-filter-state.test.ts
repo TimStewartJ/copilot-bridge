@@ -1,9 +1,13 @@
+import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createReactDomHarness } from "./test-react-harness";
 import {
   DEFAULT_WORK_MAP_FILTERS,
   loadWorkMapFilters,
   saveWorkMapFilters,
+  useWorkMapFilters,
   WORK_MAP_FILTERS_STORAGE_KEY,
+  type WorkMapFilters,
 } from "./work-map-filter-state";
 
 function stubLocalStorage(initial: Record<string, string> = {}) {
@@ -30,7 +34,6 @@ describe("Work Map filter persistence", () => {
   it("round-trips every filter", () => {
     const storage = stubLocalStorage();
     const filters = {
-      view: "clusters" as const,
       search: "bridge",
       assignedToMeOnly: true,
       openAdoOnly: true,
@@ -55,7 +58,8 @@ describe("Work Map filter persistence", () => {
   it("keeps valid fields while defaulting unsupported values", () => {
     stubLocalStorage({
       [WORK_MAP_FILTERS_STORAGE_KEY]: JSON.stringify({
-        view: "graph",
+        // Saved by a version that still had a second layout.
+        view: "clusters",
         search: "ADO",
         assignedToMeOnly: "yes",
         openAdoOnly: true,
@@ -66,12 +70,33 @@ describe("Work Map filter persistence", () => {
     });
 
     expect(loadWorkMapFilters()).toEqual({
-      view: "tree",
       search: "ADO",
       assignedToMeOnly: false,
       openAdoOnly: true,
       gapsOnly: false,
       includeArchived: false,
     });
+  });
+
+  it("starts from the saved filters and saves each change", async () => {
+    const storage = stubLocalStorage({
+      [WORK_MAP_FILTERS_STORAGE_KEY]: JSON.stringify({ search: "SDL", openAdoOnly: true }),
+    });
+    const harness = await createReactDomHarness();
+    let current: [WorkMapFilters, (change: Partial<WorkMapFilters>) => void] | undefined;
+    function Probe() {
+      current = useWorkMapFilters();
+      return null;
+    }
+    await harness.render(createElement(Probe));
+
+    expect(current?.[0]).toEqual({ ...DEFAULT_WORK_MAP_FILTERS, search: "SDL", openAdoOnly: true });
+
+    await harness.act(async () => {
+      current?.[1]({ gapsOnly: true, search: "" });
+    });
+
+    expect(current?.[0]).toEqual({ ...DEFAULT_WORK_MAP_FILTERS, openAdoOnly: true, gapsOnly: true });
+    expect(JSON.parse(storage.setItem.mock.calls.at(-1)?.[1] ?? "{}")).toEqual(current?.[0]);
   });
 });

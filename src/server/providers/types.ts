@@ -2,9 +2,11 @@
 // Providers (ADO, GitHub, etc.) implement this to enrich work items and PRs
 
 import type { PRRef } from "../task-store.js";
+import type { WorkItemRelationType } from "../../shared/work-map.js";
 
 // Re-export for convenience
 export type { WorkItemRef, PRRef } from "../task-store.js";
+export type { WorkItemRelationType } from "../../shared/work-map.js";
 
 export type ProviderName = "ado" | "github" | "linear";
 
@@ -39,35 +41,22 @@ export interface WorkItemPullRequestLink {
   prId: number;
 }
 
-/**
- * A link between two work items, as the source item reports it. Parent/child come from the ADO
- * hierarchy; predecessor/successor from dependency links; duplicate names the item that duplicates
- * this one and duplicateOf the item this one duplicates.
- */
-export type WorkItemRelationType =
-  | "parent"
-  | "child"
-  | "related"
-  | "predecessor"
-  | "successor"
-  | "duplicate"
-  | "duplicateOf";
-
 export interface WorkItemRelation {
   workItemId: string;
   type: WorkItemRelationType;
   targetId: string;
 }
 
-export interface WorkItemPullRequestLinksResult {
-  links: WorkItemPullRequestLink[];
-  /** Work item to work item links of the requested work items, when the provider reports them. */
-  workItemRelations?: WorkItemRelation[];
+/** The links work items report. Warnings name failures that a later refresh can clear. */
+export interface WorkItemLinksResult {
+  pullRequests: WorkItemPullRequestLink[];
+  relations: WorkItemRelation[];
   warnings: string[];
 }
 
-export interface WorkItemRelationsResult {
-  relations: WorkItemRelation[];
+/** The work items pull requests report. */
+export interface PullRequestLinksResult {
+  links: WorkItemPullRequestLink[];
   warnings: string[];
 }
 
@@ -87,13 +76,6 @@ export interface WorkTrackingProvider {
 
   fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]>;
   fetchPullRequests(prs: PRRef[]): Promise<EnrichedPR[]>;
-  fetchWorkItemPullRequestLinks?(
-    workItemIds: string[],
-    pullRequests: PRRef[],
-  ): Promise<WorkItemPullRequestLinksResult>;
-  fetchWorkItemRelations?(workItemIds: string[]): Promise<WorkItemRelationsResult>;
-  fetchCurrentUser?(): Promise<WorkTrackingIdentity | null>;
-  fetchAssignedWorkItemIds?(): Promise<AssignedWorkItemsResult>;
 
   getWorkItemUrl(id: string): string;
   getPullRequestUrl(pr: PRRef): string;

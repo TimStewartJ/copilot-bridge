@@ -1,9 +1,8 @@
-import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { EnrichedWorkItem, Task, TaskGroup } from "../api";
 import { useSettingsQuery } from "../hooks/queries/useSettings";
 import { useWorkMapQuery } from "../hooks/queries/useWorkMap";
-import { loadWorkMapFilters } from "../work-map-filter-state";
+import { useWorkMapFilters } from "../work-map-filter-state";
 import NativeHome from "./NativeHome";
 import AllTasks from "./AllTasks";
 import { useIsMobile } from "../useIsMobile";
@@ -27,9 +26,8 @@ export default function Dashboard(props: DashboardProps) {
   const mapActive = location.pathname === "/dashboard/work-map";
   const tasksActive = location.pathname === ALL_TASKS_PATH;
   const isMobile = useIsMobile();
-  const [includeArchived, setIncludeArchived] = useState(() => loadWorkMapFilters().includeArchived);
-  const [assignedToMe, setAssignedToMe] = useState(() => loadWorkMapFilters().assignedToMeOnly);
-  const map = useWorkMapQuery(mapActive && !!settings?.providers?.ado, includeArchived, assignedToMe);
+  const [mapFilters, changeMapFilters] = useWorkMapFilters();
+  const map = useWorkMapQuery(mapActive && !!settings?.providers?.ado, mapFilters.includeArchived, mapFilters.assignedToMeOnly);
   return <div className="flex flex-1 min-h-0 flex-col">
     {settings?.providers?.ado && <nav aria-label="Home and work map" className={cx(DS.surface.pane, "flex shrink-0 gap-2 border-b border-border px-4 py-2")}>
       <Button variant="ghost" size="sm" aria-current={!mapActive && !tasksActive ? "page" : undefined} onClick={() => navigate("/dashboard/home")}>Home</Button>
@@ -37,9 +35,7 @@ export default function Dashboard(props: DashboardProps) {
       <Button id="dashboard-work-map-tab" aria-controls="dashboard-work-map-panel" variant="ghost" size="sm" aria-current={mapActive ? "page" : undefined} onClick={() => navigate("/dashboard/work-map")}>Work map</Button>
     </nav>}
     {mapActive ? <div className="flex-1 min-h-0 overflow-auto"><div className={cx(DS.layout.pageColumn, "max-w-7xl")}>
-      <DashboardWorkMap active data={map.data} isLoading={map.isLoading} error={map.error} isRefreshing={map.isRefreshing}
-        onRefresh={map.refresh} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived}
-        assignedToMeOnly={assignedToMe} onAssignedToMeChange={setAssignedToMe}
+      <DashboardWorkMap map={map} filters={mapFilters} onFiltersChange={changeMapFilters}
         onSelectTask={props.onSelectTask} onCreateTaskForWorkItems={props.onCreateTaskForWorkItems} />
     </div></div> : tasksActive ? <AllTasks compact={isMobile} onBack={() => navigate("/dashboard/home")} onSelectTask={id => props.onSelectTask(id)} scrollRestoration={props.scrollRestoration} /> : <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
   </div>;

@@ -60,6 +60,7 @@ import {
 } from "../shared/session-fork.js";
 import type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
 import type { PromptProfileId, PromptProfileSetting } from "../shared/prompt-profiles.js";
+import type { WorkMapData, WorkMapProgress } from "../shared/work-map.js";
 export type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
 export type { SessionForkJob, SessionForkJobStatus, StartSessionForkResponse } from "../shared/session-fork.js";
 export type { McpServerConfig };
@@ -670,64 +671,15 @@ export type WorkReferencePreview =
   | { kind: "workItem"; workItem: EnrichedWorkItem }
   | { kind: "pullRequest"; pullRequest: EnrichedPR };
 
-export interface WorkMapTask {
-  id: string;
-  title: string;
-  kind: Task["kind"];
-  status: Task["status"];
-  deferred: boolean;
-  priority: number;
-  nextAction: string | null;
-  waitingOn: string | null;
-}
-
-export type WorkMapRelationType =
-  | "parent"
-  | "child"
-  | "related"
-  | "predecessor"
-  | "successor"
-  | "duplicate"
-  | "duplicateOf";
-
-export interface WorkMapRelation {
-  type: WorkMapRelationType;
-  workItemId: string;
-}
-
-export interface WorkMapWorkItem extends EnrichedWorkItem {
-  taskIds: string[];
-  pullRequestKeys: string[];
-  assignedToCurrentUser: boolean;
-  /** Links to other work items. Absent from responses of servers older than the hierarchy view. */
-  relations?: WorkMapRelation[];
-}
-
-/** An ancestor or linked work item that places Bridge work in the ADO hierarchy. */
-export interface WorkMapContextWorkItem extends EnrichedWorkItem {
-  relations: WorkMapRelation[];
-}
-
-export interface WorkMapPullRequest extends EnrichedPR {
-  key: string;
-  taskIds: string[];
-  workItemIds: string[];
-}
-
-export interface WorkMapData {
-  enabled: boolean;
-  includeArchived: boolean;
-  assignedToMe: boolean;
-  currentUser: { displayName: string } | null;
-  org: string | null;
-  project: string | null;
-  generatedAt: string;
-  tasks: WorkMapTask[];
-  workItems: WorkMapWorkItem[];
-  contextWorkItems?: WorkMapContextWorkItem[];
-  pullRequests: WorkMapPullRequest[];
-  warnings: string[];
-}
+export type {
+  WorkMapContextWorkItem,
+  WorkMapData,
+  WorkMapProgress,
+  WorkMapPullRequest,
+  WorkMapRelation,
+  WorkMapTask,
+  WorkMapWorkItem,
+} from "../shared/work-map.js";
 
 export interface SessionStorageWarning {
   code: "missing" | "partial";
@@ -2028,17 +1980,36 @@ export async function fetchDashboard(): Promise<DashboardChecklistData> {
   return apiFetch<DashboardChecklistData>("/api/dashboard/focus");
 }
 
-export async function fetchWorkMap(options: {
-  forceRefresh?: boolean;
-  includeArchived?: boolean;
-  assignedToMe?: boolean;
-} = {}): Promise<WorkMapData> {
+function workMapQuery(options: { forceRefresh?: boolean; includeArchived?: boolean; assignedToMe?: boolean }): string {
   const query = new URLSearchParams();
   if (options.forceRefresh) query.set("refresh", "1");
   if (options.includeArchived) query.set("includeArchived", "1");
   if (options.assignedToMe) query.set("assignedToMe", "1");
-  const suffix = query.size > 0 ? `?${query.toString()}` : "";
-  return apiFetch<WorkMapData>(`/api/dashboard/work-map${suffix}`);
+  return query.size > 0 ? `?${query.toString()}` : "";
+}
+
+export async function fetchWorkMap(options: {
+  /** Asks ADO again instead of answering from what the server remembers. */
+  forceRefresh?: boolean;
+  includeArchived?: boolean;
+  assignedToMe?: boolean;
+  signal?: AbortSignal;
+} = {}): Promise<WorkMapData> {
+  return apiFetch<WorkMapData>(`/api/dashboard/work-map${workMapQuery(options)}`, undefined, { signal: options.signal });
+}
+
+/** How far the server is with the map for these filters, or null when it is not building one. */
+export async function fetchWorkMapProgress(options: {
+  includeArchived?: boolean;
+  assignedToMe?: boolean;
+  signal?: AbortSignal;
+}): Promise<WorkMapProgress | null> {
+  const data = await apiFetch<{ progress: WorkMapProgress | null }>(
+    `/api/dashboard/work-map/progress${workMapQuery(options)}`,
+    undefined,
+    { signal: options.signal, reportTelemetry: false },
+  );
+  return data.progress;
 }
 
 export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_metrics" | "parse_error";

@@ -99,9 +99,9 @@ describe("AdoProvider", () => {
     };
     const fetchMock = getFetchMock();
     fetchMock.mockResolvedValueOnce(jsonResponse({
-      repository: { name: "AzureStack-ZTP-OOBE" },
+      repository: { id: prRef.repoId, name: "AzureStack-ZTP-OOBE" },
       title: "Remove eastus2euap from Arc region dropdown",
-      status: "completed",
+      status: "active",
       createdBy: { displayName: "Tim Stewart" },
       reviewers: [{}, {}],
     }));
@@ -123,13 +123,14 @@ describe("AdoProvider", () => {
         prId: 15404546,
         provider: "ado",
         title: "Remove eastus2euap from Arc region dropdown",
-        status: "completed",
+        status: "active",
         createdBy: "Tim Stewart",
         reviewerCount: 2,
         url: "https://msazure.visualstudio.com/One/_git/AzureStack-ZTP-OOBE/pullrequest/15404546",
       },
     ]);
     expect(stale).toEqual(fresh);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("drops stale work item data after the stale window expires", async () => {
@@ -181,9 +182,9 @@ describe("AdoProvider", () => {
     };
     const fetchMock = getFetchMock();
     fetchMock.mockResolvedValueOnce(jsonResponse({
-      repository: { name: "AzureStack-ZTP-OOBE" },
+      repository: { id: prRef.repoId, name: "AzureStack-ZTP-OOBE" },
       title: "Remove eastus2euap from Arc region dropdown",
-      status: "completed",
+      status: "active",
       createdBy: { displayName: "Tim Stewart" },
       reviewers: [{}, {}],
     }));
@@ -215,6 +216,10 @@ describe("AdoProvider", () => {
         url: "https://msazure.visualstudio.com/One/_git/AzureStack-ZTP-OOBE/pullrequest/15404546",
       },
     ]);
+
+    // The answer is remembered, so the build that reads this pull request twice asks once.
+    await expect(provider.fetchPullRequests([prRef])).resolves.toEqual(missing);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("clearProviderCache clears ADO stale caches alongside provider instances", async () => {
@@ -267,7 +272,7 @@ describe("AdoProvider", () => {
       })
       .mockReturnValueOnce("retry-token\n");
     getFetchMock().mockResolvedValue(jsonResponse({
-      repository: { name: "AzureStack-ZTP-OOBE" },
+      repository: { id: "503e1343-325a-43f5-a33b-04405569f3d5", name: "AzureStack-ZTP-OOBE" },
       title: "Cherry-pick PR",
       status: "completed",
       createdBy: { displayName: "Tim Stewart" },
@@ -360,7 +365,7 @@ describe("AdoProvider", () => {
       const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
       if (auth === "Bearer stale-token") return htmlResponse();
       return jsonResponse({
-        repository: { name: "AzureStack-ZTP-OOBE" },
+        repository: { id: "503e1343-325a-43f5-a33b-04405569f3d5", name: "AzureStack-ZTP-OOBE" },
         title: "Recovered PR",
         status: "active",
         createdBy: { displayName: "Tim Stewart" },
@@ -398,15 +403,15 @@ describe("AdoProvider", () => {
             },
             relations: [{
               rel: "ArtifactLink",
-              url: "vstfs:///Git/PullRequestId/project-id%2Frepo-id%2F42",
+              url: "vstfs:///Git/PullRequestId/project-id%2Fe428a0f8-c480-4d71-af51-6ecc94225b14%2F42",
               attributes: { name: "Pull Request" },
             }],
           }],
         });
       }
-      if (url === "https://dev.azure.com/msazure/_apis/git/repositories/repo-id/pullrequests/42?includeWorkItemRefs=true&api-version=7.1") {
+      if (url === "https://dev.azure.com/msazure/_apis/git/repositories/e428a0f8-c480-4d71-af51-6ecc94225b14/pullrequests/42?includeWorkItemRefs=true&api-version=7.1") {
         return jsonResponse({
-          repository: { id: "repo-id", name: "copilot-bridge" },
+          repository: { id: "e428a0f8-c480-4d71-af51-6ecc94225b14", name: "copilot-bridge" },
           title: "Add work map",
           status: "active",
           createdBy: { displayName: "Tim Stewart" },
@@ -418,16 +423,23 @@ describe("AdoProvider", () => {
     });
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
-    const pr = { repoId: "repo-id", repoName: "copilot-bridge", prId: 42, provider: "ado" as const };
+    const pr = { repoId: "e428a0f8-c480-4d71-af51-6ecc94225b14", repoName: "copilot-bridge", prId: 42, provider: "ado" as const };
 
-    const result = await provider.fetchWorkItemPullRequestLinks(["123"], [pr]);
+    const [fromWorkItems, fromPullRequests] = await Promise.all([
+      provider.fetchWorkItemLinks(["123"]),
+      provider.fetchPullRequestWorkItems([pr]),
+    ]);
 
-    expect(result).toEqual({
+    expect(fromWorkItems).toEqual({
+      pullRequests: [{ workItemId: "123", repoId: "e428a0f8-c480-4d71-af51-6ecc94225b14", prId: 42 }],
+      relations: [],
+      warnings: [],
+    });
+    expect(fromPullRequests).toEqual({
       links: [
-        { workItemId: "123", repoId: "repo-id", prId: 42 },
-        { workItemId: "456", repoId: "repo-id", prId: 42 },
+        { workItemId: "123", repoId: "e428a0f8-c480-4d71-af51-6ecc94225b14", prId: 42 },
+        { workItemId: "456", repoId: "e428a0f8-c480-4d71-af51-6ecc94225b14", prId: 42 },
       ],
-      workItemRelations: [],
       warnings: [],
     });
     expect((await provider.fetchWorkItems(["123"]))[0]?.title).toBe("Bridge work map");
@@ -435,51 +447,49 @@ describe("AdoProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("reads work item links from the same relations payload and reuses them for hierarchy lookups", async () => {
+  it("reads the links between work items from one relations payload and remembers them", async () => {
     const fetchMock = getFetchMock();
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/_apis/wit/workitems?")) {
-        return jsonResponse({
-          value: [{
-            id: 123,
-            fields: { "System.Title": "Child task", "System.State": "Active", "System.WorkItemType": "Task" },
-            relations: [
-              { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/100" },
-              { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/124" },
-              { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/200" },
-              { rel: "System.LinkTypes.Dependency-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/201" },
-              { rel: "System.LinkTypes.Dependency-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/202" },
-              { rel: "System.LinkTypes.Duplicate-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/203" },
-              { rel: "System.LinkTypes.Duplicate-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/204" },
-              { rel: "Microsoft.VSTS.Common.TestedBy-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/205" },
-              { rel: "Hyperlink", url: "https://example.test/_apis/wit/workItems/206" },
-              { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/123" },
-            ],
-          }],
-        });
-      }
-      throw new Error(`Unexpected ADO URL: ${url}`);
-    });
+    fetchMock.mockImplementation(async () => jsonResponse({
+      value: [{
+        id: 123,
+        fields: { "System.Title": "Child task", "System.State": "Active", "System.WorkItemType": "Task" },
+        relations: [
+          { rel: "System.LinkTypes.Hierarchy-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/100" },
+          { rel: "System.LinkTypes.Hierarchy-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/124" },
+          { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/200" },
+          { rel: "System.LinkTypes.Dependency-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/201" },
+          { rel: "System.LinkTypes.Dependency-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/202" },
+          { rel: "System.LinkTypes.Duplicate-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/203" },
+          { rel: "System.LinkTypes.Duplicate-Reverse", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/204" },
+          { rel: "Microsoft.VSTS.Common.TestedBy-Forward", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/205" },
+          { rel: "Hyperlink", url: "https://example.test/_apis/wit/workItems/206" },
+          { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/msazure/project-guid/_apis/wit/workItems/123" },
+        ],
+      }],
+    }));
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
 
-    const result = await provider.fetchWorkItemPullRequestLinks(["123"], []);
-    const relations = await provider.fetchWorkItemRelations(["123"]);
+    const first = await provider.fetchWorkItemLinks(["123"]);
+    const again = await provider.fetchWorkItemLinks(["123", "123"]);
 
-    const expected = [
-      { workItemId: "123", type: "parent", targetId: "100" },
-      { workItemId: "123", type: "child", targetId: "124" },
-      { workItemId: "123", type: "related", targetId: "200" },
-      { workItemId: "123", type: "predecessor", targetId: "201" },
-      { workItemId: "123", type: "successor", targetId: "202" },
-      { workItemId: "123", type: "duplicate", targetId: "203" },
-      { workItemId: "123", type: "duplicateOf", targetId: "204" },
-    ];
-    expect(result.links).toEqual([]);
-    expect(result.workItemRelations).toEqual(expected);
-    expect(relations).toEqual({ relations: expected, warnings: [] });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(first).toEqual({
+      pullRequests: [],
+      relations: [
+        { workItemId: "123", type: "parent", targetId: "100" },
+        { workItemId: "123", type: "child", targetId: "124" },
+        { workItemId: "123", type: "related", targetId: "200" },
+        { workItemId: "123", type: "predecessor", targetId: "201" },
+        { workItemId: "123", type: "successor", targetId: "202" },
+        { workItemId: "123", type: "duplicate", targetId: "203" },
+        { workItemId: "123", type: "duplicateOf", targetId: "204" },
+      ],
+      warnings: [],
+    });
+    expect(again).toEqual(first);
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      "https://dev.azure.com/msazure/One/_apis/wit/workitems?ids=123&$expand=Relations&errorPolicy=omit&api-version=7.1",
+    ]);
   });
 
   it("fetches pull requests from any project by organization-wide id, including name-only chat links", async () => {
@@ -501,20 +511,21 @@ describe("AdoProvider", () => {
     });
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
+    const nameOnly = {
+      repoId: "SFFLinux-OS-Composition",
+      repoName: "SFFLinux-OS-Composition",
+      prId: 15553686,
+      provider: "ado" as const,
+    };
 
     const result = await provider.fetchPullRequests([
       {
-        repoId: "ccb450bd-2048-42d2-864d-320ac5718687",
+        repoId: "CCB450BD-2048-42D2-864D-320AC5718687",
         repoName: "SFFLinux-OS-Composition",
         prId: 17135261,
         provider: "ado",
       },
-      {
-        repoId: "SFFLinux-OS-Composition",
-        repoName: "SFFLinux-OS-Composition",
-        prId: 15553686,
-        provider: "ado",
-      },
+      nameOnly,
     ]);
 
     expect(fetchMock.mock.calls.map(([input]) => String(input)).sort()).toEqual([
@@ -523,7 +534,7 @@ describe("AdoProvider", () => {
     ]);
     expect(result).toEqual([
       {
-        repoId: "ccb450bd-2048-42d2-864d-320ac5718687",
+        repoId: "CCB450BD-2048-42D2-864D-320AC5718687",
         repoName: "SFFLinux-OS-Composition",
         prId: 17135261,
         provider: "ado",
@@ -540,39 +551,87 @@ describe("AdoProvider", () => {
         url: "https://msazure.visualstudio.com/msk8s/_git/SFFLinux-OS-Composition/pullrequest/15553686",
       }),
     ]);
+
+    // The route that lists a pull request's work items takes the repository's GUID. Without one,
+    // no work items are reported and ADO is not sent a request it would reject.
+    await expect(provider.fetchPullRequestWorkItems([nameOnly])).resolves.toEqual({ links: [], warnings: [] });
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("/repositories/"))).toEqual([]);
   });
 
-  it("reports relationship refresh failures instead of silently returning an empty graph", async () => {
-    getFetchMock().mockResolvedValue(new Response(JSON.stringify({ message: "Unavailable" }), {
-      status: 503,
-      statusText: "Service Unavailable",
-      headers: { "content-type": "application/json; charset=utf-8" },
+  it("does not show this organization's pull request for a link saved from another one", async () => {
+    const fetchMock = getFetchMock();
+    // Pull request 29903 exists in this organization too, in a different repository.
+    fetchMock.mockResolvedValue(jsonResponse({
+      repository: { id: "fb0b6d86-71f7-432d-ae35-cb75e21a97de", name: "AzureStack-Solution-Deploy", project: { name: "One" } },
+      title: "Update Test VHD to fix build break",
+      status: "completed",
+      createdBy: { displayName: "Someone Else" },
+      reviewers: [],
     }));
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
+    const link = {
+      repoId: "b27864cd-e9b9-462b-ab91-a6f00e7f54a4",
+      repoName: "https://dev.azure.com/1esgitops/agency/_git/agency",
+      prId: 29903,
+      provider: "ado" as const,
+    };
 
-    const result = await provider.fetchWorkItemPullRequestLinks(["123"], []);
+    const details = await provider.fetchPullRequests([link]);
 
-    expect(result.links).toEqual([]);
-    expect(result.warnings).toEqual([
-      "Some ADO work item relationships could not be refreshed.",
-    ]);
+    expect(details).toEqual([{
+      repoId: link.repoId,
+      repoName: link.repoName,
+      prId: 29903,
+      provider: "ado",
+      title: null,
+      status: null,
+      createdBy: null,
+      reviewerCount: 0,
+      // The saved repository URL still opens the pull request that was linked.
+      url: "https://dev.azure.com/1esgitops/agency/_git/agency/pullrequest/29903",
+    }]);
+    // Not being in this organization is not a failed refresh, and is not asked about again.
+    await expect(provider.fetchPullRequestWorkItems([link])).resolves.toEqual({ links: [], warnings: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("isolates an unreadable work item instead of losing the rest of an ADO batch", async () => {
+  it("treats a pull request ADO cannot find as missing, and any other failure as a refresh to retry", async () => {
+    const pr = { repoId: "503e1343-325a-43f5-a33b-04405569f3d5", repoName: "AzureStack-ZTP-OOBE", prId: 7, provider: "ado" as const };
+    const respond = (status: number) => new Response(JSON.stringify({ message: "No" }), {
+      status,
+      statusText: "No",
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+    const fetchMock = getFetchMock();
+    fetchMock.mockImplementation(async () => respond(404));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    await expect(provider.fetchPullRequestWorkItems([pr])).resolves.toEqual({ links: [], warnings: [] });
+    await expect(provider.fetchPullRequestWorkItems([pr])).resolves.toEqual({ links: [], warnings: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockImplementation(async () => respond(503));
+    await expect(provider.fetchPullRequestWorkItems([{ ...pr, prId: 8 }])).resolves.toEqual({
+      links: [],
+      warnings: ["Some ADO pull requests could not be refreshed."],
+    });
+    await expect(provider.fetchWorkItemLinks(["123"])).resolves.toEqual({
+      pullRequests: [],
+      relations: [],
+      warnings: ["Some ADO work items could not be refreshed."],
+    });
+  });
+
+  it("leaves a work item ADO does not return as a stub, without failing its batch or warning", async () => {
     const fetchMock = getFetchMock();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
-      if (ids.includes("999")) {
-        return new Response(JSON.stringify({ message: "Work item 999 is unavailable" }), {
-          status: 404,
-          statusText: "Not Found",
-          headers: { "content-type": "application/json; charset=utf-8" },
-        });
-      }
+      // With errorPolicy=omit ADO answers with a hole where a work item cannot be read.
       return jsonResponse({
-        value: ids.map((id) => ({
+        value: ids.map((id) => (id === "999" ? null : {
           id: Number(id),
           fields: {
             "System.Title": `Work item ${id}`,
@@ -590,15 +649,135 @@ describe("AdoProvider", () => {
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
 
-    const result = await provider.fetchWorkItemPullRequestLinks(["123", "999", "456"], []);
+    const result = await provider.fetchWorkItemLinks(["123", "999", "456"]);
 
-    expect(result.links.map((link) => link.workItemId)).toEqual(["123", "456"]);
-    expect(result.warnings).toEqual([
-      "Some ADO work item relationships could not be refreshed.",
-    ]);
-    expect((await provider.fetchWorkItems(["123", "456"])).map((item) => item.title))
-      .toEqual(["Work item 123", "Work item 456"]);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(result.pullRequests.map((link) => link.workItemId)).toEqual(["123", "456"]);
+    expect(result.warnings).toEqual([]);
+    expect((await provider.fetchWorkItems(["123", "999", "456"])).map((item) => item.title))
+      .toEqual(["Work item 123", null, "Work item 456"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new URL(String(fetchMock.mock.calls[0]?.[0])).searchParams.get("errorPolicy")).toBe("omit");
+  });
+
+  it("does not send ADO an id that is not a number", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValue(jsonResponse({
+      value: [{ id: 123, fields: { "System.Title": "Real work item", "System.State": "Active" } }],
+    }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+
+    const result = await provider.fetchWorkItems(["123", "octo/api#4"]);
+
+    expect(result.map((item) => item.title)).toEqual(["Real work item", null]);
+    expect(fetchMock.mock.calls.map(([input]) => new URL(String(input)).searchParams.get("ids"))).toEqual(["123"]);
+  });
+
+  it("reads batches of a hundred side by side and keeps the order that was asked for", async () => {
+    const fetchMock = getFetchMock();
+    const answers: Array<() => void> = [];
+    let allAsked: () => void = () => {};
+    const asked = new Promise<void>((resolve) => { allAsked = resolve; });
+    fetchMock.mockImplementation((input: RequestInfo | URL) => new Promise<Response>((resolve) => {
+      const ids = (new URL(String(input)).searchParams.get("ids") ?? "").split(",");
+      answers.push(() => resolve(jsonResponse({
+        value: ids.map((id) => ({ id: Number(id), fields: { "System.Title": `Work item ${id}`, "System.State": "Active" } })),
+      })));
+      if (answers.length === 3) allAsked();
+    }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+    const ids = Array.from({ length: 250 }, (_, index) => String(index + 1));
+    const ticks: number[] = [];
+
+    const reading = provider.fetchWorkItems(ids, (count) => ticks.push(count));
+    // All three batches are on their way before any of them is answered.
+    await asked;
+    for (const answer of answers.reverse()) answer();
+    const result = await reading;
+
+    expect(result.map((item) => item.id)).toEqual(ids);
+    expect(ticks.reduce((sum, count) => sum + count, 0)).toBe(250);
+  });
+
+  it("keeps a completed pull request for hours and asks again about anything that can still change", async () => {
+    const repoId = "503e1343-325a-43f5-a33b-04405569f3d5";
+    const statuses: Record<string, string> = { "1": "completed", "2": "active", "3": "abandoned" };
+    const fetchMock = getFetchMock();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const prId = /pullrequests\/(\d+)\?/.exec(url)?.[1];
+      if (prId) {
+        return jsonResponse({ repository: { id: repoId, name: "AzureStack-ZTP-OOBE" }, title: `PR ${prId}`, status: statuses[prId], reviewers: [] });
+      }
+      const ids = (new URL(url).searchParams.get("ids") ?? "").split(",");
+      return jsonResponse({
+        value: ids.map((id) => ({ id: Number(id), fields: { "System.Title": `Work item ${id}`, "System.State": "Done" } })),
+      });
+    });
+    const asked = () => fetchMock.mock.calls
+      .map(([input]) => /pullrequests\/(\d+)\?/.exec(String(input))?.[1] ?? "work item")
+      .sort();
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+    const prs = ["1", "2", "3"].map((prId) => ({ repoId, repoName: "AzureStack-ZTP-OOBE", prId: Number(prId), provider: "ado" as const }));
+
+    await provider.fetchPullRequests(prs);
+    await provider.fetchWorkItems(["10"]);
+    vi.advanceTimersByTime(61_000);
+    await provider.fetchPullRequests(prs);
+    await provider.fetchWorkItems(["10"]);
+    // An abandoned pull request can be reactivated and closed work reopened, so each is asked
+    // about again. Only the completed pull request is not.
+    expect(asked()).toEqual(["1", "2", "2", "3", "3", "work item", "work item"]);
+
+    vi.advanceTimersByTime(6 * 60 * 60_000);
+    await provider.fetchPullRequests(prs.slice(0, 1));
+    expect(asked()).toEqual(["1", "1", "2", "2", "3", "3", "work item", "work item"]);
+  });
+
+  it("asks ADO again after a refresh, keeping the token and the copy that covers a failed read", async () => {
+    const pr = { repoId: "503e1343-325a-43f5-a33b-04405569f3d5", repoName: "AzureStack-ZTP-OOBE", prId: 7, provider: "ado" as const };
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      repository: { id: pr.repoId, name: "AzureStack-ZTP-OOBE" },
+      title: "Merged long ago",
+      status: "completed",
+      reviewers: [],
+    }));
+    const { AdoProvider, expireAdoProviderData } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+    await provider.fetchPullRequests([pr]);
+
+    // A completed pull request would be remembered for hours. A refresh asks about it anyway.
+    expireAdoProviderData();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ message: "Unavailable" }), {
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }));
+    const refreshed = await provider.fetchPullRequests([pr]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refreshed[0]?.title).toBe("Merged long ago");
+    expect(azCommandMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives every request a time limit and treats one that runs out as a refresh to retry", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      value: [{ id: 1, fields: { "System.Title": "Slow to refresh", "System.State": "Active" } }],
+    }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+    await provider.fetchWorkItems(["1"]);
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
+
+    vi.advanceTimersByTime(61_000);
+    fetchMock.mockRejectedValueOnce(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    const afterTimeout = await provider.fetchWorkItems(["1"]);
+
+    expect(afterTimeout[0]?.title).toBe("Slow to refresh");
   });
 
   it("loads and caches the authenticated ADO user's display name", async () => {
@@ -614,28 +793,40 @@ describe("AdoProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("loads and caches work item IDs assigned to the authenticated ADO user", async () => {
-    azCommandMock.mockImplementation((command) =>
-      command.includes("--wiql") ? "[12,34,12]\n" : "token\n");
+  it("asks ADO for the open work assigned to the signed-in user and remembers the answer", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValue(jsonResponse({ workItems: [{ id: 12 }, { id: 34 }, { id: 12 }] }));
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "msazure", project: "One" });
 
+    await expect(provider.fetchAssignedWorkItemIds()).resolves.toEqual({ ids: ["12", "34"], warnings: [] });
+    await expect(provider.fetchAssignedWorkItemIds()).resolves.toEqual({ ids: ["12", "34"], warnings: [] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://dev.azure.com/msazure/One/_apis/wit/wiql?api-version=7.1");
+    expect(init.method).toBe("POST");
+    const { query } = JSON.parse(String(init.body)) as { query: string };
+    expect(query).toContain("[System.AssignedTo] = @Me");
+    // Finished work is left out by the query, so the map never reads it only to hide it.
+    expect(query).toContain("[System.State] NOT IN ('closed', 'completed', 'done', 'removed', 'resolved')");
+    // The az CLI supplies the token and nothing else.
+    expect(azCommandMock.mock.calls.map(([command]) => command.includes("get-access-token"))).toEqual([true]);
+  });
+
+  it("keeps the last assigned work, with a warning, when the query fails", async () => {
+    const fetchMock = getFetchMock();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ workItems: [{ id: 12 }] }));
+    const { AdoProvider } = await loadAdoModule();
+    const provider = new AdoProvider({ org: "msazure", project: "One" });
+    await provider.fetchAssignedWorkItemIds();
+
+    vi.advanceTimersByTime(61_000);
+    fetchMock.mockResolvedValue(jsonResponse({ message: "No list here" }));
+
     await expect(provider.fetchAssignedWorkItemIds()).resolves.toEqual({
-      ids: ["12", "34"],
-      warnings: [],
+      ids: ["12"],
+      warnings: ["Assigned ADO work items could not be refreshed."],
     });
-    await expect(provider.fetchAssignedWorkItemIds()).resolves.toEqual({
-      ids: ["12", "34"],
-      warnings: [],
-    });
-    expect(azCommandMock).toHaveBeenCalledTimes(1);
-    expect(azCommandMock.mock.calls[0]?.[0]).toContain("WHERE [System.AssignedTo] = @Me");
-    expect(azCommandMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Resolved'");
-    expect(azCommandMock.mock.calls[0]?.[0]).toContain("[System.State] <> 'Removed'");
-    expect(azCommandMock.mock.calls[0]?.[1]).toMatchObject({
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    expect(getFetchMock()).not.toHaveBeenCalled();
   });
 });

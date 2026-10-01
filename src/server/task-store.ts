@@ -541,7 +541,12 @@ export function createTaskStore(
     return row ? hydrate(row) : undefined;
   }
 
-  function createTask(title: string, groupId?: string | null, kind?: TaskKind): Task {
+  function createTask(
+    title: string,
+    groupId?: string | null,
+    kind?: TaskKind,
+    workItems: ReadonlyArray<{ workItemId: string; provider: ProviderName }> = [],
+  ): Task {
     const normalizedKind = kind === undefined ? "task" : normalizeTaskKind(kind, { strict: true });
     const normalizedGroupId = normalizeTaskGroupId(groupId);
 
@@ -549,9 +554,8 @@ export function createTaskStore(
     const now = new Date().toISOString();
     const cwd = defaultTaskCwd();
 
-    // The order bump and the INSERT are one unit: if the INSERT fails, every
-    // active task must not keep the +1, or each failed create permanently
-    // inflates the ordering.
+    // The order bump, the INSERT and the links are one unit: if any of them fails, every active
+    // task must not keep the +1, and no task is left behind without the work it was created for.
     runTransaction(db, () => {
       assertTaskGroupExists(db, normalizedGroupId);
       // Bump order of all existing active tasks to make room at top
@@ -561,6 +565,9 @@ export function createTaskStore(
         INSERT INTO tasks (id, title, kind, status, notes, priority, "order", groupId, cwd, createdAt, updatedAt)
         VALUES (?, ?, ?, 'active', '', 0, 0, ?, ?, ?, ?)
       `).run(id, title, normalizedKind, normalizedGroupId ?? null, cwd ?? null, now, now);
+
+      const link = db.prepare("INSERT OR IGNORE INTO task_work_items (taskId, itemId, provider) VALUES (?, ?, ?)");
+      for (const item of workItems) link.run(id, normalizeWorkItemId(item.workItemId), item.provider);
     });
 
     const task = getTask(id)!;
