@@ -34,6 +34,7 @@ type FakeElement = FakeNode & {
   getBoundingClientRect: () => DOMRect;
   firstChild: FakeNode | null;
   lastChild: FakeNode | null;
+  children: FakeNode[];
 };
 
 type FakeDocument = {
@@ -282,6 +283,9 @@ function createDomShimState(): DomShimState {
       },
       get lastChild() {
         return this.childNodes[this.childNodes.length - 1] ?? null;
+      },
+      get children() {
+        return this.childNodes.filter((child) => child.nodeType === 1);
       },
     } as FakeElement;
 

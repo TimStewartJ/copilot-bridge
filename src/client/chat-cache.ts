@@ -1,5 +1,5 @@
-import type { QueryClient } from "@tanstack/react-query";
-import type { Attachment, ChatEntry, ToolCall } from "./api";
+import { replaceEqualDeep, type QueryClient } from "@tanstack/react-query";
+import type { ChatEntry } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
@@ -14,69 +14,14 @@ const recentSessionIds: string[] = [];
  * A window of committed transcript entries read straight from `events.jsonl`. Cached windows are
  * always disk-derived, so they can be rendered immediately on revisit and simply replaced by the
  * next disk read. Optimistic and live content is never stored here.
+ *
+ * The cache holds the very entry objects the view renders, so entries are never changed in place.
  */
 export interface ChatHistorySnapshot {
   sessionId: string;
   entries: ChatEntry[];
   firstItemIndex: number;
   fetchedAt: number;
-}
-
-function cloneAttachment(attachment: Attachment): Attachment {
-  return { ...attachment };
-}
-
-function cloneToolCall(toolCall: ToolCall): ToolCall {
-  return {
-    ...toolCall,
-    childToolCalls: toolCall.childToolCalls?.map((child) => cloneToolCall(child)),
-  };
-}
-
-function cloneChatEntry(entry: ChatEntry): ChatEntry {
-  if (entry.type === "tool") {
-    return {
-      ...entry,
-      toolCall: entry.toolCall ? cloneToolCall(entry.toolCall) : entry.toolCall,
-    };
-  }
-
-  if (entry.type === "visual") {
-    return { ...entry };
-  }
-
-  if (entry.type === "completion") {
-    return {
-      ...entry,
-      completion: { ...entry.completion },
-    };
-  }
-
-  if (entry.type === "skill") {
-    return { ...entry, skill: { ...entry.skill } };
-  }
-
-  if (entry.type === "reasoning") {
-    return { ...entry, reasoning: { ...entry.reasoning } };
-  }
-
-  if (entry.type === "continuation") {
-    return { ...entry };
-  }
-
-  return {
-    ...entry,
-    attachments: entry.attachments?.map((attachment) => cloneAttachment(attachment)),
-    toolCalls: entry.toolCalls?.map((toolCall) => cloneToolCall(toolCall)),
-    delivery: entry.delivery ? { ...entry.delivery } : undefined,
-  };
-}
-
-function cloneSnapshot(snapshot: ChatHistorySnapshot): ChatHistorySnapshot {
-  return {
-    ...snapshot,
-    entries: snapshot.entries.map((entry) => cloneChatEntry(entry)),
-  };
 }
 
 function forgetSession(sessionId: string): void {
@@ -108,18 +53,36 @@ export function getCachedChatSnapshot(queryClient: QueryClient, sessionId: strin
     return undefined;
   }
   touchSession(sessionId);
-  return cloneSnapshot(snapshot);
+  return { ...snapshot, entries: [...snapshot.entries] };
 }
 
 export function setCachedChatSnapshot(queryClient: QueryClient, snapshot: ChatHistorySnapshot): void {
   const dropped = Math.max(0, snapshot.entries.length - MAX_CACHED_ENTRIES);
-  queryClient.setQueryData(queryKeys.chatMessages(snapshot.sessionId), cloneSnapshot({
+  queryClient.setQueryData<ChatHistorySnapshot>(queryKeys.chatMessages(snapshot.sessionId), {
     ...snapshot,
     entries: snapshot.entries.slice(dropped),
     firstItemIndex: snapshot.firstItemIndex + dropped,
-  }));
+  });
   touchSession(snapshot.sessionId);
   pruneSessions(queryClient);
+}
+
+/**
+ * A fresh read returns equal copies of the entries that are already loaded. Keeping the loaded
+ * object wherever the two are equal lets that entry's row skip rendering, so a refresh costs what
+ * changed and not the size of the window. Entries are matched by their index in the session.
+ */
+export function keepLoadedEntries(
+  loaded: ChatEntry[],
+  loadedFirstItemIndex: number,
+  next: ChatEntry[],
+  nextFirstItemIndex: number,
+): ChatEntry[] {
+  const offset = nextFirstItemIndex - loadedFirstItemIndex;
+  return next.map((entry, index) => {
+    const loadedEntry = loaded[index + offset];
+    return loadedEntry ? replaceEqualDeep(loadedEntry, entry) : entry;
+  });
 }
 
 /**

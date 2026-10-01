@@ -1,4 +1,4 @@
-import { createElement, Fragment, type ReactNode } from "react";
+import { createElement, Fragment, memo, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -37,6 +37,8 @@ const undoSessionTurnMock = vi.hoisted(() => vi.fn());
 const chatInputMock = vi.hoisted(() => vi.fn());
 const mcpStatusBarMock = vi.hoisted(() => vi.fn());
 const useSessionUsageMetricsQueryMock = vi.hoisted(() => vi.fn());
+/** Called with the message each time a bubble actually renders; the bubble is memoized like the real one. */
+const messageBubbleRenderMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../useSessionStream", () => ({
   useSessionStream: (...args: unknown[]) => useSessionStreamMock(...args),
@@ -76,46 +78,61 @@ vi.mock("../hooks/queries/useSessionUsageMetrics", () => ({
   useSessionUsageMetricsQuery: (...args: unknown[]) => useSessionUsageMetricsQueryMock(...args),
 }));
 
-vi.mock("./MessageBubble", () => ({
-  default: ({
-    message,
-    actionSlot,
-    isStreaming,
-    onRetry,
-    selectingText,
-    onFinishSelectingText,
-  }: {
-    message: ChatMessage;
-    actionSlot?: ReactNode;
-    isStreaming?: boolean;
-    onRetry?: () => void;
-    selectingText?: boolean;
-    onFinishSelectingText?: () => void;
-  }) => createElement(
-    "div",
-    {
-      "data-testid": "message-bubble",
-      "data-role": message.role,
-      "data-streaming": isStreaming ? "true" : "false",
-      "data-selecting-text": selectingText ? "true" : "false",
-      "data-delivery-state": message.delivery
-        ? message.delivery.failed ? "failed" : message.delivery.queued ? "queued" : "sending"
-        : "sent",
-      "data-delivery-error": message.delivery?.error,
-    },
-    message.content,
-    actionSlot,
-    onRetry
-      ? createElement("button", { "aria-label": "Retry sending message", onClick: onRetry }, "Retry")
-      : null,
-    onFinishSelectingText
-      ? createElement("button", {
-          "aria-label": "Finish selecting message text",
-          onClick: onFinishSelectingText,
-        }, "Done")
-      : null,
-  ),
-}));
+vi.mock("./MessageBubble", async () => {
+  const { MessageActionToolbar } = await import("./MessageActions");
+  return {
+    default: memo(({
+      message,
+      actions,
+      messageKey,
+      copied = false,
+      isStreaming,
+      onRetry,
+      selectingText,
+      onFinishSelectingText,
+    }: {
+      message: ChatMessage;
+      actions?: {
+        onCopy: (key: string, message: ChatMessage) => void;
+        onOpenMenu: (x: number, y: number, key: string, message: ChatMessage) => void;
+      };
+      messageKey?: string;
+      copied?: boolean;
+      isStreaming?: boolean;
+      onRetry?: () => void;
+      selectingText?: boolean;
+      onFinishSelectingText?: () => void;
+    }) => {
+      messageBubbleRenderMock(message);
+      return createElement(
+        "div",
+        {
+          "data-testid": "message-bubble",
+          "data-role": message.role,
+          "data-streaming": isStreaming ? "true" : "false",
+          "data-selecting-text": selectingText ? "true" : "false",
+          "data-delivery-state": message.delivery
+            ? message.delivery.failed ? "failed" : message.delivery.queued ? "queued" : "sending"
+            : "sent",
+          "data-delivery-error": message.delivery?.error,
+        },
+        message.content,
+        actions && messageKey !== undefined
+          ? createElement(MessageActionToolbar, { messageKey, message, copied, ...actions })
+          : null,
+        onRetry
+          ? createElement("button", { "aria-label": "Retry sending message", onClick: onRetry }, "Retry")
+          : null,
+        onFinishSelectingText
+          ? createElement("button", {
+              "aria-label": "Finish selecting message text",
+              onClick: onFinishSelectingText,
+            }, "Done")
+          : null,
+      );
+    }),
+  };
+});
 
 vi.mock("./ToolCallTree", () => ({
   default: () => null,
@@ -1457,6 +1474,104 @@ describe("ChatView history pagination", () => {
     }
   });
 
+  it("holds the reader's place when the reply they are reading is not a message", async () => {
+    // A finished run's summary is a completion card, and the reader is partway down a long one:
+    // nothing in or below their view is a message.
+    const view = await renderPaginatedSession([
+      createMessage("entry-3"),
+      {
+        id: "entry-4",
+        type: "completion",
+        content: "All done",
+        completion: { content: "All done", title: "Task complete", status: "success", sourceEventType: "session.task_complete" },
+      },
+    ], 5);
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(0, 3), hasMore: false, total: 5 });
+
+    try {
+      const { scrollContainer, dom, act } = view;
+      const olderPageRendered = () => dom.container.textContent?.includes("entry-0") ?? false;
+      const card = findMessageWrapperByAnchorKey(dom.container, "entry-3").parentNode.childNodes.at(-1);
+      placeInScroller(card, scrollContainer, () => 170 + (olderPageRendered() ? 700 : 0), 3000);
+      setScrollGeometry(scrollContainer, { scrollHeight: 3200, clientHeight: 600, scrollTop: 400 });
+
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, olderPageRendered);
+
+      expect(scrollContainer.scrollTop).toBe(1100);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  describe("an older page that brings earlier steps of the run in view", () => {
+    /** A window that starts partway through a run: its later step, then the reply. */
+    async function renderRunInView(turnOf: (toolCallId: string) => string | undefined) {
+      const step = (toolCallId: string): ChatEntry => ({
+        id: `entry-${toolCallId}`,
+        type: "tool",
+        turnInstanceId: turnOf(toolCallId),
+        toolCall: { toolCallId, name: "view", result: "done", success: true, completedAt: "2026-07-25T22:00:09.000Z" },
+      });
+      const view = await renderPaginatedSession([step("later"), createMessage("entry-2")], 3);
+      fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: [step("earlier")], hasMore: false, total: 3 });
+      const reply = findMessageWrapperByAnchorKey(view.dom.container, "entry-2");
+      const rows = reply.parentNode;
+      const steps = rows.childNodes[0];
+      // The row that offers older messages goes once the first of them is in.
+      const pageIn = () => !view.dom.container.textContent?.includes("older messages");
+      const loadOlder = async () => {
+        await view.act(async () => {
+          clickButton(findButtonContainingText(view.dom.container, "Load older messages"));
+          await waitTick();
+        });
+        await waitUntilAct(view.act, pageIn);
+      };
+      return { ...view, reply, steps, stepsKept: () => rows.contains(steps), pageIn, loadOlder };
+    }
+
+    it("measures against the reply when the run's block is rebuilt", async () => {
+      // The earlier step is from another turn, and a block is keyed by the turn that opens it.
+      const view = await renderRunInView((toolCallId) => `turn-${toolCallId}`);
+
+      try {
+        const { scrollContainer, reply, steps, stepsKept, pageIn, loadOlder } = view;
+        placeInScroller(steps, scrollContainer, () => 100, 40);
+        placeInScroller(reply, scrollContainer, () => 140 + (pageIn() ? 300 : 0), 300);
+        setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 50 });
+
+        await loadOlder();
+
+        expect(stepsKept()).toBe(false);
+        expect(scrollContainer.scrollTop).toBe(350);
+      } finally {
+        await view.cleanup();
+      }
+    });
+
+    it("measures against the reply when the block grows above what is on screen", async () => {
+      // Same turn, so the block stays, and the viewport top cuts through it: the earlier step
+      // lands inside it, above the reader, and its own top does not move.
+      const view = await renderRunInView(() => "turn-1");
+
+      try {
+        const { scrollContainer, reply, steps, stepsKept, pageIn, loadOlder } = view;
+        placeInScroller(steps, scrollContainer, () => 100, 400);
+        placeInScroller(reply, scrollContainer, () => 500 + (pageIn() ? 60 : 0), 300);
+        setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 200 });
+
+        await loadOlder();
+
+        expect(stepsKept()).toBe(true);
+        expect(scrollContainer.scrollTop).toBe(260);
+      } finally {
+        await view.cleanup();
+      }
+    });
+  });
   it("prefetches the previous page once the reader scrolls within a screen of the top", async () => {
     const view = await renderPaginatedSession(createMessages(3, 5), 5);
 
@@ -1475,6 +1590,227 @@ describe("ChatView history pagination", () => {
         await waitTick();
       });
       expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 200, before: 3 });
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("does not fetch older messages when the reader scrolls down from near the top", async () => {
+    // A long reply under a collapsed run opens with the reader almost at the top of what is loaded.
+    const view = await renderPaginatedSession(createMessages(3, 5), 5);
+
+    try {
+      const { scrollContainer, act } = view;
+      setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 90 });
+      for (const scrollTop of [90, 300]) {
+        scrollContainer.scrollTop = scrollTop;
+        await act(async () => {
+          scroll(scrollContainer);
+          await waitTick();
+        });
+      }
+      expect(fetchOlderMessagesFastMock).not.toHaveBeenCalled();
+
+      scrollContainer.scrollTop = 250;
+      await act(async () => {
+        scroll(scrollContainer);
+        await waitTick();
+      });
+      expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("keeps filling when a page adds nothing above a reader parked at the very top", async () => {
+    // A page of steps that all fold into a run already on screen changes no heights, so the
+    // reader is still at the top with nothing new to scroll to.
+    const view = await renderPaginatedSession(createMessages(6, 8), 8);
+    fetchOlderMessagesFastMock
+      .mockResolvedValueOnce({ messages: createMessages(3, 6), hasMore: true, total: 8 })
+      .mockResolvedValueOnce({ messages: createMessages(0, 3), hasMore: false, total: 8 });
+
+    try {
+      const { scrollContainer, dom, act } = view;
+      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 0 });
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-0") ?? false);
+
+      expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(2);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  describe("an older page that arrives while the reader is scrolling", () => {
+    async function renderWithOlderPageReady() {
+      vi.useFakeTimers();
+      const view = await renderPaginatedSession(createMessages(3, 5), 5);
+      fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(0, 3), hasMore: false, total: 5 });
+      setScrollGeometry(view.scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 900 });
+      const scrollTo = async (scrollTop: number) => {
+        view.scrollContainer.scrollTop = scrollTop;
+        await view.act(async () => {
+          scroll(view.scrollContainer);
+          await waitTick();
+        });
+      };
+      await scrollTo(900);
+      return { ...view, scrollTo, inserted: () => view.dom.container.textContent?.includes("entry-0") ?? false };
+    }
+
+    it("goes in only once they have stopped", async () => {
+      const { act, cleanup, dom, scrollTo, inserted } = await renderWithOlderPageReady();
+
+      try {
+        // Moving up within a screen of the top fetches the page, which is back at once.
+        await scrollTo(500);
+        expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(1);
+        await advanceTimersByTimeAct(act, 100);
+        await scrollTo(300);
+        await advanceTimersByTimeAct(act, 100);
+        // Inserting it now would mean moving the scroller mid-gesture.
+        expect(inserted()).toBe(false);
+        expect(dom.container.textContent).toContain("Loading older messages");
+
+        await advanceTimersByTimeAct(act, 20);
+        await waitUntilAct(act, inserted);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("waits for a finger resting on the transcript to lift", async () => {
+      const { act, cleanup, scrollContainer, scrollTo, inserted } = await renderWithOlderPageReady();
+
+      try {
+        const lift: Record<string, (event: { touches: unknown[] }) => void> = {};
+        await act(async () => {
+          getReactProps(scrollContainer)!.onTouchStart({
+            target: { addEventListener: (type: string, listener: (event: { touches: unknown[] }) => void) => { lift[type] = listener; } },
+          });
+        });
+        await scrollTo(500);
+        await advanceTimersByTimeAct(act, 1000);
+        expect(inserted()).toBe(false);
+
+        await act(async () => lift.touchend({ touches: [] }));
+        await advanceTimersByTimeAct(act, 120);
+        await waitUntilAct(act, inserted);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("goes in after five seconds even if the touch never seems to end", async () => {
+      const { act, cleanup, scrollContainer, scrollTo, inserted } = await renderWithOlderPageReady();
+
+      try {
+        // The touched node was replaced mid-touch and nothing reported the finger lifting.
+        await act(async () => {
+          getReactProps(scrollContainer)!.onTouchStart({ target: { addEventListener() {} } });
+        });
+        await scrollTo(500);
+        await advanceTimersByTimeAct(act, 4_900);
+        expect(inserted()).toBe(false);
+
+        await advanceTimersByTimeAct(act, 200);
+        await waitUntilAct(act, inserted);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("does not hold up a refresh while it waits", async () => {
+      const { act, cleanup, render, scrollContainer, scrollTo, inserted } = await renderWithOlderPageReady();
+
+      try {
+        await act(async () => {
+          getReactProps(scrollContainer)!.onTouchStart({ target: { addEventListener() {} } });
+        });
+        await scrollTo(500);
+        fetchMessagesFastMock.mockClear();
+        await render({ streamOverrides: { historyEpoch: 1, isStreaming: false, pendingOrigin: null } });
+        await advanceTimersByTimeAct(act, 1000);
+
+        expect(inserted()).toBe(false);
+        expect(newestReads()).toEqual([{ limit: 50 }]);
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  it("leaves alone the scrolling a reader does while a refresh renders", async () => {
+    const view = await renderPaginatedSession(createMessages(3, 5), 5);
+
+    try {
+      const { scrollContainer, dom, act, render } = view;
+      // Reading entry-4, well above the bottom, when one more reply is committed.
+      setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 400 });
+      placeInScroller(findMessageWrapperByAnchorKey(dom.container, "entry-4"), scrollContainer, () => 500, 300);
+      await act(async () => {
+        scroll(scrollContainer);
+        await waitTick();
+      });
+      fetchMessagesFastMock.mockResolvedValueOnce({
+        messages: createMessages(3, 6),
+        runState: "idle",
+        total: 6,
+        warm: true,
+        hasMore: true,
+      });
+      // The compositor keeps scrolling while React renders; by the commit they are 60px further on.
+      messageBubbleRenderMock.mockImplementation((message: ChatMessage) => {
+        if (message.id === "entry-5") scrollContainer.scrollTop = 460;
+      });
+
+      await render({ streamOverrides: { historyEpoch: 1 } });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-5") ?? false);
+
+      // Nothing above them changed height, so there is nothing to put back.
+      expect(scrollContainer.scrollTop).toBe(460);
+    } finally {
+      messageBubbleRenderMock.mockReset();
+      await view.cleanup();
+    }
+  });
+
+  it("reads only the newest page while the run is still going", async () => {
+    const view = await renderPagedBackSession(undefined, true);
+
+    try {
+      await view.render({ streamOverrides: { historyEpoch: 1 } });
+      await waitUntilAct(view.act, () => newestReads().length > 0);
+      // A run in flight only rewrites its newest entries, however far back the reader has loaded.
+      expect(newestReads()).toEqual([{ limit: 50 }]);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("reaches further back when more arrived than the newest page covers", async () => {
+    const view = await renderPagedBackSession(undefined, true);
+
+    try {
+      const { dom, act, render } = view;
+      // 110 entries were committed since the last read, so the newest 50 leave a hole after entry-299.
+      fetchMessagesFastMock.mockImplementation((_sessionId: string, request: { limit: number }) => Promise.resolve({
+        messages: createMessages(410 - request.limit, 410),
+        runState: "busy",
+        total: 410,
+        warm: true,
+      }));
+
+      await render({ streamOverrides: { historyEpoch: 1 } });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-409") ?? false);
+
+      expect(newestReads()).toEqual([{ limit: 50 }, { limit: 200 }]);
+      expect(dom.container.textContent).toContain("entry-300");
+      expect(dom.container.textContent).toContain("entry-50");
     } finally {
       await view.cleanup();
     }
@@ -1592,6 +1928,41 @@ describe("ChatView history pagination", () => {
       // Output a finished run left on screen may be part of what was cut, and no read removes it.
       expect(view.dropFinishedRunOutputMock).toHaveBeenCalledTimes(1);
     } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("reads the window again when an older page went in above while it was being read", async () => {
+    const view = await renderPaginatedSession(createMessages(250, 300), 300);
+    const windowRead = createDeferred<FetchMessagesFastResult>();
+    const newest = (from: number) => ({ messages: createMessages(from, 300), runState: "idle" as const, total: 300, warm: true });
+
+    try {
+      const { dom, act, render } = view;
+      fetchMessagesFastMock.mockClear();
+      fetchMessagesFastMock.mockReturnValueOnce(windowRead.promise);
+      await render({ historySignal: 1 });
+      await waitUntilAct(act, () => newestReads().length === 1);
+
+      fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(50, 250), hasMore: true, total: 300 });
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-50") ?? false);
+
+      // The read that was out covers only the 50 entries loaded when it began.
+      fetchMessagesFastMock.mockResolvedValueOnce(newest(50));
+      await act(async () => {
+        windowRead.resolve(newest(250));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => newestReads().length === 2);
+
+      expect(newestReads()).toEqual([{ limit: 50 }, { limit: 250 }]);
+      expect(dom.container.textContent).toContain("entry-50");
+    } finally {
+      windowRead.resolve(newest(250));
       await view.cleanup();
     }
   });
@@ -3700,6 +4071,62 @@ describe("ChatView user input question cards", () => {
 });
 
 describe("ChatView disk-authoritative synchronization", () => {
+  describe("with replies already on screen", () => {
+    const loaded = () => [createMessage("entry-1", "first reply"), createMessage("entry-2", "second reply")];
+    const renderedMessageIds = () => messageBubbleRenderMock.mock.calls.map(([message]) => (message as ChatMessage).id);
+
+    // Rendering a reply means parsing its markdown again, so both of these keep a long chat cheap.
+    it("renders streamed text without rendering them again", async () => {
+      vi.useFakeTimers();
+      const streaming = { isStreaming: true, streamStatus: "streaming", streamingContent: "one" };
+      const { dom, act, cleanup, render } = await renderChatView({
+        fetchMessagesFastResult: { messages: loaded(), runState: "busy", total: 2, warm: true },
+        streamOverrides: streaming,
+      });
+
+      try {
+        await waitUntilAct(act, () => dom.container.textContent?.includes("second reply") ?? false);
+        await advanceTimersByTimeAct(act, 200);
+        messageBubbleRenderMock.mockClear();
+
+        await render({ streamOverrides: { ...streaming, streamingContent: "one two three" } });
+        await advanceTimersByTimeAct(act, 200);
+
+        expect(dom.container.textContent).toContain("one two three");
+        expect(renderedMessageIds()).not.toContain("entry-1");
+        expect(renderedMessageIds()).not.toContain("entry-2");
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("renders only what a refresh changed", async () => {
+      const { dom, act, cleanup, render } = await renderChatView({
+        fetchMessagesFastResult: { messages: loaded(), runState: "idle", total: 2, warm: true },
+        streamOverrides: { isStreaming: false, pendingOrigin: null },
+      });
+
+      try {
+        await waitUntilAct(act, () => dom.container.textContent?.includes("second reply") ?? false);
+        messageBubbleRenderMock.mockClear();
+        // A read returns fresh copies of everything, including what did not change.
+        fetchMessagesFastMock.mockResolvedValueOnce({
+          messages: [...loaded(), createMessage("entry-3", "third reply")],
+          runState: "idle",
+          total: 3,
+          warm: true,
+        });
+
+        await render({ streamOverrides: { historyEpoch: 1 } });
+        await waitUntilAct(act, () => dom.container.textContent?.includes("third reply") ?? false);
+
+        expect(renderedMessageIds()).toEqual(["entry-3"]);
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
   it("re-reads the disk window when the server reports committed history advanced", async () => {
     vi.useFakeTimers();
     try {

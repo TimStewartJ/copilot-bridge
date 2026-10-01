@@ -279,3 +279,42 @@ describe("MessageBubble images", () => {
     }
   });
 });
+
+describe("MessageBubble actions", () => {
+  it.each(["user", "assistant"] as const)("offers copy and the menu on a %s message, naming the message", async (role) => {
+    const harness = await createReactDomHarness();
+    const message = { role, content: "Hello" } satisfies ChatMessage;
+    const actions = { onCopy: vi.fn(), onOpenMenu: vi.fn() };
+    const button = (label: string) => findAllByTag(harness.dom.container, "BUTTON")
+      .find((candidate) => candidate.getAttribute?.("aria-label") === label);
+    const click = { preventDefault() {}, stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 10, bottom: 20 }) } };
+
+    try {
+      await harness.render(createElement(MessageBubble, { message, actions, messageKey: "entry-1" }));
+      await harness.act(async () => {
+        getReactProps(button("Copy message"))!.onClick(click);
+        getReactProps(button("Open message actions"))!.onClick(click);
+      });
+
+      expect(actions.onCopy).toHaveBeenCalledWith("entry-1", message);
+      expect(actions.onOpenMenu).toHaveBeenCalledWith(10, 24, "entry-1", message);
+
+      await harness.render(createElement(MessageBubble, { message, actions, messageKey: "entry-1", copied: true }));
+      expect(button("Copied message")).toBeDefined();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("offers none while it has no actions", async () => {
+    const harness = await createReactDomHarness();
+    const message = { role: "assistant", content: "Hello" } satisfies ChatMessage;
+
+    try {
+      await harness.render(createElement(MessageBubble, { message, messageKey: "entry-1" }));
+      expect(findAllByTag(harness.dom.container, "BUTTON")).toHaveLength(0);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
