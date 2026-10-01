@@ -1,5 +1,7 @@
 import UserInputQuestionCard from "./UserInputQuestionCard";
 import {
+  Component,
+  createRef,
   useState,
   useEffect,
   useLayoutEffect,
@@ -8,6 +10,7 @@ import {
   useCallback,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  type RefObject,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -37,7 +40,7 @@ import {
   type ToolCall,
   type UserInputAnswerEndpointPayload,
 } from "../api";
-import { getCachedChatSnapshot, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
+import { getCachedChatSnapshot, keepLoadedEntries, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
@@ -66,11 +69,7 @@ import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
 import ElicitationCard from "./ElicitationCard";
 import ElicitationCancellationNotice from "./ElicitationCancellationNotice";
-import {
-  MessageActionsMenu,
-  MessageActionToolbar,
-  type MessageActionMenuTarget,
-} from "./MessageActions";
+import { MessageActionsMenu, type MessageActionMenuTarget } from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
 import SkillLoadedCard from "./SkillLoadedCard";
 import AskUserRecordBlock from "./chat/AskUserRecord";
@@ -100,6 +99,12 @@ const STREAM_RENDER_INTERVAL_MS = 60;
 const HISTORY_REFRESH_THROTTLE_MS = 250;
 /** Most entries a refresh of the newest history re-reads; older loaded entries are kept as they are. */
 const HISTORY_REFRESH_MAX_LIMIT = 200;
+/** How long the transcript must sit still, with no finger on it, before older messages go in above. */
+const SCROLL_REST_MS = 120;
+/** After this long they go in regardless, in case the end of a touch never reaches the page. */
+const SCROLL_REST_TIMEOUT_MS = 5_000;
+/** How many rows a change to the transcript is measured against; the change may replace some of them. */
+const VIEWPORT_ANCHOR_ROWS = 4;
 /**
  * Cached history paints instantly, so a sync that lands inside this window never shows an
  * indicator; anything slower gets a clear, full-width strip instead of a flash.
@@ -267,40 +272,101 @@ function getMaxScrollTop(el: HTMLElement): number {
   return Math.max(0, scrollHeight - clientHeight);
 }
 
-/** The first message at least partly in view, and how far below the viewport top it starts. */
+/** A transcript row in or below the viewport, and how far below the viewport top it starts. */
 interface ViewportAnchor {
-  key: string;
+  row: Element;
   offset: number;
 }
 
-function captureViewportAnchor(
-  scroller: HTMLElement,
-  messages: ReadonlyMap<string, HTMLElement>,
-): ViewportAnchor | null {
+/**
+ * The rows to measure a change to the transcript against, best first. Any row will do, not only a
+ * message: the newest reply is often a completion card, or the steps of a run. A row that starts
+ * in view comes before one the viewport top cuts through, because that one can grow above what
+ * is on screen (earlier steps joining its run) without its own top moving.
+ */
+function captureViewportAnchors(scroller: HTMLElement, rows: Element): ViewportAnchor[] {
   const viewportTop = scroller.getBoundingClientRect().top;
-  let anchor: ViewportAnchor | null = null;
-  for (const [key, element] of messages) {
-    const rect = element.getBoundingClientRect();
-    if (rect.bottom > viewportTop && (!anchor || rect.top - viewportTop < anchor.offset)) {
-      anchor = { key, offset: rect.top - viewportTop };
-    }
+  const anchors: ViewportAnchor[] = [];
+  for (const row of rows.children) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom <= viewportTop) continue;
+    anchors.push({ row, offset: rect.top - viewportTop });
+    if (anchors.length === VIEWPORT_ANCHOR_ROWS) break;
   }
-  return anchor;
+  if (anchors.length > 1 && anchors[0].offset < 0) anchors.push(anchors.shift()!);
+  return anchors;
 }
 
 /**
- * Put the anchored message back where it was. Measuring the element (not `scrollHeight`) ignores
- * growth below it, such as live output, and any adjustment the browser's own scroll anchoring made.
+ * The transcript's rows, with the reader's place held across a change to them. A row in view is
+ * measured as React is about to change the DOM and again once it has, so the difference is only
+ * what the change itself moved: growth below (live output), the browser's own scroll anchoring,
+ * and scrolling the reader did while the change rendered are all left alone. Nothing is written
+ * when nothing shifted, because moving a scroller cuts a touch scroll short.
  */
-function restoreViewportAnchor(
-  scroller: HTMLElement,
-  anchor: ViewportAnchor,
-  messages: ReadonlyMap<string, HTMLElement>,
-): void {
-  const element = messages.get(anchor.key);
-  if (!element) return;
-  const offset = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-  if (offset !== anchor.offset) scroller.scrollTop = getSafeScrollTop(scroller) + offset - anchor.offset;
+class ViewportKeeper extends Component<{
+  scrollerRef: RefObject<HTMLElement | null>;
+  className?: string;
+  /** Asked as the DOM is about to change: must this change leave the reader's view where it is? */
+  shouldKeep: () => boolean;
+  /** Moves the transcript by `delta` without it counting as the reader scrolling. */
+  shift: (scroller: HTMLElement, delta: number) => void;
+  children: ReactNode;
+}> {
+  private readonly rows = createRef<HTMLDivElement>();
+
+  getSnapshotBeforeUpdate(): ViewportAnchor[] | null {
+    const scroller = this.props.scrollerRef.current;
+    const rows = this.rows.current;
+    return scroller && rows && this.props.shouldKeep() ? captureViewportAnchors(scroller, rows) : null;
+  }
+
+  componentDidUpdate(_props: unknown, _state: unknown, anchors: ViewportAnchor[] | null) {
+    const scroller = this.props.scrollerRef.current;
+    const anchor = anchors?.find(({ row }) => this.rows.current?.contains(row));
+    if (!scroller || !anchor) return;
+    const delta = anchor.row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+    if (Math.abs(delta) >= 1) this.props.shift(scroller, delta);
+  }
+
+  render() {
+    return <div ref={this.rows} className={this.props.className}>{this.props.children}</div>;
+  }
+}
+
+/** When the reader last moved the transcript, and whether a finger is on it. */
+interface ScrollActivity {
+  movedAt: number;
+  touching: boolean;
+}
+
+/**
+ * Resolves once the reader has stopped scrolling. Content going in above them means moving the
+ * scroller to hold their place, and doing that mid-gesture stops a touch scroll dead; where the
+ * browser cannot anchor scrolling itself (Safari before 27) it also lands on a stale position.
+ */
+function scrollerAtRest(activity: ScrollActivity): Promise<void> {
+  const giveUpAt = Date.now() + SCROLL_REST_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    const check = () => {
+      if (Date.now() >= giveUpAt) {
+        resolve();
+        return;
+      }
+      const wait = activity.touching ? SCROLL_REST_MS : activity.movedAt + SCROLL_REST_MS - Date.now();
+      if (wait > 0) {
+        setTimeout(check, wait);
+        return;
+      }
+      // Scroll events held up behind a long task are delivered before the next frame's callbacks.
+      const { movedAt } = activity;
+      window.requestAnimationFrame(() => {
+        if (activity.movedAt === movedAt && !activity.touching) resolve();
+        else check();
+      });
+    };
+    check();
+  });
 }
 
 function isChatMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "message" } {
@@ -320,21 +386,30 @@ interface PendingSend {
   delivery?: ChatMessageDelivery;
 }
 
+/**
+ * How far back a refresh re-reads, shallowest first: "live" the newest page, which is all a run
+ * in flight rewrites; "tail" the newest entries a finished run may have touched; "window" every
+ * loaded entry, because what is loaded may no longer match disk.
+ */
+const HISTORY_REACHES = ["live", "tail", "window"] as const;
+type HistoryReach = (typeof HISTORY_REACHES)[number];
+
+function deeperReach(a: HistoryReach = "tail", b: HistoryReach = "tail"): HistoryReach {
+  return HISTORY_REACHES[Math.max(HISTORY_REACHES.indexOf(a), HISTORY_REACHES.indexOf(b))];
+}
+
 /** How a background refresh reconciles the loaded history window with disk. */
 interface HistoryRefresh {
-  /** Re-read every loaded entry, not only the newest: what is loaded may no longer match disk. */
-  window?: boolean;
+  /** "tail" unless said otherwise. */
+  reach?: HistoryReach;
   /** Routine refreshes are the steady state of a run; they show no strip and disable no actions. */
   silent?: boolean;
   /** Replace the run's stream even if it looks healthy; one that died while the tab slept is otherwise kept. */
   reconnect?: boolean;
 }
 
-/**
- * What one disk read fetches: "load" the newest page for a navigation, "tail" the newest entries
- * to splice onto the loaded window, "window" every loaded entry again.
- */
-type HistoryReadMode = "load" | "tail" | "window";
+/** What one disk read fetches: "load" the newest page for a navigation, or a refresh of some reach. */
+type HistoryReadMode = "load" | HistoryReach;
 
 /** The open session's disk reads. Replaced on every navigation and inert once it is left. */
 interface HistoryReader {
@@ -710,8 +785,11 @@ export default function ChatView({
   const pendingSendsRef = useRef<PendingSend[]>([]);
   const sessionIdRef = useRef<string | null>(sessionId);
   const loadingMoreRef = useRef(false);
-  /** Set by a history apply that must not move what the reader is looking at; consumed on commit. */
-  const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
+  /** Set by a history apply that must not move what the reader is looking at; cleared once it is on screen. */
+  const keepViewportRef = useRef(false);
+  const scrollActivityRef = useRef<ScrollActivity>({ movedAt: 0, touching: false });
+  /** Where the last scroll event left the transcript, to tell which way the next one moved. */
+  const lastScrollTopRef = useRef(0);
   const historyRef = useRef(NO_HISTORY_READER);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const followScrollFrameRef = useRef<number | null>(null);
@@ -812,11 +890,7 @@ export default function ChatView({
     const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
     const nextFirstItemIndex = opts.firstItemIndex ?? firstItemIndex.current;
 
-    const scroller = scrollContainerRef.current;
-    viewportAnchorRef.current = opts.keepViewport && scroller
-      && (!stickToBottomRef.current || anchoredMessageKeyRef.current)
-      ? captureViewportAnchor(scroller, messageElementRefs.current)
-      : null;
+    keepViewportRef.current = Boolean(opts.keepViewport);
     firstItemIndex.current = nextFirstItemIndex;
     const nextLastVisibleActivityAt = opts.lastVisibleActivityAt === null
       ? undefined
@@ -1257,6 +1331,7 @@ export default function ChatView({
     messageElementRefs.current.clear();
     loadingMoreRef.current = false;
     setLoadingMore(false);
+    lastScrollTopRef.current = 0;
     if (prevSession !== sessionId) {
       // Arm the landing anchor per navigation only. Re-running this effect for the same session
       // (composer or callback identity churn) must not yank an established reading position.
@@ -1302,15 +1377,20 @@ export default function ChatView({
       visibleRefresh = mode !== "load" && !silent;
       setRefreshingHistory(visibleRefresh);
       const loaded = Math.max(INITIAL_PAGE_SIZE, entriesRef.current.length);
-      const limit = mode === "load"
-        ? INITIAL_PAGE_SIZE
-        : mode === "window" ? loaded : Math.min(HISTORY_REFRESH_MAX_LIMIT, loaded);
+      const limit = mode === "window"
+        ? loaded
+        : mode === "tail" ? Math.min(HISTORY_REFRESH_MAX_LIMIT, loaded) : INITIAL_PAGE_SIZE;
       try {
-        const { messages: msgs, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer } = await fetchMessagesFast(
+        const { messages: fetched, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer } = await fetchMessagesFast(
           sessionId,
           targetSourceEventId ? { before: 50, after: 50, aroundEventId: targetSourceEventId } : { limit },
         );
         if (superseded()) return;
+        const windowStart = Math.max(0, total - fetched.length);
+        // A refresh mostly returns what is already loaded; keeping those objects spares their rows a render.
+        const msgs = mode === "load"
+          ? fetched
+          : keepLoadedEntries(entriesRef.current, firstItemIndex.current, fetched, windowStart);
         const busy = runState !== "idle";
         setHistoryRunBusy(busy);
         const disk = { ownerSessionId: sessionId, lastVisibleActivityAt: lastVisibleActivityAt ?? null };
@@ -1322,21 +1402,22 @@ export default function ChatView({
           stickToBottomRef.current = false;
           applyHistory(found ? msgs : [], {
             ...disk,
-            firstItemIndex: startOffset ?? Math.max(0, total - msgs.length),
+            firstItemIndex: startOffset ?? windowStart,
             persistSnapshot: false,
             reportReadThrough: false,
           });
-        } else if (mode === "tail") {
+        } else if (mode === "live" || mode === "tail") {
           const merged = replaceHistoryWindow(entriesRef.current, firstItemIndex.current, msgs, total);
-          // More arrived than one tail read covers; re-read rather than show a hole.
-          if (merged.hasGap) return await read("window", { silent, reconnect: replaceStream });
+          // More arrived than this read covers; reach further back rather than show a hole.
+          if (merged.hasGap) {
+            return await read(mode === "live" ? "tail" : "window", { silent, reconnect: replaceStream });
+          }
           applyHistory(merged.entries, { ...disk, firstItemIndex: merged.firstItemIndex, keepViewport: true });
+        } else if (mode === "window" && entriesRef.current.length > limit) {
+          // An older page went in above while this was read; replacing the window would drop it.
+          return await read("window", { silent, reconnect: replaceStream });
         } else {
-          applyHistory(msgs, {
-            ...disk,
-            firstItemIndex: Math.max(0, total - msgs.length),
-            keepViewport: mode === "window",
-          });
+          applyHistory(msgs, { ...disk, firstItemIndex: windowStart, keepViewport: mode === "window" });
         }
         endRead();
         if (historicalMode) return;
@@ -1402,10 +1483,7 @@ export default function ChatView({
     };
     const pump = () => {
       if (!queued || inFlight || timer != null || controller.signal.aborted) return;
-      // An older page in flight was read against the current window, so let it land first.
-      const wait = loadingMoreRef.current
-        ? HISTORY_REFRESH_THROTTLE_MS
-        : lastRefreshAt + HISTORY_REFRESH_THROTTLE_MS - Date.now();
+      const wait = lastRefreshAt + HISTORY_REFRESH_THROTTLE_MS - Date.now();
       if (wait > 0) {
         timer = setTimeout(() => {
           timer = null;
@@ -1416,14 +1494,14 @@ export default function ChatView({
       const request = queued;
       queued = null;
       lastRefreshAt = Date.now();
-      start(request.window ? "window" : "tail", request);
+      start(request.reach ?? "tail", request);
     };
     const reader: HistoryReader = {
       load: () => start("load"),
       refresh: (request = {}) => {
         queued = queued
           ? {
-              window: queued.window || request.window,
+              reach: deeperReach(queued.reach, request.reach),
               silent: queued.silent && request.silent,
               reconnect: queued.reconnect || request.reconnect,
             }
@@ -1451,7 +1529,7 @@ export default function ChatView({
       });
       setLoading(false);
       setWarming(false);
-      reader.refresh({ window: true });
+      reader.refresh({ reach: "window" });
     } else {
       applyHistory([], NO_HISTORY);
       reader.load();
@@ -1521,12 +1599,13 @@ export default function ChatView({
   useCounterAdvance(sessionId, historySignal, () => {
     if (historicalMode) return;
     dropFinishedRunOutput();
-    historyRef.current.refresh({ window: true });
+    historyRef.current.refresh({ reach: "window" });
   });
-  // Committed history moved on disk. Reading the newest entries is enough, a finished run
-  // included: re-reading the whole window costs more the further back the reader has scrolled.
+  // Committed history moved on disk. While the run goes on only its newest entries change, and
+  // once it has finished a wider read picks up what the turn touched. Neither re-reads the whole
+  // window, which costs more the further back the reader has scrolled.
   useCounterAdvance(sessionId, historyEpoch, () => {
-    if (!historicalMode) historyRef.current.refresh({ silent: true });
+    if (!historicalMode) historyRef.current.refresh({ silent: true, reach: isStreaming ? "live" : "tail" });
   });
 
   useEffect(() => {
@@ -1550,24 +1629,27 @@ export default function ChatView({
     onRenderedReadThrough?.(pending.sessionId, pending.readThroughActivityAt);
   }, [entries, onRenderedReadThrough, sessionId]);
 
-  // Keep the reader's place when history changes above them; otherwise follow the bottom.
-  // useLayoutEffect runs before paint, preventing flash.
+  // Follow the bottom unless the reader is elsewhere; `ViewportKeeper` holds their place when
+  // they are. useLayoutEffect runs before paint, preventing flash.
   useLayoutEffect(() => {
-    const el = scrollContainerRef.current;
-    const anchor = viewportAnchorRef.current;
-    viewportAnchorRef.current = null;
-    if (!el) return;
-    if (anchor) {
-      restoreViewportAnchor(el, anchor, messageElementRefs.current);
-      return;
-    }
+    keepViewportRef.current = false;
     // When a message is top-anchored, message-key changes handle the next scroll.
     if (stickToBottomRef.current && !anchoredMessageKeyRef.current) {
       scrollToLatest({ immediate: true });
     }
   }, [entries, scrollToLatest]);
 
-  const loadOlderMessages = useCallback(() => {
+  const shouldKeepViewport = useCallback(
+    () => keepViewportRef.current && (!stickToBottomRef.current || anchoredMessageKeyRef.current !== null),
+    [],
+  );
+  const shiftTranscript = useCallback((scroller: HTMLElement, delta: number) => {
+    programmaticScrollRef.current = true;
+    scroller.scrollTop = getSafeScrollTop(scroller) + delta;
+    settleProgrammaticScroll();
+  }, [settleProgrammaticScroll]);
+
+  const loadOlderMessages = useCallback(async () => {
     const before = firstItemIndex.current;
     if (!sessionId || historicalMode || before <= 0 || loadingMoreRef.current) return;
     loadingMoreRef.current = true;
@@ -1575,41 +1657,45 @@ export default function ChatView({
     setLoadMoreError(null);
     const requestSessionId = sessionId;
     const isStale = () => sessionIdRef.current !== requestSessionId || firstItemIndex.current !== before;
-    fetchMessagesFast(requestSessionId, { limit: OLDER_PAGE_SIZE, before })
-      .then(({ messages: older, total }) => {
-        if (isStale()) return;
-        if (total < before) {
-          // History shrank under the loaded window, so its indexes no longer line up with disk.
-          historyRef.current.refresh({ window: true, silent: true });
-          return;
-        }
-        applyHistory([...older, ...entriesRef.current], {
-          ownerSessionId: requestSessionId,
-          firstItemIndex: before - older.length,
-          keepViewport: true,
-        });
-      })
-      .catch((err) => {
-        if (!isStale()) setLoadMoreError(`Could not load older messages: ${getErrorMessage(err)}`);
-      })
-      .finally(() => {
-        if (sessionIdRef.current !== requestSessionId) return;
+    try {
+      const { messages: older, total } = await fetchMessagesFast(requestSessionId, { limit: OLDER_PAGE_SIZE, before });
+      await scrollerAtRest(scrollActivityRef.current);
+      if (isStale()) return;
+      if (total < before) {
+        // History shrank under the loaded window, so its indexes no longer line up with disk.
+        historyRef.current.refresh({ reach: "window", silent: true });
+        return;
+      }
+      applyHistory([...older, ...entriesRef.current], {
+        ownerSessionId: requestSessionId,
+        firstItemIndex: before - older.length,
+        keepViewport: true,
+      });
+    } catch (err) {
+      if (!isStale()) setLoadMoreError(`Could not load older messages: ${getErrorMessage(err)}`);
+    } finally {
+      if (sessionIdRef.current === requestSessionId) {
         loadingMoreRef.current = false;
         setLoadingMore(false);
-      });
+      }
+    }
   }, [applyHistory, historicalMode, sessionId]);
 
   const handleLoadOlderClick = useCallback(() => {
     handleUserScrollIntent();
-    loadOlderMessages();
+    void loadOlderMessages();
   }, [handleUserScrollIntent, loadOlderMessages]);
 
-  // Track bottom-following, and fetch the previous page once the reader is within a screen of the
-  // top so it is usually in place before they reach it.
+  // Track bottom-following, and fetch the previous page once the reader is heading for the top
+  // and within a screen of it, so it is usually in place before they get there.
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    const top = getSafeScrollTop(el);
+    const movedUp = top < lastScrollTopRef.current;
+    lastScrollTopRef.current = top;
     if (programmaticScrollRef.current) return;
+    scrollActivityRef.current.movedAt = Date.now();
 
     const following = getDistanceFromBottom(el) <= FOLLOW_BOTTOM_THRESHOLD_PX;
     stickToBottomRef.current = following;
@@ -1620,15 +1706,34 @@ export default function ChatView({
       setShowJumpToLatest(true);
     }
 
+    // Only moving up asks for older messages. A chat often opens near the top of what is loaded
+    // (a long reply under a collapsed run), and reading down from there must not fetch anything.
     // A failed page waits for Retry instead of refiring on every scroll event.
-    if (!loadMoreError && getSafeScrollTop(el) < el.clientHeight) loadOlderMessages();
+    if (movedUp && !loadMoreError && top < el.clientHeight) void loadOlderMessages();
   }, [creating, isStreaming, loadMoreError, loadOlderMessages, pendingInteractionCount]);
 
-  // A window too short to scroll never produces a scroll event, so keep filling it from the top.
+  const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    const activity = scrollActivityRef.current;
+    activity.touching = true;
+    // Listen on the touched node itself: once a render replaces it, its touchend no longer
+    // reaches the scroller, and a finger that never seems to lift would hold older pages back.
+    const lifted = new AbortController();
+    const onLift = (end: Event) => {
+      lifted.abort();
+      activity.touching = (end as TouchEvent).touches.length > 0;
+      activity.movedAt = Date.now();
+    };
+    event.target.addEventListener("touchend", onLift, { signal: lifted.signal });
+    event.target.addEventListener("touchcancel", onLift, { signal: lifted.signal });
+  }, []);
+
+  // Neither a window too short to scroll nor a reader parked at its very top produces a scroll
+  // event that could ask for more, so keep filling from the top.
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (!el || loading || loadMoreError || !(el.clientHeight > 0) || getMaxScrollTop(el) > 0) return;
-    loadOlderMessages();
+    if (!el || loading || loadMoreError || !(el.clientHeight > 0)) return;
+    if (getMaxScrollTop(el) > 0 && getSafeScrollTop(el) > 0) return;
+    void loadOlderMessages();
   }, [entries, loadMoreError, loadOlderMessages, loading]);
 
   /**
@@ -1696,7 +1801,7 @@ export default function ChatView({
         updateOptimisticMessageDelivery(messageId, ownerSessionId, undefined);
       }
       if (ownerSessionId === null && sessionIdRef.current) {
-        historyRef.current.refresh({ window: true });
+        historyRef.current.refresh({ reach: "window" });
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
@@ -2385,6 +2490,11 @@ export default function ChatView({
       console.error("Failed to copy message:", err);
     });
   }, []);
+  /** One object for every row, so a message's bubble only renders again when the message changes. */
+  const messageActions = useMemo(
+    () => ({ onCopy: handleCopySpecificMessage, onOpenMenu: openMessageActionsMenu }),
+    [handleCopySpecificMessage, openMessageActionsMenu],
+  );
 
   const handleCopyMessage = useCallback(() => {
     const target = messageMenuTarget;
@@ -2439,7 +2549,7 @@ export default function ChatView({
           lastVisibleActivityAt: getLatestEntryActivityTimestamp(nextEntries) ?? null,
         });
       }
-      historyRef.current.refresh({ window: true });
+      historyRef.current.refresh({ reach: "window" });
     } catch (error) {
       console.error("Failed to undo chat turn:", error);
       setUndoError(`Undo failed: ${getErrorMessage(error)}`);
@@ -2663,15 +2773,6 @@ export default function ChatView({
       const isLongPressTarget = !isLiveStreamingMessage && isMessageLongPressTarget(messageAnchorKey);
       // A reply reads as the continuation of the work that produced it, so it sits closer to it.
       const followsActivity = msg.role === "assistant" && renderBlocks[index - 1]?.type === "activity";
-      const actionSlot = isLiveStreamingMessage || isSelectingText ? undefined : (
-        <MessageActionToolbar
-          messageKey={messageAnchorKey}
-          message={msg}
-          copied={copiedMessageKey === messageAnchorKey}
-          onCopy={handleCopySpecificMessage}
-          onOpenMenu={openMessageActionsMenu}
-        />
-      );
       result.push(
         <div
           key={messageKey}
@@ -2710,7 +2811,9 @@ export default function ChatView({
         >
           <MessageBubble
             message={msg}
-            actionSlot={actionSlot}
+            actions={isLiveStreamingMessage || isSelectingText ? undefined : messageActions}
+            messageKey={messageAnchorKey}
+            copied={copiedMessageKey === messageAnchorKey}
             isStreaming={isLiveStreamingMessage}
             selectingText={isSelectingText}
             onFinishSelectingText={isSelectingText ? handleFinishSelectingMessageText : undefined}
@@ -2735,7 +2838,7 @@ export default function ChatView({
     liveActivityKey,
     messageAnchorKeys,
     renderBlocks,
-    handleCopySpecificMessage,
+    messageActions,
     handleFinishSelectingMessageText,
     handleRetryMessage,
     isMessageLongPressTarget,
@@ -2884,18 +2987,18 @@ export default function ChatView({
           className="flex-1 overflow-y-auto overflow-x-hidden"
           onScroll={handleScroll}
           onWheel={handleUserScrollIntent}
+          onTouchStart={handleTouchStart}
           onTouchMove={handleUserScrollIntent}
         >
           {showHistorySync && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="sticky top-0 z-10 border-b border-border bg-bg-primary/90 backdrop-blur-sm"
-            >
-              <div className="history-sync-bar" aria-hidden="true" />
-              <div className="flex items-center justify-center gap-2 px-3 py-1.5 text-xs">
-                <span className={cx("font-medium", DS.motion.live)}>Syncing chat history…</span>
-                <span className="hidden text-text-faint sm:inline">{historySyncDetail}</span>
+            // Zero height: the strip lies over the transcript, so showing and hiding it moves nothing.
+            <div className="sticky top-0 z-10 h-0">
+              <div role="status" aria-live="polite" className="border-b border-border bg-bg-primary/90 backdrop-blur-sm">
+                <div className="history-sync-bar" aria-hidden="true" />
+                <div className="flex items-center justify-center gap-2 px-3 py-1.5 text-xs">
+                  <span className={cx("font-medium", DS.motion.live)}>Syncing chat history…</span>
+                  <span className="hidden text-text-faint sm:inline">{historySyncDetail}</span>
+                </div>
               </div>
             </div>
           )}
@@ -2916,9 +3019,14 @@ export default function ChatView({
           )}
           {/* Cached transcript dims and shimmers while the disk read is in flight; live content below stays crisp. */}
           <ChatRunActiveProvider value={runActive}>
-            <div className={showHistorySync ? "history-syncing" : undefined}>
+            <ViewportKeeper
+              scrollerRef={scrollContainerRef}
+              className={showHistorySync ? "history-syncing" : undefined}
+              shouldKeep={shouldKeepViewport}
+              shift={shiftTranscript}
+            >
               {renderedEntries}
-            </div>
+            </ViewportKeeper>
           </ChatRunActiveProvider>
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           {!historicalMode && showJumpToLatest && (

@@ -1,4 +1,5 @@
-import ReactMarkdown from "react-markdown";
+import { memo } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
@@ -22,6 +23,18 @@ function describeAutopilotRun(run: AutopilotRunSummary): string {
   return parts.join(" · ");
 }
 
+const SUMMARY_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
+const SUMMARY_MARKDOWN_COMPONENTS: Components = { pre: CodeBlock };
+
+/** Parsed once per summary. The transcript renders again on every streamed chunk, and a summary can be long. */
+const CompletionSummary = memo(function CompletionSummary({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={SUMMARY_REMARK_PLUGINS} components={SUMMARY_MARKDOWN_COMPONENTS}>
+      {content}
+    </ReactMarkdown>
+  );
+});
+
 /** The run's closing summary. Only its marker carries colour; the summary reads as normal text. */
 export default function CompletionCard({ entry, autopilot }: CompletionCardProps) {
   const isError = entry.completion.status === "error";
@@ -42,9 +55,7 @@ export default function CompletionCard({ entry, autopilot }: CompletionCardProps
         )}
       </div>
       <div className={`ds-prose mt-2 max-w-none text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}>
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{ pre: CodeBlock }}>
-          {entry.content}
-        </ReactMarkdown>
+        <CompletionSummary content={entry.content} />
       </div>
     </div>
   );

@@ -13,12 +13,24 @@ import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
 import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChatBridgeLink } from "./BridgeReference";
 import { MessageAttachments, OutboundAttachment, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
 import { APP_PROSE } from "./shared/prose-classes";
+import { MessageActionToolbar } from "./MessageActions";
 import { DS, cx } from "../design/tokens";
 import { AutopilotBadge } from "../design/primitives";
 
 interface MessageBubbleProps {
   message: ChatMessage;
-  actionSlot?: ReactNode;
+  /**
+   * Copy and menu actions. They arrive as plain values and stable callbacks, never as a rendered
+   * element: this component is memoized, and re-parsing every loaded reply's markdown each time
+   * the transcript renders is what it exists to avoid.
+   */
+  actions?: {
+    onCopy: (key: string, message: ChatMessage) => void;
+    onOpenMenu: (x: number, y: number, key: string, message: ChatMessage) => void;
+  };
+  /** The message's key in the transcript; required for `actions`. */
+  messageKey?: string;
+  copied?: boolean;
   isStreaming?: boolean;
   onRetry?: () => void;
   selectingText?: boolean;
@@ -185,7 +197,9 @@ const MESSAGE_MARKDOWN_COMPONENTS: Components = {
 
 export default memo(function MessageBubble({
   message,
-  actionSlot,
+  actions,
+  messageKey,
+  copied = false,
   isStreaming = false,
   onRetry,
   selectingText = false,
@@ -193,6 +207,15 @@ export default memo(function MessageBubble({
   sessionId,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const actionSlot = actions && messageKey !== undefined && (
+    <MessageActionToolbar
+      messageKey={messageKey}
+      message={message}
+      copied={copied}
+      onCopy={actions.onCopy}
+      onOpenMenu={actions.onOpenMenu}
+    />
+  );
 
   if (isUser) {
     const hasAttachments = message.attachments && message.attachments.length > 0;
