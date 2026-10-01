@@ -487,6 +487,10 @@ export type AgentBackgroundTask = {
   prompt?: string;
   result?: string;
   latestResponse?: string;
+  /** Shell tasks only: the command line. */
+  command?: string;
+  /** Shell tasks only: attached | detached. An attached command dies with its session's runtime handle. */
+  attachmentMode?: string;
 } & Record<string, unknown>;
 
 /**

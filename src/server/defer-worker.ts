@@ -129,7 +129,7 @@ export function buildDeferWorkerSystemPrompt(kind: DeferWorkerKind): string {
   const actions = kind === "interval"
     ? [
         '- "continue": run the recurring check again later without disturbing the parent.',
-        '- "notify": send a concise message to the parent and keep the recurring check active.',
+        '- "notify": send a concise message to the parent and keep the recurring check active. The message starts a full turn in the parent, which is costly, so use it only for a change the prompt asks to be told about or one the parent must act on. Routine progress is "continue".',
         '- "finish": stop the recurring check silently.',
         '- "return": stop the recurring check and send a concise result to the parent.',
       ]

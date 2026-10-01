@@ -177,6 +177,8 @@ function mapCopilotTaskInfo(raw: any): AgentBackgroundTask {
     prompt: normalizeString(raw?.prompt),
     result: normalizeString(raw?.result),
     latestResponse: normalizeString(raw?.latestResponse),
+    command: normalizeString(raw?.command),
+    attachmentMode: normalizeString(raw?.attachmentMode),
   };
 }
 

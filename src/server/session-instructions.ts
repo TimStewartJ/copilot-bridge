@@ -1,5 +1,7 @@
 // System instruction constants used when constructing Copilot sessions.
 
+import { BACKGROUND_COMMAND_PROTECT_MS } from "./background-commands.js";
+
 export const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql", "report_intent"];
 
 export { DEFAULT_IDENTITY } from "../shared/session-identity.js";
@@ -37,6 +39,33 @@ export const AGENT_LIFECYCLE_GUIDANCE = `
 * Agents launched with mode "sync" are one-shot: never call write_agent on them. Keep sync as the default for one-off work.
 * Launch an agent in background mode when you may need to send it follow-ups, such as a correction or another review round. This is the one exception to using background mode only while doing independent work.
 * To wait for a background agent, call read_agent once with wait: true. If it is still running, end your turn and continue when its completion notification arrives; do not call read_agent repeatedly.
+`.trim();
+
+/**
+ * How to spend the time a slow command takes, and how to wait without paying for it twice.
+ * Where the numbers come from (Claude main-agent requests, 15 September to 1 October 2026):
+ * - 240 seconds: a request that started within five minutes of the previous one read the cache
+ *   99.7% of the time, and one that started more than five and a half minutes after it missed it
+ *   94% of the time. A wait of three to four minutes was followed by a miss 5% of the time, about
+ *   as often as a wait of one to three minutes (3%).
+ * - Ten or more times: a request that misses the cache writes it again at 1.25 times the input
+ *   price (see COPILOT_CACHE_WRITE_INPUT_RATE_MULTIPLIER), while cached input costs about a
+ *   tenth of the input price for 29 of the 33 priced models, a twentieth for one and a quarter
+ *   for three that charge nothing extra for the write.
+ * - 45 minutes: at those prices and that miss rate, polling every four minutes costs as much as
+ *   one uncached wake-up after about 33 minutes where cached input costs a tenth, and after about
+ *   47 minutes where it costs a twentieth. The guidance uses one figure near the upper end; in
+ *   between, the two choices differ by less than half the price of one uncached request.
+ * Other providers keep a cache longer, so for them the 240 seconds are stricter than needed.
+ * The text is fixed for the life of the process, so it never disturbs a session's cached prefix.
+ */
+export const LONG_RUNNING_WORK_GUIDANCE = `
+**Long-running commands and waiting**
+* Keep working while a slow command or a background agent runs. When a build, test run, install or similar command will take more than a minute or two and you have work that does not depend on its result, start it with mode "async" and carry on; start independent slow commands together instead of one after another. You are notified when each one finishes.
+* Start the slowest step first and use the wait for what comes next: read the code you will need, prepare the following change, write up what is already established.
+* When only waiting on a command is left, stay in the turn, even where a tool result suggests ending your response to wait for the notification, and wait in steps of at most 240 seconds (the shell tool's initial_wait, its read tool's delay, and any sleep inside a command), repeating until the command finishes. Both tools return as soon as it does, so a shorter step costs no time. A single pause of five minutes or more can let the provider's prompt cache expire, and the next request then re-reads the whole conversation uncached, at ten or more times the cost.
+* To wait longer than about 45 minutes on something outside this session that your work depends on, such as a pipeline, a deployment or a person, create a defer and end the turn instead of polling.
+* A background command lives only while Bridge keeps this session loaded. If you end the turn with one still running you are woken when it finishes, and Bridge keeps the session loaded and holds its own restarts for about ${Math.round(BACKGROUND_COMMAND_PROTECT_MS / 60_000)} minutes after the command started. After that an idle session can be unloaded, which stops the command; a <bridge_notice> then names the commands that were stopped.
 `.trim();
 
 // Section transforms for CLI-rendered text the Bridge keeps but must correct. The pattern

@@ -243,6 +243,7 @@ export function createMockSessionManager() {
     }),
     getActiveSessions: () => [],
     getLifecycleBlockingSessionCount: () => 0,
+    getLifecycleBlockingSessionIds: () => [],
     getEffectiveSessionCwd: () => undefined,
     getActiveRuns: () => [],
     isRuntimeIdle: async () => true,

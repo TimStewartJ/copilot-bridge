@@ -234,6 +234,7 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
         .run(`copied-loop-${status}`, "copied-session", "Isolation fixture. Must not run.", 300, "9999-01-01T00:00:00Z", status, at, at);
     }
     db.prepare("INSERT INTO interrupted_run_markers(sessionId,attentionMode,acceptedAt) VALUES(?,?,?)").run("copied-session", "interactive", at);
+    db.prepare("INSERT INTO background_command_markers(sessionId,shellId,startedAt) VALUES(?,?,?)").run("copied-session", "1", at);
     db.prepare("INSERT INTO voice_jobs(id,composerKey,status,audioPath,createdAt,updatedAt) VALUES(?,?,?,?,?,?)")
       .run("copied-voice", "copied-session", "accepted", join(rootDir, "not-copied.wav"), at, at);
   } finally {
@@ -325,6 +326,7 @@ async function main(): Promise<void> {
       assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM deferred_prompts WHERE status='cancelled' AND id LIKE 'copied-prompt-%'").get()?.n, 2);
       assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM defer_loops WHERE status='cancelled' AND id LIKE 'copied-loop-%'").get()?.n, 2);
       assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM interrupted_run_markers").get()?.n, 0);
+      assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM background_command_markers").get()?.n, 0);
       assert.equal(isolated.prepare("SELECT status FROM voice_jobs WHERE id='copied-voice'").get()?.status, "error");
     } finally { isolated.close(); }
     stagingTools.registerExistingPreviewsFromDisk({ stagingParent: dirname(stagingDir) });

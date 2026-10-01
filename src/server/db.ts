@@ -757,6 +757,20 @@ function initSchema(db: DatabaseSync): void {
       lastResumedAt TEXT
     );
 
+    -- Commands the agent left running in a session's attached shell. stoppedAt is NULL while the
+    -- command runs in a loaded session. A row that keeps it NULL to the next boot was cut off by
+    -- the server stopping; a row with stoppedAt set is a loss the agent has not been told about.
+    CREATE TABLE IF NOT EXISTS background_command_markers (
+      sessionId TEXT NOT NULL,
+      shellId TEXT NOT NULL,
+      startedAt TEXT NOT NULL,
+      description TEXT,
+      command TEXT,
+      stoppedAt TEXT,
+      stoppedBy TEXT,
+      PRIMARY KEY (sessionId, shellId, startedAt)
+    );
+
     -- Recurring same-session deferred execution loops
     CREATE TABLE IF NOT EXISTS defer_loops (
       id TEXT PRIMARY KEY,

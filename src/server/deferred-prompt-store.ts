@@ -18,6 +18,9 @@ export const MANAGEMENT_JOB_DELIVERY_ID_PREFIX = "management-job:";
 /** Delivery ids for chat messages the session could not take when they were sent (see chat-message-outbox.ts). */
 export const CHAT_MESSAGE_DELIVERY_ID_PREFIX = "chat-message:";
 
+/** Delivery ids and source ids for notices about stopped background commands (see background-commands.ts). */
+export const BACKGROUND_COMMAND_DELIVERY_ID_PREFIX = "background-commands:";
+
 /** Upper bound on rows removed by a single terminal-row prune pass. */
 export const DEFAULT_TERMINAL_PRUNE_LIMIT = 500;
 

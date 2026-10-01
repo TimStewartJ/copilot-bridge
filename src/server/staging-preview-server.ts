@@ -134,6 +134,16 @@ async function main(): Promise<void> {
     console.error("[voice-jobs] Initial maintenance failed:", error);
   }
   ctx.voiceJobManager.resumePendingJobs();
+  // A command still marked running belonged to a previous preview process. Record it as stopped
+  // for its agent's next message; a preview never starts a turn on its own to say so.
+  try {
+    if (ctx.backgroundCommandStore) {
+      const { recoverBackgroundCommandsOnBoot } = await import("./background-commands.js");
+      recoverBackgroundCommandsOnBoot({ backgroundCommandStore: ctx.backgroundCommandStore }, { wake: false });
+    }
+  } catch (error) {
+    console.error("[staging-preview] Background command recovery failed:", error);
+  }
   initializeSchedulerAndDeferredRunners(ctx);
 
   app.use(createResponseCompressionMiddleware());

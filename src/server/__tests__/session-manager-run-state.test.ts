@@ -534,6 +534,61 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("notices a background command starting and finishing while no run is open", async () => {
+    const { manager } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    let tasks: any[] = [];
+    (session as any).listTasks = vi.fn(async () => ({ tasks }));
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    manager.startWork("session-command", "start the build and stop");
+    await flushMicrotasks();
+    getHandler()?.({ type: "assistant.turn_start", data: {}, timestamp: new Date().toISOString() });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date(Date.now() + 1).toISOString() });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState("session-command")).toBe("idle");
+    expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+    (session as any).listTasks.mockClear();
+
+    const command = {
+      kind: "shell",
+      id: "0",
+      status: "running",
+      executionMode: "background",
+      attachmentMode: "attached",
+      startedAt: new Date().toISOString(),
+      command: "npm run build",
+    };
+    tasks = [command];
+    getHandler()?.({ type: "session.background_tasks_changed", data: {}, timestamp: new Date().toISOString() });
+    await flushMicrotasks();
+
+    expect((session as any).listTasks).toHaveBeenCalled();
+    // The run is over, yet unloading the session now would stop the build its agent is waiting for.
+    expect(manager.getSessionRunState("session-command")).toBe("idle");
+    expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+    expect(manager.getLifecycleBlockingSessionIds()).toEqual(["session-command"]);
+
+    tasks = [{ ...command, status: "completed" }];
+    getHandler()?.({ type: "session.background_tasks_changed", data: {}, timestamp: new Date().toISOString() });
+    await flushMicrotasks();
+
+    expect(manager.agentRegistry.getRunningCommands("session-command")).toEqual([]);
+    // Still held for the turn the runtime starts to report the result, then released.
+    expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 31_000);
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("removes a finished sync agent after its parent tool call completes", async () => {
     const { manager } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();

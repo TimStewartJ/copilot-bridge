@@ -60,6 +60,13 @@ import type { SendMode } from "../shared/send-mode.js";
 import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
+import type { BackgroundCommandStore } from "./background-command-store.js";
+import {
+  BACKGROUND_COMMAND_PROTECT_MS,
+  buildStoppedCommandsNotice,
+  queueStoppedCommandWake,
+  type RunningBackgroundCommand,
+} from "./background-commands.js";
 import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
@@ -214,6 +221,7 @@ import {
 import {
   createDisposableDeferWorker,
   DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX,
+  isDisposableDeferWorkerSessionId,
   type DeferWorkerInput,
   type DeferWorkerLease,
   type DeferWorkerResult,
@@ -567,6 +575,16 @@ export interface SessionManagerDeps {
   taskHistoryStore?: TaskHistoryStore;
   sessionMetaStore?: SessionMetaStore;
   interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
+  /** Markers for commands running in attached shells, so one the Bridge stops can be reported. */
+  backgroundCommandStore?: Pick<
+    BackgroundCommandStore,
+    "syncRunning" | "markSessionStopped" | "listStopped" | "clearStopped" | "forgetSession"
+  >;
+  /**
+   * Called after a session was unloaded with commands still running in it. Their loss is already
+   * recorded and goes out with the session's next message; this is the chance to say so sooner.
+   */
+  onBackgroundCommandsStopped?(sessionId: string): void;
   cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
   taskStore: TaskStore;
   taskAgentDefinitionStore?: TaskAgentDefinitionStore;
@@ -719,6 +737,21 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     taskHistoryStore: ctx.taskHistoryStore,
     sessionMetaStore: ctx.sessionMetaStore,
     interruptedRunStore: ctx.interruptedRunStore,
+    backgroundCommandStore: ctx.backgroundCommandStore,
+    onBackgroundCommandsStopped: (sessionId) => {
+      // A staged preview never starts turns on its own; the notice still goes out with the next message.
+      if (ctx.isStaging || !ctx.backgroundCommandStore || !ctx.deferredPromptStore) return;
+      const outcome = queueStoppedCommandWake({
+        backgroundCommandStore: ctx.backgroundCommandStore,
+        deferredPromptStore: ctx.deferredPromptStore,
+        deferredPromptRunner: ctx.deferredPromptRunner,
+        isSessionBusy: (id) => ctx.sessionManager.isSessionBusy(id),
+        isSessionArchived: (id) => ctx.sessionMetaStore.isArchived(id),
+      }, sessionId);
+      if (outcome === "queued") {
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Telling the agent now that its background commands were stopped`);
+      }
+    },
     cliSessionCatalog: ctx.cliSessionCatalog,
     taskStore: ctx.taskStore,
     taskAgentDefinitionStore: ctx.taskAgentDefinitionStore,
@@ -793,6 +826,8 @@ export class SessionManager {
   private readonly backendFences = new WeakMap<AgentBackend, BackendFence>();
   private readonly sessionRuntimeOwners = new WeakMap<AgentSession, SessionRuntimeOwner>();
   private readonly backendAutoResumeAt = new Map<string, number>();
+  /** Sessions whose cut-off run a backend recovery is about to resume with a continue prompt. */
+  private readonly pendingBackendAutoResumes = new Set<string>();
   private deferStartupHoldMs = SessionManager.resolveNonNegativeIntegerEnv(
     "BRIDGE_DEFER_STARTUP_HOLD_MS",
     DEFAULT_DEFER_STARTUP_HOLD_MS,
@@ -1002,6 +1037,8 @@ export class SessionManager {
           "trimming the session-tree cache after background agent activity",
         );
       },
+      onCommandsChanged: (sessionId, commands) => this.handleBackgroundCommandsChanged(sessionId, commands),
+      onCommandsStopped: (sessionId, commands) => this.handleBackgroundCommandsStopped(sessionId, commands),
     });
     this.sessionNameRpc = createSessionNameRpc({
       withSessionNameRpc: (sessionId, operation) => this.withSessionNameRpc(sessionId, operation),
@@ -2193,7 +2230,10 @@ export class SessionManager {
     const protectedIds = new Set(this.getActiveSessions());
     if (extraProtectedId) protectedIds.add(extraProtectedId);
     for (const sessionId of this.sessionObjects.keys()) {
-      if (this.agentRegistry.hasRunningAgents(sessionId)) protectedIds.add(sessionId);
+      // Unloading a session releases its runtime handle, which stops its agents and its commands.
+      if (this.agentRegistry.hasRunningAgents(sessionId) || this.agentRegistry.hasProtectedCommand(sessionId)) {
+        protectedIds.add(sessionId);
+      }
     }
     return protectedIds;
   }
@@ -2201,6 +2241,57 @@ export class SessionManager {
   private isSessionTreeIdleExpired(sessionId: string, now = Date.now()): boolean {
     const lastActivityAt = this.sessionTreeLastActivityAt.get(sessionId);
     return lastActivityAt !== undefined && now - lastActivityAt >= this.sessionCacheIdleTtlMs;
+  }
+
+  /** A command started running in the session's attached shell, or left the running set. */
+  private handleBackgroundCommandsChanged(sessionId: string, commands: RunningBackgroundCommand[]): void {
+    if (isDisposableDeferWorkerSessionId(sessionId)) return;
+    this.touchSessionTree(sessionId);
+    try {
+      this.deps.backgroundCommandStore?.syncRunning(sessionId, commands);
+    } catch (error) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not record running background commands:`, error);
+    }
+    if (commands.length > 0) {
+      console.log(
+        `[sdk] [${sessionId.slice(0, 8)}] ${commands.length} background command(s) running; the session stays loaded `
+        + `and restarts wait while one is under ${Math.round(BACKGROUND_COMMAND_PROTECT_MS / 60_000)} min old`,
+      );
+    }
+    // A finished command may have been all that kept this tree in the cache.
+    this.scheduleCacheOperation(
+      this.trimSessionCache("background commands changed"),
+      "trimming the session-tree cache after a background command changed",
+    );
+  }
+
+  /** The session's runtime handle is going away, and with it the commands still running in it. */
+  private handleBackgroundCommandsStopped(sessionId: string, commands: RunningBackgroundCommand[]): void {
+    // Nobody is left to tell about a deleted session's commands, and deleteSession drops its markers.
+    // On shutdown the markers stay as they are: the next boot reports whatever they still show running.
+    if (this.deletingSessions.has(sessionId) || this.shuttingDown || isDisposableDeferWorkerSessionId(sessionId)) return;
+    const sid = sessionId.slice(0, 8);
+    let recorded = 0;
+    try {
+      recorded = this.deps.backgroundCommandStore?.markSessionStopped(sessionId, "unloaded") ?? 0;
+    } catch (error) {
+      console.warn(`[sdk] [${sid}] Could not record stopped background commands:`, error);
+    }
+    const labels = commands
+      .map((command) => (command.description ?? command.command ?? `shell ${command.shellId}`).replace(/\s+/g, " ").slice(0, 60))
+      .join("; ");
+    console.warn(`[sdk] [${sid}] Unloading the session stopped ${commands.length} background command(s): ${labels}`);
+    this.recordSpan("session.background_commands.stopped", 0, sessionId, { cause: "unloaded", count: commands.length });
+    // A run the backend loss cut off is resumed with its own prompt, which carries the notice.
+    if (recorded === 0 || this.pendingBackendAutoResumes.has(sessionId)) return;
+    // Decided once the cache operation that is unloading the session has finished.
+    setImmediate(() => {
+      try {
+        this.deps.onBackgroundCommandsStopped?.(sessionId);
+      } catch (error) {
+        console.warn(`[sdk] [${sid}] Could not tell the agent about its stopped background commands:`, error);
+      }
+    });
   }
 
   private getCopilotHome(): string {
@@ -3642,6 +3733,7 @@ export class SessionManager {
       }
       if (!skipReason) {
         resumable.push(run);
+        this.pendingBackendAutoResumes.add(run.sessionId);
         continue;
       }
       if (skipReason === "cooldown") this.markSessionAttention(run.sessionId);
@@ -3738,6 +3830,7 @@ export class SessionManager {
         : retry === "start" && progress.startRetries < BACKEND_RECOVERY_MAX_START_RETRIES;
       if (!transition || !canRetry) {
         if (transition) this.blockBackendTransition(transition);
+        this.pendingBackendAutoResumes.clear();
         for (const record of this.cleanupOwnership.values()) {
           record.phase = "operator-blocked";
           if (record.timer) clearTimeout(record.timer);
@@ -3782,6 +3875,7 @@ export class SessionManager {
   private async autoResumeInterruptedRuns(resumable: InterruptedRun[]): Promise<number> {
     let resumed = 0;
     for (const run of resumable) {
+      this.pendingBackendAutoResumes.delete(run.sessionId);
       if (this.shuttingDown) break;
       const sid = run.sessionId.slice(0, 8);
       const idleDeadline = createDeadline(BACKEND_AUTO_RESUME_IDLE_WAIT_MS);
@@ -5421,6 +5515,7 @@ export class SessionManager {
       }
       this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
       this.deliveredTurnContext.delete(sessionId);
+      this.deps.backgroundCommandStore?.forgetSession(sessionId);
 
       // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
       const copilotHome = this.getCopilotHome();
@@ -5486,8 +5581,39 @@ export class SessionManager {
    */
   private readonly deliveredTurnContext = new Map<string, { generation: number; hashes: Map<BridgeContextSectionName, string> }>();
 
-  /** The bridge_context block to put in front of this user message, if anything changed. */
+  /**
+   * What goes in front of this user message: a one-time notice about background commands the
+   * Bridge stopped, then the bridge_context block if anything in it changed. Both travel with the
+   * message instead of the system prompt, so neither disturbs the cached prompt prefix.
+   */
   prepareTurnContext(sessionId: string): { block?: string; commit(): void } {
+    const context = this.prepareBridgeContext(sessionId);
+    const store = this.deps.backgroundCommandStore;
+    if (!store) return context;
+    let stopped: ReturnType<typeof store.listStopped>;
+    try {
+      stopped = store.listStopped(sessionId);
+    } catch (error) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not read stopped background commands:`, error);
+      return context;
+    }
+    if (stopped.length === 0) return context;
+    const notice = buildStoppedCommandsNotice(stopped);
+    return {
+      block: context.block ? `${notice}\n\n${context.block}` : notice,
+      commit: () => {
+        context.commit();
+        try {
+          store.clearStopped(sessionId, stopped);
+        } catch (error) {
+          console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not clear delivered background-command notice:`, error);
+        }
+      },
+    };
+  }
+
+  /** The bridge_context block to put in front of this user message, if anything changed. */
+  private prepareBridgeContext(sessionId: string): { block?: string; commit(): void } {
     const none = { commit: () => {} };
     // Chats with their own replace-mode prompt (Helm) take no Bridge task context.
     if (this.deps.resolveSessionProfile?.(sessionId)) return none;
@@ -5850,6 +5976,14 @@ export class SessionManager {
    */
   getLifecycleBlockingSessionCount(): number {
     return this.getProtectedSessionTreeIds().size + this.inFlightSessionCreations.size;
+  }
+
+  /**
+   * The sessions a restart is waiting for: those with a run, resume or hold in flight, and those
+   * kept loaded for a running background agent or a recently started background command.
+   */
+  getLifecycleBlockingSessionIds(): string[] {
+    return [...this.getProtectedSessionTreeIds()];
   }
 
   /** Evict all cached session objects so the next turn forces a re-resume with fresh config */
