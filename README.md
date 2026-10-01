@@ -357,7 +357,8 @@ Every client screen is built from `src/client/design/`: `tokens.ts` holds the cl
 - `npx tsx src/client/design/audit.ts --explain <file>` lists what a file still breaks.
 
 Search keeps the query/source filters fixed above a single results scroller, with plain document
-excerpts and literal chat excerpts. Settings keeps long instruction fields behind disclosures,
+excerpts and literal chat excerpts. Ctrl/⌘ K opens it from anywhere; with nothing typed it lists
+unread chats, and arrow keys reach the result rows. Settings keeps long instruction fields behind disclosures,
 uses a mobile category selector, and exposes live quota from the mobile header. Drafts save only
 changed fields; theme selection is a reversible preview until Save, and passive model-catalog reads
 do not change saved preferences or create an unsaved-changes warning.

@@ -14,10 +14,13 @@ function isNewerTimestamp(candidate: string, current?: string): boolean {
 
 export function useReadState() {
   const [state, setState] = useState<ReadState>({});
+  // Until the server's state arrives every chat looks unread, so a list of unread chats must wait.
+  const [hydrated, setHydrated] = useState(false);
 
   // Apply server state as the single source of truth
   const applyServerState = useCallback((server: ReadState) => {
     setState(server);
+    setHydrated(true);
   }, []);
 
   // Hydrate from server on mount
@@ -81,5 +84,5 @@ export function useReadState() {
     [isUnread],
   );
 
-  return { isUnread, markRead, markUnread, unreadCount, applyServerState };
+  return { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated };
 }

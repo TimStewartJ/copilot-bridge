@@ -213,6 +213,9 @@ loaded/empty/error states, both themes and phone/container widths before publish
 
 - Search is one top-anchored overlay. Its query and source controls stay outside the single results
   scroller. It grows with content up to a viewport bound, rather than leaving a tall empty panel.
+  With nothing typed, its default results are the unread chats, newest first: the set Home lists as
+  new replies, less the chat already open. The Tasks and Docs sources and a whole-chat search show
+  the search hint instead. Arrow keys move between the query field and the result rows.
   Source headings, dividers and bounded excerpts do the grouping; do not put result cards inside
   another card. Notes/docs use plain Markdown excerpts; message excerpts remain literal for code
   searches. Query syntax, coverage details and help are available without competing with results.
