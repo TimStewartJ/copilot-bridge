@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ChatEntry } from "./api";
 import {
   getCachedChatSnapshot,
+  keepLoadedEntries,
   replaceHistoryWindow,
   resetCachedChatSnapshotState,
   setCachedChatSnapshot,
@@ -17,7 +18,7 @@ afterEach(() => {
 });
 
 describe("chat cache", () => {
-  it("clones cached disk windows and evicts least-recently-used sessions", () => {
+  it("hands out its own list of a cached window and evicts least-recently-used sessions", () => {
     const client = new QueryClient();
     for (let index = 0; index < 6; index += 1) {
       setCachedChatSnapshot(client, {
@@ -68,6 +69,44 @@ describe("chat cache", () => {
     expect(snapshot?.entries).toHaveLength(200);
     expect(snapshot?.entries[0]).toEqual(message("entry-100"));
     expect(snapshot?.firstItemIndex).toBe(100);
+  });
+
+  it("returns the entries it was given, so a revisit and the read behind it can be compared", () => {
+    const client = new QueryClient();
+    const entry = message("entry-0");
+    setCachedChatSnapshot(client, { sessionId: "session-1", entries: [entry], firstItemIndex: 0, fetchedAt: 1 });
+
+    expect(getCachedChatSnapshot(client, "session-1")?.entries[0]).toBe(entry);
+  });
+});
+
+describe("keepLoadedEntries", () => {
+  const tool = (id: string, result?: string): ChatEntry => ({
+    id,
+    type: "tool",
+    toolCall: { toolCallId: id, name: "view", args: { path: "a.ts" }, ...(result ? { result } : {}) },
+  } as ChatEntry);
+
+  it("keeps the loaded object for every entry a fresh read left unchanged", () => {
+    const loaded = [message("entry-0"), tool("entry-1"), message("entry-2")];
+    const kept = keepLoadedEntries(loaded, 0, [message("entry-0"), tool("entry-1", "done"), message("entry-2"), message("entry-3")], 0);
+
+    expect(kept[0]).toBe(loaded[0]);
+    expect(kept[2]).toBe(loaded[2]);
+    // A changed entry is a new object, but still shares what did not change inside it.
+    expect(kept[1]).not.toBe(loaded[1]);
+    expect(kept[1]).toEqual(tool("entry-1", "done"));
+    expect((kept[1] as { toolCall: { args: unknown } }).toolCall.args).toBe((loaded[1] as { toolCall: { args: unknown } }).toolCall.args);
+    expect(kept[3]).toEqual(message("entry-3"));
+  });
+
+  it("matches entries by where they sit in the session, not in the window", () => {
+    const loaded = [message("entry-4"), message("entry-5"), message("entry-6")];
+    // The fresh window starts two entries later than the loaded one.
+    const kept = keepLoadedEntries(loaded, 4, [message("entry-6"), message("entry-7")], 6);
+
+    expect(kept[0]).toBe(loaded[2]);
+    expect(kept[1]).toEqual(message("entry-7"));
   });
 });
 
