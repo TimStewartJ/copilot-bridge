@@ -147,7 +147,8 @@ export interface StreamState {
   activeTurnId?: string;
   activeTurnInstanceId?: string;
   /**
-   * Locally monotonic marker that advances whenever committed disk history may have changed.
+   * Locally monotonic marker that advances whenever committed disk history may have changed,
+   * including every time a run settles: it is the view's only cue to re-read disk history.
    * Derived rather than mirrored: the server's per-run counter restarts with each new bus, so the
    * view would otherwise stop refreshing after the first run of a session.
    */
@@ -608,7 +609,8 @@ export function useSessionStream(
           liveAssistantSegments: current.liveAssistantSegments,
           liveReasoning: keepCommittedReasoning(current.liveReasoning),
           pendingUserMessages: current.pendingUserMessages,
-          historyEpoch: current.historyEpoch,
+          // Whatever the run committed after the stream died was never announced.
+          historyEpoch: current.historyEpoch + 1,
         }));
         onSettledRef.current();
       }
@@ -676,10 +678,11 @@ export function useSessionStream(
             runMode: isSendMode(event.runMode)
               ? event.runMode
               : snapshotRunId === previousRunId ? current.runMode : undefined,
-            // A snapshot from a different run means committed history moved while disconnected.
-            historyEpoch: snapshotRunId === previousRunId
-              ? current.historyEpoch
-              : current.historyEpoch + 1,
+            // A finished run, or a snapshot from a different one, means committed history moved
+            // while disconnected.
+            historyEpoch: complete || snapshotRunId !== previousRunId
+              ? current.historyEpoch + 1
+              : current.historyEpoch,
             activeTurnId: turnId,
             activeTurnInstanceId: turnInstanceId,
           },
@@ -1165,5 +1168,15 @@ export function useSessionStream(
     connectStream(sid, "reconnect");
   }, [connectStream]);
 
-  return { ...streamState, sendMessage, abortSession, reconnect, ensureConnected };
+  /**
+   * Drop what a finished run left behind. Its output stays in state until disk history shows it,
+   * and history that was cut back since (an undone turn) never will.
+   */
+  const dropFinishedRunOutput = useCallback(() => {
+    setStreamState((current) => current.isStreaming
+      ? current
+      : createState("idle", { contextSummary: current.contextSummary, historyEpoch: current.historyEpoch }));
+  }, []);
+
+  return { ...streamState, sendMessage, abortSession, reconnect, ensureConnected, dropFinishedRunOutput };
 }

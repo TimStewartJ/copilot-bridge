@@ -2641,7 +2641,6 @@ function SessionRoute({
   const historySignal = sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0;
   const activeSession = sessions.find((s) => s.sessionId === sessionId);
   const hasPlan = activeSession?.hasPlan;
-  const activeSessionActivityAt = activeSession?.lastVisibleActivityAt;
   // Tied to the chat it was opened from: leaving that chat closes it instead of retargeting it.
   const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
   const modelDialogSession = modelDialogSessionId
@@ -3053,7 +3052,6 @@ function SessionRoute({
         reloadToken={sessionReloadToken}
         busySignal={busySignal}
         historySignal={historySignal}
-        activeSessionActivityAt={activeSessionActivityAt}
         externallyInUse={activeSession?.externallyInUse}
         backgroundAgents={activeSession?.backgroundAgents}
         onForkSession={onForkSession}

@@ -271,11 +271,14 @@ describe("useSessionStream EventSource lifecycle", () => {
     await withHarness(async ({ getState, getSource, settled, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
+      const before = getState().historyEpoch;
       await act(async () => source.failClosed());
       await waitUntilAct(act, () => getState().streamStatus === "idle");
 
       expect(source.close).toHaveBeenCalledOnce();
       expect(settled).toHaveBeenCalledOnce();
+      // Nothing announced what the run committed after the stream died, so the view must re-read.
+      expect(getState().historyEpoch).toBe(before + 1);
     });
   });
 
@@ -840,6 +843,53 @@ describe("useSessionStream terminal handling", () => {
       expect(source.close).toHaveBeenCalled();
       expect(settled).toHaveBeenCalled();
       expect(getState().runNotice).toMatchObject({ kind: "stopped" });
+    });
+  });
+
+  it("advances the epoch when a run this stream was following turns out to have finished", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, snapshot({ streamingContent: "typing" }),
+        () => getState().streamingContent === "typing");
+      const before = getState().historyEpoch;
+
+      // The connection dropped and came back after the run ended: same run, no terminal event.
+      await emitAndWait(act, source, snapshot({ complete: true, terminalType: "done" }),
+        () => getState().streamStatus === "idle");
+
+      expect(getState().historyEpoch).toBe(before + 1);
+    });
+  });
+
+  it("drops what a finished run left behind on request, and leaves a running one alone", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      await emitAndWait(act, source, {
+        type: "user_message",
+        userMessage: { id: "prompt-1", content: "the prompt", pending: true },
+      }, () => getState().pendingUserMessages.length === 1);
+      await emitAndWait(act, source, {
+        type: "assistant_partial",
+        content: "the reply",
+        sourceEventId: "assistant-1",
+      }, () => getState().liveAssistantSegments.length === 1);
+
+      // Mid-run this is the only copy there is.
+      await act(async () => getState().dropFinishedRunOutput());
+      expect(getState().liveAssistantSegments).toHaveLength(1);
+
+      await emitAndWait(act, source, { type: "done", content: "the reply", sourceEventId: "t-1" },
+        () => getState().streamStatus === "idle");
+      // Kept so the view can hand it off to disk history, which an undone turn never reaches.
+      expect(getState().liveAssistantSegments).toHaveLength(1);
+      const epoch = getState().historyEpoch;
+
+      await act(async () => getState().dropFinishedRunOutput());
+      expect(getState().liveAssistantSegments).toEqual([]);
+      expect(getState().pendingUserMessages).toEqual([]);
+      expect(getState().historyEpoch).toBe(epoch);
     });
   });
 });

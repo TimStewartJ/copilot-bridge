@@ -154,8 +154,8 @@ type FetchMessagesFastResult = {
 };
 
 type RenderChatViewOptions = {
-  activeSessionActivityAt?: string;
   busySignal?: number;
+  historySignal?: number;
   composerKey?: string;
   externallyInUse?: boolean;
   fetchMessagesFastResult?: Promise<FetchMessagesFastResult> | FetchMessagesFastResult;
@@ -248,7 +248,6 @@ function createSnapshot(
     sessionId,
     entries,
     firstItemIndex: 0,
-    total: entries.length,
     fetchedAt: Date.now(),
   };
 }
@@ -383,6 +382,7 @@ async function renderChatView(
   const abortSessionMock = vi.fn();
   const reconnectMock = vi.fn();
   const ensureConnectedMock = vi.fn();
+  const dropFinishedRunOutputMock = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -476,6 +476,7 @@ async function renderChatView(
     abortSession: abortSessionMock,
     reconnect: reconnectMock,
     ensureConnected: ensureConnectedMock,
+    dropFinishedRunOutput: dropFinishedRunOutputMock,
     ...nextOptions.streamOverrides,
   });
   useSessionStreamMock.mockReturnValue(buildStreamState(options));
@@ -505,7 +506,7 @@ async function renderChatView(
               onCreateAndSend: nextOptions.onCreateAndSend,
               onSubmitVoiceCapture: vi.fn(),
               busySignal: nextOptions.busySignal,
-              activeSessionActivityAt: nextOptions.activeSessionActivityAt,
+              historySignal: nextOptions.historySignal,
               externallyInUse: nextOptions.externallyInUse,
               onForkSession: nextOptions.onForkSession,
               onRenderedReadThrough: nextOptions.onRenderedReadThrough,
@@ -534,7 +535,17 @@ async function renderChatView(
     }
   }
 
-  return { dom, act: act as Act, cleanup, queryClient, render, reconnectMock, ensureConnectedMock, sendMessageMock };
+  return {
+    dom,
+    act: act as Act,
+    cleanup,
+    queryClient,
+    render,
+    reconnectMock,
+    ensureConnectedMock,
+    dropFinishedRunOutputMock,
+    sendMessageMock,
+  };
 }
 
 afterEach(() => {
@@ -818,6 +829,7 @@ describe("ChatView exact-message history", () => {
 
 describe("ChatView external session use", () => {
   it("attaches to a busy session's stream without replacing a healthy one on history refreshes", async () => {
+    vi.useFakeTimers();
     let visibilityHandler: (() => void) | undefined;
     const { act, cleanup, render, reconnectMock, ensureConnectedMock } = await renderChatView({
       fetchMessagesFastResult: {
@@ -850,13 +862,17 @@ describe("ChatView external session use", () => {
       await waitUntilAct(act, () => ensureConnectedMock.mock.calls.length === 2);
       expect(reconnectMock).not.toHaveBeenCalled();
 
-      // A tab that slept may hold a stream that died unnoticed, so waking replaces it.
+      // A tab that slept may hold a stream that died unnoticed, so waking replaces it. The read
+      // that finds out takes its turn after the one that just ran.
       await act(async () => {
         visibilityHandler?.();
         await waitTick();
       });
+      expect(reconnectMock).not.toHaveBeenCalled();
+      await advanceTimersByTimeAct(act, 250);
       await waitUntilAct(act, () => reconnectMock.mock.calls.length === 1);
       expect(reconnectMock).toHaveBeenCalledWith("session-1");
+      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(3);
     } finally {
       await cleanup();
     }
@@ -1069,10 +1085,45 @@ describe("ChatView cached resume loading state", () => {
     }
   });
 
+  it("stops waiting on a cached resume's refresh once the reader sends a message", async () => {
+    vi.useFakeTimers();
+    const refresh = createDeferred<FetchMessagesFastResult>();
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: refresh.promise,
+      seedQueryClient: (queryClient) => setCachedChatSnapshot(
+        queryClient,
+        createSnapshot("session-1", [createMessage("entry-1")]),
+      ),
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-1") ?? false);
+      await advanceTimersByTimeAct(act, 150);
+      expect(dom.container.textContent).toContain("Syncing chat history");
+
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        await props.onSend("next question");
+        await waitTick();
+      });
+      expect(dom.container.textContent).not.toContain("Syncing chat history");
+
+      // The read predates the send, so neither its entries nor its idle-and-cold verdict apply.
+      await act(async () => {
+        refresh.resolve({ messages: [createMessage("stale-entry")], runState: "idle", total: 1, warm: false });
+        await waitTick();
+      });
+      expect(dom.container.textContent).not.toContain("stale-entry");
+      expect(warmSessionMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("uses only the cold-load skeleton when there is no cached resume", async () => {
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
       fetchMessagesFastResult: deferred.promise,
     });
 
@@ -1105,7 +1156,6 @@ describe("ChatView cached resume loading state", () => {
     });
     const deferred = createDeferred<FetchMessagesFastResult>();
     const { dom, act, cleanup, render } = await renderChatView({
-      activeSessionActivityAt: "2026-04-29T12:00:00.000Z",
       fetchMessagesFastResult: deferred.promise,
       seedQueryClient: (queryClient) => setCachedChatSnapshot(
         queryClient,
@@ -1120,7 +1170,6 @@ describe("ChatView cached resume loading state", () => {
       expect(dom.container.textContent).not.toContain("Syncing chat history");
 
       await render({
-        activeSessionActivityAt: "2026-04-29T12:05:00.000Z",
         busySignal: 1,
       });
       await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 2);
@@ -1338,13 +1387,35 @@ describe("ChatView history pagination", () => {
     getReactProps(scroller)!.onScroll();
   }
 
-  async function renderPaginatedSession(tail: ChatEntry[], total: number) {
+  /** Requests for the newest history, in order: every disk read except an older page. */
+  function newestReads() {
+    return fetchMessagesFastMock.mock.calls
+      .map(([, request]) => request as { limit?: number; before?: number })
+      .filter((request) => request.before == null);
+  }
+
+  async function renderPaginatedSession(tail: ChatEntry[], total: number, running = false) {
     const view = await renderChatView({
-      fetchMessagesFastResult: { messages: tail, runState: "idle", total, warm: true, hasMore: true },
-      streamOverrides: { isStreaming: false, pendingOrigin: null },
+      fetchMessagesFastResult: { messages: tail, runState: running ? "busy" : "idle", total, warm: true, hasMore: true },
+      streamOverrides: running
+        ? { isStreaming: true, streamStatus: "streaming" }
+        : { isStreaming: false, pendingOrigin: null },
     });
     await waitUntilAct(view.act, () => view.dom.container.textContent?.includes("Load older messages") ?? false);
     return { ...view, scrollContainer: findScrollContainer(view.dom.container) };
+  }
+
+  /** A chat of 300 entries whose reader paged back once, so entries 50 to 299 are loaded. */
+  async function renderPagedBackSession(tail = createMessages(250, 300), running = false) {
+    const view = await renderPaginatedSession(tail, 300, running);
+    fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(50, 250), hasMore: true, total: 300 });
+    await view.act(async () => {
+      clickButton(findButtonContainingText(view.dom.container, "Load older messages"));
+      await waitTick();
+    });
+    await waitUntilAct(view.act, () => view.dom.container.textContent?.includes("entry-50") ?? false);
+    fetchMessagesFastMock.mockClear();
+    return view;
   }
 
   it("keeps the first visible message in place when older messages are prepended", async () => {
@@ -1440,26 +1511,114 @@ describe("ChatView history pagination", () => {
     }
   });
 
-  it("re-reads every loaded page when a finished run replaces the window", async () => {
-    const view = await renderPaginatedSession(createMessages(250, 300), 300);
-    fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(50, 250), hasMore: true, total: 300 });
+  it("reads only the newest entries, once, when a run finishes on a long loaded window", async () => {
+    vi.useFakeTimers();
+    const view = await renderPagedBackSession(undefined, true);
 
     try {
-      const { dom, act } = view;
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
+      const { dom, act, render } = view;
+      // Hold responses back like a real network would, so every read the run's end triggers is
+      // issued before any of them lands.
+      const reads: Array<{ limit: number; respond: () => void }> = [];
+      fetchMessagesFastMock.mockImplementation((_sessionId: string, request: { limit: number }) => {
+        const response = createDeferred<FetchMessagesFastResult>();
+        reads.push({
+          limit: request.limit,
+          respond: () => response.resolve({
+            messages: createMessages(300 - request.limit, 300),
+            runState: "idle",
+            total: 300,
+            warm: true,
+          }),
+        });
+        return response.promise;
       });
-      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-50") ?? false);
 
+      // What the stream hook does on a terminal event: report the run settled, go idle, advance the epoch.
       const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as () => void;
       await act(async () => {
         onSettled();
+      });
+      await render({
+        streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null, historyEpoch: 1 },
+      });
+      await advanceTimersByTimeAct(act, 1000);
+      await act(async () => {
+        for (const read of reads) read.respond();
         await waitTick();
       });
+      await advanceTimersByTimeAct(act, 1000);
 
-      // Capping this read would drop the pages the reader scrolled back through.
-      expect(fetchMessagesFastMock).toHaveBeenLastCalledWith("session-1", { limit: 250 });
+      // Re-reading all 250 loaded entries would cost more the further back the reader had paged.
+      expect(reads.map((read) => read.limit)).toEqual([200]);
+      expect(dom.container.textContent).toContain("entry-50");
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("replaces a cached window with what disk holds now instead of trusting any of it", async () => {
+    // Cached at 170 entries; the session has 200 by the time the reader comes back.
+    const view = await renderChatView({
+      fetchMessagesFastResult: { messages: createMessages(80, 200), runState: "idle", total: 200, warm: true, hasMore: true },
+      seedQueryClient: (queryClient) => setCachedChatSnapshot(queryClient, {
+        ...createSnapshot("session-1", createMessages(50, 170)),
+        firstItemIndex: 50,
+      }),
+      streamOverrides: { isStreaming: false, pendingOrigin: null },
+    });
+
+    try {
+      const { dom, act } = view;
+      await waitUntilAct(act, () => dom.container.textContent?.includes("entry-199") ?? false);
+      expect(newestReads()).toEqual([{ limit: 120 }]);
+      // Anything may have happened to the session since it was cached, so entries the read did
+      // not cover are dropped rather than kept above it.
+      expect(() => findMessageWrapperByAnchorKey(dom.container, "entry-79")).toThrow();
+      expect(findMessageWrapperByAnchorKey(dom.container, "entry-80")).toBeDefined();
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("re-reads the whole loaded window when the server truncates history", async () => {
+    const view = await renderPagedBackSession();
+
+    try {
+      await view.render({ historySignal: 1 });
+      await waitUntilAct(view.act, () => newestReads().length > 0);
+      // The cut may fall anywhere in the window, so the newest entries alone cannot confirm it.
+      expect(newestReads()).toEqual([{ limit: 250 }]);
+      // Output a finished run left on screen may be part of what was cut, and no read removes it.
+      expect(view.dropFinishedRunOutputMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it("re-reads the whole loaded window after an undo", async () => {
+    const view = await renderPagedBackSession([
+      ...createMessages(250, 298),
+      { id: "entry-298", role: "user", content: "entry-298", undoEventId: "undo-1" },
+      { id: "entry-299", role: "assistant", content: "entry-299", undoEventId: "undo-1" },
+    ]);
+    stubWindowConfirm(true);
+
+    try {
+      const { dom, act } = view;
+      const menuButton = findAllByTag(findMessageWrapperByAnchorKey(dom.container, "entry-299"), "BUTTON")
+        .find((button) => getReactProps(button)?.["aria-label"] === "Open message actions");
+      await act(async () => {
+        clickButton(menuButton);
+      });
+      await act(async () => {
+        clickButton(findButtonByText(dom.container, "Undo turn from here"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => newestReads().length > 0);
+
+      // The undone turn's two entries are already gone from the window; the other 248 are re-read.
+      expect(newestReads()).toEqual([{ limit: 248 }]);
     } finally {
       await view.cleanup();
     }
@@ -1649,11 +1808,11 @@ describe("ChatView draft materialization", () => {
       });
       await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
 
-      const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as (() => void) | undefined;
-      expect(onSettled).toBeTypeOf("function");
-      await act(async () => {
-        onSettled?.();
-        await waitTick();
+      // A resync request settles the stream and advances its history epoch.
+      await render({
+        composerKey: "created-session",
+        sessionId: "created-session",
+        streamOverrides: { historyEpoch: 1 },
       });
 
       await waitUntilAct(act, () => dom.container.textContent?.includes("resynced response") ?? false);
@@ -2195,6 +2354,7 @@ describe("ChatView steering sends", () => {
           pendingUserMessages: [streamedUser],
           isStreaming: false,
           streamStatus: "idle",
+          historyEpoch: 1,
         },
       });
       await waitUntilAct(act, () => {
@@ -2399,7 +2559,7 @@ describe("ChatView steering sends", () => {
 
   it("reconciles a projected final assistant entry when delayed disk history reaches its source event", async () => {
     const onRenderedReadThrough = vi.fn();
-    const { dom, act, cleanup } = await renderChatView({
+    const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [{
           id: "canonical-user",
@@ -2457,11 +2617,8 @@ describe("ChatView steering sends", () => {
         warm: true,
         hasMore: false,
       });
-      const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as (() => void) | undefined;
-      if (!onSettled) throw new Error("Stream settled callback is unavailable");
-      await act(async () => {
-        onSettled();
-      });
+      // The delayed commit reaches disk and the stream announces it.
+      await render({ streamOverrides: { historyEpoch: 1 } });
       await waitUntilAct(act, () => {
         try {
           findMessageWrapperByAnchorKey(dom.container, "canonical-final");
@@ -2978,7 +3135,7 @@ describe("ChatView message actions", () => {
         hasMore: false,
       });
 
-      await render({ streamOverrides: { isStreaming: false } });
+      await render({ streamOverrides: { isStreaming: false, historyEpoch: 1 } });
       await waitUntilAct(act, () => dom.container.textContent?.includes("reply one") ?? false);
 
       const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
@@ -3307,7 +3464,7 @@ describe("ChatView message actions", () => {
   });
 
   it("offers undo on assistant messages and optimistically removes that turn and later history", async () => {
-    const { dom, act, cleanup } = await renderChatView({
+    const { dom, act, cleanup, dropFinishedRunOutputMock } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [
           { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
@@ -3349,6 +3506,8 @@ describe("ChatView message actions", () => {
       expect(dom.container.textContent).toContain("reply one");
       expect(dom.container.textContent).not.toContain("second");
       expect(dom.container.textContent).not.toContain("reply two");
+      // A turn that just ran is also on screen as output its run left behind.
+      expect(dropFinishedRunOutputMock).toHaveBeenCalledTimes(1);
     } finally {
       refresh.resolve({
         messages: [],
@@ -3401,7 +3560,7 @@ describe("ChatView message actions", () => {
   it("surfaces undo failures without mutating the visible transcript", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     undoSessionTurnMock.mockRejectedValueOnce(new Error("This turn is no longer available to undo."));
-    const { dom, act, cleanup } = await renderChatView({
+    const { dom, act, cleanup, dropFinishedRunOutputMock } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [
           { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
@@ -3431,6 +3590,7 @@ describe("ChatView message actions", () => {
 
       expect(dom.container.textContent).toContain("Undo failed: This turn is no longer available to undo.");
       expect(dom.container.textContent).toContain("first");
+      expect(dropFinishedRunOutputMock).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
       await cleanup();
@@ -3604,6 +3764,113 @@ describe("ChatView disk-authoritative synchronization", () => {
       }
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  describe("while a refresh is in flight", () => {
+    const busyHistory: FetchMessagesFastResult = {
+      messages: [createMessage("entry-1", "first reply")],
+      runState: "busy",
+      total: 1,
+      warm: true,
+    };
+
+    /** A busy chat whose first refresh has been issued and has not come back. */
+    async function renderWithRefreshInFlight() {
+      vi.useFakeTimers();
+      let wake: (() => void) | undefined;
+      const view = await renderChatView({
+        fetchMessagesFastResult: busyHistory,
+        streamOverrides: { historyEpoch: 0 },
+        prepareDom: () => {
+          Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+          document.addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+            if (type === "visibilitychange" && typeof listener === "function") wake = listener as () => void;
+          });
+          document.removeEventListener = vi.fn();
+        },
+      });
+      await waitUntilAct(view.act, () => view.ensureConnectedMock.mock.calls.length === 1);
+      const inFlight = createDeferred<FetchMessagesFastResult>();
+      fetchMessagesFastMock.mockImplementationOnce(() => inFlight.promise);
+      await view.render({ streamOverrides: { historyEpoch: 1 } });
+      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(2);
+      return { ...view, inFlight, wake: () => view.act(async () => wake?.()) };
+    }
+
+    it("folds what is announced meanwhile into one read after it", async () => {
+      const { act, cleanup, render, inFlight } = await renderWithRefreshInFlight();
+
+      try {
+        for (const historyEpoch of [2, 3, 4]) await render({ streamOverrides: { historyEpoch } });
+        await advanceTimersByTimeAct(act, 1000);
+        expect(fetchMessagesFastMock).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          inFlight.resolve(busyHistory);
+          await waitTick();
+        });
+        await advanceTimersByTimeAct(act, 1000);
+        expect(fetchMessagesFastMock).toHaveBeenCalledTimes(3);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("does not make a waking tab wait on a read that may never come back", async () => {
+      const { act, cleanup, render, inFlight, wake, reconnectMock, ensureConnectedMock } = await renderWithRefreshInFlight();
+
+      try {
+        await wake();
+        await render({ streamOverrides: { historyEpoch: 2 } });
+        await advanceTimersByTimeAct(act, 250);
+
+        // One read serves the wake-up and the announcement, and still replaces the stream.
+        expect(fetchMessagesFastMock).toHaveBeenCalledTimes(3);
+        expect(reconnectMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          inFlight.resolve(busyHistory);
+          await waitTick();
+        });
+        await advanceTimersByTimeAct(act, 1000);
+        expect(fetchMessagesFastMock).toHaveBeenCalledTimes(3);
+        expect(ensureConnectedMock).toHaveBeenCalledTimes(1);
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  it("loads a chat once when the chat before it was still running", async () => {
+    vi.useFakeTimers();
+    const { act, cleanup, render } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [createMessage("entry-1", "first reply")],
+        runState: "idle",
+        total: 1,
+        warm: true,
+      },
+      streamOverrides: { isStreaming: true, streamStatus: "streaming", historyEpoch: 4 },
+    });
+
+    try {
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
+      fetchMessagesFastMock.mockClear();
+
+      // The stream hook resets one render after the session changes, so the next chat's first
+      // render still carries the previous chat's run.
+      await render({ sessionId: "session-2", composerKey: "session-2" });
+      await render({
+        sessionId: "session-2",
+        composerKey: "session-2",
+        streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null, historyEpoch: 0 },
+      });
+      await advanceTimersByTimeAct(act, 1000);
+
+      expect(fetchMessagesFastMock.mock.calls).toEqual([["session-2", { limit: 50 }]]);
+    } finally {
+      await cleanup();
     }
   });
 
