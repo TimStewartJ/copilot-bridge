@@ -3,6 +3,11 @@ import type { Attachment, ChatEntry, ToolCall } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
+/**
+ * A revisit lands on the newest reply and re-reads everything it paints from the cache, so the
+ * cache keeps only this many of the newest entries. Older pages load again on scroll.
+ */
+const MAX_CACHED_ENTRIES = 200;
 const recentSessionIds: string[] = [];
 
 /**
@@ -14,7 +19,6 @@ export interface ChatHistorySnapshot {
   sessionId: string;
   entries: ChatEntry[];
   firstItemIndex: number;
-  total: number;
   fetchedAt: number;
 }
 
@@ -108,7 +112,12 @@ export function getCachedChatSnapshot(queryClient: QueryClient, sessionId: strin
 }
 
 export function setCachedChatSnapshot(queryClient: QueryClient, snapshot: ChatHistorySnapshot): void {
-  queryClient.setQueryData(queryKeys.chatMessages(snapshot.sessionId), cloneSnapshot(snapshot));
+  const dropped = Math.max(0, snapshot.entries.length - MAX_CACHED_ENTRIES);
+  queryClient.setQueryData(queryKeys.chatMessages(snapshot.sessionId), cloneSnapshot({
+    ...snapshot,
+    entries: snapshot.entries.slice(dropped),
+    firstItemIndex: snapshot.firstItemIndex + dropped,
+  }));
   touchSession(snapshot.sessionId);
   pruneSessions(queryClient);
 }
@@ -126,22 +135,15 @@ export function replaceHistoryWindow(
   previousFirstItemIndex: number,
   nextWindow: ChatEntry[],
   total: number,
-): { entries: ChatEntry[]; firstItemIndex: number; total: number; hasGap: boolean } {
+): { entries: ChatEntry[]; firstItemIndex: number; hasGap: boolean } {
   const nextWindowStart = Math.max(0, total - nextWindow.length);
   if (nextWindowStart <= previousFirstItemIndex) {
-    return {
-      entries: nextWindow,
-      firstItemIndex: nextWindowStart,
-      total: Math.max(total, nextWindowStart + nextWindow.length),
-      hasGap: false,
-    };
+    return { entries: nextWindow, firstItemIndex: nextWindowStart, hasGap: false };
   }
   const prefixLength = Math.min(previousEntries.length, nextWindowStart - previousFirstItemIndex);
-  const entries = [...previousEntries.slice(0, prefixLength), ...nextWindow];
   return {
-    entries,
+    entries: [...previousEntries.slice(0, prefixLength), ...nextWindow],
     firstItemIndex: previousFirstItemIndex,
-    total: Math.max(total, previousFirstItemIndex + entries.length),
     hasGap: prefixLength < nextWindowStart - previousFirstItemIndex,
   };
 }
