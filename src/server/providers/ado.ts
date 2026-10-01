@@ -6,10 +6,10 @@ import type {
   EnrichedWorkItem,
   EnrichedPR,
   WorkItemPullRequestLink,
-  WorkItemPullRequestLinksResult,
   WorkItemRelation,
   WorkItemRelationType,
-  WorkItemRelationsResult,
+  WorkItemLinksResult,
+  PullRequestLinksResult,
   WorkTrackingIdentity,
   AssignedWorkItemsResult,
   WorkTrackingProvider,
@@ -18,6 +18,7 @@ import type {
 import { createProviderCache } from "./cache.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { buildAdoPullRequestUrl } from "../../shared/ado-work-reference.js";
+import { CLOSED_WORK_ITEM_STATES } from "../../shared/work-map.js";
 
 // ── Token cache ───────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ const TOKEN_REFRESH_BUFFER_MS = 60_000;
 const TOKEN_CACHE_TTL = 50 * 60_000;
 const TOKEN_FETCH_TIMEOUT_MS = 30_000;
 const TOKEN_FETCH_ATTEMPTS = 2;
-const ASSIGNED_WORK_ITEMS_FETCH_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 class AdoRequestError extends Error {
   readonly transient: boolean;
@@ -115,20 +116,31 @@ function isHtmlResponse(contentType: string, body: string): boolean {
     || normalizedBody.startsWith("<html");
 }
 
-async function adoFetch(url: string): Promise<any> {
-  return adoFetchAttempt(url, false);
-}
-
-async function adoFetchAttempt(url: string, isRetry: boolean): Promise<any> {
+/** GETs `url`, or POSTs `payload` to it, and returns the parsed JSON answer. */
+async function adoFetch(url: string, payload?: unknown, isRetry = false): Promise<any> {
   const token = await getAccessToken();
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-    },
-  });
+  let res: Response;
+  let body: string;
+  try {
+    res = await fetch(url, {
+      method: payload === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        ...(payload === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    body = await res.text();
+  } catch (error) {
+    // A dropped connection, or an answer that did not arrive in time, can succeed on a later try.
+    throw new AdoRequestError(
+      `ADO request failed: ${error instanceof Error ? error.message : String(error)}`,
+      true,
+    );
+  }
   const contentType = res.headers.get("content-type") ?? "";
-  const body = await res.text();
   if (!res.ok) {
     const transient = res.status === 408 || res.status === 429 || res.status >= 500;
     throw new AdoRequestError(
@@ -146,7 +158,7 @@ async function adoFetchAttempt(url: string, isRetry: boolean): Promise<any> {
       if (cachedToken?.value === token) {
         cachedToken = null;
       }
-      return adoFetchAttempt(url, true);
+      return adoFetch(url, payload, true);
     }
     throw new AdoRequestError(
       `ADO API returned HTML instead of JSON (${describeResponse(contentType, body)})`,
@@ -170,7 +182,7 @@ interface WorkItemLinks {
   relations: WorkItemRelation[];
 }
 
-const EMPTY_WORK_ITEM_LINKS: WorkItemLinks = { pullRequests: [], relations: [] };
+const NO_WORK_ITEM_LINKS: WorkItemLinks = { pullRequests: [], relations: [] };
 
 const WORK_ITEM_RELATION_TYPES: Record<string, WorkItemRelationType> = {
   "system.linktypes.hierarchy-reverse": "parent",
@@ -182,40 +194,68 @@ const WORK_ITEM_RELATION_TYPES: Record<string, WorkItemRelationType> = {
   "system.linktypes.duplicate-reverse": "duplicateOf",
 };
 
+const WORK_ITEM_FIELDS = "System.Title,System.State,System.WorkItemType,System.AssignedTo,System.AreaPath";
+const WORK_ITEM_BATCH_SIZE = 100;
+const WORK_ITEM_BATCH_CONCURRENCY = 4;
+const PULL_REQUEST_CONCURRENCY = 6;
+const REPOSITORY_GUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const ASSIGNED_OPEN_WORK_QUERY = "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @Me"
+  + ` AND [System.State] NOT IN (${CLOSED_WORK_ITEM_STATES.map((state) => `'${state}'`).join(", ")})`
+  + " ORDER BY [System.ChangedDate] DESC";
+
+/**
+ * A completed pull request rarely changes again, so it is asked for again only after this long.
+ * Everything else uses the cache's short default: closed work can be reopened and an abandoned
+ * pull request reactivated, and the task panels that read this cache have no refresh of their own.
+ */
+const COMPLETED_PR_FRESH_MS = 6 * 60 * 60_000;
+
 const workItemCache = createProviderCache<EnrichedWorkItem>();
 const prCache = createProviderCache<EnrichedPR>();
 const workItemLinkCache = createProviderCache<WorkItemLinks>();
 const prLinkCache = createProviderCache<WorkItemPullRequestLink[]>();
 const currentUserCache = createProviderCache<WorkTrackingIdentity>();
 const assignedWorkItemIdsCache = createProviderCache<string[]>();
+const dataCaches = [workItemCache, prCache, workItemLinkCache, prLinkCache, currentUserCache, assignedWorkItemIdsCache];
 
 function shouldUseStaleFallback(err: unknown): boolean {
-  if (err instanceof AdoRequestError) return err.transient;
-  return err instanceof TypeError;
+  return err instanceof AdoRequestError && err.transient;
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof AdoRequestError && err.status === 404;
 }
 
 export function clearAdoProviderState(): void {
   cachedToken = null;
-  workItemCache.clear();
-  prCache.clear();
-  workItemLinkCache.clear();
-  prLinkCache.clear();
-  currentUserCache.clear();
-  assignedWorkItemIdsCache.clear();
+  for (const cache of dataCaches) cache.clear();
 }
+
+/**
+ * Makes the next read ask ADO again. The access token and the stale copies that cover an ADO
+ * outage are kept, so a refresh never leaves less on screen than there was before it.
+ */
+export function expireAdoProviderData(): void {
+  for (const cache of dataCaches) cache.expire();
+}
+
+/** Told how many work items or pull requests have just been read, so a long read can show progress. */
+type Tick = (count: number) => void;
 
 // ── Provider ──────────────────────────────────────────────────────
 
 export class AdoProvider implements WorkTrackingProvider {
   readonly name = "ado" as const;
-  private readonly org: string;
-  private readonly project: string;
+  readonly org: string;
+  readonly project: string;
   private readonly baseUrl: string;
+  private readonly projectUrl: string;
 
   constructor(config: AdoProviderConfig) {
     this.org = config.org;
     this.project = config.project;
     this.baseUrl = `https://dev.azure.com/${config.org}`;
+    this.projectUrl = `${this.baseUrl}/${encodeURIComponent(config.project)}`;
   }
 
   getWorkItemUrl(id: string): string {
@@ -223,6 +263,10 @@ export class AdoProvider implements WorkTrackingProvider {
   }
 
   getPullRequestUrl(pr: PRRef): string {
+    // A link saved from another organization carries that repository's URL as its name.
+    if (pr.repoName && /^https:\/\//i.test(pr.repoName)) {
+      return `${pr.repoName.replace(/\/+$/, "")}/pullrequest/${pr.prId}`;
+    }
     return buildAdoPullRequestUrl({
       org: this.org,
       project: this.project,
@@ -237,22 +281,6 @@ export class AdoProvider implements WorkTrackingProvider {
 
   private prCacheKey(pr: Pick<PRRef, "repoId" | "prId">): string {
     return `${this.org}:${pr.repoId}:${pr.prId}`;
-  }
-
-  private getCachedWorkItem(id: string, now: number, allowStale = false): EnrichedWorkItem | null {
-    return workItemCache.read(this.workItemCacheKey(id), now, allowStale);
-  }
-
-  private getCachedPR(pr: PRRef, now: number, allowStale = false): EnrichedPR | null {
-    return prCache.read(this.prCacheKey(pr), now, allowStale);
-  }
-
-  private cacheWorkItem(item: EnrichedWorkItem, now: number): void {
-    workItemCache.write(this.workItemCacheKey(item.id), item, now);
-  }
-
-  private cachePR(pr: EnrichedPR, now: number): void {
-    prCache.write(this.prCacheKey(pr), pr, now);
   }
 
   private mapWorkItem(item: any): EnrichedWorkItem {
@@ -294,33 +322,6 @@ export class AdoProvider implements WorkTrackingProvider {
     };
   }
 
-  private async fetchWorkItemBatches(
-    ids: string[],
-    buildUrl: (batchIds: string[]) => string,
-    onSuccess: (requestedIds: string[], items: any[]) => void,
-    onFailure: (failedIds: string[], error: unknown) => void,
-  ): Promise<void> {
-    const fetchBatch = async (batchIds: string[]): Promise<void> => {
-      try {
-        const data = await adoFetch(buildUrl(batchIds));
-        onSuccess(batchIds, Array.isArray(data.value) ? data.value : []);
-      } catch (error) {
-        if (error instanceof AdoRequestError && error.status === 404 && batchIds.length > 1) {
-          const midpoint = Math.ceil(batchIds.length / 2);
-          await fetchBatch(batchIds.slice(0, midpoint));
-          await fetchBatch(batchIds.slice(midpoint));
-          return;
-        }
-        onFailure(batchIds, error);
-      }
-    };
-
-    const chunkSize = 100;
-    for (let offset = 0; offset < ids.length; offset += chunkSize) {
-      await fetchBatch(ids.slice(offset, offset + chunkSize));
-    }
-  }
-
   private buildWorkItemFallback(id: string): EnrichedWorkItem {
     return {
       id,
@@ -348,53 +349,74 @@ export class AdoProvider implements WorkTrackingProvider {
     };
   }
 
-  async fetchWorkItems(ids: string[]): Promise<EnrichedWorkItem[]> {
-    if (ids.length === 0) return [];
+  /** Remembers a work item, or the stub for one ADO did not return, and hands it back. */
+  private cacheWorkItem(id: string, payload: any, now: number): EnrichedWorkItem {
+    const item = payload ? this.mapWorkItem(payload) : this.buildWorkItemFallback(id);
+    workItemCache.write(this.workItemCacheKey(id), item, now);
+    return item;
+  }
 
-    const now = Date.now();
-    const resultMap = new Map<string, EnrichedWorkItem>();
-    const toFetch: string[] = [];
-
+  /**
+   * Reads work items in batches, several batches at a time. `onItem` gets each work item's
+   * payload, or null for one ADO has no answer for: deleted, in an organization this login cannot
+   * read, or not a work item number. Returns the error for every id whose batch failed.
+   */
+  private async readWorkItems(
+    ids: string[],
+    query: string,
+    onItem: (id: string, payload: any) => void,
+    tick?: Tick,
+  ): Promise<Map<string, unknown>> {
+    const errors = new Map<string, unknown>();
+    // ADO rejects the whole batch when one id is not a number.
+    const isNumber = (id: string) => /^\d+$/.test(id);
+    const readable = ids.filter(isNumber);
     for (const id of ids) {
-      const cached = this.getCachedWorkItem(id, now);
-      if (cached) {
-        resultMap.set(id, cached);
-      } else {
-        toFetch.push(id);
-      }
+      if (!isNumber(id)) onItem(id, null);
     }
-
-    if (toFetch.length > 0) {
-      const errorById = new Map<string, unknown>();
-      const fields = "System.Title,System.State,System.WorkItemType,System.AssignedTo,System.AreaPath";
-      await this.fetchWorkItemBatches(
-        toFetch,
-        (batchIds) =>
-          `${this.baseUrl}/${this.project}/_apis/wit/workitems?ids=${batchIds.join(",")}&fields=${fields}&api-version=7.1`,
-        (_requestedIds, items) => {
-          for (const item of items) {
-            const enriched = this.mapWorkItem(item);
-            this.cacheWorkItem(enriched, now);
-            resultMap.set(enriched.id, enriched);
-          }
-        },
-        (failedIds, error) => {
-          console.error(`[ado] Failed to fetch work item${failedIds.length === 1 ? "" : "s"} ${failedIds.join(",")}:`, error);
-          for (const id of failedIds) errorById.set(id, error);
-        },
-      );
-
-      for (const id of toFetch) {
-        if (resultMap.has(id)) continue;
-        const fetchError = errorById.get(id);
-        const fallback = fetchError && shouldUseStaleFallback(fetchError)
-          ? this.getCachedWorkItem(id, now, true) ?? this.buildWorkItemFallback(id)
-          : this.buildWorkItemFallback(id);
-        resultMap.set(id, fallback);
-      }
+    tick?.(ids.length - readable.length);
+    const batches: string[][] = [];
+    for (let offset = 0; offset < readable.length; offset += WORK_ITEM_BATCH_SIZE) {
+      batches.push(readable.slice(offset, offset + WORK_ITEM_BATCH_SIZE));
     }
+    await mapWithConcurrency(batches, WORK_ITEM_BATCH_CONCURRENCY, async (batch) => {
+      try {
+        // errorPolicy=omit leaves out a work item that cannot be read instead of failing its batch.
+        const data = await adoFetch(
+          `${this.projectUrl}/_apis/wit/workitems?ids=${batch.join(",")}&${query}&errorPolicy=omit&api-version=7.1`,
+        );
+        const payloads = new Map<string, any>();
+        for (const item of Array.isArray(data.value) ? data.value : []) {
+          if (item) payloads.set(String(item.id), item);
+        }
+        for (const id of batch) onItem(id, payloads.get(id) ?? null);
+      } catch (error) {
+        console.error(`[ado] Failed to fetch work item${batch.length === 1 ? "" : "s"} ${batch.join(",")}:`, error);
+        for (const id of batch) errors.set(id, error);
+      }
+      tick?.(batch.length);
+    });
+    return errors;
+  }
 
-    return ids.map((id) => resultMap.get(id)!);
+  async fetchWorkItems(ids: string[], tick?: Tick): Promise<EnrichedWorkItem[]> {
+    const now = Date.now();
+    const result = new Map<string, EnrichedWorkItem>();
+    const toFetch = [...new Set(ids)].filter((id) => {
+      const cached = workItemCache.read(this.workItemCacheKey(id), now);
+      if (cached) result.set(id, cached);
+      return !cached;
+    });
+    tick?.(ids.length - toFetch.length);
+
+    const errors = await this.readWorkItems(toFetch, `fields=${WORK_ITEM_FIELDS}`, (id, payload) => {
+      result.set(id, this.cacheWorkItem(id, payload, now));
+    }, tick);
+    for (const [id, error] of errors) {
+      const stale = shouldUseStaleFallback(error) ? workItemCache.read(this.workItemCacheKey(id), now, true) : null;
+      result.set(id, stale ?? this.buildWorkItemFallback(id));
+    }
+    return ids.map((id) => result.get(id)!);
   }
 
   private parsePullRequestArtifactLink(
@@ -435,7 +457,7 @@ export class AdoProvider implements WorkTrackingProvider {
 
   private linksFromWorkItemPayload(item: any): WorkItemLinks {
     const workItemId = String(item.id);
-    if (!Array.isArray(item.relations)) return { pullRequests: [], relations: [] };
+    if (!Array.isArray(item.relations)) return NO_WORK_ITEM_LINKS;
     const pullRequests: WorkItemPullRequestLink[] = [];
     const relations = new Map<string, WorkItemRelation>();
     for (const relation of item.relations) {
@@ -464,135 +486,111 @@ export class AdoProvider implements WorkTrackingProvider {
     });
   }
 
-  private async fetchLinksFromWorkItems(
-    ids: string[],
-    now: number,
-  ): Promise<{ links: WorkItemPullRequestLink[]; relations: WorkItemRelation[]; warning: boolean }> {
-    const resultMap = new Map<string, WorkItemLinks>();
-    const toFetch: string[] = [];
-    for (const id of [...new Set(ids)]) {
-      const cached = workItemLinkCache.read(this.workItemCacheKey(id), now);
-      if (cached) resultMap.set(id, cached);
-      else toFetch.push(id);
-    }
-
-    const errorById = new Map<string, unknown>();
-    await this.fetchWorkItemBatches(
-      toFetch,
-      (batchIds) =>
-        `${this.baseUrl}/${this.project}/_apis/wit/workitems?ids=${batchIds.join(",")}&$expand=Relations&api-version=7.1`,
-      (requestedIds, items) => {
-        const returnedIds = new Set<string>();
-        for (const item of items) {
-          const enriched = this.mapWorkItem(item);
-          this.cacheWorkItem(enriched, now);
-          const links = this.linksFromWorkItemPayload(item);
-          workItemLinkCache.write(this.workItemCacheKey(enriched.id), links, now);
-          resultMap.set(enriched.id, links);
-          returnedIds.add(enriched.id);
-        }
-        for (const id of requestedIds) {
-          if (returnedIds.has(id)) continue;
-          workItemLinkCache.write(this.workItemCacheKey(id), EMPTY_WORK_ITEM_LINKS, now);
-          resultMap.set(id, EMPTY_WORK_ITEM_LINKS);
-        }
-      },
-      (failedIds, error) => {
-        console.error(
-          `[ado] Failed to fetch pull request links for work item${failedIds.length === 1 ? "" : "s"} ${failedIds.join(",")}:`,
-          error,
-        );
-        for (const id of failedIds) errorById.set(id, error);
-      },
-    );
-
-    for (const id of toFetch) {
-      if (resultMap.has(id)) continue;
-      const fetchError = errorById.get(id);
-      const fallback = fetchError && shouldUseStaleFallback(fetchError)
-        ? workItemLinkCache.read(this.workItemCacheKey(id), now, true) ?? EMPTY_WORK_ITEM_LINKS
-        : EMPTY_WORK_ITEM_LINKS;
-      resultMap.set(id, fallback);
-    }
-
-    return {
-      links: ids.flatMap((id) => resultMap.get(id)?.pullRequests ?? []),
-      relations: [...new Set(ids)].flatMap((id) => resultMap.get(id)?.relations ?? []),
-      warning: errorById.size > 0,
-    };
-  }
-
-  private async fetchLinksFromPullRequests(
-    prs: PRRef[],
-    now: number,
-  ): Promise<{ links: WorkItemPullRequestLink[]; warning: boolean }> {
-    const resultMap = new Map<string, WorkItemPullRequestLink[]>();
-    const uniquePrs = [...new Map(prs.map((pr) => [this.prCacheKey(pr), pr])).values()];
-    const toFetch: PRRef[] = [];
-    for (const pr of uniquePrs) {
-      const key = this.prCacheKey(pr);
-      const cached = prLinkCache.read(key, now);
-      if (cached) resultMap.set(key, cached);
-      else toFetch.push(pr);
-    }
-
-    const refreshWarnings = await mapWithConcurrency(toFetch, 6, async (pr) => {
-      const key = this.prCacheKey(pr);
-      try {
-        // Only the repository route returns work item refs; links are stored with the repository GUID it needs.
-        const data = await adoFetch(
-          `${this.baseUrl}/_apis/git/repositories/${encodeURIComponent(pr.repoId)}/pullrequests/${pr.prId}?includeWorkItemRefs=true&api-version=7.1`,
-        );
-        this.cachePR(this.mapPullRequest(data, pr), now);
-        const links = this.linksFromPullRequestPayload(data, pr);
-        prLinkCache.write(key, links, now);
-        resultMap.set(key, links);
-        return false;
-      } catch (err) {
-        console.error(`[ado] Failed to fetch work item links for PR ${pr.repoId}#${pr.prId}:`, err);
-        const fallback = shouldUseStaleFallback(err)
-          ? prLinkCache.read(key, now, true) ?? []
-          : [];
-        resultMap.set(key, fallback);
-        return true;
-      }
-    });
-
-    return {
-      links: uniquePrs.flatMap((pr) => resultMap.get(this.prCacheKey(pr)) ?? []),
-      warning: refreshWarnings.some(Boolean),
-    };
-  }
-
-  async fetchWorkItemPullRequestLinks(
-    workItemIds: string[],
-    pullRequests: PRRef[],
-  ): Promise<WorkItemPullRequestLinksResult> {
+  /**
+   * The pull requests and other work items that work items link to. The same answer carries each
+   * work item's fields, so a later fetchWorkItems for these ids is served from the cache.
+   */
+  async fetchWorkItemLinks(ids: string[], tick?: Tick): Promise<WorkItemLinksResult> {
     const now = Date.now();
-    const [fromWorkItems, fromPullRequests] = await Promise.all([
-      this.fetchLinksFromWorkItems(workItemIds, now),
-      this.fetchLinksFromPullRequests(pullRequests, now),
-    ]);
-    const linkMap = new Map<string, WorkItemPullRequestLink>();
-    for (const link of [...fromPullRequests.links, ...fromWorkItems.links]) {
-      linkMap.set(`${link.workItemId}:${link.repoId}:${link.prId}`, link);
+    const result = new Map<string, WorkItemLinks>();
+    const unique = [...new Set(ids)];
+    const toFetch = unique.filter((id) => {
+      const cached = workItemLinkCache.read(this.workItemCacheKey(id), now);
+      if (cached) result.set(id, cached);
+      return !cached;
+    });
+    tick?.(unique.length - toFetch.length);
+
+    const errors = await this.readWorkItems(toFetch, "$expand=Relations", (id, payload) => {
+      this.cacheWorkItem(id, payload, now);
+      const links = payload ? this.linksFromWorkItemPayload(payload) : NO_WORK_ITEM_LINKS;
+      workItemLinkCache.write(this.workItemCacheKey(id), links, now);
+      result.set(id, links);
+    }, tick);
+    for (const [id, error] of errors) {
+      const stale = shouldUseStaleFallback(error) ? workItemLinkCache.read(this.workItemCacheKey(id), now, true) : null;
+      result.set(id, stale ?? NO_WORK_ITEM_LINKS);
     }
-    const links = [...linkMap.values()];
-    const warnings: string[] = [];
-    if (fromWorkItems.warning) {
-      warnings.push("Some ADO work item relationships could not be refreshed.");
-    }
-    if (fromPullRequests.warning) {
-      warnings.push("Some ADO pull request relationships could not be refreshed.");
-    }
-    return { links, workItemRelations: fromWorkItems.relations, warnings };
+
+    return {
+      pullRequests: unique.flatMap((id) => result.get(id)!.pullRequests),
+      relations: unique.flatMap((id) => result.get(id)!.relations),
+      warnings: errors.size > 0 ? ["Some ADO work items could not be refreshed."] : [],
+    };
   }
 
-  async fetchWorkItemRelations(workItemIds: string[]): Promise<WorkItemRelationsResult> {
-    const result = await this.fetchLinksFromWorkItems(workItemIds, Date.now());
+  /**
+   * Reads one pull request, with the work items it links when `withWorkItems` is set, and
+   * remembers both. A pull request ADO says is not there comes back as a stub and is not reported
+   * as a failed refresh: asking again would not find it.
+   */
+  private async readPullRequest(
+    pr: PRRef,
+    now: number,
+    withWorkItems: boolean,
+  ): Promise<{ details: EnrichedPR; links: WorkItemPullRequestLink[]; failed: boolean }> {
+    const key = this.prCacheKey(pr);
+    const cachedDetails = prCache.read(key, now);
+    const cachedLinks = prLinkCache.read(key, now);
+    if (cachedDetails && (cachedLinks || !withWorkItems)) {
+      return { details: cachedDetails, links: cachedLinks ?? [], failed: false };
+    }
+    const hasGuid = REPOSITORY_GUID.test(pr.repoId);
+    try {
+      const data = await adoFetch(withWorkItems && hasGuid
+        // Only the repository route returns work item refs, and it takes the repository's GUID. Task
+        // links are stored with it. A link without one is read by id and reports no work items.
+        ? `${this.baseUrl}/_apis/git/repositories/${pr.repoId}/pullrequests/${pr.prId}?includeWorkItemRefs=true&api-version=7.1`
+        // Pull request ids are unique across the organization, so this route resolves links from
+        // every project, including chat links that only carry a repository name.
+        : `${this.baseUrl}/_apis/git/pullrequests/${pr.prId}?api-version=7.1`);
+      // The id alone names a pull request in this organization. A link saved from another one
+      // must not show whichever pull request happens to have the same number here.
+      if (hasGuid && String(data.repository?.id).toLowerCase() !== pr.repoId.toLowerCase()) {
+        throw new AdoRequestError(`Pull request ${pr.prId} is not in repository ${pr.repoId}`, false, 404);
+      }
+      const details = this.mapPullRequest(data, pr);
+      const freshMs = details.status === "completed" ? COMPLETED_PR_FRESH_MS : undefined;
+      prCache.write(key, details, now, freshMs);
+      if (!withWorkItems) return { details, links: [], failed: false };
+      const links = this.linksFromPullRequestPayload(data, pr);
+      prLinkCache.write(key, links, now, freshMs);
+      return { details, links, failed: false };
+    } catch (err) {
+      console.error(`[ado] Failed to fetch PR ${pr.repoId}#${pr.prId}:`, err);
+      const stale = shouldUseStaleFallback(err);
+      const details = (stale ? prCache.read(key, now, true) : null) ?? this.buildPRFallback(pr);
+      const links = (stale ? prLinkCache.read(key, now, true) : null) ?? [];
+      if (isNotFound(err)) {
+        // One build reads a pull request twice, for its work items and for its details.
+        prCache.write(key, details, now);
+        prLinkCache.write(key, links, now);
+      }
+      return { details, links, failed: !isNotFound(err) };
+    }
+  }
+
+  async fetchPullRequests(prs: PRRef[], tick?: Tick): Promise<EnrichedPR[]> {
+    const now = Date.now();
+    return mapWithConcurrency(prs, PULL_REQUEST_CONCURRENCY, async (pr) => {
+      const { details } = await this.readPullRequest(pr, now, false);
+      tick?.(1);
+      return details;
+    });
+  }
+
+  /** The work items that pull requests link to. A pull request saved without its repository's GUID reports none. */
+  async fetchPullRequestWorkItems(prs: PRRef[], tick?: Tick): Promise<PullRequestLinksResult> {
+    const now = Date.now();
+    const unique = [...new Map(prs.map((pr) => [this.prCacheKey(pr), pr])).values()];
+    const results = await mapWithConcurrency(unique, PULL_REQUEST_CONCURRENCY, async (pr) => {
+      const result = await this.readPullRequest(pr, now, true);
+      tick?.(1);
+      return result;
+    });
     return {
-      relations: result.relations,
-      warnings: result.warning ? ["Some ADO work item relationships could not be refreshed."] : [],
+      links: results.flatMap((result) => result.links),
+      warnings: results.some((result) => result.failed) ? ["Some ADO pull requests could not be refreshed."] : [],
     };
   }
 
@@ -623,6 +621,7 @@ export class AdoProvider implements WorkTrackingProvider {
     }
   }
 
+  /** Open work items assigned to the signed-in user, most recently changed first. */
   async fetchAssignedWorkItemIds(): Promise<AssignedWorkItemsResult> {
     const now = Date.now();
     const cacheKey = `${this.org}:${this.project}`;
@@ -630,74 +629,19 @@ export class AdoProvider implements WorkTrackingProvider {
     if (cached) return { ids: cached, warnings: [] };
 
     try {
-      const query = [
-        "SELECT [System.Id] FROM WorkItems",
-        "WHERE [System.AssignedTo] = @Me",
-        "AND [System.State] <> 'Resolved'",
-        "AND [System.State] <> 'Removed'",
-        "ORDER BY [System.ChangedDate] DESC",
-      ].join(" ");
-      const { stdout: raw } = await getProcessHost().exec(
-        `az boards query --wiql ${JSON.stringify(query)} --query "[].id" --output json`,
-        {
-          encoding: "utf-8",
-          timeout: ASSIGNED_WORK_ITEMS_FETCH_TIMEOUT_MS,
-          maxBuffer: 1024 * 1024,
-        },
-      );
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        throw new Error("ADO assigned work query returned a non-array result");
+      const data = await adoFetch(`${this.projectUrl}/_apis/wit/wiql?api-version=7.1`, { query: ASSIGNED_OPEN_WORK_QUERY });
+      if (!Array.isArray(data.workItems)) {
+        throw new Error("ADO assigned work query returned no work item list");
       }
-      const ids = [...new Set<string>(parsed.flatMap((id): string[] =>
-        typeof id === "number" || typeof id === "string" ? [String(id)] : []))];
+      const ids = [...new Set<string>(data.workItems.flatMap((item: any) => (item?.id == null ? [] : [String(item.id)])))];
       assignedWorkItemIdsCache.write(cacheKey, ids, now);
       return { ids, warnings: [] };
     } catch (err) {
       console.error("[ado] Failed to fetch assigned work items:", err);
-      const stale = assignedWorkItemIdsCache.read(cacheKey, now, true);
       return {
-        ids: stale ?? [],
+        ids: assignedWorkItemIdsCache.read(cacheKey, now, true) ?? [],
         warnings: ["Assigned ADO work items could not be refreshed."],
       };
     }
-  }
-
-  async fetchPullRequests(prs: PRRef[]): Promise<EnrichedPR[]> {
-    if (prs.length === 0) return [];
-
-    const now = Date.now();
-    const resultMap = new Map<string, EnrichedPR>();
-    const toFetch: PRRef[] = [];
-
-    for (const pr of prs) {
-      const cached = this.getCachedPR(pr, now);
-      if (cached) {
-        resultMap.set(this.prCacheKey(pr), cached);
-      } else {
-        toFetch.push(pr);
-      }
-    }
-
-    await mapWithConcurrency(toFetch, 6, async (pr) => {
-      try {
-        // Pull request ids are unique across the organization, so this route resolves links from
-        // every project, including chat links that only carry a repository name.
-        const data = await adoFetch(`${this.baseUrl}/_apis/git/pullrequests/${pr.prId}?api-version=7.1`);
-
-        const enriched = this.mapPullRequest(data, pr);
-
-        this.cachePR(enriched, now);
-        resultMap.set(this.prCacheKey(pr), enriched);
-      } catch (err) {
-        console.error(`[ado] Failed to fetch PR ${pr.repoId}#${pr.prId}:`, err);
-        const fallback = shouldUseStaleFallback(err)
-          ? this.getCachedPR(pr, now, true) ?? this.buildPRFallback(pr)
-          : this.buildPRFallback(pr);
-        resultMap.set(this.prCacheKey(pr), fallback);
-      }
-    });
-
-    return prs.map((pr) => resultMap.get(this.prCacheKey(pr))!);
   }
 }

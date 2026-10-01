@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PRRef } from "../server/task-store.js";
+import type { WorkMapSource } from "../server/work-map.js";
 import type { ApiRouteTestState, DeferredPromptRunner } from "../test-support/api-routes.js";
 import {
   createCopilotUsageTestHome,
@@ -241,215 +243,197 @@ describe("Work-reference preview route", () => {
 });
 
 describe("Dashboard work map route", () => {
-  it("stays disabled when the ADO provider is not configured", async () => {
-    const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks");
-    try {
-      const res = await request(app).get("/api/dashboard/work-map");
-
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        enabled: false,
-        assignedToMe: false,
-        org: null,
-        project: null,
-        tasks: [],
-        workItems: [],
-        pullRequests: [],
-        warnings: [],
-      });
-      expect(relationshipSpy).not.toHaveBeenCalled();
-    } finally {
-      relationshipSpy.mockRestore();
-    }
+  const spies: Array<{ mockRestore: () => void }> = [];
+  // The provider registry outlives a test's app, so an earlier test's ADO settings would still answer.
+  beforeEach(() => providers.clearProviderCache());
+  afterEach(() => {
+    for (const spy of spies.splice(0)) spy.mockRestore();
   });
 
-  it("joins ADO relationships with the Bridge tasks that own either endpoint", async () => {
-    ctx.settingsStore.updateSettings({
-      providers: { ado: { org: "msazure", project: "One" } },
+  /** An Azure DevOps where everything asked about exists and nothing links anything. */
+  function fakeAdo(options: { assigned?: string[]; hold?: Promise<void> } = {}) {
+    return {
+      org: "msazure",
+      project: "One",
+      fetchCurrentUser: vi.fn(async () => {
+        await options.hold;
+        return { displayName: "Tim Stewart" };
+      }),
+      fetchAssignedWorkItemIds: vi.fn(async () => ({ ids: options.assigned ?? [], warnings: [] })),
+      fetchWorkItemLinks: vi.fn(async () => ({ pullRequests: [], relations: [], warnings: [] })),
+      fetchPullRequestWorkItems: vi.fn(async () => ({ links: [], warnings: [] })),
+      fetchWorkItems: vi.fn(async (ids: string[]) => ids.map((id) => ({
+        id,
+        provider: "ado" as const,
+        title: `Work item ${id}`,
+        state: "Active",
+        type: "Task",
+        assignedTo: null,
+        areaPath: null,
+        url: `https://example.test/workitems/${id}`,
+      }))),
+      fetchPullRequests: vi.fn(async (prs: PRRef[]) => prs.map((pr) => ({
+        repoId: pr.repoId,
+        repoName: pr.repoName ?? null,
+        prId: pr.prId,
+        provider: "ado" as const,
+        title: `PR ${pr.prId}`,
+        status: "active" as const,
+        createdBy: null,
+        reviewerCount: 0,
+        url: `https://example.test/pullrequests/${pr.prId}`,
+      }))),
+    } satisfies WorkMapSource;
+  }
+
+  /** Makes the route read `ado`. The returned function waits until that many map requests have reached the route. */
+  function useAdo(ado: WorkMapSource) {
+    const waiting = new Map<number, () => void>();
+    let arrived = 0;
+    spies.push(vi.spyOn(providers, "getAdoProvider").mockImplementation(() => {
+      arrived += 1;
+      waiting.get(arrived)?.();
+      return ado as ReturnType<typeof providers.getAdoProvider>;
+    }));
+    return (count: number) => new Promise<void>((resolve) => {
+      if (arrived >= count) resolve();
+      else waiting.set(count, resolve);
     });
-    const enrichWorkItemsSpy = vi.spyOn(providers, "enrichWorkItems").mockImplementation(async (refs) =>
-      refs.map((ref) => ({
-        id: ref.id,
-        provider: "ado",
-        title: `Work item ${ref.id}`,
-        state: ref.id === "10" ? "Active" : "New",
-        type: "Feature",
-        assignedTo: "Tim Stewart",
-        areaPath: "One\\Bridge",
-        url: `https://example.test/workitems/${ref.id}`,
-      })));
-    const enrichPullRequestsSpy = vi.spyOn(providers, "enrichPullRequests").mockImplementation(async (refs) =>
-      refs.map((ref) => ({
-        ...ref,
-        repoName: ref.repoName ?? "copilot-bridge",
-        title: `PR ${ref.prId}`,
-        status: "active",
-        createdBy: "Tim Stewart",
-        reviewerCount: 1,
-        url: `https://example.test/pullrequests/${ref.prId}`,
-      })));
-    const relationshipSpy = vi.spyOn(providers, "fetchAdoWorkItemPullRequestLinks")
-      .mockImplementation(async (ids) => ({
-        links: [
-          { workItemId: "10", repoId: "repo-guid", prId: 20 },
-          { workItemId: "11", repoId: "repo-guid", prId: 20 },
-          ...(ids.includes("13")
-            ? [{ workItemId: "13", repoId: "repo-two", prId: 30 }]
-            : []),
-        ],
-        workItemRelations: ids.includes("10")
-          ? [
-              { workItemId: "10", type: "parent" as const, targetId: "50" },
-              { workItemId: "10", type: "predecessor" as const, targetId: "70" },
-            ]
-          : [],
-        warnings: [],
-      }));
-    const hierarchyParents: Record<string, string> = { "11": "50", "50": "60" };
-    const workItemRelationsSpy = vi.spyOn(providers, "fetchAdoWorkItemRelations")
-      .mockImplementation(async (ids) => ({
-        relations: ids.flatMap((id) => hierarchyParents[id]
-          ? [{ workItemId: id, type: "parent" as const, targetId: hierarchyParents[id] }]
-          : []),
-        warnings: [],
-      }));
-    const currentUserSpy = vi.spyOn(providers, "fetchAdoCurrentUser").mockResolvedValue({
-      displayName: "Tim Stewart",
-    });
-    const assignedWorkItemsSpy = vi.spyOn(providers, "fetchAdoAssignedWorkItemIds").mockResolvedValue({
-      ids: ["13"],
+  }
+
+  function held() {
+    let release: () => void = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    return { hold, release };
+  }
+
+  it("stays disabled when Azure DevOps is not configured", async () => {
+    const task = ctx.taskStore.createTask("Track the feature");
+    ctx.taskStore.linkWorkItem(task.id, "10", "ado");
+
+    const res = await request(app).get("/api/dashboard/work-map?assignedToMe=1");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      enabled: false,
+      currentUser: null,
+      org: null,
+      project: null,
+      tasks: [],
+      workItems: [],
+      contextWorkItems: [],
+      pullRequests: [],
       warnings: [],
     });
+    expect((await request(app).get("/api/dashboard/work-map/progress")).body).toEqual({ progress: null });
+  });
 
-    try {
-      const workItemTask = ctx.taskStore.createTask("Track the feature");
-      ctx.taskStore.linkWorkItem(workItemTask.id, "10", "ado");
-      const pullRequestTask = ctx.taskStore.createTask("Review the implementation");
-      ctx.taskStore.linkPR(pullRequestTask.id, {
-        repoId: "repo-guid",
-        repoName: "copilot-bridge",
-        prId: 20,
-        provider: "ado",
-      });
-      const archivedTask = ctx.taskStore.createTask("Historical implementation");
-      ctx.taskStore.linkWorkItem(archivedTask.id, "12", "ado");
-      ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
+  it("builds the map from the tasks that link ADO work, for the filters asked for", async () => {
+    const ado = fakeAdo({ assigned: ["13"] });
+    useAdo(ado);
+    const active = ctx.taskStore.createTask("Track the feature");
+    ctx.taskStore.linkWorkItem(active.id, "10", "ado");
+    ctx.taskStore.linkPR(active.id, { repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" });
+    const archived = ctx.taskStore.createTask("Historical implementation");
+    ctx.taskStore.linkWorkItem(archived.id, "12", "ado");
+    ctx.taskStore.updateTask(archived.id, { status: "archived" });
+    ctx.taskStore.createTask("Links nothing");
 
-      const res = await request(app).get("/api/dashboard/work-map");
+    const res = await request(app).get("/api/dashboard/work-map");
 
-      expect(res.status).toBe(200);
-      expect(relationshipSpy).toHaveBeenNthCalledWith(
-        1,
-        ["10"],
-        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
-      );
-      expect(res.body).toMatchObject({
-        enabled: true,
-        includeArchived: false,
-        assignedToMe: false,
-        currentUser: { displayName: "Tim Stewart" },
-        org: "msazure",
-        project: "One",
-        warnings: [],
-      });
-      expect(res.body.tasks).toHaveLength(2);
-      expect(res.body.tasks).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: workItemTask.id, title: "Track the feature" }),
-        expect.objectContaining({ id: pullRequestTask.id, title: "Review the implementation" }),
-      ]));
-      expect(res.body.workItems).toEqual([
-        expect.objectContaining({
-          id: "10",
-          taskIds: [workItemTask.id],
-          pullRequestKeys: ["repo-guid:20"],
-          assignedToCurrentUser: false,
-        }),
-        expect.objectContaining({
-          id: "11",
-          taskIds: [],
-          pullRequestKeys: ["repo-guid:20"],
-        }),
-      ]);
-      expect(res.body.pullRequests).toEqual([
-        expect.objectContaining({
-          key: "repo-guid:20",
-          repoId: "repo-guid",
-          repoName: "copilot-bridge",
-          taskIds: [pullRequestTask.id],
-          workItemIds: ["10", "11"],
-        }),
-      ]);
-      expect(workItemRelationsSpy).toHaveBeenNthCalledWith(1, ["11"]);
-      expect(workItemRelationsSpy).toHaveBeenNthCalledWith(2, ["50"]);
-      expect(workItemRelationsSpy).toHaveBeenNthCalledWith(3, ["60"]);
-      expect(res.body.workItems[0].relations).toEqual([
-        { type: "parent", workItemId: "50" },
-        { type: "predecessor", workItemId: "70" },
-      ]);
-      expect(res.body.workItems[1].relations).toEqual([{ type: "parent", workItemId: "50" }]);
-      expect(res.body.contextWorkItems).toEqual([
-        expect.objectContaining({ id: "50", title: "Work item 50", relations: [{ type: "parent", workItemId: "60" }] }),
-        expect.objectContaining({ id: "60", relations: [] }),
-        expect.objectContaining({ id: "70", relations: [] }),
-      ]);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      enabled: true,
+      currentUser: { displayName: "Tim Stewart" },
+      org: "msazure",
+      project: "One",
+      tasks: [expect.objectContaining({ id: active.id, title: "Track the feature", status: "active" })],
+      workItems: [expect.objectContaining({
+        id: "10",
+        title: "Work item 10",
+        taskIds: [active.id],
+        pullRequestKeys: [],
+        assignedToCurrentUser: false,
+        relations: [],
+      })],
+      contextWorkItems: [],
+      pullRequests: [expect.objectContaining({ key: "repo-guid:20", title: "PR 20", taskIds: [active.id], workItemIds: [] })],
+      warnings: [],
+    });
+    expect(ado.fetchAssignedWorkItemIds).not.toHaveBeenCalled();
 
-      const assignedRes = await request(app).get("/api/dashboard/work-map?assignedToMe=1");
+    const assigned = await request(app).get("/api/dashboard/work-map?assignedToMe=1");
 
-      expect(assignedRes.status).toBe(200);
-      expect(assignedWorkItemsSpy).toHaveBeenCalledTimes(1);
-      expect(relationshipSpy).toHaveBeenNthCalledWith(
-        2,
-        ["13", "10"],
-        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
-      );
-      expect(assignedRes.body.assignedToMe).toBe(true);
-      expect(assignedRes.body.workItems).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          id: "13",
-          taskIds: [],
-          pullRequestKeys: ["repo-two:30"],
-          assignedToCurrentUser: true,
-        }),
-      ]));
-      expect(assignedRes.body.pullRequests).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          key: "repo-two:30",
-          repoId: "repo-two",
-          prId: 30,
-          title: null,
-          status: null,
-          url: "https://msazure.visualstudio.com/One/_git/repo-two/pullrequest/30",
-          taskIds: [],
-          workItemIds: ["13"],
-        }),
-      ]));
-      expect(enrichPullRequestsSpy).toHaveBeenNthCalledWith(
-        2,
-        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
-      );
+    expect(assigned.body.workItems.map((item: { id: string; assignedToCurrentUser: boolean }) => [item.id, item.assignedToCurrentUser]))
+      .toEqual([["13", true], ["10", false]]);
+    expect(ado.fetchAssignedWorkItemIds).toHaveBeenCalledTimes(1);
 
-      const archivedRes = await request(app).get("/api/dashboard/work-map?includeArchived=1");
+    const withArchived = await request(app).get("/api/dashboard/work-map?includeArchived=true");
 
-      expect(archivedRes.status).toBe(200);
-      expect(relationshipSpy).toHaveBeenNthCalledWith(
-        3,
-        ["10", "12"],
-        [{ repoId: "repo-guid", repoName: "copilot-bridge", prId: 20, provider: "ado" }],
-      );
-      expect(archivedRes.body.includeArchived).toBe(true);
-      expect(archivedRes.body.tasks).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: archivedTask.id, status: "archived" }),
-      ]));
-      expect(archivedRes.body.workItems).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "12", taskIds: [archivedTask.id] }),
-      ]));
-    } finally {
-      enrichWorkItemsSpy.mockRestore();
-      enrichPullRequestsSpy.mockRestore();
-      relationshipSpy.mockRestore();
-      workItemRelationsSpy.mockRestore();
-      currentUserSpy.mockRestore();
-      assignedWorkItemsSpy.mockRestore();
-    }
+    expect(withArchived.body.tasks.map((task: { id: string }) => task.id).sort()).toEqual([active.id, archived.id].sort());
+    expect(withArchived.body.workItems.map((item: { id: string }) => item.id).sort()).toEqual(["10", "12"]);
+  });
+
+  it("shares one build between requests that arrive together and reports how far it is", async () => {
+    const { hold, release } = held();
+    const ado = fakeAdo({ hold });
+    const arrivals = useAdo(ado);
+    const task = ctx.taskStore.createTask("Track the feature");
+    ctx.taskStore.linkWorkItem(task.id, "10", "ado");
+
+    const first = request(app).get("/api/dashboard/work-map").then((res) => res);
+    const second = request(app).get("/api/dashboard/work-map").then((res) => res);
+    await arrivals(2);
+
+    expect((await request(app).get("/api/dashboard/work-map/progress")).body).toEqual({
+      progress: { label: "Connecting to Azure DevOps", step: 1, steps: 4, done: 0, total: 0 },
+    });
+    // Nothing is being built for the other filter combinations.
+    expect((await request(app).get("/api/dashboard/work-map/progress?includeArchived=1")).body).toEqual({ progress: null });
+
+    release();
+    const [firstRes, secondRes] = await Promise.all([first, second]);
+
+    expect(firstRes.status).toBe(200);
+    expect(secondRes.body).toEqual(firstRes.body);
+    expect(ado.fetchCurrentUser).toHaveBeenCalledTimes(1);
+    expect((await request(app).get("/api/dashboard/work-map/progress")).body).toEqual({ progress: null });
+  });
+
+  it("reads Azure DevOps again for a refresh, without joining a build that is already running", async () => {
+    const { hold, release } = held();
+    const ado = fakeAdo({ hold });
+    const arrivals = useAdo(ado);
+    const expire = vi.spyOn(providers, "expireAdoProviderData").mockImplementation(() => {});
+    spies.push(expire);
+
+    const running = request(app).get("/api/dashboard/work-map").then((res) => res);
+    await arrivals(1);
+    expect(expire).not.toHaveBeenCalled();
+
+    const refreshed = request(app).get("/api/dashboard/work-map?refresh=1").then((res) => res);
+    await arrivals(2);
+    release();
+    const results = await Promise.all([running, refreshed]);
+
+    expect(results.map((res) => res.status)).toEqual([200, 200]);
+    expect(expire).toHaveBeenCalledTimes(1);
+    // The refresh did not take the answer of the build that started before it.
+    expect(ado.fetchCurrentUser).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers 500 with the reason when the build fails", async () => {
+    const ado = fakeAdo();
+    ado.fetchCurrentUser.mockRejectedValueOnce(new Error("ADO is unreachable"));
+    useAdo(ado);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    spies.push(consoleError);
+
+    const failed = await request(app).get("/api/dashboard/work-map");
+
+    expect(failed.status).toBe(500);
+    expect(failed.body).toEqual({ error: "ADO is unreachable" });
+    // The failed build is not kept: the next request builds again.
+    expect((await request(app).get("/api/dashboard/work-map")).status).toBe(200);
   });
 });

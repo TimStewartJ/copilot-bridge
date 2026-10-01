@@ -42,10 +42,8 @@ import {
 import {
   enrichWorkItems,
   enrichPullRequests,
-  fetchAdoAssignedWorkItemIds,
-  fetchAdoCurrentUser,
-  fetchAdoWorkItemPullRequestLinks,
-  fetchAdoWorkItemRelations,
+  expireAdoProviderData,
+  getAdoProvider,
   clearProviderCache,
   setSettingsGetter,
 } from "./providers/index.js";
@@ -183,7 +181,7 @@ import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError, serializeDocContent } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
-import { buildWorkMapData } from "./work-map.js";
+import { createWorkMapBuilds } from "./work-map.js";
 import {
   isManagementJobStatus,
   isManagementJobType,
@@ -4481,25 +4479,10 @@ export function createApiRouter(
         providers: ctx.settingsStore.getSettings().providers,
       });
       if (!resolved.ok) return res.status(400).json({ error: resolved.error });
-      if (!initialWorkItems.some((item) =>
-        item.workItemId === resolved.value.workItemId && item.provider === resolved.value.provider)) {
-        initialWorkItems.push(resolved.value);
-      }
+      initialWorkItems.push(resolved.value);
     }
     try {
-      let task = ctx.taskStore.createTask(title, groupId, kind);
-      try {
-        for (const initialWorkItem of initialWorkItems) {
-          task = ctx.taskStore.linkWorkItem(
-            task.id,
-            initialWorkItem.workItemId,
-            initialWorkItem.provider,
-          );
-        }
-      } catch (error) {
-        ctx.taskStore.deleteTask(task.id);
-        throw error;
-      }
+      const task = ctx.taskStore.createTask(title, groupId, kind, initialWorkItems);
       res.json({ task: toClientTaskResponse(task) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -5264,27 +5247,24 @@ export function createApiRouter(
   router.get("/dashboard/focus", sendDashboardFocus);
   router.get("/dashboard/checklist", sendDashboardFocus);
 
+  const workMapBuilds = createWorkMapBuilds();
+  const workMapRequest = (query: express.Request["query"]) => {
+    const isSet = (value: unknown) => value === "1" || value === "true";
+    const includeArchived = isSet(query.includeArchived);
+    const assignedToMe = isSet(query.assignedToMe);
+    return { includeArchived, assignedToMe, refresh: isSet(query.refresh), filters: `${includeArchived}:${assignedToMe}` };
+  };
+
   router.get("/dashboard/work-map", async (req, res) => {
     try {
       const t0 = Date.now();
-      const adoConfig = ctx.settingsStore.getSettings().providers?.ado;
-      const includeArchived = req.query.includeArchived === "1" || req.query.includeArchived === "true";
-      const assignedToMe = req.query.assignedToMe === "1" || req.query.assignedToMe === "true";
-      if (adoConfig && (req.query.refresh === "1" || req.query.refresh === "true")) {
-        clearProviderCache();
-      }
-      const data = await buildWorkMapData({
+      const { includeArchived, assignedToMe, refresh, filters } = workMapRequest(req.query);
+      if (refresh) expireAdoProviderData();
+      const data = await workMapBuilds.run(filters, {
         tasks: ctx.taskStore.listTasks().filter((task) => includeArchived || task.status === "active"),
-        includeArchived,
         assignedToMe,
-        adoConfig,
-        enrichWorkItems,
-        enrichPullRequests,
-        fetchRelationships: fetchAdoWorkItemPullRequestLinks,
-        fetchWorkItemRelations: fetchAdoWorkItemRelations,
-        fetchCurrentUser: fetchAdoCurrentUser,
-        fetchAssignedWorkItemIds: fetchAdoAssignedWorkItemIds,
-      });
+        ado: getAdoProvider(),
+      }, refresh);
       res.json(data);
       ctx.telemetryStore?.recordSpan({
         name: "dashboard.work_map",
@@ -5303,6 +5283,11 @@ export function createApiRouter(
       console.error("[dashboard:work-map] Error:", err);
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // How far the build for these filters is, for a client that has nothing to show yet.
+  router.get("/dashboard/work-map/progress", (req, res) => {
+    res.json({ progress: workMapBuilds.progress(workMapRequest(req.query).filters) });
   });
 
   // ── Schedule routes ───────────────────────────────────────────────
