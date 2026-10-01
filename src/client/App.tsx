@@ -177,6 +177,8 @@ function AppShell() {
   const [restoringArchivedSessionIds, setRestoringArchivedSessionIds] = useState<Set<string>>(new Set());
   const {
     data: activeSessions = [],
+    isPending: activeSessionsPending,
+    isLoadingError: activeSessionsUnavailable,
   } = useSessionsQuery(false);
   const {
     data: archivedQuerySessions = [],
@@ -335,7 +337,9 @@ function AppShell() {
     return () => window.removeEventListener("keydown", openSearch);
   }, [location.pathname, location.search, location.hash, searchOpen, navigate]);
 
-  const { isUnread, markRead, markUnread, unreadCount, applyServerState } = useReadState();
+  const { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated: readStateHydrated } = useReadState();
+  // Search lists unread chats only once it can tell: before that, every chat or none would look unread.
+  const unreadChatsKnown = readStateHydrated && !activeSessionsPending && !activeSessionsUnavailable && tasksQuery.data !== undefined;
   const bridgeReferenceContext = useMemo(() => ({ isUnread }), [isUnread]);
   // Helm conversations are not in the session lists, so their drafts need their own protection
   // from draft cleanup. Until Helm's state is known, nothing is pruned.
@@ -2341,6 +2345,8 @@ function AppShell() {
     {searchOpen && <SearchView
       tasks={tasks}
       sessions={sessions}
+      isUnread={unreadChatsKnown ? isUnread : undefined}
+      activeSessionId={activeSessionId}
       onClose={closeSearch}
     />}
     {handsFree.active && !isHelmRoute && !searchOpen && (
