@@ -116,12 +116,17 @@ export const DS = {
     lift: "shadow-lg shadow-black/10",
     /**
      * A jump control pinned to the edge of a scrolling list: rows fade out under a band so the
-     * control reads as sitting on the edge rather than on top of a row.
+     * control reads as sitting on the edge rather than on top of a row. The band is sticky, and a
+     * sticky box stops at its scroller's padding, so pad a wrapper inside the scroller instead;
+     * otherwise rows show, unfaded, in the gap between the band and the edge. The band also runs
+     * 2px past the edge, where the scroller clips it, because at a fractional display scale a band
+     * that ends on the edge can stop a device pixel short of the rows. That overhang sits in the
+     * wrapper's padding when the list is scrolled to its end.
      */
-    edgeBand: "pointer-events-none absolute inset-x-0 flex h-11 justify-center",
+    edgeBand: "pointer-events-none absolute inset-x-0 flex h-11.5 justify-center",
     edgeFade: {
-      pane: { above: "top-0 items-start pt-1.5 bg-linear-to-b from-surface-pane from-35% to-transparent", below: "bottom-0 items-end pb-1.5 bg-linear-to-t from-surface-pane from-35% to-transparent" },
-      canvas: { above: "top-0 items-start pt-1.5 bg-linear-to-b from-surface-canvas from-35% to-transparent", below: "bottom-0 items-end pb-1.5 bg-linear-to-t from-surface-canvas from-35% to-transparent" },
+      pane: { above: "-top-0.5 items-start pt-2 bg-linear-to-b from-surface-pane from-38% to-transparent", below: "-bottom-0.5 items-end pb-2 bg-linear-to-t from-surface-pane from-38% to-transparent" },
+      canvas: { above: "-top-0.5 items-start pt-2 bg-linear-to-b from-surface-canvas from-38% to-transparent", below: "-bottom-0.5 items-end pb-2 bg-linear-to-t from-surface-canvas from-38% to-transparent" },
     },
     edgeJump: "pointer-events-auto inline-flex min-h-8 items-center gap-1.5 rounded-full border border-surface-edge bg-surface-overlay pl-2 pr-2.5 text-xs font-medium tabular-nums text-text-primary shadow-lg shadow-black/10 transition-colors hover:bg-surface-selected md:min-h-7",
     /** The message composer: the one floating surface that is always on screen. */

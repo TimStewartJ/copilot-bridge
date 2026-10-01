@@ -47,7 +47,9 @@ quiet, dense with information, and calm until something needs attention.
 11. **Only what floats has a shadow:** menus, the composer, dialogs, jump controls
     (`DS.surface.floating`, `.composer`, `.dialog`, `.sheet`, `.floatingPill`, `.lift`). A jump control on
     the edge of a scrolling list sits on a fade band (`.edgeBand` + `.edgeFade`, `.edgeJump`) so rows fade
-    out beneath it instead of being cut by it.
+    out beneath it instead of being cut by it. The band is sticky, so the scroller takes no top or
+    bottom padding of its own (pad a wrapper inside it): a sticky box stops at the scroller's padding,
+    and rows would show in the gap between the band and the edge.
 12. **Touch targets are 40px on a phone** (`DS.button.size.md`, `DS.field.inputSize.md`), and a text
     field is 16px there so iOS does not zoom the page.
 

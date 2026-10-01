@@ -619,235 +619,239 @@ export default function TaskRail({
       </div>
 
       {/* ── Tab content (scrollable) ────────────────────────── */}
-      <div ref={expandedTaskListRef} className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
-        {railTab === "tasks" ? (
-          <>
-            {/* New Task button */}
-            <Button ref={newTaskButtonRef} fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
-              New task
-            </Button>
-            {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
-            <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
+      {/* The padding is on the wrapper inside. A sticky control stops at its scroller's padding, so
+          padding here leaves rows showing past the reorder bar and the unread bands. */}
+      <div ref={expandedTaskListRef} className="flex-1 overflow-y-auto">
+        <div className="px-2 py-2 space-y-0.5">
+          {railTab === "tasks" ? (
+            <>
+              {/* New Task button */}
+              <Button ref={newTaskButtonRef} fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
+                New task
+              </Button>
+              {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
+              <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
 
-            <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
-              {hasGroups && displaySections ? (
-                // ── Grouped mode ──────────────────────────────────
-                <>
-                  {displaySections.map((section) => {
-                    const group = section.group;
-                    const isCollapsed = group?.collapsed ?? false;
-                    const groupId = group?.id ?? "__ungrouped__";
+              <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
+                {hasGroups && displaySections ? (
+                  // ── Grouped mode ──────────────────────────────────
+                  <>
+                    {displaySections.map((section) => {
+                      const group = section.group;
+                      const isCollapsed = group?.collapsed ?? false;
+                      const groupId = group?.id ?? "__ungrouped__";
 
-                    return (
-                      <DroppableGroup key={groupId} id={groupId}>
-                        <div className={cx(DS.surface.group, "mb-3 overflow-hidden")} data-ds-surface="group">
-                          {/* Group header (skip for ungrouped tasks) */}
-                          {group && (
-                          <div className={cx(DS.collection.header, "group/header")}>
-                          <button
-                            onClick={() => {
-                              if (onUpdateGroup) {
-                                onUpdateGroup(group.id, { collapsed: !isCollapsed });
-                              }
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
-                            }}
-                            aria-expanded={!isCollapsed}
-                            className={cx(DS.focus, "flex min-h-10 min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-3 text-xs text-text-secondary transition-colors hover:text-text-primary md:min-h-8")}
-                          >
-                            {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                            <IdentitySwatch color={group.color} />
-                            <span className="font-medium truncate">{group.name}</span>
-                          </button>
-                            {group.notes && (
+                      return (
+                        <DroppableGroup key={groupId} id={groupId}>
+                          <div className={cx(DS.surface.group, "mb-3 overflow-hidden")} data-ds-surface="group">
+                            {/* Group header (skip for ungrouped tasks) */}
+                            {group && (
+                            <div className={cx(DS.collection.header, "group/header")}>
+                            <button
+                              onClick={() => {
+                                if (onUpdateGroup) {
+                                  onUpdateGroup(group.id, { collapsed: !isCollapsed });
+                                }
+                              }}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                setGroupCtx({ groupId: group.id, x: e.clientX, y: e.clientY });
+                              }}
+                              aria-expanded={!isCollapsed}
+                              className={cx(DS.focus, "flex min-h-10 min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-3 text-xs text-text-secondary transition-colors hover:text-text-primary md:min-h-8")}
+                            >
+                              {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                              <IdentitySwatch color={group.color} />
+                              <span className="font-medium truncate">{group.name}</span>
+                            </button>
+                              {group.notes && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setGroupNotesId(group.id);
+                                    setGroupNotesStartEdit(false);
+                                  }}
+                                  title="Group notes"
+                                  className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
+                                >
+                                  <FileText size={11} />
+                                </button>
+                              )}
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setGroupNotesId(group.id);
-                                  setGroupNotesStartEdit(false);
+                                  onNewTask(group.id);
                                 }}
-                                title="Group notes"
-                                className="p-1 rounded text-text-faint hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
+                                title={`New task in ${group.name}`}
+                                className="p-1 mr-1.5 rounded text-text-faint opacity-0 group-hover/header:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
                               >
-                                <FileText size={11} />
+                                <Plus size={12} />
                               </button>
+                            </div>
                             )}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onNewTask(group.id);
-                              }}
-                              title={`New task in ${group.name}`}
-                              className="p-1 mr-1.5 rounded text-text-faint opacity-0 group-hover/header:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all cursor-pointer"
-                            >
-                              <Plus size={12} />
-                            </button>
-                          </div>
-                          )}
 
-                          {/* Group tasks */}
-                          {!isCollapsed && (
-                            <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                              {section.tasks.map((task) => (
-                                <SortableTaskItem
-                                  key={task.id}
-                                  task={task}
-                                  isActive={task.id === activeTaskId}
-                                  indicator={taskIndicators.get(task.id)}
-                                  isCtxTarget={ctxMenu?.id === task.id}
-                                  isLongPressTarget={isTarget(task.id)}
-                                  bindLongPress={bindLongPress}
-                                  onSelectTask={onSelectTask}
-                                  variant="rail"
-                                  quiet={quietIds.has(task.id)}
-                                  rowDrag={canReorder}
-                                  reordering={reorderMode.reordering}
-                                />
-                              ))}
-                            </SortableContext>
-                          )}
+                            {/* Group tasks */}
+                            {!isCollapsed && (
+                              <SortableContext items={section.tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                                {section.tasks.map((task) => (
+                                  <SortableTaskItem
+                                    key={task.id}
+                                    task={task}
+                                    isActive={task.id === activeTaskId}
+                                    indicator={taskIndicators.get(task.id)}
+                                    isCtxTarget={ctxMenu?.id === task.id}
+                                    isLongPressTarget={isTarget(task.id)}
+                                    bindLongPress={bindLongPress}
+                                    onSelectTask={onSelectTask}
+                                    variant="rail"
+                                    quiet={quietIds.has(task.id)}
+                                    rowDrag={canReorder}
+                                    reordering={reorderMode.reordering}
+                                  />
+                                ))}
+                              </SortableContext>
+                            )}
+                          </div>
+                        </DroppableGroup>
+                      );
+                    })}
+                  </>
+                ) : (
+                  // ── Flat mode (no groups) ──────────────────────────
+                  <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                    {sortedTasks.map((task) => (
+                      <SortableTaskItem
+                        key={task.id}
+                        task={task}
+                        isActive={task.id === activeTaskId}
+                        indicator={taskIndicators.get(task.id)}
+                        isCtxTarget={ctxMenu?.id === task.id}
+                        isLongPressTarget={isTarget(task.id)}
+                        bindLongPress={bindLongPress}
+                        onSelectTask={onSelectTask}
+                        variant="rail"
+                        quiet={quietIds.has(task.id)}
+                        rowDrag={canReorder}
+                        reordering={reorderMode.reordering}
+                      />
+                    ))}
+                  </SortableContext>
+                )}
+                <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
+              </DndContext>
+              {sortedTasks.length === 0 && (
+                <EmptyState
+                  message="No tasks yet"
+                  sub="Create a task to organize your work"
+                />
+              )}
+              {setAsideTasks.length > 0 && (
+                <>
+                  <button
+                    onClick={() => setShowSetAside((v) => !v)}
+                    aria-expanded={showSetAside}
+                    className="w-full flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 mt-2 text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                  >
+                    {showSetAside ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    <EyeOff size={12} />
+                    Set aside ({setAsideTasks.length})
+                    {setAsideNeeds.size > 0 && (
+                      <span className={cx("ml-1 inline-flex items-center gap-1 font-medium", DS.tone.warning)}>
+                        <StatusIcon kind="warning" decorative />
+                        {needsYouCount(setAsideNeeds.size)}
+                      </span>
+                    )}
+                  </button>
+                  {showSetAside && (
+                    <div className={cx(DS.surface.group, "mb-1 overflow-hidden")} data-ds-surface="group">
+                      {setAsideTasks.map((task) => (
+                        <button
+                          key={task.id}
+                          type="button"
+                          {...bindLongPress(task.id, () => onSelectTask(task.id))}
+                          className={cx("flex w-full items-center gap-2 border-b border-border-subtle px-3 py-2 text-left text-sm last:border-b-0 select-none no-callout transition-colors",
+                            ctxMenu?.id === task.id ? "bg-bg-hover ring-1 ring-border" : task.id === activeTaskId ? DS.row.selected : "hover:bg-bg-hover/60")}
+                        >
+                          <span className="w-3 shrink-0" />
+                          <span className="min-w-0 flex-1 truncate font-medium text-text-primary">{task.title}</span>
+                          <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
+                          {setAsideNeeds.has(task.id) && <span className={cx(DS.badge.base, DS.badge.tone.warning)}>{setAsideNeeds.get(task.id)}</span>}
+                          <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>{task.muted ? "Muted" : "Deferred"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {archivedTasks.length > 0 && (
+                <>
+                  <button
+                    onClick={() => setShowArchived((v) => !v)}
+                    className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+                  >
+                    {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    <Archive size={12} />
+                    Archived ({archivedTasks.length})
+                  </button>
+                  {showArchived && archivedTasks.map((task) => {
+                    const isActive = task.id === activeTaskId;
+
+                    return (
+                      <button
+                        key={task.id}
+                        {...bindLongPress(task.id, () => onSelectTask(task.id))}
+                        className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
+                          ctxMenu?.id === task.id
+                            ? "bg-bg-hover ring-1 ring-border"
+                            : isActive
+                              ? "bg-bg-hover"
+                              : "hover:bg-bg-hover"
+                        } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium truncate flex-1">
+                            {task.title}
+                          </span>
+                          <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
+                          <span className="text-[10px] text-text-faint">archived</span>
                         </div>
-                      </DroppableGroup>
+                        <div className="text-xs text-text-muted mt-0.5">
+                          {timeAgo(taskIndicators.get(task.id)?.lastActivity ?? task.updatedAt)}
+                        </div>
+                      </button>
                     );
                   })}
                 </>
-              ) : (
-                // ── Flat mode (no groups) ──────────────────────────
-                <SortableContext items={sortedTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                  {sortedTasks.map((task) => (
-                    <SortableTaskItem
-                      key={task.id}
-                      task={task}
-                      isActive={task.id === activeTaskId}
-                      indicator={taskIndicators.get(task.id)}
-                      isCtxTarget={ctxMenu?.id === task.id}
-                      isLongPressTarget={isTarget(task.id)}
-                      bindLongPress={bindLongPress}
-                      onSelectTask={onSelectTask}
-                      variant="rail"
-                      quiet={quietIds.has(task.id)}
-                      rowDrag={canReorder}
-                      reordering={reorderMode.reordering}
-                    />
-                  ))}
-                </SortableContext>
               )}
-              <TaskDragOverlay task={activeDragTask} lastActivity={activeDragTask ? taskIndicators.get(activeDragTask.id)?.lastActivity : undefined} />
-            </DndContext>
-            {sortedTasks.length === 0 && (
-              <EmptyState
-                message="No tasks yet"
-                sub="Create a task to organize your work"
-              />
-            )}
-            {setAsideTasks.length > 0 && (
-              <>
-                <button
-                  onClick={() => setShowSetAside((v) => !v)}
-                  aria-expanded={showSetAside}
-                  className="w-full flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 mt-2 text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
-                >
-                  {showSetAside ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <EyeOff size={12} />
-                  Set aside ({setAsideTasks.length})
-                  {setAsideNeeds.size > 0 && (
-                    <span className={cx("ml-1 inline-flex items-center gap-1 font-medium", DS.tone.warning)}>
-                      <StatusIcon kind="warning" decorative />
-                      {needsYouCount(setAsideNeeds.size)}
-                    </span>
-                  )}
-                </button>
-                {showSetAside && (
-                  <div className={cx(DS.surface.group, "mb-1 overflow-hidden")} data-ds-surface="group">
-                    {setAsideTasks.map((task) => (
-                      <button
-                        key={task.id}
-                        type="button"
-                        {...bindLongPress(task.id, () => onSelectTask(task.id))}
-                        className={cx("flex w-full items-center gap-2 border-b border-border-subtle px-3 py-2 text-left text-sm last:border-b-0 select-none no-callout transition-colors",
-                          ctxMenu?.id === task.id ? "bg-bg-hover ring-1 ring-border" : task.id === activeTaskId ? DS.row.selected : "hover:bg-bg-hover/60")}
-                      >
-                        <span className="w-3 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate font-medium text-text-primary">{task.title}</span>
-                        <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
-                        {setAsideNeeds.has(task.id) && <span className={cx(DS.badge.base, DS.badge.tone.warning)}>{setAsideNeeds.get(task.id)}</span>}
-                        <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>{task.muted ? "Muted" : "Deferred"}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-            {archivedTasks.length > 0 && (
-              <>
-                <button
-                  onClick={() => setShowArchived((v) => !v)}
-                  className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
-                >
-                  {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  <Archive size={12} />
-                  Archived ({archivedTasks.length})
-                </button>
-                {showArchived && archivedTasks.map((task) => {
-                  const isActive = task.id === activeTaskId;
-
-                  return (
-                    <button
-                      key={task.id}
-                      {...bindLongPress(task.id, () => onSelectTask(task.id))}
-                      className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
-                        ctxMenu?.id === task.id
-                          ? "bg-bg-hover ring-1 ring-border"
-                          : isActive
-                            ? "bg-bg-hover"
-                            : "hover:bg-bg-hover"
-                      } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium truncate flex-1">
-                          {task.title}
-                        </span>
-                        <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
-                        <span className="text-[10px] text-text-faint">archived</span>
-                      </div>
-                      <div className="text-xs text-text-muted mt-0.5">
-                        {timeAgo(taskIndicators.get(task.id)?.lastActivity ?? task.updatedAt)}
-                      </div>
-                    </button>
-                  );
-                })}
-              </>
-            )}
-            <UnreadTaskEdgePill edge={unreadTaskEdges.below} direction="below" onJump={unreadTaskEdges.jumpToTask} />
-          </>
-        ) : (
-          <SessionList
-            variant="compact"
-            sessions={orphanSessions}
-            activeSessionId={activeSessionId ?? null}
-            onSelectSession={(sessionId) => onSelectSession?.(sessionId)}
-            onNewSession={() => onNewQuickChat?.()}
-            newButtonLabel="+ Quick Chat"
-            isUnread={isUnread}
-            onArchiveSession={onArchiveSession}
-            archivingIds={archivingIds}
-            exitingIds={exitingIds}
-            tasks={tasks}
-            onLinkToTask={onLinkToTask}
-            onDeleteSession={onDeleteSession}
-            onForkSession={onForkSession}
-            onReloadSession={onReloadSession}
-            onMarkUnread={onMarkUnread}
-            onMarkAllRead={onMarkAllQuickChatsRead}
-            hasDraft={hasDraft}
-            onBulkAction={onBulkAction}
-            onRequestArchived={onRequestArchived}
-            archivedLoaded={archivedLoaded}
-            archivedLoading={archivedLoading}
-          />
-        )}
+              <UnreadTaskEdgePill edge={unreadTaskEdges.below} direction="below" onJump={unreadTaskEdges.jumpToTask} />
+            </>
+          ) : (
+            <SessionList
+              variant="compact"
+              sessions={orphanSessions}
+              activeSessionId={activeSessionId ?? null}
+              onSelectSession={(sessionId) => onSelectSession?.(sessionId)}
+              onNewSession={() => onNewQuickChat?.()}
+              newButtonLabel="+ Quick Chat"
+              isUnread={isUnread}
+              onArchiveSession={onArchiveSession}
+              archivingIds={archivingIds}
+              exitingIds={exitingIds}
+              tasks={tasks}
+              onLinkToTask={onLinkToTask}
+              onDeleteSession={onDeleteSession}
+              onForkSession={onForkSession}
+              onReloadSession={onReloadSession}
+              onMarkUnread={onMarkUnread}
+              onMarkAllRead={onMarkAllQuickChatsRead}
+              hasDraft={hasDraft}
+              onBulkAction={onBulkAction}
+              onRequestArchived={onRequestArchived}
+              archivedLoaded={archivedLoaded}
+              archivedLoading={archivedLoading}
+            />
+          )}
+        </div>
       </div>
 
       {/* Dashboard */}
