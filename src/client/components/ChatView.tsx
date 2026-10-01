@@ -106,6 +106,11 @@ const SCROLL_REST_TIMEOUT_MS = 5_000;
 /** How many rows a change to the transcript is measured against; the change may replace some of them. */
 const VIEWPORT_ANCHOR_ROWS = 4;
 /**
+ * A row overlapping the viewport top by no more than this is not in view: landing on a row
+ * leaves a fraction of a pixel of the one above.
+ */
+const VIEWPORT_EDGE_PX = 1;
+/**
  * Cached history paints instantly, so a sync that lands inside this window never shows an
  * indicator; anything slower gets a clear, full-width strip instead of a flash.
  */
@@ -278,55 +283,151 @@ interface ViewportAnchor {
   offset: number;
 }
 
-/**
- * The rows to measure a change to the transcript against, best first. Any row will do, not only a
- * message: the newest reply is often a completion card, or the steps of a run. A row that starts
- * in view comes before one the viewport top cuts through, because that one can grow above what
- * is on screen (earlier steps joining its run) without its own top moving.
- */
-function captureViewportAnchors(scroller: HTMLElement, rows: Element): ViewportAnchor[] {
-  const viewportTop = scroller.getBoundingClientRect().top;
-  const anchors: ViewportAnchor[] = [];
-  for (const row of rows.children) {
-    const rect = row.getBoundingClientRect();
-    if (rect.bottom <= viewportTop) continue;
-    anchors.push({ row, offset: rect.top - viewportTop });
-    if (anchors.length === VIEWPORT_ANCHOR_ROWS) break;
-  }
-  if (anchors.length > 1 && anchors[0].offset < 0) anchors.push(anchors.shift()!);
-  return anchors;
+/** Whether the browser itself keeps the reader's place when content above the viewport changes height. */
+function browserAnchorsScrolling(): boolean {
+  return typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("overflow-anchor", "auto");
 }
 
 /**
- * The transcript's rows, with the reader's place held across a change to them. A row in view is
+ * The first `limit` rows in view, top one first, and where each starts. Any row will do, not only
+ * a message: the newest reply is often a completion card, or the steps of a run. Rows stack
+ * downwards in document order, so the first one in view is found by bisection.
+ */
+function captureViewportAnchors(scroller: HTMLElement, rows: Element, limit = VIEWPORT_ANCHOR_ROWS): ViewportAnchor[] {
+  const viewportTop = scroller.getBoundingClientRect().top;
+  const candidates = rows.children;
+  let first = 0;
+  let end = candidates.length;
+  while (first < end) {
+    const middle = Math.floor((first + end) / 2);
+    if (candidates[middle].getBoundingClientRect().bottom > viewportTop + VIEWPORT_EDGE_PX) end = middle;
+    else first = middle + 1;
+  }
+  const anchors: ViewportAnchor[] = [];
+  for (let index = first; index < candidates.length && anchors.length < limit; index += 1) {
+    anchors.push({ row: candidates[index], offset: candidates[index].getBoundingClientRect().top - viewportTop });
+  }
+  return anchors;
+}
+
+/** How far `anchor` now is from where it was. */
+function shiftOf(scroller: HTMLElement, { row, offset }: ViewportAnchor): number {
+  return row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset;
+}
+
+/** The viewport top cuts through this row: content can grow inside it, above the view, without its top moving. */
+function startsAboveView(anchor: ViewportAnchor): boolean {
+  return anchor.offset < -VIEWPORT_EDGE_PX;
+}
+
+/**
+ * The transcript's rows, with the reader's place held when content above it changes height.
+ *
+ * Across a change to the rows themselves (older messages going in, a refresh), a row in view is
  * measured as React is about to change the DOM and again once it has, so the difference is only
  * what the change itself moved: growth below (live output), the browser's own scroll anchoring,
- * and scrolling the reader did while the change rendered are all left alone. Nothing is written
- * when nothing shifted, because moving a scroller cuts a touch scroll short.
+ * and scrolling the reader did while the change rendered are all left alone.
+ *
+ * Content also changes height long after it rendered: an image above the view finishes loading,
+ * a preview card fills in. Most browsers anchor scrolling through that themselves. Safari before
+ * 27 does not, so there the top row in view is put back where it was. Only growth above that row
+ * moves it, never something the reader opens in view.
+ *
+ * Nothing is written when nothing shifted or while the reader is scrolling, because moving a
+ * scroller cuts a touch scroll short.
  */
 class ViewportKeeper extends Component<{
   scrollerRef: RefObject<HTMLElement | null>;
   className?: string;
   /** Asked as the DOM is about to change: must this change leave the reader's view where it is? */
   shouldKeep: () => boolean;
+  /** Whether the reader has stopped scrolling and has no finger on the transcript. */
+  atRest: () => boolean;
   /** Moves the transcript by `delta` without it counting as the reader scrolling. */
   shift: (scroller: HTMLElement, delta: number) => void;
   children: ReactNode;
 }> {
   private readonly rows = createRef<HTMLDivElement>();
+  /** Reports late changes in the rows' height; unused where the browser anchors scrolling itself. */
+  private observer: ResizeObserver | null = null;
+  /** The top row in view and the scroll position, as of the last render or movement of the view. */
+  private settled: { anchor: ViewportAnchor | undefined; scrollTop: number } | null = null;
+  private settling = false;
 
-  getSnapshotBeforeUpdate(): ViewportAnchor[] | null {
-    const scroller = this.props.scrollerRef.current;
-    const rows = this.rows.current;
-    return scroller && rows && this.props.shouldKeep() ? captureViewportAnchors(scroller, rows) : null;
+  componentDidMount() {
+    if (browserAnchorsScrolling() || typeof ResizeObserver === "undefined" || !this.rows.current) return;
+    this.observer = new ResizeObserver(() => {
+      this.holdSettled();
+      this.settle();
+    });
+    this.observer.observe(this.rows.current);
+    this.settleSoon();
   }
 
-  componentDidUpdate(_props: unknown, _state: unknown, anchors: ViewportAnchor[] | null) {
+  getSnapshotBeforeUpdate(): { anchors: ViewportAnchor[]; scrollTop: number } | null {
+    // A late change the observer has yet to report must not pass for part of this render.
+    this.holdSettled();
     const scroller = this.props.scrollerRef.current;
-    const anchor = anchors?.find(({ row }) => this.rows.current?.contains(row));
-    if (!scroller || !anchor) return;
-    const delta = anchor.row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+    const rows = this.rows.current;
+    if (!scroller || !rows || !this.props.shouldKeep()) return null;
+    const anchors = captureViewportAnchors(scroller, rows);
+    // Earlier steps joining a run grow its row above the view, so rows that start in view come first.
+    if (anchors.length > 1 && startsAboveView(anchors[0])) anchors.push(anchors.shift()!);
+    return { anchors, scrollTop: getSafeScrollTop(scroller) };
+  }
+
+  componentDidUpdate(_props: unknown, _state: unknown, before: { anchors: ViewportAnchor[]; scrollTop: number } | null) {
+    const scroller = this.props.scrollerRef.current;
+    const anchor = before?.anchors.find(({ row }) => this.rows.current?.contains(row));
+    if (scroller && before && anchor) {
+      const delta = shiftOf(scroller, anchor);
+      // The view moving by itself during the render is the browser's scroll anchoring, which
+      // holds a line inside a row. That row's own top then says nothing about what moved.
+      const heldByBrowser = startsAboveView(anchor) && getSafeScrollTop(scroller) !== before.scrollTop;
+      if (Math.abs(delta) >= 1 && !heldByBrowser) this.props.shift(scroller, delta);
+    }
+    this.settleSoon();
+  }
+
+  componentWillUnmount() {
+    this.observer?.disconnect();
+    this.observer = null;
+  }
+
+  /** The view moved, so late changes are measured from where it is now. */
+  moved() {
+    const scroller = this.props.scrollerRef.current;
+    // The scroll event for a move made from code arrives a frame later. By then an image may
+    // have loaded, and measuring again would take its shift for granted.
+    if (this.observer && scroller && this.settled?.scrollTop !== getSafeScrollTop(scroller)) this.settle();
+  }
+
+  /** Puts the top row back where it was if content above it has changed height since. */
+  private holdSettled() {
+    const scroller = this.props.scrollerRef.current;
+    const settled = this.settled;
+    if (!scroller || !settled?.anchor || !this.rows.current?.contains(settled.anchor.row)) return;
+    if (settled.scrollTop !== getSafeScrollTop(scroller) || !this.props.atRest()) return;
+    const delta = shiftOf(scroller, settled.anchor);
     if (Math.abs(delta) >= 1) this.props.shift(scroller, delta);
+  }
+
+  private settle() {
+    const scroller = this.props.scrollerRef.current;
+    const rows = this.rows.current;
+    this.settled = scroller && rows
+      ? { anchor: captureViewportAnchors(scroller, rows, 1)[0], scrollTop: getSafeScrollTop(scroller) }
+      : null;
+  }
+
+  /** Settles once the render is over, after the layout effects that put the view where it belongs. */
+  private settleSoon() {
+    if (!this.observer || this.settling) return;
+    this.settling = true;
+    queueMicrotask(() => {
+      this.settling = false;
+      if (this.observer) this.settle();
+    });
   }
 
   render() {
@@ -788,6 +889,7 @@ export default function ChatView({
   /** Set by a history apply that must not move what the reader is looking at; cleared once it is on screen. */
   const keepViewportRef = useRef(false);
   const scrollActivityRef = useRef<ScrollActivity>({ movedAt: 0, touching: false });
+  const viewportKeeperRef = useRef<ViewportKeeper>(null);
   /** Where the last scroll event left the transcript, to tell which way the next one moved. */
   const lastScrollTopRef = useRef(0);
   const historyRef = useRef(NO_HISTORY_READER);
@@ -1648,6 +1750,10 @@ export default function ChatView({
     scroller.scrollTop = getSafeScrollTop(scroller) + delta;
     settleProgrammaticScroll();
   }, [settleProgrammaticScroll]);
+  const transcriptAtRest = useCallback(() => {
+    const { movedAt, touching } = scrollActivityRef.current;
+    return !touching && Date.now() - movedAt >= SCROLL_REST_MS;
+  }, []);
 
   const loadOlderMessages = useCallback(async () => {
     const before = firstItemIndex.current;
@@ -1691,10 +1797,16 @@ export default function ChatView({
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    viewportKeeperRef.current?.moved();
     const top = getSafeScrollTop(el);
     const movedUp = top < lastScrollTopRef.current;
     lastScrollTopRef.current = top;
     if (programmaticScrollRef.current) return;
+    // A browser that anchors scrolling moves the view itself when content above it changes
+    // height, and that is a scroll event too. The reader is still parked on the same reply.
+    const parkedOn = anchoredMessageKeyRef.current;
+    const parkedTop = parkedOn ? getMessageTopWithinScroller(parkedOn) : null;
+    if (parkedTop != null && Math.abs(parkedTop - top) <= LATEST_MESSAGE_TOP_THRESHOLD_PX) return;
     scrollActivityRef.current.movedAt = Date.now();
 
     const following = getDistanceFromBottom(el) <= FOLLOW_BOTTOM_THRESHOLD_PX;
@@ -1710,7 +1822,7 @@ export default function ChatView({
     // (a long reply under a collapsed run), and reading down from there must not fetch anything.
     // A failed page waits for Retry instead of refiring on every scroll event.
     if (movedUp && !loadMoreError && top < el.clientHeight) void loadOlderMessages();
-  }, [creating, isStreaming, loadMoreError, loadOlderMessages, pendingInteractionCount]);
+  }, [creating, getMessageTopWithinScroller, isStreaming, loadMoreError, loadOlderMessages, pendingInteractionCount]);
 
   const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const activity = scrollActivityRef.current;
@@ -3020,9 +3132,11 @@ export default function ChatView({
           {/* Cached transcript dims and shimmers while the disk read is in flight; live content below stays crisp. */}
           <ChatRunActiveProvider value={runActive}>
             <ViewportKeeper
+              ref={viewportKeeperRef}
               scrollerRef={scrollContainerRef}
               className={showHistorySync ? "history-syncing" : undefined}
               shouldKeep={shouldKeepViewport}
+              atRest={transcriptAtRest}
               shift={shiftTranscript}
             >
               {renderedEntries}
