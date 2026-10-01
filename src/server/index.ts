@@ -26,6 +26,7 @@ import { resolveRuntimePaths } from "./runtime-paths.js";
 import { prepareNeutralWorkspaceDir } from "./neutral-workspace.js";
 import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
 import { queueBootRecoveryPrompts } from "./restart-resume.js";
+import { recoverBackgroundCommandsOnBoot } from "./background-commands.js";
 import { setProcessLaunchObserver } from "./process-host.js";
 import {
   getEventLoopLagRequestTelemetryMetadata,
@@ -238,6 +239,7 @@ async function main(): Promise<void> {
   // Queue continue prompts for runs a server kill or crash cut off, before the runner starts.
   // Production boot only: the staged preview server shares the hook below but must never
   // resume sessions from its copied database.
+  let resumedSessionIds: string[] = [];
   try {
     const { deferredPromptStore, interruptedRunStore } = defaultContext;
     if (deferredPromptStore && interruptedRunStore) {
@@ -246,6 +248,7 @@ async function main(): Promise<void> {
         deferredPromptRunner: defaultContext.deferredPromptRunner,
         globalBus: defaultContext.globalBus,
       }, interruptedRunStore);
+      resumedSessionIds = recovery.resumed;
       if (recovery.resumed.length + recovery.skippedCooldown.length > 0) {
         console.warn(
           `[restart-resume] Runs interrupted by the last server exit: resumed [${recovery.resumed.join(", ")}], `
@@ -255,6 +258,34 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     console.error("[restart-resume] Boot recovery failed:", error);
+  }
+
+  // Commands that were still running in a session's shell when the last server stopped went with
+  // it. Record that for their agents, and tell an agent that was most likely waiting for one now.
+  try {
+    const { backgroundCommandStore, deferredPromptStore } = defaultContext;
+    if (backgroundCommandStore) {
+      const recovery = recoverBackgroundCommandsOnBoot({
+        backgroundCommandStore,
+        deferredPromptStore,
+        deferredPromptRunner: defaultContext.deferredPromptRunner,
+        isSessionArchived: (sessionId) => defaultContext.sessionMetaStore.isArchived(sessionId),
+      }, { wake: true, alreadyResumedSessionIds: resumedSessionIds });
+      if (recovery.stopped > 0) {
+        console.warn(
+          `[restart-resume] ${recovery.stopped} background command(s) were still running at the last server exit; `
+          + `told now: [${recovery.woken.join(", ")}], the rest with their session's next message`,
+        );
+        defaultContext.telemetryStore?.recordSpan({
+          name: "session.background_commands.stopped",
+          duration: 0,
+          metadata: { cause: "restart", count: recovery.stopped, woken: recovery.woken.length },
+          source: "server",
+        });
+      }
+    }
+  } catch (error) {
+    console.error("[restart-resume] Background command recovery failed:", error);
   }
 
   // Initialize scheduler after session manager is ready

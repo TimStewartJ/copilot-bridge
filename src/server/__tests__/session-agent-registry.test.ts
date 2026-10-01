@@ -553,4 +553,161 @@ describe("SessionAgentRegistry", () => {
     expect(registry.getSummary("live2").source).not.toBe("unknown");
     registry.dispose();
   });
+
+  describe("commands in attached shells", () => {
+    const MINUTE = 60_000;
+
+    function shellTask(partial: Partial<AgentBackgroundTask> & Pick<AgentBackgroundTask, "id">): AgentBackgroundTask {
+      return { kind: "shell", status: "running", executionMode: "background", attachmentMode: "attached", ...partial };
+    }
+
+    it("keeps running attached commands apart from the agent snapshot", async () => {
+      const { bus } = makeBus();
+      const session = fakeSession(async () => ({
+        tasks: [
+          shellTask({ id: "1", startedAt: new Date(0).toISOString(), description: "Build", command: "npm run build" }),
+          shellTask({ id: "2", status: "completed", startedAt: new Date(0).toISOString() }),
+          shellTask({ id: "3", attachmentMode: "detached", startedAt: new Date(0).toISOString() }),
+        ],
+      }));
+      const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+      await registry.refresh("s1", "test");
+
+      expect(registry.getRunningCommands("s1")).toEqual([
+        { shellId: "1", startedAt: new Date(0).toISOString(), description: "Build", command: "npm run build" },
+      ]);
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+      expect(registry.hasRunningAgents("s1")).toBe(false);
+      expect(registry.getSnapshot("s1").tasks).toEqual([]);
+      expect(registry.getSummary("s1")).toMatchObject({ running: 0, total: 0 });
+      registry.dispose();
+    });
+
+    it("protects a session only while a command is inside the window and its snapshot is fresh", async () => {
+      const { bus } = makeBus();
+      let tasks = [shellTask({ id: "1", startedAt: new Date(0).toISOString() })];
+      const listTasks = vi.fn(async () => ({ tasks }));
+      const session = fakeSession(listTasks);
+      const registry = new SessionAgentRegistry({
+        globalBus: bus,
+        getLiveSession: () => session,
+        pollIntervalMs: 15_000,
+        commandProtectMs: 45 * MINUTE,
+      });
+
+      await registry.refresh("s1", "test");
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+
+      // The poll keeps the snapshot live for as long as the command is protected.
+      await vi.advanceTimersByTimeAsync(44 * MINUTE);
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+      expect(listTasks.mock.calls.length).toBeGreaterThan(100);
+
+      // A command that outlives the window stops counting, and nothing is left to poll for.
+      await vi.advanceTimersByTimeAsync(2 * MINUTE);
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+      expect(registry.getRunningCommands("s1")).toHaveLength(1);
+      const callsAfterWindow = listTasks.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      expect(listTasks.mock.calls.length).toBe(callsAfterWindow);
+
+      // A new command protects the session again.
+      tasks = [...tasks, shellTask({ id: "2", startedAt: new Date(Date.now()).toISOString() })];
+      await registry.refresh("s1", "second");
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+      registry.dispose();
+    });
+
+    it("stops protecting when the command finishes, found by the poll with no task event", async () => {
+      const { bus } = makeBus();
+      let tasks = [shellTask({ id: "1", startedAt: new Date(0).toISOString() })];
+      const session = fakeSession(async () => ({ tasks }));
+      const onCommandsChanged = vi.fn();
+      const registry = new SessionAgentRegistry({
+        globalBus: bus,
+        getLiveSession: () => session,
+        pollIntervalMs: 15_000,
+        onCommandsChanged,
+      });
+
+      await registry.refresh("s1", "test");
+      await registry.refresh("s1", "unchanged");
+      expect(onCommandsChanged).toHaveBeenCalledTimes(1);
+      expect(onCommandsChanged).toHaveBeenLastCalledWith("s1", [{ shellId: "1", startedAt: new Date(0).toISOString() }]);
+
+      tasks = [shellTask({ id: "1", status: "completed", startedAt: new Date(0).toISOString() })];
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(registry.getRunningCommands("s1")).toEqual([]);
+      expect(onCommandsChanged).toHaveBeenCalledTimes(2);
+      expect(onCommandsChanged).toHaveBeenLastCalledWith("s1", []);
+      // The runtime is about to start the turn that tells the agent, so the session is held a moment longer.
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+      registry.dispose();
+    });
+
+    it("dates a command the runtime gave no start time from when it was first seen", async () => {
+      const { bus } = makeBus();
+      const session = fakeSession(async () => ({ tasks: [shellTask({ id: "1" })] }));
+      const onCommandsChanged = vi.fn();
+      const registry = new SessionAgentRegistry({
+        globalBus: bus,
+        getLiveSession: () => session,
+        commandProtectMs: 45 * MINUTE,
+        onCommandsChanged,
+      });
+
+      vi.setSystemTime(10 * MINUTE);
+      await registry.refresh("s1", "first");
+      vi.setSystemTime(20 * MINUTE);
+      await registry.refresh("s1", "second");
+
+      expect(registry.getRunningCommands("s1")).toEqual([{ shellId: "1", startedAt: new Date(10 * MINUTE).toISOString() }]);
+      expect(onCommandsChanged).toHaveBeenCalledTimes(1);
+      registry.dispose();
+    });
+
+    it("reports the commands that were running when the session object went away", async () => {
+      const { bus } = makeBus();
+      const live = new Map<string, AgentSession>();
+      live.set("s1", fakeSession(async () => ({
+        tasks: [shellTask({ id: "1", startedAt: new Date(0).toISOString(), description: "Refresh" })],
+      })));
+      const onCommandsStopped = vi.fn();
+      const registry = new SessionAgentRegistry({
+        globalBus: bus,
+        getLiveSession: (id) => live.get(id),
+        onCommandsStopped,
+      });
+      await registry.refresh("s1", "test");
+
+      live.delete("s1");
+      registry.markSessionUnavailable("s1");
+      registry.markSessionUnavailable("s1");
+
+      expect(onCommandsStopped).toHaveBeenCalledTimes(1);
+      expect(onCommandsStopped).toHaveBeenCalledWith("s1", [
+        { shellId: "1", startedAt: new Date(0).toISOString(), description: "Refresh" },
+      ]);
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+      expect(registry.getRunningCommands("s1")).toEqual([]);
+      registry.dispose();
+    });
+
+    it("does not report commands for a session that is forgotten outright", async () => {
+      const { bus } = makeBus();
+      const session = fakeSession(async () => ({ tasks: [shellTask({ id: "1", startedAt: new Date(0).toISOString() })] }));
+      const onCommandsStopped = vi.fn();
+      const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session, onCommandsStopped });
+      await registry.refresh("s1", "test");
+
+      registry.forget("s1");
+
+      expect(onCommandsStopped).not.toHaveBeenCalled();
+      registry.dispose();
+    });
+  });
 });

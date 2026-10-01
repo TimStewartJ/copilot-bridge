@@ -16,6 +16,7 @@ export function isolateStagingRuntimeState(db: DatabaseSync): Record<string, num
       WHERE status IN (?,'running')`).run(reason, now, pending).changes);
   }
   if (hasTable("interrupted_run_markers")) changed.interruptedRuns = Number(db.prepare("DELETE FROM interrupted_run_markers").run().changes);
+  if (hasTable("background_command_markers")) changed.backgroundCommands = Number(db.prepare("DELETE FROM background_command_markers").run().changes);
   if (hasTable("voice_jobs")) changed.voiceJobs = Number(db.prepare(`UPDATE voice_jobs SET status='error',error=?,updatedAt=?
     WHERE status IN ('accepted','transcribing','sending')`).run(reason, now).changes);
   return changed;
