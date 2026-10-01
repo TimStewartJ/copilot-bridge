@@ -1,8 +1,9 @@
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BridgeSearchResponse } from "../../shared/search.js";
+import type { Session, Task } from "../api";
 import {
   createReactDomHarness,
   advanceTimersByTimeAct,
@@ -56,6 +57,57 @@ function findButton(root: any, text: string) {
   return button;
 }
 
+const ACTIVITY_AT = "2026-09-30T18:00:00.000Z";
+
+function chat(sessionId: string, overrides: Partial<Session> = {}): Session {
+  return {
+    sessionId,
+    summary: `Chat ${sessionId}`,
+    runState: "idle",
+    lastActivityAt: ACTIVITY_AT,
+    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    ...overrides,
+  };
+}
+
+function task(id: string, activeSessionIds: string[]): Task {
+  return {
+    id,
+    title: `Task ${id}`,
+    kind: "task",
+    muted: false,
+    deferred: false,
+    status: "active",
+    notes: "",
+    priority: 0,
+    order: 0,
+    createdAt: ACTIVITY_AT,
+    updatedAt: ACTIVITY_AT,
+    activeSessionIds, sessionCount: activeSessionIds.length, archivedSessionCount: 0, sessionLinksRevision: "rev-0",
+    workItems: [],
+    pullRequests: [],
+  };
+}
+
+/** A library with two unread chats (one in a task, one quick), one read chat and one still working. */
+function unreadLibrary(): ComponentProps<typeof SearchView> {
+  const unread = new Set(["in-task", "quick", "working"]);
+  return {
+    sessions: [
+      chat("in-task", { linkedTaskIds: ["task-1"], lastActivityAt: "2026-09-30T19:00:00.000Z" }),
+      chat("quick"),
+      chat("read", { linkedTaskIds: ["task-1"] }),
+      chat("working", { runState: "busy" }),
+    ],
+    tasks: [task("task-1", ["in-task", "read"]), task("task-2", [])],
+    isUnread: (sessionId, activityTime) => !!activityTime && unread.has(sessionId),
+  };
+}
+
+function resultRows(root: any): any[] {
+  return findAllByTag(root, "BUTTON").filter((node) => node.getAttribute("data-search-result") !== null);
+}
+
 describe("SearchView", () => {
   let harness: ReactDomHarness | null = null;
 
@@ -65,7 +117,7 @@ describe("SearchView", () => {
     harness = null;
   });
 
-  async function render(entry: string) {
+  async function render(entry: string, props: ComponentProps<typeof SearchView> = {}) {
     harness = await createReactDomHarness({ installDom: installDialogDom });
     await harness.render(createElement(
       MemoryRouter,
@@ -73,7 +125,7 @@ describe("SearchView", () => {
       createElement(Routes, null,
         createElement(Route, {
           path: "*",
-          element: createElement("div", null, createElement(SearchView), createElement(LocationProbe)),
+          element: createElement("div", null, createElement(SearchView, props), createElement(LocationProbe)),
         }),
       ),
     ));
@@ -187,6 +239,99 @@ describe("SearchView", () => {
     expect(findAllByTag(scroll, "BUTTON").filter((node) => node.textContent === "All")).toHaveLength(0);
     expect(rendered.dom.container.textContent).toContain("Find something you saved");
     expect(searchBridgeMock).not.toHaveBeenCalled();
+  });
+
+  it("lists unread chats as the default results and opens one under its task", async () => {
+    const rendered = await render("/search?from=%2F", unreadLibrary());
+    const scroll = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.["data-testid"] === "search-scroll");
+
+    expect(scroll.textContent).toContain("Unread chats (2)");
+    expect(resultRows(scroll).map((row) => row.textContent.replace(/ · .*$/, ""))).toEqual([
+      "Chat in-taskTask: Task task-1",
+      "Chat quickQuick chat",
+    ]);
+    expect(scroll.textContent).not.toContain("Find something you saved");
+    expect(searchBridgeMock).not.toHaveBeenCalled();
+
+    await rendered.act(async () => {
+      getReactProps(findButton(scroll, "Chat in-task"))?.onClick?.();
+    });
+    expect(rendered.dom.container.textContent).toContain("/tasks/task-1/sessions/in-task");
+  });
+
+  it("leaves the open chat out and says when no chats are unread", async () => {
+    const library = unreadLibrary();
+    const rendered = await render("/search", { ...library, activeSessionId: "quick" });
+    expect(rendered.dom.container.textContent).toContain("Unread chats (1)");
+    expect(rendered.dom.container.textContent).not.toContain("Chat quick");
+    await rendered.cleanup();
+
+    const caughtUp = await render("/search", { ...library, isUnread: () => false });
+    expect(caughtUp.dom.container.textContent).toContain("No unread chats");
+    expect(caughtUp.dom.container.textContent).toContain("Search a phrase, task name, or topic.");
+    expect(resultRows(caughtUp.dom.container)).toHaveLength(0);
+  });
+
+  it("lists unread chats only for sources that hold chats", async () => {
+    searchBridgeMock.mockResolvedValue(response());
+    const rendered = await render("/search", unreadLibrary());
+    const source = (label: string) => findAllByTag(rendered.dom.container, "BUTTON").find((node) => node.textContent === label);
+
+    await rendered.act(async () => { getReactProps(source("Chats"))?.onClick?.(); });
+    expect(rendered.dom.container.textContent).toContain("Unread chats (2)");
+    await rendered.act(async () => { getReactProps(source("Docs"))?.onClick?.(); });
+    expect(rendered.dom.container.textContent).not.toContain("nread chats");
+    expect(rendered.dom.container.textContent).toContain("Find something you saved");
+    expect(searchBridgeMock).not.toHaveBeenCalled();
+    await rendered.cleanup();
+
+    const wholeChat = await render("/search?scope=session&sessionId=in-task", unreadLibrary());
+    expect(wholeChat.dom.container.textContent).toContain("Find something you saved");
+    await wholeChat.cleanup();
+
+    const typed = await render("/search?q=needle", unreadLibrary());
+    await waitUntilAct(typed.act, () => typed.dom.container.textContent?.includes("No matches") ?? false);
+    expect(typed.dom.container.textContent).not.toContain("nread chats");
+  });
+
+  it("narrows the unread chats to a task named in the query field", async () => {
+    const rendered = await render("/search?scope=task&taskId=task-1", unreadLibrary());
+    expect(rendered.dom.container.textContent).toContain("Unread chats (1)");
+    expect(resultRows(rendered.dom.container).map((row) => row.textContent.replace(/ · .*$/, ""))).toEqual(["Chat in-taskTask: Task task-1"]);
+    await rendered.cleanup();
+
+    const none = await render("/search?scope=task&taskId=task-2", unreadLibrary());
+    expect(none.dom.container.textContent).toContain("No unread chats in this task");
+  });
+
+  it("moves between the query field and result rows with the arrow keys", async () => {
+    const rendered = await render("/search", unreadLibrary());
+    const input = findAllByTag(rendered.dom.container, "INPUT")[0];
+    const layout = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.["data-testid"] === "search-layout");
+    const [first, second] = resultRows(rendered.dom.container);
+    const press = async (key: string, target: unknown, extra: Record<string, unknown> = {}) => {
+      const preventDefault = vi.fn();
+      await rendered.act(async () => { getReactProps(layout)?.onKeyDown?.({ key, target, preventDefault, ...extra }); });
+      return preventDefault;
+    };
+
+    expect(document.activeElement).toBe(input);
+    // The filter suggestions already used this key press.
+    await press("ArrowDown", input, { defaultPrevented: true });
+    expect(document.activeElement).toBe(input);
+    expect(await press("ArrowUp", input)).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+
+    expect(await press("ArrowDown", input)).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(first);
+    await press("ArrowDown", first);
+    expect(document.activeElement).toBe(second);
+    expect(await press("ArrowDown", second)).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(second);
+    await press("ArrowUp", second);
+    expect(document.activeElement).toBe(first);
+    await press("ArrowUp", first);
+    expect(document.activeElement).toBe(input);
   });
 
   it("switches source without losing text or task scope and resets pagination", async () => {

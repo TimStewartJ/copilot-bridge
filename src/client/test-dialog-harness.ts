@@ -10,6 +10,8 @@ export function installDialogDom() {
   const matchingChildren = (root: Element, selector: string): Element[] => {
     const selectors = selector.split(",").map((value) => value.trim());
     const matches = (element: Element) => selectors.some((value) => {
+      const attribute = /^\[([\w-]+)\]$/.exec(value)?.[1];
+      if (attribute) return element.getAttribute(attribute) !== null;
       const tag = value.replace(":not([disabled])", "").replace("[href]", "").toUpperCase();
       return element.tagName === tag
         && (!value.includes("[href]") || element.getAttribute("href") !== null)

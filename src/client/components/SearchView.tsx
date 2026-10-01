@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { BookOpen, Clipboard, FileText, MessageSquare } from "lucide-react";
 import type {
@@ -7,14 +7,16 @@ import type {
   SearchKind,
   SearchScope,
 } from "../../shared/search.js";
-import { searchBridge, type Task, type Session } from "../api";
+import { getSessionActivityTime, searchBridge, type Task, type Session } from "../api";
 import FocusDialog from "../design/Dialog";
 import SearchQueryInput, { getSearchFilterToken } from "./SearchQueryInput";
 import { writeClipboardText } from "../lib/clipboard";
 import { getAppAbsoluteUrl } from "../lib/app-url";
 import { getSessionPath } from "../lib/session-path";
+import { listUnreadSessions } from "../lib/unread-sessions";
 import useElementScrollRestoration from "../hooks/useElementScrollRestoration";
 import { formatSearchExcerpt, getSearchHighlightTerms } from "../lib/search-text";
+import { timeAgo } from "../time";
 import { DS, cx } from "../design/tokens";
 import { Button, SegmentedControl } from "../design/primitives";
 
@@ -110,9 +112,13 @@ function chatHistoryPath(hit: SearchChatHit, returnTo: string): string {
   return `${path}?${params.toString()}`;
 }
 
-export default function SearchView({ tasks = [], sessions = [], onClose }: {
+export default function SearchView({ tasks = [], sessions = [], isUnread, activeSessionId, onClose }: {
   tasks?: Task[];
   sessions?: Session[];
+  /** Says which chats are unread. Leave it out until read state, chats and tasks have loaded. */
+  isUnread?: (sessionId: string, activityTime?: string) => boolean;
+  /** The chat open behind the search, which is being read and so is not listed as unread. */
+  activeSessionId?: string | null;
   onClose?: () => void;
 }) {
   const navigate = useNavigate();
@@ -135,11 +141,17 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
   const [pollRevision, setPollRevision] = useState(0);
   const [responseKey, setResponseKey] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSearchUrl = `${location.pathname}${location.search}`;
   const currentParams = params.toString();
   const requestKey = JSON.stringify({ query, scope, kind, taskId, sessionId, offset, retryRevision });
   const visibleResponse = responseKey === requestKey ? response : null;
+  // With nothing typed, the results are the unread chats. Tasks, docs and one chat's messages have none to list.
+  const listsUnreadChats = !query.trim() && scope !== "session" && (kind === "all" || kind === "chat") && isUnread !== undefined;
+  const unreadChats = useMemo(() => (listsUnreadChats
+    ? listUnreadSessions({ sessions, tasks, isUnread, activeSessionId, taskId: scope === "task" ? taskId ?? "" : undefined })
+    : []), [activeSessionId, isUnread, listsUnreadChats, scope, sessions, taskId, tasks]);
   useElementScrollRestoration(scrollRef, {
     key: `bridge-search:${currentSearchUrl}`,
     enabled: !query.trim() || visibleResponse !== null,
@@ -262,10 +274,29 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
     else navigate(returnTo, { replace: true });
   };
 
+  // Arrow keys walk the result rows from the query field, so a result opens without tabbing past the source controls.
+  const moveResultFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (event.defaultPrevented || event.nativeEvent?.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const rows = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-search-result]") ?? []);
+    const target = event.target as HTMLElement;
+    const index = rows.indexOf(target);
+    const down = event.key === "ArrowDown";
+    const next = index >= 0
+      ? down ? rows[index + 1] : rows[index - 1] ?? layoutRef.current?.querySelector<HTMLElement>("input")
+      : down && target.tagName === "INPUT" ? rows[0] : undefined;
+    if (!next) return;
+    event.preventDefault();
+    next.focus();
+  };
+
   return (
     <FocusDialog title="Search Bridge" closeLabel="Close search" pending={false} onClose={goBack} size="wide" contained>
-    <div data-testid="search-layout" className="flex min-h-0 flex-1 flex-col" onKeyDown={(event) => {
-      if (event.key !== "Escape") return;
+    <div ref={layoutRef} data-testid="search-layout" className="flex min-h-0 flex-1 flex-col" onKeyDown={(event) => {
+      if (event.key !== "Escape") {
+        moveResultFocus(event);
+        return;
+      }
       event.preventDefault();
       goBack();
     }}>
@@ -300,9 +331,21 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
         </header>
 
       <div ref={scrollRef} data-testid="search-scroll" className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
-        {!query.trim() && !loading && (
-          <div className="py-5">
-            <p className={DS.text.sectionTitle}>Find something you saved</p>
+        {!query.trim() && !loading && (unreadChats.length > 0
+          ? <section aria-labelledby="search-unread">
+            <h3 id="search-unread" className={cx(DS.text.sectionLabel, "mb-2 flex items-center gap-2")}><MessageSquare size={14} /> Unread chats <span className="tabular-nums text-text-muted">({unreadChats.length})</span></h3>
+            <div className={DS.surface.divided}>{unreadChats.map(({ session, task }) => <div key={session.sessionId} className="py-1">
+              <button type="button" data-search-result="" onClick={() => navigate(getSessionPath({ sessionId: session.sessionId, taskId: task?.id }))} className={DS.row.stacked}>
+                <span className="break-words text-sm font-semibold text-text-primary line-clamp-2">{session.summary?.trim() || "Untitled chat"}</span>
+                <span className="mt-1 flex min-w-0 gap-1 text-xs text-text-muted">
+                  <span className="min-w-0 truncate">{task ? `Task: ${task.title}` : "Quick chat"}</span>{" "}
+                  <span className="shrink-0">· {timeAgo(getSessionActivityTime(session))}</span>
+                </span>
+              </button>
+            </div>)}</div>
+          </section>
+          : <div className="py-5">
+            <p className={DS.text.sectionTitle}>{!listsUnreadChats ? "Find something you saved" : scope === "task" ? "No unread chats in this task" : "No unread chats"}</p>
             <p className={cx(DS.text.prose, "mt-1")}>Search a phrase, task name, or topic. Choose a source above to narrow the results.</p>
           </div>
         )}
@@ -346,7 +389,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
                 <h3>
-                  <button type="button" onClick={() => navigate(titleTarget)} className={cx(DS.focus, "min-h-10 rounded py-1 text-left text-sm font-medium text-text-primary hover:underline md:min-h-7")}>
+                  <button type="button" data-search-result="" onClick={() => navigate(titleTarget)} className={cx(DS.focus, "min-h-10 rounded py-1 text-left text-sm font-medium text-text-primary hover:underline md:min-h-7")}>
                     <Highlight text={hit.title} query={query} />
                   </button>
                 </h3>
@@ -378,7 +421,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
                       );
                     }} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-h-9 gap-1")}><Clipboard size={13} /> {copiedId === match.sourceEventId ? "Copied" : "Copy link"}</button>
                   </div>
-                  <button type="button" onClick={() => navigate(target)} className={cx(DS.row.stacked, "mt-1 px-0 py-1.5 text-text-secondary")}>
+                  <button type="button" data-search-result="" onClick={() => navigate(target)} className={cx(DS.row.stacked, "mt-1 px-0 py-1.5 text-text-secondary")}>
                     <span className="block break-words leading-6 line-clamp-3"><Highlight text={match.snippet} query={query} /></span>
                   </button>
                 </div>;
@@ -393,7 +436,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
 
         {visibleResponse && visibleResponse.tasks.items.length > 0 && <section aria-labelledby="search-tasks">
           <h3 id="search-tasks" className={cx(DS.text.sectionLabel, "mb-2 flex items-center gap-2")}><FileText size={14} /> Tasks <span className="tabular-nums text-text-muted">({visibleResponse.tasks.total})</span></h3>
-          <div className={DS.surface.divided}>{visibleResponse.tasks.items.map((hit) => <div key={hit.taskId} className="py-1"><button type="button" onClick={() => navigate(`/tasks/${hit.taskId}`)} className={DS.row.stacked}>
+          <div className={DS.surface.divided}>{visibleResponse.tasks.items.map((hit) => <div key={hit.taskId} className="py-1"><button type="button" data-search-result="" onClick={() => navigate(`/tasks/${hit.taskId}`)} className={DS.row.stacked}>
             <span className="block text-sm font-medium text-text-primary"><Highlight text={hit.title} query={query} /></span>
             <span className="mt-1 block text-xs text-text-muted">{hit.archived ? "Archived task" : "Task"}</span>
             <span className="mt-1.5 block break-words leading-6 text-text-secondary line-clamp-3"><Highlight text={formatSearchExcerpt(hit.snippet, query)} query={query} /></span>
@@ -402,14 +445,14 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
 
         {visibleResponse && visibleResponse.docs.items.length > 0 && <section aria-labelledby="search-docs">
           <h3 id="search-docs" className={cx(DS.text.sectionLabel, "mb-2 flex items-center gap-2")}><BookOpen size={14} /> Docs <span className="tabular-nums text-text-muted">({visibleResponse.docs.total})</span></h3>
-          <div className={DS.surface.divided}>{visibleResponse.docs.items.map((hit) => <div key={hit.path} className="py-1"><button type="button" onClick={() => navigate(`/docs/${hit.path}`)} className={DS.row.stacked}>
+          <div className={DS.surface.divided}>{visibleResponse.docs.items.map((hit) => <div key={hit.path} className="py-1"><button type="button" data-search-result="" onClick={() => navigate(`/docs/${hit.path}`)} className={DS.row.stacked}>
             <span className="block text-sm font-medium text-text-primary"><Highlight text={hit.title} query={query} /></span>
             <span className="mt-1 block truncate text-xs text-text-muted">{hit.path}</span>
             <span className="mt-1.5 block break-words leading-6 text-text-secondary line-clamp-3"><Highlight text={formatSearchExcerpt(hit.snippet, query)} query={query} /></span>
           </button></div>)}</div>
         </section>}
 
-        {query.trim() && <button type="button" onClick={() => navigate(historyUrl)} className={cx(DS.row.stacked, "text-accent")}>
+        {query.trim() && <button type="button" data-search-result="" onClick={() => navigate(historyUrl)} className={cx(DS.row.stacked, "text-accent")}>
           Search Focus History for “{query.trim()}”
         </button>}
 
@@ -425,7 +468,7 @@ export default function SearchView({ tasks = [], sessions = [], onClose }: {
         <details className={DS.details.root}>
           <summary className={cx(DS.details.summary, DS.row.touch, "text-xs text-text-secondary")}>Search tips and coverage</summary>
           <div className="space-y-1 pb-2 text-xs leading-relaxed text-text-secondary">
-            <p>Use type:chat, type:task, type:doc, task: or chat: to filter. Use arrows and Enter to choose a suggestion.</p>
+            <p>Use type:chat, type:task, type:doc, task: or chat: to filter. Use arrows and Enter to choose a suggestion or open a result.</p>
             <p>Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched. Search retrieves saved text only; it does not ask AI.</p>
           </div>
         </details>
