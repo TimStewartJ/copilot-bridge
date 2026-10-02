@@ -1,5 +1,5 @@
 import { replaceEqualDeep, type QueryClient } from "@tanstack/react-query";
-import type { ChatEntry } from "./api";
+import type { ChatEntry, TranscriptAgent } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
@@ -22,6 +22,8 @@ export interface ChatHistorySnapshot {
   entries: ChatEntry[];
   firstItemIndex: number;
   fetchedAt: number;
+  /** The session's sub-agents as that read reported them, so a cached step still names its agent. */
+  agents?: readonly TranscriptAgent[];
 }
 
 function forgetSession(sessionId: string): void {

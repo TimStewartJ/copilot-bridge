@@ -472,6 +472,8 @@ export type AgentBackgroundTask = {
   kind: "agent" | "shell";
   id: string;
   toolCallId?: string;
+  /** Agent tasks only: the name the agent was launched under. */
+  displayName?: string;
   description?: string;
   /** running | idle | completed | failed | cancelled */
   status: string;
@@ -481,6 +483,8 @@ export type AgentBackgroundTask = {
   startedAt?: string;
   completedAt?: string;
   activeTimeMs?: number;
+  /** Agent tasks only: when the period of work in flight began. */
+  activeStartedAt?: string;
   idleSince?: string;
   model?: string;
   error?: string;

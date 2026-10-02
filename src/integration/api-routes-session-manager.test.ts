@@ -93,6 +93,34 @@ describe("Session manager routes", () => {
     });
   });
 
+  it("GET /api/sessions/:id/messages-fast carries the session's agents with whichever messages it returns", async () => {
+    const moves = {
+      toolCallId: "task-moves",
+      agentId: "agent-moves",
+      name: "moves-agent",
+      background: true,
+      status: "running",
+      startedAt: "2026-04-29T12:00:00.000Z",
+      activeSince: "2026-04-29T12:00:00.000Z",
+      activeMs: 0,
+      toolCount: 31,
+      failedToolCount: 0,
+    };
+    ctx.sessionManager.readMessagesFromDisk = vi.fn().mockResolvedValue({
+      messages: [],
+      total: 0,
+      hasMore: false,
+      coverage: {},
+      agents: [moves],
+    });
+
+    const res = await request(app).get("/api/sessions/test-id/messages-fast?limit=50&before=200");
+
+    expect(res.status).toBe(200);
+    expect(ctx.sessionManager.readMessagesFromDisk).toHaveBeenCalledWith("test-id", { limit: 50, before: 200 });
+    expect(res.body.agents).toEqual([moves]);
+  });
+
   it("GET /api/sessions/:id/stream returns a complete ephemeral snapshot", async () => {
     const bus = ctx.eventBusRegistry.getOrCreateBus("stream-complete");
     bus.reset();

@@ -13,7 +13,7 @@ import {
   type RefObject,
   type TouchEvent as ReactTouchEvent,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   fetchSlashCommands,
@@ -38,6 +38,7 @@ import {
   type ElicitationResponseEndpointPayload,
   type SlashCommandInfo,
   type ToolCall,
+  type TranscriptAgent,
   type UserInputAnswerEndpointPayload,
 } from "../api";
 import { getCachedChatSnapshot, keepLoadedEntries, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
@@ -51,7 +52,17 @@ import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { summarizeAutopilotRuns } from "../lib/autopilot-runs";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import { buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
-import { groupActivitySegments } from "../lib/chat-activity";
+import { groupActivitySegments, mapLatestAgentBlocks } from "../lib/chat-activity";
+import { describeToolCall, describeToolCallBriefly } from "../lib/tool-presentation";
+import {
+  attachTranscriptAgents,
+  buildAgentPlaceholders,
+  describeWaitingOnAgents,
+  getWorkingAgents,
+  withoutWorkingAgents,
+  type AgentAttachmentCache,
+} from "../lib/transcript-agents";
+import { buildTranscriptAgentDirectory, getTopLevelAgentToolCallId } from "../../shared/transcript-agents.js";
 import type { SubmitVoiceCapture } from "../lib/voice-submit-mode";
 import { useSessionStream, type LiveReasoningBlock } from "../useSessionStream";
 import { useOverlayParam } from "../hooks/useOverlayParam";
@@ -75,6 +86,7 @@ import SkillLoadedCard from "./SkillLoadedCard";
 import AskUserRecordBlock from "./chat/AskUserRecord";
 import ActivityBlock from "./chat/ActivityBlock";
 import { ChatRunActiveProvider } from "./chat/chat-run-context";
+import { TranscriptAgentsProvider, type TranscriptAgentsContextValue } from "./chat/transcript-agents-context";
 import LiveStatusLine from "./chat/LiveStatusLine";
 import AutopilotRunLine from "./chat/AutopilotRunLine";
 import { DS, cx } from "../design/tokens";
@@ -525,6 +537,9 @@ interface HistoryReader {
 const NO_HISTORY_READER: HistoryReader = { load() {}, refresh() {}, abandonVisibleRefresh() {} };
 /** `applyHistory` options for a transcript that is not a session's disk history: empty, or a load error. */
 const NO_HISTORY = { ownerSessionId: null, firstItemIndex: 0 } as const;
+/** A session that has run no sub-agents, or one whose history has not been read yet. */
+const NO_AGENT_RECORDS: readonly TranscriptAgent[] = Object.freeze([]);
+const NO_AGENT_BLOCKS: ReadonlyMap<string, string> = new Map();
 
 let clientMessageIdCounter = 0;
 
@@ -795,6 +810,20 @@ export default function ChatView({
   const historicalMode = Boolean(sessionId && (targetSourceEventId || historyOnlyMode));
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   /**
+   * Every sub-agent the session has run, as its last history read reported them. A step names its
+   * agent, and the call that launched the agent is usually far above the loaded window.
+   */
+  const [agentRecords, setAgentRecords] = useState<readonly TranscriptAgent[]>(NO_AGENT_RECORDS);
+  const agentRecordsRef = useRef<readonly TranscriptAgent[]>(NO_AGENT_RECORDS);
+  const applyAgentRecords = useCallback((next: readonly TranscriptAgent[] | undefined) => {
+    if (!next) return;
+    // A read mostly repeats what is known; keeping those objects spares the agents' rows a render.
+    const kept = next.length === 0 ? NO_AGENT_RECORDS : replaceEqualDeep(agentRecordsRef.current, next);
+    if (kept === agentRecordsRef.current) return;
+    agentRecordsRef.current = kept;
+    setAgentRecords(kept);
+  }, []);
+  /**
    * Client-owned optimistic sends (in flight or failed). They live outside `entries` so the
    * committed window stays purely disk-derived.
    */
@@ -804,6 +833,9 @@ export default function ChatView({
   const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
+  // The agents list is a sheet on a phone, opened the same way so the back button closes it.
+  const showAgents = planOverlay.isOpen && planOverlay.value === "agents";
+  const openAgentsSheet = useCallback(() => planOverlay.open("agents"), [planOverlay.open]);
   const [creating, setCreating] = useState(false);
   const mcpStatusQuery = useMcpStatusSnapshotQuery(historicalMode ? null : sessionId);
   const sessionUsageMetricsQuery = useSessionUsageMetricsQuery(historicalMode ? null : sessionId);
@@ -1022,6 +1054,7 @@ export default function ChatView({
       entries: nextEntries,
       firstItemIndex: nextFirstItemIndex,
       fetchedAt,
+      agents: agentRecordsRef.current,
     });
   }, [queryClient]);
 
@@ -1061,6 +1094,7 @@ export default function ChatView({
     dropFinishedRunOutput,
     activeTurnId,
     activeTurnInstanceId,
+    mainAgentIdle = false,
   } = useSessionStream(historicalMode ? null : sessionId, onMessageSent, onMessageSent, refreshMcpObservation);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
@@ -1134,12 +1168,24 @@ export default function ChatView({
     }
     return ids;
   }, [entries]);
+  /**
+   * Calls that launched an agent in an earlier part of the session. An agent keeps reporting on
+   * its launching call for as long as it works, and that call is usually far above the loaded
+   * window: such a report updates a row that is not here, and must not add one at the bottom.
+   */
+  const earlierAgentLaunchIds = useMemo(
+    () => new Set(agentRecords.map((agent) => agent.toolCallId)),
+    [agentRecords],
+  );
   /** Tools disk history has not surfaced at all yet; these append to the overlay. */
   const uncommittedLiveTools = useMemo(
     () => liveTools.filter((tool) => (
-      !committedToolCallIds.has(tool.toolCallId) && !isCommittedByWatermark(tool.startedAt)
+      !committedToolCallIds.has(tool.toolCallId)
+      && !isCommittedByWatermark(tool.startedAt)
+      // The stream saw this call start, or it is not a launch the session's history already has.
+      && (tool.startedAt !== undefined || !earlierAgentLaunchIds.has(tool.toolCallId))
     )),
-    [committedToolCallIds, isCommittedByWatermark, liveTools],
+    [committedToolCallIds, earlierAgentLaunchIds, isCommittedByWatermark, liveTools],
   );
   const committedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
@@ -1441,6 +1487,7 @@ export default function ChatView({
       loadAnchoredMessageKeyRef.current = null;
     }
     if (!sessionId) {
+      applyAgentRecords(NO_AGENT_RECORDS);
       applyHistory([], NO_HISTORY);
       setLoading(false);
       setRefreshingHistory(false);
@@ -1483,11 +1530,13 @@ export default function ChatView({
         ? loaded
         : mode === "tail" ? Math.min(HISTORY_REFRESH_MAX_LIMIT, loaded) : INITIAL_PAGE_SIZE;
       try {
-        const { messages: fetched, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer } = await fetchMessagesFast(
+        const { messages: fetched, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer, agents } = await fetchMessagesFast(
           sessionId,
           targetSourceEventId ? { before: 50, after: 50, aroundEventId: targetSourceEventId } : { limit },
         );
         if (superseded()) return;
+        // Before the entries, so the snapshot cached with them holds the agents they name.
+        applyAgentRecords(agents ?? NO_AGENT_RECORDS);
         const windowStart = Math.max(0, total - fetched.length);
         // A refresh mostly returns what is already loaded; keeping those objects spares their rows a render.
         const msgs = mode === "load"
@@ -1624,6 +1673,7 @@ export default function ChatView({
     if (cachedSnapshot && cachedSnapshot.entries.length > 0) {
       // A cached window is disk-derived, so it paints at once. Anything may have happened to the
       // session since it was cached, so the read behind it covers all of it.
+      applyAgentRecords(cachedSnapshot.agents ?? NO_AGENT_RECORDS);
       applyHistory(cachedSnapshot.entries, {
         ownerSessionId: sessionId,
         firstItemIndex: cachedSnapshot.firstItemIndex,
@@ -1633,6 +1683,7 @@ export default function ChatView({
       setWarming(false);
       reader.refresh({ reach: "window" });
     } else {
+      applyAgentRecords(NO_AGENT_RECORDS);
       applyHistory([], NO_HISTORY);
       reader.load();
     }
@@ -1654,6 +1705,7 @@ export default function ChatView({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [
+    applyAgentRecords,
     applyHistory,
     cancelFollowScroll,
     clearProgrammaticScroll,
@@ -1709,6 +1761,18 @@ export default function ChatView({
   useCounterAdvance(sessionId, historyEpoch, () => {
     if (!historicalMode) historyRef.current.refresh({ silent: true, reach: isStreaming ? "live" : "tail" });
   });
+  // An agent that changes state outside a run this view is streaming leaves nothing on the stream
+  // to say so. The session list's counts move when it does, so history is read again then.
+  const backgroundAgentCounts = backgroundAgents
+    ? `${backgroundAgents.running}:${backgroundAgents.idle}:${backgroundAgents.failed}:${backgroundAgents.total}`
+    : "";
+  const seenBackgroundAgentCountsRef = useRef({ sessionId, counts: backgroundAgentCounts });
+  useEffect(() => {
+    const seen = seenBackgroundAgentCountsRef.current;
+    seenBackgroundAgentCountsRef.current = { sessionId, counts: backgroundAgentCounts };
+    if (historicalMode || !sessionId || seen.sessionId !== sessionId || seen.counts === backgroundAgentCounts) return;
+    if (!isStreaming) historyRef.current.refresh({ silent: true, reach: "tail" });
+  }, [backgroundAgentCounts, historicalMode, isStreaming, sessionId]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -1764,6 +1828,8 @@ export default function ChatView({
     const requestSessionId = sessionId;
     const isStale = () => sessionIdRef.current !== requestSessionId || firstItemIndex.current !== before;
     try {
+      // Only its entries are taken. It also carries the session's agents, but a read of the newest
+      // page asked for later can be applied first, and this one would then put older records back.
       const { messages: older, total } = await fetchMessagesFast(requestSessionId, { limit: OLDER_PAGE_SIZE, before });
       await scrollerAtRest(scrollActivityRef.current);
       if (isStale()) return;
@@ -2132,8 +2198,21 @@ export default function ChatView({
         ...(segment.timestamp ? { timestamp: segment.timestamp } : {}),
       });
     }
+    // A sub-agent's call is in a turn of the agent's own, so the main agent's turn says nothing
+    // about where it goes. Its time does: before or after what the main agent has said this turn,
+    // which is the side of that text disk history will have it on.
+    let currentTurnTextAt = Number.POSITIVE_INFINITY;
+    for (const segment of uncommittedAssistantSegments) {
+      if (bucketFor(segment.turnInstanceId) !== currentTurnEntries) continue;
+      const at = segment.timestamp ? Date.parse(segment.timestamp) : Number.NaN;
+      if (Number.isFinite(at)) currentTurnTextAt = Math.min(currentTurnTextAt, at);
+    }
+    const agentBucketFor = (startedAt?: string) => {
+      const at = startedAt ? Date.parse(startedAt) : Number.NaN;
+      return Number.isFinite(at) && at >= currentTurnTextAt ? currentTurnEntries : endedTurnEntries;
+    };
     for (const tool of uncommittedLiveTools) {
-      bucketFor(tool.turnInstanceId).push({
+      (tool.parentToolCallId ? agentBucketFor(tool.startedAt) : bucketFor(tool.turnInstanceId)).push({
         id: `live-tool-${tool.toolCallId}`,
         type: "tool",
         turnId: tool.turnId,
@@ -2300,9 +2379,29 @@ export default function ChatView({
       };
     });
   }, [clientOwnedCommittedSourceEventIds, entries, liveToolsById]);
+  /**
+   * A step with no recorded end is only "running" while something can still end it: this view's
+   * stream, a run the last disk read reported (or no read yet), a background agent, or another
+   * Copilot client holding the session. Otherwise it simply never finished.
+   */
+  const runActive = isStreaming
+    || creating
+    || historyRunBusy !== false
+    || (backgroundAgents?.running ?? 0) > 0
+    || externallyInUse;
+  // The same goes for an agent the records show working.
+  const agentDirectory = useMemo(
+    () => buildTranscriptAgentDirectory(runActive ? agentRecords : withoutWorkingAgents(agentRecords)),
+    [agentRecords, runActive],
+  );
+  const agentAttachmentCache = useRef<AgentAttachmentCache>(new WeakMap()).current;
   const displayEntries = useMemo(
-    () => liveEntries.length > 0 ? [...committedEntries, ...liveEntries] : committedEntries,
-    [committedEntries, liveEntries],
+    () => attachTranscriptAgents(
+      liveEntries.length > 0 ? [...committedEntries, ...liveEntries] : committedEntries,
+      agentDirectory,
+      agentAttachmentCache,
+    ),
+    [agentAttachmentCache, agentDirectory, committedEntries, liveEntries],
   );
   const messageAnchorKeys = useMemo(() => {
     const keys = new WeakMap<object, string>();
@@ -2337,33 +2436,80 @@ export default function ChatView({
     () => displayEntries.flatMap((entry) => entry.type === "tool" && entry.toolCall ? [entry.toolCall] : []),
     [displayEntries],
   );
-  const toolForest = useMemo(() => buildToolCallForest(toolEntries), [toolEntries]);
+  // A step's agent is usually launched above the loaded window; a stand-in gives the step its row.
+  const toolForest = useMemo(
+    () => buildToolCallForest([...buildAgentPlaceholders(toolEntries, agentDirectory), ...toolEntries]),
+    [agentDirectory, toolEntries],
+  );
   const activeToolForest = useMemo(() => buildToolCallForest(activeToolCalls), [activeToolCalls]);
   const activeRootNodes = useMemo(() => getActiveToolCallRoots(activeToolForest.roots), [activeToolForest.roots]);
-  /**
-   * A step with no recorded end is only "running" while something can still end it: this view's
-   * stream, a run the last disk read reported (or no read yet), a background agent, or another
-   * Copilot client holding the session. Otherwise it simply never finished.
-   */
-  const runActive = isStreaming
-    || creating
-    || historyRunBusy !== false
-    || (backgroundAgents?.running ?? 0) > 0
-    || externallyInUse;
   const renderBlocks = useMemo(
-    () => groupActivitySegments(segmentChatEntries(displayEntries), { includeUnfinishedQuestions: !runActive }),
-    [displayEntries, runActive],
+    () => groupActivitySegments(segmentChatEntries(displayEntries), {
+      includeUnfinishedQuestions: !runActive,
+      agents: agentDirectory,
+    }),
+    [agentDirectory, displayEntries, runActive],
   );
+  // Most changes to the transcript move no agent to another stretch; the rows that read this are
+  // only told when one does.
+  const latestAgentBlocksRef = useRef<ReadonlyMap<string, string>>(NO_AGENT_BLOCKS);
+  const latestBlockByAgent = useMemo(() => {
+    const latest = mapLatestAgentBlocks(renderBlocks, latestAgentBlocksRef.current);
+    latestAgentBlocksRef.current = latest;
+    return latest;
+  }, [renderBlocks]);
+  const transcriptAgents = useMemo<TranscriptAgentsContextValue>(
+    () => ({ directory: agentDirectory, latestBlockByAgent }),
+    [agentDirectory, latestBlockByAgent],
+  );
+  /**
+   * The main agent has stopped and the run stays open for agents it launched. The line says how
+   * many it is waiting on, not which of them took the last step.
+   */
+  const waitingOnAgents = useMemo(() => {
+    if (!isStreaming || !mainAgentIdle) return undefined;
+    const working = getWorkingAgents(agentDirectory);
+    return working.length > 0 ? describeWaitingOnAgents(working) : undefined;
+  }, [agentDirectory, isStreaming, mainAgentIdle]);
+  /**
+   * The newest step each agent has taken in this run, by the call that launched it, for the agents
+   * list. The stream keeps an agent's calls until its next turn, so the step holds still between them.
+   */
+  const agentLatestSteps = useMemo(() => {
+    const steps = new Map<string, string>();
+    for (const tool of liveTools) {
+      if (!tool.parentToolCallId) continue;
+      const presentation = describeToolCall(
+        tool,
+        tool.completedAt ? (tool.success === false ? "failed" : "done") : "running",
+      );
+      steps.set(
+        getTopLevelAgentToolCallId(tool.parentToolCallId, agentDirectory),
+        describeToolCallBriefly(presentation),
+      );
+    }
+    return steps;
+  }, [agentDirectory, liveTools]);
+  /** How many of each agent's steps are loaded, for the same list: a step shows there as it is taken. */
+  const agentLoadedStepCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const agent of agentDirectory.all) {
+      const loaded = toolForest.nodesById.get(agent.toolCallId)?.loadedChildCount;
+      if (loaded) counts.set(agent.toolCallId, loaded);
+    }
+    return counts;
+  }, [agentDirectory, toolForest]);
   /**
    * While the run is between steps, the block at the end of the transcript is where the next step
    * will land, so it carries the "still working" state instead of a separate indicator below it.
    */
   const autopilotRuns = useMemo(() => summarizeAutopilotRuns(renderBlocks), [renderBlocks]);
-  const liveActivityKey = useMemo(() => {
-    if (!isStreaming || hasStreamingText) return null;
+  /** The block at the end of the transcript, where a step still in flight is the run's current one. */
+  const trailingActivityKey = useMemo(() => {
     const trailing = renderBlocks[renderBlocks.length - 1];
     return trailing?.type === "activity" ? trailing.key : null;
-  }, [hasStreamingText, isStreaming, renderBlocks]);
+  }, [renderBlocks]);
+  const liveActivityKey = isStreaming && !hasStreamingText ? trailingActivityKey : null;
   liveActivityKeyRef.current = liveActivityKey;
   const runHeaderState = useMemo(() => deriveLiveRunHeaderState({
     creating,
@@ -2485,12 +2631,21 @@ export default function ChatView({
       const attaching = runHeaderState.phase === "reconnecting" && !reconnectIsSlow;
       parts.push(
         <div key="run-header" className={CHAT_RAIL_CLASS}>
-          <LiveStatusLine
-            label={attaching ? "Thinking" : runHeaderState.label}
-            detail={intentText || undefined}
-            description={attaching ? undefined : `${runHeaderState.title}. ${runHeaderState.detail}`}
-            autopilot={!attaching && runMode === "autopilot"}
-          />
+          {waitingOnAgents ? (
+            <LiveStatusLine
+              label={waitingOnAgents.label}
+              detail={waitingOnAgents.detail}
+              description="The main agent has stopped and is waiting for these agents to report back."
+              autopilot={runMode === "autopilot"}
+            />
+          ) : (
+            <LiveStatusLine
+              label={attaching ? "Thinking" : runHeaderState.label}
+              detail={intentText || undefined}
+              description={attaching ? undefined : `${runHeaderState.title}. ${runHeaderState.detail}`}
+              autopilot={!attaching && runMode === "autopilot"}
+            />
+          )}
         </div>,
       );
     }
@@ -2542,6 +2697,7 @@ export default function ChatView({
     runMode,
     runNotice,
     showStatusLine,
+    waitingOnAgents,
   ]);
 
   const isDraft = !sessionId && !!onCreateAndSend;
@@ -2799,7 +2955,9 @@ export default function ChatView({
               expanded={activityExpansion[segment.key] ?? false}
               onToggle={handleToggleActivity}
               live={segment.key === liveActivityKey}
+              latest={segment.key === trailingActivityKey}
               liveLabel={intentText}
+              waiting={segment.key === liveActivityKey ? waitingOnAgents : undefined}
             />
           </div>,
         );
@@ -2961,6 +3119,8 @@ export default function ChatView({
     historicalMode,
     targetSourceEventId,
     toolForest,
+    trailingActivityKey,
+    waitingOnAgents,
   ]);
 
   const messageMenuForkBoundary = messageMenuTarget?.message.role === "assistant"
@@ -3045,7 +3205,18 @@ export default function ChatView({
         onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
         onRefresh={sessionId ? refreshMcpStatus : undefined}
       />}
-      {!historicalMode && <SessionAgentsBar sessionId={sessionId} backgroundAgents={backgroundAgents} />}
+      {!historicalMode && (
+        <SessionAgentsBar
+          sessionId={sessionId}
+          backgroundAgents={backgroundAgents}
+          agents={agentDirectory}
+          latestSteps={agentLatestSteps}
+          loadedStepCounts={agentLoadedStepCounts}
+          sheetOpen={showAgents}
+          onOpenSheet={openAgentsSheet}
+          onCloseSheet={planOverlay.close}
+        />
+      )}
       {externallyInUse && (
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
           <Terminal size={12} className="shrink-0 text-info" aria-hidden="true" />
@@ -3131,16 +3302,18 @@ export default function ChatView({
           )}
           {/* Cached transcript dims and shimmers while the disk read is in flight; live content below stays crisp. */}
           <ChatRunActiveProvider value={runActive}>
-            <ViewportKeeper
-              ref={viewportKeeperRef}
-              scrollerRef={scrollContainerRef}
-              className={showHistorySync ? "history-syncing" : undefined}
-              shouldKeep={shouldKeepViewport}
-              atRest={transcriptAtRest}
-              shift={shiftTranscript}
-            >
-              {renderedEntries}
-            </ViewportKeeper>
+            <TranscriptAgentsProvider value={transcriptAgents}>
+              <ViewportKeeper
+                ref={viewportKeeperRef}
+                scrollerRef={scrollContainerRef}
+                className={showHistorySync ? "history-syncing" : undefined}
+                shouldKeep={shouldKeepViewport}
+                atRest={transcriptAtRest}
+                shift={shiftTranscript}
+              >
+                {renderedEntries}
+              </ViewportKeeper>
+            </TranscriptAgentsProvider>
           </ChatRunActiveProvider>
           {pendingContent && <div className="pt-4">{pendingContent}</div>}
           {!historicalMode && showJumpToLatest && (

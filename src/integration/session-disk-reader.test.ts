@@ -563,6 +563,129 @@ describe("readMessagesFromDisk latest-page path", () => {
     ]);
   });
 
+  it("names the agent a step belongs to when the agent was launched far above the part of the log that is read", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-agents-tail");
+    const sessionId = "agents-tail";
+    const at = (minutes: number, seconds = 0) =>
+      new Date(Date.parse("2026-10-01T10:00:00.000Z") + minutes * 60_000 + seconds * 1000).toISOString();
+    const moves = { agentId: "agent-moves", toolCallId: "task-moves" };
+    const launchedLongAgo = [
+      { type: "user.message", id: "user-0", timestamp: at(0), data: { content: "Refactor the engine" } },
+      { type: "assistant.turn_start", id: "main-turn-0", timestamp: at(0, 1), data: { turnId: "provider-main-0" } },
+      {
+        type: "tool.execution_start",
+        id: "launch-moves",
+        timestamp: at(0, 2),
+        data: {
+          toolCallId: moves.toolCallId,
+          toolName: "task",
+          arguments: { name: "moves-agent", agent_type: "general-purpose", description: "Refactor move generation", mode: "background", prompt: "…" },
+        },
+      },
+      {
+        type: "subagent.started",
+        agentId: moves.agentId,
+        timestamp: at(0, 2),
+        data: { toolCallId: moves.toolCallId, agentName: "general-purpose", agentDisplayName: "moves-agent", executionMode: "background" },
+      },
+      { type: "tool.execution_complete", timestamp: at(0, 2), data: { toolCallId: moves.toolCallId, success: true, result: { content: "Agent started" } } },
+      // The runtime says this turn is the agent's. Nothing below repeats that before the main agent's next turn.
+      { type: "assistant.turn_start", id: "moves-turn-0", agentId: moves.agentId, timestamp: at(0, 3), data: { parentToolCallId: moves.toolCallId } },
+      { type: "assistant.turn_end", timestamp: at(0, 4), data: { turnId: "provider-main-0" } },
+    ];
+    const padding = Array.from({ length: 5_000 }, (_, index) => ({
+      type: "internal.trace",
+      timestamp: at(1),
+      data: { index, payload: "x".repeat(220) },
+    }));
+    const agentSteps = Array.from({ length: 60 }, (_, index) => [
+      {
+        type: "tool.execution_start",
+        agentId: moves.agentId,
+        timestamp: at(2, index),
+        data: { toolCallId: `moves-step-${index}`, toolName: "view", arguments: { path: `/repo/file-${index}.ts` }, parentToolCallId: moves.toolCallId },
+      },
+      {
+        type: "tool.execution_complete",
+        agentId: moves.agentId,
+        timestamp: at(2, index),
+        data: { toolCallId: `moves-step-${index}`, success: true, result: { content: "ok" }, parentToolCallId: moves.toolCallId },
+      },
+    ]).flat();
+    const mainAgentMeanwhile = [
+      { type: "assistant.turn_start", id: "main-turn-1", timestamp: at(4), data: { turnId: "provider-main-1" } },
+      {
+        type: "tool.execution_start",
+        timestamp: at(4, 1),
+        data: { toolCallId: "task-saves", toolName: "task", arguments: { name: "saves-agent", description: "Add the save migration", mode: "background" } },
+      },
+      { type: "subagent.started", agentId: "agent-saves", timestamp: at(4, 1), data: { toolCallId: "task-saves", agentName: "general-purpose", agentDisplayName: "saves-agent", executionMode: "background" } },
+      { type: "tool.execution_complete", timestamp: at(4, 1), data: { toolCallId: "task-saves", success: true, result: { content: "Agent started" } } },
+      { type: "assistant.turn_end", timestamp: at(4, 2), data: { turnId: "provider-main-1" } },
+      // With two agents running, a runtime that did not say whose turn this is would have it guessed an agent's.
+      { type: "assistant.turn_start", id: "main-turn-2", timestamp: at(4, 3), data: { turnId: "provider-main-2" } },
+      { type: "tool.execution_start", timestamp: at(4, 4), data: { toolCallId: "main-view", toolName: "view", arguments: { path: "/repo/README.md" } } },
+      { type: "tool.execution_complete", timestamp: at(4, 5), data: { toolCallId: "main-view", success: true, result: { content: "ok" } } },
+    ];
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [...launchedLongAgo, ...padding, ...agentSteps, ...mainAgentMeanwhile],
+    });
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const { deps, spans } = createDeps(copilotHome);
+
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    // Only the newest part of the log was parsed, and the launch is not in it.
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata).toMatchObject({ mode: "tail", readFullFile: false });
+    expect(result.total).toBe(64);
+    expect(result.messages).toHaveLength(50);
+    expect(result.messages.some((entry) => entry.toolCall?.toolCallId === moves.toolCallId)).toBe(false);
+
+    // Every history read still carries who the agents are and where they stand.
+    expect(result.agents).toEqual([
+      {
+        toolCallId: "task-moves",
+        agentId: "agent-moves",
+        name: "moves-agent",
+        agentType: "general-purpose",
+        description: "Refactor move generation",
+        background: true,
+        status: "running",
+        startedAt: at(0, 2),
+        activeSince: at(0, 2),
+        activeMs: 0,
+        toolCount: 60,
+        failedToolCount: 0,
+      },
+      expect.objectContaining({ toolCallId: "task-saves", name: "saves-agent", status: "running", toolCount: 0 }),
+    ]);
+    // An agent's steps name the call that launched it; the main agent's stay in the main agent's turn.
+    expect(result.messages[0]).toMatchObject({ type: "tool", toolCall: { toolCallId: "moves-step-12", parentToolCallId: "task-moves" } });
+    const mainStep = result.messages.at(-1);
+    expect(mainStep).toMatchObject({ type: "tool", turnId: "provider-main-2", turnInstanceId: "main-turn-2", toolCall: { toolCallId: "main-view" } });
+    expect(mainStep?.toolCall?.parentToolCallId).toBeUndefined();
+
+    // An older page reads the whole log, and names the same agents.
+    const older = await readMessagesFromDisk(deps, sessionId, { limit: 10, before: 10 });
+    expect(older.agents).toEqual(result.agents);
+    expect(older.messages.some((entry) => entry.toolCall?.toolCallId === moves.toolCallId)).toBe(true);
+
+    // The agent reports and its turn ends. The next read folds only what was appended.
+    appendFileSync(eventsPath, [
+      { type: "assistant.turn_start", agentId: moves.agentId, timestamp: at(29), data: { parentToolCallId: moves.toolCallId } },
+      { type: "assistant.message", agentId: moves.agentId, timestamp: at(30), data: { parentToolCallId: moves.toolCallId, content: "Move generation is refactored.", toolRequests: [] } },
+      { type: "subagent.completed", agentId: moves.agentId, timestamp: at(30, 2), data: { toolCallId: moves.toolCallId } },
+    ].map((event) => `${JSON.stringify(event)}\n`).join(""));
+    const afterReport = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(spans.filter((span) => span.name === "session.readFromDisk.stats").at(-1)?.metadata?.cacheResult).toBe("resumed");
+    expect(afterReport.agents[0]).toMatchObject({ status: "finished", endedAt: at(30, 2), activeMs: 30 * 60_000, toolCount: 60 });
+    expect(afterReport.agents[0]).not.toHaveProperty("activeSince");
+    expect(afterReport.agents[1]).toMatchObject({ toolCallId: "task-saves", status: "running" });
+    clearEventLogStatsCache(sessionId);
+    expect((await readMessagesFromDisk(deps, sessionId, { limit: 50 })).agents).toEqual(afterReport.agents);
+  });
+
   it("resumes the event-log stats fold from the last scanned offset after an append", async () => {
     const copilotHome = makeTestDir("session-disk-reader-stats-cache");
     const sessionId = "stats-cache";
@@ -1001,7 +1124,7 @@ describe("readMessagesFromDisk latest-page path", () => {
 
     const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
 
-    expect(result).toEqual({ messages: [], total: 0, hasMore: false, coverage: {} });
+    expect(result).toEqual({ messages: [], total: 0, hasMore: false, coverage: {}, agents: [] });
   });
 
   it("returns provider turn and terminal coverage for overlay reconciliation", async () => {

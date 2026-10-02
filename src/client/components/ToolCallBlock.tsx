@@ -5,6 +5,7 @@ import type { ToolCallTreeNode } from "../lib/tool-call-tree";
 import ToolResultModal from "./ToolResultModal";
 import ToolIcon from "./chat/ToolIcon";
 import { useChatRunActive } from "./chat/chat-run-context";
+import { useAgentNameResolver } from "./chat/transcript-agents-context";
 import { formatToolArgsDetails, hasToolArgs } from "../lib/tool-args";
 import { getToolCallStatus, getToolCallStatusLabel } from "../lib/tool-call-status";
 import { describeToolCall, formatDuration, getToolDurationMs } from "../lib/tool-presentation";
@@ -77,9 +78,11 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
   );
   // No completion was recorded and the run is over: it never finished, which is not "running".
   const unfinished = status === "running" && !runActive;
+  // A call about another agent carries only its runtime id; the session's records put a name to it.
+  const agentName = useAgentNameResolver();
   const presentation = useMemo(
-    () => describeToolCall(toolCall, unfinished ? "done" : status),
-    [status, toolCall.args, toolCall.isSubAgent, toolCall.name, unfinished],
+    () => describeToolCall(toolCall, unfinished ? "done" : status, { agentName }),
+    [agentName, status, toolCall.agent, toolCall.args, toolCall.isSubAgent, toolCall.name, unfinished],
   );
   const durationMs = getToolDurationMs(toolCall);
   const startTime = formatStartTime(toolCall);

@@ -25,6 +25,8 @@ export interface SessionAgentTask {
   id: string;
   /** Tool call id that launched the task, when available. Best-effort UI anchor; may be absent. */
   toolCallId?: string;
+  /** The name the agent was launched under ("moves-agent"), when the runtime reports one. */
+  name?: string;
   /** Short human description of the task. */
   description?: string;
   status: AgentTaskStatus;
@@ -34,8 +36,10 @@ export interface SessionAgentTask {
   agentType?: string;
   startedAt?: string;
   completedAt?: string;
-  /** Accumulated active execution time in ms, when reported. */
+  /** Active execution time in ms over the periods of work that have ended, when reported. */
   activeTimeMs?: number;
+  /** When the period of work in flight began, when reported. Absent while the agent is not working. */
+  activeStartedAt?: string;
   /** When the agent entered idle (awaiting a follow-up message), when reported. */
   idleSince?: string;
   model?: string;

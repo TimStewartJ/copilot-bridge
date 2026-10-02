@@ -24,7 +24,11 @@ import {
   keepCommittedReasoning,
   type LiveReasoningBlock,
 } from "../shared/live-reasoning.js";
-import { keepEndingTurnItems } from "../shared/live-turn-retention.js";
+import {
+  keepEndingTurnItems,
+  keepToolsAtAgentTurnBoundary,
+  keepToolsAtMainTurnBoundary,
+} from "../shared/live-turn-retention.js";
 import { haptic } from "./lib/haptics";
 
 export type { LiveReasoningBlock };
@@ -131,6 +135,13 @@ export interface StreamState {
   pendingUserMessages: LivePendingUserMessage[];
   /** In-flight and recently-completed tools; the view derives in-flight ones for run status. */
   liveTools: PendingTool[];
+  /** The turn each working sub-agent is in, by the call that launched it. */
+  agentTurnInstanceIds: Readonly<Record<string, string>>;
+  /**
+   * The main agent has stopped and background work keeps the run open: agents still running, or
+   * a command in an attached shell.
+   */
+  mainAgentIdle: boolean;
   liveVisuals: LiveVisual[];
   liveCompletion: LiveCompletion | null;
   pendingUserInputs: PendingUserInputRequestView[];
@@ -155,6 +166,8 @@ export interface StreamState {
   historyEpoch: number;
 }
 
+const NO_AGENT_TURNS: Readonly<Record<string, string>> = Object.freeze({});
+
 function createState(status: StreamStatus, partial: Partial<StreamState> = {}): StreamState {
   return {
     streamingContent: "",
@@ -162,6 +175,8 @@ function createState(status: StreamStatus, partial: Partial<StreamState> = {}): 
     liveReasoning: [],
     pendingUserMessages: [],
     liveTools: [],
+    agentTurnInstanceIds: NO_AGENT_TURNS,
+    mainAgentIdle: false,
     liveVisuals: [],
     liveCompletion: null,
     pendingUserInputs: [],
@@ -411,16 +426,20 @@ export function normalizeActiveTool(
   if (!isRecord(rawTool)) return undefined;
   const toolCallId = optionalString(rawTool.toolCallId);
   if (!toolCallId) return undefined;
+  const parentToolCallId = optionalString(rawTool.parentToolCallId);
+  // The fallback is the main agent's turn. A sub-agent's call is in a turn of the agent's own.
+  const ownedByMainAgent = parentToolCallId === undefined;
   return {
     toolCallId,
     name: optionalString(rawTool.name) ?? "unknown",
-    turnId: optionalString(rawTool.turnId) ?? fallbackTurnId,
-    turnInstanceId: optionalString(rawTool.turnInstanceId) ?? fallbackTurnInstanceId,
+    turnId: optionalString(rawTool.turnId) ?? (ownedByMainAgent ? fallbackTurnId : undefined),
+    turnInstanceId: optionalString(rawTool.turnInstanceId)
+      ?? (ownedByMainAgent ? fallbackTurnInstanceId : undefined),
     sourceEventId: optionalString(rawTool.sourceEventId),
     args: rawTool.args as ToolArgs | undefined,
     startedAt: optionalString(rawTool.startedAt),
     progressText: optionalString(rawTool.progressText),
-    parentToolCallId: optionalString(rawTool.parentToolCallId),
+    parentToolCallId,
     isSubAgent: optionalBoolean(rawTool.isSubAgent),
     agentInstructions: normalizeAgentInstructions(rawTool.agentInstructions),
     completedAt: optionalString(rawTool.completedAt),
@@ -471,6 +490,20 @@ export function normalizeLiveTools(
     tools.set(tool.toolCallId, tool);
   }
   return [...tools.values()];
+}
+
+/** Reads the `[launching tool call, turn instance]` pairs a snapshot carries for working sub-agents. */
+export function normalizeAgentTurns(value: unknown): Readonly<Record<string, string>> {
+  if (!Array.isArray(value)) return NO_AGENT_TURNS;
+  const turns: Record<string, string> = {};
+  for (const pair of value) {
+    if (!Array.isArray(pair)) continue;
+    const [agentToolCallId, turnInstanceId] = pair;
+    if (typeof agentToolCallId === "string" && agentToolCallId && typeof turnInstanceId === "string" && turnInstanceId) {
+      turns[agentToolCallId] = turnInstanceId;
+    }
+  }
+  return Object.keys(turns).length > 0 ? turns : NO_AGENT_TURNS;
 }
 
 /** Merge a live tool patch into the active set, creating the entry when the patch arrives first. */
@@ -662,6 +695,8 @@ export function useSessionStream(
             streamingContent: complete ? "" : streamingContent,
             // Completed items stay after a terminal snapshot until the disk read confirms them.
             liveTools,
+            agentTurnInstanceIds: complete ? NO_AGENT_TURNS : normalizeAgentTurns(event.agentTurns),
+            mainAgentIdle: !complete && event.mainAgentIdle === true,
             liveVisuals,
             liveCompletion,
             pendingUserInputs: complete ? [] : normalizePendingUserInputRequests(event.pendingUserInputs),
@@ -730,7 +765,9 @@ export function useSessionStream(
             streamStatus: "thinking",
             isStreaming: true,
             runNotice: null,
-            liveTools: keepEndingTurnItems(current.liveTools, endingTurnInstanceId, (tool) => Boolean(tool.completedAt)),
+            // The boundary is the main agent's; a sub-agent's calls are kept by its own turns.
+            liveTools: keepToolsAtMainTurnBoundary(current.liveTools, endingTurnInstanceId),
+            mainAgentIdle: false,
             liveVisuals: keepEndingTurnItems(current.liveVisuals, endingTurnInstanceId),
             liveCompletion: null,
             liveReasoning: keepEndingTurnItems(
@@ -742,6 +779,26 @@ export function useSessionStream(
             activeTurnInstanceId: getEventTurnInstanceId(event) ?? current.activeTurnInstanceId,
           };
         });
+        return;
+      }
+      if (eventType === "agent_turn") {
+        // A sub-agent began a turn of its own: only that agent's calls move along.
+        const agentToolCallId = optionalString(event.agentToolCallId);
+        const turnInstanceId = getEventTurnInstanceId(event);
+        if (!agentToolCallId || !turnInstanceId) return;
+        setStreamState((current) => ({
+          ...current,
+          liveTools: keepToolsAtAgentTurnBoundary(
+            current.liveTools,
+            agentToolCallId,
+            current.agentTurnInstanceIds[agentToolCallId],
+          ),
+          agentTurnInstanceIds: { ...current.agentTurnInstanceIds, [agentToolCallId]: turnInstanceId },
+        }));
+        return;
+      }
+      if (eventType === "main_idle") {
+        setStreamState((current) => current.mainAgentIdle ? current : { ...current, mainAgentIdle: true });
         return;
       }
       if (eventType === "reasoning_delta" || eventType === "reasoning" || eventType === "reasoning_committed") {
