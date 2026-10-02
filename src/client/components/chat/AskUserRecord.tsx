@@ -19,6 +19,8 @@ function describeOutcome(outcome: AskUserOutcome, durationMs: number | undefined
       return "you dismissed it";
     case "away":
       return "not answered, the run went on without you";
+    case "autopilot":
+      return "Autopilot went on without you";
     case "failed":
       return "the question failed";
     case "unanswered":

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ToolArgs, ToolCall } from "../api";
+import { AUTOMATIC_ANSWERS } from "../../shared/automatic-answer.js";
 import { readAskUserRecord } from "./ask-user-record";
 
 function call(args: ToolArgs, result?: string, partial: Partial<ToolCall> = {}): ToolCall {
@@ -96,6 +97,22 @@ describe("readAskUserRecord", () => {
       .toBe("away");
     expect(readAskUserRecord(call(ONE_OF))?.outcome).toBe("unanswered");
     expect(readAskUserRecord(call(ONE_OF, "boom", { success: false }))).toMatchObject({ outcome: "failed", note: "boom" });
+  });
+
+  it("does not read a reply Bridge gave in the user's place as the user's answer", () => {
+    // The transcript carries the reply as the first field's value, the way it carries a typed answer.
+    const unanswered = readAskUserRecord(call(ONE_OF, `User responded:\npreProv: ${AUTOMATIC_ANSWERS.unanswered}`));
+    expect(unanswered?.outcome).toBe("away");
+    expect(unanswered?.fields.map((field) => [field.answered, field.answer])).toEqual([[false, undefined], [false, undefined]]);
+    expect(unanswered?.freeformAnswer).toBeUndefined();
+    // The runtime's own summary of the same reply, as the event log has it.
+    expect(readAskUserRecord(call(ONE_OF, `User responded: ${AUTOMATIC_ANSWERS.unanswered}`))?.outcome).toBe("away");
+
+    const autopilot = readAskUserRecord(call(ONE_OF, `User responded:\npreProv: ${AUTOMATIC_ANSWERS.autopilot}`));
+    expect(autopilot?.outcome).toBe("autopilot");
+    expect(autopilot?.fields.some((field) => field.answered)).toBe(false);
+    expect(readAskUserRecord(call({ question: "Proceed?" }, `User responded: ${AUTOMATIC_ANSWERS.autopilot}`)))
+      .toEqual({ message: "Proceed?", fields: [], outcome: "autopilot" });
   });
 
   it("ignores other tools and calls with no question", () => {
