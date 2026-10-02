@@ -1,6 +1,6 @@
 // Shared contract of the process host: request/response shapes that cross the thread boundary,
 // and the error type callers see. This module must stay free of node:child_process so the
-// server's main thread never loads it through the host.
+// calling thread never loads it through the host.
 
 export interface HostExecOptions {
   cwd?: string;

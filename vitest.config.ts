@@ -6,6 +6,7 @@ export default defineConfig({
     projects: [
       "./vitest.client.config.ts",
       "./vitest.server.config.ts",
+      "./vitest.packages.config.ts",
       "./vitest.integration.config.ts",
       "./vitest.launcher.config.ts",
       "./vitest.staging.config.ts",
@@ -13,7 +14,7 @@ export default defineConfig({
     ],
     coverage: {
       provider: "v8",
-      include: ["src/server/**/*.ts"],
+      include: ["src/server/**/*.ts", "src/packages/*/src/**/*.ts"],
       exclude: ["src/server/__tests__/**", "src/server/browser-fetch-tools.ts", "src/server/web-search-tools.ts"],
       reporter: ["text", "text-summary", "json-summary", "html"],
       thresholds: {

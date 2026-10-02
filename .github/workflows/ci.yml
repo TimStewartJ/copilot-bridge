@@ -49,6 +49,10 @@ jobs:
         shell: pwsh
         run: npm run typecheck:client
 
+      - name: Package typecheck
+        shell: pwsh
+        run: npm run typecheck:packages
+
       - name: Build
         shell: pwsh
         run: npm run build

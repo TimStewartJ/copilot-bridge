@@ -1,0 +1,43 @@
+{
+  "name": "smart-turn-js",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run the Smart Turn v3 end-of-turn detection model from JavaScript: dependency-free Whisper log-mel preprocessing and a thin ONNX Runtime wrapper for Node.js and the browser.",
+  "keywords": [
+    "smart-turn",
+    "turn-detection",
+    "end-of-turn",
+    "endpointing",
+    "voice-agent",
+    "voice-ai",
+    "whisper",
+    "log-mel",
+    "onnxruntime",
+    "vad"
+  ],
+  "license": "MIT",
+  "author": "Tim Stewart <timstewartj@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timstewartj/copilot-bridge.git",
+    "directory": "src/packages/smart-turn-js"
+  },
+  "homepage": "https://github.com/timstewartj/copilot-bridge/tree/master/src/packages/smart-turn-js#readme",
+  "bugs": {
+    "url": "https://github.com/timstewartj/copilot-bridge/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false
+}
