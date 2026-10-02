@@ -339,7 +339,7 @@ describe("browser diagnostics", () => {
           return {} as any;
         }
         if (file === "ps") {
-          cb(null, { stdout: `4242 chrome chrome --user-data-dir=${normalizePath(profileDir)}`, stderr: "" });
+          cb(null, { stdout: `4242 1 chrome chrome --user-data-dir=${normalizePath(profileDir)}`, stderr: "" });
           return {} as any;
         }
         throw new Error(`Unexpected execFile command: ${file}`);

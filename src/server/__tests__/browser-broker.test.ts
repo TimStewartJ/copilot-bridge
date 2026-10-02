@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BrowserBroker } from "../browser-broker.js";
+import { BROWSER_SESSION_IDLE_TIMEOUT_MS, BrowserBroker, PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS } from "../browser-broker.js";
 import { makeTestDir } from "./helpers.js";
 
 function successfulShutdown() {
@@ -37,6 +37,13 @@ describe("browser broker", () => {
     expect(lease.browserTarget.profileDir).toContain(join(root, "browser-public"));
     expect(lease.browserTarget.profileDir).not.toContain("authenticated-profile");
     expect(lease.browserTarget.sessionName).toContain("copilot-bridge-public-");
+    // Its daemon outlives an idle browser_session handle, and goes away with the browser when one is lost.
+    expect(lease.browserTarget.disposable).toBe(true);
+    expect(lease.browserTarget.idleTimeoutMs).toBe(PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS);
+    expect(PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS).toBeGreaterThan(BROWSER_SESSION_IDLE_TIMEOUT_MS);
+    const authenticated = (await broker.createSessionTarget("authenticated")).browserTarget;
+    expect(authenticated.disposable).toBeUndefined();
+    expect(authenticated.idleTimeoutMs).toBeUndefined();
     await broker.disposeSessionTarget(lease, {
       toolName: "test",
       browserOpId: "op-public",

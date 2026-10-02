@@ -3,6 +3,7 @@ import type { TelemetryStore } from "./telemetry-store.js";
 import type { BrowserLaunchConfig, BrowserTarget } from "./agent-browser.js";
 import { safeRecordBrowserSpan } from "./agent-browser.js";
 import {
+  BROWSER_SESSION_IDLE_TIMEOUT_MS,
   BrowserBroker,
   type BrowserBrokerLease,
   type BrowserContext,
@@ -45,7 +46,7 @@ export class BrowserSessionStore {
 
   constructor(options: BrowserSessionStoreOptions = {}) {
     this.telemetryStore = options.telemetryStore;
-    this.idleTimeoutMs = options.idleTimeoutMs ?? (30 * 60_000);
+    this.idleTimeoutMs = options.idleTimeoutMs ?? BROWSER_SESSION_IDLE_TIMEOUT_MS;
     this.browserBroker = options.browserBroker ?? new BrowserBroker({
       copilotHome: options.copilotHome,
       telemetryStore: options.telemetryStore,

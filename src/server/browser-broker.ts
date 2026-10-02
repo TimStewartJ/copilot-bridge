@@ -88,6 +88,16 @@ const READINESS_TIMEOUT_MS = 45_000;
 const READINESS_RETRY_DELAYS_MS = [250, 750, 1_500] as const;
 const STALE_PUBLIC_PROFILE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
+/** How long a browser_session handle may go unused before the Bridge closes it. */
+export const BROWSER_SESSION_IDLE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long the daemon of a public browser may go without a command before it closes the
+ * browser and exits by itself. This is the backstop for a browser the Bridge failed to close
+ * or lost track of (a server that was killed, a cleanup that missed a process), so it is
+ * longer than the Bridge's own limit, which removes the profile as well.
+ */
+export const PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS = BROWSER_SESSION_IDLE_TIMEOUT_MS + 15 * 60_000;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -225,6 +235,8 @@ export class BrowserBroker {
       browserTarget: {
         sessionName: `copilot-bridge-public-${publicTargetId}`,
         profileDir,
+        idleTimeoutMs: PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS,
+        disposable: true,
         ...(launchConfig.executablePath ? { executablePath: launchConfig.executablePath } : {}),
       },
     };

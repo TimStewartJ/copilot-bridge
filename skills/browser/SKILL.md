@@ -44,6 +44,7 @@ Follow these rules unless the user explicitly asks otherwise:
 
 3. **Do not routinely close the browser when done.**
    - Do **not** end ordinary flows with `agent-browser close` unless the user explicitly wants teardown or you intentionally created an isolated one-off session.
+   - A raw session's browser closes itself after an hour without a command (Bridge sets `AGENT_BROWSER_IDLE_TIMEOUT_MS` for agent shells). After a longer pause, expect a fresh browser on a blank page with no cookies: open the URL again and take a new snapshot.
 
 4. **Use explicit waits and re-snapshots.**
    - Prefer `wait --load networkidle`, element waits, and fresh snapshots after page changes.

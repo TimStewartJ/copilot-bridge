@@ -535,6 +535,18 @@ file is what remains to explain a loss later.
 
 Recording is observational: it does not delay or change recovery.
 
+### Automation browsers
+
+The browser tools drive a browser through `agent-browser`, whose background daemon holds the browser open between commands. Three rules keep such a browser from outliving its use:
+
+- **It starts on a blank page.** A browser launched without a URL opens its new-tab page. In Edge that is a news feed. Right after launch it cost about 0.3 of a processor and 350 MB more than a blank tab, and it keeps running for as long as the tab stays open.
+- **Closing a public browser also stops its daemon.** A public browser (the disposable, signed-out kind) is closed with the daemon's `close` command. When that does not finish in 10 seconds the Bridge kills the daemon and then the browser's processes, and looks once more: a daemon whose browser dies under a command it is still serving starts a new browser on the same profile.
+- **An idle daemon exits by itself.** The daemon of a public browser closes the browser and exits after 45 minutes without a command (`AGENT_BROWSER_IDLE_TIMEOUT_MS`), which covers a browser the Bridge lost track of. A `browser_session` handle already expires after 30 unused minutes. The limit counts from the last command received, so it has to stay longer than any single command.
+
+Agents can also run `agent-browser` from their shell. Those browsers are not managed by the Bridge and outlive the shell, the session and the server. The Bridge puts `AGENT_BROWSER_IDLE_TIMEOUT_MS=3600000` into the agent runtime's environment, so they close after an hour without a command.
+
+Setting `AGENT_BROWSER_IDLE_TIMEOUT_MS` in `.env` replaces that hour for agent shells and also applies to the signed-in browser, which otherwise has no limit: it stays open on its last page while the server runs, because closing it drops session cookies. The 45 minutes of the Bridge's public browsers are fixed.
+
 ### Public URL Configuration
 
 If you expose the bridge through something other than dev tunnels (for example Cloudflare Tunnel, ngrok, or a reverse proxy), set a canonical public base URL so staging previews can return shareable absolute links:
