@@ -121,15 +121,26 @@ async function fixture(signal: AbortSignal) {
   return { client, backend, config, requests, fixtureErrors, cleanup };
 }
 
-function assertEagerRequest(request: Record<string, unknown> | undefined) {
+function requestToolNames(request: Record<string, unknown> | undefined): unknown[] {
   expect(request).toBeDefined();
-  const names = Array.isArray(request?.tools) ? request.tools.map((tool: unknown) =>
+  return Array.isArray(request?.tools) ? request.tools.map((tool: unknown) =>
     isRecord(tool) && isRecord(tool.function) ? tool.function.name : undefined,
   ) : [];
+}
+
+function assertEagerRequest(request: Record<string, unknown> | undefined) {
+  const names = requestToolNames(request);
   expect(names).toContain("external_fixture");
   for (const tool of mcpTools) expect(names).toContain(`fixture-${tool.name}`);
   expect(names.length).toBeGreaterThan(30);
   expect(names).not.toContain("tool_search_tool");
+}
+
+function assertDeferredRequest(request: Record<string, unknown> | undefined) {
+  const names = requestToolNames(request);
+  expect(names).toContain("tool_search_tool");
+  expect(names).not.toContain("external_fixture");
+  for (const tool of mcpTools) expect(names).not.toContain(`fixture-${tool.name}`);
 }
 
 describe("native eager tool definitions", () => {
@@ -173,15 +184,17 @@ describe("native eager tool definitions", () => {
       assertEagerRequest(requests.at(-1));
       await resumed.release();
 
-      const legacy = await client.createSession({ ...config, toolSearch: { enabled: true, deferThreshold: 1 } });
+      // Since CLI 1.0.90 this loopback completions provider defers when a create or resume call asks
+      // for tool search, and the request is not stored with the session. So the Bridge resume asks
+      // too: same session, same request, and only the Bridge sends every definition.
+      // CAPI deferral still needs a real preview smoke.
+      const deferring = { ...config, toolSearch: { enabled: true, deferThreshold: 1 } };
+      const legacy = await client.createSession(deferring);
       await legacy.rpc.tools.initializeAndValidate();
       await legacy.sendAndWait({ prompt: "Persist this session created with tool search enabled." });
-      // This loopback completions provider does not activate deferral, even when
-      // requested. This test guards payload/lifecycle fidelity; adapter tests
-      // enforce the disabled policy, and CAPI deferral needs a real preview smoke.
-      assertEagerRequest(requests.at(-1));
+      assertDeferredRequest(requests.at(-1));
       await legacy.disconnect();
-      const upgraded = await backend.resumeSession(legacy.sessionId, config);
+      const upgraded = await backend.resumeSession(legacy.sessionId, deferring);
       await upgraded.initializeTools();
       await upgraded.sendAndWait({ prompt: "Return the fixture response with eager tools after resume." }, null);
       assertEagerRequest(requests.at(-1));
