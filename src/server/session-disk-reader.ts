@@ -2,15 +2,21 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { open, readdir, readFile, stat } from "node:fs/promises";
-import { readJsonlLines } from "./jsonl-lines.js";
+import { readJsonlLines, scanJsonlRecords, withoutCarriageReturn } from "./jsonl-lines.js";
 import {
+  advanceTranscriptCursor,
+  cloneTranscriptCursor,
+  createTranscriptCursor,
   createVisibleActivityTracker,
   getLastVisibleActivityAt,
   getVisibleReasoningText,
   getVisualArtifactFromToolCompletion,
   isAutopilotContinuationEvent,
   isVisibleMessageEvent,
+  projectTranscriptEvent,
   transformEventsToMessages,
+  TRANSCRIPT_EVENT_TYPES,
+  type TranscriptCursor,
   type TransformedEntry,
   type VisibleActivityTrackerState,
 } from "./event-transform.js";
@@ -25,13 +31,12 @@ import type { SessionMetaStore } from "./session-meta-store.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import type { SessionHistoryCoverage } from "../shared/session-stream.js";
 import {
-  getAssistantTurnInstanceId,
   getSdkEventId,
   getSdkTurnId,
   isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
-import { isStampedAgentTurnEvent, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
+import { AgentEventOwners } from "./agent-event-ownership.js";
 import { projectSearchableMessage, type SearchableMessage } from "./search-message-projection.js";
 import {
   TranscriptAgentFold,
@@ -53,29 +58,13 @@ const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
 const EVENT_LOG_STATS_CACHE_VERSION = 5;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
-/** Backstop bound on retained turn checkpoints when the log has very short turns. */
+/** Backstop bound on retained cursor checkpoints when the log has very short turns. */
 const EVENT_LOG_TURN_CHECKPOINT_MAX = 2048;
 const SESSION_LIST_WORKSPACE_READ_CONCURRENCY = 32;
 const SESSION_LIST_EVENT_STAT_CONCURRENCY = 64;
 
-const MESSAGE_RELEVANT_EVENT_MARKERS = [
-  "user.message",
-  "assistant.message",
-  "assistant.turn_start",
-  "assistant.turn_end",
-  "tool.execution_start",
-  "tool.execution_complete",
-  "tool.execution_progress",
-  "tool.execution_partial_result",
-  "subagent.started",
-  "subagent.completed",
-  "subagent.failed",
-  "session.shutdown",
-  "session.idle",
-  "session.error",
-  "session.task_complete",
-  "abort",
-];
+/** Every event the transcript reads names its type, so any other line can be skipped unparsed. */
+const MESSAGE_RELEVANT_EVENT_MARKERS = [...TRANSCRIPT_EVENT_TYPES];
 
 const TURN_TERMINAL_EVENT_TYPES = TERMINAL_TURN_EVENT_TYPES;
 const isTurnTerminalEvent = (event: any): boolean =>
@@ -139,7 +128,8 @@ interface EventLogStats {
   malformedCandidateCount: number;
   totalEntries: number;
   lastVisibleActivityAt?: string;
-  turnState: TailTurnState;
+  /** Transcript cursor in effect just before the requested offset; undefined once pruned. */
+  cursor?: TranscriptCursor;
   coverage: SessionHistoryCoverage;
   agents: TranscriptAgent[];
 }
@@ -155,20 +145,10 @@ interface TailCandidateEvents {
   fullContentBuffer?: Buffer;
 }
 
-interface TailTurnState {
-  initialTurnIndex: number;
-  initialActiveTurnId?: string;
-  initialActiveTurnInstanceId?: string;
-  /** The log has shown turn events stamped with their agent, somewhere before or inside the tail. */
-  agentTurnsStamped?: boolean;
-}
-
-interface TurnStateCheckpoint {
-  /** Byte offset of the line that produced this turn state. */
+interface CursorCheckpoint {
+  /** Byte offset of the line whose effect produced `cursor`. */
   offset: number;
-  turnIndex: number;
-  activeTurnId?: string;
-  activeTurnInstanceId?: string;
+  cursor: TranscriptCursor;
 }
 
 /**
@@ -186,16 +166,16 @@ interface EventLogStatsScannerState {
   latestEventId?: string;
   latestTurnId?: string;
   latestTerminalEventId?: string;
+  /** Counts every turn start, as `getSessionHistoryCoverage` numbers turns without an id. */
   turnIndex: number;
-  /** The runtime has been seen to say which agent a turn belongs to; see agent-event-ownership.ts. */
-  agentTurnsStamped: boolean;
-  activeTurnId?: string;
-  activeTurnInstanceId?: string;
+  cursor: TranscriptCursor;
   /** Collapsed state for every checkpoint older than the largest possible tail window. */
-  baseTurnCheckpoint: TurnStateCheckpoint;
-  turnCheckpoints: TurnStateCheckpoint[];
+  baseCheckpoint: CursorCheckpoint;
+  checkpoints: CursorCheckpoint[];
   activity: VisibleActivityTrackerState;
   agents: TranscriptAgentFoldState;
+  /** What the cursor's {@link AgentEventOwners} has learnt, so a resumed scan files turns alike. */
+  agentOwners: Array<[string, string]>;
 }
 
 export interface EventLogStatsCacheEntry {
@@ -260,10 +240,6 @@ async function acquireEventLogStatsScanSlot(): Promise<() => void> {
     const next = eventLogStatsScanWaiters.shift();
     if (next) next();
   };
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
 }
 
 /** Test hook: report scan concurrency so the gate can be asserted without timing games. */
@@ -353,24 +329,22 @@ function getToolName(event: any): string {
   return typeof name === "string" ? name : "unknown";
 }
 
-function parseCandidateEventsFromContent(content: string, partialFirstLine: boolean): {
+/**
+ * Parses every line of a tail window. Events the transcript never reads keep their envelope,
+ * because a fork boundary can be any event.
+ */
+function parseTailEvents(content: string): {
   events: any[];
   malformedCandidateCount: number;
 } {
-  const normalizedContent = partialFirstLine
-    ? (() => {
-        const firstNewline = content.indexOf("\n");
-        return firstNewline >= 0 ? content.slice(firstNewline + 1) : "";
-      })()
-    : content;
   const events: any[] = [];
   let malformedCandidateCount = 0;
 
-  for (const rawLine of normalizedContent.split(/\r?\n/)) {
+  for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || !lineMayAffectMessageTransform(line)) continue;
+    if (!line) continue;
     try {
-      events.push(JSON.parse(line));
+      events.push(projectTranscriptEvent(JSON.parse(line)));
     } catch {
       malformedCandidateCount += 1;
     }
@@ -430,7 +404,7 @@ async function readTailCandidateEvents(
           startOffset = position + bytesRead;
         }
       }
-      const parsed = parseCandidateEventsFromContent(contentBuffer.toString("utf-8"), false);
+      const parsed = parseTailEvents(contentBuffer.toString("utf-8"));
       latest = {
         events: parsed.events,
         bytesRead,
@@ -453,7 +427,8 @@ async function readTailCandidateEvents(
   }
 }
 
-function createEventLogStatsScannerState(): EventLogStatsScannerState {
+function createEventLogStatsScannerState(agentTurnsStamped = false): EventLogStatsScannerState {
+  const cursor = { ...createTranscriptCursor(), agentTurnsStamped };
   return {
     eventCount: 0,
     candidateEventCount: 0,
@@ -463,15 +438,16 @@ function createEventLogStatsScannerState(): EventLogStatsScannerState {
     visiblePublishVisualToolCallIds: [],
     pendingTerminalCompletionEntry: false,
     turnIndex: 0,
-    agentTurnsStamped: false,
-    baseTurnCheckpoint: { offset: -1, turnIndex: 0 },
-    turnCheckpoints: [],
+    cursor,
+    baseCheckpoint: { offset: -1, cursor: cloneTranscriptCursor(cursor) },
+    checkpoints: [],
     activity: {
       openVisibleToolCallIds: [],
       quietTurn: false,
       pendingTerminalCompletionActivity: false,
     },
     agents: createTranscriptAgentFoldState(),
+    agentOwners: [],
   };
 }
 
@@ -482,13 +458,15 @@ function cloneEventLogStatsScannerState(
     ...state,
     openVisibleToolCallIds: [...state.openVisibleToolCallIds],
     visiblePublishVisualToolCallIds: [...state.visiblePublishVisualToolCallIds],
-    baseTurnCheckpoint: { ...state.baseTurnCheckpoint },
-    turnCheckpoints: state.turnCheckpoints.map((checkpoint) => ({ ...checkpoint })),
+    cursor: cloneTranscriptCursor(state.cursor),
+    baseCheckpoint: { offset: state.baseCheckpoint.offset, cursor: cloneTranscriptCursor(state.baseCheckpoint.cursor) },
+    checkpoints: state.checkpoints.map((checkpoint) => ({ offset: checkpoint.offset, cursor: cloneTranscriptCursor(checkpoint.cursor) })),
     activity: {
       ...state.activity,
       openVisibleToolCallIds: [...state.activity.openVisibleToolCallIds],
     },
     agents: cloneTranscriptAgentFoldState(state.agents),
+    agentOwners: [...state.agentOwners],
   };
 }
 
@@ -503,21 +481,10 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
   const visiblePublishVisualToolCallIds = new Set(state.visiblePublishVisualToolCallIds);
   const visibleActivityTracker = createVisibleActivityTracker(sessionId, state.activity);
   const agentFold = new TranscriptAgentFold(state.agents);
-
-  const recordTurnCheckpoint = (offset: number): void => {
-    state.turnCheckpoints.push({
-      offset,
-      turnIndex: state.turnIndex,
-      ...(state.activeTurnId ? { activeTurnId: state.activeTurnId } : {}),
-      ...(state.activeTurnInstanceId ? { activeTurnInstanceId: state.activeTurnInstanceId } : {}),
-    });
-  };
+  const agentOwners = new AgentEventOwners(state.agentOwners);
 
   const processLine = (lineBuffer: Buffer, lineStartOffset: number): void => {
-    const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
-      ? lineBuffer.length - 1
-      : lineBuffer.length;
-    const line = lineBuffer.subarray(0, contentEnd).toString("utf-8").trim();
+    const line = withoutCarriageReturn(lineBuffer).toString("utf-8").trim();
     if (!line) return;
     state.eventCount += 1;
     if (!lineMayAffectMessageTransform(line)) return;
@@ -525,7 +492,8 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     state.candidateEventCount += 1;
     let event: any;
     try {
-      event = JSON.parse(line);
+      // Projected as a whole-history read projects it, so both fold exactly the same events.
+      event = projectTranscriptEvent(JSON.parse(line));
     } catch {
       state.malformedCandidateCount += 1;
       return;
@@ -533,31 +501,16 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
 
     visibleActivityTracker.observe(event);
     agentFold.observe(event);
+    agentOwners.learn(event);
     const eventId = getSdkEventId(event);
     if (eventId) state.latestEventId = eventId;
-    // A turn boundary the runtime stamps with an agent says nothing about the main agent's turn,
-    // which is the one a tail read resumes from.
-    const agentTurnEvent = isStampedAgentTurnEvent(event);
-    if (showsAgentTurnsAreStamped(event)) state.agentTurnsStamped = true;
     if (event.type === "assistant.turn_start") {
       state.turnIndex += 1;
       state.latestTurnId = getSdkTurnId(event) ?? `turn-${state.turnIndex}`;
-      if (!agentTurnEvent) {
-        state.activeTurnId = state.latestTurnId;
-        state.activeTurnInstanceId = getAssistantTurnInstanceId(
-          event,
-          `turn-instance-${state.turnIndex}`,
-        );
-        recordTurnCheckpoint(lineStartOffset);
-      }
     }
-    if (isTurnTerminalEvent(event)) {
-      if (eventId) state.latestTerminalEventId = eventId;
-      if (!agentTurnEvent) {
-        state.activeTurnId = undefined;
-        state.activeTurnInstanceId = undefined;
-        recordTurnCheckpoint(lineStartOffset);
-      }
+    if (isTurnTerminalEvent(event) && eventId) state.latestTerminalEventId = eventId;
+    if (advanceTranscriptCursor(state.cursor, event, agentOwners)) {
+      state.checkpoints.push({ offset: lineStartOffset, cursor: cloneTranscriptCursor(state.cursor) });
     }
     if (
       event.type === "tool.execution_start"
@@ -620,6 +573,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     state.visiblePublishVisualToolCallIds = [...visiblePublishVisualToolCallIds];
     state.activity = visibleActivityTracker.getState();
     state.agents = agentFold.getState();
+    state.agentOwners = agentOwners.entries();
     return state;
   };
 
@@ -628,56 +582,56 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
 
 /**
  * Collapse checkpoints that can never be selected again into the base checkpoint. Any future
- * `turnStateOffset` is at least `scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES`, so older
+ * `cursorOffset` is at least `scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES`, so older
  * checkpoints only matter through the most recent one below that bound.
  */
-function pruneTurnCheckpoints(state: EventLogStatsScannerState, scannedBytes: number): void {
+function pruneCursorCheckpoints(state: EventLogStatsScannerState, scannedBytes: number): void {
   const minUsefulOffset = scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES;
   let collapseCount = 0;
   while (
-    collapseCount < state.turnCheckpoints.length
-    && state.turnCheckpoints[collapseCount]!.offset < minUsefulOffset
+    collapseCount < state.checkpoints.length
+    && state.checkpoints[collapseCount]!.offset < minUsefulOffset
   ) {
     collapseCount += 1;
   }
   // Backstop for logs with very short turns, where the tail window alone bounds nothing useful.
-  const overflow = state.turnCheckpoints.length - collapseCount - EVENT_LOG_TURN_CHECKPOINT_MAX;
+  const overflow = state.checkpoints.length - collapseCount - EVENT_LOG_TURN_CHECKPOINT_MAX;
   if (overflow > 0) collapseCount += overflow;
   if (collapseCount === 0) return;
-  state.baseTurnCheckpoint = state.turnCheckpoints[collapseCount - 1]!;
-  state.turnCheckpoints = state.turnCheckpoints.slice(collapseCount);
+  state.baseCheckpoint = state.checkpoints[collapseCount - 1]!;
+  state.checkpoints = state.checkpoints.slice(collapseCount);
 }
 
-function resolveTurnState(
+/**
+ * The cursor in effect just before `cursorOffset`: the last checkpoint written by an earlier line.
+ * Undefined when the backstop has already collapsed that checkpoint into a later base.
+ */
+function resolveTranscriptCursor(
   state: EventLogStatsScannerState,
-  turnStateOffset: number,
-): TailTurnState {
-  let selected = state.baseTurnCheckpoint;
+  cursorOffset: number,
+): TranscriptCursor | undefined {
+  if (state.baseCheckpoint.offset >= cursorOffset) return undefined;
+  let selected = state.baseCheckpoint;
   let low = 0;
-  let high = state.turnCheckpoints.length - 1;
+  let high = state.checkpoints.length - 1;
   while (low <= high) {
     const mid = (low + high) >> 1;
-    const checkpoint = state.turnCheckpoints[mid]!;
-    if (checkpoint.offset < turnStateOffset) {
+    const checkpoint = state.checkpoints[mid]!;
+    if (checkpoint.offset < cursorOffset) {
       selected = checkpoint;
       low = mid + 1;
     } else {
       high = mid - 1;
     }
   }
-  return {
-    initialTurnIndex: selected.turnIndex,
-    ...(selected.activeTurnId ? { initialActiveTurnId: selected.activeTurnId } : {}),
-    ...(selected.activeTurnInstanceId
-      ? { initialActiveTurnInstanceId: selected.activeTurnInstanceId }
-      : {}),
-  };
+  return cloneTranscriptCursor(selected.cursor);
 }
 
 function buildEventLogStats(
   state: EventLogStatsScannerState,
-  turnStateOffset: number,
+  cursorOffset: number,
 ): EventLogStats {
+  const cursor = resolveTranscriptCursor(state, cursorOffset);
   return {
     eventCount: state.eventCount,
     candidateEventCount: state.candidateEventCount,
@@ -686,10 +640,7 @@ function buildEventLogStats(
     ...(state.activity.lastVisibleActivityAt
       ? { lastVisibleActivityAt: state.activity.lastVisibleActivityAt }
       : {}),
-    turnState: {
-      ...resolveTurnState(state, turnStateOffset),
-      ...(state.agentTurnsStamped ? { agentTurnsStamped: true } : {}),
-    },
+    ...(cursor ? { cursor } : {}),
     coverage: {
       ...(state.latestEventId ? { latestEventId: state.latestEventId } : {}),
       ...(state.latestTurnId ? { latestTurnId: state.latestTurnId } : {}),
@@ -702,7 +653,7 @@ function buildEventLogStats(
 function scanEventLogStatsFromBuffer(
   contentBuffer: Buffer,
   sessionId: string,
-  turnStateOffset: number,
+  cursorOffset: number,
 ): EventLogStats {
   const scanner = createEventLogStatsScanner(sessionId);
   let lineStart = 0;
@@ -718,7 +669,7 @@ function scanEventLogStatsFromBuffer(
     scanner.processLine(contentBuffer.subarray(lineStart), lineStart);
   }
 
-  return buildEventLogStats(scanner.syncState(), turnStateOffset);
+  return buildEventLogStats(scanner.syncState(), cursorOffset);
 }
 
 /**
@@ -779,65 +730,38 @@ async function scanEventLogStats(
       }
     }
 
-    // Large cold scans queue behind a small concurrency cap; small or resumed ones run freely.
-    if (upToBytes - startOffset >= EVENT_LOG_STATS_SCAN_GATE_MIN_BYTES) {
-      const tWait = Date.now();
-      releaseSlot = await acquireEventLogStatsScanSlot();
-      waitedMs = Date.now() - tWait;
+    // Folding is synchronous CPU work; the reader hands the loop back regularly so HTTP requests,
+    // SSE heartbeats, and other sessions keep moving while a large log is scanned.
+    const fold = async (from: EventLogStatsScannerState | undefined, start: number) => {
+      // Large cold scans queue behind a small concurrency cap; small or resumed ones run freely.
+      if (!releaseSlot && upToBytes - start >= EVENT_LOG_STATS_SCAN_GATE_MIN_BYTES) {
+        const tWait = Date.now();
+        releaseSlot = await acquireEventLogStatsScanSlot();
+        waitedMs = Date.now() - tWait;
+      }
+      const scanner = createEventLogStatsScanner(sessionId, from);
+      const { completeEnd, trailing } = await scanJsonlRecords(
+        file,
+        (record, offset) => scanner.processLine(record, offset),
+        { start, end: upToBytes, chunkBytes: EVENT_LOG_STATS_SCAN_CHUNK_BYTES, yieldAfterMs: EVENT_LOG_STATS_SCAN_SLICE_MS },
+      );
+      // Cache only complete lines: a trailing partial line is completed by a later append.
+      const complete = cloneEventLogStatsScannerState(scanner.syncState());
+      // The tail transform also consumes a final line without a trailing newline, so the returned
+      // stats must include it even though it is never folded into the cached state.
+      if (trailing) scanner.processLine(trailing.record, trailing.offset);
+      return { complete, state: scanner.syncState(), scannedBytes: completeEnd };
+    };
+    let folded = await fold(state, startOffset);
+    if (folded.state.cursor.agentTurnsStamped && folded.state.cursor.guessedAgentTurn) {
+      // The log began stamping its agents' turns after the fold had guessed at some. A whole-history
+      // transform reads such a log as stamped from its first event, so fold it again that way.
+      startOffset = 0;
+      folded = await fold(createEventLogStatsScannerState(true), 0);
     }
+    const { scannedBytes } = folded;
 
-    const scanner = createEventLogStatsScanner(sessionId, state);
-    const chunkBuffer = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
-    let fileOffset = startOffset;
-    let pending: Buffer[] = [];
-    let pendingBytes = 0;
-    let pendingStartOffset = startOffset;
-    let scannedBytes = startOffset;
-    let sliceStartedAt = performance.now();
-
-    while (fileOffset < upToBytes) {
-      const maxRead = Math.min(chunkBuffer.length, upToBytes - fileOffset);
-      const { bytesRead } = await file.read(chunkBuffer, 0, maxRead, fileOffset);
-      if (bytesRead === 0) break;
-
-      const chunk = chunkBuffer.subarray(0, bytesRead);
-      let lineStart = 0;
-
-      while (true) {
-        const newlineIndex = chunk.indexOf(0x0a, lineStart);
-        if (newlineIndex < 0) break;
-        const line = chunk.subarray(lineStart, newlineIndex);
-        if (pendingBytes > 0) {
-          scanner.processLine(Buffer.concat([...pending, line], pendingBytes + line.length), pendingStartOffset);
-          pending = [];
-          pendingBytes = 0;
-        } else {
-          scanner.processLine(line, fileOffset + lineStart);
-        }
-        lineStart = newlineIndex + 1;
-        scannedBytes = fileOffset + lineStart;
-      }
-
-      if (lineStart < chunk.length) {
-        if (pendingBytes === 0) pendingStartOffset = fileOffset + lineStart;
-        // The read buffer is reused; retain only this chunk's unfinished fragment.
-        const fragment = Buffer.from(chunk.subarray(lineStart));
-        pending.push(fragment);
-        pendingBytes += fragment.length;
-      }
-      fileOffset += bytesRead;
-
-      // Folding is synchronous CPU work; hand the loop back regularly so HTTP requests,
-      // SSE heartbeats, and other sessions keep moving while a large log is scanned.
-      if (performance.now() - sliceStartedAt >= EVENT_LOG_STATS_SCAN_SLICE_MS) {
-        await yieldToEventLoop();
-        sliceStartedAt = performance.now();
-      }
-    }
-
-    // Cache only complete lines: a trailing partial line is completed by a later append.
-    const persistedState = cloneEventLogStatsScannerState(scanner.syncState());
-    pruneTurnCheckpoints(persistedState, scannedBytes);
+    pruneCursorCheckpoints(folded.complete, scannedBytes);
     if (scannedBytes > 0 && eventLogStatsCacheGeneration === generation) {
       const fingerprint = await readScannedRegionFingerprint(file, scannedBytes);
       const current = getCachedEventLogStatsEntry(eventsPath, sessionId);
@@ -848,20 +772,14 @@ async function scanEventLogStats(
           eventsPath,
           sessionId,
           scannedBytes,
-          state: persistedState,
+          state: folded.complete,
           fingerprint,
           fileId,
         });
       }
     }
 
-    // The tail transform also consumes a final line without a trailing newline, so the returned
-    // stats must include it even though it is never folded into the cached state.
-    if (pendingBytes > 0) {
-      scanner.processLine(Buffer.concat(pending, pendingBytes), pendingStartOffset);
-    }
-
-    return { state: scanner.syncState(), resumedFrom: startOffset, scannedBytes, waitedMs };
+    return { state: folded.state, resumedFrom: startOffset, scannedBytes, waitedMs };
   } finally {
     releaseSlot?.();
     await file.close();
@@ -877,29 +795,42 @@ async function readMessagesFromDiskFull(
   metadata: Record<string, unknown> = {},
 ): Promise<ReadMessagesFromDiskResult> {
   const tRead = Date.now();
-  let raw: string;
+  const events: any[] = [];
+  let malformedEventCount = 0;
+  let parseMs = 0;
+  // Streamed rather than read into one string: a history can be hundreds of MB. Events the
+  // transcript never reads keep only their envelope.
+  const addRecord = (record: Buffer): void => {
+    const parseStartedAt = performance.now();
+    const line = withoutCarriageReturn(record).toString("utf-8");
+    if (line.trim()) {
+      try {
+        events.push(projectTranscriptEvent(JSON.parse(line)));
+      } catch {
+        malformedEventCount += 1;
+      }
+    }
+    parseMs += performance.now() - parseStartedAt;
+  };
+  let bytes: number;
   try {
-    raw = await readFile(eventsPath, "utf-8");
+    const file = await open(eventsPath, "r");
+    try {
+      const { size } = await file.stat();
+      const { trailing } = await scanJsonlRecords(file, addRecord, { end: size, chunkBytes: EVENT_LOG_STATS_SCAN_CHUNK_BYTES });
+      if (trailing) addRecord(trailing.record);
+      bytes = size;
+    } finally {
+      await file.close();
+    }
   } catch {
     return emptyReadResult();
   }
+  parseMs = Math.round(parseMs);
   deps.recordSpan("session.readFromDisk.fullRead", Date.now() - tRead, sessionId, {
-    bytes: Buffer.byteLength(raw),
+    bytes,
     ...metadata,
   });
-
-  const tParse = Date.now();
-  const events: any[] = [];
-  let malformedEventCount = 0;
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      events.push(JSON.parse(line));
-    } catch {
-      malformedEventCount += 1;
-    }
-  }
-  const parseMs = Date.now() - tParse;
 
   const tTransform = Date.now();
   const messages = transformEventsToMessages(events, sessionId);
@@ -1136,15 +1067,15 @@ export async function readMessagesFromDisk(
     if (tail.readFullFile && tail.fullContentBuffer) {
       const tStats = Date.now();
       stats = scanEventLogStatsFromBuffer(tail.fullContentBuffer, sessionId, tail.startOffset);
-      derivedTailMessages = transformEventsToMessages(tail.events, sessionId, stats.turnState);
+      derivedTailMessages = transformEventsToMessages(tail.events, sessionId, { initialCursor: stats.cursor });
       deps.recordSpan("session.readFromDisk.stats", Date.now() - tStats, sessionId, {
         cacheResult: "derived",
         eventCount: stats.eventCount,
         candidateEventCount: stats.candidateEventCount,
         malformedCandidateCount: stats.malformedCandidateCount,
         totalMessages: stats.totalEntries,
-        initialTurnIndex: stats.turnState.initialTurnIndex,
-        hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
+        initialTurnIndex: stats.cursor?.turnIndex,
+        hasActiveTurn: stats.cursor?.activeTurnId !== undefined,
       });
     } else {
       const tStats = Date.now();
@@ -1162,8 +1093,8 @@ export async function readMessagesFromDisk(
         candidateEventCount: stats.candidateEventCount,
         malformedCandidateCount: stats.malformedCandidateCount,
         totalMessages: stats.totalEntries,
-        initialTurnIndex: stats.turnState.initialTurnIndex,
-        hasActiveTurn: stats.turnState.initialActiveTurnId !== undefined,
+        initialTurnIndex: stats.cursor?.turnIndex,
+        hasActiveTurn: stats.cursor?.activeTurnId !== undefined,
       });
     }
   } catch (err) {
@@ -1192,8 +1123,21 @@ export async function readMessagesFromDisk(
     });
   }
 
+  if (!stats.cursor) {
+    // The saved cursor for this window start was collapsed; guessing would mislabel turns.
+    deps.recordSpan("session.readFromDisk.tailFallback", Date.now() - t0, sessionId, {
+      reason: "cursor-unavailable",
+      startOffset: tail.startOffset,
+      fileSize: tail.fileSize,
+    });
+    return readMessagesFromDiskFull(deps, sessionId, eventsPath, t0, opts, {
+      fallbackReason: "cursor-unavailable",
+    });
+  }
+
   const tTransform = Date.now();
-  const tailMessages = derivedTailMessages ?? transformEventsToMessages(tail.events, sessionId, stats.turnState);
+  const tailMessages = derivedTailMessages
+    ?? transformEventsToMessages(tail.events, sessionId, { initialCursor: stats.cursor });
   const transformMs = derivedTailMessages ? 0 : Date.now() - tTransform;
 
   if (!tail.readFullFile && tailMessages.length < Math.min(latestLimit, stats.totalEntries)) {
@@ -1235,9 +1179,21 @@ export async function readMessagesFromDisk(
     total,
     hasMore: start > 0,
     lastVisibleActivityAt: stats.lastVisibleActivityAt,
-    coverage: stats.coverage,
+    coverage: withLatestEventId(stats.coverage, tail.events),
     agents: stats.agents,
   };
+}
+
+/**
+ * The stats fold only parses transcript events, so its latest event id can lag behind a later
+ * envelope-only event. The tail window reaches the end of the log and holds every envelope.
+ */
+function withLatestEventId(coverage: SessionHistoryCoverage, tailEvents: readonly unknown[]): SessionHistoryCoverage {
+  for (let index = tailEvents.length - 1; index >= 0; index -= 1) {
+    const latestEventId = getSdkEventId(tailEvents[index]);
+    if (latestEventId) return { ...coverage, latestEventId };
+  }
+  return coverage;
 }
 
 export async function readMessagesAroundEventFromDisk(
@@ -1473,64 +1429,32 @@ export async function findSessionEventIndex(
 
   let match: { index: number; event: unknown } | undefined;
   let totalEvents = 0;
+  const processLine = (record: Buffer): void => {
+    const line = withoutCarriageReturn(record).toString("utf-8").trim();
+    if (!line) return;
+    const index = totalEvents;
+    totalEvents += 1;
+    if (match) return;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (matches(event)) {
+      match = { index, event };
+      return;
+    }
+    options.onEventBefore?.(event, index);
+  };
+
   const file = await open(eventsPath, "r");
   try {
-    const chunk = Buffer.alloc(EVENT_LOG_STATS_SCAN_CHUNK_BYTES);
-    let pending: Buffer[] = [];
-    let pendingBytes = 0;
-    let position = 0;
-
-    const processLine = (lineBuffer: Buffer): void => {
-      const contentEnd = lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 0x0d
-        ? lineBuffer.length - 1
-        : lineBuffer.length;
-      const line = lineBuffer.subarray(0, contentEnd).toString("utf-8").trim();
-      if (!line) return;
-      const index = totalEvents;
-      totalEvents += 1;
-      if (match) return;
-      let event: unknown;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (matches(event)) {
-        match = { index, event };
-        return;
-      }
-      options.onEventBefore?.(event, index);
-    };
-
-    while (true) {
-      const { bytesRead } = await file.read(chunk, 0, chunk.length, position);
-      if (bytesRead === 0) break;
-      position += bytesRead;
-      let start = 0;
-      for (let i = 0; i < bytesRead; i += 1) {
-        if (chunk[i] !== 0x0a) continue;
-        const segment = chunk.subarray(start, i);
-        if (pendingBytes > 0) {
-          processLine(Buffer.concat([...pending, segment], pendingBytes + segment.length));
-          pending = [];
-          pendingBytes = 0;
-        } else {
-          processLine(segment);
-        }
-        start = i + 1;
-      }
-      if (start < bytesRead) {
-        const rest = Buffer.from(chunk.subarray(start, bytesRead));
-        pending.push(rest);
-        pendingBytes += rest.length;
-        if (pendingBytes > SESSION_EVENT_LOG_MAX_LINE_BYTES) {
-          throw new Error(`events.jsonl line exceeds ${SESSION_EVENT_LOG_MAX_LINE_BYTES} bytes at offset ${position - pendingBytes}`);
-        }
-      }
-    }
-    if (pendingBytes > 0) {
-      processLine(Buffer.concat(pending, pendingBytes));
-    }
+    const { trailing } = await scanJsonlRecords(file, processLine, {
+      chunkBytes: EVENT_LOG_STATS_SCAN_CHUNK_BYTES,
+      maxRecordBytes: SESSION_EVENT_LOG_MAX_LINE_BYTES,
+    });
+    if (trailing) processLine(trailing.record);
   } finally {
     await file.close();
   }

@@ -12,7 +12,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
+import { scanJsonlRecords } from "./jsonl-lines.js";
 import {
   isCopilotContextTier,
   type CopilotContextTier,
@@ -125,43 +126,63 @@ export function deriveModelStateFromEventsFile(eventsPath: string): DerivedModel
 
 /** Model-bearing events are identified by these markers; other lines never need parsing. */
 const MODEL_EVENT_MARKERS = ['"session.model_change"', '"session.resume"', '"session.start"'];
+const MODEL_EVENT_MARKER_BYTES = MODEL_EVENT_MARKERS.map((marker) => Buffer.from(marker));
 /** Bytes read from each end before falling back to a streamed scan of the whole file. */
 const MODEL_STATE_HEAD_BYTES = 256 * 1024;
 const MODEL_STATE_TAIL_BYTES = 2 * 1024 * 1024;
-const MODEL_STATE_STREAM_CHUNK_BYTES = 256 * 1024;
 
 function lineMayCarryModelState(line: string): boolean {
   return MODEL_EVENT_MARKERS.some((marker) => line.includes(marker));
 }
 
-function foldModelStateLines(
+function foldModelStateLine(
   state: DerivedModelState,
-  content: string,
+  line: string,
   track?: { preservedFromEarlier: boolean },
 ): DerivedModelState {
-  let next = state;
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || !lineMayCarryModelState(trimmed)) continue;
-    try {
-      const extracted = extractFromEvent(JSON.parse(trimmed));
-      if (extracted !== null) {
-        const { preserveReasoningEffort, preserveContextTier, ...nextState } = extracted;
-        if (track) track.preservedFromEarlier = preserveReasoningEffort || preserveContextTier;
-        next = {
-          ...nextState,
-          ...(preserveReasoningEffort && next.reasoningEffort !== undefined
-            ? { reasoningEffort: next.reasoningEffort }
-            : {}),
-          ...(preserveContextTier && next.contextTier !== undefined
-            ? { contextTier: next.contextTier }
-            : {}),
-        };
-      }
-    } catch {
-      // skip malformed lines
-    }
+  const trimmed = line.trim();
+  if (!trimmed || !lineMayCarryModelState(trimmed)) return state;
+  try {
+    const extracted = extractFromEvent(JSON.parse(trimmed));
+    if (extracted === null) return state;
+    const { preserveReasoningEffort, preserveContextTier, ...nextState } = extracted;
+    if (track) track.preservedFromEarlier = preserveReasoningEffort || preserveContextTier;
+    return {
+      ...nextState,
+      ...(preserveReasoningEffort && state.reasoningEffort !== undefined
+        ? { reasoningEffort: state.reasoningEffort }
+        : {}),
+      ...(preserveContextTier && state.contextTier !== undefined
+        ? { contextTier: state.contextTier }
+        : {}),
+    };
+  } catch {
+    return state; // skip malformed lines
   }
+}
+
+/** Decodes a record only when it may carry model state. */
+function modelStateLine(record: Buffer): string | undefined {
+  return MODEL_EVENT_MARKER_BYTES.some((marker) => record.includes(marker))
+    ? record.toString("utf-8")
+    : undefined;
+}
+
+/** Folds the model-bearing records of `[start, end)`, including an unterminated last record. */
+async function foldModelStateRange(
+  file: FileHandle,
+  state: DerivedModelState,
+  range: { start: number; end: number },
+  chunkBytes?: number,
+): Promise<DerivedModelState> {
+  let next = state;
+  const fold = (record: Buffer) => {
+    const line = modelStateLine(record);
+    if (line !== undefined) next = foldModelStateLine(next, line);
+  };
+  // Yield between reads so a 100 MB log never pins the event loop.
+  const { trailing } = await scanJsonlRecords(file, fold, { ...range, chunkBytes, yieldAfterMs: 0 });
+  if (trailing) fold(trailing.record);
   return next;
 }
 
@@ -169,13 +190,12 @@ function foldModelStateLines(
  * Bounded, non-blocking variant for request paths. The model is set by `session.start`
  * (head of the log) and changed by later `session.model_change` / `session.resume`
  * events, which for a live session are almost always within the last couple of MB.
- * Read the head and the tail; if the tail region is self-sufficient (it contains a
- * model-bearing event) the head is irrelevant because later events win. Only when
- * neither end carries a model event do we stream the middle, in chunks, yielding
- * between them so a 100 MB log never pins the event loop.
+ * Read the tail first: if it contains a model-bearing event that does not inherit fields
+ * from an earlier one, later events win and the rest of the log is irrelevant. Otherwise
+ * stream the log up to the tail window and fold the tail on top.
  */
 export async function deriveModelStateFromEventsFileAsync(eventsPath: string): Promise<DerivedModelState> {
-  let file: Awaited<ReturnType<typeof open>>;
+  let file: FileHandle;
   try {
     file = await open(eventsPath, "r");
   } catch {
@@ -184,47 +204,31 @@ export async function deriveModelStateFromEventsFileAsync(eventsPath: string): P
   try {
     const { size } = await file.stat();
     if (size <= MODEL_STATE_HEAD_BYTES + MODEL_STATE_TAIL_BYTES) {
-      const buffer = Buffer.alloc(size);
-      const { bytesRead } = await file.read(buffer, 0, size, 0);
-      return foldModelStateLines({}, buffer.subarray(0, bytesRead).toString("utf-8"));
+      // Small enough for one read, so the answer never waits on the event loop.
+      return await foldModelStateRange(file, {}, { start: 0, end: size }, Math.max(1, size));
     }
 
-    // Tail first: the newest model-bearing event wins, so a tail hit is authoritative
-    // unless that event inherits (preserves) fields from an earlier one we have not seen.
+    // The tail window starts mid-record; its first record is left to the streamed pass.
     const tailStart = size - MODEL_STATE_TAIL_BYTES;
-    const tailBuffer = Buffer.alloc(MODEL_STATE_TAIL_BYTES);
-    const tailRead = await file.read(tailBuffer, 0, MODEL_STATE_TAIL_BYTES, tailStart);
-    const tailText = tailBuffer.subarray(0, tailRead.bytesRead).toString("utf-8");
-    // Drop the partial first line of the tail window; it is covered by the streamed pass.
-    const tailFromLine = tailText.indexOf("\n");
-    const tailLines = tailFromLine >= 0 ? tailText.slice(tailFromLine + 1) : "";
-    if (lineMayCarryModelState(tailLines)) {
-      const track = { preservedFromEarlier: false };
-      const fromTail = foldModelStateLines({}, tailLines, track);
-      if (fromTail.model !== undefined && !track.preservedFromEarlier) return fromTail;
-    }
+    let tailLinesStart: number | undefined;
+    const tailLines: string[] = [];
+    const collectTail = (record: Buffer, offset: number) => {
+      if (tailLinesStart === undefined) {
+        tailLinesStart = offset + record.length + 1;
+        return;
+      }
+      const line = modelStateLine(record);
+      if (line !== undefined) tailLines.push(line);
+    };
+    const tail = await scanJsonlRecords(file, collectTail, { start: tailStart, end: size, chunkBytes: MODEL_STATE_TAIL_BYTES });
+    if (tail.trailing && tailLinesStart !== undefined) collectTail(tail.trailing.record, tail.trailing.offset);
 
-    // Otherwise stream from the head up to the tail window in chunks, yielding between
-    // them, then fold the tail on top so later events still win.
-    let state: DerivedModelState = {};
-    const chunk = Buffer.alloc(MODEL_STATE_STREAM_CHUNK_BYTES);
-    let offset = 0;
-    let leftover = "";
-    const streamEnd = tailStart + (tailFromLine >= 0 ? tailFromLine + 1 : tailRead.bytesRead);
-    while (offset < streamEnd) {
-      const toRead = Math.min(chunk.length, streamEnd - offset);
-      const { bytesRead } = await file.read(chunk, 0, toRead, offset);
-      if (bytesRead === 0) break;
-      const text = leftover + chunk.subarray(0, bytesRead).toString("utf-8");
-      const lastNewline = text.lastIndexOf("\n");
-      const complete = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : "";
-      leftover = lastNewline >= 0 ? text.slice(lastNewline + 1) : text;
-      if (lineMayCarryModelState(complete)) state = foldModelStateLines(state, complete);
-      offset += bytesRead;
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-    if (leftover) state = foldModelStateLines(state, leftover);
-    return foldModelStateLines(state, tailLines);
+    const track = { preservedFromEarlier: false };
+    const fromTail = tailLines.reduce((state, line) => foldModelStateLine(state, line, track), {} as DerivedModelState);
+    if (fromTail.model !== undefined && !track.preservedFromEarlier) return fromTail;
+
+    const beforeTail = await foldModelStateRange(file, {}, { start: 0, end: tailLinesStart ?? size });
+    return tailLines.reduce((state, line) => foldModelStateLine(state, line), beforeTail);
   } catch {
     return {};
   } finally {
