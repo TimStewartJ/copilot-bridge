@@ -1,21 +1,39 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
-import type { ToolCall } from "../../api";
+import type { ToolArgs, ToolCall } from "../../api";
 import {
+  collectActivityCalls,
   getReasoningHeadline,
   getReasoningTail,
+  getStepStatus,
+  launchesBackgroundAgent,
   summarizeActivity,
   type ActivityBlock as ActivityBlockModel,
   type ActivityStep,
   type ActivitySummary,
 } from "../../lib/chat-activity";
-import { getToolCallStatus } from "../../lib/tool-call-status";
 import { buildRenderableSegmentRoots, type ToolCallForest } from "../../lib/tool-call-tree";
-import { describeToolCall, formatDuration } from "../../lib/tool-presentation";
+import {
+  describeToolCall,
+  describeToolCallBriefly,
+  formatDuration,
+  type ToolPresentationContext,
+} from "../../lib/tool-presentation";
+import { agentDisplayName, describeWaitingOnAgents, listAgentNames } from "../../lib/transcript-agents";
+import { useNow } from "../../hooks/useNow";
 import ToolCallNodeGroup from "../ToolCallNodeGroup";
 import ReasoningStep from "./ReasoningStep";
 import { useChatRunActive } from "./chat-run-context";
+import { ActivityBlockKeyProvider, useAgentNameResolver } from "./transcript-agents-context";
 import { DS, cx } from "../../design/tokens";
+
+/** What to say on the line of a run whose main agent has stopped to wait for agents. */
+export interface ActivityWaitingText {
+  label: string;
+  detail?: string;
+  /** How many agents are being waited on. Others may have finished earlier in the same stretch. */
+  count?: number;
+}
 
 interface ActivityBlockProps {
   block: ActivityBlockModel;
@@ -24,26 +42,39 @@ interface ActivityBlockProps {
   onToggle: (key: string, expanded: boolean) => void;
   /** The run is still going and this block is where its next step will land. */
   live?: boolean;
+  /**
+   * This block is the last thing in the transcript, so a step still in flight in it is what the
+   * run is doing now. An agent can leave a step in flight in an earlier block; that block keeps
+   * its summary, and the agent's row inside it shows the step. A block shown on its own is the last.
+   */
+  latest?: boolean;
   /** What the agent says it is doing, shown while no single step is in flight. */
   liveLabel?: string;
+  /** The main agent is waiting on agents. Shown in place of whichever agent's step came last. */
+  waiting?: ActivityWaitingText;
 }
 
 interface HeaderText {
   label: string;
   detail?: string;
   detailMono?: boolean;
+  /**
+   * The line is about agents and the main agent did nothing else in this stretch, so the figures
+   * beside it are the agents' steps and need not say whose they are.
+   */
+  agentsOnly?: boolean;
+  /**
+   * How many agents the line speaks of, when more may have worked in the stretch: the ones still
+   * being waited on, not the ones that have finished. The figures then say how many they cover.
+   */
+  agentsNamed?: number;
 }
 
-/** Re-render once a second while something is in flight, so its elapsed time keeps moving. */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
+/** Shown only where the line has room for it: beside a side panel or on a phone it is dropped. */
+const ROOMY_ONLY = "hidden @[30rem]/activity:inline";
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 /**
@@ -78,20 +109,6 @@ function ThoughtWindow({ content }: { content: string }) {
   );
 }
 
-function getToolCalls(steps: ActivityStep[]): ToolCall[] {
-  const seen = new Set<string>();
-  const toolCalls: ToolCall[] = [];
-  for (const step of steps) {
-    if (step.kind !== "tools") continue;
-    for (const entry of step.entries) {
-      if (seen.has(entry.toolCall.toolCallId)) continue;
-      seen.add(entry.toolCall.toolCallId);
-      toolCalls.push(entry.toolCall);
-    }
-  }
-  return toolCalls;
-}
-
 function getStreamingThought(steps: ActivityStep[]): string | undefined {
   for (let index = steps.length - 1; index >= 0; index -= 1) {
     const step = steps[index]!;
@@ -100,38 +117,36 @@ function getStreamingThought(steps: ActivityStep[]): string | undefined {
   return undefined;
 }
 
-function agentLabel(toolCall: ToolCall): string {
-  return toolCall.name.replace(/^🤖\s*/, "") || "Agent";
+function getDescriptionArg(args: ToolArgs | undefined): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const value = args.description;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function workedLabel(subject: string | undefined, durationMs: number | undefined): string {
+  const verb = subject ? `${subject} worked` : "Worked";
+  return durationMs !== undefined && durationMs >= 1000 ? `${verb} for ${formatDuration(durationMs)}` : verb;
 }
 
 /**
- * The step in flight, for the collapsed line. Work inside a delegated agent is attributed to it:
- * an agent can run for minutes, so the line names the agent and what it is doing right now rather
- * than sitting on its brief. Calls an agent makes are its own business and are not counted as
- * other steps the reader is waiting on.
+ * The main agent's step in flight, for the collapsed line. Steps agents take in the background are
+ * left to their own rows: several agents take turns many times a minute, and a line that followed
+ * them would say something different every time it was read.
  */
-function describeRunningStep(running: ToolCall[], toolForest: ToolCallForest): HeaderText {
-  const parentAgent = (toolCall: ToolCall): ToolCall | undefined => {
-    const parent = toolCall.parentToolCallId
-      ? toolForest.nodesById.get(toolCall.parentToolCallId)?.toolCall
-      : undefined;
-    return parent?.isSubAgent ? parent : undefined;
-  };
-  const own = running.filter((toolCall) => !toolCall.parentToolCallId);
-  const current = own[own.length - 1] ?? running[running.length - 1]!;
-  const agent = current.isSubAgent ? current : parentAgent(current);
-  // Agents still running whose launching call already returned (background agents) count too.
-  const otherAgents = new Set(
-    running.flatMap((toolCall) => {
-      const owner = toolCall.isSubAgent ? toolCall : parentAgent(toolCall);
-      return owner && owner.toolCallId !== agent?.toolCallId ? [owner.toolCallId] : [];
-    }),
-  );
-  const others = own.filter((toolCall) => toolCall !== current && !toolCall.isSubAgent).length + otherAgents.size;
-  const more = others > 0 ? `+${others} more` : undefined;
+function describeStepInFlight(
+  main: ToolCall[],
+  inAgents: ToolCall[],
+  context: ToolPresentationContext,
+): HeaderText | undefined {
+  const running = main.filter((toolCall) => getStepStatus(toolCall) === "running");
+  if (running.length === 0) return undefined;
 
-  if (!agent) {
-    const presentation = describeToolCall(current, "running");
+  const ownSteps = running.filter((toolCall) => !toolCall.isSubAgent);
+  if (ownSteps.length > 0) {
+    const current = ownSteps[ownSteps.length - 1]!;
+    const presentation = describeToolCall(current, "running", context);
+    const others = running.length - 1;
+    const more = others > 0 ? `+${others} more` : undefined;
     return {
       label: presentation.verb,
       detail: [presentation.target, more].filter(Boolean).join("  ·  ") || undefined,
@@ -139,40 +154,60 @@ function describeRunningStep(running: ToolCall[], toolForest: ToolCallForest): H
     };
   }
 
-  const step = current === agent
-    ? [...running].reverse().find((toolCall) => toolCall.parentToolCallId === agent.toolCallId)
-    : current;
-  const stepText = step
-    ? (() => {
-        const presentation = describeToolCall(step, "running");
-        return [presentation.verb, presentation.target].filter(Boolean).join(" ");
-      })()
-    : describeToolCall(agent, "running").target;
+  // Everything in flight is an agent the main agent handed work to and is waiting for.
+  const agentsOnly = main.every((toolCall) => toolCall.isSubAgent);
+  if (running.length > 1) {
+    const waitingOn = describeWaitingOnAgents(running.map((toolCall) => ({
+      name: agentDisplayName(toolCall),
+      description: toolCall.agent?.description ?? getDescriptionArg(toolCall.args),
+    })));
+    return { label: waitingOn.label, detail: waitingOn.detail, agentsOnly, agentsNamed: waitingOn.count };
+  }
+  // One agent can run for minutes, so the line names it and what it is doing right now.
+  const agent = running[0]!;
+  const step = [...inAgents].reverse().find((toolCall) => (
+    toolCall.parentToolCallId === agent.toolCallId && getStepStatus(toolCall) === "running"
+  ));
+  const stepPresentation = step ? describeToolCall(step, "running", context) : undefined;
   return {
-    label: agentLabel(agent),
-    detail: [stepText, more].filter(Boolean).join("  ·  ") || undefined,
+    label: agentDisplayName(agent),
+    detail: stepPresentation
+      ? describeToolCallBriefly(stepPresentation)
+      : describeToolCall(agent, "running", context).target,
+    agentsOnly,
+    agentsNamed: 1,
   };
 }
 
-function describeHeader(
-  steps: ActivityStep[],
-  summary: ActivitySummary,
-  live: boolean,
-  inFlight: boolean,
-  liveLabel: string | undefined,
-  toolForest: ToolCallForest,
-): HeaderText {
-  const toolCalls = getToolCalls(steps);
-  if (inFlight && summary.streamingThought) return { label: "Thinking" };
+function describeHeader(input: {
+  steps: ActivityStep[];
+  summary: ActivitySummary;
+  active: boolean;
+  inFlight: boolean;
+  liveLabel: string | undefined;
+  waiting: ActivityWaitingText | undefined;
+  toolForest: ToolCallForest;
+  context: ToolPresentationContext;
+}): HeaderText {
+  const { steps, summary, active, inFlight, liveLabel, waiting, toolForest, context } = input;
+  const { main, inAgents } = collectActivityCalls(steps);
 
-  if (inFlight && summary.runningCount > 0) {
-    const running = toolCalls.filter((toolCall) => getToolCallStatus(toolCall) === "running");
-    return describeRunningStep(running, toolForest);
+  if (active) {
+    // The runtime says the main agent has stopped, so nothing of its own is in flight.
+    if (waiting) {
+      return {
+        label: waiting.label,
+        detail: waiting.detail,
+        agentsOnly: main.every((toolCall) => toolCall.isSubAgent),
+        agentsNamed: waiting.count,
+      };
+    }
+    if (inFlight && summary.streamingThought) return { label: "Thinking" };
+    const step = inFlight ? describeStepInFlight(main, inAgents, context) : undefined;
+    return step ?? { label: liveLabel?.trim() || "Working" };
   }
 
-  if (live) return { label: liveLabel?.trim() || "Working" };
-
-  if (toolCalls.length === 0) {
+  if (main.length === 0 && inAgents.length === 0) {
     const first = steps.find((step) => step.kind === "reasoning");
     return {
       label: "Thought",
@@ -180,24 +215,60 @@ function describeHeader(
     };
   }
 
-  if (toolCalls.length === 1) {
-    const only = toolCalls[0]!;
-    const status = getToolCallStatus(only);
-    // A lone call that never recorded a completion, in a run that is over, reads in the past tense.
-    const presentation = describeToolCall(only, status === "running" ? "done" : status);
-    return { label: presentation.verb, detail: presentation.target, detailMono: presentation.mono };
+  // Agents launched in an earlier stretch that kept working through this one.
+  const continued = steps.flatMap((step) => step.kind === "agent" ? [step.agentToolCallId] : []);
+
+  if (main.length === 0) {
+    // Nothing here is the main agent's.
+    const only = continued.length === 1 ? toolForest.nodesById.get(continued[0]!)?.toolCall : undefined;
+    const subject = only ? agentDisplayName(only) : continued.length > 1 ? plural(continued.length, "agent") : undefined;
+    return { label: workedLabel(subject, summary.durationMs), agentsOnly: subject !== undefined };
   }
 
-  return {
-    label: summary.durationMs !== undefined && summary.durationMs >= 1000
-      ? `Worked for ${formatDuration(summary.durationMs)}`
-      : "Worked",
-  };
+  const handedOut = continued.length === 0
+    && main.every((toolCall) => toolCall.isSubAgent && getStepStatus(toolCall) !== "failed");
+
+  if (handedOut && summary.agentToolCount === 0 && main.every(launchesBackgroundAgent)) {
+    // All that happened here is that work was handed out. What came of it is on the agents' rows,
+    // in the stretches where they did it.
+    const [only] = main;
+    return main.length === 1
+      ? {
+          label: `Launched ${agentDisplayName(only!)}`,
+          detail: describeToolCall(only!, "done", context).target,
+          agentsOnly: true,
+        }
+      : {
+          label: `Launched ${plural(main.length, "agent")}`,
+          detail: listAgentNames(main.map((toolCall) => ({ name: agentDisplayName(toolCall) })), 4),
+          agentsOnly: true,
+        };
+  }
+
+  if (main.length === 1 && continued.length === 0) {
+    // One call says it all: the call itself, or a delegation and what its agent did.
+    const only = main[0]!;
+    const status = getStepStatus(only);
+    // A lone call that never recorded a completion, in a run that is over, reads in the past tense.
+    const presentation = describeToolCall(only, status === "running" ? "done" : status, context);
+    return {
+      label: presentation.verb,
+      detail: presentation.target,
+      detailMono: presentation.mono,
+      agentsOnly: only.isSubAgent === true,
+    };
+  }
+
+  // Every call here handed work to an agent, so the stretch is the agents' and reads as theirs.
+  if (handedOut) return { label: workedLabel(plural(main.length, "agent"), summary.durationMs), agentsOnly: true };
+
+  return { label: workedLabel(undefined, summary.durationMs) };
 }
 
 /**
- * Everything the agent did between two things it said, as one line that opens into a timeline of
- * its thinking and tool calls. While the run is live the line names the step in flight.
+ * Everything that happened between two things the agent said, as one line that opens into a
+ * timeline: its thinking, its tool calls, and one row for each agent that was at work. While the
+ * run is live the line names the main agent's step in flight, or says it is waiting on agents.
  */
 export default memo(function ActivityBlock({
   block,
@@ -205,76 +276,134 @@ export default memo(function ActivityBlock({
   expanded,
   onToggle,
   live = false,
+  latest = true,
   liveLabel,
+  waiting,
 }: ActivityBlockProps) {
   const runActive = useChatRunActive();
+  const agentName = useAgentNameResolver();
+  const context = useMemo<ToolPresentationContext>(() => ({ agentName }), [agentName]);
   // Steps with no recorded end are in flight only while the run that owns them is still going.
   const inFlight = useMemo(() => {
     if (!runActive) return false;
     const snapshot = summarizeActivity(block.steps);
     return snapshot.runningCount > 0 || snapshot.streamingThought;
   }, [block.steps, runActive]);
-  const active = live || inFlight;
+  const active = live || (inFlight && latest);
   const now = useNow(active);
   const summary = useMemo(
     () => summarizeActivity(block.steps, active ? now : undefined),
     [active, block.steps, now],
   );
   const header = useMemo(
-    () => describeHeader(block.steps, summary, live, inFlight, liveLabel, toolForest),
-    [block.steps, inFlight, live, liveLabel, summary, toolForest],
+    () => describeHeader({
+      steps: block.steps,
+      summary,
+      active,
+      inFlight,
+      liveLabel,
+      waiting: active ? waiting : undefined,
+      toolForest,
+      context,
+    }),
+    [active, block.steps, context, inFlight, liveLabel, summary, toolForest, waiting],
   );
-  const streamingThought = inFlight ? getStreamingThought(block.steps) : undefined;
+  const streamingThought = active && inFlight ? getStreamingThought(block.steps) : undefined;
   const showThoughtWindow = !expanded && streamingThought !== undefined;
-  const meta: string[] = [];
-  if (summary.toolCount > 1 || (active && summary.toolCount > 0)) {
-    meta.push(`${summary.toolCount} step${summary.toolCount === 1 ? "" : "s"}`);
-  }
-  if (active && summary.durationMs !== undefined && summary.durationMs >= 1000) {
-    meta.push(formatDuration(summary.durationMs, { wholeSeconds: true }));
-  }
+
+  // The figures: the main agent's steps, then how many agents worked and how much they did. A line
+  // that is about those agents alone gives just their steps.
+  const agentSteps = summary.agentToolCount > 0 ? plural(summary.agentToolCount, "step") : undefined;
+  const stepsAreTheNamedAgents = header.agentsOnly === true
+    && (header.agentsNamed === undefined || summary.agentCount <= header.agentsNamed);
+  const agentsAtWork = !stepsAreTheNamedAgents && agentSteps && summary.agentCount > 0
+    ? plural(summary.agentCount, "agent")
+    : undefined;
+  // One step of its own goes without saying, unless it has to be told apart from the agents'.
+  const ownSteps = !header.agentsOnly
+    && (summary.toolCount > 1 || (summary.toolCount > 0 && (active || agentsAtWork !== undefined)))
+    ? plural(summary.toolCount, "step")
+    : undefined;
+  const hasCounts = stepsAreTheNamedAgents ? Boolean(agentSteps) : Boolean(ownSteps || agentsAtWork);
+  const elapsed = active && summary.durationMs !== undefined && summary.durationMs >= 1000
+    ? formatDuration(summary.durationMs, { wholeSeconds: true })
+    : undefined;
+  const failedTotal = summary.failedCount + (header.agentsOnly ? summary.agentFailedCount : 0);
 
   return (
-    <div className="min-w-0" data-activity-block={block.key} data-activity-state={active ? "active" : "done"}>
-      <button
-        type="button"
-        onClick={() => onToggle(block.key, !expanded)}
-        aria-expanded={expanded}
-        className={cx("group/activity", DS.row.inline, DS.row.interactive)}
-      >
-        <ChevronRight
-          size={13}
-          aria-hidden="true"
-          className={cx(DS.row.chevron, "group-hover/activity:text-text-muted", expanded && DS.row.chevronOpen)}
-        />
-        {/* The label keeps its width; the detail takes whatever is left and truncates first. */}
-        <span className={cx(DS.row.label, "font-medium", active ? DS.motion.live : "text-text-secondary")}>
-          {header.label}
-        </span>
-        {header.detail && (
-          <span className={cx(DS.row.detail, "text-text-muted", header.detailMono && "font-mono text-[12px]")}>
-            {header.detail}
+    <div
+      className="min-w-0"
+      data-activity-block={block.key}
+      data-activity-state={active ? "active" : "done"}
+      data-activity-waiting={active && waiting ? "agents" : undefined}
+    >
+      {/* Only the line is measured: a container around the rows would trap the dialogs they open. */}
+      <div className="@container/activity min-w-0">
+        <button
+          type="button"
+          onClick={() => onToggle(block.key, !expanded)}
+          aria-expanded={expanded}
+          className={cx("group/activity", DS.row.inline, DS.row.interactive)}
+        >
+          <ChevronRight
+            size={13}
+            aria-hidden="true"
+            className={cx(DS.row.chevron, "group-hover/activity:text-text-muted", expanded && DS.row.chevronOpen)}
+          />
+          {/* The label keeps its width; the detail takes whatever is left and truncates first. */}
+          <span className={cx(DS.row.label, "font-medium", active ? DS.motion.live : "text-text-secondary")}>
+            {header.label}
           </span>
-        )}
-        {meta.length > 0 && (
-          <span className="shrink-0 whitespace-nowrap pl-1 text-xs tabular-nums text-text-faint">
-            {meta.join(" · ")}
-          </span>
-        )}
-        {summary.failedCount > 0 && (
-          <span className="shrink-0 whitespace-nowrap text-xs text-error/80">
-            {summary.failedCount} failed
-          </span>
-        )}
-      </button>
+          {header.detail && (
+            <span className={cx(DS.row.detail, "text-text-muted", header.detailMono && "font-mono text-[12px]")}>
+              {header.detail}
+            </span>
+          )}
+          {(hasCounts || elapsed) && (
+            <span className="shrink-0 whitespace-nowrap pl-1 text-xs tabular-nums text-text-faint" data-activity-meta="">
+              {stepsAreTheNamedAgents ? agentSteps : (
+                <>
+                  {ownSteps}
+                  {agentsAtWork && (
+                    <>
+                      {ownSteps && " · "}
+                      {agentsAtWork}
+                      <span className={ROOMY_ONLY}>, {agentSteps}</span>
+                    </>
+                  )}
+                </>
+              )}
+              {elapsed && (
+                <>
+                  {hasCounts && " · "}
+                  {elapsed}
+                </>
+              )}
+            </span>
+          )}
+          {failedTotal > 0 && (
+            <span className="shrink-0 whitespace-nowrap text-xs text-error/80">
+              {failedTotal} failed
+            </span>
+          )}
+          {!header.agentsOnly && summary.agentFailedCount > 0 && (
+            <span className={cx("shrink-0 whitespace-nowrap text-xs text-error/80", ROOMY_ONLY)}>
+              {summary.agentFailedCount} failed in agents
+            </span>
+          )}
+        </button>
+      </div>
       {showThoughtWindow && <ThoughtWindow content={streamingThought} />}
       {expanded && (
         <div className={cx(DS.rail, DS.motion.reveal, "pb-1")}>
-          {block.steps.map((step) => {
-            if (step.kind === "reasoning") return <ReasoningStep key={step.key} entry={step.entry} />;
-            const roots = buildRenderableSegmentRoots(step.entries, toolForest);
-            return roots.length > 0 ? <ToolCallNodeGroup key={step.key} nodes={roots} /> : null;
-          })}
+          <ActivityBlockKeyProvider value={block.key}>
+            {block.steps.map((step) => {
+              if (step.kind === "reasoning") return <ReasoningStep key={step.key} entry={step.entry} />;
+              // An agent's step renders under the call that launched it, wherever that call is.
+              const roots = buildRenderableSegmentRoots(step.entries, toolForest);
+              return roots.length > 0 ? <ToolCallNodeGroup key={step.key} nodes={roots} /> : null;
+            })}
+          </ActivityBlockKeyProvider>
         </div>
       )}
     </div>

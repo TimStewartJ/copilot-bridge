@@ -578,6 +578,7 @@ export class SessionAgentRegistry {
     return {
       id: task.id,
       toolCallId: task.toolCallId,
+      name: task.displayName,
       description: task.description,
       status,
       executionMode,
@@ -585,6 +586,7 @@ export class SessionAgentRegistry {
       startedAt: task.startedAt,
       completedAt: task.completedAt,
       activeTimeMs: task.activeTimeMs,
+      activeStartedAt: task.activeStartedAt,
       idleSince: task.idleSince,
       model: task.model,
       error: task.error,

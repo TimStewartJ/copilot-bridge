@@ -37,13 +37,27 @@ export interface ToolPresentation {
   /** Whether the target is literal input (a command, path or pattern) rather than prose. */
   mono: boolean;
   icon: ToolIconName;
+  /** The verb is the call's own account of what it is for, so it reads without the target. */
+  selfDescribed?: boolean;
 }
 
 interface ToolTarget {
   /** Replaces the verb when the call carries its own description of what it is for. */
   label?: string;
+  /** The label is that description, not just a verb in another tense. */
+  selfDescribed?: boolean;
   text?: string;
   mono?: boolean;
+}
+
+/** What a row knows beyond the call itself. */
+export interface ToolPresentationContext {
+  /** The name of the agent with this runtime id, when the session's history has one for it. */
+  agentName?: (agentId: string) => string | undefined;
+}
+
+interface ToolTargetContext extends ToolPresentationContext {
+  running: boolean;
 }
 
 interface ToolVerb {
@@ -51,7 +65,7 @@ interface ToolVerb {
   done: string;
   icon: ToolIconName;
   /** Picks the target; falls back to the generic argument summary when it yields nothing. */
-  target?: (args: Record<string, ToolArgs>) => ToolTarget | undefined;
+  target?: (args: Record<string, ToolArgs>, context: ToolTargetContext) => ToolTarget | undefined;
 }
 
 function isArgObject(args: ToolArgs | undefined): args is Record<string, ToolArgs> {
@@ -102,7 +116,7 @@ function commandTarget(args: Record<string, ToolArgs>): ToolTarget | undefined {
   const command = stringArg(args, "command", "cmd", "script");
   if (!description && !command) return undefined;
   return {
-    ...(description ? { label: description } : {}),
+    ...(description ? { label: description, selfDescribed: true } : {}),
     ...(command ? { text: firstLine(command), mono: true } : {}),
   };
 }
@@ -142,6 +156,26 @@ const WEB_SEARCH: ToolVerb = {
   icon: "globe",
   target: (args) => ({ text: stringArg(args, "query", "q"), mono: false }),
 };
+
+/**
+ * A call about another agent names it. The call only carries the agent's runtime id, so with a
+ * name on hand the row reads "Checked moves-agent"; without one it falls back to "Checked agent"
+ * and the start of the id.
+ */
+function agentTarget(named: { active: string; done: string }): ToolVerb["target"] {
+  return (args, context) => {
+    const agentId = stringArg(args, "agent_id");
+    if (!agentId) return undefined;
+    const name = context.agentName?.(agentId);
+    if (!name) return { text: agentId.length > 12 ? agentId.slice(0, 8) : agentId, mono: true };
+    // Asking to be told when the agent is done is waiting on it, not looking in on it.
+    const waiting = args.wait === true;
+    const label = context.running
+      ? waiting ? "Waiting on" : named.active
+      : waiting ? "Waited on" : named.done;
+    return { label, text: name, mono: false };
+  };
+}
 
 const TOOL_VERBS: Record<string, ToolVerb> = {
   powershell: SHELL,
@@ -185,7 +219,7 @@ const TOOL_VERBS: Record<string, ToolVerb> = {
       const query = stringArg(args, "query");
       if (!description && !query) return undefined;
       return {
-        ...(description ? { label: description } : {}),
+        ...(description ? { label: description, selfDescribed: true } : {}),
         ...(query ? { text: firstLine(query), mono: true } : {}),
       };
     },
@@ -214,8 +248,8 @@ const TOOL_VERBS: Record<string, ToolVerb> = {
       return name ? { text: shortenPath(name, 1), mono: false } : undefined;
     },
   },
-  read_agent: { active: "Checking agent", done: "Checked agent", icon: "agent", target: (args) => ({ text: stringArg(args, "agent_id"), mono: true }) },
-  write_agent: { active: "Messaging agent", done: "Messaged agent", icon: "agent", target: (args) => ({ text: stringArg(args, "agent_id"), mono: true }) },
+  read_agent: { active: "Checking agent", done: "Checked agent", icon: "agent", target: agentTarget({ active: "Checking", done: "Checked" }) },
+  write_agent: { active: "Messaging agent", done: "Messaged agent", icon: "agent", target: agentTarget({ active: "Messaging", done: "Messaged" }) },
   list_agents: { active: "Listing agents", done: "Listed agents", icon: "agent" },
   // A delegation before its agent has reported in; afterwards the row is the agent's own.
   task: {
@@ -255,8 +289,9 @@ function bound(value: string | undefined, maxLength = 240): string | undefined {
 }
 
 export function describeToolCall(
-  toolCall: Pick<ToolCall, "name" | "args" | "isSubAgent">,
+  toolCall: Pick<ToolCall, "name" | "args" | "isSubAgent" | "agent">,
   status: ToolCallStatus | null,
+  context: ToolPresentationContext = {},
 ): ToolPresentation {
   // Bridge tools reached through MCP carry the server's name in front of their own.
   const name = toolCall.name.trim().replace(/^bridge-tools-(?:session-)?/i, "");
@@ -264,15 +299,15 @@ export function describeToolCall(
   const running = status === "running";
   if (toolCall.isSubAgent) {
     return {
-      verb: name.replace(/^🤖\s*/, "") || "Agent",
-      target: bound(args ? stringArg(args, "description") : undefined),
+      verb: toolCall.agent?.name ?? (name.replace(/^🤖\s*/, "") || "Agent"),
+      target: bound(toolCall.agent?.description ?? (args ? stringArg(args, "description") : undefined)),
       mono: false,
       icon: "agent",
     };
   }
   const verb = TOOL_VERBS[name.toLowerCase()];
   if (verb) {
-    const picked = args ? verb.target?.(args) : undefined;
+    const picked = args ? verb.target?.(args, { ...context, running }) : undefined;
     // A verb with no target of its own ("Listed agents") says everything already.
     const fallback = verb.target && !picked?.text && !picked?.label ? summarizeToolArgs(toolCall.args) : "";
     return {
@@ -280,6 +315,7 @@ export function describeToolCall(
       target: bound(picked?.text ?? (fallback || undefined)),
       mono: picked?.text ? picked.mono === true : Boolean(fallback),
       icon: verb.icon,
+      ...(picked?.label && picked.selfDescribed ? { selfDescribed: true } : {}),
     };
   }
 
@@ -295,6 +331,15 @@ export function describeToolCall(
     };
   }
   return { verb: humanize(name), target: bound(summary || undefined), mono: false, icon: "tool" };
+}
+
+/**
+ * A call as one phrase, for a line that cannot set the target apart from the verb. A call that
+ * says what it is for is left at that: the command beside it would read as more of the sentence.
+ */
+export function describeToolCallBriefly(presentation: ToolPresentation): string {
+  if (presentation.selfDescribed) return presentation.verb;
+  return [presentation.verb, presentation.target].filter(Boolean).join(" ");
 }
 
 /**

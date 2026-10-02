@@ -161,6 +161,7 @@ import {
 import { ImageBudgetController } from "./image-budget.js";
 import { SessionHolds, type SessionHoldReason } from "./session-holds.js";
 import { SessionAgentRegistry } from "./session-agent-registry.js";
+import { settleTranscriptAgents } from "./transcript-agent-settle.js";
 import type {
   AgentCountsSource,
   BackgroundAgentsAggregate,
@@ -5373,7 +5374,7 @@ export class SessionManager {
     sessionId: string,
     opts?: { limit?: number; before?: number },
   ): Promise<ReadMessagesFromDiskResult> {
-    return readMessagesFromDiskWithDeps({
+    const result = await readMessagesFromDiskWithDeps({
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
       eventBusRegistry: this.deps.eventBusRegistry,
@@ -5383,6 +5384,9 @@ export class SessionManager {
       persistLastVisibleActivityAt: (sessionId, lastVisibleActivityAt) =>
         this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt),
     }, sessionId, opts);
+    // The log cannot say an agent stopped when its process died or its run was cut short.
+    const agents = settleTranscriptAgents(result.agents, this.agentRegistry.getSnapshot(sessionId));
+    return agents === result.agents ? result : { ...result, agents };
   }
 
   waitForSessionWatchdogIdle(sessionId: string): Promise<void> {

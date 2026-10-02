@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ChatEntry, ChatReasoningEntry, ChatToolEntry, ToolCall } from "../api";
+import type { ChatEntry, ChatReasoningEntry, ChatToolEntry, ToolCall, TranscriptAgent } from "../api";
+import { buildTranscriptAgentDirectory } from "../../shared/transcript-agents.js";
 import {
   getReasoningHeadline,
   getReasoningTail,
+  getStepStatus,
   groupActivitySegments,
+  mapLatestAgentBlocks,
   summarizeActivity,
   type ActivityBlock,
   type ActivityStep,
@@ -155,6 +158,203 @@ describe("groupActivitySegments", () => {
 
   it("drops blank thinking instead of rendering an empty step", () => {
     expect(blocksOf([thought("blank", "turn-a", { content: "  \n" })])).toEqual([]);
+  });
+});
+
+describe("agents in a stretch of work", () => {
+  /** A call an agent made. It names the call that launched the agent as its parent. */
+  function agentCall(id: string, agent: string, partial: Partial<ToolCall> = {}): ChatToolEntry {
+    return {
+      id,
+      type: "tool",
+      toolCall: { toolCallId: `${id}-call`, name: id, parentToolCallId: `${agent}-call`, ...partial },
+    };
+  }
+
+  function record(agent: string, partial: Partial<TranscriptAgent> = {}): TranscriptAgent {
+    return {
+      toolCallId: `${agent}-call`,
+      name: agent,
+      status: "finished",
+      activeMs: 0,
+      toolCount: 0,
+      failedToolCount: 0,
+      ...partial,
+    };
+  }
+
+  it("puts what an agent did beneath the call that launched it, after the main agent's calls of the turn", () => {
+    const [block] = activity(blocksOf([
+      tool("moves", "turn-a", { isSubAgent: true }),
+      tool("saves", "turn-a", { isSubAgent: true }),
+      agentCall("moves-1", "moves"),
+      agentCall("saves-1", "saves"),
+      agentCall("moves-2", "moves"),
+    ]));
+
+    expect(block?.steps).toMatchObject([
+      {
+        kind: "tools",
+        entries: [{ id: "moves" }, { id: "saves" }, { id: "moves-1" }, { id: "saves-1" }, { id: "moves-2" }],
+      },
+    ]);
+  });
+
+  it("gives an agent launched earlier one step per stretch, however its calls were interleaved", () => {
+    const blocks = activity(blocksOf([
+      tool("moves", "turn-a", { isSubAgent: true }),
+      tool("saves", "turn-a", { isSubAgent: true }),
+      agentCall("moves-1", "moves"),
+      { role: "assistant", content: "Both are running.", turnInstanceId: "turn-b" },
+      agentCall("moves-2", "moves"),
+      agentCall("saves-1", "saves"),
+      tool("read_agent", "turn-c"),
+      agentCall("moves-3", "moves"),
+      agentCall("saves-2", "saves"),
+    ]));
+
+    expect(blocks).toHaveLength(2);
+    // The stretch after the reply: each agent once, where it first acted, around the main agent's call.
+    expect(blocks[1]?.steps).toMatchObject([
+      { kind: "agent", agentToolCallId: "moves-call", entries: [{ id: "moves-2" }, { id: "moves-3" }] },
+      { kind: "agent", agentToolCallId: "saves-call", entries: [{ id: "saves-1" }, { id: "saves-2" }] },
+      { kind: "tools", entries: [{ id: "read_agent" }] },
+    ]);
+  });
+
+  it("keys a stretch that opens with an agent's step by that step, so it stays put as history loads", () => {
+    const blocks = activity(blocksOf([
+      { role: "assistant", content: "Waiting on the agents." },
+      agentCall("moves-7", "moves"),
+      agentCall("moves-8", "moves"),
+    ]));
+
+    expect(blocks[0]?.key).toBe("activity:moves-7-call:0");
+  });
+
+  it("follows an agent another agent launched up to the one the main agent launched", () => {
+    const entries: ChatEntry[] = [
+      { role: "assistant", content: "Waiting on the agents." },
+      agentCall("inner-1", "inner"),
+      agentCall("outer-1", "outer"),
+    ];
+    // The launching calls are above the loaded history; only the session's records link them.
+    const agents = buildTranscriptAgentDirectory([
+      record("outer"),
+      record("inner", { parentToolCallId: "outer-call" }),
+    ]);
+
+    const [block] = activity(groupActivitySegments(segmentChatEntries(entries), { agents }));
+
+    expect(block?.steps).toMatchObject([
+      { kind: "agent", agentToolCallId: "outer-call", entries: [{ id: "inner-1" }, { id: "outer-1" }] },
+    ]);
+    // Without the records the two cannot be known to be one agent's work.
+    expect(activity(blocksOf(entries))[0]?.steps).toHaveLength(2);
+  });
+
+  it("counts the main agent's steps apart from the agents'", () => {
+    const [block] = activity(blocksOf([
+      tool("moves", "turn-a", { isSubAgent: true, startedAt: at(0), completedAt: at(0), success: true }),
+      tool("read", "turn-a", { startedAt: at(1), completedAt: at(2), success: true }),
+      agentCall("moves-1", "moves", { startedAt: at(1), completedAt: at(4), success: true }),
+      agentCall("moves-2", "moves", { startedAt: at(4), completedAt: at(9), success: false }),
+      agentCall("earlier-1", "earlier", { startedAt: at(2), completedAt: at(3), success: true }),
+    ]));
+
+    expect(summarizeActivity(block!.steps)).toMatchObject({
+      toolCount: 2,
+      failedCount: 0,
+      agentCount: 2,
+      agentToolCount: 3,
+      agentFailedCount: 1,
+      runningCount: 0,
+      durationMs: 9_000,
+    });
+  });
+
+  it("does not count a delegation whose agent has done nothing yet as an agent at work", () => {
+    const [block] = activity(blocksOf([
+      tool("moves", "turn-a", { isSubAgent: true, completedAt: at(0), success: true }),
+    ]));
+
+    expect(summarizeActivity(block!.steps)).toMatchObject({ toolCount: 1, agentCount: 0, agentToolCount: 0 });
+  });
+
+  it("treats handing work to a background agent as done once the agent has started", () => {
+    const background = record("moves", { status: "running", background: true });
+    const blocking = record("review", { status: "running" });
+    const launched: ToolCall = { toolCallId: "moves-call", name: "moves", isSubAgent: true, completedAt: at(0), success: true, agent: background };
+    const waitedOn: ToolCall = { toolCallId: "review-call", name: "review", isSubAgent: true, agent: blocking };
+
+    // The agent's own rows show it working; the stretch that launched it is finished.
+    expect(getStepStatus(launched)).toBe("done");
+    // The main agent is still inside the call that runs this one.
+    expect(getStepStatus(waitedOn)).toBe("running");
+  });
+
+  it("finds the newest stretch that has a row for each agent", () => {
+    const blocks = blocksOf([
+      tool("moves", "turn-a", { isSubAgent: true }),
+      tool("saves", "turn-a", { isSubAgent: true }),
+      agentCall("saves-1", "saves"),
+      { role: "assistant", content: "Both are running.", turnInstanceId: "turn-b" },
+      agentCall("moves-1", "moves"),
+    ]);
+    const [first, second] = activity(blocks);
+
+    expect(Object.fromEntries(mapLatestAgentBlocks(blocks))).toEqual({
+      "moves-call": second!.key,
+      "saves-call": first!.key,
+    });
+  });
+
+  it("hands back the answer it gave before while no agent has moved to a newer stretch", () => {
+    const entries: ChatEntry[] = [
+      tool("moves", "turn-a", { isSubAgent: true }),
+      agentCall("moves-1", "moves"),
+      { role: "assistant", content: "It is running.", turnInstanceId: "turn-b" },
+      agentCall("moves-2", "moves"),
+    ];
+    const before = mapLatestAgentBlocks(blocksOf(entries));
+
+    // Another step in the same stretch: the rows that read this are not told it changed.
+    const sameStretch = mapLatestAgentBlocks(blocksOf([...entries, agentCall("moves-3", "moves")]), before);
+    expect(sameStretch).toBe(before);
+
+    // The agent carries on after the next reply, so its newest row is now a different one.
+    const moved = mapLatestAgentBlocks(blocksOf([
+      ...entries,
+      { role: "assistant", content: "Still running.", turnInstanceId: "turn-c" },
+      agentCall("moves-4", "moves"),
+    ]), before);
+    expect(moved).not.toBe(before);
+    expect(moved.get("moves-call")).not.toBe(before.get("moves-call"));
+  });
+
+  it("does not stretch the launching block for as long as a background agent keeps reporting", () => {
+    const background = record("moves", { status: "running", background: true });
+    const [block] = activity(blocksOf([
+      thought("t1", "turn-a", { timestamp: at(2), reasoning: { startedAt: at(0) } }),
+      // While the agent works, the stream moves the end of the call that launched it to its latest word.
+      tool("moves", "turn-a", { isSubAgent: true, startedAt: at(2), completedAt: at(95), success: true, agent: background }),
+      tool("read", "turn-a", { startedAt: at(3), completedAt: at(35), success: true }),
+    ]));
+
+    expect(summarizeActivity(block!.steps)).toMatchObject({ toolCount: 2, runningCount: 0, durationMs: 35_000 });
+
+    // Before the session's records name the agent, the call's own arguments say it runs in the background.
+    const [unnamed] = activity(blocksOf([
+      tool("moves", "turn-a", { isSubAgent: true, args: { mode: "background" }, startedAt: at(2), completedAt: at(95), success: true }),
+      tool("read", "turn-a", { startedAt: at(3), completedAt: at(35), success: true }),
+    ]));
+    expect(summarizeActivity(unnamed!.steps).durationMs).toBe(33_000);
+
+    // An agent the main agent waits for does take the stretch's time.
+    const [blocking] = activity(blocksOf([
+      tool("review", "turn-a", { isSubAgent: true, startedAt: at(2), completedAt: at(95), success: true, agent: record("review") }),
+    ]));
+    expect(summarizeActivity(blocking!.steps).durationMs).toBe(93_000);
   });
 });
 

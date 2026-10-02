@@ -25,7 +25,7 @@ import {
   keepCommittedReasoning,
   type LiveReasoningBlock,
 } from "../shared/live-reasoning.js";
-import { keepEndingTurnItems } from "../shared/live-turn-retention.js";
+import { keepEndingTurnItems, keepToolsAtAgentTurnBoundary, keepToolsAtMainTurnBoundary } from "../shared/live-turn-retention.js";
 import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
@@ -176,6 +176,16 @@ export interface BusSnapshot {
   pendingUserMessages: ProjectedUserMessage[];
   /** In-flight and recently-completed tool calls, keyed by `toolCallId`. */
   liveTools: LiveTool[];
+  /**
+   * The turn each working sub-agent is in, as `[launching tool call, turn instance]` pairs, so a
+   * browser that reconnects mid-run applies the next agent turn boundary to the right calls.
+   */
+  agentTurns: Array<[string, string]>;
+  /**
+   * The main agent has stopped and the run is held open by background work: agents still running,
+   * or a command in an attached shell. It ends when the main agent starts a turn.
+   */
+  mainAgentIdle: boolean;
   /** Visuals published this run that disk history may not have surfaced yet. */
   liveVisuals: LiveVisual[];
   /** Completion card for this run, if one was produced. */
@@ -231,6 +241,11 @@ export interface ProjectedUserMessage {
 type Listener = (event: StreamEvent) => void;
 
 const CLEANUP_DELAY = 5 * 60_000;
+/**
+ * How long after an agent starts or stops working the browser is told to read history once more.
+ * The runtime can still be writing the event that says so when the first read arrives.
+ */
+const AGENT_CHANGE_RECHECK_MS = 1_000;
 
 interface UserInputCanceledOptions {
   reason?: UserInputCancelReason;
@@ -338,6 +353,14 @@ function getToolCallId(event: StreamEvent): string {
   return typeof event.toolCallId === "string" ? event.toolCallId : "";
 }
 
+function isToolStreamEvent(event: StreamEvent): boolean {
+  return event.type === "tool_start"
+    || event.type === "tool_update"
+    || event.type === "tool_progress"
+    || event.type === "tool_output"
+    || event.type === "tool_done";
+}
+
 function optionalTimestamp(event: StreamEvent): string | undefined {
   return typeof event.timestamp === "string" && event.timestamp ? event.timestamp : undefined;
 }
@@ -406,6 +429,11 @@ export class SessionEventBus {
   private liveAssistantSegments: LiveAssistantSegment[] = [];
   private liveReasoning: LiveReasoningBlock[] = [];
   private liveTools: LiveTool[] = [];
+  /** The turn each working sub-agent is in, by the call that launched it. */
+  private agentTurnInstanceIds = new Map<string, string>();
+  private agentChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The main agent has stopped while background work keeps the run open. */
+  private mainAgentIdle = false;
   private liveVisuals: LiveVisual[] = [];
   private liveCompletion?: LiveCompletion;
   private intentText = "";
@@ -501,6 +529,31 @@ export class SessionEventBus {
    */
   private advanceHistory(): void {
     this.broadcast({ type: "history_advanced" });
+  }
+
+  /**
+   * A sub-agent started or stopped working. Nothing in the overlay stands for that: the browser
+   * reads it back from history, which is told to look now and once more shortly after, in case the
+   * runtime was still writing the event the first time.
+   */
+  announceAgentChange(): void {
+    this.advanceHistory();
+    if (this.agentChangeTimer) return;
+    this.agentChangeTimer = setTimeout(() => {
+      this.agentChangeTimer = null;
+      this.advanceHistory();
+    }, AGENT_CHANGE_RECHECK_MS);
+    this.agentChangeTimer.unref?.();
+  }
+
+  /** The sub-agent a tool event belongs to, by the call that launched it; nothing for the main agent. */
+  private getOwningAgent(event: StreamEvent): string | undefined {
+    if (!isToolStreamEvent(event)) return undefined;
+    if (typeof event.parentToolCallId === "string" && event.parentToolCallId) return event.parentToolCallId;
+    const toolCallId = getToolCallId(event);
+    return toolCallId
+      ? this.liveTools.find((tool) => tool.toolCallId === toolCallId)?.parentToolCallId
+      : undefined;
   }
 
   /** Add a server-owned user entry before the SDK persists it. */
@@ -691,6 +744,28 @@ export class SessionEventBus {
   }
 
   emit(event: StreamEvent): void {
+    if (event.type === "agent_turn") {
+      // A sub-agent began a turn of its own. Only that agent's calls are affected.
+      const agentToolCallId = typeof event.agentToolCallId === "string" ? event.agentToolCallId : "";
+      const turnInstanceId = getStreamTurnInstanceId(event);
+      if (!agentToolCallId || !turnInstanceId) return;
+      this.liveTools = keepToolsAtAgentTurnBoundary(
+        this.liveTools,
+        agentToolCallId,
+        this.agentTurnInstanceIds.get(agentToolCallId),
+      );
+      this.agentTurnInstanceIds.set(agentToolCallId, turnInstanceId);
+      this.broadcast({ type: "agent_turn", agentToolCallId, turnInstanceId });
+      return;
+    }
+    if (event.type === "main_idle") {
+      // The main agent has nothing left to do; whatever keeps the run open is background work.
+      if (this.mainAgentIdle || this._complete) return;
+      this.mainAgentIdle = true;
+      this.broadcast({ type: "main_idle" });
+      return;
+    }
+    const owningAgent = this.getOwningAgent(event);
     if (event.type === "thinking") {
       const turnId = getStreamTurnId(event) ?? `turn-${randomUUID()}`;
       const turnInstanceId = getStreamTurnInstanceId(event) ?? `turn-instance-${randomUUID()}`;
@@ -698,6 +773,14 @@ export class SessionEventBus {
       this.currentTurnId = turnId;
       this.currentTurnInstanceId = turnInstanceId;
       event = { ...event, turnId, turnInstanceId };
+    } else if (owningAgent !== undefined) {
+      // An agent's call belongs to the agent's turn, never to whichever turn the main agent is in.
+      const { turnId: _turnId, turnInstanceId: _turnInstanceId, ...unstamped } = event;
+      const agentTurnInstanceId = this.agentTurnInstanceIds.get(owningAgent);
+      event = {
+        ...unstamped,
+        ...(agentTurnInstanceId ? { turnInstanceId: agentTurnInstanceId } : {}),
+      } as StreamEvent;
     } else if (isTurnScopedStreamEvent(event)) {
       const turnId = getStreamTurnId(event) ?? this.currentTurnId;
       const turnInstanceId = getStreamTurnInstanceId(event) ?? this.currentTurnInstanceId;
@@ -920,6 +1003,7 @@ export class SessionEventBus {
       this.terminalCompletion = resolved;
       this.pendingTerminalCompletion = undefined;
       this._complete = true;
+      this.cancelAgentChangeRecheck();
       this.streamingContent = "";
       this.intentText = "";
       // Thinking that never reached an assistant message has no disk copy and ends with the run.
@@ -990,6 +1074,8 @@ export class SessionEventBus {
       liveReasoning: this.liveReasoning.map((block) => ({ ...block })),
       pendingUserMessages: this.userMessages.map((message) => structuredClone(message)),
       liveTools: this.liveTools.map((tool) => ({ ...tool })),
+      agentTurns: [...this.agentTurnInstanceIds],
+      mainAgentIdle: this.mainAgentIdle && !this._complete,
       liveVisuals: this.liveVisuals.map((visual) => ({ ...visual })),
       ...(this.liveCompletion ? { liveCompletion: { ...this.liveCompletion } } : {}),
       intentText: this.intentText,
@@ -1052,6 +1138,8 @@ export class SessionEventBus {
     this.runId = randomUUID();
     this.runMode = undefined;
     this.resetLiveTurnState();
+    this.agentTurnInstanceIds.clear();
+    this.cancelAgentChangeRecheck();
     this.clearPendingInteractionIndex();
     this.userMessages = [];
     this.liveAssistantSegments = [];
@@ -1079,6 +1167,8 @@ export class SessionEventBus {
     this.terminalTurnId = undefined;
     this.currentTurnInstanceId = undefined;
     this.terminalTurnInstanceId = undefined;
+    // Also where a main-agent turn begins, which is what ends the wait.
+    this.mainAgentIdle = false;
     this.cancelCleanup();
   }
 
@@ -1093,7 +1183,8 @@ export class SessionEventBus {
         && segment.turnInstanceId === endingTurnInstanceId
         && segment.sourceEventId !== undefined)
     ));
-    const tools = keepEndingTurnItems(this.liveTools, endingTurnInstanceId, (tool) => Boolean(tool.completedAt));
+    // A boundary only speaks for the main agent's calls; a sub-agent's are kept by its own turns.
+    const tools = keepToolsAtMainTurnBoundary(this.liveTools, endingTurnInstanceId);
     const visuals = keepEndingTurnItems(this.liveVisuals, endingTurnInstanceId);
     const reasoning = keepEndingTurnItems(
       this.liveReasoning,
@@ -1133,8 +1224,16 @@ export class SessionEventBus {
     }
   }
 
+  private cancelAgentChangeRecheck(): void {
+    if (this.agentChangeTimer) {
+      clearTimeout(this.agentChangeTimer);
+      this.agentChangeTimer = null;
+    }
+  }
+
   dispose(): void {
     this.cancelCleanup();
+    this.cancelAgentChangeRecheck();
     this.clearPendingInteractionIndex();
     const event: StreamEvent = { type: "resync_required" };
     for (const listener of this.listeners) {

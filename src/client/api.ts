@@ -42,6 +42,7 @@ import type {
   BackgroundAgentsSummary,
   SessionAgentTask,
 } from "../shared/session-agents.js";
+import type { TranscriptAgent } from "../shared/transcript-agents.js";
 import type { TaskGitStatusResponse, GitWorktreeHead } from "../server/git-worktree-status.js";
 import type {
   NativeUserInputResponse as NativeUserInputResponseType,
@@ -72,6 +73,7 @@ export type {
   BackgroundAgentsSummary,
   SessionAgentTask,
 } from "../shared/session-agents.js";
+export type { TranscriptAgent, TranscriptAgentStatus } from "../shared/transcript-agents.js";
 export type {
   SessionContextCapabilities,
   SessionContextEvent,
@@ -310,6 +312,12 @@ export interface ToolCall {
   /** Set on sub-agent pseudo-tool entries (the group header) */
   isSubAgent?: boolean;
   agentInstructions?: AgentInstruction[];
+  /**
+   * Client-only: the agent this call launched, as the session's history records it. With it the
+   * row shows the agent's own state and working time instead of those of the launching call, which
+   * for a background agent returns the moment the agent is started.
+   */
+  agent?: TranscriptAgent;
   childToolCalls?: ToolCall[];
   /** ISO timestamp when the tool call started */
   startedAt?: string;
@@ -1241,6 +1249,11 @@ export interface MessagesFastResponse {
   warm: boolean;
   lastVisibleActivityAt?: string;
   coverage: SessionHistoryCoverage;
+  /**
+   * Every sub-agent the session has run, whichever part of its history `messages` holds. A step
+   * names its agent by `toolCall.parentToolCallId`, which is an agent's `toolCallId` here.
+   */
+  agents?: TranscriptAgent[];
 }
 
 export async function fetchMessagesFast(
@@ -2771,6 +2784,25 @@ export interface SessionAgentsResponse {
 
 export async function fetchSessionAgents(sessionId: string): Promise<SessionAgentsResponse> {
   return apiFetch<SessionAgentsResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/agents`);
+}
+
+export interface SessionAgentDetailResponse {
+  task: SessionAgentTask;
+  source: AgentCountsSource;
+  refreshedAt?: string;
+}
+
+/** One agent with its brief and latest report in full; the list carries only the start of each. */
+export async function fetchSessionAgentDetail(
+  sessionId: string,
+  agentId: string,
+  options?: { signal?: AbortSignal },
+): Promise<SessionAgentDetailResponse> {
+  return apiFetch<SessionAgentDetailResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}`,
+    undefined,
+    options,
+  );
 }
 
 export async function cancelSessionAgent(

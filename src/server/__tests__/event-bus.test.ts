@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createEventBusRegistry } from "../event-bus.js";
 import type { StreamEvent } from "../event-bus.js";
 
@@ -917,6 +917,139 @@ describe("event-bus", () => {
       expect(snap.pendingUserMessages).toEqual([]);
       expect(snap.pendingUserInputs).toEqual([]);
     });
+  });
+});
+
+describe("event-bus sub-agents", () => {
+  const liveToolIds = (bus: ReturnType<typeof getOrCreateBus>) => bus.getSnapshot().liveTools.map((tool) => tool.toolCallId);
+
+  it("puts an agent's calls in the agent's turn, not the main agent's", () => {
+    const bus = getOrCreateBus("test-agent-turn-stamp");
+    const events: StreamEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot" && event.type !== "history_advanced") events.push(event);
+    });
+
+    bus.emit({ type: "thinking", turnId: "0", turnInstanceId: "main-1" });
+    bus.emit({ type: "tool_start", toolCallId: "task-bg", name: "task" });
+    bus.emit({ type: "tool_done", toolCallId: "task-bg", success: true });
+    // Before the agent's first turn is known, its call has no turn rather than someone else's.
+    bus.emit({ type: "tool_start", toolCallId: "bg-early", name: "view", parentToolCallId: "task-bg" });
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-1" });
+    bus.emit({ type: "tool_start", toolCallId: "bg-view", name: "view", parentToolCallId: "task-bg" });
+    // The event that ends a call does not name its parent; the bus remembers whose it is.
+    bus.emit({ type: "tool_done", toolCallId: "bg-view", success: true });
+
+    expect(events).toMatchObject([
+      { type: "thinking", turnInstanceId: "main-1" },
+      { type: "tool_start", toolCallId: "task-bg", turnId: "0", turnInstanceId: "main-1" },
+      { type: "tool_done", toolCallId: "task-bg", turnInstanceId: "main-1" },
+      { type: "tool_start", toolCallId: "bg-early" },
+      { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-1" },
+      { type: "tool_start", toolCallId: "bg-view", turnInstanceId: "agent-1" },
+      { type: "tool_done", toolCallId: "bg-view", turnInstanceId: "agent-1" },
+    ]);
+    expect(events[3]).not.toHaveProperty("turnId");
+    expect(events[3]).not.toHaveProperty("turnInstanceId");
+    expect(events[5]).not.toHaveProperty("turnId");
+    expect(bus.getSnapshot().agentTurns).toEqual([["task-bg", "agent-1"]]);
+  });
+
+  it("keeps an agent's calls through the main agent's turns and lets them go at the agent's own", () => {
+    const bus = getOrCreateBus("test-agent-turn-retention");
+    bus.emit({ type: "thinking", turnId: "0", turnInstanceId: "main-1" });
+    bus.emit({ type: "tool_start", toolCallId: "task-bg", name: "task" });
+    bus.emit({ type: "tool_done", toolCallId: "task-bg", success: true });
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-1" });
+    bus.emit({ type: "tool_start", toolCallId: "bg-done", name: "view", parentToolCallId: "task-bg" });
+    bus.emit({ type: "tool_done", toolCallId: "bg-done", success: true });
+    bus.emit({ type: "tool_start", toolCallId: "bg-open", name: "bash", parentToolCallId: "task-bg" });
+
+    // The main agent moves on twice. Its own finished call lasts one turn; the agent's are untouched.
+    bus.emit({ type: "thinking", turnId: "1", turnInstanceId: "main-2" });
+    expect(liveToolIds(bus)).toEqual(["task-bg", "bg-done", "bg-open"]);
+    bus.emit({ type: "thinking", turnId: "2", turnInstanceId: "main-3" });
+    expect(liveToolIds(bus)).toEqual(["bg-done", "bg-open"]);
+
+    // The agent's next turn: its finished call stays for that one turn, as the main agent's did.
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-2" });
+    expect(liveToolIds(bus)).toEqual(["bg-done", "bg-open"]);
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-3" });
+    // A call still in flight is never let go.
+    expect(liveToolIds(bus)).toEqual(["bg-open"]);
+    expect(bus.getSnapshot().agentTurns).toEqual([["task-bg", "agent-3"]]);
+
+    bus.reset();
+    expect(bus.getSnapshot().agentTurns).toEqual([]);
+  });
+
+  it("leaves one agent's calls alone when another agent starts a turn", () => {
+    const bus = getOrCreateBus("test-agent-turn-neighbours");
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-a", turnInstanceId: "a-1" });
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-b", turnInstanceId: "b-1" });
+    bus.emit({ type: "tool_start", toolCallId: "a-view", name: "view", parentToolCallId: "task-a" });
+    bus.emit({ type: "tool_done", toolCallId: "a-view", success: true });
+    bus.emit({ type: "tool_start", toolCallId: "b-view", name: "view", parentToolCallId: "task-b" });
+    bus.emit({ type: "tool_done", toolCallId: "b-view", success: true });
+
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-a", turnInstanceId: "a-2" });
+    bus.emit({ type: "agent_turn", agentToolCallId: "task-a", turnInstanceId: "a-3" });
+
+    expect(liveToolIds(bus)).toEqual(["b-view"]);
+  });
+
+  it("says when the main agent has stopped to wait, until it starts a turn again", () => {
+    const bus = getOrCreateBus("test-main-idle");
+    const events: StreamEvent[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+    bus.emit({ type: "thinking", turnId: "0", turnInstanceId: "main-1" });
+    expect(bus.getSnapshot().mainAgentIdle).toBe(false);
+
+    bus.emit({ type: "main_idle" });
+    bus.emit({ type: "main_idle" });
+    expect(bus.getSnapshot().mainAgentIdle).toBe(true);
+    // Said once, and it is not something disk history records.
+    expect(events.filter((event) => event.type === "main_idle")).toEqual([{ type: "main_idle" }]);
+    expect(events.some((event) => event.type === "history_advanced")).toBe(false);
+
+    bus.emit({ type: "thinking", turnId: "1", turnInstanceId: "main-2" });
+    expect(bus.getSnapshot().mainAgentIdle).toBe(false);
+
+    bus.emit({ type: "main_idle" });
+    bus.emit({ type: "done", content: "Done" });
+    // A finished run is not waiting on anything.
+    expect(bus.getSnapshot().mainAgentIdle).toBe(false);
+  });
+
+  it("tells the browser to read history when an agent starts or stops, and once more shortly after", () => {
+    vi.useFakeTimers();
+    try {
+      const bus = getOrCreateBus("test-agent-change");
+      const received: StreamEvent[] = [];
+      const advances = () => received.filter((event) => event.type === "history_advanced").length;
+      bus.subscribe((event) => received.push(event));
+
+      bus.announceAgentChange();
+      expect(advances()).toBe(1);
+      // A second change inside the wait shares the one follow-up read.
+      bus.announceAgentChange();
+      expect(advances()).toBe(2);
+      vi.advanceTimersByTime(1_000);
+      expect(advances()).toBe(3);
+      vi.advanceTimersByTime(5_000);
+      expect(advances()).toBe(3);
+
+      // A run that ends takes the follow-up with it: its ending is announced on its own.
+      bus.announceAgentChange();
+      bus.emit({ type: "done", content: "Done" });
+      const afterDone = advances();
+      vi.advanceTimersByTime(5_000);
+      expect(advances()).toBe(afterDone);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

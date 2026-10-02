@@ -446,21 +446,23 @@ function getSessionStatus(
 }
 
 const AGENT_TEXT_MAX_LENGTH = 2_000;
+/** One agent opened on its own gets its brief and report in full, short of a runaway value. */
+const AGENT_DETAIL_TEXT_MAX_LENGTH = 200_000;
 
-function truncateAgentText(value: string | undefined): string | undefined {
+function truncateAgentText(value: string | undefined, maxLength = AGENT_TEXT_MAX_LENGTH): string | undefined {
   if (value === undefined) return undefined;
-  if (value.length <= AGENT_TEXT_MAX_LENGTH) return value;
-  return `${value.slice(0, AGENT_TEXT_MAX_LENGTH)}… (truncated)`;
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength)}… (truncated)`;
 }
 
 /** Truncate large free-text fields before returning a task over the wire. */
-function truncateAgentTaskText(task: SessionAgentTask): SessionAgentTask {
+function truncateAgentTaskText(task: SessionAgentTask, maxLength = AGENT_TEXT_MAX_LENGTH): SessionAgentTask {
   return {
     ...task,
-    prompt: truncateAgentText(task.prompt),
-    result: truncateAgentText(task.result),
-    latestResponse: truncateAgentText(task.latestResponse),
-    error: truncateAgentText(task.error),
+    prompt: truncateAgentText(task.prompt, maxLength),
+    result: truncateAgentText(task.result, maxLength),
+    latestResponse: truncateAgentText(task.latestResponse, maxLength),
+    error: truncateAgentText(task.error, maxLength),
   };
 }
 
@@ -2744,7 +2746,7 @@ export function createApiRouter(
       }
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const before = req.query.before ? parseInt(req.query.before as string, 10) : undefined;
-      const { messages, total, hasMore, lastVisibleActivityAt, coverage } = await timeRequestOperation(
+      const { messages, total, hasMore, lastVisibleActivityAt, coverage, agents } = await timeRequestOperation(
         res,
         "sessions.messagesFast.diskRead",
         () => ctx.sessionManager.readMessagesFromDisk(
@@ -2755,7 +2757,7 @@ export function createApiRouter(
       );
       const status = getSessionStatus(ctx, req.params.id);
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-      res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, coverage, warm });
+      res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, coverage, warm, agents });
     } catch (err) {
       if (err instanceof SessionMessageNotFoundError || getErrorCode(err) === "ENOENT") {
         return res.status(404).json({
@@ -3931,10 +3933,32 @@ export function createApiRouter(
         { sessionId: req.params.id },
       );
       res.json({
-        tasks: snapshot.tasks.map(truncateAgentTaskText),
+        tasks: snapshot.tasks.map((task) => truncateAgentTaskText(task)),
         source: snapshot.source,
         ...(snapshot.refreshedAt ? { refreshedAt: snapshot.refreshedAt } : {}),
         backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(req.params.id),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /sessions/:id/agents/:agentId — one agent with its brief and latest report in full, for
+  // the row a reader opened. The list above carries only the first part of each.
+  router.get("/sessions/:id/agents/:agentId", async (req, res) => {
+    try {
+      const snapshot = await timeRequestOperation(
+        res,
+        "sessions.agents.detail",
+        () => ctx.sessionManager.listSessionAgents(req.params.id),
+        { sessionId: req.params.id },
+      );
+      const task = snapshot.tasks.find((candidate) => candidate.id === req.params.agentId);
+      if (!task) return res.status(404).json({ error: "This agent is no longer tracked for the session" });
+      res.json({
+        task: truncateAgentTaskText(task, AGENT_DETAIL_TEXT_MAX_LENGTH),
+        source: snapshot.source,
+        ...(snapshot.refreshedAt ? { refreshedAt: snapshot.refreshedAt } : {}),
       });
     } catch (err) {
       res.status(500).json({ error: String(err) });

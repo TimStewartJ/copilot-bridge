@@ -289,7 +289,7 @@ describe("tool call tree helpers", () => {
     ]);
   });
 
-  it("merges root-only subagent launch turns with later descendant tool turns", () => {
+  it("keeps a sub-agent's calls where they happened, apart from the main agent's turn groups", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "Delegating work", turnId: "turn-1" },
       {
@@ -319,24 +319,19 @@ describe("tool call tree helpers", () => {
       },
     ];
 
-    const segments = segmentChatEntries(entries);
-
-    expect(segments).toHaveLength(3);
-    expect(segments[0]).toMatchObject({ type: "message", entry: { content: "Delegating work" } });
-    expect(segments[1]).toMatchObject({
-      type: "tool-segment",
-      turnId: "turn-1",
-      entries: [
-        { id: "agent-a" },
-        { id: "agent-b" },
-        { id: "child-a" },
-        { id: "read-agent" },
-      ],
-    });
-    expect(segments[2]).toMatchObject({ type: "message", entry: { content: "Agents are running" } });
+    // The agent's call shares a turn id with the main agent's later call, and must not pull that
+    // call up above the reply it followed.
+    expect(segmentChatEntries(entries)).toMatchObject([
+      { type: "message", entry: { content: "Delegating work" } },
+      { type: "tool-segment", turnId: "turn-1", entries: [{ id: "agent-a" }, { id: "agent-b" }] },
+      { type: "tool-segment", entries: [{ id: "child-a" }] },
+      { type: "message", entry: { content: "Agents are running" } },
+      { type: "tool-segment", turnId: "turn-2", entries: [{ id: "read-agent" }] },
+    ]);
+    expect(segmentChatEntries(entries)[2]).not.toHaveProperty("turnId");
   });
 
-  it("merges subagent descendants by turn instance when provider ids repeat", () => {
+  it("keeps the main agent's turns apart by turn instance when provider ids repeat", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "Delegating first", turnId: "0", turnInstanceId: "turn-root-a" },
       {
@@ -374,23 +369,17 @@ describe("tool call tree helpers", () => {
 
     expect(segmentChatEntries(entries)).toMatchObject([
       { type: "message", entry: { content: "Delegating first" } },
-      {
-        type: "tool-segment",
-        turnInstanceId: "turn-root-a",
-        entries: [{ id: "agent-a" }, { id: "child-a" }],
-      },
+      { type: "tool-segment", turnInstanceId: "turn-root-a", entries: [{ id: "agent-a" }] },
+      { type: "tool-segment", entries: [{ id: "child-a" }] },
       { type: "message", entry: { content: "First agent done" } },
       { type: "message", entry: { content: "Delegating resumed" } },
-      {
-        type: "tool-segment",
-        turnInstanceId: "turn-root-b",
-        entries: [{ id: "agent-b" }, { id: "child-b" }],
-      },
+      { type: "tool-segment", turnInstanceId: "turn-root-b", entries: [{ id: "agent-b" }] },
+      { type: "tool-segment", entries: [{ id: "child-b" }] },
       { type: "message", entry: { content: "Second agent done" } },
     ]);
   });
 
-  it("keeps a parallel agent's calls under its one row when another agent's turn end left them without a turn", () => {
+  it("leaves a run of sub-agent calls as one segment, whatever turns the agents were in", () => {
     // The entries a real run produced: two agents side by side. Agent one finished a turn while
     // agent two was mid-turn, so agent two's next two calls carry no turn of their own.
     const child = (id: string, parent: string, turnInstanceId?: string): ChatEntry => ({
@@ -414,12 +403,15 @@ describe("tool call tree helpers", () => {
       { role: "assistant", content: "Both agents reported back." },
     ];
 
-    const segments = segmentChatEntries(entries);
-    const toolSegments = segments.filter((segment) => segment.type === "tool-segment");
-    // One group holds everything, so each agent renders once with all of its calls.
-    expect(toolSegments).toHaveLength(1);
+    const toolSegments = segmentChatEntries(entries).filter((segment) => segment.type === "tool-segment");
+    // The launches are the main agent's turn; the agents' calls follow in the order they were made.
+    expect(toolSegments.map((segment) => segment.entries.map((entry) => entry.id))).toEqual([
+      ["agent-one", "agent-two"],
+      ["one-a", "two-a", "two-b", "one-b", "two-c", "two-d", "two-e", "two-f"],
+    ]);
+    // Rendered together, as the stretch of work they belong to renders them, each agent is one row.
     const forest = buildToolCallForest(entries.flatMap((entry) => entry.type === "tool" ? [entry.toolCall] : []));
-    const roots = buildRenderableSegmentRoots(toolSegments[0]!.entries, forest);
+    const roots = buildRenderableSegmentRoots(toolSegments.flatMap((segment) => segment.entries), forest);
     expect(roots.map((root) => [root.toolCall.toolCallId, root.isContextOnly, root.children.length])).toEqual([
       ["agent-one", false, 2],
       ["agent-two", false, 6],
@@ -468,6 +460,9 @@ describe("tool call tree helpers", () => {
     expect(roots).toHaveLength(1);
     expect(roots[0]?.toolCall.toolCallId).toBe("subagent-1");
     expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-2"]);
+    // Cut down to this segment, the row still knows how many calls are loaded beneath it in all.
+    expect(roots[0]?.loadedChildCount).toBe(2);
+    expect(fullForest.nodesById.get("subagent-1")?.loadedChildCount).toBe(2);
   });
 
   it("does not replay ancestor completion state when only a later child row is visible", () => {

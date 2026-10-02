@@ -31,7 +31,15 @@ import {
   isSdkAgentUserMessage,
   isSdkSubagentSessionError,
 } from "./sdk-event-identity.js";
+import { isStampedAgentTurnEvent, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
 import { projectSearchableMessage, type SearchableMessage } from "./search-message-projection.js";
+import {
+  TranscriptAgentFold,
+  cloneTranscriptAgentFoldState,
+  createTranscriptAgentFoldState,
+  type TranscriptAgentFoldState,
+} from "./transcript-agent-fold.js";
+import type { TranscriptAgent } from "../shared/transcript-agents.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
@@ -42,7 +50,7 @@ const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
  * only a handful of sessions are ever read concurrently, so this is deliberately small.
  */
 const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
-const EVENT_LOG_STATS_CACHE_VERSION = 4;
+const EVENT_LOG_STATS_CACHE_VERSION = 5;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
 /** Backstop bound on retained turn checkpoints when the log has very short turns. */
@@ -60,6 +68,8 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [
   "tool.execution_progress",
   "tool.execution_partial_result",
   "subagent.started",
+  "subagent.completed",
+  "subagent.failed",
   "session.shutdown",
   "session.idle",
   "session.error",
@@ -89,6 +99,11 @@ export interface ReadMessagesFromDiskResult {
   hasMore: boolean;
   lastVisibleActivityAt?: string;
   coverage: SessionHistoryCoverage;
+  /**
+   * Every sub-agent the session has run, from the whole log and not only the part `messages` was
+   * read from, so a step can be shown under its agent even when the launch is far above the window.
+   */
+  agents: TranscriptAgent[];
 }
 
 export interface ReadMessagesAroundEventResult extends ReadMessagesFromDiskResult {
@@ -108,6 +123,10 @@ export class SessionMessageNotFoundError extends Error {
   }
 }
 
+function emptyReadResult(): ReadMessagesFromDiskResult {
+  return { messages: [], total: 0, hasMore: false, coverage: {}, agents: [] };
+}
+
 interface WorkspaceSessionRead {
   dirName: string;
   yamlPath: string;
@@ -122,6 +141,7 @@ interface EventLogStats {
   lastVisibleActivityAt?: string;
   turnState: TailTurnState;
   coverage: SessionHistoryCoverage;
+  agents: TranscriptAgent[];
 }
 
 interface TailCandidateEvents {
@@ -139,6 +159,8 @@ interface TailTurnState {
   initialTurnIndex: number;
   initialActiveTurnId?: string;
   initialActiveTurnInstanceId?: string;
+  /** The log has shown turn events stamped with their agent, somewhere before or inside the tail. */
+  agentTurnsStamped?: boolean;
 }
 
 interface TurnStateCheckpoint {
@@ -165,12 +187,15 @@ interface EventLogStatsScannerState {
   latestTurnId?: string;
   latestTerminalEventId?: string;
   turnIndex: number;
+  /** The runtime has been seen to say which agent a turn belongs to; see agent-event-ownership.ts. */
+  agentTurnsStamped: boolean;
   activeTurnId?: string;
   activeTurnInstanceId?: string;
   /** Collapsed state for every checkpoint older than the largest possible tail window. */
   baseTurnCheckpoint: TurnStateCheckpoint;
   turnCheckpoints: TurnStateCheckpoint[];
   activity: VisibleActivityTrackerState;
+  agents: TranscriptAgentFoldState;
 }
 
 export interface EventLogStatsCacheEntry {
@@ -438,6 +463,7 @@ function createEventLogStatsScannerState(): EventLogStatsScannerState {
     visiblePublishVisualToolCallIds: [],
     pendingTerminalCompletionEntry: false,
     turnIndex: 0,
+    agentTurnsStamped: false,
     baseTurnCheckpoint: { offset: -1, turnIndex: 0 },
     turnCheckpoints: [],
     activity: {
@@ -445,6 +471,7 @@ function createEventLogStatsScannerState(): EventLogStatsScannerState {
       quietTurn: false,
       pendingTerminalCompletionActivity: false,
     },
+    agents: createTranscriptAgentFoldState(),
   };
 }
 
@@ -461,6 +488,7 @@ function cloneEventLogStatsScannerState(
       ...state.activity,
       openVisibleToolCallIds: [...state.activity.openVisibleToolCallIds],
     },
+    agents: cloneTranscriptAgentFoldState(state.agents),
   };
 }
 
@@ -474,6 +502,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
   const openVisibleToolCallIds = new Set(state.openVisibleToolCallIds);
   const visiblePublishVisualToolCallIds = new Set(state.visiblePublishVisualToolCallIds);
   const visibleActivityTracker = createVisibleActivityTracker(sessionId, state.activity);
+  const agentFold = new TranscriptAgentFold(state.agents);
 
   const recordTurnCheckpoint = (offset: number): void => {
     state.turnCheckpoints.push({
@@ -503,23 +532,32 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     }
 
     visibleActivityTracker.observe(event);
+    agentFold.observe(event);
     const eventId = getSdkEventId(event);
     if (eventId) state.latestEventId = eventId;
+    // A turn boundary the runtime stamps with an agent says nothing about the main agent's turn,
+    // which is the one a tail read resumes from.
+    const agentTurnEvent = isStampedAgentTurnEvent(event);
+    if (showsAgentTurnsAreStamped(event)) state.agentTurnsStamped = true;
     if (event.type === "assistant.turn_start") {
       state.turnIndex += 1;
       state.latestTurnId = getSdkTurnId(event) ?? `turn-${state.turnIndex}`;
-      state.activeTurnId = state.latestTurnId;
-      state.activeTurnInstanceId = getAssistantTurnInstanceId(
-        event,
-        `turn-instance-${state.turnIndex}`,
-      );
-      recordTurnCheckpoint(lineStartOffset);
+      if (!agentTurnEvent) {
+        state.activeTurnId = state.latestTurnId;
+        state.activeTurnInstanceId = getAssistantTurnInstanceId(
+          event,
+          `turn-instance-${state.turnIndex}`,
+        );
+        recordTurnCheckpoint(lineStartOffset);
+      }
     }
     if (isTurnTerminalEvent(event)) {
       if (eventId) state.latestTerminalEventId = eventId;
-      state.activeTurnId = undefined;
-      state.activeTurnInstanceId = undefined;
-      recordTurnCheckpoint(lineStartOffset);
+      if (!agentTurnEvent) {
+        state.activeTurnId = undefined;
+        state.activeTurnInstanceId = undefined;
+        recordTurnCheckpoint(lineStartOffset);
+      }
     }
     if (
       event.type === "tool.execution_start"
@@ -581,6 +619,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     state.openVisibleToolCallIds = [...openVisibleToolCallIds];
     state.visiblePublishVisualToolCallIds = [...visiblePublishVisualToolCallIds];
     state.activity = visibleActivityTracker.getState();
+    state.agents = agentFold.getState();
     return state;
   };
 
@@ -647,12 +686,16 @@ function buildEventLogStats(
     ...(state.activity.lastVisibleActivityAt
       ? { lastVisibleActivityAt: state.activity.lastVisibleActivityAt }
       : {}),
-    turnState: resolveTurnState(state, turnStateOffset),
+    turnState: {
+      ...resolveTurnState(state, turnStateOffset),
+      ...(state.agentTurnsStamped ? { agentTurnsStamped: true } : {}),
+    },
     coverage: {
       ...(state.latestEventId ? { latestEventId: state.latestEventId } : {}),
       ...(state.latestTurnId ? { latestTurnId: state.latestTurnId } : {}),
       ...(state.latestTerminalEventId ? { latestTerminalEventId: state.latestTerminalEventId } : {}),
     },
+    agents: new TranscriptAgentFold(state.agents).list(),
   };
 }
 
@@ -838,7 +881,7 @@ async function readMessagesFromDiskFull(
   try {
     raw = await readFile(eventsPath, "utf-8");
   } catch {
-    return { messages: [], total: 0, hasMore: false, coverage: {} };
+    return emptyReadResult();
   }
   deps.recordSpan("session.readFromDisk.fullRead", Date.now() - tRead, sessionId, {
     bytes: Buffer.byteLength(raw),
@@ -863,6 +906,7 @@ async function readMessagesFromDiskFull(
   const transformMs = Date.now() - tTransform;
   const lastVisibleActivityAt = getLastVisibleActivityAt(events, sessionId);
   const coverage = getSessionHistoryCoverage(events);
+  const agents = foldTranscriptAgents(events);
   deps.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt);
 
   const total = messages.length;
@@ -880,7 +924,7 @@ async function readMessagesFromDiskFull(
       transformMs,
       ...metadata,
     });
-    return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt, coverage };
+    return { messages: sliced, total, hasMore: start > 0, lastVisibleActivityAt, coverage, agents };
   }
 
   deps.recordSpan("session.readFromDisk", Date.now() - startedAt, sessionId, {
@@ -893,7 +937,14 @@ async function readMessagesFromDiskFull(
     transformMs,
     ...metadata,
   });
-  return { messages, total, hasMore: false, lastVisibleActivityAt, coverage };
+  return { messages, total, hasMore: false, lastVisibleActivityAt, coverage, agents };
+}
+
+/** Every sub-agent a complete event log records, in launch order. */
+export function foldTranscriptAgents(events: readonly unknown[]): TranscriptAgent[] {
+  const fold = new TranscriptAgentFold();
+  for (const event of events) fold.observe(event);
+  return fold.list();
 }
 
 export function getSessionHistoryCoverage(events: readonly unknown[]): SessionHistoryCoverage {
@@ -1075,7 +1126,7 @@ export async function readMessagesFromDisk(
   try {
     tail = await tailPromise;
   } catch (err) {
-    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
+    if (isFileNotFoundError(err)) return emptyReadResult();
     throw err;
   }
 
@@ -1116,7 +1167,7 @@ export async function readMessagesFromDisk(
       });
     }
   } catch (err) {
-    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
+    if (isFileNotFoundError(err)) return emptyReadResult();
     throw err;
   }
 
@@ -1124,7 +1175,7 @@ export async function readMessagesFromDisk(
   try {
     currentFileStat = await stat(eventsPath);
   } catch (err) {
-    if (isFileNotFoundError(err)) return { messages: [], total: 0, hasMore: false, coverage: {} };
+    if (isFileNotFoundError(err)) return emptyReadResult();
     throw err;
   }
   if (currentFileStat.size !== tail.fileSize || currentFileStat.mtimeMs !== tail.mtimeMs) {
@@ -1185,6 +1236,7 @@ export async function readMessagesFromDisk(
     hasMore: start > 0,
     lastVisibleActivityAt: stats.lastVisibleActivityAt,
     coverage: stats.coverage,
+    agents: stats.agents,
   };
 }
 
@@ -1263,6 +1315,8 @@ export async function readMessagesAroundEventFromDisk(
     hasNewer: endOffset < total,
     lastVisibleActivityAt,
     coverage: {},
+    // A window around one saved message holds messages only, so no step needs its agent named.
+    agents: [],
   };
 }
 

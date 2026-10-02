@@ -726,6 +726,115 @@ describe("useSessionStream ephemeral state", () => {
     });
   });
 
+  it("keeps a sub-agent's calls through the main agent's turns, and moves them along at the agent's own", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      const liveIds = () => getState().liveTools.map((tool) => tool.toolCallId);
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "0", turnInstanceId: "main-1" },
+        () => getState().activeTurnInstanceId === "main-1");
+      await emitAndWait(act, source, {
+        type: "tool_start", toolCallId: "task-bg", name: "task", turnInstanceId: "main-1", timestamp: "2026-10-01T10:00:01.000Z",
+      }, () => liveIds().length === 1);
+      await emitAndWait(act, source, {
+        type: "tool_done", toolCallId: "task-bg", turnInstanceId: "main-1", success: true, timestamp: "2026-10-01T10:00:01.020Z",
+      }, () => getState().liveTools[0]?.completedAt !== undefined);
+      await emitAndWait(act, source, { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-1" },
+        () => getState().agentTurnInstanceIds["task-bg"] === "agent-1");
+      await emitAndWait(act, source, {
+        type: "tool_start", toolCallId: "bg-done", name: "view", parentToolCallId: "task-bg", turnInstanceId: "agent-1", timestamp: "2026-10-01T10:00:02.000Z",
+      }, () => liveIds().length === 2);
+      await emitAndWait(act, source, {
+        type: "tool_done", toolCallId: "bg-done", turnInstanceId: "agent-1", success: true, timestamp: "2026-10-01T10:00:03.000Z",
+      }, () => getState().liveTools[1]?.completedAt !== undefined);
+      await emitAndWait(act, source, {
+        type: "tool_start", toolCallId: "bg-open", name: "bash", parentToolCallId: "task-bg", turnInstanceId: "agent-1", timestamp: "2026-10-01T10:00:04.000Z",
+      }, () => liveIds().length === 3);
+
+      // The main agent moves on twice: its own finished call lasts one turn, the agent's are untouched.
+      await emitAndWait(act, source, { type: "thinking", turnId: "1", turnInstanceId: "main-2" },
+        () => getState().activeTurnInstanceId === "main-2");
+      expect(liveIds()).toEqual(["task-bg", "bg-done", "bg-open"]);
+      await emitAndWait(act, source, { type: "thinking", turnId: "2", turnInstanceId: "main-3" },
+        () => getState().activeTurnInstanceId === "main-3");
+      expect(liveIds()).toEqual(["bg-done", "bg-open"]);
+      // An agent's call is never in the main agent's turn.
+      expect(getState().liveTools.map((tool) => tool.turnInstanceId)).toEqual(["agent-1", "agent-1"]);
+
+      // The agent's own turns do for its calls what the main agent's do for the main agent's.
+      await emitAndWait(act, source, { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-2" },
+        () => getState().agentTurnInstanceIds["task-bg"] === "agent-2");
+      expect(liveIds()).toEqual(["bg-done", "bg-open"]);
+      await emitAndWait(act, source, { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-3" },
+        () => getState().agentTurnInstanceIds["task-bg"] === "agent-3");
+      // A call still in flight is never let go.
+      expect(liveIds()).toEqual(["bg-open"]);
+    });
+  });
+
+  it("knows the main agent is waiting from the moment it stops until it starts a turn again", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "0", turnInstanceId: "main-1" },
+        () => getState().activeTurnInstanceId === "main-1");
+      expect(getState().mainAgentIdle).toBe(false);
+
+      await emitAndWait(act, source, { type: "main_idle" }, () => getState().mainAgentIdle);
+      // Background work is holding the run open, so it is still streaming.
+      expect(getState().isStreaming).toBe(true);
+
+      await emitAndWait(act, source, { type: "thinking", turnId: "1", turnInstanceId: "main-2" },
+        () => !getState().mainAgentIdle);
+
+      await emitAndWait(act, source, { type: "main_idle" }, () => getState().mainAgentIdle);
+      await emitAndWait(act, source, { type: "done", content: "Done" }, () => getState().streamStatus === "idle");
+      expect(getState().mainAgentIdle).toBe(false);
+    });
+  });
+
+  it("restores the agents' turns and the wait from a reconnect snapshot", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({
+        turnId: "3",
+        turnInstanceId: "main-4",
+        mainAgentIdle: true,
+        agentTurns: [["task-bg", "agent-7"], ["bad"], "nonsense"],
+        liveTools: [
+          { toolCallId: "main-view", name: "view", completedAt: "2026-10-01T10:00:05.000Z" },
+          { toolCallId: "bg-view", name: "view", parentToolCallId: "task-bg", turnInstanceId: "agent-7", completedAt: "2026-10-01T10:00:06.000Z" },
+          // Started before the agent's first turn was known: it has no turn, and is not given the main agent's.
+          { toolCallId: "bg-early", name: "view", parentToolCallId: "task-bg" },
+        ],
+      }), () => getState().liveTools.length === 3);
+
+      expect(getState().mainAgentIdle).toBe(true);
+      expect(getState().agentTurnInstanceIds).toEqual({ "task-bg": "agent-7" });
+      expect(getState().liveTools.map((tool) => [tool.toolCallId, tool.turnInstanceId])).toEqual([
+        ["main-view", "main-4"],
+        ["bg-view", "agent-7"],
+        ["bg-early", undefined],
+      ]);
+
+      // The next turn of the agent's is applied to the right calls.
+      await emitAndWait(act, source, { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-8" },
+        () => getState().agentTurnInstanceIds["task-bg"] === "agent-8");
+      await emitAndWait(act, source, { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-9" },
+        () => getState().agentTurnInstanceIds["task-bg"] === "agent-9");
+      expect(getState().liveTools.map((tool) => tool.toolCallId)).toEqual(["main-view", "bg-early"]);
+
+      await emitAndWait(act, source, snapshot({ complete: true, terminalType: "done", mainAgentIdle: true, agentTurns: [["task-bg", "agent-9"]] }),
+        () => getState().streamStatus === "idle");
+      expect(getState().mainAgentIdle).toBe(false);
+      expect(getState().agentTurnInstanceIds).toEqual({});
+    });
+  });
+
   it("restores in-flight thinking from a reconnect snapshot and drops it if the run is cut short", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
