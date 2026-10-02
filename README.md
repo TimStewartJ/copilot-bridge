@@ -414,31 +414,46 @@ successful resume, or healthy ping.
 
 An agent can start a shell command in the background (or a foreground one can outlive its
 wait), end its turn, and be woken by the runtime when the command finishes. The command runs
-inside the session's runtime handle. Releasing the handle stops it, the runtime reports
-`processing: false` while it runs, and a resumed session knows nothing about it
-(`copilot-background-commands.native.test.ts` pins all three against the installed CLI).
-Without help the agent would never hear of the command again.
+inside the session's runtime handle, the runtime reports `processing: false` while it runs,
+and a resumed session knows nothing about it. Without help the agent would never hear of a
+command its session lost.
 
-- **Kept loaded.** A session with an attached command that started within the last 45
+What ends the command depends on how the session loses it:
+
+| How the session loses the command | The command's process |
+|---|---|
+| The Bridge releases the session's handle (eviction, reload, settings refresh) | Stopped by the runtime |
+| The runtime is stopped in an orderly way (a graceful Bridge shutdown) | Stopped by the runtime within a few seconds |
+| The server or the runtime dies without that (a crash, a kill of one process) | Keeps running with no session attached |
+
+`copilot-background-commands.native.test.ts` pins the first row and how the runtime lists
+commands against the installed CLI. The other two rows were measured by hand on CLI 1.0.89.
+
+- **Kept loaded.** A session with a background command that started within the last 45
   minutes counts as working: idle eviction, cache trimming, manual idle eviction and
-  restart-when-idle all wait for it, and for 30 seconds after any command ends, while the
-  runtime starts the turn that reports the result. A model refresh that needs a new
-  backend is refused meanwhile, as it is for a running session. Its run is still over, so
-  the chat shows idle. The window is `BACKGROUND_COMMAND_PROTECT_MS` in
+  restart-when-idle all wait for it, and for 10 seconds after it ends, while the runtime
+  starts the turn that reports the result. A model refresh that needs a new backend is
+  refused meanwhile, as it is for a running session. Its run is still over, so the chat
+  shows idle. The window is `BACKGROUND_COMMAND_PROTECT_MS` in
   `src/server/background-commands.ts`. Of the background commands that finished in a
   month of sessions, 99% took less; a command that never finishes (a dev server, a
-  watcher) must not pin a session or hold restarts for longer. Detached commands are
-  not tracked, because they outlive the handle.
-- **Reported when stopped.** A session unloaded with a command still running (after the
-  window, by a settings or task-instruction refresh, or by a backend loss) gets a one-time
-  `<bridge_notice>` in front of its next message naming the commands. A command still
-  marked running at boot was cut off by the server stopping and is reported the same way.
-  The notice travels with the user message, never in the system prompt.
-- **Woken when it was waiting.** If the stopped command was still inside the window and
-  the session is idle and not archived, the notice is sent at once as a message of its
-  own, so the agent reruns what it needs instead of waiting for a completion that will
-  not come. One wake per session per 10 minutes; a run that is being resumed anyway
-  carries the notice instead. Staged previews record the loss but never start a turn.
+  watcher) must not pin a session or hold restarts for longer. Two kinds of command are
+  not tracked: a foreground command whose tool call is still waiting on it (the runtime
+  lists it with execution mode `sync`, and the run in flight already keeps the session),
+  and a detached command, which outlives the handle.
+- **Reported when lost.** A session that loses a running command gets a one-time
+  `<bridge_notice>` in front of its next message naming the commands. The notice says a
+  command was stopped only when the Bridge released its handle. A command still marked
+  running at boot, or one whose runtime was lost under a running server, is reported as
+  possibly still running, with its process ID: the Bridge cannot tell an orderly stop
+  from a crash afterwards, so the agent is told to look for the process before it reruns
+  the command. The notice travels with the user message, never in the system prompt.
+- **Woken when it was waiting.** If the lost command was still inside the window and
+  the session is not archived, the notice is sent as a message of its own, so the agent
+  reruns what it needs instead of waiting for a completion that will not come. A session
+  that is being reloaded gets it once it is loaded again. One wake per session per 10
+  minutes; a run that is in flight or being resumed carries the notice instead. Staged
+  previews record the loss but never start a turn.
 
 Evict-all, a session reload and configuration refreshes do not wait for a command: they
 reload sessions that have no run open so the next turn sees the new settings. The notice

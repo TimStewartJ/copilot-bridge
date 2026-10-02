@@ -495,6 +495,8 @@ export type AgentBackgroundTask = {
   command?: string;
   /** Shell tasks only: attached | detached. An attached command dies with its session's runtime handle. */
   attachmentMode?: string;
+  /** Shell tasks only: the operating system's ID for the process running the command. */
+  pid?: number;
 } & Record<string, unknown>;
 
 /**

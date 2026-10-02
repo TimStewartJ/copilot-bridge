@@ -10,10 +10,12 @@ import { SessionAgentRegistry } from "../session-agent-registry.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
 
 /**
- * The Bridge's handling of background commands rests on three things the runtime does, none of
+ * The Bridge's handling of background commands rests on four things the runtime does, none of
  * which the SDK documents: it lists a running command as an attached shell task with a start
- * time, it stops the command when the session's handle is released, and a resumed session knows
- * nothing about it. This pins them against the installed runtime with no model in the loop.
+ * time, it lists a command as "sync" while a tool call is still waiting on it and as "background"
+ * once the agent has left it running, it stops the command when the session's handle is released,
+ * and a resumed session knows nothing about it. This pins them against the installed runtime with
+ * no model in the loop.
  */
 
 function sdkSession(session: AgentSession): CopilotSession {
@@ -99,11 +101,12 @@ async function fixture(signal: AbortSignal) {
 }
 
 describe("native background commands", () => {
-  it("lists a running command as an attached shell task and stops it when the session is released", async ({ signal }) => {
+  it("tells a foreground command from a background one, and stops the background one when the session is released", async ({ signal }) => {
     const { backend, shell, config, cleanup } = await fixture(signal);
     // Long enough that it cannot finish on its own while the test runs, short enough not to linger if it survives.
     const runSeconds = 90;
     const command = process.platform === "win32" ? `Start-Sleep -Seconds ${runSeconds}` : `sleep ${runSeconds}`;
+    const foregroundCommand = process.platform === "win32" ? "Start-Sleep -Seconds 4" : "sleep 4";
     const isAlive = (pid: number): boolean => {
       try {
         process.kill(pid, 0);
@@ -112,22 +115,43 @@ describe("native background commands", () => {
         return false;
       }
     };
+    const shellTasks = async (session: AgentSession) =>
+      ((await session.listTasks())?.tasks ?? []).filter((task) => task.kind === "shell");
     try {
       const session = await backend.createSession(config);
       await session.initializeTools();
       // An empty session is discarded on release; one turn makes it resumable.
       await session.sendAndWait({ prompt: "Finish this local diagnostic fixture." }, null);
-      const startedAfter = Date.now() - 5_000;
-      await expect(sdkSession(session).rpc.tools.execute({
-        name: shell,
-        arguments: { command, description: "Native background command fixture", mode: "async" },
-      })).resolves.toMatchObject({ resultType: "success" });
-
       const registry = new SessionAgentRegistry({
         globalBus: { emit: () => {}, subscribe: () => () => {} } as any,
         getLiveSession: () => session,
       });
       try {
+        // A command whose tool call is still waiting on it is listed as well. The run that made
+        // the call keeps the session, so the Bridge must be able to tell it from one left running.
+        const foreground = sdkSession(session).rpc.tools.execute({
+          name: shell,
+          arguments: { command: foregroundCommand, description: "Native foreground command fixture", mode: "sync", initial_wait: 30 },
+        });
+        await vi.waitFor(async () => {
+          expect(await shellTasks(session)).toMatchObject([
+            { status: "running", executionMode: "sync", attachmentMode: "attached" },
+          ]);
+        });
+        await registry.refresh(session.sessionId, "native fixture, foreground");
+        expect(registry.getRunningCommands(session.sessionId)).toEqual([]);
+        expect(registry.hasProtectedCommand(session.sessionId)).toBe(false);
+        await expect(foreground).resolves.toMatchObject({ resultType: "success" });
+
+        const startedAfter = Date.now() - 5_000;
+        await expect(sdkSession(session).rpc.tools.execute({
+          name: shell,
+          arguments: { command, description: "Native background command fixture", mode: "async" },
+        })).resolves.toMatchObject({ resultType: "success" });
+        expect((await shellTasks(session)).filter((task) => task.status === "running")).toMatchObject([
+          { executionMode: "background", attachmentMode: "attached" },
+        ]);
+
         await registry.refresh(session.sessionId, "native fixture");
         const [running] = registry.getRunningCommands(session.sessionId);
         expect(running).toMatchObject({ description: "Native background command fixture" });
@@ -137,6 +161,10 @@ describe("native background commands", () => {
         expect(registry.hasProtectedCommand(session.sessionId)).toBe(true);
         // The runtime does not count a running command as work, which is why the Bridge has to.
         await expect(session.getActivity()).resolves.toMatchObject({ processing: false });
+        // The ID it reports is the command's own process, which is what an agent is sent to look
+        // for when the command may have outlived a crash.
+        expect(running?.pid).toEqual(expect.any(Number));
+        expect(isAlive(running!.pid!)).toBe(true);
       } finally {
         registry.dispose();
       }
