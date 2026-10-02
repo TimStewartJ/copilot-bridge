@@ -540,6 +540,7 @@ export const STATUS_LABEL: Record<DsStatusKind, string> = {
   "needs-input": "Needs your input",
   working: "Working",
   unread: "New results",
+  "unread-working": "New results, still working",
   warning: "Needs attention",
   danger: "Problem",
   done: "Done",
@@ -610,6 +611,17 @@ function StatusGlyph({ kind }: { kind: DsStatusKind }) {
       );
     case "unread":
       return <circle cx="8" cy="8" r="4" fill="currentColor" />;
+    case "unread-working": {
+      // The unread dot inside the working ring, so the shape still says both when the ring is still.
+      const ring = { ...stroke, stroke: "var(--color-text-secondary)" } as const;
+      return (
+        <>
+          <circle cx="8" cy="8" r="3.5" fill="currentColor" />
+          <circle cx="8" cy="8" r="6.5" {...ring} strokeWidth={1.5} strokeOpacity="0.3" />
+          <path d="M8 1.5a6.5 6.5 0 0 1 6.5 6.5" {...ring} />
+        </>
+      );
+    }
     case "warning":
       return (
         <>
@@ -657,7 +669,8 @@ function StatusGlyph({ kind }: { kind: DsStatusKind }) {
 }
 
 /**
- * A state as a glyph: needs input, working, unread, warning, danger, done, open, closed, paused, on.
+ * A state as a glyph: needs input, working, unread, unread while working, warning, danger, done,
+ * open, closed, paused, on.
  * The shape says which state it is, so the glyphs stay distinguishable without colour. It names
  * itself to assistive technology unless `decorative` is set because adjacent text already says it.
  */
@@ -688,7 +701,7 @@ export function StatusIcon({
         viewBox="0 0 16 16"
         className={cx(
           "size-full overflow-visible",
-          kind === "working" && "animate-spin motion-reduce:animate-none",
+          (kind === "working" || kind === "unread-working") && "animate-spin motion-reduce:animate-none",
           kind === "autopilot" && "animate-[spin_2.4s_linear_infinite] motion-reduce:animate-none",
         )}
         aria-hidden="true"
