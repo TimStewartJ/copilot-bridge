@@ -136,6 +136,24 @@ describe("fresh database schema", () => {
     migrated.close();
   });
 
+  it("adds the process ID column to existing background command markers without inventing one", () => {
+    const dataDir = makeTestDir("background-command-pid-migration");
+    const legacy = openDatabase(dataDir);
+    legacy.exec(`
+      ALTER TABLE background_command_markers DROP COLUMN pid;
+      INSERT INTO background_command_markers(sessionId,shellId,startedAt,description,stoppedAt,stoppedBy)
+      VALUES('old-session','3','2026-10-01T17:00:00.000Z','Test refresh','2026-10-01T17:10:00.000Z','unloaded');
+    `);
+    legacy.close();
+    const migrated = openDatabase(dataDir);
+    expect(migrated.prepare("SELECT sessionId, stoppedBy, pid FROM background_command_markers").get())
+      .toEqual({ sessionId: "old-session", stoppedBy: "unloaded", pid: null });
+    migrated.close();
+    const reopened = openDatabase(dataDir);
+    expect(reopened.prepare("SELECT COUNT(*) AS count FROM background_command_markers").get()).toEqual({ count: 1 });
+    reopened.close();
+  });
+
   it("adds the checkpoint column to an existing defer loop table", () => {
     const dataDir = makeTestDir("db-defer-checkpoint-migration");
     const legacy = new DatabaseSync(join(dataDir, "bridge.db"));

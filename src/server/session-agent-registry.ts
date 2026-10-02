@@ -51,11 +51,12 @@ import {
 /** After this window without a live refresh, a snapshot degrades to `lastSeen`. */
 const FRESHNESS_WINDOW_MS = 60_000;
 /**
- * How long a session stays protected after a command leaves its running set. The runtime starts
- * the turn that tells the agent a moment after the command ends, and unloading the session in
- * that gap would lose the news. Must stay below FRESHNESS_WINDOW_MS, which nothing refreshes here.
+ * How long a session stays protected after a background command leaves its running set. The
+ * runtime starts the turn that tells the agent a moment after the command ends (under half a
+ * second when measured in production), and unloading the session in that gap would lose the
+ * news. Must stay below FRESHNESS_WINDOW_MS, which nothing refreshes here.
  */
-const COMMAND_SETTLE_MS = 30_000;
+const COMMAND_SETTLE_MS = 10_000;
 /** Interval for the bounded in-flight poll. */
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 /** Hard cap on a single session's poll lifetime, so a stuck task can't leak a timer. */
@@ -78,7 +79,7 @@ const KNOWN_STATUSES: ReadonlySet<string> = new Set<AgentTaskStatus>([
 interface RegistryEntry {
   tasks: SessionAgentTask[];
   tasksSignature?: string;
-  /** Commands still running in the session's attached shells, from the same listing as `tasks`. */
+  /** Background commands still running in the session's attached shells, from the same listing as `tasks`. */
   commands: RunningBackgroundCommand[];
   commandsSignature: string;
   /** Epoch ms until which a command that just left the running set still protects the session. */
@@ -298,8 +299,8 @@ export class SessionAgentRegistry {
   }
 
   /**
-   * True while a command started within the protection window is still running in the session's
-   * attached shell, and for a moment after any command ends. Unloading the session would stop a
+   * True while a background command started within the protection window is still running in the
+   * session's attached shell, and for a moment after one ends. Unloading the session would stop a
    * running command, and its agent is most likely waiting for it; just after it ends, the runtime
    * is about to start the turn that tells the agent. An older command that is still running no
    * longer counts: one that never finishes must not pin the session.
@@ -311,7 +312,7 @@ export class SessionAgentRegistry {
       && (this.hasProtectedCommandIn(entry) || this.now() < (entry.commandSettleUntil ?? 0));
   }
 
-  /** Commands running in the session's attached shells as of the last refresh. */
+  /** Background commands running in the session's attached shells as of the last refresh. */
   getRunningCommands(sessionId: string): RunningBackgroundCommand[] {
     return (this.entries.get(sessionId)?.commands ?? []).map((command) => ({ ...command }));
   }
@@ -430,8 +431,11 @@ export class SessionAgentRegistry {
   }
 
   /**
-   * The commands still running in the session's attached shells. A detached command outlives the
-   * session's runtime handle, so it is not the Bridge's to keep alive or report.
+   * The commands an agent left running in the session's attached shells. The runtime also lists a
+   * foreground command while its tool call is still waiting on it, with execution mode "sync".
+   * That one belongs to a run in flight, which keeps the session by itself, and it becomes
+   * "background" under the same ID and start time if it outlives the wait. A detached command
+   * outlives the session's runtime handle, so it is not the Bridge's to keep alive or report.
    */
   private readRunningCommands(
     entry: RegistryEntry,
@@ -440,7 +444,10 @@ export class SessionAgentRegistry {
     const known = new Map(entry.commands.map((command) => [command.shellId, command]));
     const firstSeenAt = new Date(this.now()).toISOString();
     return rawTasks
-      .filter((task) => task.kind === "shell" && task.status === "running" && task.attachmentMode !== "detached")
+      .filter((task) => task.kind === "shell"
+        && task.status === "running"
+        && task.executionMode === "background"
+        && task.attachmentMode !== "detached")
       .map((task) => ({
         shellId: task.id,
         // The start time is the command's identity and its age, so one the runtime did not give
@@ -450,6 +457,7 @@ export class SessionAgentRegistry {
           : known.get(task.id)?.startedAt ?? firstSeenAt,
         ...(task.description ? { description: task.description } : {}),
         ...(task.command ? { command: task.command } : {}),
+        ...(task.pid !== undefined ? { pid: task.pid } : {}),
       }));
   }
 
@@ -468,14 +476,17 @@ export class SessionAgentRegistry {
   ): void {
     const tasksSignature = this.getTasksSignature(tasks);
     const tasksChanged = entry.tasksSignature !== tasksSignature;
+    const commandKey = (command: RunningBackgroundCommand) => `${command.shellId}\u0000${command.startedAt}`;
+    // The runtime can list a command a moment before it reports the command's process ID, so
+    // the ID arriving counts as a change to record, though not as a command ending.
     const commandsSignature = commands
-      .map((command) => `${command.shellId}\u0000${command.startedAt}`)
+      .map((command) => `${commandKey(command)}\u0000${command.pid ?? ""}`)
       .sort()
       .join("\u0001");
     const commandsChanged = entry.commandsSignature !== commandsSignature;
     if (commandsChanged) {
-      const stillRunning = new Set(commands.map((command) => `${command.shellId}\u0000${command.startedAt}`));
-      if (entry.commands.some((command) => !stillRunning.has(`${command.shellId}\u0000${command.startedAt}`))) {
+      const stillRunning = new Set(commands.map(commandKey));
+      if (entry.commands.some((command) => !stillRunning.has(commandKey(command)))) {
         entry.commandSettleUntil = this.now() + COMMAND_SETTLE_MS;
       }
     }

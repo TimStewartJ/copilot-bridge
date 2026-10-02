@@ -30,6 +30,7 @@ function sessionWithCommand(sessionId: string, startedAt: number) {
             startedAt: new Date(startedAt).toISOString(),
             description: "Test refresh",
             command: "pwsh -File refresh.ps1",
+            pid: 4242,
           }],
     })),
     setCommand(next: ShellState) {
@@ -147,10 +148,34 @@ describe("SessionManager and commands left running in a session's shell", () => 
     expect(turn.block).toContain("<bridge_notice>");
     expect(turn.block).toContain('shellId 7 "Test refresh"');
     expect(turn.block).toContain("stopped when the Bridge unloaded this session");
+    // The runtime stopped it with the handle, so there is no process for the agent to look for.
+    expect(turn.block).not.toContain("possibly still running");
     // A send that failed leaves the notice for the retry.
     expect(manager.prepareTurnContext("s1").block).toBe(turn.block);
     turn.commit();
     expect(manager.prepareTurnContext("s1").block).toBeUndefined();
+  });
+
+  it("does not claim a command was stopped when its runtime was lost", async () => {
+    const { manager, backgroundCommandStore, onBackgroundCommandsStopped } = createManager();
+    const session = sessionWithCommand("s1", 0);
+    await manager.cacheResumedSession("s1", session);
+    await manager.agentRegistry.refresh("s1", "started");
+    await vi.advanceTimersByTimeAsync(3 * MINUTE);
+
+    // The runtime died or was fenced: its handles are dropped without asking it to release anything.
+    manager.backendTransition = { owner: {}, phase: "retiring" };
+    await manager.dropCachedSessionsForLostBackend();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(manager.sessionObjects.has("s1")).toBe(false);
+    expect(backgroundCommandStore.listStopped("s1")).toMatchObject([{ shellId: "7", pid: 4242, stoppedBy: "runtime-lost" }]);
+    expect(onBackgroundCommandsStopped).toHaveBeenCalledExactlyOnceWith("s1");
+    const block = manager.prepareTurnContext("s1").block;
+    expect(block).toContain('shellId 7 "Test refresh" (started 1970-01-01T00:00:00.000Z as process 4242, cut off when the agent runtime was lost, possibly still running)');
+    expect(block).toContain("Before you rerun it, look for its process");
+    expect(block).not.toContain("were stopped before they finished");
   });
 
   it("wakes the agent when a refresh unloads the session under a command it was waiting for", async () => {
@@ -159,7 +184,7 @@ describe("SessionManager and commands left running in a session's shell", () => 
       queueStoppedCommandWake({
         backgroundCommandStore,
         deferredPromptStore,
-        isSessionBusy: (id) => manager.isSessionBusy(id),
+        hasRunInFlight: (id) => manager.hasRunInFlight(id),
       }, sessionId);
     });
     const session = sessionWithCommand("s1", 0);
@@ -178,6 +203,46 @@ describe("SessionManager and commands left running in a session's shell", () => 
     expect(delivery?.prompt).toContain("Continue the work that was waiting on these commands.");
     // The wake carries the notice, so the next message does not repeat it.
     expect(manager.prepareTurnContext("s1").block).toBeUndefined();
+  });
+
+  it("wakes the agent when its session is reloaded under a command it was waiting for", async () => {
+    const { manager, backgroundCommandStore, deferredPromptStore, onBackgroundCommandsStopped } = createManager();
+    const seen: Array<{ busy: boolean; runInFlight: boolean; outcome: string }> = [];
+    onBackgroundCommandsStopped.mockImplementation((sessionId: string) => {
+      seen.push({
+        busy: manager.isSessionBusy(sessionId),
+        runInFlight: manager.hasRunInFlight(sessionId),
+        outcome: queueStoppedCommandWake({
+          backgroundCommandStore,
+          deferredPromptStore,
+          hasRunInFlight: (id) => manager.hasRunInFlight(id),
+        }, sessionId),
+      });
+    });
+    const session = sessionWithCommand("s1", 0);
+    await manager.cacheResumedSession("s1", session);
+    await manager.agentRegistry.refresh("s1", "started");
+    await vi.advanceTimersByTimeAsync(3 * MINUTE);
+
+    // The reload has released the old handle and is still waiting for the new one.
+    let finishResume!: (session: ReturnType<typeof makeAgentSessionStub>) => void;
+    manager.backend = {
+      resumeSession: vi.fn(() => new Promise((resolve) => { finishResume = resolve; })),
+    };
+    const reloading = manager.reloadSession("s1");
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
+    // Loading the session again makes it busy, but no run is coming whose prompt could carry the notice.
+    expect(seen).toEqual([{ busy: true, runInFlight: false, outcome: "queued" }]);
+    const [delivery] = deferredPromptStore.listDeliveriesForSession("s1");
+    expect(delivery?.status).toBe("pending");
+    expect(delivery?.prompt).toContain('shellId 7 "Test refresh"');
+
+    finishResume(makeAgentSessionStub({ sessionId: "s1" }));
+    await vi.advanceTimersByTimeAsync(1);
+    await reloading;
+    expect(manager.isSessionBusy("s1")).toBe(false);
   });
 
   it("stays silent for a session that is being deleted", async () => {

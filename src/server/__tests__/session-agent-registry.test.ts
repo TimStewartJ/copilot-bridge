@@ -644,7 +644,82 @@ describe("SessionAgentRegistry", () => {
       expect(onCommandsChanged).toHaveBeenLastCalledWith("s1", []);
       // The runtime is about to start the turn that tells the agent, so the session is held a moment longer.
       expect(registry.hasProtectedCommand("s1")).toBe(true);
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+      registry.dispose();
+    });
+
+    it("leaves a foreground command to the run waiting on it, and tracks it once it moves to the background", async () => {
+      const { bus } = makeBus();
+      const startedAt = new Date(0).toISOString();
+      let tasks: AgentBackgroundTask[] = [shellTask({ id: "1", executionMode: "sync", startedAt })];
+      const session = fakeSession(async () => ({ tasks }));
+      const onCommandsChanged = vi.fn();
+      const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session, onCommandsChanged });
+
+      await registry.refresh("s1", "foreground");
+      expect(registry.getRunningCommands("s1")).toEqual([]);
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+
+      // It returned inside its wait. The run that waited on it is still going, so nothing is held for it.
+      tasks = [];
+      await registry.refresh("s1", "returned");
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+      expect(onCommandsChanged).not.toHaveBeenCalled();
+
+      // The next one outlives its wait, and the runtime lists the same command as a background one.
+      tasks = [shellTask({ id: "2", executionMode: "sync", startedAt })];
+      await registry.refresh("s1", "second foreground");
+      expect(registry.getRunningCommands("s1")).toEqual([]);
+      tasks = [shellTask({ id: "2", executionMode: "background", startedAt })];
+      await registry.refresh("s1", "moved to the background");
+      expect(registry.getRunningCommands("s1")).toEqual([{ shellId: "2", startedAt }]);
+      expect(registry.hasProtectedCommand("s1")).toBe(true);
+      expect(onCommandsChanged).toHaveBeenCalledExactlyOnceWith("s1", [{ shellId: "2", startedAt }]);
+      registry.dispose();
+    });
+
+    it("records a process ID the runtime reports after it first lists the command, and holds nothing extra for it", async () => {
+      const { bus } = makeBus();
+      const startedAt = new Date(0).toISOString();
+      let tasks = [shellTask({ id: "1", startedAt })];
+      const session = fakeSession(async () => ({ tasks }));
+      const onCommandsChanged = vi.fn();
+      const registry = new SessionAgentRegistry({
+        globalBus: bus,
+        getLiveSession: () => session,
+        commandProtectMs: 1_000,
+        onCommandsChanged,
+      });
+
+      await registry.refresh("s1", "listed");
+      expect(onCommandsChanged).toHaveBeenLastCalledWith("s1", [{ shellId: "1", startedAt }]);
+
+      tasks = [shellTask({ id: "1", startedAt, pid: 4242 })];
+      await registry.refresh("s1", "process known");
+      await registry.refresh("s1", "unchanged");
+      expect(onCommandsChanged).toHaveBeenCalledTimes(2);
+      expect(onCommandsChanged).toHaveBeenLastCalledWith("s1", [{ shellId: "1", startedAt, pid: 4242 }]);
+      expect(registry.getRunningCommands("s1")).toEqual([{ shellId: "1", startedAt, pid: 4242 }]);
+
+      // No command ended, so once this one is past its window nothing else keeps the session.
+      vi.setSystemTime(2_000);
+      expect(registry.hasProtectedCommand("s1")).toBe(false);
+      registry.dispose();
+    });
+
+    it("does not track a command the runtime gave no execution mode for", async () => {
+      const { bus } = makeBus();
+      const session = fakeSession(async () => ({
+        tasks: [shellTask({ id: "1", executionMode: undefined, startedAt: new Date(0).toISOString() })],
+      }));
+      const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+      await registry.refresh("s1", "test");
+
+      expect(registry.getRunningCommands("s1")).toEqual([]);
       expect(registry.hasProtectedCommand("s1")).toBe(false);
       registry.dispose();
     });
@@ -674,7 +749,7 @@ describe("SessionAgentRegistry", () => {
       const { bus } = makeBus();
       const live = new Map<string, AgentSession>();
       live.set("s1", fakeSession(async () => ({
-        tasks: [shellTask({ id: "1", startedAt: new Date(0).toISOString(), description: "Refresh" })],
+        tasks: [shellTask({ id: "1", startedAt: new Date(0).toISOString(), description: "Refresh", pid: 4242 })],
       })));
       const onCommandsStopped = vi.fn();
       const registry = new SessionAgentRegistry({
@@ -690,7 +765,7 @@ describe("SessionAgentRegistry", () => {
 
       expect(onCommandsStopped).toHaveBeenCalledTimes(1);
       expect(onCommandsStopped).toHaveBeenCalledWith("s1", [
-        { shellId: "1", startedAt: new Date(0).toISOString(), description: "Refresh" },
+        { shellId: "1", startedAt: new Date(0).toISOString(), description: "Refresh", pid: 4242 },
       ]);
       expect(registry.hasProtectedCommand("s1")).toBe(false);
       expect(registry.getRunningCommands("s1")).toEqual([]);

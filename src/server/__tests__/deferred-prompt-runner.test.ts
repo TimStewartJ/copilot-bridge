@@ -1513,5 +1513,37 @@ describe("deferred-prompt-runner", () => {
       expect(store.listDeliveriesForSession("session-1")[0]?.status).toBe("completed");
       runner.shutdown();
     });
+
+    it("delivers it on the next sweep when the session was only being loaded again, with no run to end", async () => {
+      const store = createDeferredPromptStore(db);
+      const commands = createBackgroundCommandStore(db);
+      const bus = createGlobalBus();
+      const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+      commands.syncRunning("session-1", [{ shellId: "3", startedAt, description: "Test refresh" }]);
+      commands.markSessionStopped("session-1", "unloaded");
+      // A reload: the session is busy while it loads, and no run is in flight.
+      const busySessions = new Set(["session-1"]);
+      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions }) as any;
+      const runner = createDeferredPromptRunner(store, sm, bus);
+      runner.start();
+
+      expect(queueStoppedCommandWake({
+        backgroundCommandStore: commands,
+        deferredPromptStore: store,
+        deferredPromptRunner: runner,
+        hasRunInFlight: () => false,
+      }, "session-1")).toBe("queued");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sm._started).toEqual([]);
+
+      // Nothing announces that the session finished loading; the periodic sweep finds the message.
+      busySessions.delete("session-1");
+      await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+      expect(sm._started).toHaveLength(1);
+      expect(sm._started[0].prompt).toContain('shellId 3 "Test refresh"');
+      expect(store.listDeliveriesForSession("session-1")[0]?.status).toBe("completed");
+      runner.shutdown();
+    });
   });
 });

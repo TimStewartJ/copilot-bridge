@@ -760,6 +760,7 @@ function initSchema(db: DatabaseSync): void {
     -- Commands the agent left running in a session's attached shell. stoppedAt is NULL while the
     -- command runs in a loaded session. A row that keeps it NULL to the next boot was cut off by
     -- the server stopping; a row with stoppedAt set is a loss the agent has not been told about.
+    -- pid is the command's process, which can outlive a crash of the server or the runtime.
     CREATE TABLE IF NOT EXISTS background_command_markers (
       sessionId TEXT NOT NULL,
       shellId TEXT NOT NULL,
@@ -768,6 +769,7 @@ function initSchema(db: DatabaseSync): void {
       command TEXT,
       stoppedAt TEXT,
       stoppedBy TEXT,
+      pid INTEGER,
       PRIMARY KEY (sessionId, shellId, startedAt)
     );
 
@@ -927,6 +929,19 @@ function initSchema(db: DatabaseSync): void {
   );
   if (!deferLoopColumns.has("checkpoint")) {
     db.exec("ALTER TABLE defer_loops ADD COLUMN checkpoint TEXT");
+  }
+
+  const backgroundCommandColumns = new Set(
+    (db.prepare("PRAGMA table_info(background_command_markers)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  if (!backgroundCommandColumns.has("pid")) {
+    try {
+      db.exec("ALTER TABLE background_command_markers ADD COLUMN pid INTEGER");
+    } catch (error) {
+      // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
   }
 
   const contextBackfillColumns = new Set(
