@@ -2,6 +2,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 import { getProcessHost, type HostExecOptions } from "./process-host.js";
@@ -226,6 +227,28 @@ function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
   // A blank value, as in a copied .env.example, means no setting rather than a setting of nothing.
   if (!env.AGENT_BROWSER_IDLE_TIMEOUT_MS?.trim()) delete env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
   return env;
+}
+
+/** Where agent-browser keeps the socket, port and pid files of its daemons (its `get_socket_dir`). */
+function daemonStateDirectory(env: NodeJS.ProcessEnv): string {
+  if (env.AGENT_BROWSER_SOCKET_DIR) return env.AGENT_BROWSER_SOCKET_DIR;
+  if (env.XDG_RUNTIME_DIR) return join(env.XDG_RUNTIME_DIR, "agent-browser");
+  return join(homedir(), ".agent-browser");
+}
+
+/**
+ * Removes the state files of a daemon that was killed. A daemon removes them itself when it
+ * exits, and agent-browser clears them for a session name that is used again, which the name of
+ * a disposable target never is.
+ */
+async function removeDaemonStateFiles(sessionName: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const directory = daemonStateDirectory(env);
+  try {
+    const names = (await readdir(directory)).filter((name) => name.startsWith(`${sessionName}.`));
+    await Promise.all(names.map((name) => rm(join(directory, name), { force: true })));
+  } catch {
+    // Files left behind are small and harmless.
+  }
 }
 
 function logBrowser(event: string, data: Record<string, unknown>): void {
@@ -1241,12 +1264,16 @@ export async function shutdownBridgeBrowser(
 ): Promise<BrowserShutdownResult> {
   return withBridgeBrowserSession(browserTarget, async () => {
     const startedAt = Date.now();
-    const closeResult = await runAgentBrowserJsonCommand(["close"], 10_000, browserEnv(browserTarget));
+    const env = browserEnv(browserTarget);
+    const closeResult = await runAgentBrowserJsonCommand(["close"], 10_000, env);
     const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
       browserSession: browserTarget.sessionName,
       ...(!closeResult.ok ? { closeFailureCode: failureCode(closeResult.output) } : {}),
       cleanupPhase: "primary_shutdown",
     }, { stopDaemons: browserTarget.disposable === true });
+    if (forceCloseResult.stoppedDaemonPids?.length) {
+      await removeDaemonStateFiles(browserTarget.sessionName, env);
+    }
     const shutdownResult = buildBrowserShutdownResult(closeResult, forceCloseResult, browserTarget.profileDir);
     const duration = Date.now() - startedAt;
     recordBrowserSpan(telemetryStore, "browser.lifecycle.shutdown", duration, {
