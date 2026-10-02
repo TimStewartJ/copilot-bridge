@@ -63,6 +63,9 @@ interface BrowserProcessInfo {
   pid: number;
   name: string;
   commandLine: string;
+  parentPid?: number;
+  /** Only read on Windows, where a dead parent's id stays on its children and can be reused. */
+  createdAtMs?: number;
 }
 
 interface AgentBrowserJsonEnvelope {
@@ -76,6 +79,17 @@ export interface BrowserTarget {
   profileDir: string;
   executablePath?: string;
   headed?: boolean;
+  /**
+   * How long the session's agent-browser daemon may go without a command before it closes its
+   * browser and exits by itself. It counts from the last command it received, so it has to be
+   * longer than any single command.
+   */
+  idleTimeoutMs?: number;
+  /**
+   * The session name and profile are used once and thrown away. Shutting such a target down
+   * also stops its agent-browser daemon when the daemon does not close the browser itself.
+   */
+  disposable?: boolean;
 }
 
 export interface BrowserCommandOptions {
@@ -113,6 +127,8 @@ export interface BrowserProcessCleanupResult {
   killedPids: number[];
   remainingPids: number[];
   clearedRuntimeFiles: number;
+  /** agent-browser daemons stopped because they owned the profile's browser. */
+  stoppedDaemonPids?: number[];
 }
 
 export interface BrowserShutdownResult extends BrowserProcessCleanupResult {
@@ -176,19 +192,39 @@ export function getBridgeBrowserTarget(
   };
 }
 
+const BLANK_START_PAGE = "about:blank";
+
+/**
+ * The inherited browser launch arguments plus a blank start page. A browser started without
+ * a URL opens its new-tab page. In Edge that is a news feed, which loads on every launch and
+ * keeps a processor busy for as long as the tab exists.
+ */
+export function withBlankStartPage(inheritedArgs: string | undefined): string {
+  const inherited = inheritedArgs?.trim();
+  if (!inherited) return BLANK_START_PAGE;
+  // agent-browser separates arguments by newlines or by commas; keep whichever is in use.
+  const separator = inherited.includes("\n") ? "\n" : ",";
+  const present = inherited.split(separator).some((arg) => arg.trim() === BLANK_START_PAGE);
+  return present ? inherited : `${inherited}${separator}${BLANK_START_PAGE}`;
+}
+
 function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     AGENT_BROWSER_NAMESPACE: "copilot-bridge",
     AGENT_BROWSER_SESSION: target.sessionName,
     AGENT_BROWSER_PROFILE: target.profileDir,
+    AGENT_BROWSER_ARGS: withBlankStartPage(process.env.AGENT_BROWSER_ARGS),
     ...(target.executablePath ? { AGENT_BROWSER_EXECUTABLE_PATH: target.executablePath } : {}),
+    ...(target.idleTimeoutMs !== undefined ? { AGENT_BROWSER_IDLE_TIMEOUT_MS: String(target.idleTimeoutMs) } : {}),
   };
   if (target.headed) {
     env.AGENT_BROWSER_HEADED = "true";
   } else {
     delete env.AGENT_BROWSER_HEADED;
   }
+  // A blank value, as in a copied .env.example, means no setting rather than a setting of nothing.
+  if (!env.AGENT_BROWSER_IDLE_TIMEOUT_MS?.trim()) delete env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
   return env;
 }
 
@@ -386,6 +422,41 @@ function isBrowserProcessForProfile(processInfo: BrowserProcessInfo, profileDir:
   return !!userDataDir && normalizeComparablePath(userDataDir) === normalizeComparablePath(profileDir);
 }
 
+function isAgentBrowserProcess(processInfo: BrowserProcessInfo): boolean {
+  return [processInfo.name, splitCommandLine(processInfo.commandLine)[0] ?? ""]
+    .some((value) => normalizedPathBasename(stripWrappingQuotes(value)).toLowerCase().startsWith("agent-browser"));
+}
+
+/**
+ * The agent-browser daemons that started the given browser processes: a daemon is the parent
+ * of its browser's main process. The command-line clients share the daemon's executable name
+ * but never have a browser as a child.
+ */
+function findOwningDaemons(
+  allProcesses: readonly BrowserProcessInfo[],
+  browserProcesses: readonly BrowserProcessInfo[],
+): BrowserProcessInfo[] {
+  const byPid = new Map(allProcesses.map((processInfo) => [processInfo.pid, processInfo]));
+  const daemons = new Map<number, BrowserProcessInfo>();
+  for (const child of browserProcesses) {
+    const parent = child.parentPid === undefined ? undefined : byPid.get(child.parentPid);
+    if (!parent || !isAgentBrowserProcess(parent)) continue;
+    // Windows never updates a child's parent id and reuses ids, so the id can name an unrelated,
+    // younger process. POSIX hands orphans to another parent instead.
+    if (platform() === "win32"
+      && !(parent.createdAtMs !== undefined && child.createdAtMs !== undefined && parent.createdAtMs <= child.createdAtMs)) {
+      continue;
+    }
+    daemons.set(parent.pid, parent);
+  }
+  return [...daemons.values()];
+}
+
+function optionalPositiveInteger(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function parseWindowsBrowserProcessJson(output: string): BrowserProcessInfo[] {
   const trimmed = output.trim();
   if (!trimmed) return [];
@@ -393,13 +464,17 @@ function parseWindowsBrowserProcessJson(output: string): BrowserProcessInfo[] {
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   return rows.flatMap((row) => {
     if (!row || typeof row !== "object") return [];
-    const data = row as { ProcessId?: unknown; Name?: unknown; CommandLine?: unknown };
+    const data = row as { ProcessId?: unknown; ParentProcessId?: unknown; Name?: unknown; CommandLine?: unknown; CreatedAtMs?: unknown };
     const pid = Number(data.ProcessId);
     if (!Number.isSafeInteger(pid) || pid <= 0 || typeof data.CommandLine !== "string") return [];
+    const parentPid = optionalPositiveInteger(data.ParentProcessId);
+    const createdAtMs = optionalPositiveInteger(data.CreatedAtMs);
     return [{
       pid,
       name: typeof data.Name === "string" ? data.Name : "",
       commandLine: data.CommandLine,
+      ...(parentPid !== undefined ? { parentPid } : {}),
+      ...(createdAtMs !== undefined ? { createdAtMs } : {}),
     }];
   });
 }
@@ -407,36 +482,41 @@ function parseWindowsBrowserProcessJson(output: string): BrowserProcessInfo[] {
 function parsePosixBrowserProcessList(output: string): BrowserProcessInfo[] {
   const rows: BrowserProcessInfo[] = [];
   for (const line of output.split(/\r?\n/)) {
-    const match = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
     if (!match) continue;
     const pid = Number(match[1]);
     if (!Number.isSafeInteger(pid) || pid <= 0) continue;
-    rows.push({ pid, name: match[2], commandLine: match[3] });
+    const parentPid = optionalPositiveInteger(match[2]);
+    rows.push({ pid, name: match[3], commandLine: match[4], ...(parentPid !== undefined ? { parentPid } : {}) });
   }
   return rows;
 }
 
+const WINDOWS_BROWSER_PROCESS_QUERY = [
+  "$ErrorActionPreference = 'Stop';",
+  "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe' OR Name = 'msedge.exe' OR Name LIKE 'agent-browser%'\"",
+  "| Select-Object ProcessId,ParentProcessId,Name,CommandLine,",
+  "@{Name='CreatedAtMs';Expression={if ($_.CreationDate) { [DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds() }}}",
+  "| ConvertTo-Json -Compress",
+].join(" ");
+
+/** Browser processes and agent-browser processes, with their parents. */
 async function listBrowserProcesses(): Promise<BrowserProcessInfo[]> {
   if (platform() === "win32") {
     const { stdout } = await execFileAsync("powershell.exe", [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe' OR Name = 'msedge.exe'\" | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+      WINDOWS_BROWSER_PROCESS_QUERY,
     ], { encoding: "utf-8", timeout: 5_000, windowsHide: true });
     return parseWindowsBrowserProcessJson(stdout);
   }
 
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,comm=,args="], {
     encoding: "utf-8",
     timeout: 5_000,
   });
   return parsePosixBrowserProcessList(stdout);
-}
-
-async function findBrowserProcessesForProfile(profileDir: string): Promise<BrowserProcessInfo[]> {
-  const processes = await listBrowserProcesses();
-  return processes.filter((processInfo) => isBrowserProcessForProfile(processInfo, profileDir));
 }
 
 function readLockOwner(
@@ -724,70 +804,120 @@ function clearStaleLocks(profileDir: string): boolean {
   }
 }
 
+/** A process that is already gone needs no report: killing a browser takes its children with it. */
+function isAlreadyGone(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "ESRCH";
+}
+
+// One look after the first round of kills, for processes that appeared in the meantime.
+const DISPOSABLE_PROFILE_KILL_PASSES = 2;
+
+/**
+ * Kills the browser processes of a profile. With `stopDaemons`, the agent-browser daemon that
+ * owns them is killed first and the profile is looked at once more: a daemon whose browser
+ * dies under a command it is still serving starts a new browser on the same profile.
+ */
 async function killProfileBoundBrowserProcesses(
   profileDir: string,
   metadata: Record<string, unknown>,
-): Promise<{ terminatedPids: number[]; killedPids: number[]; remainingPids: number[] }> {
-  let processes: BrowserProcessInfo[];
-  try {
-    processes = await findBrowserProcessesForProfile(profileDir);
-  } catch (err) {
-    logBrowser("recovery.profile_process_discovery_failed", {
-      ...metadata,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { terminatedPids: [], killedPids: [], remainingPids: [] };
-  }
-
+  options: { stopDaemons?: boolean } = {},
+): Promise<{ terminatedPids: number[]; killedPids: number[]; remainingPids: number[]; stoppedDaemonPids: number[] }> {
   const terminatedPids: number[] = [];
-  for (const processInfo of processes) {
-    try {
-      process.kill(processInfo.pid, "SIGTERM");
-      terminatedPids.push(processInfo.pid);
-    } catch (err) {
-      logBrowser("recovery.kill_profile_process_failed", {
-        ...metadata,
-        pid: processInfo.pid,
-        processName: processInfo.name,
-        signal: "SIGTERM",
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  if (terminatedPids.length > 0) await delay(BROWSER_PROFILE_SIGTERM_GRACE_MS);
-
   const killedPids: number[] = [];
   const remainingPids: number[] = [];
-  for (const processInfo of processes) {
+  const stoppedDaemonPids: number[] = [];
+  // A killed process can stay in the process table for seconds; it must not be handled twice.
+  const handledPids = new Set<number>();
+  const passes = options.stopDaemons ? DISPOSABLE_PROFILE_KILL_PASSES : 1;
+
+  for (let pass = 1; pass <= passes; pass++) {
+    let allProcesses: BrowserProcessInfo[];
     try {
-      process.kill(processInfo.pid, 0);
-    } catch {
-      continue;
-    }
-    try {
-      process.kill(processInfo.pid, "SIGKILL");
-      killedPids.push(processInfo.pid);
+      allProcesses = await listBrowserProcesses();
     } catch (err) {
-      remainingPids.push(processInfo.pid);
-      logBrowser("recovery.kill_profile_process_failed", {
+      logBrowser("recovery.profile_process_discovery_failed", {
         ...metadata,
-        pid: processInfo.pid,
-        processName: processInfo.name,
-        signal: "SIGKILL",
         error: err instanceof Error ? err.message : String(err),
       });
+      break;
+    }
+    const processes = allProcesses.filter((processInfo) =>
+      isBrowserProcessForProfile(processInfo, profileDir) && !handledPids.has(processInfo.pid));
+    if (processes.length === 0) break;
+
+    if (options.stopDaemons) {
+      for (const daemon of findOwningDaemons(allProcesses, processes)) {
+        if (handledPids.has(daemon.pid)) continue;
+        handledPids.add(daemon.pid);
+        try {
+          process.kill(daemon.pid, "SIGKILL");
+          stoppedDaemonPids.push(daemon.pid);
+        } catch (err) {
+          if (isAlreadyGone(err)) continue;
+          logBrowser("recovery.kill_profile_daemon_failed", {
+            ...metadata,
+            pid: daemon.pid,
+            processName: daemon.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    let terminatedThisPass = 0;
+    for (const processInfo of processes) {
+      handledPids.add(processInfo.pid);
+      try {
+        process.kill(processInfo.pid, "SIGTERM");
+        terminatedPids.push(processInfo.pid);
+        terminatedThisPass += 1;
+      } catch (err) {
+        if (isAlreadyGone(err)) continue;
+        logBrowser("recovery.kill_profile_process_failed", {
+          ...metadata,
+          pid: processInfo.pid,
+          processName: processInfo.name,
+          signal: "SIGTERM",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (terminatedThisPass > 0) await delay(BROWSER_PROFILE_SIGTERM_GRACE_MS);
+
+    for (const processInfo of processes) {
+      try {
+        process.kill(processInfo.pid, 0);
+      } catch {
+        continue;
+      }
+      try {
+        process.kill(processInfo.pid, "SIGKILL");
+        killedPids.push(processInfo.pid);
+      } catch (err) {
+        if (isAlreadyGone(err)) continue;
+        remainingPids.push(processInfo.pid);
+        logBrowser("recovery.kill_profile_process_failed", {
+          ...metadata,
+          pid: processInfo.pid,
+          processName: processInfo.name,
+          signal: "SIGKILL",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
-  return { terminatedPids, killedPids, remainingPids };
+  return { terminatedPids, killedPids, remainingPids, stoppedDaemonPids };
 }
 
 async function forceCloseProfileBoundBrowserProcesses(
   profileDir: string,
   telemetryStore: TelemetryStore | undefined,
   metadata: Record<string, unknown>,
+  options: { stopDaemons?: boolean } = {},
 ): Promise<BrowserProcessCleanupResult> {
   const startedAt = Date.now();
-  const result = await killProfileBoundBrowserProcesses(profileDir, metadata);
+  const { stoppedDaemonPids, ...result } = await killProfileBoundBrowserProcesses(profileDir, metadata, options);
+  const stoppedDaemons = stoppedDaemonPids.length > 0 ? { stoppedDaemonPids } : {};
   const clearedRuntimeFiles = result.terminatedPids.length > 0 || result.killedPids.length > 0
     ? clearProfileRuntimeFiles(profileDir)
     : 0;
@@ -796,16 +926,18 @@ async function forceCloseProfileBoundBrowserProcesses(
     logBrowser("cleanup.kill_profile_processes", {
       ...metadata,
       ...result,
+      ...stoppedDaemons,
       clearedRuntimeFiles,
       durationMs: duration,
     });
     safeRecordBrowserSpan(telemetryStore, "browser.cleanup.kill_profile_processes", duration, {
       ...metadata,
       ...result,
+      ...stoppedDaemons,
       clearedRuntimeFiles,
     });
   }
-  return { ...result, clearedRuntimeFiles };
+  return { ...result, ...stoppedDaemons, clearedRuntimeFiles };
 }
 
 function buildBrowserShutdownResult(
@@ -941,7 +1073,9 @@ export async function ab(
     logBrowser("recovery.no_lock_file", recoveryMetadata);
 
     const killStartedAt = Date.now();
-    const killResult = await killProfileBoundBrowserProcesses(browserTarget.profileDir, recoveryMetadata);
+    // The command is retried on the same session, so its daemon stays.
+    const { stoppedDaemonPids: _stoppedDaemonPids, ...killResult } =
+      await killProfileBoundBrowserProcesses(browserTarget.profileDir, recoveryMetadata);
     if (killResult.terminatedPids.length > 0 || killResult.killedPids.length > 0) {
       const clearedRuntimeFiles = clearProfileRuntimeFiles(browserTarget.profileDir);
       const killDuration = Date.now() - killStartedAt;
@@ -1112,7 +1246,7 @@ export async function shutdownBridgeBrowser(
       browserSession: browserTarget.sessionName,
       ...(!closeResult.ok ? { closeFailureCode: failureCode(closeResult.output) } : {}),
       cleanupPhase: "primary_shutdown",
-    });
+    }, { stopDaemons: browserTarget.disposable === true });
     const shutdownResult = buildBrowserShutdownResult(closeResult, forceCloseResult, browserTarget.profileDir);
     const duration = Date.now() - startedAt;
     recordBrowserSpan(telemetryStore, "browser.lifecycle.shutdown", duration, {
