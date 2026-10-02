@@ -174,6 +174,7 @@ describe("SessionManager stale cached session recovery", () => {
     ["MCP server 'demo': MCP error -32001: Session not found (403 Forbidden)", "permission"],
     ["Invalid filter: slash paths are not supported", "invalid-input"],
     ["Kusto assert: ring timeline empty", "query-server"],
+    ['MCP tool catalog changed before tool "demo-query" could be invoked: Failed to verify cached MCP tools: MCP request failed: Transport closed', "catalog-changed"],
   ])("logs %s separately without downgrading the MCP connection", async (result, category) => {
     const { manager, eventBusRegistry } = createManager();
     const log = vi.spyOn(console, "log").mockImplementation(() => {});

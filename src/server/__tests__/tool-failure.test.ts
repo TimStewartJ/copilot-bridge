@@ -20,6 +20,11 @@ describe("tool failure classification", () => {
     ["ECONNRESET: connection closed", "transport"],
     ["MCP error -32001: Session not found", "transport"],
     ["Tool initialization incomplete", "initialization"],
+    ['MCP tool catalog changed before tool "demo-read" could be invoked: MCP snapshot changed while verifying cached tools', "catalog-changed"],
+    ['MCP tool catalog changed before tool "demo-read" could be invoked: Cached MCP tool "read" changed before it could be invoked', "catalog-changed"],
+    ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP request timed out after 60000 ms', "catalog-changed"],
+    ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP request failed: Transport closed', "catalog-changed"],
+    ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP error -32602: request _meta is missing or has malformed required fields', "catalog-changed"],
     ["Something went wrong", "unknown"],
   ])("classifies %s as %s", (text, category) => {
     expect(classifyToolFailure(text).category).toBe(category);
@@ -37,6 +42,14 @@ describe("tool failure classification", () => {
     expect(permission.guidance).toContain("403 is not evidence of expired authentication");
     expect(classifyToolFailure("401 Unauthorized: token expired")).toMatchObject({ category: "authentication", retryable: false });
     expect(classifyToolFailure("Tool initialization failed: missing canonical tools").retryable).toBe(false);
+  });
+
+  it("marks a call the runtime never sent, because the server's tool list was still being checked, as safe to repeat", () => {
+    const failure = classifyToolFailure({
+      error: { message: 'MCP tool catalog changed before tool "demo-read" could be invoked: MCP snapshot changed while verifying cached tools', code: "failure" },
+    });
+    expect(failure).toMatchObject({ category: "catalog-changed", retryable: true });
+    expect(failure.guidance).toContain("Call the tool again");
   });
 
   it("reads structured errors and MCP text content without serializing arbitrary objects", () => {
