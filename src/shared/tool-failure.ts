@@ -1,4 +1,4 @@
-export type ToolFailureCategory = "transport" | "timeout" | "permission" | "authentication" | "invalid-input" | "query-server" | "initialization" | "unknown";
+export type ToolFailureCategory = "transport" | "timeout" | "permission" | "authentication" | "invalid-input" | "query-server" | "initialization" | "catalog-changed" | "unknown";
 
 export interface ToolFailure {
   category: ToolFailureCategory;
@@ -14,6 +14,7 @@ const GUIDANCE: Record<ToolFailureCategory, [string, boolean]> = {
   "invalid-input": ["Correct the arguments to match the tool contract. Reconnecting will not fix invalid input.", false],
   "query-server": ["Check the query, data availability, and server error. Reconnecting is not usually the fix.", false],
   initialization: ["Tool initialization did not complete. Inspect the initialization error and fix its cause before reloading or retrying.", false],
+  "catalog-changed": ["The MCP server was still connecting and the runtime could not confirm its tool list, so the call was not sent. Call the tool again. If it fails the same way, check that server's connection.", true],
   unknown: ["Inspect the tool error before retrying. Connection status alone does not explain this failure.", false],
 };
 
@@ -33,7 +34,10 @@ function failureText(value: unknown, depth = 0): string {
 export function classifyToolFailure(result: unknown): ToolFailure {
   const text = failureText(result);
   let category: ToolFailureCategory = "unknown";
-  if (/tool.{0,30}initializ|initialization.{0,30}(?:pending|incomplete|not ready)|tools? (?:are |is )?not ready/i.test(text)) category = "initialization";
+  // The runtime offers a connecting server's tools from a saved list and checks that list on first use. Its
+  // message ends with the reason (a timeout, a closed transport, an error code), which must not pick the category.
+  if (/MCP tool catalog changed before tool/i.test(text)) category = "catalog-changed";
+  else if (/tool.{0,30}initializ|initialization.{0,30}(?:pending|incomplete|not ready)|tools? (?:are |is )?not ready/i.test(text)) category = "initialization";
   else if (/\b(?:403|Kusto403|forbidden|AuthorizationFailed|KustoRequestDeniedException|access denied|permission denied|insufficient privileges)\b/i.test(text)) category = "permission";
   else if (/\b(?:401|unauthorized|AuthenticationFailed|invalid_token|ExpiredAuthenticationToken|token expired|expired token|credentials expired|authentication required)\b|(?:token|credential|authentication).{0,40}(?:expired|missing|invalid)|(?:expired|missing|invalid).{0,40}(?:token|credential)/i.test(text)) category = "authentication";
   else if (/\b(?:assert(?:ion)?|SemanticError|SyntaxError|query error|KustoBadRequestException)\b|semantic error|ring timeline.{0,40}empty/i.test(text)) category = "query-server";
