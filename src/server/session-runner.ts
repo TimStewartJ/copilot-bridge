@@ -26,6 +26,8 @@ import {
   normalizePendingElicitationRequest,
   normalizePendingUserInputRequest,
 } from "./pending-interaction-validation.js";
+import type { PendingUserInputRequestView } from "./user-input-types.js";
+import type { PendingElicitationRequestView } from "./elicitation-types.js";
 import {
   type SessionRunController,
   type SessionRunStateController,
@@ -48,6 +50,7 @@ import {
   type QuietIntervalDeferTailTruncationRequest,
 } from "./session-history-truncation.js";
 import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
+import type { AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import {
   extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
@@ -372,6 +375,11 @@ export interface SessionResumeLease {
   token: symbol;
 }
 
+/** A question the runtime has put to the user: the older single question, or a form. */
+export type PendingQuestion =
+  | { kind: "user_input"; request: PendingUserInputRequestView }
+  | { kind: "elicitation"; request: PendingElicitationRequestView };
+
 export interface SessionRunnerDeps {
   /** Lazy accessor for the agent backend; the manager owns lifecycle. */
   getBackend(): AgentBackend | null;
@@ -439,8 +447,18 @@ export interface SessionRunnerDeps {
   flushPendingSessionEviction(sessionId: string): void;
   getPendingUserInputCount(sessionId: string): number;
   getPendingInteractionCount(sessionId: string): number;
-  /** Answers questions nobody has answered for an hour. Never rejects. */
+  /** Answers questions nobody has answered within the wait Bridge allows. Never rejects. */
   autoAnswerOverdueInteractions(sessionId: string): Promise<void>;
+  /**
+   * Answers a question in the user's place before it is shown. Undefined means Bridge never
+   * answers this question itself; otherwise the promise says whether the runtime took the reply.
+   * Never rejects.
+   */
+  answerQuestionUnshown(
+    sessionId: string,
+    question: PendingQuestion,
+    reason: AutomaticAnswerReason,
+  ): Promise<boolean> | undefined;
   recordPendingInteractionEvent(
     sessionId: string,
     kind: "user_input" | "elicitation",
@@ -1486,6 +1504,37 @@ export class SessionRunner {
       pendingTerminalCompletion = undefined;
     };
 
+    /**
+     * Questions Bridge is answering, or has answered, in the user's place without showing them.
+     * The runtime still reports each one as completed, and that is not announced either.
+     */
+    const unshownQuestions = new Set<string>();
+    /** Shows the user a question, unless the chat is in Autopilot and Bridge answers it at once. */
+    const showOrAnswerQuestion = (question: PendingQuestion, show: () => void): void => {
+      if (this.agentModes.get(sessionId) !== "autopilot") {
+        show();
+        return;
+      }
+      const { requestId } = question.request;
+      // Recorded before the reply is sent, so a completion that arrives first finds it.
+      unshownQuestions.add(requestId);
+      const answering = this.deps.answerQuestionUnshown(sessionId, question, "autopilot");
+      if (!answering) {
+        unshownQuestions.delete(requestId);
+        show();
+        return;
+      }
+      void answering.then((answered) => {
+        // The runtime did not take the reply, so the question goes to the user after all, unless it
+        // has been completed meanwhile or the run is over.
+        if (answered || !unshownQuestions.delete(requestId)) return;
+        if (!acceptingSessionEvents || runController.isCompleted()) return;
+        show();
+      }).catch((error) => {
+        console.warn(`[sdk] [${sid}] Could not show ${question.kind} ${requestId} after a failed automatic reply:`, error);
+      });
+    };
+
     const handleEvent = (event: any, context: SessionEventHandlingContext) => {
       if (!acceptingSessionEvents || runController.isCompleted()) return;
       const eventAt = Date.now();
@@ -1508,14 +1557,12 @@ export class SessionRunner {
         case "user_input.requested": {
           turnHadSideEffects = true;
           try {
-            const request = normalizePendingUserInputRequest(data, getEventTimestampIso(event));
-            bus.emitUserInputRequested(request, getEventTimestampIso(event));
-            this.deps.recordPendingInteractionEvent(
-              sessionId,
-              "user_input",
-              "requested",
-              getEventTimestampIso(event),
-            );
+            const requestedAt = getEventTimestampIso(event);
+            const request = normalizePendingUserInputRequest(data, requestedAt);
+            showOrAnswerQuestion({ kind: "user_input", request }, () => {
+              bus.emitUserInputRequested(request, requestedAt);
+              this.deps.recordPendingInteractionEvent(sessionId, "user_input", "requested", requestedAt);
+            });
           } catch (error) {
             console.warn(`[sdk] [${sid}] Ignoring invalid user input request event:`, error);
           }
@@ -1527,6 +1574,7 @@ export class SessionRunner {
             console.warn(`[sdk] [${sid}] Ignoring user input completion without requestId`);
             break;
           }
+          if (unshownQuestions.delete(requestId)) break;
           if (
             data.dismissed !== true
             && typeof data.answer === "string"
@@ -1553,14 +1601,12 @@ export class SessionRunner {
         case "elicitation.requested": {
           turnHadSideEffects = true;
           try {
-            const request = normalizePendingElicitationRequest(data, getEventTimestampIso(event));
-            bus.emitElicitationRequested(request, getEventTimestampIso(event));
-            this.deps.recordPendingInteractionEvent(
-              sessionId,
-              "elicitation",
-              "requested",
-              getEventTimestampIso(event),
-            );
+            const requestedAt = getEventTimestampIso(event);
+            const request = normalizePendingElicitationRequest(data, requestedAt);
+            showOrAnswerQuestion({ kind: "elicitation", request }, () => {
+              bus.emitElicitationRequested(request, requestedAt);
+              this.deps.recordPendingInteractionEvent(sessionId, "elicitation", "requested", requestedAt);
+            });
           } catch (error) {
             console.warn(`[sdk] [${sid}] Ignoring invalid elicitation request event:`, error);
           }
@@ -1572,6 +1618,7 @@ export class SessionRunner {
             console.warn(`[sdk] [${sid}] Ignoring elicitation completion without requestId`);
             break;
           }
+          if (unshownQuestions.delete(requestId)) break;
           const action = data.action;
           if (action === "cancel") {
             bus.emitElicitationCanceled(requestId, {

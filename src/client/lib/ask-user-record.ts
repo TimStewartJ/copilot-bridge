@@ -1,4 +1,5 @@
 import type { ToolArgs, ToolCall } from "../api";
+import { readAutomaticAnswerReason } from "../../shared/automatic-answer.js";
 
 /**
  * Reads a finished `ask_user` call back into the question that was asked and the answer given, so
@@ -13,7 +14,10 @@ export type AskUserOutcome =
   | "answered"
   | "declined"
   | "cancelled"
+  /** Nobody answered in time, or the form was declined, and the run went on. */
   | "away"
+  /** The chat was in Autopilot, so the question was answered without being shown. */
+  | "autopilot"
   | "failed"
   | "unanswered"
   | "other";
@@ -121,6 +125,9 @@ function readShapes(args: ArgObject): FieldShape[] {
 function classify(toolCall: ToolCall, result: string | undefined): AskUserOutcome {
   if (toolCall.success === false) return "failed";
   if (result === undefined) return "unanswered";
+  // A reply Bridge gave in the user's place arrives as an answer, so it is recognised first.
+  const automatic = readAutomaticAnswerReason(result);
+  if (automatic) return automatic === "autopilot" ? "autopilot" : "away";
   if (/^user responded:/i.test(result)) return "answered";
   if (/^user (?:cancell?ed|dismissed)/i.test(result)) return "cancelled";
   if (/^user declined/i.test(result)) return "declined";

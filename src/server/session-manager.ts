@@ -57,6 +57,7 @@ import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeConte
 import { resolvePromptProfile, type PromptProfileId } from "../shared/prompt-profiles.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SendMode } from "../shared/send-mode.js";
+import { AUTOMATIC_ANSWERS, type AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
@@ -156,6 +157,7 @@ import {
   SessionRunner,
   type McpServerStatus,
   type McpStatusSnapshot,
+  type PendingQuestion,
   type SessionResumeLease,
   type StartWorkOptions,
 } from "./session-runner.js";
@@ -282,15 +284,33 @@ const DISMISSED_USER_INPUT_RESPONSE = {
   dismissed: true,
 } as const;
 const CANCELED_ELICITATION_RESPONSE = { action: "cancel" } as const;
-/** A question nobody has answered for this long is answered automatically so the turn can continue. */
-export const PENDING_INTERACTION_AUTO_ANSWER_MS = 60 * 60_000;
-// The Copilot CLI's autopilot `ask_user` response, minus its autopilot-only task_complete tool and
-// plus an explicit refusal to stand in for an approval.
-export const PENDING_INTERACTION_AUTO_ANSWER =
-  "The user is not available to respond and will review your work later. Work autonomously and make good decisions. "
-  + "This automatic reply is not an approval: do not perform anything that needs the user's explicit confirmation. "
-  + "If the request is genuinely ambiguous or unresolvable, stop and summarize the ambiguity rather than proceeding "
-  + "on an unfounded assumption.";
+/**
+ * A question nobody has answered for this long is answered automatically so the turn can continue.
+ * Where the number comes from (main-agent questions, 18 August to 2 October 2026): of 303 the
+ * user acted on, 295 were reached within 30 minutes and all within an hour. 15 others waited the
+ * full hour that applied then, and the user's next action anywhere came more than two hours after
+ * 13 of them were asked.
+ */
+export const PENDING_INTERACTION_AUTO_ANSWER_MS = 30 * 60_000;
+
+/**
+ * The reply Bridge gives to an agent's own `ask_user` form in the user's place. The form's fields
+ * accept a freeform value whatever their type, and a single answered field reaches the model as
+ * "User responded: <text>". Undefined for a form with no field to carry the reply and for anything
+ * an MCP server asked for, whose answer is never invented.
+ */
+function automaticFormAnswer(
+  request: PendingElicitationRequestView,
+  reason: AutomaticAnswerReason,
+): AgentElicitationResponse | undefined {
+  const firstField = Object.entries(request.requestedSchema?.properties ?? {})[0];
+  if (request.elicitationSource || !firstField) return undefined;
+  const answer = AUTOMATIC_ANSWERS[reason];
+  return {
+    action: "accept",
+    content: { [firstField[0]]: firstField[1].type === "array" ? [answer] : answer },
+  };
+}
 
 // Graceful shutdown must finish before the launcher's force-kill window
 // (GRACEFUL_EXIT_WAIT = 15s) so the server exits on its own. The overall budget
@@ -1179,6 +1199,7 @@ export class SessionManager {
       getPendingUserInputCount: (sessionId) => this.getPendingUserInputOnlyCount(sessionId),
       getPendingInteractionCount: (sessionId) => this.getPendingInteractionCount(sessionId),
       autoAnswerOverdueInteractions: (sessionId) => this.autoAnswerOverdueInteractions(sessionId),
+      answerQuestionUnshown: (sessionId, question, reason) => this.answerQuestionUnshown(sessionId, question, reason),
       recordPendingInteractionEvent: (sessionId, kind, state, at) =>
         this.recordPendingInteractionEvent(sessionId, kind, state, at),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
@@ -2919,14 +2940,16 @@ export class SessionManager {
         // False means the runtime no longer holds the request, so the entry is dropped either way.
         const answered = await respond();
         settle(answered);
+        const waitedMs = now - Date.parse(request.requestedAt ?? "");
         console.warn(
-          `[sdk] [${sessionId.slice(0, 8)}] ${answered ? `Auto-answered (${action})` : "Dropped stale"} ${kind} ${request.requestId} after an hour without a response`,
+          `[sdk] [${sessionId.slice(0, 8)}] ${answered ? `Auto-answered (${action})` : "Dropped stale"} ${kind} ${request.requestId} after ${Math.round(waitedMs / 60_000)} min without a response`,
         );
         this.recordSpan("session.pending_interaction.auto_answer", 0, sessionId, {
           kind,
           action,
           answered,
-          waitedMs: now - Date.parse(request.requestedAt ?? ""),
+          waitedMs,
+          reason: "unanswered",
         });
       } catch (error) {
         console.warn(
@@ -2938,7 +2961,7 @@ export class SessionManager {
 
     const pending = bus.getPendingInteractionIndex();
     for (const request of pending.pendingUserInputs.filter(isOverdue)) {
-      const response = { answer: PENDING_INTERACTION_AUTO_ANSWER, wasFreeform: true };
+      const response = { answer: AUTOMATIC_ANSWERS.unanswered, wasFreeform: true };
       await attempt(
         "user_input",
         request,
@@ -2950,20 +2973,9 @@ export class SessionManager {
       );
     }
     for (const request of pending.pendingElicitations.filter(isOverdue)) {
-      // Only the agent's own ask_user form gets the autopilot-style answer. Its fields accept a
-      // freeform value whatever their type, and a single answered field reaches the model as
-      // "User responded: <text>". Anything an MCP server asked for is cancelled, never invented.
-      const firstField = Object.entries(request.requestedSchema?.properties ?? {})[0];
-      const response: AgentElicitationResponse = !request.elicitationSource && firstField
-        ? {
-            action: "accept",
-            content: {
-              [firstField[0]]: firstField[1].type === "array"
-                ? [PENDING_INTERACTION_AUTO_ANSWER]
-                : PENDING_INTERACTION_AUTO_ANSWER,
-            },
-          }
-        : CANCELED_ELICITATION_RESPONSE;
+      // Only the agent's own ask_user form gets a reply. Anything else is cancelled.
+      const response: AgentElicitationResponse = automaticFormAnswer(request, "unanswered")
+        ?? CANCELED_ELICITATION_RESPONSE;
       await attempt(
         "elicitation",
         request,
@@ -2978,6 +2990,56 @@ export class SessionManager {
       );
     }
     void this.reconcilePendingInteractionCounts(sessionId, session);
+  }
+
+  /**
+   * Answers a question in the user's place before anyone is shown it, for a chat in Autopilot.
+   * Returns undefined for a question Bridge never answers itself (see automaticFormAnswer), which
+   * the caller then shows as usual. Otherwise resolves true once the runtime has taken the reply
+   * and false when it has not. Never rejects.
+   */
+  private answerQuestionUnshown(
+    sessionId: string,
+    question: PendingQuestion,
+    reason: AutomaticAnswerReason,
+  ): Promise<boolean> | undefined {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session) return undefined;
+    const { requestId } = question.request;
+    let respond: () => Promise<boolean>;
+    if (question.kind === "user_input") {
+      const response = { answer: AUTOMATIC_ANSWERS[reason], wasFreeform: true };
+      respond = () => session.respondToUserInput(requestId, response);
+    } else {
+      const response = automaticFormAnswer(question.request, reason);
+      if (!response) return undefined;
+      respond = () => session.tryRespondToElicitation(requestId, response);
+    }
+    const label = `[sdk] [${sessionId.slice(0, 8)}]`;
+    const subject = `${question.kind} ${requestId}`;
+    return (async () => {
+      const startedAt = Date.now();
+      let answered = false;
+      try {
+        answered = await respond();
+        console.log(answered
+          ? `${label} Answered ${subject} for the user without showing it (${reason})`
+          : `${label} The runtime did not take the automatic reply to ${subject} (${reason})`);
+      } catch (error) {
+        console.warn(
+          `${label} Failed to answer ${subject} for the user (${reason}):`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      this.recordSpan("session.pending_interaction.auto_answer", Date.now() - startedAt, sessionId, {
+        kind: question.kind,
+        action: question.kind === "user_input" ? "answer" : "accept",
+        answered,
+        waitedMs: 0,
+        reason,
+      });
+      return answered;
+    })();
   }
 
   private recordPendingInteractionEvent(

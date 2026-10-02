@@ -411,6 +411,30 @@ draining for about five seconds after release, even with the former reaper or an
 additional native close call. Do not infer process exit from an empty task list,
 successful resume, or healthy ping.
 
+### Agent questions
+
+A question an agent asks with `ask_user` is shown as a form in the chat and on Home, and the
+turn waits for the answer. A chat that is waiting counts as working, so it also holds a
+pending restart. Bridge answers in the user's place in two cases.
+
+A question asked while the chat is in Autopilot is answered at once and shown to nobody:
+no form and no "needs input" notification. The Copilot CLI's own autopilot handling of
+`ask_user` does not apply when the host shows the form, as Bridge does (measured on CLI
+1.0.89), so Bridge does it.
+
+A question nobody answers for 30 minutes is answered so the turn can go on
+(`PENDING_INTERACTION_AUTO_ANSWER_MS` in `src/server/session-manager.ts`). Of 303 questions
+acted on in six weeks of sessions, 295 were reached within 30 minutes and all within an hour.
+
+Both replies (`src/shared/automatic-answer.ts`) tell the agent to work on its own and not to
+do anything that needs the user's explicit confirmation, because the reply is not an
+approval. The transcript marks such a question "Autopilot went on without you" or "not
+answered, the run went on without you".
+
+Only the agent's own form gets a reply. Anything else, such as a question from an MCP
+server, is left for the user in Autopilot too and is cancelled after the 30 minutes. If the
+runtime does not take an Autopilot reply, the question is shown like any other.
+
 ### Background commands
 
 An agent can start a shell command in the background (or a foreground one can outlive its
