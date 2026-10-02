@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { normalizePath, testCopilotHome, testExecutablePath } from "./test-paths.js";
 
@@ -14,6 +15,8 @@ const readlinkSyncMock = vi.fn();
 const readFileSyncMock = vi.fn();
 const unlinkSyncMock = vi.fn();
 const lstatSyncMock = vi.fn();
+const readdirMock = vi.fn();
+const rmMock = vi.fn();
 const killMock = vi.spyOn(process, "kill");
 
 vi.mock("node:child_process", () => ({
@@ -26,6 +29,11 @@ vi.mock("node:fs", () => ({
   readFileSync: readFileSyncMock,
   readlinkSync: readlinkSyncMock,
   unlinkSync: unlinkSyncMock,
+}));
+
+vi.mock("node:fs/promises", () => ({
+  readdir: readdirMock,
+  rm: rmMock,
 }));
 
 function callbackSuccess(stdout = "ok") {
@@ -49,6 +57,10 @@ describe("agent-browser wrapper", () => {
     readFileSyncMock.mockReset();
     unlinkSyncMock.mockReset();
     lstatSyncMock.mockReset();
+    readdirMock.mockReset();
+    readdirMock.mockResolvedValue([]);
+    rmMock.mockReset();
+    rmMock.mockResolvedValue(undefined);
     killMock.mockReset();
     killMock.mockImplementation((() => true) as any);
     execMock.mockImplementation(callbackSuccess("agent-browser\n"));
@@ -455,9 +467,19 @@ describe("agent-browser wrapper", () => {
 
     afterEach(() => {
       vi.doUnmock("node:os");
+      vi.unstubAllEnvs();
     });
 
     it("stops the daemon first, then the browser, and catches a browser started meanwhile", async () => {
+      vi.stubEnv("AGENT_BROWSER_SOCKET_DIR", undefined);
+      vi.stubEnv("XDG_RUNTIME_DIR", undefined);
+      readdirMock.mockResolvedValue([
+        "browsers",
+        "copilot-bridge-public-1234abcd.pid",
+        "copilot-bridge-public-1234abcd.port",
+        "copilot-bridge-public-1234abcdef.pid",
+        "default.pid",
+      ]);
       const listings = mockFailedCloseAndListings("powershell.exe", [
         windowsListing([
           windowsDaemon(100, 1_000),
@@ -499,9 +521,18 @@ describe("agent-browser wrapper", () => {
         killedPids: [],
         remainingPids: [],
       });
+      // The killed daemon could not remove its own state files; other sessions' files stay.
+      const stateDirectory = join(homedir(), ".agent-browser");
+      expect(readdirMock).toHaveBeenCalledWith(stateDirectory);
+      expect(rmMock.mock.calls).toEqual([
+        [join(stateDirectory, "copilot-bridge-public-1234abcd.pid"), { force: true }],
+        [join(stateDirectory, "copilot-bridge-public-1234abcd.port"), { force: true }],
+      ]);
     });
 
     it("finds the daemon through the parent id on POSIX", async () => {
+      vi.stubEnv("AGENT_BROWSER_SOCKET_DIR", undefined);
+      vi.stubEnv("XDG_RUNTIME_DIR", "/run/user/1000");
       mockFailedCloseAndListings("ps", [
         [
           "  100     1 agent-browser-l /usr/lib/node_modules/agent-browser/bin/agent-browser-linux-x64",
@@ -528,6 +559,7 @@ describe("agent-browser wrapper", () => {
         [201, "SIGTERM"],
       ]);
       expect(result).toMatchObject({ stoppedDaemonPids: [100], terminatedPids: [200, 201], remainingPids: [] });
+      expect(readdirMock).toHaveBeenCalledWith(join("/run/user/1000", "agent-browser"));
     });
 
     it("does not take a younger process with a reused id for the daemon on Windows", async () => {
@@ -548,6 +580,7 @@ describe("agent-browser wrapper", () => {
       expect(signals).toEqual([[200, "SIGTERM"]]);
       expect(result.stoppedDaemonPids).toBeUndefined();
       expect(result.terminatedPids).toEqual([200]);
+      expect(readdirMock).not.toHaveBeenCalled();
     });
 
     it("leaves the daemon of a lasting browser running and looks only once", async () => {
@@ -565,6 +598,7 @@ describe("agent-browser wrapper", () => {
       expect(signals).toEqual([[200, "SIGTERM"]]);
       expect(listings.listingCalls()).toBe(1);
       expect(result.stoppedDaemonPids).toBeUndefined();
+      expect(readdirMock).not.toHaveBeenCalled();
     });
   });
 });
