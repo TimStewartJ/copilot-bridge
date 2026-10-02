@@ -31,7 +31,11 @@ export const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
 export const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
-export const STAGING_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+// An install takes well under a minute, but it is thousands of small file writes with little
+// processor time of its own: next to other heavy work on a busy machine it has needed more than
+// five minutes, which failed a deploy whose checks had already passed. The limit only has to
+// catch an install that hangs.
+export const STAGING_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 export const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
 export const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
 export const STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS = 10_000;

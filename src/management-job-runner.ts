@@ -24,6 +24,7 @@ import {
 import { readActiveRelease } from "./server/release-slots.js";
 import { cleanupCompletedStagingDeploy } from "./server/staging-tools.js";
 import { getProcessHost } from "./server/process-host.js";
+import { runOnPerformanceCores } from "./server/platform.js";
 import { resolveBridgeControlRoot } from "./server/control-root.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { isRecord } from "./shared/is-record.js";
@@ -314,6 +315,14 @@ function isMainModule(): boolean {
 async function main(): Promise<void> {
   const runtimePaths = resolveRuntimePaths(process.env);
   Object.assign(process.env, runtimePaths.env);
+  // The launcher that started this runner may predate the setting, so apply it here as well:
+  // checks, installs and builds are this process's children.
+  const scheduling = await runOnPerformanceCores();
+  if (process.platform === "win32") {
+    runnerLog(scheduling.applied
+      ? `Running on performance cores: ${scheduling.detail}`
+      : `Leaving processor choice to Windows: ${scheduling.detail}`);
+  }
   const sweptTemps = sweepStaleRestartStateTempFiles(
     resolve(runtimePaths.dataDir, RESTART_STATE_FILE_NAME),
   );
