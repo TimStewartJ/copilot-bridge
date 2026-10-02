@@ -4,6 +4,14 @@ import { createRequire } from "node:module";
 
 export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
 const HYDRAFUSION_FEATURE_FLAGS = ["HYDRAFUSION", "HYDRAFUSION_ROLLOUT"];
+const AGENT_BROWSER_IDLE_TIMEOUT_ENV = "AGENT_BROWSER_IDLE_TIMEOUT_MS";
+/**
+ * An agent that drives agent-browser from its shell starts a daemon and a browser that outlive
+ * the shell, the session and the Bridge. Nothing closes them, so they stayed on their last page
+ * for weeks. With this in the runtime's environment such a daemon closes its browser and exits
+ * after an hour without a command. A value set in the Bridge's own environment wins.
+ */
+export const AGENT_SHELL_BROWSER_IDLE_TIMEOUT_MS = 60 * 60_000;
 const require = createRequire(import.meta.url);
 
 export function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
@@ -49,6 +57,8 @@ export function buildCopilotClientOptions(
   const env: Record<string, string | undefined> = {
     ...inheritedEnv,
     COPILOT_CLI_ENABLED_FEATURE_FLAGS: [...enabledFlags].join(","),
+    [AGENT_BROWSER_IDLE_TIMEOUT_ENV]: normalizeOptionalEnvValue(inheritedEnv[AGENT_BROWSER_IDLE_TIMEOUT_ENV])
+      ?? String(AGENT_SHELL_BROWSER_IDLE_TIMEOUT_MS),
   };
   const copilotCliPath = require.resolve("@github/copilot/npm-loader.js");
   // Use the pinned CLI package so the Bridge can validate a CLI independently of the SDK bundle.

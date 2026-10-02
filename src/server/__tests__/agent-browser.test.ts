@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { join } from "node:path";
 import { normalizePath, testCopilotHome, testExecutablePath } from "./test-paths.js";
@@ -308,5 +308,263 @@ describe("agent-browser wrapper", () => {
     });
     expect(result.outputSummary).toContain("<browser-profile>");
     expect(result.outputSummary).not.toContain(normalizePath(BROWSER_PROFILE));
+  });
+
+  describe("start page and idle shutdown", () => {
+    async function commandEnvFor(target: (mod: typeof import("../agent-browser.js")) => import("../agent-browser.js").BrowserTarget) {
+      let commandEnv: NodeJS.ProcessEnv | undefined;
+      execFileMock.mockImplementation((
+        _file: string,
+        _args: string[],
+        options: any,
+        cb: (error: unknown, result?: { stdout: string; stderr: string }) => void,
+      ) => {
+        commandEnv = options.env;
+        cb(null, { stdout: "ok", stderr: "" });
+        return {} as any;
+      });
+      const mod = await import("../agent-browser.js");
+      await mod.ab(["get", "url"], 5_000, { browserTarget: target(mod) });
+      return commandEnv;
+    }
+
+    it("adds a blank start page to the launch arguments", async () => {
+      const mod = await import("../agent-browser.js");
+
+      expect(mod.withBlankStartPage(undefined)).toBe("about:blank");
+      expect(mod.withBlankStartPage("  ")).toBe("about:blank");
+      expect(mod.withBlankStartPage("--no-sandbox")).toBe("--no-sandbox,about:blank");
+      expect(mod.withBlankStartPage("--no-sandbox\n--window-size=1280,720")).toBe("--no-sandbox\n--window-size=1280,720\nabout:blank");
+      expect(mod.withBlankStartPage("--no-sandbox, about:blank")).toBe("--no-sandbox, about:blank");
+    });
+
+    it("starts every browser on a blank page and keeps inherited launch arguments", async () => {
+      vi.stubEnv("AGENT_BROWSER_ARGS", "--no-sandbox");
+      try {
+        const env = await commandEnvFor((mod) => mod.getBridgeBrowserTarget(COPILOT_HOME));
+        expect(env?.AGENT_BROWSER_ARGS).toBe("--no-sandbox,about:blank");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("gives the daemon an idle limit only for a target that has one", async () => {
+      vi.stubEnv("AGENT_BROWSER_IDLE_TIMEOUT_MS", undefined);
+      vi.stubEnv("AGENT_BROWSER_ARGS", undefined);
+      try {
+        const lasting = await commandEnvFor((mod) => mod.getBridgeBrowserTarget(COPILOT_HOME));
+        expect(lasting?.AGENT_BROWSER_ARGS).toBe("about:blank");
+        expect(lasting?.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBeUndefined();
+
+        const disposable = await commandEnvFor(() => ({
+          sessionName: "copilot-bridge-public-1234abcd",
+          profileDir: join(COPILOT_HOME, "browser-public", "profile-1234abcd"),
+          idleTimeoutMs: 2_700_000,
+          disposable: true,
+        }));
+        expect(disposable?.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("2700000");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+
+  describe("shutdown of a disposable browser", () => {
+    const WINDOWS_PROFILE = "C:\\Users\\test\\.copilot\\browser-public\\profile-1234abcd";
+    const POSIX_PROFILE = "/home/test/.copilot/browser-public/profile-1234abcd";
+
+    interface ListedProcess {
+      pid: number;
+      parentPid: number;
+      name: string;
+      commandLine: string;
+      createdAtMs: number;
+    }
+
+    function windowsBrowser(pid: number, parentPid: number, createdAtMs: number, profileDir = WINDOWS_PROFILE, extra = ""): ListedProcess {
+      return {
+        pid,
+        parentPid,
+        createdAtMs,
+        name: "msedge.exe",
+        commandLine: `"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" ${extra}--headless=new --user-data-dir=${profileDir} --window-size=1280,720`,
+      };
+    }
+
+    function windowsDaemon(pid: number, createdAtMs: number): ListedProcess {
+      return {
+        pid,
+        parentPid: 4,
+        createdAtMs,
+        name: "agent-browser-win32-x64.exe",
+        commandLine: "\"\\\\?\\C:\\tools\\node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe\"",
+      };
+    }
+
+    function windowsListing(processes: ListedProcess[]): string {
+      return JSON.stringify(processes.map((processInfo) => ({
+        ProcessId: processInfo.pid,
+        ParentProcessId: processInfo.parentPid,
+        Name: processInfo.name,
+        CommandLine: processInfo.commandLine,
+        CreatedAtMs: processInfo.createdAtMs,
+      })));
+    }
+
+    /** Forces the platform branch; process creation, signals and the file system are mocked already. */
+    async function importForPlatform(platformName: NodeJS.Platform) {
+      vi.doMock("node:os", async (importOriginal) => ({
+        ...(await importOriginal<typeof import("node:os")>()),
+        platform: () => platformName,
+      }));
+      return import("../agent-browser.js");
+    }
+
+    /** Fails `close` and answers each process listing with the next entry of `listings`. */
+    function mockFailedCloseAndListings(listingCommand: string, listings: string[]) {
+      let listingCalls = 0;
+      execFileMock.mockImplementation((
+        file: string,
+        args: string[],
+        _options: any,
+        cb: (error: unknown, result?: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (args[0] === "close") {
+          cb({ stderr: "agent-browser command timed out after 10000ms" });
+        } else if (file === listingCommand) {
+          cb(null, { stdout: listings[Math.min(listingCalls, listings.length - 1)], stderr: "" });
+          listingCalls += 1;
+        } else {
+          throw new Error(`Unexpected execFile command: ${file}`);
+        }
+        return {} as any;
+      });
+      return { listingCalls: () => listingCalls };
+    }
+
+    /** Every signalled process exits at once: a later check finds it gone. */
+    function recordSignals() {
+      const signals: Array<[number, number | NodeJS.Signals | undefined]> = [];
+      killMock.mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        signals.push([pid, signal]);
+        return true as never;
+      }) as any);
+      return signals;
+    }
+
+    afterEach(() => {
+      vi.doUnmock("node:os");
+    });
+
+    it("stops the daemon first, then the browser, and catches a browser started meanwhile", async () => {
+      const listings = mockFailedCloseAndListings("powershell.exe", [
+        windowsListing([
+          windowsDaemon(100, 1_000),
+          windowsBrowser(200, 100, 2_000),
+          windowsBrowser(201, 200, 2_100, WINDOWS_PROFILE, "--type=renderer "),
+          windowsDaemon(300, 1_500),
+          windowsBrowser(400, 300, 2_500, "C:\\Users\\test\\.copilot\\browser-public\\profile-other"),
+        ]),
+        // The first browser is still in the process table, and a new one has appeared.
+        windowsListing([
+          windowsBrowser(200, 100, 2_000),
+          windowsBrowser(500, 100, 3_000),
+          windowsDaemon(300, 1_500),
+          windowsBrowser(400, 300, 2_500, "C:\\Users\\test\\.copilot\\browser-public\\profile-other"),
+        ]),
+      ]);
+      const signals = recordSignals();
+      const mod = await importForPlatform("win32");
+
+      const result = await mod.shutdownBridgeBrowser({
+        sessionName: "copilot-bridge-public-1234abcd",
+        profileDir: WINDOWS_PROFILE,
+        disposable: true,
+      });
+
+      expect(signals).toEqual([
+        [100, "SIGKILL"],
+        [200, "SIGTERM"],
+        [201, "SIGTERM"],
+        [500, "SIGTERM"],
+      ]);
+      expect(listings.listingCalls()).toBe(2);
+      expect(result).toMatchObject({
+        ok: false,
+        closeOk: false,
+        failureCode: "launch.timeout",
+        stoppedDaemonPids: [100],
+        terminatedPids: [200, 201, 500],
+        killedPids: [],
+        remainingPids: [],
+      });
+    });
+
+    it("finds the daemon through the parent id on POSIX", async () => {
+      mockFailedCloseAndListings("ps", [
+        [
+          "  100     1 agent-browser-l /usr/lib/node_modules/agent-browser/bin/agent-browser-linux-x64",
+          `  200   100 chrome          /opt/google/chrome/chrome --headless=new --user-data-dir=${POSIX_PROFILE} about:blank`,
+          `  201   200 chrome          /opt/google/chrome/chrome --type=renderer --user-data-dir=${POSIX_PROFILE}`,
+          "  300     1 agent-browser-l /usr/lib/node_modules/agent-browser/bin/agent-browser-linux-x64",
+          "  400   300 chrome          /opt/google/chrome/chrome --headless=new --user-data-dir=/home/test/.copilot/browser-public/profile-other",
+          "  600   555 agent-browser   agent-browser close --json",
+        ].join("\n"),
+        "",
+      ]);
+      const signals = recordSignals();
+      const mod = await importForPlatform("linux");
+
+      const result = await mod.shutdownBridgeBrowser({
+        sessionName: "copilot-bridge-public-1234abcd",
+        profileDir: POSIX_PROFILE,
+        disposable: true,
+      });
+
+      expect(signals).toEqual([
+        [100, "SIGKILL"],
+        [200, "SIGTERM"],
+        [201, "SIGTERM"],
+      ]);
+      expect(result).toMatchObject({ stoppedDaemonPids: [100], terminatedPids: [200, 201], remainingPids: [] });
+    });
+
+    it("does not take a younger process with a reused id for the daemon on Windows", async () => {
+      mockFailedCloseAndListings("powershell.exe", [
+        // The browser's real parent is gone; its id now belongs to another session's daemon.
+        windowsListing([windowsDaemon(100, 9_000), windowsBrowser(200, 100, 2_000)]),
+        "",
+      ]);
+      const signals = recordSignals();
+      const mod = await importForPlatform("win32");
+
+      const result = await mod.shutdownBridgeBrowser({
+        sessionName: "copilot-bridge-public-1234abcd",
+        profileDir: WINDOWS_PROFILE,
+        disposable: true,
+      });
+
+      expect(signals).toEqual([[200, "SIGTERM"]]);
+      expect(result.stoppedDaemonPids).toBeUndefined();
+      expect(result.terminatedPids).toEqual([200]);
+    });
+
+    it("leaves the daemon of a lasting browser running and looks only once", async () => {
+      const listings = mockFailedCloseAndListings("powershell.exe", [
+        windowsListing([windowsDaemon(100, 1_000), windowsBrowser(200, 100, 2_000)]),
+      ]);
+      const signals = recordSignals();
+      const mod = await importForPlatform("win32");
+
+      const result = await mod.shutdownBridgeBrowser({
+        sessionName: "copilot-bridge-1234abcd",
+        profileDir: WINDOWS_PROFILE,
+      });
+
+      expect(signals).toEqual([[200, "SIGTERM"]]);
+      expect(listings.listingCalls()).toBe(1);
+      expect(result.stoppedDaemonPids).toBeUndefined();
+    });
   });
 });

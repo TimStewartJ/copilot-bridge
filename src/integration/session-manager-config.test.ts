@@ -46,6 +46,7 @@ describe("SessionManager session config", () => {
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
         },
       }));
     });
@@ -64,6 +65,7 @@ describe("SessionManager session config", () => {
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
         },
         gitHubToken: "github_pat_bridge",
         useLoggedInUser: false,
@@ -87,6 +89,7 @@ describe("SessionManager session config", () => {
         env: {
           COPILOT_HOME: copilotHome,
           COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
           [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
         },
         gitHubToken: "github_pat_client",
@@ -129,10 +132,21 @@ describe("SessionManager session config", () => {
     expect(options.env).toEqual({
       COPILOT_HOME: clientEnv.COPILOT_HOME,
       COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG,HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
       COPILOT_CLI_DISABLED_FEATURE_FLAGS: "DISABLED_FLAG",
     });
     expect(clientEnv.COPILOT_CLI_PATH).toBe("custom-cli");
     expect(clientEnv.COPILOT_CLI_ENABLED_FEATURE_FLAGS).toBe("OTHER_FLAG, HYDRAFUSION, ,OTHER_FLAG");
+  });
+
+  it("lets agent-started browsers close themselves after an hour unless the environment says otherwise", () => {
+    const copilotHome = makeTestDir("browser-idle-client-options");
+
+    expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome }).env?.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("3600000");
+    expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome, AGENT_BROWSER_IDLE_TIMEOUT_MS: " " }).env?.AGENT_BROWSER_IDLE_TIMEOUT_MS)
+      .toBe("3600000");
+    expect(buildCopilotClientOptions({ COPILOT_HOME: copilotHome, AGENT_BROWSER_IDLE_TIMEOUT_MS: "600000" }).env?.AGENT_BROWSER_IDLE_TIMEOUT_MS)
+      .toBe("600000");
   });
 
   it("keeps Home native to existing tasks and sessions instead of publishing dashboard objects", () => {
