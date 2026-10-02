@@ -158,6 +158,13 @@ function backendFixture(startup?: Promise<void>) {
 }
 
 describe("Copilot owned-runtime fence", () => {
+  it("reports every captured runtime process id, the spawned child first", async () => {
+    const { backend } = backendFixture();
+    expect(backend.getConnectionStatus().runtimePids).toBeUndefined();
+    await backend.start();
+    expect(backend.getConnectionStatus()).toMatchObject({ pid: root.pid, runtimePids: [root.pid, runtime.pid] });
+  });
+
   it.each(["linux", "win32"] as const)("uses the platform boundary and retained native runtime identity on %s", async (platform) => {
     const { backend, client } = backendFixture();
     const original = Object.getOwnPropertyDescriptor(process, "platform")!;

@@ -538,7 +538,10 @@ export type AgentSessionSummary = {
   sessionId: string;
 } & Record<string, unknown>;
 
-/** Why the backend considers its RPC channel lost. */
+/**
+ * Why the backend was replaced. Most are a lost RPC channel; `cleanup-stalled` is the Bridge
+ * replacing a runtime that reported no failure because a session would not release.
+ */
 export type AgentBackendDisconnectReason =
   | "connection-closed"
   | "connection-error"
@@ -560,6 +563,8 @@ export interface AgentBackendConnectionStatus {
   state: "connected" | "connecting" | "disconnected" | "error" | "unknown";
   /** Child runtime process id when the backend spawned one. */
   pid?: number;
+  /** Every process of the owned runtime captured so far, the spawned child first. */
+  runtimePids?: number[];
   lastDisconnect?: AgentBackendDisconnect;
 }
 

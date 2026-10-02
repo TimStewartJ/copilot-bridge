@@ -28,6 +28,7 @@ import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./rest
 import { queueBootRecoveryPrompts } from "./restart-resume.js";
 import { recoverBackgroundCommandsOnBoot } from "./background-commands.js";
 import { setProcessLaunchObserver } from "./process-host.js";
+import { noteTimerDelay } from "./host-suspend.js";
 import {
   getEventLoopLagRequestTelemetryMetadata,
   startRequestTelemetryInflightReporter,
@@ -320,6 +321,7 @@ async function main(): Promise<void> {
     const now = Date.now();
     const lag = now - lastTick - LAG_INTERVAL;
     lastTick = now;
+    noteTimerDelay(lag, now);
     if (lag > LAG_THRESHOLD) {
       defaultContext.telemetryStore?.recordSpan({
         name: "eventloop.lag",

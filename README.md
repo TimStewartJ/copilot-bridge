@@ -468,6 +468,33 @@ looks alive (immediately when the process exits, the pipe closes, or a ping fail
 another reason). That indicates unresponsiveness, not proof that the runtime process
 crashed or its transport physically closed.
 
+### Backend loss records
+
+Every time the Bridge gives its agent backend up, it writes one JSON file to
+`data/backend-losses/` (`<time>-<reason>.json`, newest 200 kept). Telemetry spans are
+pruned after a week and the runtime's own log holds only its last few minutes, so this
+file is what remains to explain a loss later.
+
+- `origin` separates the two kinds of loss. `runtime`: the channel failed or the runtime
+  stopped answering. `bridge`: the Bridge replaced a runtime that had reported no failure,
+  because a session release or resume never finished (`cleanup-stalled`, or a resume that
+  timed out); `trigger` names that session. The log line and the status banner say so
+  instead of calling it a disconnect.
+- Written at the moment of the loss: the interrupted runs and whether each will be
+  continued, the cached sessions and how long each had been idle, releases still pending,
+  the last event the runtime delivered, and how long ago the host woke from sleep (a
+  timer that fires more than two minutes late is taken as a sleep).
+- Added when the first recovery attempt settles: its outcome, and the answer to one ping
+  sent before fencing began. `responsive` means the runtime still answered. Any other
+  answer counts only if it took less than `runtimeKilledAfterMs`, because the ping races
+  the kill.
+- `runtimeLog` holds the runtime's last three minutes: session and server lifecycle
+  lines, warnings and errors (each cut to 300 characters), and how many events it
+  delivered to each session. Model requests and responses and tool payloads are never
+  copied. A warning or error can still quote a fragment of what it was handling.
+
+Recording is observational: it does not delay or change recovery.
+
 ### Public URL Configuration
 
 If you expose the bridge through something other than dev tunnels (for example Cloudflare Tunnel, ngrok, or a reverse proxy), set a canonical public base URL so staging previews can return shareable absolute links:
@@ -576,6 +603,7 @@ scripts/
 data/                              # Runtime data (git-ignored)
 ├── bridge.db                      # Primary SQLite store
 ├── docs/                          # Markdown knowledge base
+├── backend-losses/                # One JSON record per agent-backend loss
 └── ...                            # Logs, metadata, and runtime state
 ```
 
@@ -610,3 +638,8 @@ tail -n 30 data/bridge-error.log
 Get-Content data\bridge.log -Tail 30
 Get-Content data\bridge-error.log -Tail 30
 ```
+
+Lines written through `console.log`, `console.warn` and `console.error` start with a UTC
+time of day (`[HH:MM:SS.mmm]`); the logs carry no dates. Each agent-backend loss also
+leaves a dated record in `data/backend-losses/`
+(see [Backend loss records](#backend-loss-records)).

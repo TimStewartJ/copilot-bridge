@@ -5,8 +5,8 @@
 // interactive turns it interrupted.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createEventBusRegistry } from "../server/event-bus.js";
 import { SessionManager, type SessionManagerDeps } from "../server/session-manager.js";
 import { createSessionTitlesStore } from "../server/session-titles.js";
@@ -22,7 +22,11 @@ import {
 import type { AgentBackendDisconnect } from "../server/agent-backend/types.js";
 import { RUNTIME_FENCE_BUDGET_MS, RuntimeFenceError, type RuntimeFenceOptions } from "../server/agent-backend/runtime-fence.js";
 import { createDeadline } from "../server/deadline.js";
-import { createTestBus, makeAgentSessionStub, makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
+import type { BackendLossRecord } from "../server/backend-loss-record.js";
+import type { RuntimePaths } from "../server/runtime-paths.js";
+import {
+  createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths, setupTestDb,
+} from "../server/__tests__/helpers.js";
 
 function makeSession(sessionId: string) {
   const handlers: Array<(event: any) => void> = [];
@@ -92,7 +96,7 @@ function createFakeBackend(name: string, sessions: Record<string, ReturnType<typ
   return backend;
 }
 
-function createManager(backends: unknown[]) {
+function createManager(backends: unknown[], options: { runtimePaths?: RuntimePaths } = {}) {
   const db = setupTestDb();
   const copilotHome = makeTestDir("backend-recovery");
   const globalBus = createTestBus();
@@ -114,8 +118,16 @@ function createManager(backends: unknown[]) {
     copilotHome,
     telemetryStore,
     createBackend: createBackendSpy,
+    ...options,
   };
-  return { manager: new SessionManager(deps) as any, createBackendSpy, statusEvents, telemetryStore };
+  return { manager: new SessionManager(deps) as any, createBackendSpy, statusEvents, telemetryStore, copilotHome };
+}
+
+function readLossRecords(runtimePaths: RuntimePaths): BackendLossRecord[] {
+  const directory = join(runtimePaths.dataDir, "backend-losses");
+  return readdirSync(directory)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")));
 }
 
 async function flushMicrotasks(rounds = 80) {
@@ -234,6 +246,112 @@ describe("SessionManager backend disconnect recovery", () => {
     // Finish the resumed turn so the run settles.
     resumedInteractive.emit({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
     await flushMicrotasks();
+  });
+
+  it("leaves a durable record that names a restart the Bridge chose and the session behind it", async () => {
+    vi.useFakeTimers();
+    const interactive = makeSession("session-interactive");
+    const idleCached = makeSession("session-idle");
+    const resumedInteractive = makeSession("session-interactive");
+    const dead = createFakeBackend("dead", { "session-interactive": interactive });
+    const diagnosticPing = vi.fn(async () => "responsive" as const);
+    Object.assign(dead, { diagnosticPing });
+    dead.fence.mockImplementation(async (options) => {
+      options?.onPhase?.({ phase: "terminate", durationMs: 12, outcome: "completed", pid: 100 });
+    });
+    const fresh = createFakeBackend("fresh", { "session-interactive": resumedInteractive });
+    const runtimePaths = makeTestRuntimePaths("backend-loss");
+    const { manager, telemetryStore } = createManager([dead, fresh], { runtimePaths });
+    try {
+      await manager.initialize();
+      manager.startWork("session-interactive", "do the thing");
+      await vi.waitFor(() => expect(interactive.session.send).toHaveBeenCalled());
+      interactive.emit({ type: "user.message", data: {}, timestamp: new Date().toISOString() });
+      manager.sessionObjects.set("session-idle", idleCached.session);
+
+      // The fake backend reports pid 100, so this is the log the record must find.
+      const logsDir = join(manager.getCopilotHome(), "logs");
+      mkdirSync(logsDir, { recursive: true });
+      const closing = `${new Date(Date.now() - 3_000).toISOString()} [INFO] Cleaning up session session-idle: `
+        + "Session closed after last owner detached";
+      writeFileSync(join(logsDir, `process-${Date.now() - 5_000}-100.log`), [
+        closing,
+        `${new Date(Date.now() - 2_000).toISOString()} [DEBUG] [rust:model_wire] Wire request: {"content":"private"}`,
+      ].join("\n"));
+
+      idleCached.session.disconnect.mockImplementation(() => new Promise(() => {}));
+      await manager.evictCachedSession("session-idle");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
+      await vi.waitFor(() => expect(readLossRecords(runtimePaths)[0]?.recovery).toMatchObject({ outcome: "recovered" }));
+
+      const records = readLossRecords(runtimePaths);
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record).toMatchObject({
+        version: 1,
+        reason: "cleanup-stalled",
+        origin: "bridge",
+        summary: "Bridge restarted the agent backend because session session-idle did not release within 60s. "
+          + "The runtime had not reported a failure.",
+        trigger: { sessionId: "session-idle", operation: "release", waitedMs: 60_000, retirementReason: expect.any(String) },
+        backend: { generation: 1, connection: "connected", pid: 100, runtimePids: [100] },
+        host: { lastResumeAt: null, msSinceResume: null, sleptMs: null },
+        lastRuntimeEvent: { sessionId: "session-interactive", type: "user.message" },
+        interruptedRuns: [{
+          sessionId: "session-interactive", promptAccepted: true, attentionMode: "normal", autoResume: "queued",
+          idleMs: expect.any(Number),
+        }],
+        cachedSessions: [{ sessionId: "session-interactive" }],
+        pendingReleases: [{ sessionId: "session-idle", phase: "backend-recycling", waitedMs: 60_000 }],
+        ping: { outcome: "responsive" },
+        runtimeKilledAfterMs: 0,
+        recovery: { outcome: "recovered" },
+        runtimeLog: { status: "read", matchedBy: "pid", reachesWindowStart: true, lines: [closing] },
+      });
+      // The ping has to reach the runtime before fencing starts to kill it.
+      expect(diagnosticPing.mock.invocationCallOrder[0]).toBeLessThan(dead.fence.mock.invocationCallOrder[0]!);
+      expect(telemetryStore.querySpans({ name: "backend.disconnect" })[0]?.metadata).toMatchObject({
+        origin: "bridge",
+        record: expect.stringMatching(/-cleanup-stalled\.json$/),
+      });
+    } finally {
+      resumedInteractive.emit({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("records a loss the runtime reported, with the first recovery attempt's outcome", async () => {
+    vi.useFakeTimers();
+    const dead = createFakeBackend("dead", {});
+    const fresh = createFakeBackend("fresh", {});
+    dead.fence
+      .mockRejectedValueOnce(new RuntimeFenceError("Runtime fencing failed: snapshot-unavailable", true))
+      .mockResolvedValueOnce(undefined);
+    const runtimePaths = makeTestRuntimePaths("backend-loss");
+    const { manager } = createManager([dead, fresh], { runtimePaths });
+    try {
+      await manager.initialize();
+      dead.simulateDisconnect({ reason: "process-exit", detail: "runtime process exited (code=1, signal=null)" });
+      await vi.waitFor(() => expect(readLossRecords(runtimePaths)[0]?.recovery).toMatchObject({ outcome: "failed" }));
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
+
+      expect(readLossRecords(runtimePaths)).toEqual([expect.objectContaining({
+        reason: "process-exit",
+        detail: "runtime process exited (code=1, signal=null)",
+        origin: "runtime",
+        summary: "The agent backend was lost: its process exited.",
+        trigger: null,
+        interruptedRuns: [],
+        ping: { outcome: "unsupported", elapsedMs: 0 },
+        runtimeKilledAfterMs: null,
+        recovery: expect.objectContaining({ outcome: "failed", error: expect.stringContaining("snapshot-unavailable") }),
+        runtimeLog: { status: "unavailable", reason: "ENOENT" },
+      })]);
+    } finally {
+      await manager.gracefulShutdown();
+    }
   });
 
   it("waits past five seconds for identity-verified fencing with the same deadline passed to the backend", async () => {
