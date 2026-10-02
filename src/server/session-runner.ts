@@ -71,6 +71,8 @@ import { readPersistedRunEnding, type PersistedRunEnding } from "./session-run-e
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
 import type { ImageBudgetController } from "./image-budget.js";
 import { normalizePromptCacheBreak, promptProcessMetadata } from "./session-prompt-fingerprint.js";
+import { getParentToolCallId, isStampedAgentTurnEvent, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
+import { TranscriptAgentFold } from "./transcript-agent-fold.js";
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
@@ -468,6 +470,12 @@ export class SessionRunner {
     count: number;
     windowStartedAt: number;
   }>();
+  /**
+   * Whether the runtime has shown that it says whose turn a turn event is, which it does when it
+   * starts its first agent (agent-event-ownership.ts). A runtime that does it keeps doing it, so
+   * the first sighting settles it for every later run.
+   */
+  private runtimeStampsAgentTurns = false;
 
   constructor(private readonly deps: SessionRunnerDeps) {}
 
@@ -1114,6 +1122,9 @@ export class SessionRunner {
     const toolStartTimes = new Map<string, number>();
     const toolLoopGuard = createToolLoopGuard();
     const correlator = new SubagentCorrelator();
+    // Kept only to notice the moment an agent starts or stops working; the browser reads the
+    // agents themselves from history.
+    const agentLifecycle = new TranscriptAgentFold();
     const subAgentToolCallIds = new Set<string>();
     const activeSubAgentToolCallIds = new Set<string>();
     const subAgentTerminalToolCallIds = new Set<string>();
@@ -1484,6 +1495,8 @@ export class SessionRunner {
       if (opts.attentionMode !== "quiet") {
         this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
       }
+      if (agentLifecycle.observe(event)) bus.announceAgentChange();
+      if (!this.runtimeStampsAgentTurns && showsAgentTurnsAreStamped(event)) this.runtimeStampsAgentTurns = true;
       switch (event.type) {
         case "user_input.requested": {
           turnHadSideEffects = true;
@@ -1625,7 +1638,24 @@ export class SessionRunner {
           break;
         }
         case "assistant.turn_start":
-          if (activeSubAgentToolCallIds.size > 0) {
+          if (isStampedAgentTurnEvent(event)) {
+            // The runtime says this turn is a sub-agent's: it moves that agent's calls along and
+            // leaves the main agent's turn alone.
+            const agentId = getSdkAgentId(event);
+            const agentToolCallId = getParentToolCallId(event)
+              ?? (agentId ? correlator.resolveAgentToolCallId(agentId) : undefined)
+              ?? (agentId ? agentLifecycle.getToolCallIdForAgent(agentId) : undefined);
+            if (agentToolCallId) {
+              bus.emit({
+                type: "agent_turn",
+                agentToolCallId,
+                turnInstanceId: getAssistantTurnInstanceId(event, `subagent-turn-instance-${randomUUID()}`),
+              });
+            }
+            break;
+          }
+          // A runtime that does not say whose turn this is: with an agent running, take it for an agent's.
+          if (!this.runtimeStampsAgentTurns && activeSubAgentToolCallIds.size > 0) {
             console.log(`[sdk] [${sid}] ⏳ Sub-agent turn started`);
             break;
           }
@@ -2029,7 +2059,11 @@ export class SessionRunner {
         case "assistant.idle":
           // The main agent stopped. `session.idle` follows at once unless a background agent or an
           // attached shell defers it, so ask the runtime now instead of waiting for the next tick.
-          if (!getSdkAgentId(event)) startWatchdogTick();
+          if (!getSdkAgentId(event)) {
+            // Until it starts another turn, the main agent is waiting on that background work.
+            bus.emit({ type: "main_idle" });
+            startWatchdogTick();
+          }
           break;
         case "session.error": {
           const agentId = getSdkAgentId(event);

@@ -1,22 +1,35 @@
 import type { ChatReasoningEntry, ChatToolEntry, ToolCall } from "../api";
+import type { TranscriptAgentDirectory } from "../../shared/transcript-agents.js";
 import type { ChatRenderSegment } from "./tool-call-tree";
-import { getToolCallStatus } from "./tool-call-status";
+import { getOwnToolCallStatus, getToolCallStatus, type ToolCallStatus } from "./tool-call-status";
 import { isSettledAskUserCall } from "./ask-user-record";
 
 /**
- * Work the agent did between two things it said: its thinking and its tool calls, in order. The
- * chat renders each run of it as one collapsible block, so a long agentic turn reads as a few lines
- * of prose instead of a wall of tool rows.
+ * Work done between two things the agent said: its thinking and its tool calls, in order, and what
+ * each sub-agent did meanwhile. The chat renders each such stretch as one collapsible block, so a
+ * long agentic turn reads as a few lines of prose instead of a wall of tool rows.
  */
 
 export type ActivityStep =
   | { kind: "reasoning"; key: string; entry: ChatReasoningEntry }
   | {
+      /** The main agent's calls of one turn. A delegation among them holds what its agent did here. */
       kind: "tools";
       key: string;
       entries: ChatToolEntry[];
       turnId?: string;
       turnInstanceId?: string;
+    }
+  | {
+      /**
+       * What one agent did in this stretch when it was launched in an earlier one. However its
+       * calls were interleaved with everyone else's, they are one step, and so one row.
+       */
+      kind: "agent";
+      key: string;
+      /** The call that launched the agent the main agent delegated to. */
+      agentToolCallId: string;
+      entries: ChatToolEntry[];
     };
 
 export interface ActivityBlock {
@@ -44,13 +57,25 @@ export interface GroupActivityOptions {
    * while a run is live the open question is shown by its own form.
    */
   includeUnfinishedQuestions?: boolean;
+  /**
+   * The session's agents, for following a step up to the agent the main agent launched when the
+   * launching calls in between are above the loaded history.
+   */
+  agents?: Pick<TranscriptAgentDirectory, "byToolCallId">;
 }
 
 export interface ActivitySummary {
+  /** The main agent's own calls. Handing work to an agent is one of them. */
   toolCount: number;
   thoughtCount: number;
+  /** Calls still going in this stretch, the main agent's or an agent's. */
   runningCount: number;
+  /** The main agent's calls that failed. */
   failedCount: number;
+  /** Agents that did something in this stretch, with how much they did and how much of it failed. */
+  agentCount: number;
+  agentToolCount: number;
+  agentFailedCount: number;
   streamingThought: boolean;
   /** Wall-clock span of the block, when its steps carry enough timestamps to know it. */
   durationMs?: number;
@@ -68,7 +93,9 @@ function toolStepKey(entries: ChatToolEntry[], index: number): string {
 /**
  * A turn instance id is the persisted `assistant.turn_start` event id, identical live and on disk.
  * Keying a block by the turn that opened it keeps it mounted while its entries are handed from the
- * stream to disk history; entry ids and tool-call ids are only the fallback for older logs.
+ * stream to disk history; entry ids and tool-call ids are only the fallback for older logs. A block
+ * that opens with an agent's step is keyed by that call: the agent's turn is not known to the
+ * stream, and one agent opens many blocks.
  */
 function getBlockBaseKey(step: ActivityStep): string {
   if (step.kind === "reasoning") {
@@ -78,11 +105,87 @@ function getBlockBaseKey(step: ActivityStep): string {
       ?? step.entry.id
       ?? step.key;
   }
+  if (step.kind === "agent") return step.entries[0]?.toolCall.toolCallId ?? step.key;
   return step.turnInstanceId
     ?? step.entries[0]?.turnInstanceId
     ?? step.turnId
     ?? step.entries[0]?.toolCall.toolCallId
     ?? step.key;
+}
+
+/**
+ * Puts each agent's calls in one place within a stretch. A call made by an agent that was
+ * delegated to in this stretch moves into the step that holds the delegation, where it renders
+ * beneath it. A call made by an agent launched earlier joins that agent's one step, which sits
+ * where the agent first acted here. The main agent's steps keep their order.
+ */
+function gatherAgentSteps(
+  steps: ActivityStep[],
+  topLevelAgentOf: (toolCall: ToolCall) => string,
+): ActivityStep[] {
+  const mainCallIds = new Set<string>();
+  let hasAgentCalls = false;
+  for (const step of steps) {
+    if (step.kind !== "tools") continue;
+    for (const { toolCall } of step.entries) {
+      if (toolCall.parentToolCallId) hasAgentCalls = true;
+      else mainCallIds.add(toolCall.toolCallId);
+    }
+  }
+  if (!hasAgentCalls) return steps;
+
+  const gathered: ActivityStep[] = [];
+  const holderByMainCallId = new Map<string, ChatToolEntry[]>();
+  const agentStepByAgent = new Map<string, ChatToolEntry[]>();
+  const delegatedHere: Array<{ agentToolCallId: string; entry: ChatToolEntry }> = [];
+
+  for (const step of steps) {
+    if (step.kind !== "tools") {
+      gathered.push(step);
+      continue;
+    }
+    let mainEntries: ChatToolEntry[] | undefined;
+    for (const entry of step.entries) {
+      if (!entry.toolCall.parentToolCallId) {
+        if (!mainEntries) {
+          mainEntries = [];
+          gathered.push({
+            kind: "tools",
+            key: step.entries[0] === entry ? step.key : `tools:${entry.toolCall.toolCallId}`,
+            entries: mainEntries,
+            ...(step.turnId ? { turnId: step.turnId } : {}),
+            ...(step.turnInstanceId ? { turnInstanceId: step.turnInstanceId } : {}),
+          });
+        }
+        mainEntries.push(entry);
+        holderByMainCallId.set(entry.toolCall.toolCallId, mainEntries);
+        continue;
+      }
+      const agentToolCallId = topLevelAgentOf(entry.toolCall);
+      if (mainCallIds.has(agentToolCallId)) {
+        delegatedHere.push({ agentToolCallId, entry });
+        continue;
+      }
+      const known = agentStepByAgent.get(agentToolCallId);
+      if (known) {
+        known.push(entry);
+        continue;
+      }
+      const agentEntries = [entry];
+      agentStepByAgent.set(agentToolCallId, agentEntries);
+      gathered.push({
+        kind: "agent",
+        key: `agent:${agentToolCallId}:${entry.toolCall.toolCallId}`,
+        agentToolCallId,
+        entries: agentEntries,
+      });
+    }
+  }
+  // After the main agent's calls of the step, so each delegation is followed by what its agent did.
+  for (const { agentToolCallId, entry } of delegatedHere) {
+    holderByMainCallId.get(agentToolCallId)?.push(entry);
+  }
+  return gathered;
 }
 
 export function groupActivitySegments(
@@ -109,6 +212,20 @@ export function groupActivitySegments(
   );
   const emittedQuestionIds = new Set<string>();
 
+  /** The call that launched the agent the main agent delegated to, however deep `toolCall` is. */
+  const topLevelAgentOf = (toolCall: ToolCall): string => {
+    const seen = new Set<string>();
+    let current = toolCall.parentToolCallId ?? toolCall.toolCallId;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const loaded = latestToolCalls.get(current);
+      const parent = loaded ? loaded.parentToolCallId : options.agents?.byToolCallId.get(current)?.parentToolCallId;
+      if (!parent) return current;
+      current = parent;
+    }
+    return current;
+  };
+
   const pushTools = (
     entries: ChatToolEntry[],
     index: number,
@@ -126,11 +243,12 @@ export function groupActivitySegments(
 
   const flush = () => {
     if (steps.length === 0) return;
-    const baseKey = getBlockBaseKey(steps[0]!);
+    const gathered = gatherAgentSteps(steps, topLevelAgentOf);
+    const baseKey = getBlockBaseKey(gathered[0]!);
     // One turn can open several blocks (thinking, then text, then tools), so number them.
     const occurrence = keyCounts.get(baseKey) ?? 0;
     keyCounts.set(baseKey, occurrence + 1);
-    blocks.push({ type: "activity", key: `activity:${baseKey}:${occurrence}`, steps });
+    blocks.push({ type: "activity", key: `activity:${baseKey}:${occurrence}`, steps: gathered });
     steps = [];
   };
 
@@ -175,15 +293,51 @@ function parseTime(value: string | undefined): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+/**
+ * A call that handed work to an agent which carries on after the call itself has returned. Before
+ * the session's records name the agent, the call's own arguments say how it was launched.
+ */
+export function launchesBackgroundAgent(toolCall: ToolCall): boolean {
+  if (toolCall.agent) return toolCall.agent.background === true;
+  if (!toolCall.isSubAgent) return false;
+  const args = toolCall.args;
+  return typeof args === "object" && args !== null && !Array.isArray(args) && args.mode === "background";
+}
+
+/**
+ * Where a call stands as far as its stretch is concerned. Handing work to a background agent is
+ * done the moment the agent starts; what becomes of the agent afterwards shows on the agent's own
+ * rows, in the stretches where it works, and must not keep the stretch that launched it alive.
+ */
+export function getStepStatus(toolCall: ToolCall): ToolCallStatus {
+  return launchesBackgroundAgent(toolCall) ? getOwnToolCallStatus(toolCall) : getToolCallStatus(toolCall);
+}
+
+/** The calls of a stretch, each once: the main agent's, and those made inside agents. */
+export function collectActivityCalls(steps: ActivityStep[]): { main: ToolCall[]; inAgents: ToolCall[] } {
+  const seen = new Set<string>();
+  const main: ToolCall[] = [];
+  const inAgents: ToolCall[] = [];
+  for (const step of steps) {
+    if (step.kind === "reasoning") continue;
+    for (const { toolCall } of step.entries) {
+      // The same call can appear twice in a turn group (a start row and a later snapshot).
+      if (seen.has(toolCall.toolCallId)) continue;
+      seen.add(toolCall.toolCallId);
+      (toolCall.parentToolCallId ? inAgents : main).push(toolCall);
+    }
+  }
+  return { main, inAgents };
+}
+
 export function summarizeActivity(steps: ActivityStep[], nowMs?: number): ActivitySummary {
-  let toolCount = 0;
   let thoughtCount = 0;
   let runningCount = 0;
   let failedCount = 0;
+  let agentFailedCount = 0;
   let streamingThought = false;
   let startedAtMs: number | undefined;
   let endedAtMs: number | undefined;
-  const seenToolCallIds = new Set<string>();
 
   const observe = (start: number | undefined, end: number | undefined) => {
     if (start !== undefined) startedAtMs = startedAtMs === undefined ? start : Math.min(startedAtMs, start);
@@ -192,26 +346,36 @@ export function summarizeActivity(steps: ActivityStep[], nowMs?: number): Activi
   };
 
   for (const step of steps) {
-    if (step.kind === "reasoning") {
-      thoughtCount += 1;
-      if (step.entry.reasoning.streaming) streamingThought = true;
-      // A model call's end also covers the reply it wrote, so only its start counts as work here.
-      const at = parseTime(step.entry.reasoning.startedAt) ?? parseTime(step.entry.timestamp);
-      observe(at, at);
-      continue;
-    }
-    for (const entry of step.entries) {
-      const { toolCall } = entry;
-      // The same call can appear twice in a turn group (a start row and a later snapshot).
-      if (seenToolCallIds.has(toolCall.toolCallId)) continue;
-      seenToolCallIds.add(toolCall.toolCallId);
-      toolCount += 1;
-      const status = getToolCallStatus(toolCall);
-      if (status === "running") runningCount += 1;
-      if (status === "failed") failedCount += 1;
-      observe(parseTime(toolCall.startedAt), parseTime(toolCall.completedAt));
-    }
+    if (step.kind !== "reasoning") continue;
+    thoughtCount += 1;
+    if (step.entry.reasoning.streaming) streamingThought = true;
+    // A model call's end also covers the reply it wrote, so only its start counts as work here.
+    const at = parseTime(step.entry.reasoning.startedAt) ?? parseTime(step.entry.timestamp);
+    observe(at, at);
   }
+
+  const { main, inAgents } = collectActivityCalls(steps);
+  for (const toolCall of main) {
+    const status = getStepStatus(toolCall);
+    if (status === "running") runningCount += 1;
+    if (status === "failed") failedCount += 1;
+    const startedAt = parseTime(toolCall.startedAt);
+    // Handing work to a background agent takes no time. While the agent works, the stream reports
+    // its latest word as that call's end, which would stretch this block for as long as it does.
+    observe(startedAt, launchesBackgroundAgent(toolCall) ? startedAt : parseTime(toolCall.completedAt));
+  }
+  for (const toolCall of inAgents) {
+    const status = getStepStatus(toolCall);
+    if (status === "running") runningCount += 1;
+    if (status === "failed") agentFailedCount += 1;
+    observe(parseTime(toolCall.startedAt), parseTime(toolCall.completedAt));
+  }
+
+  // Agents with a step of their own here: one per continued agent, and each delegation in this
+  // stretch whose agent has already done something.
+  const parentIds = new Set(inAgents.map((toolCall) => toolCall.parentToolCallId));
+  const agentCount = steps.filter((step) => step.kind === "agent").length
+    + main.filter((toolCall) => parentIds.has(toolCall.toolCallId)).length;
 
   const live = runningCount > 0 || streamingThought;
   const end = live && nowMs !== undefined ? nowMs : endedAtMs;
@@ -219,14 +383,52 @@ export function summarizeActivity(steps: ActivityStep[], nowMs?: number): Activi
     ? end - startedAtMs
     : undefined;
   return {
-    toolCount,
+    toolCount: main.length,
     thoughtCount,
     runningCount,
     failedCount,
+    agentCount,
+    agentToolCount: inAgents.length,
+    agentFailedCount,
     streamingThought,
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(startedAtMs !== undefined ? { startedAtMs } : {}),
   };
+}
+
+/**
+ * For each agent, by launching call, the key of the newest stretch that has a row for it. An agent
+ * that works across several of the main agent's replies has a row in each stretch; this tells the
+ * rows which of them is the current one. Pass the previous answer to get it back when nothing
+ * moved, so the rows that read it are not told it changed every time the transcript does.
+ */
+export function mapLatestAgentBlocks(
+  blocks: readonly ChatRenderBlock[],
+  previous?: ReadonlyMap<string, string>,
+): ReadonlyMap<string, string> {
+  const latest = new Map<string, string>();
+  for (const block of blocks) {
+    if (block.type !== "activity") continue;
+    for (const step of block.steps) {
+      if (step.kind === "reasoning") continue;
+      if (step.kind === "agent") latest.set(step.agentToolCallId, block.key);
+      for (const { toolCall } of step.entries) {
+        if (toolCall.isSubAgent) latest.set(toolCall.toolCallId, block.key);
+        if (toolCall.parentToolCallId) latest.set(toolCall.parentToolCallId, block.key);
+      }
+    }
+  }
+  if (previous && previous.size === latest.size) {
+    let same = true;
+    for (const [agentToolCallId, blockKey] of latest) {
+      if (previous.get(agentToolCallId) !== blockKey) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return previous;
+  }
+  return latest;
 }
 
 const MARKDOWN_NOISE = /[*_`#>]+/g;

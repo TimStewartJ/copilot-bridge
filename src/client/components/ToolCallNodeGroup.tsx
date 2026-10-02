@@ -31,6 +31,7 @@ export const ToolCallTree = memo(function ToolCallTree({
         <SubAgentGroup
           agentTool={node.toolCall}
           childNodes={node.children}
+          loadedStepCount={node.loadedChildCount}
           renderChildNodes={renderChildNodes}
           defaultExpanded={defaultExpanded}
           contextOnly={effectiveContextOnly}

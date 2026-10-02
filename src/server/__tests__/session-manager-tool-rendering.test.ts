@@ -567,6 +567,73 @@ describe("SessionManager tool result rendering", () => {
     }]);
   });
 
+  it("follows the main agent's turns apart from an agent's, and says when the main agent is waiting on it", async () => {
+    const at = (seconds: number) => new Date(Date.parse("2026-10-01T10:00:00.000Z") + seconds * 1000).toISOString();
+    const agent = { agentId: "agent-bg" };
+    const sdkEvents = [
+      { id: "main-1", type: "assistant.turn_start", timestamp: at(0), data: { turnId: "0" } },
+      {
+        type: "tool.execution_start",
+        timestamp: at(1),
+        data: { toolCallId: "task-bg", toolName: "task", arguments: { name: "moves-agent", description: "Refactor move generation", mode: "background" } },
+      },
+      {
+        type: "subagent.started",
+        ...agent,
+        timestamp: at(1),
+        data: { toolCallId: "task-bg", agentName: "general-purpose", agentDisplayName: "moves-agent", executionMode: "background" },
+      },
+      { type: "tool.execution_complete", timestamp: at(1), data: { toolCallId: "task-bg", success: true, result: { content: "Agent started" } } },
+      { type: "assistant.turn_end", timestamp: at(1), data: { turnId: "0" } },
+      // The main agent starts its next turn at once, before the agent has begun one of its own:
+      // how the launch was reported is all there is to say this turn is not the agent's.
+      { id: "main-2", type: "assistant.turn_start", timestamp: at(1.02), data: { turnId: "1" } },
+      // The runtime says whose turn this is, so it does not become the main agent's.
+      { id: "agent-turn-1", type: "assistant.turn_start", ...agent, timestamp: at(3), data: { parentToolCallId: "task-bg" } },
+      { type: "tool.execution_start", ...agent, timestamp: at(3), data: { toolCallId: "bg-view", toolName: "view", arguments: { path: "/repo/moves.ts" }, parentToolCallId: "task-bg" } },
+      { type: "tool.execution_start", timestamp: at(6), data: { toolCallId: "main-view", toolName: "view", arguments: { path: "/repo/README.md" } } },
+      { type: "tool.execution_complete", timestamp: at(7), data: { toolCallId: "main-view", success: true, result: { content: "ok" } } },
+      { id: "main-reply", type: "assistant.message", timestamp: at(8), data: { content: "Waiting for the agent." } },
+      { type: "assistant.turn_end", timestamp: at(8), data: { turnId: "1" } },
+      // The main agent has stopped; the session stays busy for the agent.
+      { type: "assistant.idle", ephemeral: true, timestamp: at(8), data: {} },
+      { type: "tool.execution_complete", ...agent, timestamp: at(20), data: { toolCallId: "bg-view", success: true, result: { content: "ok" }, parentToolCallId: "task-bg" } },
+      { type: "assistant.message", ...agent, timestamp: at(30), data: { parentToolCallId: "task-bg", content: "Move generation is refactored.", toolRequests: [] } },
+      { type: "subagent.completed", ...agent, timestamp: at(30), data: { toolCallId: "task-bg" } },
+      { type: "session.idle", timestamp: at(31), data: {} },
+    ];
+
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("session-agent-turns");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-agent-turns", createSession(sdkEvents));
+    await manager._doWork("session-agent-turns", "refactor the engine", bus);
+
+    // Two turns of the main agent's, and one of the agent's that only moves the agent's calls along.
+    expect(events.filter((event) => event.type === "thinking").map((event) => event.turnInstanceId)).toEqual(["main-1", "main-2"]);
+    expect(events.filter((event) => event.type === "agent_turn")).toEqual([
+      { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-turn-1" },
+    ]);
+    const toolStarts = Object.fromEntries(
+      events.filter((event) => event.type === "tool_start").map((event) => [event.toolCallId, event]),
+    );
+    expect(toolStarts["bg-view"]).toMatchObject({ parentToolCallId: "task-bg", turnInstanceId: "agent-turn-1" });
+    expect(toolStarts["bg-view"]).not.toHaveProperty("turnId");
+    expect(toolStarts["main-view"]).toMatchObject({ turnId: "1", turnInstanceId: "main-2" });
+    expect(toolStarts["main-view"].parentToolCallId).toBeUndefined();
+
+    // Said once, after the main agent's last step and before the agent's own finishes.
+    const types = events.map((event) => event.type === "tool_done" ? `tool_done:${event.toolCallId}` : event.type);
+    expect(types.filter((type) => type === "main_idle")).toHaveLength(1);
+    expect(types.indexOf("main_idle")).toBeGreaterThan(types.indexOf("tool_done:main-view"));
+    expect(types.indexOf("main_idle")).toBeLessThan(types.indexOf("tool_done:bg-view"));
+  });
+
   it("streams the main agent's thinking and commits it under its assistant message", async () => {
     // The order the runtime really uses: deltas, then the persisted message carrying the same
     // text as `reasoningText`, then the ephemeral complete block.

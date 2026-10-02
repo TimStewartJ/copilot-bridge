@@ -21,7 +21,7 @@ describe("native Home composition", () => {
       getSessionRunState: vi.fn<SessionManager["getSessionRunState"]>(() => "idle"),
       getPendingUserInputCount: vi.fn<SessionManager["getPendingUserInputCount"]>(() => 0),
       hydratePendingInteractions: vi.fn<SessionManager["hydratePendingInteractions"]>(async () => ({ pendingUserInputs: [], pendingElicitations: [] })),
-      readMessagesFromDisk: vi.fn<SessionManager["readMessagesFromDisk"]>(async id => ({ messages: [{ id: "message", type: "message", role: "assistant", sourceEventId: `reply-${id}`, content: "A source-backed answer" }], total: 1, hasMore: false, coverage: {} })),
+      readMessagesFromDisk: vi.fn<SessionManager["readMessagesFromDisk"]>(async id => ({ messages: [{ id: "message", type: "message", role: "assistant", sourceEventId: `reply-${id}`, content: "A source-backed answer" }], total: 1, hasMore: false, coverage: {}, agents: [] })),
     };
     const scheduleStore = createScheduleStore(db);
     const reader = createHomeReader({ taskStore, checklistStore, readStateStore, scheduleStore, taskGroupStore: createTaskGroupStore(db, bus), sessionManager: manager }, async () => sessions);

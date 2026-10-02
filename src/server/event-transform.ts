@@ -21,6 +21,7 @@ import {
   isSdkSubagentSessionError,
   isSdkUserAuthoredMessage,
 } from "./sdk-event-identity.js";
+import { AgentEventOwners, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
@@ -463,6 +464,11 @@ export interface TransformEventsToMessagesOptions {
   initialTurnIndex?: number;
   initialActiveTurnId?: string;
   initialActiveTurnInstanceId?: string;
+  /**
+   * The log is known to stamp sub-agent turn events with their agent, from a part of it that is
+   * not among `events`. See agent-event-ownership.ts.
+   */
+  agentTurnsStamped?: boolean;
 }
 
 /**
@@ -485,6 +491,11 @@ export function transformEventsToMessages(
   let pendingTerminalCompletion: TerminalCompletion | undefined;
   const activeSubAgentToolCallIds = new Set<string>();
   const correlatingSubAgentToolCallIds = new Set<string>();
+  // When the runtime says whose turn a turn event is, each agent's turn is followed on its own and
+  // the main agent's is never mistaken for one of theirs.
+  let agentTurnsStamped = options.agentTurnsStamped === true;
+  const agentOwners = new AgentEventOwners();
+  const agentTurns = new Map<string, { turnId: string; turnInstanceId: string }>();
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, ToolCompletionRecord>();
@@ -499,6 +510,8 @@ export function transformEventsToMessages(
 
   for (const event of events) {
     const data = (event as any).data;
+    agentOwners.learn(event);
+    if (!agentTurnsStamped && showsAgentTurnsAreStamped(event)) agentTurnsStamped = true;
     if (event.type === "tool.execution_start" && data?.toolCallId) {
       openToolCallOwners.set(data.toolCallId, getSdkAgentId(event));
       toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
@@ -578,7 +591,17 @@ export function transformEventsToMessages(
     ) {
       activeSubAgentToolCallIds.delete(data.toolCallId);
     } else if (event.type === "assistant.turn_start") {
-      if (activeSubAgentToolCallIds.size > 0) {
+      const agentOwner = agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
+      if (agentOwner !== undefined) {
+        subAgentTurnIndex += 1;
+        agentTurns.set(agentOwner, {
+          turnId: `subagent-turn-${subAgentTurnIndex}`,
+          turnInstanceId: getAssistantTurnInstanceId(event, `subagent-turn-instance-${subAgentTurnIndex}`),
+        });
+        continue;
+      }
+      // A runtime that does not say whose turn this is: with an agent running, take it for an agent's.
+      if (!agentTurnsStamped && activeSubAgentToolCallIds.size > 0) {
         subAgentTurnIndex += 1;
         activeTurnId = `subagent-turn-${subAgentTurnIndex}`;
         activeTurnInstanceId = getAssistantTurnInstanceId(
@@ -622,6 +645,14 @@ export function transformEventsToMessages(
           ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
         });
         pendingTerminalCompletion = undefined;
+      }
+      const endedAgent = agentTurnsStamped && event.type === "assistant.turn_end"
+        ? agentOwners.ownerOf(event)
+        : undefined;
+      if (endedAgent !== undefined) {
+        // An agent finishing a turn leaves the main agent's turn exactly as it was.
+        agentTurns.delete(endedAgent);
+        continue;
       }
       activeTurnId = undefined;
       activeTurnInstanceId = undefined;
@@ -720,12 +751,18 @@ export function transformEventsToMessages(
       const complete = toolCompletes.get(data.toolCallId);
       const resolution = correlator.resolve(data.toolCallId);
       const outcome = resolveToolOutcome(resolution, complete, toolName);
+      // An agent's step belongs to that agent's turn, not to whichever turn began most recently.
+      const agentOwner = agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
+      const stepTurn = agentOwner !== undefined
+        ? agentTurns.get(agentOwner)
+        : { turnId: activeTurnId, turnInstanceId: activeTurnInstanceId };
+      const parentToolCallId = agentOwners.launchOf(event);
       entries.push({
         id: `entry-${idx++}`,
         type: "tool",
         ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
-        ...(activeTurnId ? { turnId: activeTurnId } : {}),
-        ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
+        ...(stepTurn?.turnId ? { turnId: stepTurn.turnId } : {}),
+        ...(stepTurn?.turnInstanceId ? { turnInstanceId: stepTurn.turnInstanceId } : {}),
         toolCall: {
           toolCallId: data.toolCallId,
           name: outcome.displayName,
@@ -733,7 +770,7 @@ export function transformEventsToMessages(
           result: outcome.result,
           progressText: toolProgress.get(data.toolCallId),
           success: outcome.success,
-          parentToolCallId: data.parentToolCallId,
+          parentToolCallId,
           isSubAgent: outcome.isSubAgent || undefined,
           agentInstructions: outcome.isSubAgent
             ? buildSubagentInstructions(data.arguments, resolution.instructions)

@@ -349,6 +349,45 @@ describe("Session routes (mocked)", () => {
     expect(res.body.backgroundAgents).toMatchObject({ running: 1, source: "live" });
   });
 
+  it("GET /api/sessions/:id/agents/:agentId returns one agent's brief and report in full", async () => {
+    const sessionManager = createMockSessionManager();
+    // Far more than the list carries of each agent, and well short of the bound on a single one.
+    const report = "r".repeat(20_000);
+    const prompt = "p".repeat(12_000);
+    sessionManager.listSessionAgents = vi.fn(async () => ({
+      tasks: [
+        { id: "agent-docs", status: "idle" as const, executionMode: "background" as const, latestResponse: "Docs updated." },
+        { id: "agent-moves", status: "running" as const, executionMode: "background" as const, name: "moves-agent", latestResponse: report, prompt },
+      ],
+      source: "live" as const,
+      refreshedAt: "2026-04-16T12:00:00.000Z",
+    }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/sessions/agents-host/agents/agent-moves");
+
+    expect(res.status).toBe(200);
+    expect(sessionManager.listSessionAgents).toHaveBeenCalledWith("agents-host");
+    expect(res.body).toMatchObject({ source: "live", refreshedAt: "2026-04-16T12:00:00.000Z", task: { id: "agent-moves", name: "moves-agent" } });
+    expect(res.body.task.latestResponse).toBe(report);
+    expect(res.body.task.prompt).toBe(prompt);
+
+    // The list still carries only the start of each.
+    const list = await request(app).get("/api/sessions/agents-host/agents");
+    expect(list.body.tasks[1].latestResponse.length).toBeLessThan(report.length);
+  });
+
+  it("GET /api/sessions/:id/agents/:agentId says when the runtime no longer tracks the agent", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionAgents = vi.fn(async () => ({ tasks: [], source: "unknown" as const }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).get("/api/sessions/agents-host/agents/agent-gone");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/no longer tracked/);
+  });
+
   it("POST /api/sessions/:id/agents/:agentId/cancel returns 409 when unavailable", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.cancelSessionAgent = vi.fn(async () => undefined);

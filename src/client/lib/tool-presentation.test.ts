@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeToolCall, formatDuration, getToolDurationMs, shortenPath } from "./tool-presentation";
+import { describeToolCall, describeToolCallBriefly, formatDuration, getToolDurationMs, shortenPath } from "./tool-presentation";
 
 describe("describeToolCall", () => {
   it("lets a shell call speak for itself and keeps the command beside it", () => {
@@ -11,7 +11,28 @@ describe("describeToolCall", () => {
       target: "git --no-pager status --short",
       mono: true,
       icon: "terminal",
+      selfDescribed: true,
     });
+  });
+
+  it("leaves the command out where a call has to fit in one phrase and already says what it is for", () => {
+    const described = describeToolCall({
+      name: "powershell",
+      args: { command: "Start-Sleep -Seconds 12", description: "Wait for the build" },
+    }, "running");
+    expect(describeToolCallBriefly(described)).toBe("Wait for the build");
+
+    // Without its own description, the command is all there is to say.
+    expect(describeToolCallBriefly(describeToolCall({ name: "bash", args: { command: "npm test" } }, "running")))
+      .toBe("Running npm test");
+    expect(describeToolCallBriefly(describeToolCall({ name: "view", args: { path: "/repo/src/App.tsx" } }, "done")))
+      .toBe("Read src/App.tsx");
+    // A call about an agent swaps its verb for another tense; the agent's name is still needed.
+    expect(describeToolCallBriefly(describeToolCall(
+      { name: "read_agent", args: { agent_id: "agent-1", wait: true } },
+      "running",
+      { agentName: () => "moves-agent" },
+    ))).toBe("Waiting on moves-agent");
   });
 
   it("falls back to a verb in the right tense when a shell call has no description", () => {
@@ -61,6 +82,53 @@ describe("describeToolCall", () => {
       mono: false,
       icon: "agent",
     });
+  });
+
+  it("uses the name and brief the session's records hold for an agent", () => {
+    // A stand-in for a launch above the loaded history carries no arguments of its own.
+    expect(describeToolCall({
+      name: "🤖 general-purpose",
+      isSubAgent: true,
+      agent: {
+        toolCallId: "call-moves",
+        name: "moves-agent",
+        description: "Refactor move generation",
+        status: "running",
+        activeMs: 0,
+        toolCount: 0,
+        failedToolCount: 0,
+      },
+    }, "running")).toMatchObject({ verb: "moves-agent", target: "Refactor move generation", icon: "agent" });
+  });
+
+  it("names the agent a call is about instead of showing its runtime id", () => {
+    const agentId = "1c9d6f0e-8a3b-4f5e-9c1d-2b7a6e4f3d10";
+    const context = { agentName: (id: string) => id === agentId ? "moves-agent" : undefined };
+
+    expect(describeToolCall({ name: "read_agent", args: { agent_id: agentId } }, "done", context))
+      .toEqual({ verb: "Checked", target: "moves-agent", mono: false, icon: "agent" });
+    expect(describeToolCall({ name: "read_agent", args: { agent_id: agentId } }, "running", context))
+      .toMatchObject({ verb: "Checking", target: "moves-agent" });
+    expect(describeToolCall({ name: "write_agent", args: { agent_id: agentId, message: "Also cover castling." } }, "done", context))
+      .toMatchObject({ verb: "Messaged", target: "moves-agent" });
+    expect(describeToolCall({ name: "write_agent", args: { agent_id: agentId, message: "Also cover castling." } }, "running", context))
+      .toMatchObject({ verb: "Messaging", target: "moves-agent" });
+  });
+
+  it("says the main agent is waiting on an agent when it asked to be told once the agent is done", () => {
+    const context = { agentName: () => "moves-agent" };
+    const waiting = { name: "read_agent", args: { agent_id: "agent-moves", wait: true, timeout: 180 } };
+
+    expect(describeToolCall(waiting, "running", context)).toMatchObject({ verb: "Waiting on", target: "moves-agent" });
+    expect(describeToolCall(waiting, "done", context)).toMatchObject({ verb: "Waited on", target: "moves-agent" });
+  });
+
+  it("falls back to the start of the id for an agent the session's records do not name", () => {
+    expect(describeToolCall({ name: "read_agent", args: { agent_id: "1c9d6f0e-8a3b-4f5e-9c1d-2b7a6e4f3d10" } }, "done"))
+      .toEqual({ verb: "Checked agent", target: "1c9d6f0e", mono: true, icon: "agent" });
+    // A short id is a name already.
+    expect(describeToolCall({ name: "write_agent", args: { agent_id: "explore-docs" } }, "done", { agentName: () => undefined }))
+      .toMatchObject({ verb: "Messaged agent", target: "explore-docs", mono: true });
   });
 
   it("reads a tool family's action off its name", () => {

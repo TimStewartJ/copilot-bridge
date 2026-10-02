@@ -21,3 +21,44 @@ export function keepEndingTurnItems<T extends { turnInstanceId?: string }>(
   if (!endingTurnInstanceId) return [];
   return items.filter((item) => item.turnInstanceId === endingTurnInstanceId && isDiskBacked(item));
 }
+
+/**
+ * Tool calls follow the same rule, per owner. A sub-agent works through turns of its own while the
+ * main agent goes through its turns, so a boundary only speaks for the calls of whoever crossed it:
+ * a call an agent made names the call that launched the agent as its parent, and the main agent's
+ * calls have no parent.
+ */
+interface OwnedLiveTool {
+  turnInstanceId?: string;
+  parentToolCallId?: string;
+  completedAt?: string;
+}
+
+/** A main-agent turn began: its finished calls from the turn that just ended stay, as does every agent's call. */
+export function keepToolsAtMainTurnBoundary<T extends OwnedLiveTool>(
+  tools: T[],
+  endingTurnInstanceId: string | undefined,
+): T[] {
+  return tools.filter((tool) => (
+    tool.parentToolCallId !== undefined
+    || (endingTurnInstanceId !== undefined
+      && tool.turnInstanceId === endingTurnInstanceId
+      && Boolean(tool.completedAt))
+  ));
+}
+
+/**
+ * A sub-agent's turn began: of that agent's calls, the ones still in flight and the finished ones
+ * from the turn that just ended stay. Nobody else's calls are touched.
+ */
+export function keepToolsAtAgentTurnBoundary<T extends OwnedLiveTool>(
+  tools: T[],
+  agentToolCallId: string,
+  endingTurnInstanceId: string | undefined,
+): T[] {
+  return tools.filter((tool) => (
+    tool.parentToolCallId !== agentToolCallId
+    || !tool.completedAt
+    || (endingTurnInstanceId !== undefined && tool.turnInstanceId === endingTurnInstanceId)
+  ));
+}

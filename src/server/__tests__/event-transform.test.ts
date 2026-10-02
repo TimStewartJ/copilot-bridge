@@ -1488,6 +1488,110 @@ describe("event-transform tool calls that outlive someone else's turn", () => {
     expect(toolStates(aborted)["bg-view"]).toEqual({ success: false, completedAt: "2026-09-20T10:00:05.000Z" });
   });
 });
+
+describe("event-transform turns of the main agent and of its sub-agents", () => {
+  const T = (seconds: number) => new Date(Date.parse("2026-10-01T10:00:00.000Z") + seconds * 1000).toISOString();
+  const start = (id: string, toolName: string, seconds: number, extra: Record<string, unknown> = {}, agentId?: string) => ({
+    type: "tool.execution_start",
+    timestamp: T(seconds),
+    ...(agentId ? { agentId } : {}),
+    data: { toolCallId: id, toolName, ...extra },
+  });
+  const complete = (id: string, seconds: number, agentId?: string) => ({
+    type: "tool.execution_complete",
+    timestamp: T(seconds),
+    ...(agentId ? { agentId } : {}),
+    data: { toolCallId: id, success: true, result: { content: "ok" } },
+  });
+  /** Each tool entry's owner and turn, by tool call. */
+  const turnsOf = (events: unknown[], options?: Parameters<typeof transformEventsToMessages>[2]) => Object.fromEntries(
+    transformEventsToMessages(events as any[], undefined, options)
+      .filter((entry) => entry.type === "tool")
+      .map((entry) => [entry.toolCall!.toolCallId, {
+        turnId: entry.turnId,
+        turnInstanceId: entry.turnInstanceId,
+        parent: entry.toolCall!.parentToolCallId,
+      }]),
+  );
+
+  // A background agent working while the main agent goes through turns of its own. `agentStamp`
+  // is what the runtime puts on the agent's turn events: nothing through CLI 1.0.82, the agent since.
+  const backgroundRun = (agentStamp: Record<string, unknown>) => [
+    { id: "main-1", type: "assistant.turn_start", timestamp: T(0), data: { turnId: "0" } },
+    start("task-bg", "task", 1, { arguments: { name: "moves-agent", description: "Refactor move generation", mode: "background" } }),
+    { type: "subagent.started", agentId: "agent-bg", timestamp: T(1), data: { toolCallId: "task-bg", agentName: "general-purpose", agentDisplayName: "moves-agent" } },
+    complete("task-bg", 1),
+    { id: "agent-turn-1", type: "assistant.turn_start", ...agentStamp, timestamp: T(2), data: {} },
+    // This call says whose it is only by the agent's id; the launching call comes from `subagent.started`.
+    start("bg-view", "view", 3, {}, "agent-bg"),
+    complete("bg-view", 3.5, "agent-bg"),
+    { type: "assistant.turn_end", timestamp: T(4), data: { turnId: "0" } },
+    { id: "main-2", type: "assistant.turn_start", timestamp: T(5), data: { turnId: "1" } },
+    start("main-view", "view", 6),
+    complete("main-view", 7),
+    { type: "assistant.turn_end", ...agentStamp, timestamp: T(8), data: {} },
+    { id: "agent-turn-2", type: "assistant.turn_start", ...agentStamp, timestamp: T(8), data: {} },
+    start("bg-edit", "edit", 9, { parentToolCallId: "task-bg" }, "agent-bg"),
+    complete("bg-edit", 9.5, "agent-bg"),
+    { id: "main-reply", type: "assistant.message", timestamp: T(10), data: { content: "The agent is on it." } },
+  ];
+
+  it("keeps the main agent's steps in the main agent's turns while an agent works beside it", () => {
+    const events = backgroundRun({ agentId: "agent-bg" });
+
+    expect(turnsOf(events)).toEqual({
+      "task-bg": { turnId: "0", turnInstanceId: "main-1", parent: undefined },
+      "bg-view": { turnId: "subagent-turn-1", turnInstanceId: "agent-turn-1", parent: "task-bg" },
+      // Began while the agent was mid-turn, and is still the main agent's own turn.
+      "main-view": { turnId: "1", turnInstanceId: "main-2", parent: undefined },
+      "bg-edit": { turnId: "subagent-turn-2", turnInstanceId: "agent-turn-2", parent: "task-bg" },
+    });
+    // The agent ending a turn in between did not close the main agent's.
+    expect(transformEventsToMessages(events as any[]).find((entry) => entry.role === "assistant")).toMatchObject({
+      content: "The agent is on it.",
+      turnId: "1",
+      turnInstanceId: "main-2",
+    });
+  });
+
+  it("still takes a turn for an agent's when the runtime does not say whose it is", () => {
+    // Through CLI 1.0.82 nothing owns a turn event, so one that starts while an agent runs is guessed to be the agent's.
+    const turns = turnsOf(backgroundRun({}));
+
+    expect(turns["main-view"]).toMatchObject({ turnId: "subagent-turn-2", parent: undefined });
+    expect(turns["bg-view"]).toMatchObject({ turnId: "subagent-turn-1", parent: "task-bg" });
+  });
+
+  it("knows a turn is the main agent's when the part of the log that showed it stamps agents is not being read", () => {
+    // The newest part of a long log: the agent's stamped turns are above it.
+    const tail = [
+      { type: "subagent.started", agentId: "agent-bg", timestamp: T(1), data: { toolCallId: "task-bg", agentName: "general-purpose" } },
+      { id: "main-2", type: "assistant.turn_start", timestamp: T(5), data: { turnId: "1" } },
+      start("main-view", "view", 6),
+    ];
+
+    expect(turnsOf(tail, { agentTurnsStamped: true })["main-view"]).toMatchObject({ turnId: "1", turnInstanceId: "main-2" });
+    expect(turnsOf(tail)["main-view"]).toMatchObject({ turnId: "subagent-turn-1" });
+  });
+
+  it("keeps the turn the main agent starts right after a launch, before the agent has begun its own", () => {
+    // What a read finds a moment after a launch: the agent has started and has not taken a turn
+    // yet, so nothing in the log is stamped. How the launch was reported is what says the runtime stamps.
+    const justLaunched = (started: Record<string, unknown>) => [
+      { id: "main-1", type: "assistant.turn_start", timestamp: T(0), data: { turnId: "0" } },
+      start("task-bg", "task", 1, { arguments: { name: "moves-agent", mode: "background" } }),
+      { type: "subagent.started", agentId: "agent-bg", timestamp: T(1), data: { toolCallId: "task-bg", agentName: "general-purpose", ...started } },
+      complete("task-bg", 1),
+      { type: "assistant.turn_end", timestamp: T(1), data: { turnId: "0" } },
+      { id: "main-2", type: "assistant.turn_start", timestamp: T(1.02), data: { turnId: "1" } },
+      start("main-view", "view", 1.5),
+    ];
+
+    expect(turnsOf(justLaunched({ executionMode: "background" }))["main-view"]).toMatchObject({ turnId: "1", turnInstanceId: "main-2" });
+    // An older runtime's launch says nothing, and the turn is still guessed to be the agent's.
+    expect(turnsOf(justLaunched({}))["main-view"]).toMatchObject({ turnId: "subagent-turn-1" });
+  });
+});
 describe("event-transform autopilot", () => {
   it("marks messages sent with autopilot and turns the CLI's continuations into markers", () => {
     const entries = transformEventsToMessages([

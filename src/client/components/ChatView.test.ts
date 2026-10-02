@@ -2,7 +2,7 @@ import { createElement, Fragment, memo, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView, SessionRunState } from "../api";
+import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView, SessionRunState, TranscriptAgent } from "../api";
 import { ApiError } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
@@ -168,6 +168,7 @@ type FetchMessagesFastResult = {
   hasNewer?: boolean;
   lastVisibleActivityAt?: string;
   coverage?: SessionHistoryCoverage;
+  agents?: TranscriptAgent[];
 };
 
 type RenderChatViewOptions = {
@@ -3738,6 +3739,267 @@ describe("ChatView live streaming UX", () => {
       });
 
       expect(scrollContainer.scrollTop).toBe(505);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("ChatView sub-agents", () => {
+  const at = (seconds: number) => new Date(Date.parse("2026-10-01T10:00:00.000Z") + seconds * 1000).toISOString();
+
+  function agentRecord(agent: string, partial: Partial<TranscriptAgent> = {}): TranscriptAgent {
+    return {
+      toolCallId: `task-${agent}`,
+      agentId: `agent-${agent}`,
+      name: `${agent}-agent`,
+      background: true,
+      status: "finished",
+      activeMs: 0,
+      toolCount: 0,
+      failedToolCount: 0,
+      ...partial,
+    };
+  }
+
+  /** A step an agent took. It names the call that launched the agent, which is not among the loaded entries. */
+  function agentStep(id: string, agent: string, startSeconds: number, endSeconds?: number): ChatEntry {
+    return {
+      id,
+      type: "tool",
+      toolCall: {
+        toolCallId: `${id}-call`,
+        name: "view",
+        args: { path: `/repo/${id}.ts` },
+        parentToolCallId: `task-${agent}`,
+        startedAt: at(startSeconds),
+        ...(endSeconds === undefined ? {} : { completedAt: at(endSeconds), success: true }),
+      },
+    };
+  }
+
+  function activityBlocks(root: any): any[] {
+    return findAllByTag(root, "DIV").filter((candidate) => candidate.getAttribute?.("data-activity-block"));
+  }
+
+  it("files an agent's steps under the agent when the call that launched it is above the loaded history", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-200", role: "assistant", content: "Waiting on the agents.", sourceEventId: "assistant-1", timestamp: at(0) },
+          agentStep("moves-8", "moves", 1, 60),
+          agentStep("saves-3", "saves", 2, 30),
+          agentStep("moves-9", "moves", 60, 126),
+        ],
+        runState: "idle",
+        total: 204,
+        warm: true,
+        hasMore: true,
+        agents: [
+          agentRecord("moves", { description: "Refactor move generation", toolCount: 9, activeMs: 300_000 }),
+          agentRecord("saves", { description: "Add the save migration", toolCount: 3, activeMs: 60_000 }),
+        ],
+      },
+      streamOverrides: { isStreaming: false, streamStatus: "idle" },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on the agents.") ?? false);
+      const [block] = activityBlocks(dom.container);
+      // The line names whose work this was; it is not credited to the main agent.
+      expect(block?.textContent).toBe("2 agents worked for 2m 05s3 steps");
+
+      await act(async () => clickButton(findButtonContainingText(dom.container, "2 agents worked")));
+      const rows = findAllByTag(dom.container, "DIV").filter((candidate) => candidate.getAttribute?.("data-agent-row"));
+      // One row for each agent, however their steps were interleaved.
+      expect(rows.map((row) => [row.getAttribute("data-agent-row"), row.textContent])).toEqual([
+        ["continued", "moves-agentRefactor move generation2 steps"],
+        ["continued", "saves-agentAdd the save migration1 step"],
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("says how many agents the main agent is waiting on, instead of following their steps", async () => {
+    const { dom, act, cleanup, render } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-200", role: "assistant", content: "Waiting on the agents.", sourceEventId: "assistant-1", timestamp: at(0) },
+        ],
+        runState: "busy",
+        total: 201,
+        warm: true,
+        hasMore: true,
+        agents: [
+          agentRecord("moves", { status: "running", activeSince: at(0), toolCount: 9 }),
+          agentRecord("saves", { status: "running", activeSince: at(0), toolCount: 3 }),
+          agentRecord("docs", { status: "finished", toolCount: 2 }),
+        ],
+      },
+      streamOverrides: {
+        isStreaming: true,
+        streamStatus: "streaming",
+        hadVisibleOutput: true,
+        mainAgentIdle: true,
+        intentText: "Refactoring the engine",
+      },
+    });
+
+    try {
+      // With nothing of its own to show, the line under the transcript says so.
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on 2 agents") ?? false, { label: "waiting line" });
+      const status = findAllByTag(dom.container, "DIV").find((candidate) => candidate.getAttribute?.("data-live-status"));
+      expect(status?.textContent).toBe("Waiting on 2 agentsmoves-agent and saves-agent");
+
+      // An agent takes a step. The stretch it lands in carries the same words, and does not name the step.
+      await render({
+        streamOverrides: {
+          liveTools: [{
+            toolCallId: "moves-10-call",
+            name: "view",
+            args: { path: "/repo/moves-10.ts" },
+            parentToolCallId: "task-moves",
+            turnInstanceId: "agent-turn-4",
+            startedAt: at(5),
+          }],
+        },
+      });
+      await waitUntilAct(act, () => activityBlocks(dom.container).length === 1, { label: "agent step block" });
+      const [block] = activityBlocks(dom.container);
+      expect(block?.getAttribute("data-activity-waiting")).toBe("agents");
+      expect(block?.textContent).toContain("Waiting on 2 agents");
+      expect(block?.textContent).not.toContain("moves-10.ts");
+      expect(findAllByTag(dom.container, "DIV").some((candidate) => candidate.getAttribute?.("data-live-status"))).toBe(false);
+
+      // The main agent starts a turn of its own: it is no longer waiting.
+      await render({ streamOverrides: { mainAgentIdle: false } });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Refactoring the engine") ?? false, { label: "wait over" });
+      expect(dom.container.textContent).not.toContain("Waiting on 2 agents");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("does not add a row for an agent's report on a call that launched it above the loaded history", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-200", role: "assistant", content: "Waiting on the agents.", sourceEventId: "assistant-1", timestamp: at(0) },
+        ],
+        runState: "busy",
+        total: 201,
+        warm: true,
+        hasMore: true,
+        agents: [agentRecord("moves", { status: "running", activeSince: at(0), toolCount: 9 })],
+      },
+      streamOverrides: {
+        isStreaming: true,
+        streamStatus: "streaming",
+        hadVisibleOutput: true,
+        // What the stream holds after the agent says something: an update to its launching call,
+        // which this stream never saw start.
+        liveTools: [{
+          toolCallId: "task-moves",
+          name: "unknown",
+          isSubAgent: true,
+          result: "Halfway through the refactor.",
+          completedAt: at(40),
+        }],
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on the agents.") ?? false);
+      // The report belongs to a row that is not loaded; it does not become a new one at the bottom.
+      expect(activityBlocks(dom.container)).toHaveLength(0);
+      expect(dom.container.textContent).not.toContain("Halfway through the refactor.");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps the agents the newest read reported when an older page arrives with older records", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-200", role: "assistant", content: "Waiting on the agents.", sourceEventId: "assistant-1", timestamp: at(0) },
+          agentStep("moves-8", "moves", 1, 60),
+        ],
+        runState: "idle",
+        total: 202,
+        warm: true,
+        hasMore: true,
+        agents: [agentRecord("moves", { description: "Refactor move generation", toolCount: 9, activeMs: 300_000 })],
+      },
+      streamOverrides: { isStreaming: false, streamStatus: "idle" },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Load older messages") ?? false);
+      // The older page was read while the agent was still working, and lands after the read that says it finished.
+      fetchOlderMessagesFastMock.mockResolvedValueOnce({
+        messages: [{ id: "entry-199", role: "assistant", content: "An earlier reply.", sourceEventId: "assistant-0", timestamp: at(-60) }],
+        hasMore: true,
+        total: 202,
+        agents: [agentRecord("moves", { status: "running", activeSince: at(-120), toolCount: 4 })],
+      });
+      await act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("An earlier reply.") ?? false, { label: "older page" });
+
+      await act(async () => clickButton(findButtonContainingText(dom.container, "moves-agent worked")));
+      const row = findAllByTag(dom.container, "DIV").find((candidate) => candidate.getAttribute?.("data-agent-row"));
+      expect(row?.getAttribute("data-tool-status")).toBe("done");
+      expect(dom.container.textContent).not.toContain("did not finish");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("shows an agent the log left working as unfinished once nothing can be running it", async () => {
+    const { dom, act, cleanup } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [
+          { id: "entry-0", role: "user", content: "Refactor the engine", sourceEventId: "user-1", timestamp: at(0) },
+          {
+            id: "entry-1",
+            type: "tool",
+            turnInstanceId: "turn-start-1",
+            toolCall: {
+              toolCallId: "task-moves",
+              name: "🤖 moves-agent",
+              isSubAgent: true,
+              args: { description: "Refactor move generation" },
+              startedAt: at(1),
+              completedAt: at(1),
+              success: true,
+            },
+          },
+          agentStep("moves-1", "moves", 2, 3),
+        ],
+        // The session was shut down hard: its run is over and the log never said the agent stopped.
+        runState: "idle",
+        total: 3,
+        warm: false,
+        hasMore: false,
+        agents: [agentRecord("moves", { status: "running", activeSince: at(1), activeMs: 0, toolCount: 1, description: "Refactor move generation" })],
+      },
+      streamOverrides: { isStreaming: false, streamStatus: "idle" },
+    });
+
+    try {
+      await waitUntilAct(act, () => activityBlocks(dom.container).length === 1, { label: "activity block" });
+      const [block] = activityBlocks(dom.container);
+      expect(block?.getAttribute("data-activity-state")).toBe("done");
+
+      await act(async () => clickButton(findAllByTag(block, "BUTTON")[0]));
+      const row = findAllByTag(dom.container, "DIV").find((candidate) => candidate.getAttribute?.("data-agent-row") === "launch");
+      expect(row?.getAttribute("data-tool-status")).toBe("unfinished");
+      expect(row?.textContent).toContain("did not finish");
+      expect(findAllByTag(dom.container, "svg").some((icon) => String(getReactProps(icon)?.className ?? "").includes("animate-spin"))).toBe(false);
     } finally {
       await cleanup();
     }
