@@ -181,6 +181,7 @@ function mapCopilotTaskInfo(raw: any): AgentBackgroundTask {
     latestResponse: normalizeString(raw?.latestResponse),
     command: normalizeString(raw?.command),
     attachmentMode: normalizeString(raw?.attachmentMode),
+    pid: Number.isSafeInteger(raw?.pid) && raw.pid > 0 ? raw.pid : undefined,
   };
 }
 

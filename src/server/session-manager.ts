@@ -65,6 +65,7 @@ import {
   BACKGROUND_COMMAND_PROTECT_MS,
   buildStoppedCommandsNotice,
   queueStoppedCommandWake,
+  type BackgroundCommandStopCause,
   type RunningBackgroundCommand,
 } from "./background-commands.js";
 import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
@@ -776,11 +777,11 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
         backgroundCommandStore: ctx.backgroundCommandStore,
         deferredPromptStore: ctx.deferredPromptStore,
         deferredPromptRunner: ctx.deferredPromptRunner,
-        isSessionBusy: (id) => ctx.sessionManager.isSessionBusy(id),
+        hasRunInFlight: (id) => ctx.sessionManager.hasRunInFlight(id),
         isSessionArchived: (id) => ctx.sessionMetaStore.isArchived(id),
       }, sessionId);
       if (outcome === "queued") {
-        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Telling the agent now that its background commands were stopped`);
+        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Telling the agent now that its background commands were cut off`);
       }
     },
     cliSessionCatalog: ctx.cliSessionCatalog,
@@ -2301,23 +2302,28 @@ export class SessionManager {
     );
   }
 
-  /** The session's runtime handle is going away, and with it the commands still running in it. */
+  /** The session's runtime handle is going away, and the session loses the commands still running in it. */
   private handleBackgroundCommandsStopped(sessionId: string, commands: RunningBackgroundCommand[]): void {
     // Nobody is left to tell about a deleted session's commands, and deleteSession drops its markers.
     // On shutdown the markers stay as they are: the next boot reports whatever they still show running.
     if (this.deletingSessions.has(sessionId) || this.shuttingDown || isDisposableDeferWorkerSessionId(sessionId)) return;
     const sid = sessionId.slice(0, 8);
+    // Releasing a handle on a live runtime stops its commands. A runtime that was lost may have
+    // died before anything stopped them, and a command's process outlives that.
+    const cause: BackgroundCommandStopCause = this.backendTransition ? "runtime-lost" : "unloaded";
     let recorded = 0;
     try {
-      recorded = this.deps.backgroundCommandStore?.markSessionStopped(sessionId, "unloaded") ?? 0;
+      recorded = this.deps.backgroundCommandStore?.markSessionStopped(sessionId, cause) ?? 0;
     } catch (error) {
       console.warn(`[sdk] [${sid}] Could not record stopped background commands:`, error);
     }
     const labels = commands
       .map((command) => (command.description ?? command.command ?? `shell ${command.shellId}`).replace(/\s+/g, " ").slice(0, 60))
       .join("; ");
-    console.warn(`[sdk] [${sid}] Unloading the session stopped ${commands.length} background command(s): ${labels}`);
-    this.recordSpan("session.background_commands.stopped", 0, sessionId, { cause: "unloaded", count: commands.length });
+    console.warn(cause === "unloaded"
+      ? `[sdk] [${sid}] Unloading the session stopped ${commands.length} background command(s): ${labels}`
+      : `[sdk] [${sid}] The agent runtime was lost with ${commands.length} background command(s) running, which may still be running: ${labels}`);
+    this.recordSpan("session.background_commands.stopped", 0, sessionId, { cause, count: commands.length });
     // A run the backend loss cut off is resumed with its own prompt, which carries the notice.
     if (recorded === 0 || this.pendingBackendAutoResumes.has(sessionId)) return;
     // Decided once the cache operation that is unloading the session has finished.
@@ -5804,7 +5810,7 @@ export class SessionManager {
 
   /**
    * What goes in front of this user message: a one-time notice about background commands the
-   * Bridge stopped, then the bridge_context block if anything in it changed. Both travel with the
+   * session lost, then the bridge_context block if anything in it changed. Both travel with the
    * message instead of the system prompt, so neither disturbs the cached prompt prefix.
    */
   prepareTurnContext(sessionId: string): { block?: string; commit(): void } {
@@ -6008,6 +6014,11 @@ export class SessionManager {
     return this.sessionHolds.has(sessionId)
       || this.isSessionResuming(sessionId)
       || this.runStateController.isSessionBusy(sessionId);
+  }
+
+  /** Whether a run of the session is in flight. Loading the session and Bridge's own holds on it do not count. */
+  hasRunInFlight(sessionId: string): boolean {
+    return this.runStateController.isSessionBusy(sessionId);
   }
 
   /** Returns user-visible agent work state, excluding passive session lifecycle operations such as warmup. */

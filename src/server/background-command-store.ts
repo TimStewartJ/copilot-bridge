@@ -22,7 +22,13 @@ type MarkerRow = {
   command: string | null;
   stoppedAt: string | null;
   stoppedBy: string | null;
+  pid: number | null;
 };
+
+/** A cause this version does not know is read as the one that claims least about the command. */
+function toStopCause(stoppedBy: string | null): BackgroundCommandStopCause {
+  return stoppedBy === "unloaded" || stoppedBy === "runtime-lost" ? stoppedBy : "restart";
+}
 
 function toStopped(row: MarkerRow): StoppedBackgroundCommand & { sessionId: string } {
   return {
@@ -31,15 +37,20 @@ function toStopped(row: MarkerRow): StoppedBackgroundCommand & { sessionId: stri
     startedAt: row.startedAt,
     ...(row.description ? { description: row.description } : {}),
     ...(row.command ? { command: row.command } : {}),
+    ...(typeof row.pid === "number" ? { pid: row.pid } : {}),
     stoppedAt: row.stoppedAt ?? row.startedAt,
-    stoppedBy: row.stoppedBy === "restart" ? "restart" : "unloaded",
+    stoppedBy: toStopCause(row.stoppedBy),
   };
 }
 
 export function createBackgroundCommandStore(db: DatabaseSync) {
+  // A marker written before the runtime reported the command's process ID gets it once known.
+  // A marker that is already a reported loss is left as it was.
   const insertRunning = db.prepare(`
-    INSERT OR IGNORE INTO background_command_markers (sessionId, shellId, startedAt, description, command)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO background_command_markers (sessionId, shellId, startedAt, description, command, pid)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(sessionId, shellId, startedAt) DO UPDATE SET pid = excluded.pid
+    WHERE background_command_markers.stoppedAt IS NULL AND excluded.pid IS NOT NULL
   `);
   const selectRunning = db.prepare(
     "SELECT shellId, startedAt FROM background_command_markers WHERE sessionId = ? AND stoppedAt IS NULL",
@@ -88,12 +99,13 @@ export function createBackgroundCommandStore(db: DatabaseSync) {
             command.startedAt,
             command.description?.slice(0, COMMAND_TEXT_MAX_CHARS) ?? null,
             command.command?.slice(0, COMMAND_TEXT_MAX_CHARS) ?? null,
+            command.pid ?? null,
           );
         }
       });
     },
 
-    /** The session's runtime handle is gone, and its running commands with it. Returns how many. */
+    /** The session's runtime handle is gone. Its running commands become losses to report. Returns how many. */
     markSessionStopped(sessionId: string, cause: BackgroundCommandStopCause, at: Date = new Date()): number {
       return Number(stopForSession.run(at.toISOString(), cause, sessionId).changes);
     },

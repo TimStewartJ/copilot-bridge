@@ -916,7 +916,9 @@ describe("CopilotAgentSession wrap fidelity", () => {
       status: "running",
       command: "npm run build",
       attachmentMode: "attached",
+      pid: 4242,
     });
+    expect(result?.tasks?.[0]?.pid).toBeUndefined();
   });
 
   it("cancelTask and removeTask delegate to rpc.tasks and normalize the result", async () => {
