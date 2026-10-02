@@ -15,6 +15,32 @@ export interface AgentBackendDisconnectSummary {
   detail?: string;
 }
 
+/**
+ * Why the backend was replaced, in plain words, to follow "the agent backend". Not every reason
+ * is a disconnect: the Bridge restarts a runtime that reported no failure when a session will not release.
+ */
+export function describeAgentBackendLoss(reason: string): string {
+  switch (reason) {
+    case "cleanup-stalled": return "Bridge restarted it because a session did not release in time";
+    case "connection-closed": return "its connection closed";
+    case "connection-error": return "its connection failed";
+    case "process-exit": return "its process exited";
+    case "stdin-error": return "the pipe to it failed";
+    case "rpc-timeout": return "it stopped answering";
+    case "health-probe-failed": return "it failed a liveness check";
+    default: return reason;
+  }
+}
+
+/** The cause in words, then the reason code and detail, for a status line. */
+export function formatAgentBackendLoss(loss: AgentBackendDisconnectSummary): string {
+  const reason = loss.reason.trim();
+  const detail = loss.detail?.trim();
+  const code = detail ? `${reason} - ${detail}` : reason;
+  const words = describeAgentBackendLoss(reason);
+  return words === reason ? code : `${words} (${code})`;
+}
+
 export interface AgentBackendStatus {
   state: AgentBackendLifecycleState;
   /** Transport state reported by the SDK client, when the backend exposes one. */

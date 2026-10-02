@@ -1019,9 +1019,11 @@ export class CopilotBackend implements AgentBackend {
         ? rawState
         : "unknown";
     const pid = client.cliProcess?.pid;
+    const tree = this.ownedTree;
     return {
       state,
       ...(typeof pid === "number" ? { pid } : {}),
+      ...(tree ? { runtimePids: [tree.root.pid, ...tree.descendants.map((identity) => identity.pid)] } : {}),
       ...(this.lastDisconnect ? { lastDisconnect: this.lastDisconnect } : {}),
     };
   }

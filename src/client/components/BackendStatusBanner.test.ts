@@ -50,6 +50,22 @@ describe("BackendStatusBanner", () => {
     expect(text).toContain("stdio closed - broken pipe");
   });
 
+  it("says when the Bridge restarted the backend itself", async () => {
+    const { text } = await renderBanner({
+      key: "recovered",
+      variant: "success",
+      status: {
+        ...baseStatus,
+        lastRecoveryAt: "2026-08-24T22:11:00.000Z",
+        lastAutoResumedSessionCount: 2,
+        lastDisconnect: { at: "2026-08-24T22:10:00.000Z", reason: "cleanup-stalled", detail: "session abc" },
+      },
+    });
+
+    expect(text).toContain("Cause: Bridge restarted it because a session did not release in time (cleanup-stalled - session abc).");
+    expect(text).toContain("2 sessions resumed automatically.");
+  });
+
   it("dismisses through the close button", async () => {
     const { onDismiss } = await renderBanner({ key: "disconnect", variant: "error", status: { ...baseStatus, state: "disconnected" } });
     const button = findAllByTag(harness!.dom.container, "BUTTON")

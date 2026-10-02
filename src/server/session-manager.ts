@@ -191,6 +191,18 @@ import {
   isTransientBackendError,
 } from "./backend-availability.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
+import { describeAgentBackendLoss } from "../shared/agent-backend-status.js";
+import {
+  BACKEND_LOSS_DIR_NAME,
+  createBackendLossRecorder,
+  readRuntimeLogExcerpt,
+  type BackendLossPing,
+  type BackendLossRecord,
+  type BackendLossRecorder,
+  type BackendLossRecovery,
+  type RuntimeLogExcerpt,
+} from "./backend-loss-record.js";
+import { getLastHostResume } from "./host-suspend.js";
 import type { AgentBackendDisconnect, AgentContextInfo, AgentUsageCodeChanges, AgentUsageTokenTotals } from "./agent-backend/types.js";
 import {
   getModelCapabilitiesOverride,
@@ -300,6 +312,8 @@ const BACKEND_FENCE_RETRY_WINDOW_MS = 5 * 60_000;
 /** A session is re-sent a continue prompt at most once per window after a backend recovery. */
 const BACKEND_AUTO_RESUME_COOLDOWN_MS = 10 * 60_000;
 const BACKEND_AUTO_RESUME_IDLE_WAIT_MS = 30_000;
+/** A loss record waits this long for the first recovery attempt to settle before it is completed without one. */
+const BACKEND_LOSS_RECORD_CAP_MS = RUNTIME_FENCE_BUDGET_MS + 60_000;
 /** Defer deliveries are held this long after a backend (re)start so overdue loops do not hit a cold runtime. */
 const DEFAULT_DEFER_STARTUP_HOLD_MS = 45_000;
 const SESSION_DRAIN_TIMEOUT_MS = 3_000;
@@ -449,6 +463,22 @@ type BackendTransition = {
 type BackendRecoveryProgress = {
   startedAtMs: number;
   startRetries: number;
+};
+
+/** The session whose release or resume never finished, when that is why the Bridge replaced the backend. */
+type BackendLossTrigger = {
+  sessionId: string;
+  operation: "release" | "resume";
+  startedAtMs: number;
+  retirementReason?: string;
+};
+
+/** The record of the loss being recovered from, until its first recovery attempt settles. */
+type OpenBackendLoss = {
+  backend: AgentBackend;
+  lossAtMs: number;
+  killedAfterMs: number | null;
+  finish(recovery: BackendLossRecovery | null): void;
 };
 
 const MODEL_REFRESH_CLIENT_ROTATION_OPERATIONS = {
@@ -824,6 +854,8 @@ export class SessionManager {
   private lastAutoResumedSessionCount = 0;
   private backendRecoveryRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private backendTransition: BackendTransition | null = null;
+  private readonly backendLossRecorder: BackendLossRecorder | null;
+  private openBackendLoss: OpenBackendLoss | null = null;
   private readonly backendFences = new WeakMap<AgentBackend, BackendFence>();
   private readonly sessionRuntimeOwners = new WeakMap<AgentSession, SessionRuntimeOwner>();
   private readonly backendAutoResumeAt = new Map<string, number>();
@@ -984,6 +1016,9 @@ export class SessionManager {
       console.warn("[sdk] BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS must be true or false; passive resume-event suppression is disabled.");
     }
     this.suppressPassiveResumeEvents = passiveResumeSetting === "true";
+    this.backendLossRecorder = deps.runtimePaths
+      ? createBackendLossRecorder({ directory: join(deps.runtimePaths.dataDir, BACKEND_LOSS_DIR_NAME) })
+      : null;
     this.workspaceController = new SessionWorkspaceController({
       sessionWorkspaceStore: deps.sessionWorkspaceStore,
       taskStore: deps.taskStore,
@@ -1884,7 +1919,7 @@ export class SessionManager {
       this.handleBackendDisconnect(backend, {
         at: new Date().toISOString(), reason: "cleanup-stalled",
         detail: `session ${sessionId}, lease ${record.owner.lease}, generation ${record.owner.generation}`,
-      });
+      }, { sessionId, operation: "release", startedAtMs: record.startedAt, retirementReason: reason });
     }, SESSION_RETIREMENT_BUDGET_MS);
     record.timer.unref?.();
     const cleanup = Promise.resolve().then(() => this.runSessionCleanup(sessionId, session, reason));
@@ -2570,7 +2605,11 @@ export class SessionManager {
         if (!isCurrentBackend()) return;
         const recover = (detail: string) => {
           if (!isCurrentBackend()) return;
-          this.handleBackendDisconnect(owningBackend, { at: new Date().toISOString(), reason: "rpc-timeout", detail });
+          this.handleBackendDisconnect(
+            owningBackend,
+            { at: new Date().toISOString(), reason: "rpc-timeout", detail },
+            { sessionId, operation: "resume", startedAtMs: startedAt },
+          );
         };
         const detail = `session resume exceeded ${SESSION_RESUME_TIMEOUT_MS / 1_000}s for session ${sessionId}`;
         const anotherResumeStuck = this.settlingTimedOutSessionResumes.size > 0;
@@ -2615,7 +2654,7 @@ export class SessionManager {
               at: new Date().toISOString(),
               reason: "rpc-timeout",
               detail: `timed-out resume cleanup failed for session ${sessionId}`,
-            });
+            }, { sessionId, operation: "resume", startedAtMs: startedAt });
           }
           throw error;
         }
@@ -3519,6 +3558,10 @@ export class SessionManager {
           this.recordSpan("backend.fence.phase", phase.durationMs, undefined, {
             phase: phase.phase, outcome: phase.outcome, pid: phase.pid, error: phase.error, backend: backend.id,
           });
+          const loss = this.openBackendLoss;
+          if (phase.phase === "terminate" && loss?.backend === backend) {
+            loss.killedAfterMs ??= Date.now() - loss.lossAtMs;
+          }
         } });
         fence.confirmed = true;
         for (const waiter of fence.waiters) waiter();
@@ -3701,30 +3744,56 @@ export class SessionManager {
       });
   }
 
-  private handleBackendDisconnect(backend: AgentBackend, info: AgentBackendDisconnect): void {
+  private handleBackendDisconnect(
+    backend: AgentBackend,
+    info: AgentBackendDisconnect,
+    trigger?: BackendLossTrigger,
+  ): void {
     if (this.shuttingDown) return;
     if (this.backendTransition) return;
     if (this.backend !== backend) {
       console.warn(`[sdk] Ignoring disconnect from a superseded agent backend (${info.reason})`);
       return;
     }
+    const lossAtMs = Date.now();
+    // Failing a run counts as activity in its session, so read the idle times first.
+    const lastActivityAt = new Map(this.sessionTreeLastActivityAt);
+    const idleMs = (sessionId: string): number | null => {
+      const at = lastActivityAt.get(sessionId);
+      return at === undefined ? null : Math.max(0, lossAtMs - at);
+    };
     this.backendTransition = { owner: backend, phase: "retiring" };
     this.backendDisconnectCount += 1;
     this.lastBackendDisconnect = info;
     this.backendLifecycleState = "disconnected";
-    const cachedSessions = this.sessionObjects.size;
+    const cachedSessionIds = [...this.sessionObjects.keys()];
+    const code = `${info.reason}${info.detail ? `: ${info.detail}` : ""}`;
+    const waited = trigger
+      ? `session ${trigger.sessionId} did not ${trigger.operation === "release" ? "release" : "finish resuming"} `
+        + `within ${Math.round((lossAtMs - trigger.startedAtMs) / 1_000)}s`
+      : undefined;
     console.error(
-      `[sdk] ❌ Agent backend RPC channel lost (${info.reason}${info.detail ? `: ${info.detail}` : ""}); `
-      + `failing ${this.activeRunControllers.size} in-flight run(s), dropping ${cachedSessions} cached session(s), and restarting the backend`,
+      (waited
+        ? `[sdk] ❌ Bridge is restarting the agent backend: ${waited}. The runtime had not reported a failure (${code}). `
+        : `[sdk] ❌ Agent backend lost: ${describeAgentBackendLoss(info.reason)} (${code}). Restarting it. `)
+      + `Failing ${this.activeRunControllers.size} in-flight run(s) and dropping ${cachedSessionIds.length} cached session(s).`,
     );
 
-    // The backend is dead, so nothing will ever answer an abort: fail every in-flight run locally.
-    // Quiet defer turns refire on their own, and a session is re-sent a continue prompt at most once
-    // per cooldown window so a backend that dies on the same prompt cannot loop.
+    // Nothing will answer an abort from a backend that is dead or about to be killed: fail every
+    // in-flight run locally. Quiet defer turns refire on their own, and a session is re-sent a
+    // continue prompt at most once per cooldown window so a backend that dies on the same prompt cannot loop.
     const interrupted = this.getActiveRuns();
     const resumable: InterruptedRun[] = [];
+    const interruptedRuns: BackendLossRecord["interruptedRuns"] = [];
     for (const run of interrupted) {
       const skipReason = this.getAutoResumeSkipReason(run);
+      interruptedRuns.push({
+        sessionId: run.sessionId,
+        promptAccepted: run.promptAccepted,
+        attentionMode: run.attentionMode,
+        autoResume: skipReason ?? "queued",
+        idleMs: idleMs(run.sessionId),
+      });
       try {
         this.activeRunControllers.get(run.sessionId)?.completeError(
           skipReason === "cooldown" ? BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE : BACKEND_DISCONNECTED_MESSAGE,
@@ -3741,16 +3810,155 @@ export class SessionManager {
       this.recordSpan("backend.autoResume", 0, run.sessionId, { outcome: "skipped", reason: skipReason });
     }
     this.lastInterruptedSessionCount = interrupted.length;
+    const record = this.openBackendLossRecord(backend, info, trigger, {
+      lossAtMs,
+      summary: waited
+        ? `Bridge restarted the agent backend because ${waited}. The runtime had not reported a failure.`
+        : `The agent backend was lost: ${describeAgentBackendLoss(info.reason)}.`,
+      interruptedRuns,
+      cachedSessions: cachedSessionIds.map((sessionId) => ({ sessionId, idleMs: idleMs(sessionId) })),
+    });
     this.recordSpan("backend.disconnect", 0, undefined, {
       reason: info.reason,
       detail: info.detail,
+      origin: trigger ? "bridge" : "runtime",
       interruptedRuns: interrupted.length,
-      cachedSessions,
+      cachedSessions: cachedSessionIds.length,
       disconnectCount: this.backendDisconnectCount,
+      ...(record ? { record } : {}),
     });
     this.emitBackendStatus();
 
     void this.recoverBackendAfterDisconnect(backend, resumable, 0);
+  }
+
+  /**
+   * Starts the durable record of a loss and returns its file name. Called before recovery begins,
+   * while the lost backend can still be asked whether it answers. Recording never affects recovery.
+   */
+  private openBackendLossRecord(
+    backend: AgentBackend,
+    info: AgentBackendDisconnect,
+    trigger: BackendLossTrigger | undefined,
+    seen: Pick<BackendLossRecord, "summary" | "interruptedRuns" | "cachedSessions"> & { lossAtMs: number },
+  ): string | undefined {
+    const recorder = this.backendLossRecorder;
+    if (!recorder) return undefined;
+    try {
+      const { lossAtMs } = seen;
+      const connection = backend.getConnectionStatus?.();
+      const backendStartedAtMs = this.backendCreatedAtMs;
+      const runtimePids = connection?.runtimePids ?? (connection?.pid === undefined ? [] : [connection.pid]);
+      const hostResume = getLastHostResume();
+      const lastEvent = this.sessionRunner.getLastRuntimeEvent();
+      const pingStartedAt = performance.now();
+      const pingElapsedMs = () => Math.round(performance.now() - pingStartedAt);
+      // Sent now: once fencing starts the backend refuses it, and soon after the runtime is gone.
+      const ping: Promise<BackendLossPing> = typeof backend.diagnosticPing === "function"
+        ? backend.diagnosticPing().then(
+          (outcome) => ({ outcome, elapsedMs: pingElapsedMs() }),
+          () => ({ outcome: "failed", elapsedMs: pingElapsedMs() }),
+        )
+        : Promise.resolve({ outcome: "unsupported", elapsedMs: 0 });
+      const handle = recorder.open({
+        version: 1,
+        at: info.at,
+        reason: info.reason,
+        ...(info.detail ? { detail: info.detail } : {}),
+        origin: trigger ? "bridge" : "runtime",
+        summary: seen.summary,
+        trigger: trigger
+          ? {
+              sessionId: trigger.sessionId,
+              operation: trigger.operation,
+              startedAt: new Date(trigger.startedAtMs).toISOString(),
+              waitedMs: lossAtMs - trigger.startedAtMs,
+              ...(trigger.retirementReason ? { retirementReason: trigger.retirementReason } : {}),
+            }
+          : null,
+        server: {
+          pid: process.pid,
+          startedAt: new Date(this.processStartedAtMs).toISOString(),
+          uptimeMs: lossAtMs - this.processStartedAtMs,
+        },
+        backend: {
+          generation: this.backendGeneration,
+          startedAt: backendStartedAtMs === null ? null : new Date(backendStartedAtMs).toISOString(),
+          uptimeMs: backendStartedAtMs === null ? null : lossAtMs - backendStartedAtMs,
+          connection: connection?.state ?? null,
+          pid: connection?.pid ?? null,
+          runtimePids,
+        },
+        host: {
+          lastResumeAt: hostResume ? new Date(hostResume.resumedAtMs).toISOString() : null,
+          msSinceResume: hostResume ? lossAtMs - hostResume.resumedAtMs : null,
+          sleptMs: hostResume?.sleptMs ?? null,
+        },
+        lastRuntimeEvent: lastEvent && (backendStartedAtMs === null || lastEvent.receivedAtMs >= backendStartedAtMs)
+          ? {
+              at: new Date(lastEvent.receivedAtMs).toISOString(),
+              msBeforeLoss: Math.max(0, lossAtMs - lastEvent.receivedAtMs),
+              sessionId: lastEvent.sessionId,
+              type: lastEvent.type,
+            }
+          : null,
+        interruptedRuns: seen.interruptedRuns,
+        cachedSessions: seen.cachedSessions,
+        pendingReleases: [...this.cleanupOwnership.values()].map((cleanup) => ({
+          sessionId: cleanup.sessionId,
+          phase: cleanup.phase,
+          waitedMs: lossAtMs - cleanup.startedAt,
+        })),
+        ping: null,
+        runtimeKilledAfterMs: null,
+        recovery: null,
+        runtimeLog: null,
+      });
+
+      let finished = false;
+      const open: OpenBackendLoss = {
+        backend,
+        lossAtMs,
+        killedAfterMs: null,
+        // Runs inside recovery and from a timer, so it must not throw or reject.
+        finish: (recovery) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(cap);
+          if (this.openBackendLoss === open) this.openBackendLoss = null;
+          const complete = async (): Promise<void> => {
+            const [pingResult, excerpt] = await Promise.all([
+              ping,
+              readRuntimeLogExcerpt({
+                logsDir: join(this.getCopilotHome(), "logs"),
+                pids: runtimePids,
+                backendStartedAtMs,
+                lossAtMs,
+              }).catch((error): RuntimeLogExcerpt => ({
+                status: "unavailable",
+                reason: error instanceof Error ? error.message : String(error),
+              })),
+            ]);
+            handle.update({
+              ping: pingResult,
+              runtimeKilledAfterMs: open.killedAfterMs,
+              recovery,
+              runtimeLog: excerpt,
+            });
+          };
+          void complete().catch((error) => {
+            console.warn("[sdk] Could not complete the backend loss record:", error);
+          });
+        },
+      };
+      const cap = setTimeout(() => open.finish(null), BACKEND_LOSS_RECORD_CAP_MS);
+      cap.unref?.();
+      this.openBackendLoss = open;
+      return handle.fileName;
+    } catch (error) {
+      console.warn("[sdk] Could not record the backend loss:", error);
+      return undefined;
+    }
   }
 
   /**
@@ -3804,6 +4012,7 @@ export class SessionManager {
     this.emitBackendStatus();
     const startedAt = Date.now();
     let recovered: AgentBackend | undefined;
+    let recoveryError: string | undefined;
     try {
       recovered = await this.replaceBackend(deadBackend, "recovery");
       this.backendRecoveryCount++;
@@ -3813,11 +4022,19 @@ export class SessionManager {
       });
     } catch (error) {
       const message = this.lastBackendRecoveryError ?? String(error);
+      recoveryError = message;
       console.error(`[sdk] Agent backend recovery attempt ${attempt + 1} failed: ${message}`);
       this.recordSpan("backend.recover", Date.now() - startedAt, undefined, {
         outcome: "failed",
         attempt: attempt + 1,
         error: message,
+      });
+    }
+    if (this.openBackendLoss?.backend === deadBackend) {
+      this.openBackendLoss.finish({
+        outcome: recovered ? "recovered" : "failed",
+        durationMs: Date.now() - startedAt,
+        ...(recoveryError === undefined ? {} : { error: recoveryError }),
       });
     }
     this.emitBackendStatus();

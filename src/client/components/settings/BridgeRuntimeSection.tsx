@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Download, Loader2, Power, Trash2 } from "lucide-react";
 import type { BridgeRuntimeStatus } from "../../bridge-management-api";
-import type { AgentBackendLifecycleState, AgentBackendStatus } from "../../../shared/agent-backend-status.js";
+import { formatAgentBackendLoss, type AgentBackendLifecycleState, type AgentBackendStatus } from "../../../shared/agent-backend-status.js";
 import type { ManagementJobFilters, ManagementJobStatus, ManagementJobSummary, ManagementJobType } from "../../management-job-api";
 import {
   useEnqueueManagementJobMutation,
@@ -351,12 +351,11 @@ function RuntimeDetails({ status }: { status: RuntimeStatusWithAgentBackend }) {
             <p>Connection {backend.connection ?? "unknown"} · PID {backend.pid ?? "unknown"} · Backend started {formatDateTime(backend.createdAt)}</p>
             {backend.lastDisconnect && (
               <p>
-                Last disconnect {formatDateTime(backend.lastDisconnect.at)}: {backend.lastDisconnect.reason}
-                {backend.lastDisconnect.detail ? ` - ${backend.lastDisconnect.detail}` : ""}
+                Last loss {formatDateTime(backend.lastDisconnect.at)}: {formatAgentBackendLoss(backend.lastDisconnect)}
               </p>
             )}
             <p className={DS.text.meta}>
-              Disconnects {backend.disconnectCount} · Recoveries {backend.recoveryCount} · Interrupted {backend.lastInterruptedSessionCount} · Auto-resumed {backend.lastAutoResumedSessionCount}
+              Losses {backend.disconnectCount} · Recoveries {backend.recoveryCount} · Interrupted {backend.lastInterruptedSessionCount} · Auto-resumed {backend.lastAutoResumedSessionCount}
             </p>
           </div>
         )}
