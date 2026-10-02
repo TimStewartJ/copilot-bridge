@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   deriveModelStateFromEventsContent,
@@ -496,5 +496,28 @@ describe("deriveModelStateFromEventsFileAsync", () => {
       + `${JSON.stringify({ type: "session.model_change", agentId: "agent-1", data: { newModel: "gpt-6-sol", reasoningEffort: "high" } })}\n`
       + filler(50));
     expect(await deriveModelStateFromEventsFileAsync(path)).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high" });
+  });
+
+  it("matches the synchronous derivation around huge records, CRLF and an unterminated last record", async () => {
+    const dir = makeTestDir("events-model-async-huge");
+    const path = join(dir, "events.jsonl");
+    const huge = (label: string) => JSON.stringify({ type: "permission.requested", data: { label, pad: "\u00e9".repeat(3 * 1024 * 1024) } });
+    writeFileSync(path, [
+      JSON.stringify({ type: "session.start", data: { selectedModel: "gpt-5.5", reasoningEffort: "high", contextTier: "long_context" } }),
+      huge("before"),
+      JSON.stringify({ type: "session.model_change", data: { newModel: "claude-opus-4.7" } }),
+      huge("after"),
+    ].join("\r\n") + "\r\n" + JSON.stringify({ type: "session.model_change", data: { newModel: "gpt-6-sol" } }));
+
+    const expected = deriveModelStateFromEventsFile(path);
+    expect(expected).toEqual({ model: "gpt-6-sol", reasoningEffort: "high", contextTier: "long_context" });
+    const concat = vi.spyOn(Buffer, "concat");
+    try {
+      expect(await deriveModelStateFromEventsFileAsync(path)).toEqual(expected);
+      const copiedBytes = concat.mock.calls.reduce((sum, [, length]) => sum + (length ?? 0), 0);
+      expect(copiedBytes).toBeLessThan(statSync(path).size * 2);
+    } finally {
+      concat.mockRestore();
+    }
   });
 });
