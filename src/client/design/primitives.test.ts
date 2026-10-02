@@ -331,6 +331,20 @@ describe("design primitives", () => {
     expect(getReactProps(findAllByTag(icon, "svg")[0])?.className).toContain("motion-reduce:animate-none");
   });
 
+  it("turns the ring around the unread dot while work continues, and stops it under reduced motion", async () => {
+    const container = await render(createElement(StatusIcon, { kind: "unread-working" }));
+    const icon = findAllByTag(container, "SPAN")[0];
+    const svg = findAllByTag(icon, "svg")[0];
+    expect(getReactProps(svg)?.className).toContain("animate-spin");
+    expect(getReactProps(svg)?.className).toContain("motion-reduce:animate-none");
+    // Still, the shape is the unread dot plus the working ring, so it reads as both.
+    const [dot, track] = findAllByTag(icon, "circle").map((circle) => getReactProps(circle));
+    expect(dot).toMatchObject({ fill: "currentColor" });
+    expect(track).toMatchObject({ fill: "none" });
+    expect(Number(track?.r)).toBeGreaterThan(Number(dot?.r));
+    expect(findAllByTag(icon, "path")).toHaveLength(1);
+  });
+
   it("draws identity as a square swatch and falls back to slate", async () => {
     const container = await render(createElement("div", null,
       createElement(IdentitySwatch, { color: "rose" }),

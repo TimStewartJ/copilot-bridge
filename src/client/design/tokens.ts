@@ -261,6 +261,8 @@ export const DS = {
       "needs-input": "text-icon-accent",
       working: "text-text-secondary",
       unread: "text-text-primary",
+      /** The unread dot inside the working ring. The glyph draws its ring in the working tone. */
+      "unread-working": "text-text-primary",
       warning: "text-icon-warning",
       danger: "text-icon-error",
       done: "text-text-faint",

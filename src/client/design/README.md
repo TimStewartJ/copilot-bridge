@@ -73,6 +73,7 @@ One vocabulary everywhere. Each kind has one meaning, and a row shows at most on
 | `needs-input` | filled `?` | accent | A question or approval waits on the reader |
 | `working` | spinning ring | neutral | Work in flight; the motion is the signal, and it stops under reduced motion |
 | `unread` | solid dot, with a bold title | primary text | New results since the reader last looked |
+| `unread-working` | the unread dot inside the spinning ring, with a bold title | primary dot, neutral ring | New results, while other work under the same heading is still in flight (a task with an unread chat and a running one). The ring stops under reduced motion and the shape still says both |
 | `warning` | triangle | warning | Stalled, due today, needs a decision |
 | `danger` | filled `!` | error | Overdue, failed, disconnected |
 | `done` | check in a ring | faint | Finished; it steps back |
@@ -84,6 +85,10 @@ One vocabulary everywhere. Each kind has one meaning, and a row shows at most on
 A `StatusIcon` names itself to assistive technology; pass `decorative` when adjacent text already
 says the state. Counts on navigation use `CountBadge` with `accent` when something needs an answer
 and `unread` otherwise, matching the glyphs.
+
+Two states that hold at once are drawn as one glyph built from both, as `unread-working` is, not as
+two marks side by side and not as a pulsing dot: a pulse is lost under reduced motion, and it reads
+as urgency when it means that more is still coming.
 
 ## Haptics
 
