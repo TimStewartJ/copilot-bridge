@@ -856,18 +856,32 @@ export function selectPerformanceCoreMask(processors: readonly LogicalProcessor[
 export const PERFORMANCE_CORES_ENV = "BRIDGE_PERFORMANCE_CORES";
 
 export type PerformanceCoreSetting =
+  | { mode: "auto" }
   | { mode: "all" }
   | { mode: "off" }
   | { mode: "limit"; cores: number }
   | { mode: "invalid"; value: string };
 
-/** `BRIDGE_PERFORMANCE_CORES`: unset or `all`, `off`, or how many performance cores to use. */
+/** `BRIDGE_PERFORMANCE_CORES`: unset or `auto`, `all`, `off`, or how many performance cores to use. */
 export function readPerformanceCoreSetting(env: NodeJS.ProcessEnv): PerformanceCoreSetting {
   const value = env[PERFORMANCE_CORES_ENV]?.trim().toLowerCase();
-  if (!value || value === "all") return { mode: "all" };
+  if (!value || value === "auto") return { mode: "auto" };
+  if (value === "all") return { mode: "all" };
   if (value === "off" || value === "0") return { mode: "off" };
   if (/^[1-9]\d*$/.test(value)) return { mode: "limit", cores: Number(value) };
   return { mode: "invalid", value };
+}
+
+/**
+ * Whether the performance cores are at least half of the machine. Without a setting the Bridge
+ * moves onto them only then: a CPU with two performance cores and eight efficiency cores does
+ * more work on the efficiency cores Windows already gives a hidden process tree.
+ */
+export function performanceCoresAreMajority(processors: readonly LogicalProcessor[]): boolean {
+  if (processors.length === 0) return false;
+  const fastest = Math.max(...processors.map((processor) => processor.efficiencyClass));
+  const performance = processors.filter((processor) => processor.efficiencyClass === fastest).length;
+  return performance * 2 >= processors.length;
 }
 
 export interface WindowsProcessorApi {
@@ -918,7 +932,7 @@ export async function runOnPerformanceCores(options: {
   const setting = readPerformanceCoreSetting(options.env ?? process.env);
   if (setting.mode === "off") return { applied: false, detail: `${PERFORMANCE_CORES_ENV}=off` };
   if (setting.mode === "invalid") {
-    return { applied: false, detail: `${PERFORMANCE_CORES_ENV} must be all, off or a number of cores, not "${setting.value}"` };
+    return { applied: false, detail: `${PERFORMANCE_CORES_ENV} must be auto, all, off or a number of cores, not "${setting.value}"` };
   }
   try {
     const api = await (options.loadApi ?? loadWindowsProcessorApi)();
@@ -927,6 +941,14 @@ export async function runOnPerformanceCores(options: {
     const processors = parseCpuSetInformation(records);
     const mask = selectPerformanceCoreMask(processors, setting.mode === "limit" ? setting.cores : undefined);
     if (mask === undefined) return { applied: false, detail: "this CPU has no separate performance cores" };
+    if (setting.mode === "auto" && !performanceCoresAreMajority(processors)) {
+      const performance = processors.filter((processor) => (mask >> BigInt(processor.index)) & 1n).length;
+      return {
+        applied: false,
+        detail: `only ${performance} of ${processors.length} logical processors are performance cores; `
+          + `set ${PERFORMANCE_CORES_ENV}=all to use them anyway`,
+      };
+    }
     if (!api.setProcessAffinityMask(api.getCurrentProcess(), mask)) {
       return { applied: false, detail: `Windows refused processor mask 0x${mask.toString(16)}` };
     }
