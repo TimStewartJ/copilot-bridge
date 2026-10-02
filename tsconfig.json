@@ -17,6 +17,7 @@
   "include": [
     "src/shared/**/*",
     "src/server/**/*",
+    "src/packages/**/*",
     "src/integration/**/*",
     "src/test-support/**/*",
     "src/launcher.ts",

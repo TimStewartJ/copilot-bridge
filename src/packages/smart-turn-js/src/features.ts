@@ -4,7 +4,8 @@
 // (n_fft 400, hop 160, 80 slaney mel bins, log10, clamp to max-8, (x+4)/4).
 
 export const SMART_TURN_SAMPLE_RATE = 16_000;
-export const SMART_TURN_WINDOW_SAMPLES = 8 * SMART_TURN_SAMPLE_RATE;
+export const SMART_TURN_WINDOW_SECONDS = 8;
+export const SMART_TURN_WINDOW_SAMPLES = SMART_TURN_WINDOW_SECONDS * SMART_TURN_SAMPLE_RATE;
 export const SMART_TURN_MEL_BINS = 80;
 export const SMART_TURN_FRAMES = 800;
 
@@ -183,12 +184,29 @@ class BluesteinPowerSpectrum {
 }
 
 export interface SmartTurnFeatureExtractor {
-  /** Returns a [1, 80, 800] Float32Array (row-major: mel bin, then frame). */
+  /**
+   * Turns 16 kHz mono samples in [-1, 1] into the model's input: a Float32Array of 80 x 800
+   * values (row-major: mel bin, then frame), to be fed as a tensor of shape [1, 80, 800].
+   * Only the last 8 seconds are used; shorter audio is padded with silence at the start.
+   * Each call returns a new array, so results stay valid across calls.
+   */
   extract(samples: Float32Array): Float32Array;
 }
 
 export function createSmartTurnFeatureExtractor(): SmartTurnFeatureExtractor {
   const melFilters = createMelFilterBank();
+  // A filter is a triangle over a few neighbouring frequency bins; the rest of its row is zero.
+  const melStart = new Uint16Array(SMART_TURN_MEL_BINS);
+  const melEnd = new Uint16Array(SMART_TURN_MEL_BINS);
+  for (let m = 0; m < SMART_TURN_MEL_BINS; m++) {
+    const filter = melFilters[m]!;
+    let start = 0;
+    while (start < NUM_FREQ_BINS && filter[start] === 0) start++;
+    let end = NUM_FREQ_BINS;
+    while (end > start && filter[end - 1] === 0) end--;
+    melStart[m] = start;
+    melEnd[m] = end;
+  }
   const spectrum = new BluesteinPowerSpectrum();
   const window = new Float64Array(N_FFT);
   for (let i = 0; i < N_FFT; i++) window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N_FFT);
@@ -230,8 +248,9 @@ export function createSmartTurnFeatureExtractor(): SmartTurnFeatureExtractor {
         spectrum.compute(frame, power);
         for (let m = 0; m < SMART_TURN_MEL_BINS; m++) {
           const filter = melFilters[m]!;
+          const end = melEnd[m]!;
           let energy = 0;
-          for (let k = 0; k < NUM_FREQ_BINS; k++) energy += filter[k]! * power[k]!;
+          for (let k = melStart[m]!; k < end; k++) energy += filter[k]! * power[k]!;
           const value = Math.log10(Math.max(energy, 1e-10));
           logMel[m * SMART_TURN_FRAMES + t] = value;
           if (value > maxValue) maxValue = value;

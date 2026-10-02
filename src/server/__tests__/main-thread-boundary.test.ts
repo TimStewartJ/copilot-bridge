@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 // call, its event loop served nothing for the duration: health probes failed, the launcher
 // killed the server, and sessions lost their tool-permission acknowledgements. Every process
 // creation in the server runtime therefore goes through process-host.ts, which performs it on
-// a worker thread. Deleting or copying a directory tree synchronously is the same kind of call:
+// a worker thread (the mechanism is the in-tree package src/packages/spawn-offthread). Deleting
+// or copying a directory tree synchronously is the same kind of call:
 // it holds its thread for the whole operation, and a worktree is tens of thousands of files.
 // `staging_cleanup` froze the live server for 2.4 s that way. Opening a file another program keeps
 // writing is a third: on Windows an antivirus scan holds the open until it is done, and
@@ -18,13 +19,13 @@ import { describe, expect, it } from "vitest";
 const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC_DIR = resolve(SERVER_DIR, "..");
 const RUNTIME_ENTRY_POINTS = ["index.ts", "staging-preview-server.ts"].map((name) => join(SERVER_DIR, name));
-const ONLY_PROCESS_CREATOR = join(SERVER_DIR, "process-host-worker.ts");
+const ONLY_PROCESS_CREATOR = join(SRC_DIR, "packages", "spawn-offthread", "src", "worker.ts");
 const PROCESS_CREATING_EXPORTS = new Set(["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]);
 
 // Modules the server loads that may still delete or copy a tree synchronously, and why that
 // cannot stall the server. Everything else goes through getProcessHost().removeTree().
 const SYNC_TREE_OPERATIONS_ALLOWED: Record<string, string> = {
-  "server/process-host-worker.ts": "the worker thread that performs the server's tree deletes",
+  "packages/spawn-offthread/src/worker.ts": "the worker thread that performs the server's tree deletes",
   "server/dependency-sync.ts": "dependency installs run in the launcher and the job runner",
   "server/release-slots.ts": "release slots are pruned by the launcher",
   "server/validation-command-env.ts": "validation commands run in the job runner",
@@ -137,7 +138,8 @@ describe("server main-thread boundary", () => {
       "server/staging-backend-manager.ts",
       "server/voice/voice-engine.ts",
       "server/process-host.ts",
-      "server/process-host-worker.ts",
+      "packages/spawn-offthread/src/host.ts",
+      "packages/spawn-offthread/src/worker.ts",
       "server/windows-process-table.ts",
       "server/cli-session-store.ts",
       "server/cli-session-store-worker.ts",

@@ -1,0 +1,64 @@
+name: Packages
+
+# The in-tree packages (src/packages) are published to npm by themselves, so they are checked on
+# every platform they claim to run on, as an installed dependency of a scratch project.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/packages/**"
+      - "scripts/packages.mjs"
+      - "vitest.packages.config.ts"
+      - ".github/workflows/packages.yml"
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "src/packages/**"
+      - "scripts/packages.mjs"
+      - "vitest.packages.config.ts"
+      - ".github/workflows/packages.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        node: ["22", "24"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package typecheck
+        run: npm run typecheck:packages
+
+      - name: Package unit tests
+        run: npm run test:packages
+
+      - name: Package tests with real processes
+        run: npx vitest run --project native src/packages
+
+      - name: Pack, install and smoke-test as a dependency
+        run: npm run packages:verify
