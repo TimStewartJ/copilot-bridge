@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeRestartState } from "../restart-state.js";
-import { PENDING_INTERACTION_AUTO_ANSWER, SessionManager } from "../session-manager.js";
+import { SessionManager } from "../session-manager.js";
+import { AUTOMATIC_ANSWERS } from "../../shared/automatic-answer.js";
 
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
@@ -2116,7 +2117,7 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
   });
 
-  it("auto-answers questions that waited an hour instead of aborting the turn", async () => {
+  it("auto-answers questions that waited half an hour instead of aborting the turn", async () => {
     const sessionId = "session-auto-answer";
     const { manager, telemetryStore, globalBus } = createManager({ telemetry: true });
     const inputStatus = vi.fn();
@@ -2181,7 +2182,7 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
     expect(manager.getPendingUserInputCount(sessionId)).toBe(4);
 
-    await vi.advanceTimersByTimeAsync(59 * 60_000);
+    await vi.advanceTimersByTimeAsync(29 * 60_000);
     await manager.waitForSessionWatchdogIdle(sessionId);
     expect(session.respondToUserInput).not.toHaveBeenCalled();
     expect(session.tryRespondToElicitation).not.toHaveBeenCalled();
@@ -2191,11 +2192,11 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
 
     expect(session.respondToUserInput.mock.calls).toEqual([
-      ["ui-legacy", { answer: PENDING_INTERACTION_AUTO_ANSWER, wasFreeform: true }],
+      ["ui-legacy", { answer: AUTOMATIC_ANSWERS.unanswered, wasFreeform: true }],
     ]);
     expect(session.tryRespondToElicitation.mock.calls).toEqual([
-      ["el-ask", { action: "accept", content: { approved: PENDING_INTERACTION_AUTO_ANSWER } }],
-      ["el-multi", { action: "accept", content: { extras: [PENDING_INTERACTION_AUTO_ANSWER] } }],
+      ["el-ask", { action: "accept", content: { approved: AUTOMATIC_ANSWERS.unanswered } }],
+      ["el-multi", { action: "accept", content: { extras: [AUTOMATIC_ANSWERS.unanswered] } }],
       ["el-mcp", { action: "cancel" }],
     ]);
     expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
@@ -2205,7 +2206,9 @@ describe("SessionManager run state", () => {
     expect(session.abort).not.toHaveBeenCalled();
     expect(telemetryStore!.querySpans({ name: "session.run.no_progress", sessionId })).toEqual([]);
     expect(telemetryStore!.querySpans({ name: "session.run.no_progress_abort", sessionId })).toEqual([]);
-    expect(telemetryStore!.querySpans({ name: "session.pending_interaction.auto_answer", sessionId })).toHaveLength(4);
+    const answerSpans = telemetryStore!.querySpans({ name: "session.pending_interaction.auto_answer", sessionId });
+    expect(answerSpans).toHaveLength(4);
+    expect(answerSpans.map((span) => span.metadata?.reason)).toEqual(Array(4).fill("unanswered"));
 
     getReleaseSend()?.();
     await flushMicrotasks();
@@ -2239,21 +2242,195 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
-    // Watchdog ticks await real file I/O under fake timers, so which tick observes the hour is not
-    // exact. Settling between phases keeps the contract deterministic: one attempt, never retried,
-    // and the next tick then ends the dead turn like any other stall.
-    await vi.advanceTimersByTimeAsync(61 * 60_000);
+    // Watchdog ticks await real file I/O under fake timers, so which tick observes the half hour is
+    // not exact. Settling between phases keeps the contract deterministic: one attempt, never
+    // retried, and the dead turn then ends at the no-progress limit like any other stall.
+    await vi.advanceTimersByTimeAsync(32 * 60_000);
     await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
     expect(session.tryRespondToElicitation).toHaveBeenCalledTimes(1);
     expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+    expect(session.abort).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await vi.advanceTimersByTimeAsync(31 * 60_000);
     await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
     expect(session.tryRespondToElicitation).toHaveBeenCalledTimes(1);
     expect(session.abort).toHaveBeenCalledTimes(1);
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
+  });
+
+  describe("questions asked in Autopilot", () => {
+    const approvalForm = { type: "object", properties: { approved: { type: "boolean" }, note: { type: "string" } } };
+
+    async function startAutopilotRun(sessionId: string) {
+      const created = createManager({ telemetry: true });
+      const made = makeSession();
+      created.manager.backend = { resumeSession: vi.fn().mockResolvedValue(made.session) };
+      const needsInput: unknown[] = [];
+      const unsubscribe = created.globalBus.subscribe((event: any) => {
+        if (event.type === "session:user-input" && event.needsUserInput) needsInput.push(event);
+      });
+      created.manager.startWork(sessionId, "hello", undefined, { mode: "autopilot" });
+      await flushMicrotasks();
+      const shown: any[] = [];
+      created.eventBusRegistry.getBus(sessionId)?.subscribe((event: any) => {
+        if (/^(?:user_input|elicitation)_/.test(event.type)) shown.push(event);
+      });
+      const finish = async () => {
+        made.getReleaseSend()?.();
+        await flushMicrotasks();
+        made.getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
+        await flushMicrotasks();
+        expect(created.manager.getSessionRunState(sessionId)).toBe("idle");
+        unsubscribe();
+      };
+      return { ...created, ...made, needsInput, shown, finish };
+    }
+
+    it("answers at once and shows nobody the question", async () => {
+      const sessionId = "session-autopilot-answer";
+      const run = await startAutopilotRun(sessionId);
+      // Like the runtime, a responder completes the request with a live event before it returns.
+      run.session.respondToUserInput.mockImplementation(async (...[requestId, response]: any[]) => {
+        run.getHandler()?.({
+          type: "user_input.completed",
+          data: { requestId, ...response },
+          timestamp: new Date().toISOString(),
+        });
+        return true;
+      });
+      run.session.tryRespondToElicitation.mockImplementation(async (...[requestId, response]: any[]) => {
+        run.getHandler()?.({
+          type: "elicitation.completed",
+          data: { requestId, action: response.action },
+          timestamp: new Date().toISOString(),
+        });
+        return true;
+      });
+
+      const timestamp = new Date().toISOString();
+      run.getHandler()?.({
+        type: "user_input.requested",
+        timestamp,
+        data: { requestId: "ui-legacy", question: "Which one?" },
+      });
+      run.getHandler()?.({
+        type: "elicitation.requested",
+        timestamp,
+        data: { requestId: "el-ask", message: "Approve?", mode: "form", requestedSchema: approvalForm },
+      });
+      await flushMicrotasks();
+
+      expect(run.session.respondToUserInput.mock.calls).toEqual([
+        ["ui-legacy", { answer: AUTOMATIC_ANSWERS.autopilot, wasFreeform: true }],
+      ]);
+      expect(run.session.tryRespondToElicitation.mock.calls).toEqual([
+        ["el-ask", { action: "accept", content: { approved: AUTOMATIC_ANSWERS.autopilot } }],
+      ]);
+      expect(run.manager.getPendingUserInputCount(sessionId)).toBe(0);
+      expect(run.needsInput).toEqual([]);
+      expect(run.shown).toEqual([]);
+      expect(await run.manager.hydratePendingInteractions(sessionId)).toEqual({
+        pendingUserInputs: [],
+        pendingElicitations: [],
+      });
+      expect(run.manager.getSessionRunState(sessionId)).toBe("busy");
+      const spans = run.telemetryStore!.querySpans({ name: "session.pending_interaction.auto_answer", sessionId });
+      expect(spans.map((span) => span.metadata)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "user_input", action: "answer", answered: true, reason: "autopilot" }),
+        expect.objectContaining({ kind: "elicitation", action: "accept", answered: true, reason: "autopilot" }),
+      ]));
+
+      await run.finish();
+    });
+
+    it("leaves an MCP server's question, and one asked after Autopilot is turned off, to the user", async () => {
+      const sessionId = "session-autopilot-not-ours";
+      const run = await startAutopilotRun(sessionId);
+      const timestamp = new Date().toISOString();
+
+      run.getHandler()?.({
+        type: "elicitation.requested",
+        timestamp,
+        data: {
+          requestId: "el-mcp",
+          message: "Token?",
+          mode: "form",
+          elicitationSource: "some-mcp",
+          requestedSchema: approvalForm,
+        },
+      });
+      run.getHandler()?.({
+        type: "session.mode_changed",
+        timestamp,
+        data: { previousMode: "autopilot", newMode: "interactive" },
+      });
+      run.getHandler()?.({
+        type: "elicitation.requested",
+        timestamp,
+        data: { requestId: "el-ask", message: "Approve?", mode: "form", requestedSchema: approvalForm },
+      });
+      await flushMicrotasks();
+
+      expect(run.session.tryRespondToElicitation).not.toHaveBeenCalled();
+      expect(run.manager.getPendingUserInputCount(sessionId)).toBe(2);
+      expect(run.shown.map((event) => [event.type, event.requestId])).toEqual([
+        ["elicitation_requested", "el-mcp"],
+        ["elicitation_requested", "el-ask"],
+      ]);
+      expect(run.needsInput).not.toEqual([]);
+
+      run.pendingElicitations.push({ requestId: "el-mcp" }, { requestId: "el-ask" });
+      await run.manager.submitElicitationResponse(sessionId, "el-mcp", { action: "cancel" });
+      await run.manager.submitElicitationResponse(sessionId, "el-ask", { action: "cancel" });
+      await run.finish();
+    });
+
+    it("shows the question after all when the runtime does not take the reply", async () => {
+      const sessionId = "session-autopilot-fallback";
+      const run = await startAutopilotRun(sessionId);
+      run.session.tryRespondToElicitation
+        // The reply never reached the runtime.
+        .mockRejectedValueOnce(new Error("request timed out"))
+        // The runtime reports the request gone, and has said so with a completion of its own.
+        .mockImplementationOnce(async (...[requestId]: any[]) => {
+          run.getHandler()?.({
+            type: "elicitation.completed",
+            data: { requestId, action: "cancel" },
+            timestamp: new Date().toISOString(),
+          });
+          return false;
+        });
+
+      const timestamp = new Date().toISOString();
+      for (const requestId of ["el-unreached", "el-ended"]) {
+        run.getHandler()?.({
+          type: "elicitation.requested",
+          timestamp,
+          data: { requestId, message: "Approve?", mode: "form", requestedSchema: approvalForm },
+        });
+      }
+      await flushMicrotasks();
+
+      expect(run.session.tryRespondToElicitation).toHaveBeenCalledTimes(2);
+      expect(run.shown.map((event) => [event.type, event.requestId])).toEqual([
+        ["elicitation_requested", "el-unreached"],
+      ]);
+      expect(run.manager.getPendingUserInputCount(sessionId)).toBe(1);
+      expect((await run.manager.hydratePendingInteractions(sessionId)).pendingElicitations).toEqual([
+        expect.objectContaining({ requestId: "el-unreached", requestedAt: timestamp }),
+      ]);
+
+      // The user can answer what was handed back.
+      run.pendingElicitations.push({ requestId: "el-unreached" });
+      await expect(run.manager.submitElicitationResponse(sessionId, "el-unreached", {
+        action: "accept",
+        content: { approved: true },
+      })).resolves.toMatchObject({ requestId: "el-unreached", action: "accept" });
+      expect(run.manager.getPendingUserInputCount(sessionId)).toBe(0);
+      await run.finish();
+    });
   });
 
   it("translates runtime capability-loss cancellation without owning the request", async () => {

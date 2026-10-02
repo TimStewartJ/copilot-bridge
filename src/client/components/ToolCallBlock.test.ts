@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ToolCall } from "../api";
+import { AUTOMATIC_ANSWERS } from "../../shared/automatic-answer.js";
 import {
   COMPONENT_IMPORT_WARMUP_TIMEOUT_MS,
   createReactDomHarness,
@@ -116,5 +117,34 @@ describe("ToolCallBlock details", () => {
     expect(text).toContain("Nothing yet");
     expect(text).not.toContain("requestedSchema");
     expect(text).not.toContain("User responded");
+  });
+
+  it("says who went on without an answer instead of showing the automatic reply as one", async () => {
+    const question = {
+      toolCallId: "ask-2",
+      name: "ask_user",
+      args: {
+        message: "Send the update?",
+        requestedSchema: { properties: { send: { type: "string", oneOf: [{ const: "yes", title: "Send it" }] } } },
+      },
+      startedAt: "2026-09-20T08:00:00.000Z",
+      success: true,
+    };
+    const inAutopilot = await openRow({
+      ...question,
+      completedAt: "2026-09-20T08:00:00.100Z",
+      result: `User responded:\nsend: ${AUTOMATIC_ANSWERS.autopilot}`,
+    });
+    expect(inAutopilot).toContain("Autopilot went on without you");
+    expect(inAutopilot).toContain("Send it");
+    expect(inAutopilot).not.toContain("not shown to the user");
+
+    const unanswered = await openRow({
+      ...question,
+      completedAt: "2026-09-20T08:30:00.000Z",
+      result: `User responded:\nsend: ${AUTOMATIC_ANSWERS.unanswered}`,
+    });
+    expect(unanswered).toContain("Not answered, the run went on without you");
+    expect(unanswered).not.toContain("not available to respond");
   });
 });
