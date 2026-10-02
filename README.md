@@ -608,9 +608,12 @@ Windows schedules a process tree that owns no visible window onto a hybrid CPU's
 
 At startup the launcher, the server and the management job runner therefore restrict themselves to the performance cores, and every process they start inherits the restriction. Linux, and a CPU with one kind of core, are left alone. `BRIDGE_PERFORMANCE_CORES` in `.env` changes the behavior:
 
-- unset or `all`: every performance core (default)
+- unset or `auto` (default): every performance core, provided they are at least half of the machine's logical processors. A CPU with two performance cores and eight efficiency cores does more work on the efficiency cores Windows already gives a hidden process tree, so it is left alone
+- `all`: every performance core, however few they are
 - a number such as `4`: that many performance cores, counted from the last one. The Bridge never runs on the others, which leaves them to a game or other foreground work
 - `off`: no restriction. Windows keeps the Bridge on the efficiency cores
+
+The cores are found by asking Windows for each logical processor's efficiency class (`GetSystemCpuSetInformation`): the highest class is the performance cores, and both threads of a core count as one core. Nothing is measured, and the choice is made once at startup.
 
 Restart the Bridge with its startup wrapper after changing the value. Each of the three processes logs what it applied, for example `Running on performance cores: 16 of 20 logical processors (mask 0xffff)`.
 

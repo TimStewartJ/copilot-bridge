@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   parseCpuSetInformation,
+  performanceCoresAreMajority,
   readPerformanceCoreSetting,
   runOnPerformanceCores,
   selectPerformanceCoreMask,
@@ -26,8 +27,28 @@ function cpuSetRecords(processors: LogicalProcessor[]): Buffer {
 
 /** Eight performance cores with two threads each, then four efficiency cores (Core i7-12700K). */
 function hybridProcessors(): LogicalProcessor[] {
-  const performance = Array.from({ length: 16 }, (_, index) => ({ index, core: index - (index % 2), group: 0, efficiencyClass: 1 }));
-  const efficiency = Array.from({ length: 4 }, (_, offset) => ({ index: 16 + offset, core: 16 + offset, group: 0, efficiencyClass: 0 }));
+  return mixedProcessors(8, 2, 4);
+}
+
+/** Two performance cores with two threads each, then eight efficiency cores (Core i5-1235U). */
+function fewPerformanceCores(): LogicalProcessor[] {
+  return mixedProcessors(2, 2, 8);
+}
+
+function mixedProcessors(performanceCores: number, threadsPerCore: number, efficiencyCores: number): LogicalProcessor[] {
+  const performanceThreads = performanceCores * threadsPerCore;
+  const performance = Array.from({ length: performanceThreads }, (_, index) => ({
+    index,
+    core: index - (index % threadsPerCore),
+    group: 0,
+    efficiencyClass: 1,
+  }));
+  const efficiency = Array.from({ length: efficiencyCores }, (_, offset) => ({
+    index: performanceThreads + offset,
+    core: performanceThreads + offset,
+    group: 0,
+    efficiencyClass: 0,
+  }));
   return [...performance, ...efficiency];
 }
 
@@ -90,18 +111,34 @@ describe("selectPerformanceCoreMask", () => {
 });
 
 describe("readPerformanceCoreSetting", () => {
-  it("defaults to every performance core", () => {
-    expect(readPerformanceCoreSetting({})).toEqual({ mode: "all" });
-    expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: " " })).toEqual({ mode: "all" });
-    expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "ALL" })).toEqual({ mode: "all" });
+  it("defaults to choosing by itself", () => {
+    expect(readPerformanceCoreSetting({})).toEqual({ mode: "auto" });
+    expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: " " })).toEqual({ mode: "auto" });
+    expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "Auto" })).toEqual({ mode: "auto" });
   });
 
-  it("reads off, a core count, and rejects anything else", () => {
+  it("reads all, off, a core count, and rejects anything else", () => {
+    expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "ALL" })).toEqual({ mode: "all" });
     expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "off" })).toEqual({ mode: "off" });
     expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "0" })).toEqual({ mode: "off" });
     expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: " 6 " })).toEqual({ mode: "limit", cores: 6 });
     expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "half" })).toEqual({ mode: "invalid", value: "half" });
     expect(readPerformanceCoreSetting({ BRIDGE_PERFORMANCE_CORES: "-2" })).toEqual({ mode: "invalid", value: "-2" });
+  });
+});
+
+describe("performanceCoresAreMajority", () => {
+  it("is true when the performance cores are at least half of the logical processors", () => {
+    expect(performanceCoresAreMajority(hybridProcessors())).toBe(true);
+    // Eight performance cores with two threads each beside sixteen efficiency cores.
+    expect(performanceCoresAreMajority(mixedProcessors(8, 2, 16))).toBe(true);
+    expect(performanceCoresAreMajority(mixedProcessors(4, 1, 4))).toBe(true);
+  });
+
+  it("is false when most of the machine is efficiency cores", () => {
+    expect(performanceCoresAreMajority(fewPerformanceCores())).toBe(false);
+    expect(performanceCoresAreMajority(mixedProcessors(8, 1, 16))).toBe(false);
+    expect(performanceCoresAreMajority([])).toBe(false);
   });
 });
 
@@ -132,8 +169,26 @@ describe("runOnPerformanceCores", () => {
     await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "off" }, loadApi }))
       .resolves.toEqual({ applied: false, detail: "BRIDGE_PERFORMANCE_CORES=off" });
     await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "many" }, loadApi }))
-      .resolves.toEqual({ applied: false, detail: "BRIDGE_PERFORMANCE_CORES must be all, off or a number of cores, not \"many\"" });
+      .resolves.toEqual({ applied: false, detail: "BRIDGE_PERFORMANCE_CORES must be auto, all, off or a number of cores, not \"many\"" });
     expect(loadApi).not.toHaveBeenCalled();
+  });
+
+  it("stays off the performance cores by default when they are the smaller part of the machine", async () => {
+    const api = processorApi(fewPerformanceCores());
+    await expect(runOnPerformanceCores({ platform: "win32", env: {}, loadApi: async () => api })).resolves.toEqual({
+      applied: false,
+      detail: "only 4 of 12 logical processors are performance cores; set BRIDGE_PERFORMANCE_CORES=all to use them anyway",
+    });
+    expect(api.setProcessAffinityMask).not.toHaveBeenCalled();
+  });
+
+  it("uses a small set of performance cores when told to", async () => {
+    const all = processorApi(fewPerformanceCores());
+    await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "all" }, loadApi: async () => all }))
+      .resolves.toEqual({ applied: true, detail: "4 of 12 logical processors (mask 0xf)" });
+    const one = processorApi(fewPerformanceCores());
+    await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "1" }, loadApi: async () => one }))
+      .resolves.toEqual({ applied: true, detail: "2 of 12 logical processors (mask 0xc)" });
   });
 
   it("leaves a CPU with one kind of core alone", async () => {
