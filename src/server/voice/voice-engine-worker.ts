@@ -21,7 +21,7 @@ import {
 import { CLIP_CHUNK_PLAN, joinTranscripts, planSpeechChunks, type SampleRange } from "./voice-clip.js";
 import { decodeRecording } from "./voice-recording.js";
 import { VOICE_MODEL_FILES } from "./voice-catalog.js";
-import { createSmartTurnFeatureExtractor, SMART_TURN_FRAMES, SMART_TURN_MEL_BINS } from "./smart-turn-features.js";
+import { createSmartTurnDetector, type SmartTurnDetector } from "../../packages/smart-turn-js/src/index.js";
 
 const SAMPLE_RATE = 16_000;
 const VAD_WINDOW = 512;
@@ -107,10 +107,9 @@ function log(level: "info" | "warn" | "error", message: string): void {
 let options: VoiceEngineInitOptions | undefined;
 let sherpa: SherpaModule | undefined;
 let ort: OrtModule | undefined;
-let turnSession: OrtSession | undefined;
+let turnDetector: SmartTurnDetector | undefined;
 let recognizer: SherpaRecognizer | undefined;
 let tts: SherpaTts | undefined;
-const featureExtractor = createSmartTurnFeatureExtractor();
 const streams = new Map<string, StreamState>();
 const cancelledSynthesis = new Set<number>();
 const loading = new Map<VoiceEngineCapability, Promise<number>>();
@@ -163,7 +162,7 @@ async function init(initOptions: VoiceEngineInitOptions): Promise<VoiceEngineRea
 }
 
 function isLoaded(capability: VoiceEngineCapability): boolean {
-  return capability === "asr" ? !!recognizer : capability === "turn" ? !!turnSession : !!tts;
+  return capability === "asr" ? !!recognizer : capability === "turn" ? !!turnDetector : !!tts;
 }
 
 function loadedCapabilities(): VoiceEngineCapability[] {
@@ -183,7 +182,7 @@ async function loadCapability(capability: VoiceEngineCapability): Promise<number
         graphOptimizationLevel: "all",
       });
       const warmupStarted = performance.now();
-      turnSession = session;
+      turnDetector = createSmartTurnDetector({ Tensor: ortModule.Tensor, session });
       await predict(new Float32Array(SAMPLE_RATE));
       return performance.now() - warmupStarted;
     }
@@ -308,10 +307,7 @@ function extract(streamId: string, fromSample: number, toSample: number): Float3
 
 async function predict(samples: Float32Array): Promise<number> {
   requireCapability("turn");
-  const features = featureExtractor.extract(samples);
-  const tensor = new ort!.Tensor("float32", features, [1, SMART_TURN_MEL_BINS, SMART_TURN_FRAMES]);
-  const output = await turnSession!.run({ [turnSession!.inputNames[0]!]: tensor });
-  return Number(output[turnSession!.outputNames[0]!]!.data[0]);
+  return (await turnDetector!.predict(samples)).probability;
 }
 
 async function decodeNow(target: SherpaRecognizer, samples: Float32Array): Promise<string> {

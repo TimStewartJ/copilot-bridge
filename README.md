@@ -263,9 +263,10 @@ The settings API accepts `responseStyle: { detail: "adaptive" | "concise" | "det
 ```bash
 npx vitest run <file> # targeted dev test
 npm test              # full Vitest regression suite
-npm run check:fast    # x-plat audit + design audit + client/server type-checking
+npm run check:fast    # x-plat audit + design audit + client/server/package type-checking
 npm run check:client  # design audit + client type-check + client lane
 npm run check:server  # server type-check + server/shared lane
+npm run check:packages # server + per-package type-check + in-tree package tests (src/packages)
 npm run check:integration # type-check + API, workflow, persistence/lifecycle, and native process tests
 npm run check:launcher # server type-check + launcher lane
 npm run check:staging # server type-check + staging tooling lane + native process tests
@@ -595,6 +596,10 @@ src/
 │   ├── settings-store.ts          # App settings + MCP registry
 │   ├── staging-tools.ts           # staging_init / preview / deploy
 │   └── browser-*.ts               # Browser and web tooling
+├── packages/                      # Code published to npm by itself (README.md); imports nothing from the Bridge
+│   ├── spawn-offthread/           # child_process on worker threads (the server's process host)
+│   ├── smart-turn-js/             # Smart Turn v3 end-of-turn detection for hands-free voice
+│   └── voice-agent-text/          # What to speak from a streamed reply, chunking, interruptions
 └── client/
     ├── App.tsx                    # Root app shell + routing
     ├── api.ts                     # Typed client API

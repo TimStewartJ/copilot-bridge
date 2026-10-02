@@ -1,0 +1,44 @@
+{
+  "name": "voice-agent-text",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Text handling for voice agents: speak the prose of a streamed LLM reply and withhold its lists, tables and code, cut it into chunks a TTS engine can start on early, and tell a real interruption from a listener's \"mhm\".",
+  "keywords": [
+    "voice-agent",
+    "voice-ai",
+    "tts",
+    "text-to-speech",
+    "llm",
+    "streaming",
+    "sentence-splitting",
+    "markdown",
+    "barge-in",
+    "backchannel",
+    "wake-word"
+  ],
+  "license": "MIT",
+  "author": "Tim Stewart <timstewartj@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timstewartj/copilot-bridge.git",
+    "directory": "src/packages/voice-agent-text"
+  },
+  "homepage": "https://github.com/timstewartj/copilot-bridge/tree/master/src/packages/voice-agent-text#readme",
+  "bugs": {
+    "url": "https://github.com/timstewartj/copilot-bridge/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false
+}

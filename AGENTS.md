@@ -6,6 +6,7 @@ Rules for one area live in `.github/instructions/`. Read the matching file befor
 
 - `src/client/**`: `.github/instructions/client-ui.instructions.md`
 - `src/server/**`: `.github/instructions/server-runtime.instructions.md`
+- `src/packages/**`: `.github/instructions/packages.instructions.md`
 - Tests and test support: `.github/instructions/tests.instructions.md`
 
 Add a rule here only if it applies across the repository and no check enforces it. Put area rules in the matching instructions file, and the reasoning behind a check next to the check.
@@ -14,13 +15,14 @@ Add a rule here only if it applies across the repository and no check enforces i
 
 - Runtime: Node 22+, ESM TypeScript, Express server, React/Vite client, SQLite storage.
 - Server code lives in `src/server/`, client code in `src/client/`, launcher code in `src/launcher.ts`.
+- `src/packages/` holds code that is published to npm by itself and that the Bridge imports by relative path. It must not import anything from the rest of the repository.
 - Use existing stores, platform helpers, test helpers, and API/client patterns before adding new abstractions.
 
 ## Editing and validation
 
 - Deployable Bridge changes go through the staging workflow. Never edit a production deployment checkout directly.
 - Staging worktrees own their `node_modules`. Run `npm install --no-audit --no-fund --include=dev` in a fresh worktree before direct checks, and never link it to production dependencies.
-- While implementing, run `npm run check:fast` and the lane for the area you changed: `check:client`, `check:server`, `check:integration`, `check:launcher`, `check:staging`, or `check:native`.
+- While implementing, run `npm run check:fast` and the lane for the area you changed: `check:client`, `check:server`, `check:packages`, `check:integration`, `check:launcher`, `check:staging`, or `check:native`.
 - `npm run check:pr` is the review gate. `staging_preview` runs it, and `staging_deploy` runs it when preview validation was skipped or invalidated, so do not run it by hand right before them. Outside that workflow, run it before asking for review.
 - Documentation-only edits need no test run unless they change generated docs, scripts, examples, or validation guidance.
 
