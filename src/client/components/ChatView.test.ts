@@ -3822,6 +3822,7 @@ describe("ChatView sub-agents", () => {
   });
 
   it("says how many agents the main agent is waiting on, instead of following their steps", async () => {
+    vi.useFakeTimers();
     const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [
@@ -3847,7 +3848,9 @@ describe("ChatView sub-agents", () => {
     });
 
     try {
-      // With nothing of its own to show, the line under the transcript says so.
+      // With nothing of its own to show, the line under the transcript says so, once the pause holds.
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on the agents.") ?? false, { label: "history" });
+      await advanceTimersByTimeAct(act, 400);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on 2 agents") ?? false, { label: "waiting line" });
       const status = findAllByTag(dom.container, "DIV").find((candidate) => candidate.getAttribute?.("data-live-status"));
       expect(status?.textContent).toBe("Waiting on 2 agentsmoves-agent and saves-agent");
@@ -3874,6 +3877,7 @@ describe("ChatView sub-agents", () => {
 
       // The main agent starts a turn of its own: it is no longer waiting.
       await render({ streamOverrides: { mainAgentIdle: false } });
+      await advanceTimersByTimeAct(act, 400);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Refactoring the engine") ?? false, { label: "wait over" });
       expect(dom.container.textContent).not.toContain("Waiting on 2 agents");
     } finally {
