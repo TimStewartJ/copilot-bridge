@@ -384,7 +384,7 @@ describe("System page runtime and management jobs", () => {
       expect(text).toContain("Connection connected");
       expect(text).toContain("PID 31415");
       expect(text).toContain("stdio closed - broken pipe");
-      expect(text).toContain("Disconnects 2");
+      expect(text).toContain("Losses 2");
       expect(text).toContain("Recoveries 1");
       expect(text).toContain("Interrupted 3");
       expect(text).toContain("Auto-resumed 2");

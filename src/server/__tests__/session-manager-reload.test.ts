@@ -310,6 +310,7 @@ describe("SessionManager reloadSession", () => {
           reason: "rpc-timeout",
           detail: expect.stringContaining("session-timeout"),
         }),
+        expect.objectContaining({ sessionId: "session-timeout", operation: "resume" }),
       );
       expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
       expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
@@ -423,7 +424,7 @@ describe("SessionManager reloadSession", () => {
       expect(handleBackendDisconnect).toHaveBeenCalledOnce();
       expect(handleBackendDisconnect).toHaveBeenCalledWith(backend, expect.objectContaining({
         reason: "rpc-timeout", detail: expect.stringContaining("session-dead"),
-      }));
+      }), expect.objectContaining({ sessionId: "session-dead", operation: "resume" }));
     } finally {
       vi.useRealTimers();
     }
@@ -452,7 +453,7 @@ describe("SessionManager reloadSession", () => {
       expect(handleBackendDisconnect).toHaveBeenCalledOnce();
       expect(handleBackendDisconnect).toHaveBeenCalledWith(backend, expect.objectContaining({
         detail: expect.stringContaining("session-stuck-2"),
-      }));
+      }), expect.objectContaining({ sessionId: "session-stuck-2", operation: "resume" }));
     } finally {
       vi.useRealTimers();
     }
@@ -477,7 +478,7 @@ describe("SessionManager reloadSession", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(handleBackendDisconnect).toHaveBeenCalledWith(backend, expect.objectContaining({
         reason: "rpc-timeout", detail: expect.stringContaining("never settled for session session-never"),
-      }));
+      }), expect.objectContaining({ sessionId: "session-never", operation: "resume" }));
     } finally {
       vi.useRealTimers();
     }
@@ -631,6 +632,7 @@ describe("SessionManager reloadSession", () => {
           reason: "rpc-timeout",
           detail: expect.stringContaining("session-cleanup-timeout"),
         }),
+        expect.objectContaining({ sessionId: "session-cleanup-timeout", operation: "resume" }),
       );
       await expect(manager.reloadSession("session-cleanup-timeout"))
         .rejects.toThrow("reconnecting");
@@ -968,7 +970,11 @@ describe("SessionManager warmSession", () => {
       await vi.advanceTimersByTimeAsync(1);
       await rejected;
 
-      expect(disconnect).toHaveBeenCalledWith(manager.backend, expect.objectContaining({ reason: "rpc-timeout" }));
+      expect(disconnect).toHaveBeenCalledWith(
+        manager.backend,
+        expect.objectContaining({ reason: "rpc-timeout" }),
+        expect.objectContaining({ sessionId: "passive-timeout", operation: "resume" }),
+      );
       expect(resume.mock.calls[0][1]).toHaveProperty("suppressResumeEvent", true);
     } finally {
       vi.useRealTimers();

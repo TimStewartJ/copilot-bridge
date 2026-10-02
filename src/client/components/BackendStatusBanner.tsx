@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
-import type { AgentBackendStatus } from "../../shared/agent-backend-status.js";
+import { formatAgentBackendLoss, type AgentBackendStatus } from "../../shared/agent-backend-status.js";
 import type { BackendStatusBannerView } from "../lib/backend-status-banner-state";
 import { IconButton, Notice } from "../design/primitives";
 
@@ -29,20 +29,20 @@ export default function BackendStatusBanner({ banner, onDismiss }: Props) {
 }
 
 function describeBackendStatusBanner(status: AgentBackendStatus): { title: string; detail: string } {
-  const reason = formatDisconnectReason(status);
+  const cause = status.lastDisconnect?.reason?.trim() ? formatAgentBackendLoss(status.lastDisconnect) : null;
   if (status.state === "reconnecting") {
     return {
       title: "Agent backend reconnecting...",
-      detail: reason
-        ? `In-flight turns were interrupted; they will be resumed automatically. Last disconnect: ${reason}.`
+      detail: cause
+        ? `In-flight turns were interrupted; they will be resumed automatically. Cause: ${cause}.`
         : "In-flight turns were interrupted; they will be resumed automatically.",
     };
   }
   if (status.state === "disconnected") {
     return {
       title: "Agent backend disconnected",
-      detail: reason
-        ? `Last disconnect: ${reason}. Runs cannot continue until the backend reconnects.`
+      detail: cause
+        ? `Cause: ${cause}. Runs cannot continue until the backend reconnects.`
         : "Runs cannot continue until the backend reconnects.",
     };
   }
@@ -51,15 +51,8 @@ function describeBackendStatusBanner(status: AgentBackendStatus): { title: strin
   const sessions = status.lastAutoResumedSessionCount;
   return {
     title: `Agent backend recovered at ${recoveredAt}`,
-    detail: `Recovered after ${reason ?? "a disconnect"}; ${sessions} session${sessions === 1 ? "" : "s"} resumed automatically.`,
+    detail: `${cause ? `Cause: ${cause}. ` : ""}${sessions} session${sessions === 1 ? "" : "s"} resumed automatically.`,
   };
-}
-
-function formatDisconnectReason(status: AgentBackendStatus): string | null {
-  const reason = status.lastDisconnect?.reason?.trim();
-  if (!reason) return null;
-  const detail = status.lastDisconnect?.detail?.trim();
-  return detail ? `${reason} - ${detail}` : reason;
 }
 
 function formatTime(value: string | null): string {

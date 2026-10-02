@@ -461,6 +461,7 @@ export interface SessionRunnerDeps {
 export class SessionRunner {
   private readonly watchdogPromises = new Map<string, Promise<void>>();
   private readonly sessionFeeds = new Map<string, SessionFeed>();
+  private lastRuntimeEvent: { receivedAtMs: number; sessionId: string; type: string } | undefined;
   /**
    * The CLI mode each loaded session's runs use. The CLI keeps a session's mode after a run, so a
    * turn it starts on its own runs in the mode of the last send. Absent means unknown.
@@ -478,6 +479,11 @@ export class SessionRunner {
   private runtimeStampsAgentTurns = false;
 
   constructor(private readonly deps: SessionRunnerDeps) {}
+
+  /** The newest event any loaded session's runtime handle delivered, whoever it was for. */
+  getLastRuntimeEvent(): { receivedAtMs: number; sessionId: string; type: string } | undefined {
+    return this.lastRuntimeEvent;
+  }
 
   async waitForWatchdogIdle(sessionId: string): Promise<void> {
     while (true) {
@@ -556,6 +562,7 @@ export class SessionRunner {
   }
 
   private routeSessionEvent(sessionId: string, feed: SessionFeed, event: any): void {
+    this.lastRuntimeEvent = { receivedAtMs: Date.now(), sessionId, type: String(event?.type) };
     const mainAgent = !getSdkAgentId(event);
     const at = getEventTimestampMs(event) ?? Date.now();
     if (mainAgent && event?.type === "session.compaction_complete") this.deps.resetTurnContext?.(sessionId);
