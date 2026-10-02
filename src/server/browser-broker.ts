@@ -69,6 +69,8 @@ export interface BrowserBrokerOptions {
     target: BrowserTarget,
     telemetryStore?: TelemetryStore,
   ) => Promise<Awaited<ReturnType<typeof shutdownBridgeBrowser>>>;
+  removeProfile?: (profileDir: string) => Promise<void>;
+  profileRemoveRetryDelaysMs?: readonly number[];
 }
 
 interface MutableBrowserContextHealth {
@@ -87,6 +89,13 @@ const DEFAULT_PUBLIC_CONCURRENCY = 5;
 const READINESS_TIMEOUT_MS = 45_000;
 const READINESS_RETRY_DELAYS_MS = [250, 750, 1_500] as const;
 const STALE_PUBLIC_PROFILE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+/**
+ * Waits between attempts to remove a public profile. A browser that had to be killed can keep
+ * files of its profile open for a moment after its processes are gone. The attempts are counted
+ * here because rm's own `maxRetries` applies to every nested folder again, which multiplies the
+ * wait with the depth of the file that is still open.
+ */
+const PROFILE_REMOVE_RETRY_DELAYS_MS = [100, 200, 400, 800, 1_500, 2_000] as const;
 
 /** How long a browser_session handle may go unused before the Bridge closes it. */
 export const BROWSER_SESSION_IDLE_TIMEOUT_MS = 30 * 60_000;
@@ -124,6 +133,8 @@ export class BrowserBroker {
   private readonly publicConcurrency: number;
   private readonly runCommand: NonNullable<BrowserBrokerOptions["runCommand"]>;
   private readonly shutdownTarget: NonNullable<BrowserBrokerOptions["shutdownTarget"]>;
+  private readonly removeProfile: NonNullable<BrowserBrokerOptions["removeProfile"]>;
+  private readonly profileRemoveRetryDelaysMs: readonly number[];
   private readonly publicWaiters: Array<() => void> = [];
   private readonly activePublicProfiles = new Set<string>();
   private readonly targetTails = new Map<string, Promise<void>>();
@@ -153,6 +164,8 @@ export class BrowserBroker {
     this.runCommand = options.runCommand ?? ((command, timeout, commandOptions) =>
       ab(command, timeout, commandOptions));
     this.shutdownTarget = options.shutdownTarget ?? shutdownBridgeBrowser;
+    this.removeProfile = options.removeProfile ?? ((profileDir) => rm(profileDir, { recursive: true, force: true }));
+    this.profileRemoveRetryDelaysMs = options.profileRemoveRetryDelaysMs ?? PROFILE_REMOVE_RETRY_DELAYS_MS;
   }
 
   getAuthenticatedTarget(): BrowserTarget {
@@ -209,8 +222,13 @@ export class BrowserBroker {
           metadata: options.metadata,
         });
       } catch (cleanupError) {
-        if (!operationError) throw cleanupError;
-        console.error("[browser] Public browser cleanup failed after operation failure:", cleanupError);
+        // The operation's own outcome stands: its caller can do nothing about a browser or a
+        // profile folder left behind, and both are cleared later (the daemon's idle limit, the
+        // sweep of stale profiles).
+        console.error(
+          `[browser] Public browser cleanup failed after the operation ${operationError ? "failed" : "succeeded"}:`,
+          cleanupError,
+        );
       }
     }
   }
@@ -258,7 +276,7 @@ export class BrowserBroker {
       shutdownError = error;
     } finally {
       try {
-        await rm(lease.browserTarget.profileDir, { recursive: true, force: true });
+        await this.removePublicProfile(lease.browserTarget.profileDir);
       } catch (error) {
         removeError = error;
       } finally {
@@ -380,6 +398,18 @@ export class BrowserBroker {
 
   private getPublicProfileRoot(): string {
     return join(this.copilotHome, PUBLIC_PROFILE_ROOT);
+  }
+
+  private async removePublicProfile(profileDir: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.removeProfile(profileDir);
+        return;
+      } catch (error) {
+        if (attempt >= this.profileRemoveRetryDelaysMs.length) throw error;
+        await delay(this.profileRemoveRetryDelaysMs[attempt]);
+      }
+    }
   }
 
   private async cleanupStalePublicProfiles(): Promise<void> {

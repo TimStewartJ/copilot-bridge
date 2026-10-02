@@ -289,4 +289,80 @@ describe("browser broker", () => {
     })).rejects.toThrow("shutdown failed");
     await expect(access(lease.browserTarget.profileDir)).rejects.toThrow();
   });
+
+  it("tries again to remove a public profile whose files are still open", async () => {
+    const root = makeTestDir("browser-broker-remove-retry");
+    const stillOpen = Object.assign(new Error("EBUSY: resource busy or locked, unlink 'lockfile'"), { code: "EBUSY" });
+    const removeProfile = vi.fn<(profileDir: string) => Promise<void>>()
+      .mockRejectedValueOnce(stillOpen)
+      .mockRejectedValueOnce(stillOpen)
+      .mockResolvedValue(undefined);
+    const broker = new BrowserBroker({
+      copilotHome: root,
+      shutdownTarget: vi.fn(async () => successfulShutdown()),
+      removeProfile,
+      profileRemoveRetryDelaysMs: [0, 0, 0],
+    });
+    const lease = await broker.createSessionTarget("public");
+
+    await broker.disposeSessionTarget(lease, { toolName: "test", browserOpId: "remove-retry" });
+
+    expect(removeProfile).toHaveBeenCalledTimes(3);
+    expect(removeProfile).toHaveBeenCalledWith(lease.browserTarget.profileDir);
+  });
+
+  it("reports a public profile it could not remove after the last attempt", async () => {
+    const root = makeTestDir("browser-broker-remove-gives-up");
+    const removeProfile = vi.fn(async () => {
+      throw Object.assign(new Error("EBUSY: resource busy or locked, unlink 'lockfile'"), { code: "EBUSY" });
+    });
+    const broker = new BrowserBroker({
+      copilotHome: root,
+      shutdownTarget: vi.fn(async () => successfulShutdown()),
+      removeProfile,
+      profileRemoveRetryDelaysMs: [0, 0],
+    });
+    const lease = await broker.createSessionTarget("public");
+
+    await expect(broker.disposeSessionTarget(lease, {
+      toolName: "test",
+      browserOpId: "remove-gives-up",
+    })).rejects.toThrow("Failed to remove public browser profile: EBUSY");
+    expect(removeProfile).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the outcome of a public operation when the cleanup after it fails", async () => {
+    const root = makeTestDir("browser-broker-cleanup-after-operation");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const broker = new BrowserBroker({
+      copilotHome: root,
+      shutdownTarget: vi.fn(async () => successfulShutdown()),
+      removeProfile: vi.fn(async () => {
+        throw new Error("EBUSY: resource busy or locked");
+      }),
+      profileRemoveRetryDelaysMs: [],
+    });
+
+    await expect(broker.withEphemeralContext("public", {
+      toolName: "test",
+      browserOpId: "cleanup-after-success",
+      skipReadiness: true,
+    }, async () => "the page")).resolves.toBe("the page");
+    expect(logged).toHaveBeenCalledWith(
+      "[browser] Public browser cleanup failed after the operation succeeded:",
+      expect.objectContaining({ message: expect.stringContaining("Failed to remove public browser profile") }),
+    );
+
+    await expect(broker.withEphemeralContext("public", {
+      toolName: "test",
+      browserOpId: "cleanup-after-failure",
+      skipReadiness: true,
+    }, async () => {
+      throw new Error("the page did not load");
+    })).rejects.toThrow("the page did not load");
+    expect(logged).toHaveBeenLastCalledWith(
+      "[browser] Public browser cleanup failed after the operation failed:",
+      expect.objectContaining({ message: expect.stringContaining("Failed to remove public browser profile") }),
+    );
+  });
 });
