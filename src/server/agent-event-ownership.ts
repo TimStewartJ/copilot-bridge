@@ -60,7 +60,17 @@ export function showsAgentTurnsAreStamped(event: unknown): boolean {
  * still be filed under the call that launched it.
  */
 export class AgentEventOwners {
-  private readonly toolCallByAgentId = new Map<string, string>();
+  private readonly toolCallByAgentId: Map<string, string>;
+
+  /** `known` is what an earlier part of the same stream taught, as {@link entries} returned it. */
+  constructor(known: Iterable<readonly [string, string]> = []) {
+    this.toolCallByAgentId = new Map(known);
+  }
+
+  /** Everything learnt so far, for a fold of the stream that stops and resumes. */
+  entries(): Array<[string, string]> {
+    return [...this.toolCallByAgentId];
+  }
 
   /** Learns which launching call an agent id stands for from any event that carries both. */
   learn(event: unknown): void {

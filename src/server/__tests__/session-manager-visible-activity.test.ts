@@ -7,7 +7,7 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 
-const readFileCallMock = vi.hoisted(() => vi.fn<(path: string) => void>());
+const fileReadMock = vi.hoisted(() => vi.fn<(path: string) => void>());
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -15,8 +15,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     readFile: async (path: Parameters<typeof actual.readFile>[0], _encoding: BufferEncoding) => {
-      readFileCallMock(String(path));
+      fileReadMock(String(path));
       return readFileSync(path as string, "utf-8");
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      fileReadMock(String(args[0]));
+      return actual.open(...args);
     },
   };
 });
@@ -25,7 +29,7 @@ describe("SessionManager visible activity cache", () => {
   let copilotHome: string;
 
   beforeEach(() => {
-    readFileCallMock.mockReset();
+    fileReadMock.mockReset();
     copilotHome = makeTestDir("visible-activity");
   });
 
@@ -63,7 +67,7 @@ describe("SessionManager visible activity cache", () => {
   }
 
   function countReads(path: string): number {
-    return readFileCallMock.mock.calls.filter(([readPath]) => readPath === path).length;
+    return fileReadMock.mock.calls.filter(([readPath]) => readPath === path).length;
   }
 
   it("uses persisted visible activity without reading the event log", async () => {
@@ -111,7 +115,7 @@ describe("SessionManager visible activity cache", () => {
     expect(countReads(eventsPath)).toBe(1);
     expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
 
-    readFileCallMock.mockReset();
+    fileReadMock.mockReset();
     const sessions = await manager.listSessionsFromDisk();
     expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
     expect(countReads(eventsPath)).toBe(0);

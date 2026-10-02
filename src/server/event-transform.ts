@@ -92,6 +92,41 @@ function isTurnTerminalEvent(event: any): boolean {
 
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
 
+/**
+ * Event types whose payload (`data`) the transcript reads. Every other event matters only through
+ * its envelope (`type`, `id`): as a fork boundary or as the history's latest event.
+ */
+export const TRANSCRIPT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "user.message",
+  "assistant.message",
+  "assistant.turn_start",
+  "assistant.turn_end",
+  "tool.execution_start",
+  "tool.execution_complete",
+  "tool.execution_progress",
+  "tool.execution_partial_result",
+  "subagent.started",
+  "subagent.completed",
+  "subagent.failed",
+  "session.error",
+  "session.idle",
+  "session.shutdown",
+  "session.task_complete",
+  "abort",
+]);
+
+/**
+ * Drops the payload of an event the transcript never reads, so a whole-history read does not hold
+ * every binary asset and permission request in memory. The transform's output is unchanged.
+ */
+export function projectTranscriptEvent(event: unknown): unknown {
+  if (!event || typeof event !== "object" || Array.isArray(event) || !("data" in event)) return event;
+  const record = event as Record<string, unknown>;
+  if (typeof record.type === "string" && TRANSCRIPT_EVENT_TYPES.has(record.type)) return event;
+  const { data: _data, ...envelope } = record;
+  return envelope;
+}
+
 function getRawEventId(event: any): string | undefined {
   return getSdkEventId(event);
 }
@@ -460,15 +495,124 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
   return tracker.getLastVisibleActivityAt();
 }
 
-export interface TransformEventsToMessagesOptions {
-  initialTurnIndex?: number;
-  initialActiveTurnId?: string;
-  initialActiveTurnInstanceId?: string;
+/**
+ * Transcript state carried from one event to the next. Given the cursor in effect just before an
+ * event, the rest of the log transforms exactly as it does inside a whole-history transform, so a
+ * reader can start mid-log from a saved cursor.
+ */
+export interface TranscriptCursor {
+  turnIndex: number;
+  subAgentTurnIndex: number;
+  activeTurnId?: string;
+  activeTurnInstanceId?: string;
+  activeTurnStartedAt?: string;
+  activeUndoEventId?: string;
+  pendingTerminalCompletion?: TerminalCompletion;
+  /** Sub-agent launches that have started and not yet completed or failed. */
+  activeSubAgentToolCallIds: string[];
+  /** The log is known to stamp its agents' turns with their agent; see agent-event-ownership.ts. */
+  agentTurnsStamped: boolean;
   /**
-   * The log is known to stamp sub-agent turn events with their agent, from a part of it that is
-   * not among `events`. See agent-event-ownership.ts.
+   * A turn was taken for an agent's only because an agent was running when it began. If the log
+   * later shows that it stamps turns, a whole-history transform takes that turn for the main
+   * agent's, and a cursor that guessed no longer matches it.
    */
-  agentTurnsStamped?: boolean;
+  guessedAgentTurn: boolean;
+  /** The open turn of each agent whose turns are stamped, by the owner its events are filed under. */
+  agentTurns: Record<string, { turnId: string; turnInstanceId: string }>;
+}
+
+export function createTranscriptCursor(): TranscriptCursor {
+  return {
+    turnIndex: 0,
+    subAgentTurnIndex: 0,
+    activeSubAgentToolCallIds: [],
+    agentTurnsStamped: false,
+    guessedAgentTurn: false,
+    agentTurns: {},
+  };
+}
+
+export function cloneTranscriptCursor(cursor: TranscriptCursor): TranscriptCursor {
+  return {
+    ...cursor,
+    activeSubAgentToolCallIds: [...cursor.activeSubAgentToolCallIds],
+    agentTurns: { ...cursor.agentTurns },
+  };
+}
+
+/**
+ * Applies one event to the cursor. `agentOwners` must already have learnt from the event. Returns
+ * false for an event that can never change the cursor.
+ */
+export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, agentOwners: AgentEventOwners): boolean {
+  const data = event?.data;
+  const firstStamp = !cursor.agentTurnsStamped && showsAgentTurnsAreStamped(event);
+  if (firstStamp) cursor.agentTurnsStamped = true;
+  if (event?.type === "subagent.started" && data?.toolCallId) {
+    if (!cursor.activeSubAgentToolCallIds.includes(data.toolCallId)) cursor.activeSubAgentToolCallIds.push(data.toolCallId);
+    return true;
+  }
+  if ((event?.type === "subagent.completed" || event?.type === "subagent.failed") && data?.toolCallId) {
+    cursor.activeSubAgentToolCallIds = cursor.activeSubAgentToolCallIds.filter((id) => id !== data.toolCallId);
+    return true;
+  }
+  if (event?.type === "assistant.turn_start") {
+    // When the runtime says whose turn a turn event is, each agent's turn is followed on its own
+    // and the main agent's is never mistaken for one of theirs.
+    const agentOwner = cursor.agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
+    if (agentOwner !== undefined) {
+      cursor.subAgentTurnIndex += 1;
+      cursor.agentTurns[agentOwner] = {
+        turnId: `subagent-turn-${cursor.subAgentTurnIndex}`,
+        turnInstanceId: getAssistantTurnInstanceId(event, `subagent-turn-instance-${cursor.subAgentTurnIndex}`),
+      };
+    } else if (!cursor.agentTurnsStamped && cursor.activeSubAgentToolCallIds.length > 0) {
+      // A runtime that does not say whose turn this is: with an agent running, take it for an agent's.
+      cursor.guessedAgentTurn = true;
+      cursor.subAgentTurnIndex += 1;
+      cursor.activeTurnId = `subagent-turn-${cursor.subAgentTurnIndex}`;
+      cursor.activeTurnInstanceId = getAssistantTurnInstanceId(event, `subagent-turn-instance-${cursor.subAgentTurnIndex}`);
+    } else {
+      cursor.turnIndex += 1;
+      cursor.activeTurnId = getSdkTurnId(event) ?? `turn-${cursor.turnIndex}`;
+      cursor.activeTurnInstanceId = getAssistantTurnInstanceId(event, `turn-instance-${cursor.turnIndex}`);
+      cursor.activeTurnStartedAt = typeof event.timestamp === "string" ? event.timestamp : undefined;
+    }
+    return true;
+  }
+  if (extractTerminalCompletion(event) || isTurnTerminalEvent(event)) {
+    cursor.pendingTerminalCompletion = undefined;
+    const endedAgent = cursor.agentTurnsStamped && event.type === "assistant.turn_end"
+      ? agentOwners.ownerOf(event)
+      : undefined;
+    if (endedAgent !== undefined) {
+      // An agent finishing a turn leaves the main agent's turn exactly as it was.
+      delete cursor.agentTurns[endedAgent];
+    } else {
+      cursor.activeTurnId = undefined;
+      cursor.activeTurnInstanceId = undefined;
+      cursor.activeTurnStartedAt = undefined;
+    }
+    return true;
+  }
+  if (event?.type === "user.message") {
+    if (!isVisibleMessageEvent(event) || getSkillSource(event) || isAutopilotContinuationEvent(event)) return false;
+    cursor.activeUndoEventId = getUndoBoundaryEventId(event);
+    return true;
+  }
+  if (event?.type === "tool.execution_start" && data?.toolCallId) {
+    const completion = extractTerminalCompletionFromToolCall(data.toolName ?? data.name ?? "unknown", data.arguments);
+    if (!completion) return false;
+    cursor.pendingTerminalCompletion = completion;
+    return true;
+  }
+  return firstStamp;
+}
+
+export interface TransformEventsToMessagesOptions {
+  /** Cursor in effect before the first event, when `events` is a suffix of the log. */
+  initialCursor?: TranscriptCursor;
 }
 
 /**
@@ -482,20 +626,10 @@ export function transformEventsToMessages(
 ): TransformedEntry[] {
   const entries: TransformedEntry[] = [];
   let idx = 0;
-  let turnIndex = options.initialTurnIndex ?? 0;
-  let subAgentTurnIndex = 0;
-  let activeTurnId = options.initialActiveTurnId;
-  let activeTurnInstanceId = options.initialActiveTurnInstanceId;
-  let activeTurnStartedAt: string | undefined;
-  let activeUndoEventId: string | undefined;
-  let pendingTerminalCompletion: TerminalCompletion | undefined;
-  const activeSubAgentToolCallIds = new Set<string>();
-  const correlatingSubAgentToolCallIds = new Set<string>();
-  // When the runtime says whose turn a turn event is, each agent's turn is followed on its own and
-  // the main agent's is never mistaken for one of theirs.
-  let agentTurnsStamped = options.agentTurnsStamped === true;
+  const cursor = cloneTranscriptCursor(options.initialCursor ?? createTranscriptCursor());
+  // Pass 1 tracks the same launches as the cursor, as of each event it indexes.
+  const correlatingSubAgentToolCallIds = new Set<string>(cursor.activeSubAgentToolCallIds);
   const agentOwners = new AgentEventOwners();
-  const agentTurns = new Map<string, { turnId: string; turnInstanceId: string }>();
 
   // Pass 1: Index tool completions and sub-agent metadata for enrichment
   const toolCompletes = new Map<string, ToolCompletionRecord>();
@@ -511,7 +645,8 @@ export function transformEventsToMessages(
   for (const event of events) {
     const data = (event as any).data;
     agentOwners.learn(event);
-    if (!agentTurnsStamped && showsAgentTurnsAreStamped(event)) agentTurnsStamped = true;
+    // A log that stamps its agents' turns anywhere is read that way from its first event.
+    if (showsAgentTurnsAreStamped(event)) cursor.agentTurnsStamped = true;
     if (event.type === "tool.execution_start" && data?.toolCallId) {
       openToolCallOwners.set(data.toolCallId, getSdkAgentId(event));
       toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
@@ -579,44 +714,16 @@ export function transformEventsToMessages(
     }
   }
 
-  // Pass 2: Emit entries chronologically
+  // Pass 2: Emit entries chronologically. The cursor owns every state change; an entry reads the
+  // turn it belongs to (a closing event's turn is the one in effect before it closes).
   for (const event of events) {
     const data = (event as any).data;
+    const { activeTurnId: closingTurnId, activeTurnInstanceId: closingTurnInstanceId } = cursor;
+    const pendingTerminalCompletion = cursor.pendingTerminalCompletion;
+    advanceTranscriptCursor(cursor, event, agentOwners);
+    const { activeTurnId, activeTurnInstanceId, activeTurnStartedAt, activeUndoEventId } = cursor;
 
-    if (event.type === "subagent.started" && data?.toolCallId) {
-      activeSubAgentToolCallIds.add(data.toolCallId);
-    } else if (
-      (event.type === "subagent.completed" || event.type === "subagent.failed")
-      && data?.toolCallId
-    ) {
-      activeSubAgentToolCallIds.delete(data.toolCallId);
-    } else if (event.type === "assistant.turn_start") {
-      const agentOwner = agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
-      if (agentOwner !== undefined) {
-        subAgentTurnIndex += 1;
-        agentTurns.set(agentOwner, {
-          turnId: `subagent-turn-${subAgentTurnIndex}`,
-          turnInstanceId: getAssistantTurnInstanceId(event, `subagent-turn-instance-${subAgentTurnIndex}`),
-        });
-        continue;
-      }
-      // A runtime that does not say whose turn this is: with an agent running, take it for an agent's.
-      if (!agentTurnsStamped && activeSubAgentToolCallIds.size > 0) {
-        subAgentTurnIndex += 1;
-        activeTurnId = `subagent-turn-${subAgentTurnIndex}`;
-        activeTurnInstanceId = getAssistantTurnInstanceId(
-          event,
-          `subagent-turn-instance-${subAgentTurnIndex}`,
-        );
-        continue;
-      }
-      turnIndex += 1;
-      activeTurnId = getSdkTurnId(event) ?? `turn-${turnIndex}`;
-      activeTurnInstanceId = getAssistantTurnInstanceId(event, `turn-instance-${turnIndex}`);
-      activeTurnStartedAt = typeof (event as any).timestamp === "string"
-        ? (event as any).timestamp
-        : undefined;
-    } else if (extractTerminalCompletion(event)) {
+    if (extractTerminalCompletion(event)) {
       const completion = extractTerminalCompletion(event)!;
       entries.push({
         id: `entry-${idx++}`,
@@ -625,13 +732,9 @@ export function transformEventsToMessages(
         completion,
         content: completion.content,
         timestamp: (event as any).timestamp,
-        ...(activeTurnId ? { turnId: activeTurnId } : {}),
-        ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
+        ...(closingTurnId ? { turnId: closingTurnId } : {}),
+        ...(closingTurnInstanceId ? { turnInstanceId: closingTurnInstanceId } : {}),
       });
-      pendingTerminalCompletion = undefined;
-      activeTurnId = undefined;
-      activeTurnInstanceId = undefined;
-      activeTurnStartedAt = undefined;
     } else if (isTurnTerminalEvent(event)) {
       if (pendingTerminalCompletion) {
         entries.push({
@@ -641,22 +744,10 @@ export function transformEventsToMessages(
           completion: pendingTerminalCompletion,
           content: pendingTerminalCompletion.content,
           timestamp: data?.timestamp ?? (event as any).timestamp,
-          ...(activeTurnId ? { turnId: activeTurnId } : {}),
-          ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
+          ...(closingTurnId ? { turnId: closingTurnId } : {}),
+          ...(closingTurnInstanceId ? { turnInstanceId: closingTurnInstanceId } : {}),
         });
-        pendingTerminalCompletion = undefined;
       }
-      const endedAgent = agentTurnsStamped && event.type === "assistant.turn_end"
-        ? agentOwners.ownerOf(event)
-        : undefined;
-      if (endedAgent !== undefined) {
-        // An agent finishing a turn leaves the main agent's turn exactly as it was.
-        agentTurns.delete(endedAgent);
-        continue;
-      }
-      activeTurnId = undefined;
-      activeTurnInstanceId = undefined;
-      activeTurnStartedAt = undefined;
     } else if (event.type === "user.message") {
       if (isAgentInjectedSystemMessage(event)) continue;
       if (isSdkAgentUserMessage(event)) continue;
@@ -683,7 +774,6 @@ export function transformEventsToMessages(
         });
         continue;
       }
-      activeUndoEventId = getUndoBoundaryEventId(event);
       const blobAttachments = data.attachments
         ?.filter((a: any) => a.type === "blob" && a.mimeType)
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
@@ -743,18 +833,15 @@ export function transformEventsToMessages(
       if (!data?.toolCallId) continue;
       const toolName = data.toolName ?? data.name ?? "unknown";
       const terminalCompletion = extractTerminalCompletionFromToolCall(toolName, data.arguments);
-      if (terminalCompletion) {
-        pendingTerminalCompletion = terminalCompletion;
-        continue;
-      }
+      if (terminalCompletion) continue;
       if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
       const complete = toolCompletes.get(data.toolCallId);
       const resolution = correlator.resolve(data.toolCallId);
       const outcome = resolveToolOutcome(resolution, complete, toolName);
       // An agent's step belongs to that agent's turn, not to whichever turn began most recently.
-      const agentOwner = agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
+      const agentOwner = cursor.agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
       const stepTurn = agentOwner !== undefined
-        ? agentTurns.get(agentOwner)
+        ? cursor.agentTurns[agentOwner]
         : { turnId: activeTurnId, turnInstanceId: activeTurnInstanceId };
       const parentToolCallId = agentOwners.launchOf(event);
       entries.push({

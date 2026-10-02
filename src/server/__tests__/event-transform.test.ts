@@ -1,11 +1,64 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  advanceTranscriptCursor,
+  createTranscriptCursor,
   getLastVisibleActivityAt,
   getUndoBoundaryEventId,
   getVisibleReasoningText,
   isVisibleMessageEvent,
+  projectTranscriptEvent,
   transformEventsToMessages,
+  TRANSCRIPT_EVENT_TYPES,
 } from "../event-transform.js";
+import { AgentEventOwners } from "../agent-event-ownership.js";
+import { TERMINAL_TURN_EVENT_TYPES } from "../../shared/terminal-completion.js";
+
+describe("transcript event projection", () => {
+  it("keeps transcript events whole and only the envelope of the rest", () => {
+    const message = { type: "assistant.message", id: "a", data: { content: "hi" } };
+    expect(projectTranscriptEvent(message)).toBe(message);
+    expect(projectTranscriptEvent({ type: "session.binary_asset", agentId: "x", id: "b", timestamp: "t", parentId: "p", data: { blob: "..." } }))
+      .toEqual({ type: "session.binary_asset", agentId: "x", id: "b", timestamp: "t", parentId: "p" });
+    expect(projectTranscriptEvent({ id: "c", data: {} })).toEqual({ id: "c" });
+    for (const value of [null, 3, "text", ["data"], { type: "session.usage_checkpoint", id: "d" }]) {
+      expect(projectTranscriptEvent(value)).toBe(value);
+    }
+  });
+
+  it("keeps every event type the transform reads", () => {
+    const read = (...paths: string[]) => paths.map((path) => readFileSync(new URL(path, import.meta.url), "utf-8")).join("\n");
+    const compared = [...read("../event-transform.ts", "../sdk-event-identity.ts")
+      .matchAll(/(?<!typeof )\b(?:event|nextEvent|record)\??\.type\s*[!=]==\s*"([^"]+)"/g)].map((match) => match[1]!);
+    // The agent folds read the same projected events, and name every type they read as a literal.
+    const named = [...read("../agent-event-ownership.ts", "../transcript-agent-fold.ts")
+      .matchAll(/"([a-z]+\.[a-z_]+)"/g)].map((match) => match[1]!);
+    expect(compared.length).toBeGreaterThan(10);
+    expect(named.length).toBeGreaterThan(10);
+    expect([...new Set([...compared, ...named, ...TERMINAL_TURN_EVENT_TYPES])].filter((type) => !TRANSCRIPT_EVENT_TYPES.has(type))).toEqual([]);
+  });
+
+  it("gives the same transcript when non-transcript payloads are dropped", () => {
+    const events = [
+      { type: "user.message", id: "u1", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Go" } },
+      { type: "assistant.turn_start", id: "t1", data: { turnId: "turn-a" } },
+      { type: "assistant.message", id: "m1", data: { content: "Working", reasoningText: "think" } },
+      { type: "tool.execution_start", id: "s1", data: { toolCallId: "call-1", toolName: "task", arguments: { prompt: "sub" } } },
+      { type: "permission.requested", id: "p1", data: { request: "x".repeat(1000) } },
+      { type: "subagent.started", id: "sa1", data: { toolCallId: "call-1", agentName: "helper" } },
+      { type: "subagent.failed", id: "sf1", data: { toolCallId: "call-1", error: "boom" } },
+      { type: "assistant.message", id: "m2", data: { content: "Done" } },
+      { type: "assistant.turn_end", id: "e1", data: { turnId: "turn-a" } },
+      { type: "system.message", id: "sys", data: { content: "skip me" } },
+      { type: "session.binary_asset", id: "asset", data: { blob: "y".repeat(1000) } },
+      { type: "user.message", id: "u2", data: { content: "Next" } },
+    ];
+    const projected = events.map(projectTranscriptEvent);
+    expect(transformEventsToMessages(projected, "s")).toEqual(transformEventsToMessages(events, "s"));
+    expect(getLastVisibleActivityAt(projected, "s")).toEqual(getLastVisibleActivityAt(events, "s"));
+    expect(transformEventsToMessages(events, "s").find((entry) => entry.sourceEventId === "m2")?.forkBoundaryEventId).toBe("asset");
+  });
+});
 
 describe("event-transform visible activity", () => {
   it("ignores hidden lifecycle events after the last visible message", () => {
@@ -1397,7 +1450,7 @@ describe("event-transform model thinking", () => {
     expect(getLastVisibleActivityAt([turnStart, thinkingOnly])).toBeUndefined();
   });
 
-  it("omits the model-call start when the turn began above the window being read", () => {
+  it("continues the turn a window starts inside, including when that turn began", () => {
     const entries = transformEventsToMessages([
       {
         id: "assistant-message-1",
@@ -1405,10 +1458,71 @@ describe("event-transform model thinking", () => {
         timestamp: "2026-09-20T08:00:06.000Z",
         data: { content: "Reply", reasoningText: "Thinking" },
       },
-    ], "session-1", { initialTurnIndex: 4, initialActiveTurnId: "3", initialActiveTurnInstanceId: "turn-start-4" });
+    ], "session-1", {
+      initialCursor: {
+        ...createTranscriptCursor(),
+        turnIndex: 4,
+        activeTurnId: "3",
+        activeTurnInstanceId: "turn-start-4",
+        activeTurnStartedAt: "2026-09-20T08:00:01.000Z",
+        activeUndoEventId: "user-1",
+      },
+    });
 
-    expect(entries[0]).toMatchObject({ type: "reasoning", turnInstanceId: "turn-start-4" });
-    expect(entries[0]?.reasoning?.startedAt).toBeUndefined();
+    expect(entries[0]).toMatchObject({ type: "reasoning", turnId: "3", turnInstanceId: "turn-start-4" });
+    expect(entries[0]?.reasoning?.startedAt).toBe("2026-09-20T08:00:01.000Z");
+    expect(entries[1]).toMatchObject({ type: "message", turnId: "3", undoEventId: "user-1" });
+  });
+
+  it("transforms any suffix exactly as the whole log from the cursor in effect before it", () => {
+    const events = [
+      { id: "u1", type: "user.message", timestamp: "2026-09-20T08:00:00.000Z", data: { content: "Go" } },
+      { id: "t1", type: "assistant.turn_start", timestamp: "2026-09-20T08:00:01.000Z", data: { turnId: "turn-a" } },
+      { id: "s1", type: "tool.execution_start", data: { toolCallId: "call-1", toolName: "task", arguments: { prompt: "sub" } } },
+      { id: "sa1", type: "subagent.started", agentId: "agent-1", data: { toolCallId: "call-1", agentName: "helper" } },
+      { id: "i1", type: "user.message", agentId: "agent-1", data: { content: "do it" } },
+      { id: "st", type: "assistant.turn_start", agentId: "agent-1", data: {} },
+      { id: "sm", type: "assistant.message", agentId: "agent-1", data: { content: "sub answer", parentToolCallId: "call-1" } },
+      { id: "ss", type: "tool.execution_start", agentId: "agent-1", data: { toolCallId: "call-a", toolName: "view", parentToolCallId: "call-1" } },
+      { id: "sx", type: "tool.execution_complete", agentId: "agent-1", data: { toolCallId: "call-a", success: true, result: { content: "seen" } } },
+      { id: "se", type: "assistant.turn_end", agentId: "agent-1", data: {} },
+      { id: "sc", type: "subagent.completed", agentId: "agent-1", data: { toolCallId: "call-1" } },
+      { id: "c1", type: "tool.execution_complete", data: { toolCallId: "call-1", success: true, result: { content: "done" } } },
+      { id: "tc", type: "tool.execution_start", data: { toolCallId: "call-2", toolName: "task_complete", arguments: { summary: "All done" } } },
+      { id: "m1", type: "assistant.message", timestamp: "2026-09-20T08:00:05.000Z", data: { content: "Reply", reasoningText: "Thinking" } },
+      { id: "e1", type: "assistant.turn_end", data: { turnId: "turn-a" } },
+      { id: "chk", type: "session.usage_checkpoint", data: {} },
+      { id: "u2", type: "user.message", data: { content: "Again" } },
+      { id: "t2", type: "assistant.turn_start", timestamp: "2026-09-20T08:01:00.000Z", data: {} },
+      { id: "m2", type: "assistant.message", data: { content: "Second" } },
+      { id: "i2", type: "session.idle", data: {} },
+    ];
+    const whole = transformEventsToMessages(events, "s");
+    expect(whole.find((entry) => entry.toolCall?.toolCallId === "call-a")).toMatchObject({ turnId: "subagent-turn-1", turnInstanceId: "st" });
+    const cursor = createTranscriptCursor();
+    const agentOwners = new AgentEventOwners();
+    for (let start = 0; start <= events.length; start += 1) {
+      const suffix = transformEventsToMessages(events.slice(start), "s", { initialCursor: cursor });
+      const strip = (entries: typeof whole) => entries.map(({ id: _id, ...entry }) => entry);
+      expect(strip(suffix), `suffix from ${start}`).toEqual(strip(whole.slice(whole.length - suffix.length)));
+      if (start < events.length) {
+        agentOwners.learn(events[start]);
+        advanceTranscriptCursor(cursor, events[start], agentOwners);
+      }
+    }
+  });
+
+  it("never makes a continuation that carries text the undo point", () => {
+    const events = [
+      { id: "u1", type: "user.message", data: { content: "Go", agentMode: "autopilot" } },
+      { id: "c1", type: "user.message", data: { content: "keep going", isAutopilotContinuation: true } },
+      { id: "m1", type: "assistant.message", data: { content: "Done" } },
+    ];
+    const cursor = createTranscriptCursor();
+    for (const event of events) advanceTranscriptCursor(cursor, event, new AgentEventOwners());
+
+    expect(cursor.activeUndoEventId).toBe("u1");
+    expect(transformEventsToMessages(events).map((entry) => entry.undoEventId)).toEqual(["u1", undefined, "u1"]);
   });
 });
 
@@ -1570,7 +1684,8 @@ describe("event-transform turns of the main agent and of its sub-agents", () => 
       start("main-view", "view", 6),
     ];
 
-    expect(turnsOf(tail, { agentTurnsStamped: true })["main-view"]).toMatchObject({ turnId: "1", turnInstanceId: "main-2" });
+    expect(turnsOf(tail, { initialCursor: { ...createTranscriptCursor(), agentTurnsStamped: true } })["main-view"])
+      .toMatchObject({ turnId: "1", turnInstanceId: "main-2" });
     expect(turnsOf(tail)["main-view"]).toMatchObject({ turnId: "subagent-turn-1" });
   });
 

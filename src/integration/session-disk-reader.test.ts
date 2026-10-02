@@ -1,15 +1,18 @@
-import { appendFileSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearEventLogStatsCache,
+  foldTranscriptAgents,
   getEventLogStatsScanConcurrencyForTests,
+  getSessionHistoryCoverage,
   listSessionsFromDisk,
   readMessagesFromDisk,
   setEventLogStatsPersistence,
   type EventLogStatsCacheEntry,
   type SessionDiskReaderDeps,
 } from "../server/session-disk-reader.js";
+import { getLastVisibleActivityAt, transformEventsToMessages } from "../server/event-transform.js";
 import { createEventLogStatsFoldStore } from "../server/event-log-stats-fold-store.js";
 import { runAndCountEventLoopYields } from "../server/__tests__/event-loop-test-utils.js";
 import { createTestBus, makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
@@ -200,6 +203,136 @@ describe("readMessagesFromDisk latest-page path", () => {
       readFullFile: false,
     });
     expect(readSpan?.metadata?.tailEventCount as number).toBeLessThan(5_180);
+  });
+
+  it("matches a whole-history read when the tail window starts inside a sub-agent run", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-tail-cursor");
+    const sessionId = "tail-cursor";
+    const event = (id: string, type: string, data: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type, data, ...extra, id, timestamp: `2026-04-30T10:00:${String(id.length % 60).padStart(2, "0")}.000Z` });
+    const lines = [
+      event("u1", "user.message", { content: "start" }),
+      event("t1", "assistant.turn_start", { turnId: "turn-1" }),
+      event("s1", "tool.execution_start", { toolCallId: "call-1", toolName: "task", arguments: { prompt: "sub" } }),
+      event("sa1", "subagent.started", { toolCallId: "call-1", agentName: "helper" }, { agentId: "agent-1" }),
+      event("tc", "tool.execution_start", { toolCallId: "call-9", toolName: "task_complete", arguments: { summary: "Finished" } }),
+      event("st", "assistant.turn_start", {}, { agentId: "agent-1" }),
+      // Padding pushes everything above out of the tail window.
+      ...Array.from({ length: 6_000 }, (_, index) => event(`pad-${index}`, "internal.trace", { payload: "x".repeat(200) })),
+      ...Array.from({ length: 40 }, (_, index) => [
+        event(`sts${index}`, "tool.execution_start", { toolCallId: `sub-call-${index}`, toolName: "view", arguments: { path: "a" }, parentToolCallId: "call-1" }, { agentId: "agent-1" }),
+        event(`stc${index}`, "tool.execution_complete", { toolCallId: `sub-call-${index}`, success: true, result: { content: "ok" } }, { agentId: "agent-1" }),
+      ]).flat(),
+      event("se", "assistant.turn_end", {}, { agentId: "agent-1" }),
+      event("sc", "subagent.completed", { toolCallId: "call-1" }, { agentId: "agent-1" }),
+      event("c1", "tool.execution_complete", { toolCallId: "call-1", success: true, result: { content: "done" } }),
+      event("m1", "assistant.message", { content: "Reply", reasoningText: "Thinking" }),
+      event("e1", "assistant.turn_end", { turnId: "turn-1" }),
+      event("chk", "session.usage_checkpoint"),
+      ...Array.from({ length: 5 }, (_, index) => [
+        event(`u${index + 2}`, "user.message", { content: `next ${index}` }),
+        event(`t${index + 2}`, "assistant.turn_start", {}),
+        event(`m${index + 2}`, "assistant.message", { content: `answer ${index}`, reasoningText: "more" }),
+        event(`e${index + 2}`, "assistant.turn_end", {}),
+      ]).flat(),
+    ];
+    writeSessionFiles(copilotHome, sessionId, {});
+    writeFileSync(join(copilotHome, "session-state", sessionId, "events.jsonl"), `${lines.join("\n")}\n`);
+    const { deps, spans } = createDeps(copilotHome);
+
+    const whole = await readMessagesFromDisk(deps, sessionId);
+    const latest = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(spans.find((span) => span.name === "session.readFromDisk" && span.metadata?.mode === "tail")?.metadata)
+      .toMatchObject({ readFullFile: false });
+    expect(latest).toEqual({ ...whole, messages: whole.messages.slice(-50), hasMore: true });
+    const reply = latest.messages.find((entry) => entry.sourceEventId === "m1");
+    expect(reply).toMatchObject({ undoEventId: "u1", forkBoundaryEventId: "chk" });
+    // Started above the window: the sub-agent's turn and the pending completion carry into it.
+    expect(latest.messages.find((entry) => entry.sourceEventId === "sts39")).toMatchObject({ turnId: "subagent-turn-1" });
+    expect(latest.messages.find((entry) => entry.type === "completion")).toMatchObject({ content: "Finished", turnId: "turn-1" });
+  });
+
+  it("folds the log again when it begins stamping agent turns after some were guessed", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-stamps-after-guess");
+    const sessionId = "stamps-after-guess";
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    const event = (id: string, type: string, data: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type, data, ...extra, id });
+    const turns = (prefix: string) => Array.from({ length: 30 }, (_, index) => [
+      event(`${prefix}u${index}`, "user.message", { content: `ask ${index}` }),
+      event(`${prefix}t${index}`, "assistant.turn_start"),
+      event(`${prefix}m${index}`, "assistant.message", { content: `answer ${index}` }),
+      event(`${prefix}e${index}`, "assistant.turn_end"),
+    ]).flat();
+    // An older runtime: nothing says whose turn "g0" is, and with an agent running it is guessed the agent's.
+    const unstamped = [
+      event("t0", "assistant.turn_start"),
+      event("s0", "tool.execution_start", { toolCallId: "call-old", toolName: "task", arguments: { prompt: "sub" } }),
+      event("sa0", "subagent.started", { toolCallId: "call-old", agentName: "helper" }),
+      event("g0", "assistant.turn_start"),
+      event("ge0", "assistant.turn_end"),
+      event("sc0", "subagent.completed", { toolCallId: "call-old" }),
+      event("c0", "tool.execution_complete", { toolCallId: "call-old", success: true, result: { content: "done" } }),
+      ...Array.from({ length: 6_000 }, (_, index) => event(`pad-${index}`, "internal.trace", { payload: "x".repeat(200) })),
+      ...turns("a"),
+    ];
+    // A newer runtime continues the same log and says which turns are an agent's.
+    const stamped = [
+      event("t1", "assistant.turn_start"),
+      event("s1", "tool.execution_start", { toolCallId: "call-new", toolName: "task", arguments: { prompt: "sub" } }),
+      event("sa1", "subagent.started", { toolCallId: "call-new", agentName: "helper", executionMode: "background" }, { agentId: "agent-1" }),
+      event("st1", "assistant.turn_start", { parentToolCallId: "call-new" }, { agentId: "agent-1" }),
+      event("e1", "assistant.turn_end"),
+      ...turns("b"),
+    ];
+    writeSessionFiles(copilotHome, sessionId, {});
+    writeFileSync(eventsPath, `${unstamped.join("\n")}\n`);
+    const { deps, spans } = createDeps(copilotHome);
+    const latestTurnId = async () => {
+      const whole = await readMessagesFromDisk(deps, sessionId);
+      const latest = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+      expect(spans.at(-1)?.metadata).toMatchObject({ mode: "tail", readFullFile: false });
+      expect(latest).toEqual({ ...whole, messages: whole.messages.slice(-50), hasMore: true });
+      return latest.messages.at(-1)?.turnId;
+    };
+
+    expect(await latestTurnId()).toBe("turn-31");
+
+    // The stamps make "g0" the main agent's own turn, which renumbers every turn after it.
+    appendFileSync(eventsPath, `${stamped.join("\n")}\n`);
+    expect(await latestTurnId()).toBe("turn-63");
+    expect(spans.filter((span) => span.name === "session.readFromDisk.stats").at(-1)?.metadata)
+      .toMatchObject({ cacheResult: "miss", resumedFromOffset: 0 });
+
+    clearEventLogStatsCache(sessionId);
+    expect(await latestTurnId()).toBe("turn-63");
+  });
+
+  it("reads the whole log when the cursor for the tail window has been pruned", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-cursor-pruned");
+    const sessionId = "cursor-pruned";
+    // Thousands of tiny turns overflow the checkpoint backstop within one tail window.
+    const lines = Array.from({ length: 4_000 }, (_, index) => [
+      JSON.stringify({ type: "user.message", id: `u${index}`, data: { content: `q${index}` } }),
+      JSON.stringify({ type: "assistant.turn_start", id: `t${index}`, data: {} }),
+      JSON.stringify({ type: "assistant.message", id: `m${index}`, data: { content: `a${index}` } }),
+      JSON.stringify({ type: "assistant.turn_end", id: `e${index}`, data: {} }),
+      JSON.stringify({ type: "internal.trace", id: `p${index}`, data: { payload: "x".repeat(40) } }),
+    ]).flat();
+    writeSessionFiles(copilotHome, sessionId, {});
+    writeFileSync(join(copilotHome, "session-state", sessionId, "events.jsonl"), `${lines.join("\n")}\n`);
+    const { deps, spans } = createDeps(copilotHome);
+
+    const whole = await readMessagesFromDisk(deps, sessionId);
+    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    spans.length = 0;
+    const cached = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+
+    expect(spans.find((span) => span.name === "session.readFromDisk.stats")?.metadata).toMatchObject({ cacheResult: "hit" });
+    expect(spans.find((span) => span.name === "session.readFromDisk.tailFallback")?.metadata)
+      .toMatchObject({ reason: "cursor-unavailable" });
+    expect(cached).toEqual({ ...whole, messages: whole.messages.slice(-50), hasMore: true });
   });
 
   it("assembles multi-chunk records without repeatedly copying or searching their prefixes", async () => {
@@ -1311,6 +1444,55 @@ describe("readMessagesFromDisk older-page pagination", () => {
     expect(result.total).toBe(5);
     expect(result.hasMore).toBe(false);
     expect(result.messages.map((entry) => entry.content)).toEqual(["m0", "m1"]);
+  });
+
+  it("reads older pages and whole histories exactly as parsing every event would", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-older-projection");
+    const sessionId = "older-projection";
+    const bulky = (type: string, id: string) => JSON.stringify({ type, id, data: { blob: "\u00e9".repeat(700 * 1024) } });
+    const event = (type: string, id: string, data: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type, data, ...extra, id, timestamp: `2026-04-30T10:${id.padStart(2, "0").slice(-2)}:00.000Z` });
+    const lines: string[] = [];
+    for (let turn = 0; turn < 8; turn += 1) {
+      lines.push(event("user.message", `${turn}0`, { content: `ask ${turn}` }));
+      lines.push(event("assistant.turn_start", `${turn}1`, { turnId: `turn-${turn}` }));
+      lines.push(event("tool.execution_start", `${turn}2`, { toolCallId: `call-${turn}`, toolName: "task", arguments: { prompt: "sub" } }));
+      lines.push(event("subagent.started", `${turn}3`, { toolCallId: `call-${turn}`, agentName: "helper" }, { agentId: `agent-${turn}` }));
+      lines.push(bulky("permission.requested", `${turn}4`));
+      lines.push(event(turn % 2 ? "subagent.completed" : "subagent.failed", `${turn}5`, { toolCallId: `call-${turn}`, error: "boom" }));
+      lines.push(event("assistant.message", `${turn}6`, { content: `answer ${turn}`, reasoningText: "think" }));
+      lines.push(event("assistant.turn_end", `${turn}7`, { turnId: `turn-${turn}` }));
+      lines.push(turn % 3 === 0 ? event("system.message", `${turn}8`, { content: "skip" }) : "{not json");
+      lines.push(bulky("session.binary_asset", `${turn}9`));
+      if (turn === 2) lines.push(event("tool.execution_complete", "late", { toolCallId: "call-1", success: true, result: { content: "late result" } }));
+    }
+    writeSessionFiles(copilotHome, sessionId, {});
+    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
+    writeFileSync(eventsPath, `${lines.join("\r\n")}\r\n\r\n${event("user.message", "99", { content: "last, unterminated" })}`);
+
+    const reference: any[] = [];
+    for (const line of readFileSync(eventsPath, "utf-8").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try { reference.push(JSON.parse(line)); } catch { /* malformed */ }
+    }
+    const allEntries = transformEventsToMessages(reference, sessionId);
+    const expectedMeta = {
+      total: allEntries.length,
+      lastVisibleActivityAt: getLastVisibleActivityAt(reference, sessionId),
+      coverage: getSessionHistoryCoverage(reference),
+      agents: foldTranscriptAgents(reference),
+    };
+    expect(allEntries.length).toBeGreaterThan(20);
+    expect(allEntries.some((entry) => entry.forkBoundaryEventId?.endsWith("9"))).toBe(true);
+
+    const { deps, spans } = createDeps(copilotHome);
+    for (const before of [allEntries.length - 5, 12, 3]) {
+      const page = await readMessagesFromDisk(deps, sessionId, { limit: 5, before });
+      expect(page).toEqual({ ...expectedMeta, messages: allEntries.slice(before - 5 < 0 ? 0 : before - 5, before), hasMore: before - 5 > 0 });
+    }
+    expect(await readMessagesFromDisk(deps, sessionId)).toEqual({ ...expectedMeta, messages: allEntries, hasMore: false });
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata).toMatchObject({ mode: "full", malformedEventCount: 5 });
+    expect(spans.find((span) => span.name === "session.readFromDisk.fullRead")?.metadata).toMatchObject({ bytes: statSync(eventsPath).size });
   });
 
   it("bypasses the bounded-tail optimization for before pages even on large histories", async () => {
