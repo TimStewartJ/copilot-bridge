@@ -28,6 +28,7 @@ import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./rest
 import { queueBootRecoveryPrompts } from "./restart-resume.js";
 import { recoverBackgroundCommandsOnBoot } from "./background-commands.js";
 import { setProcessLaunchObserver } from "./process-host.js";
+import { runOnPerformanceCores } from "./platform.js";
 import { noteTimerDelay } from "./host-suspend.js";
 import {
   getEventLoopLagRequestTelemetryMetadata,
@@ -198,6 +199,14 @@ async function main(): Promise<void> {
   console.log("║      Copilot Web Bridge                ║");
   console.log("╚════════════════════════════════════════╝");
   console.log();
+
+  // Before anything starts a child process: only processes created afterwards inherit it.
+  const scheduling = await runOnPerformanceCores();
+  if (process.platform === "win32") {
+    console.log(scheduling.applied
+      ? `[scheduling] Running on performance cores: ${scheduling.detail}`
+      : `[scheduling] Leaving processor choice to Windows: ${scheduling.detail}`);
+  }
 
   await sessionManager.initialize();
   const sweptRestartTemps = sweepStaleRestartStateTempFiles(

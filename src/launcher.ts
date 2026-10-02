@@ -17,6 +17,7 @@ import { BRIDGE_CONTROL_ROOT_ENV } from "./server/control-root.js";
 import {
   captureProcessIdentity,
   PROCESS_TREE_TERMINATION_BUDGET_MS,
+  runOnPerformanceCores,
   shouldSpawnDetachedProcessGroup,
   terminateProcessTree,
   type ProcessIdentity,
@@ -1630,6 +1631,14 @@ async function main() {
   console.log("║      Copilot Bridge Launcher           ║");
   console.log("╚════════════════════════════════════════╝");
   console.log();
+
+  // First, so the server, the job runner and the tunnels all inherit it.
+  const scheduling = await runOnPerformanceCores();
+  if (process.platform === "win32") {
+    log(scheduling.applied
+      ? `Running on performance cores: ${scheduling.detail}`
+      : `Leaving processor choice to Windows: ${scheduling.detail}`);
+  }
 
   restorePendingRestartSignal();
   const previousRestartState = await readRestartState(RESTART_STATE_FILE);
