@@ -602,6 +602,18 @@ Packaged releases include root-level startup task scripts:
 .\uninstall-startup-task.ps1
 ```
 
+### Processor cores on hybrid CPUs (Windows)
+
+Windows schedules a process tree that owns no visible window onto a hybrid CPU's efficiency cores only, even while its performance cores are idle. The Bridge starts hidden, so everything it runs (agent shells, builds, tests, checks and deploys) would share those few slow cores with the operating system's background services. On a Core i7-12700K (8 performance and 4 efficiency cores) an 8-thread job started by an agent received 1.2 processors' worth of time; restricted to the performance cores it received 8.
+
+At startup the launcher, the server and the management job runner therefore restrict themselves to the performance cores, and every process they start inherits the restriction. Linux, and a CPU with one kind of core, are left alone. `BRIDGE_PERFORMANCE_CORES` in `.env` changes the behavior:
+
+- unset or `all`: every performance core (default)
+- a number such as `4`: that many performance cores, counted from the last one. The Bridge never runs on the others, which leaves them to a game or other foreground work
+- `off`: no restriction. Windows keeps the Bridge on the efficiency cores
+
+Restart the Bridge with its startup wrapper after changing the value. Each of the three processes logs what it applied, for example `Running on performance cores: 16 of 20 logical processors (mask 0xffff)`.
+
 ## Project Structure
 
 ```

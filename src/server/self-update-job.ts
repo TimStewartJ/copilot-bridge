@@ -22,7 +22,8 @@ import { createGitPullRebaseCommand } from "./git-command.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTROL_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const SELF_UPDATE_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
-const SELF_UPDATE_INSTALL_TIMEOUT_MS = 5 * 60_000;
+// Sized to catch a hang, not a busy machine; see STAGING_INSTALL_TIMEOUT_MS.
+const SELF_UPDATE_INSTALL_TIMEOUT_MS = 15 * 60_000;
 const SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS = 10 * 60_000;
 
 export interface SelfUpdateJobOptions {

@@ -798,3 +798,141 @@ export async function preferHighPerformanceScheduling(options: {
     return { applied: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
+
+/** One logical processor as Windows describes it (`GetSystemCpuSetInformation`). */
+export interface LogicalProcessor {
+  /** Bit position in a processor affinity mask. */
+  index: number;
+  /** Logical processors on the same physical core share this value. */
+  core: number;
+  /** Processor group. A machine with more than 64 logical processors has several. */
+  group: number;
+  /** Higher is faster and less power-efficient. The same everywhere unless the CPU is hybrid. */
+  efficiencyClass: number;
+}
+
+const CPU_SET_RECORD_BYTES = 32;
+const CPU_SET_BUFFER_BYTES = CPU_SET_RECORD_BYTES * 2048;
+
+/** Reads the `SYSTEM_CPU_SET_INFORMATION` records Windows returns for its logical processors. */
+export function parseCpuSetInformation(records: Uint8Array): LogicalProcessor[] {
+  const view = Buffer.from(records.buffer, records.byteOffset, records.byteLength);
+  const processors: LogicalProcessor[] = [];
+  for (let offset = 0; offset + CPU_SET_RECORD_BYTES <= view.length;) {
+    const size = view.readUInt32LE(offset);
+    if (size < CPU_SET_RECORD_BYTES) break;
+    // Type 0 (CpuSetInformation) is the only record kind Windows defines.
+    if (view.readUInt32LE(offset + 4) === 0) {
+      processors.push({
+        group: view.readUInt16LE(offset + 12),
+        index: view.readUInt8(offset + 14),
+        core: view.readUInt8(offset + 15),
+        efficiencyClass: view.readUInt8(offset + 18),
+      });
+    }
+    offset += size;
+  }
+  return processors;
+}
+
+/**
+ * The affinity mask of a hybrid CPU's performance cores, or undefined when there is nothing
+ * to choose: every core is the same kind, or the machine has several processor groups, where
+ * one mask cannot describe the processors. `maxCores` keeps only the last cores, so the first
+ * ones stay free for whatever else the machine runs.
+ */
+export function selectPerformanceCoreMask(processors: readonly LogicalProcessor[], maxCores?: number): bigint | undefined {
+  if (processors.length === 0 || processors.some((processor) => processor.group !== 0)) return undefined;
+  const fastest = Math.max(...processors.map((processor) => processor.efficiencyClass));
+  const performance = processors.filter((processor) => processor.efficiencyClass === fastest);
+  if (performance.length === processors.length) return undefined;
+  const cores = [...new Set(performance.map((processor) => processor.core))].sort((a, b) => a - b);
+  const kept = new Set(maxCores !== undefined && maxCores < cores.length ? cores.slice(-maxCores) : cores);
+  return performance
+    .filter((processor) => kept.has(processor.core))
+    .reduce((mask, processor) => mask | (1n << BigInt(processor.index)), 0n);
+}
+
+export const PERFORMANCE_CORES_ENV = "BRIDGE_PERFORMANCE_CORES";
+
+export type PerformanceCoreSetting =
+  | { mode: "all" }
+  | { mode: "off" }
+  | { mode: "limit"; cores: number }
+  | { mode: "invalid"; value: string };
+
+/** `BRIDGE_PERFORMANCE_CORES`: unset or `all`, `off`, or how many performance cores to use. */
+export function readPerformanceCoreSetting(env: NodeJS.ProcessEnv): PerformanceCoreSetting {
+  const value = env[PERFORMANCE_CORES_ENV]?.trim().toLowerCase();
+  if (!value || value === "all") return { mode: "all" };
+  if (value === "off" || value === "0") return { mode: "off" };
+  if (/^[1-9]\d*$/.test(value)) return { mode: "limit", cores: Number(value) };
+  return { mode: "invalid", value };
+}
+
+export interface WindowsProcessorApi {
+  getCurrentProcess(): unknown;
+  /** The raw `SYSTEM_CPU_SET_INFORMATION` records, or undefined when Windows returns none. */
+  readCpuSets(): Uint8Array | undefined;
+  setProcessAffinityMask(process: unknown, mask: bigint): boolean;
+}
+
+async function loadWindowsProcessorApi(): Promise<WindowsProcessorApi> {
+  const imported = await import("koffi");
+  const koffi = ((imported as { default?: unknown }).default ?? imported) as {
+    load(name: string): { func(signature: string): (...args: unknown[]) => unknown };
+  };
+  const kernel32 = koffi.load("kernel32.dll");
+  const getCurrentProcess = kernel32.func("void* __stdcall GetCurrentProcess()");
+  const getSystemCpuSetInformation = kernel32.func(
+    "int __stdcall GetSystemCpuSetInformation(uint8_t* info, uint32 length, _Out_ uint32* returned, void* process, uint32 flags)",
+  );
+  const setProcessAffinityMask = kernel32.func("int __stdcall SetProcessAffinityMask(void* process, uintptr_t mask)");
+  return {
+    getCurrentProcess: () => getCurrentProcess(),
+    readCpuSets: () => {
+      const records = Buffer.alloc(CPU_SET_BUFFER_BYTES);
+      const returned = [0];
+      if (!getSystemCpuSetInformation(records, records.length, returned, null, 0)) return undefined;
+      return records.subarray(0, Number(returned[0]));
+    },
+    setProcessAffinityMask: (process, mask) => Number(setProcessAffinityMask(process, mask)) !== 0,
+  };
+}
+
+/**
+ * Keeps this process, and every process it starts from now on, on the performance cores of
+ * a hybrid CPU. Windows schedules a process tree that owns no visible window onto the
+ * efficiency cores only, even while the performance cores are idle. The Bridge is such a
+ * tree, so agent builds, tests and installs shared four slow cores of a 12-core machine and
+ * crawled as soon as two of them overlapped. The allowed-processor mask is the only setting
+ * child processes inherit; Windows does not pass on a process's scheduling class. A mask
+ * that includes an efficiency core puts the work back on those cores, so it never does.
+ */
+export async function runOnPerformanceCores(options: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  loadApi?: () => Promise<WindowsProcessorApi>;
+} = {}): Promise<{ applied: boolean; detail: string }> {
+  if ((options.platform ?? process.platform) !== "win32") return { applied: false, detail: "not windows" };
+  const setting = readPerformanceCoreSetting(options.env ?? process.env);
+  if (setting.mode === "off") return { applied: false, detail: `${PERFORMANCE_CORES_ENV}=off` };
+  if (setting.mode === "invalid") {
+    return { applied: false, detail: `${PERFORMANCE_CORES_ENV} must be all, off or a number of cores, not "${setting.value}"` };
+  }
+  try {
+    const api = await (options.loadApi ?? loadWindowsProcessorApi)();
+    const records = api.readCpuSets();
+    if (!records) return { applied: false, detail: "Windows did not report its processors" };
+    const processors = parseCpuSetInformation(records);
+    const mask = selectPerformanceCoreMask(processors, setting.mode === "limit" ? setting.cores : undefined);
+    if (mask === undefined) return { applied: false, detail: "this CPU has no separate performance cores" };
+    if (!api.setProcessAffinityMask(api.getCurrentProcess(), mask)) {
+      return { applied: false, detail: `Windows refused processor mask 0x${mask.toString(16)}` };
+    }
+    const used = processors.filter((processor) => (mask >> BigInt(processor.index)) & 1n).length;
+    return { applied: true, detail: `${used} of ${processors.length} logical processors (mask 0x${mask.toString(16)})` };
+  } catch (error) {
+    return { applied: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
