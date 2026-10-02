@@ -105,13 +105,29 @@ describe("SortableTaskItem", () => {
       expect(root.textContent).not.toContain("working");
     });
 
-    it("gives unread activity the leading slot over a working agent in both variants", async () => {
+    it("draws unread activity and a working agent as one mark in both variants", async () => {
       for (const variant of ["rail", "list"] as const) {
         const root = await renderRow(task, indicator({ busy: true, busyCount: 2, unreadCount: 1, unread: true }), variant);
-        expect(getReactProps(leadingIcon(root))?.["data-status"]).toBe("unread");
-        expect(statusIcons(root)).toEqual(["unread"]);
+        const leading = leadingIcon(root);
+        expect(getReactProps(leading)?.["data-status"]).toBe("unread-working");
+        expect(getReactProps(leading)?.["aria-label"]).toBe("Unread conversation, 2 sessions working");
+        expect(statusIcons(root)).toEqual(["unread-working"]);
         expect(root.textContent).not.toContain("working");
+        // The row still counts as unread for the bold title and the unread jump bands.
+        expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.["data-unread-task-id"]).toBe("task-1");
       }
+    });
+
+    it("names both counts on the combined mark", async () => {
+      const root = await renderRow(task, indicator({ busy: true, busyCount: 1, unreadCount: 3, unread: true }));
+      expect(getReactProps(leadingIcon(root))?.["aria-label"]).toBe("3 unread conversations, agent working");
+    });
+
+    it("keeps the plain unread dot beside a Stalled badge, since a stalled agent is not working", async () => {
+      const root = await renderRow(task, indicator({ busy: true, busyCount: 1, stalled: true, unreadCount: 1, unread: true }));
+      expect(getReactProps(leadingIcon(root))?.["data-status"]).toBe("unread");
+      expect(statusIcons(root)).toEqual(["unread", "warning"]);
+      expect(root.textContent).toContain("Stalled");
     });
 
     it("draws a working agent in the leading slot when there is no unread activity", async () => {

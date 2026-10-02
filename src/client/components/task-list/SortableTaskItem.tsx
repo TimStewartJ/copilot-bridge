@@ -67,10 +67,15 @@ export default function SortableTaskItem({
 
   const isRail = variant === "rail";
   const allSignals = getTaskRowSignals(task, indicator, undefined, { quiet });
-  // An open question, unread activity and a working agent share one leading slot.
-  // Priority there: answer needed, then unread, then working.
+  // An open question, unread activity and a working agent share one leading slot. An open question
+  // comes first. Unread results and a working agent are one mark, the unread dot inside the working
+  // ring, so neither hides the other.
   const needsInputSignal = allSignals.find((candidate) => candidate.kind === "needs-input");
   const busySignal = allSignals.find((candidate) => candidate.kind === "busy");
+  const unreadSignal = allSignals.find((candidate) => candidate.kind === "unread");
+  const unreadWorkingLabel = unreadSignal && busySignal
+    ? `${unreadSignal.label}, ${busySignal.label.charAt(0).toLowerCase()}${busySignal.label.slice(1)}`
+    : null;
   const signals = allSignals.filter((candidate) => candidate.kind !== "needs-input" && candidate.kind !== "busy");
   // One line, one status: unread already has its dot, so it only names the row when nothing else does.
   const primarySignal = signals.find((candidate) => candidate.kind !== "unread");
@@ -102,6 +107,8 @@ export default function SortableTaskItem({
         <span data-task-row-leading="" className="flex w-3 shrink-0 items-center justify-center">
           {needsInputSignal ? (
             <StatusIcon kind="needs-input" label={needsInputSignal.label} />
+          ) : showUnreadDot && unreadWorkingLabel ? (
+            <StatusIcon kind="unread-working" label={unreadWorkingLabel} />
           ) : showUnreadDot ? (
             <>
               <StatusIcon kind="unread" decorative />

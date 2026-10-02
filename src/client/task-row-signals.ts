@@ -131,7 +131,12 @@ export function getTaskStatus(indicator?: TaskIndicator): TaskStatus | null {
     return { kind: "needs-input", label: needsUserInputCount === 1 ? "Answer needed" : `${needsUserInputCount} answers needed` };
   }
   if (indicator?.stalled) return { kind: "warning", label: "Stalled" };
-  if ((indicator?.unreadCount ?? 0) > 0 || indicator?.unread) return { kind: "unread", label: "Unread conversations" };
+  if ((indicator?.unreadCount ?? 0) > 0 || indicator?.unread) {
+    // Unread results do not hide an agent that is still working: the dot gains the working ring.
+    return indicator?.busy
+      ? { kind: "unread-working", label: "Unread conversations, agent working" }
+      : { kind: "unread", label: "Unread conversations" };
+  }
   if (indicator?.busy) return { kind: "working", label: "Agent working" };
   return null;
 }

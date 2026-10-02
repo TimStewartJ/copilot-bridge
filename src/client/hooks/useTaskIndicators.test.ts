@@ -257,11 +257,18 @@ describe("getTaskIndicator", () => {
       }))).toEqual({ kind: "needs-input", label: "Answer needed" });
       expect(getTaskStatus(createIndicator({ busy: true, stalled: true })))
         .toEqual({ kind: "warning", label: "Stalled" });
-      expect(getTaskStatus(createIndicator({ busy: true, unreadCount: 1 })))
-        .toEqual({ kind: "unread", label: "Unread conversations" });
       expect(getTaskStatus(createIndicator({ unreadCount: 1 })))
         .toEqual({ kind: "unread", label: "Unread conversations" });
+      expect(getTaskStatus(createIndicator({ busy: true })))
+        .toEqual({ kind: "working", label: "Agent working" });
       expect(getTaskStatus(createIndicator())).toBeNull();
+    });
+
+    it("shows unread results and a working agent as one state, without hiding either", () => {
+      expect(getTaskStatus(createIndicator({ busy: true, unreadCount: 1 })))
+        .toEqual({ kind: "unread-working", label: "Unread conversations, agent working" });
+      expect(getTaskStatus(createIndicator({ busy: true, stalled: true, unreadCount: 1 })))
+        .toEqual({ kind: "warning", label: "Stalled" });
     });
   });
 });
