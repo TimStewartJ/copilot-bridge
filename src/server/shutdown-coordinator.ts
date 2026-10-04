@@ -20,6 +20,11 @@ export function createServerShutdownCoordinator(
   dependencies: {
     exit?: (code: number) => void;
     maxBudgetMs?: number;
+    /**
+     * State to leave for the next server. Started in the tick of the request, before the services
+     * stop, so it is on disk even when the shutdown later runs out of time; awaited before exit.
+     */
+    saveHandoff?: () => Promise<unknown>;
   } = {},
 ): ServerShutdownCoordinator {
   const exit = dependencies.exit ?? ((code: number) => process.exit(code));
@@ -45,11 +50,16 @@ export function createServerShutdownCoordinator(
           exit(1);
         }, timeoutMs);
         exitTimer.unref?.();
+        // No await before shutdownAppContextServices: it stops admitting work in this same tick.
+        const handoff = Promise.resolve()
+          .then(() => dependencies.saveHandoff?.())
+          .catch((error) => console.error("[web] Saving state for the next server failed:", error));
         try {
           await shutdownAppContextServices(ctx, deadline!);
         } catch (error) {
           console.error("[web] Error during graceful shutdown:", error);
         } finally {
+          await handoff;
           clearTimeout(exitTimer);
           if (!forcedExit) exit(0);
         }

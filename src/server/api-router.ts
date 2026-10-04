@@ -130,7 +130,7 @@ import { getPushPublicStatus, type BridgePushPayload, type PushNotificationServi
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import {
-  armHibernateOnIdle,
+  armHibernateOnIdleForServer,
   cancelHibernate,
   disarmHibernateOnIdle,
   getHibernateOnIdleStatus,
@@ -206,7 +206,6 @@ import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { isBackendUnavailableError, isBridgeRestartingError } from "./backend-availability.js";
 import { queueChatMessageDelivery } from "./chat-message-outbox.js";
 import { requestRestart } from "./restart-signal.js";
-import { isRestartPending } from "./restart-state.js";
 import { getRestartBlockers, readRestartStatus } from "./restart-status.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
@@ -2362,7 +2361,8 @@ export function createApiRouter(
   });
 
   // POST /device/hibernate/on-idle — arm or disarm "hibernate once all sessions
-  // are idle". The watcher lives in memory only, so a restart or wake clears it.
+  // are idle". The watcher disarms itself before hibernating, so a wake leaves it off; a server
+  // restart carries it over (device-hibernate-handoff.ts).
   router.post("/device/hibernate/on-idle", (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
 
@@ -2403,17 +2403,7 @@ export function createApiRouter(
       return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
 
-    const status = armHibernateOnIdle({
-      command: idleHibernateCommand,
-      graceMs: graceMinutes * 60_000,
-      getActiveSessionCount: () => ctx.sessionManager.getLifecycleBlockingSessionCount(),
-      getBlockingReason: () => {
-        const job = ctx.managementJobStore?.listActive()[0];
-        if (job) return `A ${job.type} management job is ${job.status}`;
-        const dataDir = ctx.runtimePaths?.dataDir;
-        return dataDir && isRestartPending(dataDir) ? "A restart is pending" : null;
-      },
-    });
+    const status = armHibernateOnIdleForServer(ctx, idleHibernateCommand, graceMinutes * 60_000);
     console.log(
       `[device] Hibernate-on-idle armed via API (grace=${graceMinutes}m, active=${status.activeSessions})`,
     );
