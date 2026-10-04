@@ -15,7 +15,6 @@ import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
 import { getVisibleEventTimestamp } from "./event-transform.js";
-import { clearEventLogStatsCache } from "./session-disk-reader.js";
 import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
@@ -45,10 +44,6 @@ import type {
   StartWorkAttachment,
 } from "./session-attachment-routing.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
-import {
-  truncateQuietIntervalDeferTail,
-  type QuietIntervalDeferTailTruncationRequest,
-} from "./session-history-truncation.js";
 import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
 import type { AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import {
@@ -57,7 +52,6 @@ import {
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
 import {
-  createSessionContextTruncationMarker,
   getProviderTurnIdFromEvent,
   normalizeLiveSessionContextEvent,
 } from "./session-context-normalizer.js";
@@ -302,7 +296,6 @@ export interface CompletionAttentionOptions {
 export interface StartWorkOptions {
   attentionMode?: SessionAttentionMode;
   completionAttention?: boolean | CompletionAttentionOptions;
-  historyTruncation?: QuietIntervalDeferTailTruncationRequest;
   mode?: SendMode;
   clientMessageId?: string;
   /**
@@ -427,7 +420,7 @@ export interface SessionRunnerDeps {
   /** Forget what was delivered because the conversation may have lost it. */
   resetTurnContext?(sessionId: string): void;
   /** Starts compaction early for models whose provider rejects large requests. */
-  imageBudget?: Pick<ImageBudgetController, "attach" | "detach" | "observe" | "reload">;
+  imageBudget?: Pick<ImageBudgetController, "attach" | "detach" | "observe">;
   persistAndRouteAttachments(
     sessionId: string,
     attachments?: StartWorkAttachment[],
@@ -963,7 +956,6 @@ export class SessionRunner {
       completionAttention: options.completionAttention,
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending ${mode} prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
-      historyTruncation: options.historyTruncation,
       execute: async (session) => {
         if (parsedCommand) {
           commandResult = await invokeSlashCommand(session, parsedCommand);
@@ -1012,7 +1004,6 @@ export class SessionRunner {
       execute?: (session: any) => Promise<void>;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
-      historyTruncation?: QuietIntervalDeferTailTruncationRequest;
       /** The run follows a turn the runtime already started: there is no prompt to prepare or send. */
       followsRuntimeTurn?: boolean;
     },
@@ -2333,33 +2324,6 @@ export class SessionRunner {
       if (!(initialization === true || await initialization)) {
         throw new Error(SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE);
       }
-      if (opts.historyTruncation?.mode !== "replace-quiet-interval-defer-tail") return;
-      const result = await truncateQuietIntervalDeferTail({
-        session: activeSession,
-        sessionId,
-        deferId: opts.historyTruncation.deferId,
-        eventsPath: eventsJsonlPath,
-        recordSpan: (name, duration, spanSessionId, metadata) => this.recordSpan(name, duration, spanSessionId, metadata),
-      });
-      if (result.status !== "truncated") return;
-      this.deps.resetTurnContext?.(sessionId);
-      this.deps.imageBudget?.reload(sessionId);
-      publishContextSummary(this.deps.sessionContextStore?.recordContextEvent(createSessionContextTruncationMarker({
-        sessionId,
-        provider: contextTelemetryProvider,
-        providerSessionId: contextTelemetryProviderSessionId,
-        eventId: result.eventId,
-        eventsRemoved: result.eventsRemoved,
-        candidateEventsToRemove: result.candidateEventsToRemove,
-        reason: "replace-quiet-interval-defer-tail",
-      })) ?? null);
-      bus.emit({
-        type: "history_truncated",
-        eventId: result.eventId,
-        eventsRemoved: result.eventsRemoved,
-      });
-      clearEventLogStatsCache(sessionId);
-      this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
     };
 
     retryStaleCachedSession = async (reason, source) => {
