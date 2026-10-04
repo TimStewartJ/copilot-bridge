@@ -9,7 +9,11 @@
 //
 // Without --out both work in a new temporary directory. pack prints it, because the tarballs are
 // its result. verify removes it once everything passed and leaves it in place after a failure.
-// Add package names after the command to limit it to those packages.
+// Add package names or folder names after the command to limit it to those packages.
+//
+// A tarball from pack is what a release publishes (see src/packages/README.md). Its package.json
+// is the folder's without "private", which stays in the folder so npm refuses to publish the
+// source, and with the commit it was built from as gitHead.
 
 import { spawnSync } from "node:child_process";
 import {
@@ -92,9 +96,25 @@ function listPackages(only) {
       const dir = join(packagesDir, entry.name);
       return { dir, manifest: JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) };
     });
-  const unknown = only.filter((name) => !all.some((entry) => entry.manifest.name === name));
-  if (unknown.length > 0) fail(`unknown package(s): ${unknown.join(", ")}. Known: ${all.map((entry) => entry.manifest.name).join(", ")}`);
-  return only.length > 0 ? all.filter((entry) => only.includes(entry.manifest.name)) : all;
+  // A scoped name starts with "@", which PowerShell reads as an operator, so the folder name works too.
+  const isNamed = (entry, wanted) => entry.manifest.name === wanted || basename(entry.dir) === wanted;
+  const unknown = only.filter((wanted) => !all.some((entry) => isNamed(entry, wanted)));
+  if (unknown.length > 0) fail(`unknown package(s): ${unknown.join(", ")}. Known: ${all.map((entry) => basename(entry.dir)).join(", ")}`);
+  return only.length > 0 ? all.filter((entry) => only.some((wanted) => isNamed(entry, wanted))) : all;
+}
+
+/** A package name as npm writes it in a file name: "@scope/name" becomes "scope-name". */
+function fileSlug(name) {
+  return name.replace(/^@/, "").replace(/\//g, "-");
+}
+
+/** The commit a package's files come from. Undefined when they differ from it, or outside a git checkout. */
+function sourceCommit(dir) {
+  const git = (args) => spawnSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const head = git(["rev-parse", "HEAD"]);
+  const changes = git(["status", "--porcelain", "--", dir]);
+  if (head.status !== 0 || changes.status !== 0 || changes.stdout.trim()) return undefined;
+  return head.stdout.trim();
 }
 
 function typecheck(packages) {
@@ -107,12 +127,18 @@ function typecheck(packages) {
 function pack(packages, outRoot) {
   const tarballs = [];
   for (const { dir, manifest } of packages) {
-    const stage = join(outRoot, manifest.name);
+    const stage = join(outRoot, fileSlug(manifest.name));
     rmSync(stage, { recursive: true, force: true });
     mkdirSync(stage, { recursive: true });
     console.log(`[packages] building ${manifest.name}@${manifest.version}`);
     run(process.execPath, [tscCli, "-p", join(dir, "tsconfig.build.json"), "--noEmit", "false", "--outDir", join(stage, "dist")]);
-    for (const file of ["package.json", "README.md", "LICENSE", "CHANGELOG.md"]) {
+    const { private: _folderOnly, ...publishable } = manifest;
+    const gitHead = sourceCommit(dir);
+    if (gitHead) publishable.gitHead = gitHead;
+    else console.log(`[packages] ${manifest.name}: has local changes or is not in a git checkout, so the tarball records no gitHead`);
+    writeFileSync(join(stage, "package.json"), `${JSON.stringify(publishable, null, 2)}\n`);
+    // npm packs these two whatever "files" says. The changelog stays in the repository.
+    for (const file of ["README.md", "LICENSE"]) {
       if (existsSync(join(dir, file))) cpSync(join(dir, file), join(stage, file));
     }
 
@@ -139,9 +165,11 @@ function verify(packages, outRoot) {
   npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", ...tarballs.map((entry) => entry.tarball)], { cwd: consumer });
 
   for (const { dir, manifest } of tarballs) {
+    const installed = JSON.parse(readFileSync(join(consumer, "node_modules", ...manifest.name.split("/"), "package.json"), "utf8"));
+    if (installed.private) fail(`${manifest.name} was packed with "private": true, so npm would refuse to publish the tarball`);
     const smoke = join(dir, "test", "smoke.mjs");
     if (!existsSync(smoke)) fail(`${manifest.name} has no test/smoke.mjs`);
-    const target = join(consumer, `${manifest.name}.smoke.mjs`);
+    const target = join(consumer, `${fileSlug(manifest.name)}.smoke.mjs`);
     cpSync(smoke, target);
     console.log(`[packages] running ${manifest.name} smoke test as an installed dependency`);
     run(process.execPath, [target], { cwd: consumer });

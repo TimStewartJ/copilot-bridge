@@ -6,7 +6,7 @@ import {
   createSmartTurnFeatureExtractor,
   SMART_TURN_FRAMES,
   SMART_TURN_MEL_BINS,
-} from "smart-turn-js";
+} from "@timstewartj/smart-turn";
 
 const samples = new Float32Array(16_000 * 3);
 for (let i = 0; i < samples.length; i++) samples[i] = 0.3 * Math.sin((2 * Math.PI * 220 * i) / 16_000);
@@ -33,4 +33,4 @@ const prediction = await createSmartTurnDetector({ Tensor, session }).predict(sa
 assert.deepEqual(prediction, { probability: 0.75, complete: true });
 assert.deepEqual(fed[0].input_features.dims, [1, 80, 800]);
 assert.deepEqual([...fed[0].input_features.data.slice(0, 8)], [...features.slice(0, 8)]);
-console.log("smart-turn-js smoke passed: features and a prediction from an installed build");
+console.log("smart-turn smoke passed: features and a prediction from an installed build");

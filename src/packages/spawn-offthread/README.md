@@ -41,7 +41,7 @@ Measured there, with the same launches made both ways in the same seconds:
 Processes are not created any faster. The wait moves to a thread that has nothing else to do.
 
 It also shows without an overloaded machine.
-[`bench/event-loop.mjs`](https://github.com/timstewartj/copilot-bridge/blob/master/src/packages/spawn-offthread/bench/event-loop.mjs)
+[`bench/event-loop.mjs`](https://github.com/TimStewartJ/copilot-bridge/blob/master/src/packages/spawn-offthread/bench/event-loop.mjs)
 starts 200 `node -e ""` processes, 8 at a time, each way. On an otherwise idle 12th-generation
 Core i7 desktop with Windows 11 and Node 24:
 
@@ -171,8 +171,8 @@ processes are created on the calling thread, through the mocked module.
 
 ## Limits
 
-- Tested on Windows 11 and Ubuntu 24.04, with Node 24. The code has no platform-specific branches
-  and is expected to work on macOS, but it has not been run there.
+- Its tests run on Windows, Ubuntu and macOS, with Node.js 22 and 24. Beyond the tests it has been
+  used on Windows 11 and Ubuntu 24.04, and not on macOS.
 - Every long-lived child holds a worker thread, which costs several megabytes. This suits tens of
   children, not thousands.
 - The worker is loaded from a file beside the package's entry point. If you bundle your server,

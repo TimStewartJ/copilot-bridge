@@ -8,12 +8,12 @@ compiles it, and installing or deploying the Bridge works exactly as before.
 | Package | What it is | Where the Bridge uses it |
 |---|---|---|
 | [`spawn-offthread`](spawn-offthread/README.md) | `child_process` on worker threads, so creating a process never freezes the event loop | `src/server/process-host.ts` |
-| [`smart-turn-js`](smart-turn-js/README.md) | The Smart Turn v3 end-of-turn model from JavaScript: preprocessing and an ONNX Runtime wrapper | `src/server/voice/voice-engine-worker.ts` |
+| [`@timstewartj/smart-turn`](smart-turn/README.md) | The Smart Turn v3 end-of-turn model from JavaScript: preprocessing and an ONNX Runtime wrapper | `src/server/voice/voice-engine-worker.ts` |
 | [`voice-agent-text`](voice-agent-text/README.md) | What to say from a streamed LLM reply, how to chunk it for TTS, how to read an interruption | `src/server/voice/voice-text.ts` |
 
-Nothing here is published yet. Every `package.json` is marked `"private": true`, which makes
-`npm publish` refuse. The three names were unclaimed on npm on 2026-10-02 and are placeholders
-until a first release.
+The folders are named after the packages, without the scope. Each package is released to npm by
+hand, as described under [Releasing a version](#releasing-a-version). `npm view <name> versions`
+shows what is published, and the package's `CHANGELOG.md` what each version contains.
 
 ## Rules
 
@@ -35,8 +35,9 @@ switch are in `src/server/process-host.ts`, and the name "Bridge" and its voice 
 
 ```text
 src/packages/<name>/
-  package.json          name, version, exports of ./dist; "private" until first release
+  package.json          name, version, exports of ./dist; "private", so npm refuses to publish the folder
   README.md  LICENSE
+  CHANGELOG.md          one section per released version, and "Unreleased" for what changed since
   tsconfig.json         type-checks src/ and test/ with the package's own settings; never emits
   tsconfig.build.json   src/ only; scripts/packages.mjs turns emit on and points it outside the repo
   src/index.ts          the public surface
@@ -57,12 +58,25 @@ npm run packages:pack -- --out E:\Temp\packages   # just the tarballs
 never lands in the repository, because the Bridge build stamp hashes `src/`: `scripts/packages.mjs`
 writes to a temporary directory, or to an `--out` directory outside the repository.
 
-## Publishing a package
+## Releasing a version
 
-1. Settle the name and scope, and set them in the package's `package.json` and README.
-2. Run `npm run packages:verify`.
-3. Remove `"private": true`, bump `version`, and add a `CHANGELOG.md` entry.
-4. `npm run packages:pack -- --out <dir> <name>`, then `npm publish <dir>/<name>-<version>.tgz`.
+What gets published is the tarball that `scripts/packages.mjs` builds, never a folder here. A
+folder holds TypeScript source and no build, and its `package.json` stays `"private": true` so that
+`npm publish` refuses it. The packed `package.json` leaves that flag out and records the commit it
+was built from as `gitHead`.
 
-The Bridge can keep importing the in-tree source after a release. If a package later moves to its
+1. In an ordinary change, set `version` in the package's `package.json` and move the entries under
+   `## Unreleased` in its `CHANGELOG.md` to a `## <version>` section.
+2. Once that change is on `master`, in a checkout of it with no local changes, run
+   `npm run packages:verify` and then `npm run packages:pack -- --out <dir> <folder name>`. The
+   directory must be outside the repository.
+3. The owner of the npm account publishes the file: `npm publish <dir>/<file>.tgz`. npm asks for a
+   second factor, so an agent cannot do this step. A package with a scope needs `--access public`
+   the first time.
+4. Tag the commit `<folder name>-v<version>` and push the tag.
+
+A published version can never be changed or published again. To correct one, release the next
+version and mark the bad one with `npm deprecate`.
+
+The Bridge keeps importing the in-tree source after a release. If a package later moves to its
 own repository, add it to the root `package.json` and change the one import path that uses it.

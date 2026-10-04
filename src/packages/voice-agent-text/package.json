@@ -20,12 +20,12 @@
   "author": "Tim Stewart <timstewartj@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/timstewartj/copilot-bridge.git",
+    "url": "git+https://github.com/TimStewartJ/copilot-bridge.git",
     "directory": "src/packages/voice-agent-text"
   },
-  "homepage": "https://github.com/timstewartj/copilot-bridge/tree/master/src/packages/voice-agent-text#readme",
+  "homepage": "https://github.com/TimStewartJ/copilot-bridge/tree/master/src/packages/voice-agent-text#readme",
   "bugs": {
-    "url": "https://github.com/timstewartj/copilot-bridge/issues"
+    "url": "https://github.com/TimStewartJ/copilot-bridge/issues"
   },
   "type": "module",
   "exports": {
