@@ -21,11 +21,13 @@ import SessionAgentsBar from "./SessionAgentsBar";
 const fetchSessionAgents = vi.fn<(sessionId: string) => Promise<SessionAgentsResponse>>();
 const fetchSessionAgentDetail = vi.fn<(sessionId: string, agentId: string) => Promise<SessionAgentDetailResponse>>();
 const cancelSessionAgent = vi.fn<(sessionId: string, agentId: string) => Promise<{ cancelled: boolean }>>();
+const dismissSessionAgent = vi.fn<(sessionId: string, agentId: string) => Promise<{ dismissed: true }>>();
 
 vi.mock("../api", () => ({
   fetchSessionAgents: (sessionId: string) => fetchSessionAgents(sessionId),
   fetchSessionAgentDetail: (sessionId: string, agentId: string) => fetchSessionAgentDetail(sessionId, agentId),
   cancelSessionAgent: (sessionId: string, agentId: string) => cancelSessionAgent(sessionId, agentId),
+  dismissSessionAgent: (sessionId: string, agentId: string) => dismissSessionAgent(sessionId, agentId),
 }));
 
 type BarProps = Parameters<typeof SessionAgentsBar>[0];
@@ -40,6 +42,7 @@ beforeEach(() => {
   fetchSessionAgents.mockReset();
   fetchSessionAgentDetail.mockReset();
   cancelSessionAgent.mockReset();
+  dismissSessionAgent.mockReset();
   // Reading an opened row in full is beside the point of most cases here.
   fetchSessionAgentDetail.mockRejectedValue(new Error("not under test"));
 });
@@ -322,6 +325,70 @@ describe("SessionAgentsBar", () => {
     expect(text(harness)).toContain("cancellation is not available for this session");
     // The question stays open so the reader can try again or back out.
     expect(text(harness)).toContain("Stop moves-agent?");
+  });
+
+  it("dismisses an idle agent after asking, and the agent leaves the list", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(BASE_MS + 3 * 3_600_000);
+    const docs = task("a-docs", { status: "idle", toolCallId: "call-docs", name: "docs-agent", description: "Update the docs", idleSince: at(0) });
+    const moves = task("a-moves", { toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation" });
+    fetchSessionAgents.mockResolvedValue(listing([moves, docs]));
+    dismissSessionAgent.mockImplementation(async () => {
+      fetchSessionAgents.mockResolvedValue(listing([moves]));
+      return { dismissed: true };
+    });
+
+    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 1, idle: 1, total: 2 }) });
+    await openList(harness, "docs-agent");
+
+    // A working agent is stopped, not dismissed.
+    await click(harness, buttonWith(harness, "moves-agent"));
+    expect(buttonWith(harness, "Stop agent…")).toBeTruthy();
+    expect(buttonWith(harness, "Dismiss agent")).toBeUndefined();
+
+    await click(harness, buttonWith(harness, "docs-agent"));
+    // How long it has waited is what tells a finished agent from one between follow-ups.
+    expect(text(harness)).toContain("went idle 3h ago");
+    await click(harness, buttonWith(harness, "Dismiss agent…"));
+    expect(text(harness)).toContain("Dismiss docs-agent? It ends for good and leaves this list");
+    expect(dismissSessionAgent).not.toHaveBeenCalled();
+
+    await click(harness, buttonWith(harness, "Keep it"));
+    expect(text(harness)).not.toContain("Dismiss docs-agent?");
+    expect(dismissSessionAgent).not.toHaveBeenCalled();
+
+    await click(harness, buttonWith(harness, "Dismiss agent…"));
+    await click(harness, buttons(harness).find((button) => button.textContent === "Dismiss agent"));
+    await waitUntilAct(harness.act, () => !text(harness).includes("docs-agent"), { label: "agent left the list" });
+
+    expect(dismissSessionAgent).toHaveBeenCalledTimes(1);
+    expect(dismissSessionAgent).toHaveBeenCalledWith("s1", "a-docs");
+    expect(cancelSessionAgent).not.toHaveBeenCalled();
+    expect(agentRows(harness).map((row) => row.getAttribute("data-agent-id"))).toEqual(["a-moves"]);
+  });
+
+  it("offers to dismiss an agent that has ended, and says why one was not dismissed", async () => {
+    fetchSessionAgents.mockResolvedValue(listing([
+      task("a-docs", { status: "completed", toolCallId: "call-docs", name: "docs-agent", description: "Update the docs" }),
+    ], { backgroundAgents: liveSummary({ running: 0, idle: 0, total: 1 }) }));
+    dismissSessionAgent.mockRejectedValue(new Error("The runtime did not remove the agent. Try again in a moment"));
+
+    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary() });
+    await openList(harness, "docs-agent");
+    await click(harness, buttonWith(harness, "docs-agent"));
+    // An ended agent cannot be stopped again; dismissing it only takes it off the list.
+    expect(buttonWith(harness, "Stop agent")).toBeUndefined();
+    await click(harness, buttonWith(harness, "Dismiss agent…"));
+    expect(text(harness)).toContain("Dismiss docs-agent? It leaves this list");
+
+    const listReads = fetchSessionAgents.mock.calls.length;
+    await click(harness, buttons(harness).find((button) => button.textContent === "Dismiss agent"));
+    await waitUntilAct(harness.act, () => text(harness).includes("Could not dismiss the agent"), { label: "dismiss error" });
+
+    expect(text(harness)).toContain("The runtime did not remove the agent");
+    // The question stays open, and the list is read again in case it was out of date.
+    expect(text(harness)).toContain("Dismiss docs-agent?");
+    await waitUntilAct(harness.act, () => fetchSessionAgents.mock.calls.length > listReads, { label: "list re-read" });
   });
 
   it("says when the list is an old reading instead of presenting it as current", async () => {
