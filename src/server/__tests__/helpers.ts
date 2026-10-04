@@ -170,6 +170,23 @@ export function setupTestDb(): DatabaseSync {
   return openMemoryDatabase();
 }
 
+/**
+ * Put a recurring defer straight into a finished state, as a fixture. The store has no call for
+ * this: a loop ends only through its runner, cancellation, or (in older rows) a failure.
+ */
+export function endDeferLoop(
+  db: DatabaseSync,
+  loopId: string,
+  status: "completed" | "expired" | "failed",
+  lastError: string | null = null,
+): void {
+  db.prepare(`
+    UPDATE defer_loops
+    SET status = ?, lastError = ?, claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
+    WHERE id = ?
+  `).run(status, lastError, new Date().toISOString(), loopId);
+}
+
 /** Create a test global bus (no-op emitter) */
 export function createTestBus() {
   return createGlobalBus();

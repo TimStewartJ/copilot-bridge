@@ -5,6 +5,7 @@ import { installApiRouteTestHooks, makeTestDir, request } from "../test-support/
 import { normalizeLiveSessionContextEvent } from "../server/session-context-normalizer.js";
 import { SessionBackendDeleteError } from "../server/session-manager.js";
 import { createReturnedDeferDelivery } from "../server/defer-result-message.js";
+import { endDeferLoop } from "../server/__tests__/helpers.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -69,7 +70,7 @@ describe("session deletion cleans up every owned subsystem", () => {
 
     const activeOnce = deferStore.create(SESSION_ID, "future prompt", "2099-01-01T00:00:00.000Z");
     const terminalOnce = deferStore.create(SESSION_ID, "already ran", "2020-01-01T00:00:00.000Z");
-    deferStore.markCompletedById(terminalOnce.id);
+    deferStore.complete(terminalOnce.id);
     const survivingOnce = deferStore.create(OTHER_SESSION_ID, "other session", "2099-01-01T00:00:00.000Z");
 
     const activeLoop = loopStore.create({
@@ -84,7 +85,7 @@ describe("session deletion cleans up every owned subsystem", () => {
       intervalSeconds: 600,
       nextRunAt: "2099-01-01T00:00:00.000Z",
     });
-    loopStore.markCompleted(terminalLoop.id);
+    endDeferLoop(db, terminalLoop.id, "completed");
     const survivingLoop = loopStore.create({
       sessionId: OTHER_SESSION_ID,
       prompt: "other loop",

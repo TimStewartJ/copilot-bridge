@@ -47,9 +47,10 @@ describe("DeferredWorkSheet", () => {
             intervalSeconds: 1_200,
             runCount: 3,
             maxRuns: 10,
-            attempts: 0,
+            attempts: 2,
             createdAt: "2026-09-01T00:00:00.000Z",
             updatedAt: "2026-09-02T00:00:00.000Z",
+            lastError: "All 32 live Copilot contexts are currently in use.",
             canCancel: true,
             canReactivate: false,
           },
@@ -132,6 +133,16 @@ describe("DeferredWorkSheet", () => {
     expect(harness.dom.container.textContent).toContain("Build monitor");
     expect(harness.dom.container.textContent).toContain("Every 20m");
     expect(harness.dom.container.textContent).toContain("Provider unavailable");
+    // A defer that is still going shows why it is waiting or what its last check hit, as a warning.
+    expect(harness.dom.container.textContent).toContain("All 32 live Copilot contexts are currently in use.");
+    expect(harness.dom.container.textContent).toContain("2 failed checks in a row");
+    expect(harness.dom.container.textContent).toContain("5 attempts");
+    const notices = findAllByTag(harness.dom.container, "DIV")
+      .filter((node) => ["status", "alert"].includes(String(getReactProps(node)?.role)));
+    expect(notices.map((node) => [getReactProps(node)?.role, node.textContent])).toEqual([
+      ["status", "All 32 live Copilot contexts are currently in use."],
+      ["alert", "Provider unavailable"],
+    ]);
     expect(harness.dom.container.textContent).toContain("Build monitor · Continued");
     expect(harness.dom.container.textContent).toContain("Build monitor · Notified parent and continued");
     expect(harness.dom.container.textContent).toContain("Parent delivery pending");

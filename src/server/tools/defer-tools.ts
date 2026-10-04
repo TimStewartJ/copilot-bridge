@@ -1,5 +1,6 @@
 import type { AppContext } from "../app-context.js";
 import { parseDeferId } from "../defer-ids.js";
+import { reactivateDefer } from "../defer-reactivate.js";
 import { emitSessionDeferSummary } from "../defer-summary.js";
 import { toolFailure } from "../tool-results.js";
 import {
@@ -261,7 +262,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
     }),
 
     defineSessionBridgeTool("defer_reactivate", {
-      description: "Reactivate a failed, cancelled, or expired same-session defer, or retry its failed parent delivery.",
+      description: "Restart a failed, cancelled, or expired same-session defer. For a defer that is not stopped but whose result never reached this session, sends that result again instead.",
       parameters: {
         type: "object",
         properties: {
@@ -270,77 +271,18 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         required: ["deferId"],
       },
       handler: async (args: any, invocation: any) => {
-        const sessionId = invocation.sessionId;
         const deferId = typeof args.deferId === "string" ? args.deferId : "";
-        const parsed = parseDeferId(deferId);
-        if (!parsed) return toolFailure("deferId must start with once_ or interval_.");
-
-        if (parsed.kind === "once") {
-          if (!ctx.deferredPromptStore) return toolFailure("Deferred prompt store is unavailable.");
-          const existing = ctx.deferredPromptStore.get(parsed.id);
-          if (!existing) return toolFailure(`Defer ${deferId} not found.`);
-          if (existing.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
-          const retriedDeliveries =
-            ctx.deferredPromptStore.reactivateFailedDeliveryForSource(sessionId, deferId);
-          if (retriedDeliveries > 0) {
-            ctx.deferredPromptRunner?.poke();
-            return {
-              success: true,
-              deferId,
-              kind: "once",
-              status: existing.status,
-              message: `Parent delivery for ${deferId} queued for retry.`,
-            };
-          }
-          if (existing.status !== "failed" && existing.status !== "cancelled") {
-            return toolFailure(`Defer ${deferId} is ${existing.status} and cannot be reactivated.`);
-          }
-          const reactivated = ctx.deferredPromptStore.reactivate(parsed.id);
-          if (!reactivated) return toolFailure(`Failed to reactivate defer ${deferId}.`);
-          const updated = ctx.deferredPromptStore.get(parsed.id);
-          emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
-          ctx.deferredPromptRunner?.poke();
-          return {
-            success: true,
-            deferId,
-            kind: "once",
-            status: updated?.status ?? "pending",
-            nextRunAt: updated?.runAt,
-            message: `Defer ${deferId} reactivated.`,
-          };
-        }
-
-        if (!ctx.deferLoopStore) return toolFailure("Recurring defer store is unavailable.");
-        const loop = ctx.deferLoopStore.get(parsed.id);
-        if (!loop) return toolFailure(`Defer ${deferId} not found.`);
-        if (loop.sessionId !== sessionId) return toolFailure(`Defer ${deferId} does not belong to this session.`);
-        const retriedDeliveries =
-          ctx.deferredPromptStore?.reactivateFailedDeliveryForSource(sessionId, deferId) ?? 0;
-        if (retriedDeliveries > 0) {
-          ctx.deferredPromptRunner?.poke();
-          return {
-            success: true,
-            deferId,
-            kind: "interval",
-            status: loop.status,
-            message: `Parent delivery for ${deferId} queued for retry.`,
-          };
-        }
-        if (loop.status !== "failed" && loop.status !== "cancelled" && loop.status !== "expired") {
-          return toolFailure(`Defer ${deferId} is ${loop.status} and cannot be reactivated.`);
-        }
-        const reactivated = ctx.deferLoopStore.reactivate(parsed.id);
-        if (!reactivated) return toolFailure(`Failed to reactivate defer ${deferId}.`);
-        const updated = ctx.deferLoopStore.get(parsed.id);
-        emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
-        ctx.deferLoopRunner?.poke();
+        const result = reactivateDefer(ctx, invocation.sessionId, deferId);
+        if (!result.ok) return toolFailure(result.message);
         return {
           success: true,
           deferId,
-          kind: "interval",
-          status: updated?.status ?? "active",
-          nextRunAt: updated?.nextRunAt,
-          message: `Defer ${deferId} reactivated.`,
+          kind: result.kind,
+          status: result.status,
+          ...(result.nextRunAt ? { nextRunAt: result.nextRunAt } : {}),
+          message: result.deliveryRetried
+            ? `Parent delivery for ${deferId} queued for retry.`
+            : `Defer ${deferId} reactivated.`,
         };
       },
     }),
@@ -371,7 +313,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         const parentDeliveries = new Map<string, { status: string; error?: string }>();
         for (const delivery of ctx.deferredPromptStore?.listDeliveriesForSession(sessionId) ?? []) {
           const sourceId = delivery.sourceId;
-          if (!sourceId || parentDeliveries.has(sourceId)) continue;
+          if (!sourceId || delivery.status === "cancelled" || parentDeliveries.has(sourceId)) continue;
           parentDeliveries.set(sourceId, {
             status: delivery.status,
             ...(delivery.lastError ? { error: delivery.lastError } : {}),

@@ -270,12 +270,25 @@ function DeferCard({
             {item.maxRuns !== undefined ? ` of ${item.maxRuns}` : ""}
           </span>
         )}
-        {item.attempts > 0 && <span>{item.attempts} current attempt{item.attempts === 1 ? "" : "s"}</span>}
+        {item.attempts > 0 && (
+          <span>
+            {item.kind === "interval"
+              ? `${item.attempts} failed check${item.attempts === 1 ? "" : "s"} in a row`
+              : `${item.attempts} attempt${item.attempts === 1 ? "" : "s"}`}
+          </span>
+        )}
         {item.expiresAt && <span title={new Date(item.expiresAt).toLocaleString()}>Expires {timeAgo(item.expiresAt)}</span>}
       </div>
 
       {item.lastError && (
-        <Notice tone="danger" icon={<AlertTriangle size={12} />} className="mt-2">{item.lastError}</Notice>
+        // On a defer that is still going, the last error is why it is waiting or what its last check hit.
+        <Notice
+          tone={ACTIVE_STATUSES.has(item.status) ? "warning" : "danger"}
+          icon={<AlertTriangle size={12} />}
+          className="mt-2"
+        >
+          {item.lastError}
+        </Notice>
       )}
     </div>
   );

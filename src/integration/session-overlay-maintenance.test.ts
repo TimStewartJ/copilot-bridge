@@ -3,6 +3,7 @@ import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import { installApiRouteTestHooks } from "../test-support/api-routes.js";
 import { createSessionOverlayMaintenance } from "../server/session-overlay-maintenance.js";
 import { createReturnedDeferDelivery } from "../server/defer-result-message.js";
+import { endDeferLoop } from "../server/__tests__/helpers.js";
 
 let ctx: ApiRouteTestState["ctx"];
 let db: ApiRouteTestState["db"];
@@ -34,14 +35,14 @@ describe("session overlay maintenance", () => {
     const deferStore = ctx.deferredPromptStore!;
     const loopStore = ctx.deferLoopStore!;
     const terminalPrompt = deferStore.create("gone-session", "done", OLD_ISO);
-    deferStore.markCompletedById(terminalPrompt.id);
+    deferStore.complete(terminalPrompt.id);
     ageDefer("deferred_prompts", terminalPrompt.id);
     const terminalDelivery = deferStore.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: "once_1", kind: "once", parentSessionId: "gone-session" },
       "Done.",
       { deliveryId: "terminal-delivery" },
     ), OLD_ISO);
-    deferStore.markCompletedById(terminalDelivery.id);
+    deferStore.complete(terminalDelivery.id);
     ageDefer("deferred_prompts", terminalDelivery.id);
     const livePrompt = deferStore.create("live-session", "future", "2099-01-01T00:00:00.000Z");
 
@@ -51,7 +52,7 @@ describe("session overlay maintenance", () => {
       intervalSeconds: 600,
       nextRunAt: OLD_ISO,
     });
-    loopStore.markCompleted(terminalLoop.id);
+    endDeferLoop(db, terminalLoop.id, "completed");
     ageDefer("defer_loops", terminalLoop.id);
     const liveLoop = loopStore.create({
       sessionId: "live-session",
@@ -87,7 +88,7 @@ describe("session overlay maintenance", () => {
     ctx.cliSessionCatalog = { listSessions: () => [] } as any;
     const deferStore = ctx.deferredPromptStore!;
     const recentTerminal = deferStore.create("some-session", "done", OLD_ISO);
-    deferStore.markCompletedById(recentTerminal.id);
+    deferStore.complete(recentTerminal.id);
 
     const maintenance = createSessionOverlayMaintenance(ctx, { logger: { log: vi.fn(), error: vi.fn() } });
     const result = await maintenance.runOnce();
