@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseDeferId } from "../server/defer-ids.js";
 import { createReturnedDeferDelivery } from "../server/defer-result-message.js";
 import { createTestApp } from "../test-support/api-routes.js";
+import { endDeferLoop } from "../server/__tests__/helpers.js";
 import { request } from "../test-support/api-routes.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -9,7 +10,7 @@ const OTHER_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
 describe("session deferred activity routes", () => {
   it("lists active and inactive defers with recent worker receipts", async () => {
-    const { app, ctx } = createTestApp();
+    const { app, ctx, db } = createTestApp();
     const once = ctx.deferredPromptStore!.create(
       SESSION_ID,
       "Check a build once",
@@ -23,7 +24,7 @@ describe("session deferred activity routes", () => {
       nextRunAt: "2030-01-01T00:05:00.000Z",
       maxRuns: 10,
     });
-    ctx.deferLoopStore!.markFailedById(loop.id, "Build API unavailable");
+    endDeferLoop(db, loop.id, "failed", "Build API unavailable");
     ctx.telemetryStore!.recordSpan({
       name: "defer.worker",
       sessionId: SESSION_ID,
@@ -113,7 +114,7 @@ describe("session deferred activity routes", () => {
   });
 
   it("includes the latest recurring checkpoint in the session defer list", async () => {
-    const { app, ctx } = createTestApp();
+    const { app, ctx, db } = createTestApp();
     const loop = ctx.deferLoopStore!.create({
       sessionId: SESSION_ID,
       name: "Build monitor",
@@ -224,25 +225,21 @@ describe("session deferred activity routes", () => {
   });
 
   it("retries a failed parent delivery without rerunning completed work", async () => {
-    const { app, ctx } = createTestApp();
+    const { app, ctx, db } = createTestApp();
     const loop = ctx.deferLoopStore!.create({
       sessionId: SESSION_ID,
       prompt: "Watch build 123",
       intervalSeconds: 300,
       nextRunAt: "2030-01-01T00:05:00.000Z",
     });
-    ctx.deferLoopStore!.markCompleted(loop.id);
+    endDeferLoop(db, loop.id, "completed");
     const delivery = ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: loop.deferId, kind: "interval", parentSessionId: SESSION_ID },
       "Build completed",
       { deliveryId: "delivery-1" },
     ));
     const claimed = ctx.deferredPromptStore!.claimDue(delivery.id, 60_000)!;
-    ctx.deferredPromptStore!.markFailed(
-      delivery.id,
-      claimed.claimToken,
-      "Backend unavailable",
-    );
+    ctx.deferredPromptStore!.fail(delivery.id, "Backend unavailable", { claimToken: claimed.claimToken });
 
     const list = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
     expect(list.body.defers[0]).toMatchObject({
@@ -268,6 +265,44 @@ describe("session deferred activity routes", () => {
       status: "pending",
       attempts: 0,
     });
+  });
+
+  it("restarts a stopped defer in one call even when its failure notice never reached the chat", async () => {
+    const { app, ctx } = createTestApp();
+    const once = ctx.deferredPromptStore!.create(SESSION_ID, "Check build 123", "2030-01-01T00:05:00.000Z");
+    const notice = createReturnedDeferDelivery(
+      { deferId: once.deferId, kind: "once", parentSessionId: SESSION_ID },
+      "FINAL DEFER RESULT: The one-shot defer failed after 5 attempts.",
+      { deliveryId: "failure-notice" },
+    );
+    ctx.deferredPromptStore!.fail(once.id, "Model request failed", { message: notice });
+    const claimed = ctx.deferredPromptStore!.claimDue(notice.id, 60_000)!;
+    ctx.deferredPromptStore!.fail(notice.id, "Parent chat could not be resumed", { claimToken: claimed.claimToken });
+
+    // A stopped defer offers a restart, not another try at its notice.
+    const before = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
+    expect(before.body.defers[0]).toMatchObject({ deferId: once.deferId, status: "failed", canReactivate: true });
+    expect(before.body.defers[0].failedDelivery).toBeUndefined();
+
+    const response = await request(app)
+      .post(`/api/sessions/${SESSION_ID}/defers/${once.deferId}/reactivate`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ ok: true, kind: "once", status: "pending" });
+    expect(response.body.deliveryRetried).toBeUndefined();
+    expect(ctx.deferredPromptStore!.get(once.id)).toMatchObject({ status: "pending", attempts: 0 });
+    // The stale notice says the defer is no longer active. It is withdrawn, so nothing can send it later.
+    expect(ctx.deferredPromptStore!.get(notice.id)?.status).toBe("cancelled");
+
+    const after = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
+    expect(after.body.defers[0]).toMatchObject({ deferId: once.deferId, status: "pending", canReactivate: false });
+    expect(after.body.defers[0].failedDelivery).toBeUndefined();
+    expect(after.body.recentDeliveries).toEqual([]);
+
+    const again = await request(app)
+      .post(`/api/sessions/${SESSION_ID}/defers/${once.deferId}/reactivate`);
+    expect(again.status).toBe(409);
+    expect(ctx.deferredPromptStore!.get(notice.id)?.status).toBe("cancelled");
   });
 
   it("does not claim to cancel an already running worker", async () => {
@@ -298,7 +333,7 @@ describe("session deferred activity routes", () => {
       nextRunAt: new Date(createdAt - 60_000).toISOString(),
       expiresAt: new Date(createdAt - 1_000).toISOString(),
     });
-    ctx.deferLoopStore!.markExpired(loop.id);
+    endDeferLoop(db, loop.id, "expired");
 
     const response = await request(app)
       .post(`/api/sessions/${SESSION_ID}/defers/${loop.deferId}/reactivate`);
@@ -313,7 +348,7 @@ describe("session deferred activity routes", () => {
       new Date(Date.now() - 1_000).toISOString(),
       loop.id,
     );
-    ctx.deferLoopStore!.markExpired(loop.id);
+    endDeferLoop(db, loop.id, "expired");
     const second = await request(app)
       .post(`/api/sessions/${SESSION_ID}/defers/${loop.deferId}/reactivate`);
     expect(second.status).toBe(200);
@@ -324,7 +359,7 @@ describe("session deferred activity routes", () => {
   });
 
   it("leaves worker-runtime slack beyond a long recurring interval after reactivation", async () => {
-    const { app, ctx } = createTestApp();
+    const { app, ctx, db } = createTestApp();
     const loop = ctx.deferLoopStore!.create({
       sessionId: SESSION_ID,
       prompt: "Check weekly",
@@ -332,7 +367,7 @@ describe("session deferred activity routes", () => {
       nextRunAt: new Date(Date.now() - 60_000).toISOString(),
       expiresAt: new Date(Date.now() - 1_000).toISOString(),
     });
-    ctx.deferLoopStore!.markExpired(loop.id);
+    endDeferLoop(db, loop.id, "expired");
 
     const response = await request(app)
       .post(`/api/sessions/${SESSION_ID}/defers/${loop.deferId}/reactivate`);

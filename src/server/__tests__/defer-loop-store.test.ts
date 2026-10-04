@@ -50,20 +50,49 @@ describe("defer-loop-store", () => {
     expect(store.claimDue(due.id, 60_000, "2026-01-01T00:00:00.000Z")).toBeUndefined();
   });
 
-  it("renews, retries, and releases claims with token checks", () => {
+  it("renews and releases claims with token checks", () => {
     const loop = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
     const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
 
     expect(store.renewClaim(loop.id, "wrong", 60_000)).toBe(false);
     expect(store.renewClaim(loop.id, claimed.claimToken, 120_000)).toBe(true);
-    expect(store.releaseClaimWithoutAttempt(loop.id, "wrong")).toBe(false);
-    expect(store.retry(loop.id, "wrong", "2026-01-01T00:05:00.000Z")).toBe(false);
-    expect(store.retry(loop.id, claimed.claimToken, "2026-01-01T00:05:00.000Z", "busy")).toBe(true);
+    expect(store.release(loop.id, "wrong")).toBe(false);
+    expect(store.release(loop.id, claimed.claimToken, { error: "No free context" })).toBe(true);
 
-    const retried = store.get(loop.id)!;
-    expect(retried.status).toBe("active");
-    expect(retried.nextRunAt).toBe("2026-01-01T00:05:00.000Z");
-    expect(retried.lastError).toBe("busy");
+    // The try is given back and the loop stays due at its original time.
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      nextRunAt: "2026-01-01T00:00:00.000Z",
+      attempts: 0,
+      runCount: 0,
+      lastError: "No free context",
+    });
+    expect(store.get(loop.id)!.claimToken).toBeUndefined();
+  });
+
+  it("notes why an active loop is waiting until its next successful check", () => {
+    const loop = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
+    store.noteWait(loop.id, "No free context");
+    expect(store.get(loop.id)!.lastError).toBe("No free context");
+
+    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
+    const settled = store.settleOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2026-01-01T00:05:00.000Z",
+      "2026-01-01T00:00:30.000Z",
+    )!;
+    expect(settled.lastError).toBeUndefined();
+  });
+
+  it("returns the earliest future run or running lease expiry as the next wake time", () => {
+    expect(store.getNextWakeAt("2026-01-01T00:00:00.000Z")).toBeUndefined();
+    const due = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
+    store.create({ ...baseLoop, prompt: "later", nextRunAt: "2026-01-01T00:10:00.000Z" });
+    expect(store.getNextWakeAt("2026-01-01T00:00:00.000Z")).toBe("2026-01-01T00:10:00.000Z");
+
+    const claimed = store.claimDue(due.id, 60_000, "2026-01-01T00:00:00.000Z")!;
+    expect(store.getNextWakeAt("2026-01-01T00:00:00.000Z")).toBe(claimed.loop.leaseExpiresAt);
   });
 
   it("summarizes active and running loops with the earliest queued run time", () => {
@@ -110,24 +139,74 @@ describe("defer-loop-store", () => {
     expect(completed.claimToken).toBeUndefined();
   });
 
-  it("resets attempts after a successful occurrence", () => {
-    const loop = store.create({ ...baseLoop, maxRuns: 3, nextRunAt: "2026-01-01T00:00:00.000Z" });
+  it("counts a failed check as a run, keeps the failure streak, and clears it on success", () => {
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({ ...baseLoop, maxRuns: 5, nextRunAt: "2026-01-01T00:00:00.000Z" });
     let claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
     expect(claimed.loop.attempts).toBe(1);
-    expect(store.retry(loop.id, claimed.claimToken, "2026-01-01T00:00:10.000Z", "busy")).toBe(true);
-    claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:10.000Z")!;
-    expect(claimed.loop.attempts).toBe(2);
+    expect(store.settleOccurrence(
+      loop.id,
+      "wrong-token",
+      "2026-01-01T00:05:00.000Z",
+      "2026-01-01T00:00:30.000Z",
+      { error: "wrong" },
+    )).toBeUndefined();
 
-    const completed = store.settleOccurrence(
+    const failed = store.settleOccurrence(
       loop.id,
       claimed.claimToken,
       "2026-01-01T00:05:00.000Z",
       "2026-01-01T00:00:30.000Z",
+      { error: "worker failed" },
     )!;
+    expect(failed).toMatchObject({
+      status: "active",
+      runCount: 1,
+      attempts: 1,
+      nextRunAt: "2026-01-01T00:05:00.000Z",
+      lastError: "worker failed",
+    });
 
-    expect(completed.status).toBe("active");
-    expect(completed.runCount).toBe(1);
-    expect(completed.attempts).toBe(0);
+    claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:05:00.000Z")!;
+    expect(claimed.loop.attempts).toBe(2);
+    const notice = {
+      id: "failing-notice",
+      sessionId: loop.sessionId,
+      sourceId: loop.deferId,
+      prompt: "The recurring defer keeps failing.",
+    };
+    expect(store.settleOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2026-01-01T00:10:00.000Z",
+      "2026-01-01T00:05:30.000Z",
+      { error: "worker failed again", delivery: notice },
+    )).toMatchObject({ status: "active", runCount: 2, attempts: 2, lastError: "worker failed again" });
+    expect(promptStore.listDeliveriesForSession(loop.sessionId)).toEqual([
+      expect.objectContaining({ id: notice.id, sourceId: loop.deferId }),
+    ]);
+
+    claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:10:00.000Z")!;
+    const succeeded = store.settleOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2026-01-01T00:15:00.000Z",
+      "2026-01-01T00:10:30.000Z",
+    )!;
+    expect(succeeded).toMatchObject({ status: "active", runCount: 3, attempts: 0 });
+    expect(succeeded.lastError).toBeUndefined();
+  });
+
+  it("ends the loop when a failed check was its last run", () => {
+    const loop = store.create({ ...baseLoop, maxRuns: 1, nextRunAt: "2026-01-01T00:00:00.000Z" });
+    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
+    expect(store.settleOccurrence(
+      loop.id,
+      claimed.claimToken,
+      "2026-01-01T00:05:00.000Z",
+      "2026-01-01T00:00:30.000Z",
+      { error: "worker failed" },
+    )).toMatchObject({ status: "completed", runCount: 1, lastError: "worker failed" });
   });
 
   it("persists and preserves a checkpoint atomically with an occurrence", () => {
@@ -173,35 +252,25 @@ describe("defer-loop-store", () => {
     )?.checkpoint).toEqual({ status: "running", buildId: 42 });
   });
 
-  it("marks a claimed loop failed and queues its parent message atomically", () => {
+  it("ends an active loop and queues its final message atomically", () => {
     const promptStore = createDeferredPromptStore(db);
-    const loop = store.create({
-      ...baseLoop,
-      nextRunAt: "2026-01-01T00:00:00.000Z",
-    });
-    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
-    const delivery = {
-      id: "failure-delivery",
+    const loop = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
+    const running = store.create({ ...baseLoop, prompt: "running", nextRunAt: "2026-01-01T00:00:00.000Z" });
+    store.claimDue(running.id, 60_000, "2026-01-01T00:00:00.000Z");
+    const message = (id: string, deferId: string) => ({
+      id,
       sessionId: loop.sessionId,
-      sourceId: loop.deferId,
-      prompt: "The recurring defer stopped.",
-    };
+      sourceId: deferId,
+      prompt: "Monitoring expired.",
+    });
 
-    expect(store.failWithMessage(loop.id, "wrong", delivery, {
-      claimToken: "wrong-token",
-    })).toBe(false);
+    expect(store.markTerminalWithMessage(running.id, "expired", message("running-final", running.deferId))).toBe(false);
     expect(promptStore.listDeliveriesForSession(loop.sessionId)).toEqual([]);
 
-    expect(store.failWithMessage(loop.id, "worker failed", delivery, {
-      claimToken: claimed.claimToken,
-    })).toBe(true);
-    expect(store.get(loop.id)).toMatchObject({
-      status: "failed",
-      attempts: 1,
-      lastError: "worker failed",
-    });
+    expect(store.markTerminalWithMessage(loop.id, "expired", message("final", loop.deferId))).toBe(true);
+    expect(store.get(loop.id)!.status).toBe("expired");
     expect(promptStore.listDeliveriesForSession(loop.sessionId)).toEqual([
-      expect.objectContaining({ id: delivery.id, sourceId: loop.deferId }),
+      expect.objectContaining({ id: "final", sourceId: loop.deferId }),
     ]);
   });
 
@@ -217,16 +286,15 @@ describe("defer-loop-store", () => {
     expect(store.listForSession("session-2")[0]?.status).toBe("active");
   });
 
-  it("reclaims expired running loops with an interruption error", () => {
+  it("lists running loops whose lease has expired", () => {
     const loop = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
-    store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z");
+    store.create({ ...baseLoop, prompt: "idle", nextRunAt: "2026-01-01T00:00:00.000Z" });
+    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
 
-    expect(store.reclaimExpiredRunning("2026-01-01T00:00:30.000Z")).toBe(0);
-    expect(store.reclaimExpiredRunning("2026-01-01T00:01:00.000Z")).toBe(1);
-    expect(store.get(loop.id)).toMatchObject({
-      status: "active",
-      lastError: "Deferred execution lease expired before completion.",
-    });
+    expect(store.listExpiredRunning("2026-01-01T00:00:30.000Z")).toEqual([]);
+    expect(store.listExpiredRunning("2026-01-01T00:01:00.000Z")).toEqual([
+      expect.objectContaining({ id: loop.id, status: "running", claimToken: claimed.claimToken }),
+    ]);
   });
 });
 

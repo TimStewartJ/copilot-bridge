@@ -239,9 +239,7 @@ import {
   createDisposableDeferWorker,
   DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX,
   isDisposableDeferWorkerSessionId,
-  type DeferWorkerInput,
   type DeferWorkerLease,
-  type DeferWorkerResult,
   type DisposableDeferWorker,
 } from "./defer-worker.js";
 import type { InterruptedRun } from "./restart-resume.js";
@@ -1129,8 +1127,9 @@ export class SessionManager {
         if (this.shuttingDown) throw new Error(PROMPT_DELIVERY_SHUTDOWN_MESSAGE);
         return this.beginSessionCreationLifetime();
       },
+      // A check that finds no room goes back to the queue; waiting here would hold its chat and a worker slot.
       reserveCapacity: async (sessionConfig) => {
-        const reservation = await this.beginSessionCreation(sessionConfig);
+        const reservation = await this.beginSessionCreation(sessionConfig, { waitTimeoutMs: 0 });
         return () => this.endSessionCreation(reservation);
       },
       createSession: async (sessionConfig) => {
@@ -1532,10 +1531,13 @@ export class SessionManager {
     options: {
       isCancelled?: () => boolean;
       reserve: (reservation: SessionCapacityReservation) => void;
+      /** How long to wait for room; 0 fails at once. Defaults to the configured capacity wait. */
+      waitTimeoutMs?: number;
     },
   ): Promise<boolean> {
     const startedAt = Date.now();
-    const deadline = startedAt + this.sessionCapacityWaitTimeoutMs;
+    const waitTimeoutMs = options.waitTimeoutMs ?? this.sessionCapacityWaitTimeoutMs;
+    const deadline = startedAt + waitTimeoutMs;
     const request = this.getCapacityReservation(sessionConfig);
     let lastCapacityError: SessionCapacityError | undefined;
     let waitingLogged = false;
@@ -1577,18 +1579,21 @@ export class SessionManager {
       }
 
       const remaining = deadline - Date.now();
-      if (this.sessionCapacityWaitTimeoutMs <= 0 || remaining <= 0) {
-        this.recordSpan("session.capacity.wait", Date.now() - startedAt, undefined, {
-          outcome: "timed-out",
-          reason: lastCapacityError.reason,
-          ...lastCapacityError.snapshot,
-        });
+      if (waitTimeoutMs <= 0 || remaining <= 0) {
+        // A caller that does not wait retries on its own schedule; a span per try would only be noise.
+        if (waitTimeoutMs > 0) {
+          this.recordSpan("session.capacity.wait", Date.now() - startedAt, undefined, {
+            outcome: "timed-out",
+            reason: lastCapacityError.reason,
+            ...lastCapacityError.snapshot,
+          });
+        }
         throw lastCapacityError;
       }
       if (!waitingLogged) {
         waitingLogged = true;
         console.warn(
-          `[sdk] Session capacity is full (${formatCapacityUnits(lastCapacityError.snapshot.capacityUnits)}/${formatCapacityUnits(lastCapacityError.snapshot.capacityLimit)} units, ${lastCapacityError.snapshot.contexts}/${lastCapacityError.snapshot.contextLimit} contexts); waiting up to ${Math.ceil(this.sessionCapacityWaitTimeoutMs / 1_000)}s`,
+          `[sdk] Session capacity is full (${formatCapacityUnits(lastCapacityError.snapshot.capacityUnits)}/${formatCapacityUnits(lastCapacityError.snapshot.capacityLimit)} units, ${lastCapacityError.snapshot.contexts}/${lastCapacityError.snapshot.contextLimit} contexts); waiting up to ${Math.ceil(waitTimeoutMs / 1_000)}s`,
         );
       }
       await this.waitForSessionCapacityChange(Math.min(SESSION_CAPACITY_WAIT_POLL_MS, remaining));
@@ -1599,9 +1604,11 @@ export class SessionManager {
 
   private async beginSessionCreation(
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+    options: { waitTimeoutMs?: number } = {},
   ): Promise<SessionCapacityReservation> {
     let capacityReservation: SessionCapacityReservation | undefined;
     await this.waitForSessionCapacity(sessionConfig, {
+      ...options,
       reserve: (reservation) => {
         capacityReservation = reservation;
         this.creatingSessions++;
@@ -5596,12 +5603,25 @@ export class SessionManager {
     }
   }
 
-  runDeferWorker(input: DeferWorkerInput): Promise<DeferWorkerResult> {
-    return this.deferWorker.run(input);
-  }
-
   tryAcquireDeferWorker(): DeferWorkerLease | undefined {
     return this.deferWorker.tryAcquire();
+  }
+
+  /**
+   * Why deferred work cannot get a Copilot context right now, or undefined when it can.
+   * A check always needs a new context (no sessionId); a message needs one only when its chat is not loaded.
+   * Weights are not known before the session config is built, so this asks for the smallest session.
+   * Reserves nothing.
+   */
+  getSessionCapacityWait(sessionId?: string): string | undefined {
+    if (sessionId && this.sessionObjects.has(sessionId)) return undefined;
+    try {
+      this.assertSessionCapacityAvailable({ localMcpInstances: 0, capacityUnits: 1 });
+      return undefined;
+    } catch (error) {
+      if (error instanceof SessionCapacityError) return error.message;
+      throw error;
+    }
   }
 
   async startWorkAndWaitForDelivery(

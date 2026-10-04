@@ -5,7 +5,7 @@ import type { DatabaseSync } from "./db.js";
 import { toOnceDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
-import type { DeferredResultDelivery } from "./defer-result-message.js";
+import { parseReturnedDeferPrompt, type DeferredResultDelivery } from "./defer-result-message.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -60,6 +60,14 @@ export function prepareDeferredResultDeliveryInsert(db: DatabaseSync) {
     ) as any).changes > 0;
 }
 
+export interface SettleOptions {
+  /** Require the row to still be running under this claim. */
+  claimToken?: string;
+  /** Parent message to queue in the same transaction. */
+  message?: DeferredResultDelivery;
+  now?: string;
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createDeferredPromptStore(db: DatabaseSync) {
@@ -93,25 +101,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     ORDER BY runAt ASC, createdAt ASC
   `);
 
-  const selectNextPending = db.prepare(`
-    SELECT * FROM deferred_prompts
-    WHERE status = 'pending'
-    ORDER BY runAt ASC, createdAt ASC
-    LIMIT 1
-  `);
-
-  const selectNextFuturePending = db.prepare(`
-    SELECT * FROM deferred_prompts
-    WHERE status = 'pending' AND runAt > ?
-    ORDER BY runAt ASC, createdAt ASC
-    LIMIT 1
-  `);
-
-  const selectNextRunningLease = db.prepare(`
-    SELECT * FROM deferred_prompts
-    WHERE status = 'running' AND leaseExpiresAt IS NOT NULL
-    ORDER BY leaseExpiresAt ASC, updatedAt ASC
-    LIMIT 1
+  // Earliest future due time or running lease expiry: when the runner has to look again.
+  const selectNextWakeAt = db.prepare(`
+    SELECT MIN(wakeAt) AS wakeAt FROM (
+      SELECT MIN(runAt) AS wakeAt FROM deferred_prompts WHERE status = 'pending' AND runAt > ?
+      UNION ALL
+      SELECT MIN(leaseExpiresAt) AS wakeAt FROM deferred_prompts WHERE status = 'running'
+    )
   `);
 
   const selectExpiredRunningSessionIds = db.prepare(`
@@ -150,50 +146,41 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     WHERE id = ? AND status = 'pending'
   `);
 
-  // Completion/retry/failure require the matching claimToken
-  const markCompletedStmt = db.prepare(`
+  // With a claimToken the row must still be running under that claim; without one it must not be terminal yet.
+  const settleByClaimStmt = db.prepare(`
     UPDATE deferred_prompts
-    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, lastError = NULL, updatedAt = ?
+    SET status = ?, claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
-
-  const markCompletedByIdStmt = db.prepare(`
+  const settleByIdStmt = db.prepare(`
     UPDATE deferred_prompts
-    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, lastError = NULL, updatedAt = ?
-    WHERE id = ? AND status IN ('pending', 'running')
-  `);
-  const markFailedStmt = db.prepare(`
-    UPDATE deferred_prompts
-    SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
-  `);
-  const markFailedByIdStmt = db.prepare(`
-    UPDATE deferred_prompts
-    SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
+    SET status = ?, claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
     WHERE id = ? AND status IN ('pending', 'running')
   `);
 
+  // A counted retry moves runAt; an uncounted wait gives the try back and leaves runAt alone.
   const retryStmt = db.prepare(`
     UPDATE deferred_prompts
     SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL,
         runAt = ?, lastError = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
+  const waitStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL,
+        attempts = MAX(attempts - 1, 0), lastError = COALESCE(?, lastError), updatedAt = ?
+    WHERE id = ? AND status = 'running' AND claimToken = ?
+  `);
+  const noteWaitStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET lastError = ?
+    WHERE id = ? AND status = 'pending' AND lastError IS NOT ?
+  `);
   const reactivateStmt = db.prepare(`
     UPDATE deferred_prompts
     SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL, attempts = 0, lastError = NULL,
         runAt = ?, updatedAt = ?
     WHERE id = ? AND status IN ('failed', 'cancelled')
-  `);
-
-  const releaseClaimWithoutAttemptStmt = db.prepare(`
-    UPDATE deferred_prompts
-    SET status = 'pending',
-        claimToken = NULL,
-        leaseExpiresAt = NULL,
-        attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE attempts END,
-        updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
 
   const renewClaimStmt = db.prepare(`
@@ -228,6 +215,16 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     SET status = 'pending', claimToken = NULL, leaseExpiresAt = NULL,
         attempts = 0, lastError = NULL, runAt = ?, updatedAt = ?
     WHERE sessionId = ? AND purpose = 'delivery' AND sourceId = ? AND status = 'failed'
+  `);
+
+  const selectUndeliveredForSource = db.prepare(`
+    SELECT id, prompt FROM deferred_prompts
+    WHERE sessionId = ? AND purpose = 'delivery' AND sourceId = ? AND status IN ('pending', 'failed')
+  `);
+  const retireDeliveryStmt = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'cancelled', updatedAt = ?
+    WHERE id = ? AND status IN ('pending', 'failed')
   `);
 
   const deleteForSessionStmt = db.prepare("DELETE FROM deferred_prompts WHERE sessionId = ?");
@@ -313,19 +310,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (selectDue.all(now) as any[]).map(toRow);
   }
 
-  function getNextPending(): DeferredPrompt | undefined {
-    const row = selectNextPending.get();
-    return row ? toRow(row) : undefined;
-  }
-
-  function getNextFuturePending(now = new Date().toISOString()): DeferredPrompt | undefined {
-    const row = selectNextFuturePending.get(now);
-    return row ? toRow(row) : undefined;
-  }
-
-  function getNextRunningLeaseExpiry(): DeferredPrompt | undefined {
-    const row = selectNextRunningLease.get();
-    return row ? toRow(row) : undefined;
+  function getNextWakeAt(now = new Date().toISOString()): string | undefined {
+    return (selectNextWakeAt.get(now) as { wakeAt: string | null }).wakeAt ?? undefined;
   }
 
   function getSummaryForSession(sessionId: string): DeferSummary {
@@ -350,10 +336,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return row?.found === 1;
   }
 
-  function listExpiredRunningSessionIds(now = new Date().toISOString()): string[] {
-    return (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>).map((row) => row.sessionId);
-  }
-
   /**
    * Atomically claim a pending prompt for execution.
    * Returns the claimed prompt + claimToken, or undefined if already claimed.
@@ -369,61 +351,12 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return row ? { prompt: toRow(row), claimToken } : undefined;
   }
 
-  function markCompleted(id: string, claimToken: string): boolean {
-    const result = markCompletedStmt.run(new Date().toISOString(), id, claimToken);
-    return (result as any).changes > 0;
-  }
-
-  function markCompletedById(id: string): boolean {
-    const result = markCompletedByIdStmt.run(new Date().toISOString(), id);
-    return (result as any).changes > 0;
-  }
-
-  function completeWithMessage(
-    id: string,
-    claimToken: string,
-    message: DeferredResultDelivery,
-    now = new Date().toISOString(),
-  ): boolean {
+  /** Runs `settle` and queues `message` for the chat in one transaction; nothing is queued when `settle` changes no row. */
+  function settleWithMessage(settle: () => unknown, message: DeferredResultDelivery | undefined, now: string): boolean {
+    if (!message) return (settle() as any).changes > 0;
     db.exec("BEGIN IMMEDIATE");
     try {
-      const completed = markCompletedStmt.run(now, id, claimToken);
-      if ((completed as any).changes === 0) {
-        db.exec("ROLLBACK");
-        return false;
-      }
-      enqueueDelivery(message, now);
-      db.exec("COMMIT");
-      return true;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  function markFailed(id: string, claimToken: string, lastError: string): boolean {
-    const result = markFailedStmt.run(lastError, new Date().toISOString(), id, claimToken);
-    return (result as any).changes > 0;
-  }
-
-  function markFailedById(id: string, lastError: string): boolean {
-    const result = markFailedByIdStmt.run(lastError, new Date().toISOString(), id);
-    return (result as any).changes > 0;
-  }
-
-  function failWithMessage(
-    id: string,
-    lastError: string,
-    message: DeferredResultDelivery,
-    options: { claimToken?: string; now?: string } = {},
-  ): boolean {
-    const now = options.now ?? new Date().toISOString();
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const result = options.claimToken
-        ? markFailedStmt.run(lastError, now, id, options.claimToken)
-        : markFailedByIdStmt.run(lastError, now, id);
-      if ((result as any).changes === 0) {
+      if ((settle() as any).changes === 0) {
         db.exec("ROLLBACK");
         return false;
       }
@@ -438,22 +371,75 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     }
   }
 
-  /**
-   * Reschedule a running prompt for retry (requires matching claimToken).
-   */
+  function settle(
+    id: string,
+    status: "completed" | "failed",
+    lastError: string | null,
+    options: SettleOptions,
+  ): boolean {
+    const now = options.now ?? new Date().toISOString();
+    return settleWithMessage(
+      () => options.claimToken
+        ? settleByClaimStmt.run(status, lastError, now, id, options.claimToken)
+        : settleByIdStmt.run(status, lastError, now, id),
+      options.message,
+      now,
+    );
+  }
+
+  /** Mark the work done, optionally queuing its result for the chat in the same transaction. */
+  function complete(id: string, options: SettleOptions = {}): boolean {
+    return settle(id, "completed", null, options);
+  }
+
+  /** Mark the work failed for good, optionally queuing a notice for the chat in the same transaction. */
+  function fail(id: string, lastError: string, options: SettleOptions = {}): boolean {
+    return settle(id, "failed", lastError, options);
+  }
+
   /**
    * Return a failed (or cancelled) deferral to the pending queue with a fresh
-   * attempt budget, due at `runAt` (now by default). Used to recover loops
-   * that were marked failed by transient backend errors.
+   * attempt budget, due at `runAt` (now by default).
    */
   function reactivate(id: string, runAt = new Date().toISOString()): boolean {
     const result = reactivateStmt.run(runAt, new Date().toISOString(), id);
     return (result as any).changes > 0;
   }
 
-  function retry(id: string, claimToken: string, runAt: string, lastError?: string): boolean {
-    const result = retryStmt.run(runAt, lastError ?? null, new Date().toISOString(), id, claimToken);
+  /**
+   * Withdraw a defer's final messages that have not reached the chat, waiting or failed. Used when
+   * the defer is restarted: what they say (that it stopped) is no longer true. Updates from a
+   * recurring defer that was still active when it sent them are kept; they report something real.
+   */
+  function retireUndeliveredFinalMessagesForSource(sessionId: string, sourceDeferId: string): number {
+    const now = new Date().toISOString();
+    let retired = 0;
+    for (const row of selectUndeliveredForSource.all(sessionId, sourceDeferId) as Array<{ id: string; prompt: string }>) {
+      if (parseReturnedDeferPrompt(row.prompt)?.continues) continue;
+      retired += (retireDeliveryStmt.run(now, row.id) as any).changes as number;
+    }
+    return retired;
+  }
+
+  /**
+   * Give a claimed prompt back to the queue. With `retryAt` the try counts and the prompt is
+   * due again then; without it the try is not counted and the prompt stays due.
+   */
+  function release(
+    id: string,
+    claimToken: string,
+    options: { error?: string; retryAt?: string } = {},
+  ): boolean {
+    const now = new Date().toISOString();
+    const result = options.retryAt
+      ? retryStmt.run(options.retryAt, options.error ?? null, now, id, claimToken)
+      : waitStmt.run(options.error ?? null, now, id, claimToken);
     return (result as any).changes > 0;
+  }
+
+  /** Record why a due prompt is not being started; cleared when it completes. */
+  function noteWait(id: string, reason: string): void {
+    noteWaitStmt.run(reason, id, reason);
   }
 
   function reactivateFailedDeliveryForSource(
@@ -467,11 +453,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       sessionId,
       sourceDeferId,
     ) as any).changes as number;
-  }
-
-  function releaseClaimWithoutAttempt(id: string, claimToken: string): boolean {
-    const result = releaseClaimWithoutAttemptStmt.run(new Date().toISOString(), id, claimToken);
-    return (result as any).changes > 0;
   }
 
   function renewClaim(id: string, claimToken: string, leaseMs: number): boolean {
@@ -521,10 +502,12 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes as number;
   }
 
-  /** Move expired running rows back to pending so they can be retried. Returns count. */
-  function reclaimExpiredRunning(now = new Date().toISOString()): number {
-    const result = reclaimExpiredStmt.run(now, now);
-    return (result as any).changes as number;
+  /** Move rows whose lease ran out back to pending, their try still counted. Returns the chats affected. */
+  function reclaimExpiredRunning(now = new Date().toISOString()): string[] {
+    const sessionIds = (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>)
+      .map((row) => row.sessionId);
+    if (sessionIds.length > 0) reclaimExpiredStmt.run(now, now);
+    return sessionIds;
   }
 
   return {
@@ -534,24 +517,18 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     listDeliveriesForSession,
     enqueueDelivery,
     listDue,
-    getNextPending,
-    getNextFuturePending,
-    getNextRunningLeaseExpiry,
+    getNextWakeAt,
     getSummaryForSession,
     listSummariesBySession,
     hasActiveForSession,
-    listExpiredRunningSessionIds,
     claimDue,
-    markCompleted,
-    markCompletedById,
-    completeWithMessage,
-    markFailed,
-    markFailedById,
-    failWithMessage,
+    complete,
+    fail,
     reactivate,
     reactivateFailedDeliveryForSource,
-    retry,
-    releaseClaimWithoutAttempt,
+    retireUndeliveredFinalMessagesForSource,
+    release,
+    noteWait,
     renewClaim,
     cancelById,
     cancelForSession,

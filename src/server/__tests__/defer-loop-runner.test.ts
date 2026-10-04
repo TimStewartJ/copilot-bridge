@@ -3,15 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import { parseDeferId } from "../defer-ids.js";
-import { createDeferLoopRunner } from "../defer-loop-runner.js";
+import { createDeferLoopRunner, FAILING_LOOP_NOTICE_AFTER } from "../defer-loop-runner.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
 import {
   createDeferredPromptRunner,
   DEFER_WATCHDOG_INTERVAL_MS,
-  INITIAL_BACKOFF_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
 } from "../deferred-prompt-runner.js";
+import { LEASE_EXPIRED_ERROR } from "../defer-runner-core.js";
+import { SessionCapacityError } from "../session-manager.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
@@ -30,7 +31,19 @@ function makeMockSessionManager(overrides: Partial<{
   const { sessions = [], busySessions = new Set(), startWorkError } = overrides;
   const started: Array<{ sessionId: string; prompt: string; options?: unknown }> = [];
   const attention: Array<{ sessionId: string; at?: string }> = [];
-  return {
+  const sm = {
+    // Each check runs in a worker. Unless a test supplies one, the check records itself in `_started`
+    // and continues quietly, so scheduling tests can assert on what ran without caring how.
+    runDeferWorker: undefined as undefined | ((input: any) => Promise<any> | any),
+    tryAcquireDeferWorker: (): { run: (input: any) => Promise<any>; release: () => void } | undefined => ({
+      run: async (input: any) => {
+        if (sm.runDeferWorker) return sm.runDeferWorker(input);
+        if (startWorkError) throw startWorkError;
+        started.push({ sessionId: input.parentSessionId, prompt: input.prompt });
+        return { action: "continue" };
+      },
+      release: () => {},
+    }),
     listSessionsFromDisk: async (options: { includeArchived?: boolean } = {}) =>
       sessions.map((s) => ({ sessionId: s, archived: false, ...options })),
     isSessionBusy: (sid: string) => busySessions.has(sid),
@@ -44,6 +57,17 @@ function makeMockSessionManager(overrides: Partial<{
     _started: started,
     _attention: attention,
   };
+  return sm;
+}
+
+function capacityError(): SessionCapacityError {
+  return new SessionCapacityError("context-limit", {
+    contexts: 33,
+    contextLimit: 32,
+    localMcpInstances: 33,
+    capacityUnits: 41.25,
+    capacityLimit: 64,
+  });
 }
 
 let db: DatabaseSync;
@@ -58,7 +82,7 @@ afterEach(() => {
 });
 
 describe("defer-loop-runner", () => {
-  it("delivers one due occurrence with metadata and advances from acceptance time", async () => {
+  it("runs one due check in a worker with its run context and advances from acceptance time", async () => {
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
     const summaryEvents: any[] = [];
@@ -75,26 +99,25 @@ describe("defer-loop-runner", () => {
       maxRuns: 2,
     });
     const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
     const runner = createDeferLoopRunner(store, sm as any, bus);
 
     runner.start();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sm._started).toHaveLength(1);
-    expect(sm._started[0].prompt).toContain(`<defer>\ndeferId: ${loop.deferId}`);
-    expect(sm._started[0].prompt).toContain("kind: interval");
-    expect(sm._started[0].prompt).toContain("attentionMode: quiet");
-    expect(sm._started[0].prompt).toContain("runCount: 1");
-    expect(sm._started[0].prompt).toContain("If user action is needed, cancel this recurring deferral with the defer cancel tool using the deferId above, then clearly state the required next step and stop.");
-    expect(sm._started[0].prompt).not.toContain("ask_user");
-    expect(sm._started[0].prompt).toContain("User prompt:\nPoll deployment");
-    expect(sm._started[0].options).toEqual({
-      attentionMode: "quiet",
-      historyTruncation: {
-        mode: "replace-quiet-interval-defer-tail",
-        deferId: loop.deferId,
-      },
+    expect(sm.runDeferWorker).toHaveBeenCalledExactlyOnceWith({
+      deferId: loop.deferId,
+      kind: "interval",
+      parentSessionId: "session-1",
+      prompt: "Poll deployment",
+      runCount: 1,
+      maxRuns: 2,
+      remainingRunsAfterThis: 1,
+      isFinalRun: false,
+      intervalSeconds: 300,
     });
+    // The check never becomes a turn in the chat itself.
+    expect(sm._started).toEqual([]);
     const updated = store.get(loop.id)!;
     expect(updated.status).toBe("active");
     expect(updated.runCount).toBe(1);
@@ -334,7 +357,7 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it("expires a claimed worker occurrence without touching a reactivated loop", async () => {
+  it("does not let a stale claim settle a loop that was reactivated meanwhile", async () => {
     const store = createDeferLoopStore(db);
     const loop = store.create({
       sessionId: "session-1",
@@ -346,8 +369,15 @@ describe("defer-loop-runner", () => {
     expect(store.cancelById(loop.id)).toBe(true);
     expect(store.reactivate(loop.id)).toBe(true);
 
-    expect(store.markClaimedExpired(loop.id, claimed.claimToken)).toBe(false);
-    expect(store.get(loop.id)?.status).toBe("active");
+    expect(store.settleOccurrence(
+      loop.id,
+      claimed.claimToken,
+      new Date(Date.now() + 300_000).toISOString(),
+      new Date().toISOString(),
+      { status: "expired" },
+    )).toBeUndefined();
+    expect(store.release(loop.id, claimed.claimToken)).toBe(false);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 0 });
   });
 
   it("holds due loops while defer delivery readiness is not ready and resumes later", async () => {
@@ -571,68 +601,193 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it("allows max attempt count for busy delivery errors", async () => {
+  it("keeps a loop on its schedule when checks fail, counts each as a run, and tells the chat once", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
-      name: "Busy deployment monitor",
+      name: "Deployment monitor",
       prompt: "Poll",
       intervalSeconds: 300,
       nextRunAt: new Date(Date.now() - 1_000).toISOString(),
     });
-    const sm = makeMockSessionManager({
-      sessions: ["session-1"],
-      startWorkError: new Error("Session is busy processing another message"),
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    let failing = true;
+    sm.runDeferWorker = vi.fn(async () => {
+      if (failing) throw new Error("Deferred worker ended without calling defer_result.");
+      return { action: "continue" };
     });
-    const runner = createDeferLoopRunner(store, sm as any, bus);
-
-    runner.start();
-    for (let attempt = 1; attempt < 5; attempt++) {
-      await vi.advanceTimersByTimeAsync(attempt === 1 ? 0 : 5_000 * Math.pow(2, attempt - 2));
-      expect(store.get(loop.id)).toMatchObject({
-        status: "active",
-        attempts: attempt,
-      });
-    }
-
-    await vi.advanceTimersByTimeAsync(40_000);
-    expect(store.get(loop.id)).toMatchObject({
-      status: "failed",
-      attempts: 5,
-    });
-    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
-      expect.objectContaining({
-        sourceId: loop.deferId,
-        prompt: expect.stringContaining(
-          `FINAL DEFER RESULT: The recurring defer "Busy deployment monitor" (${loop.deferId}) failed after 5 attempts.`,
-        ),
-      }),
-    ]);
-    runner.shutdown();
-  });
-
-  it("returns a failure queued before restart to the parent", async () => {
-    const store = createDeferLoopStore(db);
-    const promptStore = createDeferredPromptStore(db);
-    const bus = createGlobalBus();
-    const loop = store.create({
-      sessionId: "session-1",
-      prompt: "Poll",
-      intervalSeconds: 300,
-      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    db.prepare(`
-      UPDATE defer_loops
-      SET status = 'running', attempts = ?, lastError = ?,
-          claimToken = 'stale-claim', leaseExpiresAt = '2000-01-01T00:00:00.000Z'
-      WHERE id = ?
-    `).run(MAX_ATTEMPTS, "Previous attempt failed", loop.id);
     const onParentMessageQueued = vi.fn();
     const runner = createDeferLoopRunner(
       store,
-      makeMockSessionManager({ sessions: ["session-1"] }) as any,
+      sm as any,
+      bus,
+      createDeferDeliveryGuard(),
+      { deferredPromptStore: promptStore, deferLoopStore: store },
+      { onParentMessageQueued },
+    );
+
+    runner.start();
+    // More failed checks than the old attempt budget, one interval apart.
+    const failures = MAX_ATTEMPTS + 2;
+    for (let failure = 1; failure <= failures; failure++) {
+      await vi.advanceTimersByTimeAsync(failure === 1 ? 0 : 300_000);
+      const row = store.get(loop.id)!;
+      expect(row).toMatchObject({
+        status: "active",
+        runCount: failure,
+        attempts: failure,
+        lastError: "Deferred worker ended without calling defer_result.",
+      });
+      expect(Date.parse(row.nextRunAt)).toBe(Date.now() + 300_000);
+      expect(promptStore.listDeliveriesForSession("session-1"))
+        .toHaveLength(failure >= FAILING_LOOP_NOTICE_AFTER ? 1 : 0);
+    }
+    expect(sm.runDeferWorker).toHaveBeenCalledTimes(failures);
+
+    const [notice] = promptStore.listDeliveriesForSession("session-1");
+    expect(notice).toMatchObject({ sourceId: loop.deferId, status: "pending" });
+    expect(notice!.prompt).toContain("continues: true");
+    expect(notice!.prompt).toContain(
+      `The last ${FAILING_LOOP_NOTICE_AFTER} checks of the recurring defer "Deployment monitor" (${loop.deferId}) failed`,
+    );
+    expect(notice!.prompt).toContain("Last error: Deferred worker ended without calling defer_result.");
+    // It must not read as a request to cancel: a monitor should outlast a temporary error.
+    expect(notice!.prompt).toContain("The defer is still active");
+    expect(notice!.prompt).toContain("Leave it running if the error looks temporary.");
+    expect(notice!.prompt).not.toContain("FINAL DEFER RESULT");
+    expect(sm._attention).toHaveLength(1);
+
+    // The next good check clears the streak; a later failure starts a new one.
+    failing = false;
+    await vi.advanceTimersByTimeAsync(300_000);
+    const recovered = store.get(loop.id)!;
+    expect(recovered).toMatchObject({ status: "active", runCount: failures + 1, attempts: 0 });
+    expect(recovered.lastError).toBeUndefined();
+
+    // A new streak is reported again, once, when it reaches the same length.
+    failing = true;
+    for (let failure = 1; failure <= FAILING_LOOP_NOTICE_AFTER + 1; failure++) {
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: failure });
+      expect(promptStore.listDeliveriesForSession("session-1"))
+        .toHaveLength(failure >= FAILING_LOOP_NOTICE_AFTER ? 2 : 1);
+    }
+    runner.shutdown();
+    warnSpy.mockRestore();
+  });
+
+  it("says why a loop never got its last check when it expires while waiting", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: new Date(Date.now() + 90_000).toISOString(),
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.runDeferWorker = vi.fn();
+    sm.getSessionCapacityWait = () => "All 32 live Copilot contexts are currently in use.";
+    const runner = createDeferLoopRunner(store, sm, createGlobalBus());
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(2 * DEFER_WATCHDOG_INTERVAL_MS);
+
+    expect(sm.runDeferWorker).not.toHaveBeenCalled();
+    expect(store.get(loop.id)?.status).toBe("expired");
+    const [final] = promptStore.listDeliveriesForSession("session-1");
+    expect(final!.prompt).toContain("FINAL DEFER RESULT: Monitoring expired before another check could run");
+    expect(final!.prompt).toContain("Last error: All 32 live Copilot contexts are currently in use.");
+    runner.shutdown();
+  });
+
+  it("goes on to a chat's next loop when the first one cannot get a worker", async () => {
+    const store = createDeferLoopStore(db);
+    const first = store.create({
+      sessionId: "session-1",
+      prompt: "First",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 2_000).toISOString(),
+    });
+    // Already past its run limit: ending it needs no worker, so a waiting loop ahead of it must not delay that.
+    const second = store.create({
+      sessionId: "session-1",
+      prompt: "Second",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+      maxRuns: 1,
+    });
+    db.prepare("UPDATE defer_loops SET runCount = 1 WHERE id = ?").run(second.id);
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.tryAcquireDeferWorker = vi.fn(() => undefined);
+    const runner = createDeferLoopRunner(store, sm, createGlobalBus());
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.get(first.id)).toMatchObject({ status: "active", runCount: 0, attempts: 0 });
+    expect(store.get(second.id)?.status).toBe("completed");
+    runner.shutdown();
+  });
+
+  it("names the last error when the final run of a loop fails", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+      maxRuns: 1,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    sm.runDeferWorker = vi.fn(async () => {
+      throw new Error("Model request failed");
+    });
+    const runner = createDeferLoopRunner(store, sm as any, createGlobalBus());
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1, lastError: "Model request failed" });
+    const [final] = promptStore.listDeliveriesForSession("session-1");
+    expect(final!.prompt).toContain("FINAL DEFER RESULT: Monitoring stopped after 1 checks");
+    expect(final!.prompt).toContain("The last check failed: Model request failed");
+    expect(final!.prompt).not.toContain("continues: true");
+    runner.shutdown();
+    warnSpy.mockRestore();
+  });
+
+  it.each([
+    { streak: 1, notices: 0 },
+    { streak: FAILING_LOOP_NOTICE_AFTER, notices: 1 },
+  ])("settles a check the server stopped in the middle of as a failed run (streak $streak)", async ({ streak, notices }) => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const bus = createGlobalBus();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    // What a claim leaves behind when the server dies: running, lease long gone.
+    db.prepare(`
+      UPDATE defer_loops
+      SET status = 'running', attempts = ?, claimToken = 'stale-claim', leaseExpiresAt = '2000-01-01T00:00:00.000Z'
+      WHERE id = ?
+    `).run(streak, loop.id);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const onParentMessageQueued = vi.fn();
+    const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    const runner = createDeferLoopRunner(
+      store,
+      sm as any,
       bus,
       createDeferDeliveryGuard(),
       { deferredPromptStore: promptStore, deferLoopStore: store },
@@ -642,19 +797,19 @@ describe("defer-loop-runner", () => {
     runner.start();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(store.get(loop.id)).toMatchObject({
-      status: "failed",
-      attempts: MAX_ATTEMPTS,
-      lastError: "Deferred execution lease expired before completion.",
-    });
-    expect(promptStore.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
-      "Last error: Deferred execution lease expired before completion.",
-    );
-    expect(onParentMessageQueued).toHaveBeenCalledOnce();
+    const row = store.get(loop.id)!;
+    expect(row).toMatchObject({ status: "active", runCount: 1, attempts: streak, lastError: LEASE_EXPIRED_ERROR });
+    expect(row.claimToken).toBeUndefined();
+    expect(Date.parse(row.nextRunAt)).toBe(Date.now() + 300_000);
+    // It is not rerun at once: a check that takes the server down must not run on every start.
+    expect(sm._started).toEqual([]);
+    expect(promptStore.listDeliveriesForSession("session-1")).toHaveLength(notices);
+    expect(onParentMessageQueued).toHaveBeenCalledTimes(notices);
     runner.shutdown();
+    warnSpy.mockRestore();
   });
 
-  it("does not queue an exhausted-loop failure for a missing parent", async () => {
+  it("cancels a loop whose chat is gone without queuing anything for it", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
     const loop = store.create({
@@ -679,12 +834,129 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it.each([
-    "Session tool initialization did not complete before prompt delivery",
-    "resumeSession timed out after 60s",
-  ])("retries transient loop delivery error with backoff until MAX_ATTEMPTS: %s", async (message) => {
+  it("waits without counting anything while no Copilot context is free, then runs", async () => {
     const store = createDeferLoopStore(db);
     const promptStore = createDeferredPromptStore(db);
+    const bus = createGlobalBus();
+    const dueAt = new Date(Date.now() - 1_000).toISOString();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: dueAt,
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
+    let full = true;
+    // A check needs a context of its own, so the runner asks without naming the chat.
+    sm.getSessionCapacityWait = vi.fn((sessionId?: string) =>
+      full && sessionId === undefined ? "All 32 live Copilot contexts are currently in use." : undefined);
+    const summaryEvents: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type === "session:defer-summary") summaryEvents.push(event);
+    });
+    const runner = createDeferLoopRunner(store, sm, bus);
+
+    runner.start();
+    // A full house that lasts far longer than five tries used to.
+    await vi.advanceTimersByTimeAsync(60 * DEFER_WATCHDOG_INTERVAL_MS);
+
+    expect(sm.runDeferWorker).not.toHaveBeenCalled();
+    expect(sm.getSessionCapacityWait.mock.calls.length).toBeGreaterThan(MAX_ATTEMPTS);
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      runCount: 0,
+      attempts: 0,
+      nextRunAt: dueAt,
+      lastError: "All 32 live Copilot contexts are currently in use.",
+    });
+    // Nothing was claimed, so the chat's defer indicator never flickered and nothing was queued for it.
+    expect(summaryEvents).toEqual([]);
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([]);
+
+    full = false;
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+
+    expect(sm.runDeferWorker).toHaveBeenCalledOnce();
+    const ran = store.get(loop.id)!;
+    expect(ran).toMatchObject({ status: "active", runCount: 1, attempts: 0 });
+    expect(ran.lastError).toBeUndefined();
+    runner.shutdown();
+  });
+
+  it("does not count a try the worker gave up for lack of capacity", async () => {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const bus = createGlobalBus();
+    const dueAt = new Date(Date.now() - 1_000).toISOString();
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Poll",
+      intervalSeconds: 300,
+      nextRunAt: dueAt,
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    let full = true;
+    sm.runDeferWorker = vi.fn(async () => {
+      if (full) throw capacityError();
+      return { action: "continue" };
+    });
+    const runner = createDeferLoopRunner(store, sm as any, bus);
+
+    runner.start();
+    for (let sweep = 0; sweep <= MAX_ATTEMPTS + 2; sweep++) {
+      await vi.advanceTimersByTimeAsync(sweep === 0 ? 0 : DEFER_WATCHDOG_INTERVAL_MS);
+      const row = store.get(loop.id)!;
+      expect(row).toMatchObject({ status: "active", runCount: 0, attempts: 0, nextRunAt: dueAt });
+      expect(row.lastError).toContain("All 32 live Copilot contexts are currently in use.");
+      expect(row.claimToken).toBeUndefined();
+    }
+    // One try per sweep: a waiting loop stays due, so it must not spin.
+    expect(sm.runDeferWorker).toHaveBeenCalledTimes(MAX_ATTEMPTS + 3);
+    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([]);
+
+    full = false;
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1, attempts: 0 });
+    runner.shutdown();
+  });
+
+  it("does not let two runners with waiting checks wake each other in a loop", async () => {
+    const loopStore = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const bus = createGlobalBus();
+    const dueAt = new Date(Date.now() - 1_000).toISOString();
+    loopStore.create({ sessionId: "session-1", prompt: "Loop", intervalSeconds: 300, nextRunAt: dueAt });
+    promptStore.create("session-2", "One shot", dueAt);
+    const sm = makeMockSessionManager({ sessions: ["session-1", "session-2"] });
+    // The gate lets both through and the worker is refused: what a full weighted limit looks like.
+    sm.runDeferWorker = vi.fn(async () => {
+      throw capacityError();
+    });
+    // Wired as in the app: each runner wakes the other when one of its items settles.
+    const runners: { loop?: { poke(): void }; prompt?: { poke(): void } } = {};
+    const promptRunner = createDeferredPromptRunner(promptStore, sm as any, bus, createDeferDeliveryGuard(), undefined, {
+      onSettled: () => runners.loop?.poke(),
+    });
+    const loopRunner = createDeferLoopRunner(loopStore, sm as any, bus, createDeferDeliveryGuard(), undefined, {
+      onParentMessageQueued: () => runners.prompt?.poke(),
+    });
+    runners.loop = loopRunner;
+    runners.prompt = promptRunner;
+
+    loopRunner.start();
+    promptRunner.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sm.runDeferWorker).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+    expect(sm.runDeferWorker).toHaveBeenCalledTimes(4);
+    loopRunner.shutdown();
+    promptRunner.shutdown();
+  });
+
+  it("does not count a check that failed because the Bridge stopped being ready under it", async () => {
+    const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
       sessionId: "session-1",
@@ -692,43 +964,34 @@ describe("defer-loop-runner", () => {
       intervalSeconds: 300,
       nextRunAt: new Date(Date.now() - 1_000).toISOString(),
     });
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const sm = makeMockSessionManager({
-      sessions: ["session-1"],
-      startWorkError: new Error(message),
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    let ready = true;
+    sm.getDeferDeliveryReadiness = vi.fn(() => ready
+      ? { ready: true }
+      : { ready: false, reason: "agent backend is reconnecting", retryAfterMs: 5_000 });
+    sm.runDeferWorker = vi.fn(async () => {
+      // The backend goes away mid-check; the error it surfaces as is not one the runner knows by name.
+      ready = false;
+      throw new Error("socket hang up");
     });
-    const runner = createDeferLoopRunner(store, sm as any, bus);
+    const runner = createDeferLoopRunner(store, sm, bus);
+
     runner.start();
+    await vi.advanceTimersByTimeAsync(0);
 
-    for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
-      await vi.advanceTimersByTimeAsync(attempt === 1 ? 0 : INITIAL_BACKOFF_MS * Math.pow(2, attempt - 2));
-      const row = store.get(loop.id)!;
-      expect(row.status).toBe("active");
-      expect(row.attempts).toBe(attempt);
-      expect(row.lastError).toBe(message);
-      expect(Date.parse(row.nextRunAt) - Date.now()).toBe(INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1));
-    }
-
-    await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS * Math.pow(2, MAX_ATTEMPTS - 2));
+    expect(sm.runDeferWorker).toHaveBeenCalledOnce();
     expect(store.get(loop.id)).toMatchObject({
-      status: "failed",
-      attempts: MAX_ATTEMPTS,
-      lastError: message,
+      status: "active",
+      runCount: 0,
+      attempts: 0,
+      lastError: "socket hang up",
     });
-    expect(warnSpy).toHaveBeenCalledTimes(MAX_ATTEMPTS - 1);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`Loop ${loop.id} failed after ${MAX_ATTEMPTS} attempt(s)`),
-    );
-    expect(promptStore.listDeliveriesForSession("session-1")).toEqual([
-      expect.objectContaining({
-        sourceId: loop.deferId,
-        prompt: expect.stringContaining(`Last error: ${message}`),
-      }),
-    ]);
+
+    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
+    ready = true;
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1, attempts: 0 });
     runner.shutdown();
-    warnSpy.mockRestore();
-    errorSpy.mockRestore();
   });
 
   it("releases restart-interrupted claims without consuming a run", async () => {
@@ -798,11 +1061,23 @@ describe("defer-loop-runner", () => {
     expect(sm._started).toHaveLength(0);
     expect(store.get(loop.id)!.status).toBe("running");
 
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     await vi.advanceTimersByTimeAsync(LEASE_MS);
 
+    // The interrupted check is a failed run; the loop picks up again one interval later.
+    expect(sm._started).toHaveLength(0);
+    expect(store.get(loop.id)).toMatchObject({
+      status: "active",
+      runCount: 1,
+      attempts: 1,
+      lastError: LEASE_EXPIRED_ERROR,
+    });
+
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(sm._started).toHaveLength(1);
-    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1 });
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 2, attempts: 0 });
     runner.shutdown();
+    warnSpy.mockRestore();
   });
 
   it("shares a session delivery guard with one-shot defers", async () => {
@@ -833,8 +1108,18 @@ describe("defer-loop-runner", () => {
         return Promise.resolve();
       },
     };
-    const loopRunner = createDeferLoopRunner(loopStore, sm as any, bus, guard);
-    const promptRunner = createDeferredPromptRunner(promptStore, sm as any, bus, guard);
+    // Both are checks, so each runs in a worker; here a worker's run is the manager's delivery.
+    const withWorker = Object.assign(sm, {
+      tryAcquireDeferWorker: () => ({
+        run: async (input: { parentSessionId: string; prompt: string; kind: string }) => {
+          await sm.startWorkAndWaitForDelivery(input.parentSessionId, input.prompt);
+          return { action: input.kind === "interval" ? "continue" : "finish" };
+        },
+        release: () => {},
+      }),
+    });
+    const loopRunner = createDeferLoopRunner(loopStore, withWorker as any, bus, guard);
+    const promptRunner = createDeferredPromptRunner(promptStore, withWorker as any, bus, guard);
 
     loopRunner.start();
     promptRunner.start();
@@ -878,7 +1163,7 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it("keeps a self-cancelled interval cancelled after delivery resolves", async () => {
+  it("keeps a loop cancelled when it is cancelled while its check runs", async () => {
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
     const loop = store.create({
@@ -887,24 +1172,18 @@ describe("defer-loop-runner", () => {
       intervalSeconds: 300,
       nextRunAt: new Date(Date.now() - 1_000).toISOString(),
     });
-    const started: Array<{ sessionId: string; prompt: string }> = [];
-    const sm = {
-      listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
-      isSessionBusy: () => false,
-      startWorkAndWaitForDelivery: async (sessionId: string, prompt: string) => {
-        started.push({ sessionId, prompt });
-        const deferId = prompt.match(/deferId: (interval_[^\n]+)/)?.[1];
-        expect(deferId).toBe(loop.deferId);
-        expect(parseDeferId(deferId!)).toEqual({ kind: "interval", id: loop.id });
-        store.cancelById(loop.id);
-      },
-    };
+    const sm = makeMockSessionManager({ sessions: ["session-1"] });
+    sm.runDeferWorker = vi.fn(async (input: { deferId: string }) => {
+      expect(parseDeferId(input.deferId)).toEqual({ kind: "interval", id: loop.id });
+      store.cancelById(loop.id);
+      return { action: "continue" };
+    });
     const runner = createDeferLoopRunner(store, sm as any, bus);
 
     runner.start();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(started).toHaveLength(1);
+    expect(sm.runDeferWorker).toHaveBeenCalledOnce();
     expect(store.get(loop.id)).toMatchObject({ status: "cancelled", runCount: 0 });
     runner.shutdown();
   });

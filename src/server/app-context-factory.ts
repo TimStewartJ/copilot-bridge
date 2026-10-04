@@ -292,7 +292,11 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     globalBus,
     deferDeliveryGuard,
     { deferredPromptStore, deferLoopStore },
-    { telemetryStore },
+    {
+      telemetryStore,
+      // A recurring check may be waiting for the chat or the worker a one-time check just let go of.
+      onSettled: () => ctx.deferLoopRunner?.poke(),
+    },
   );
   ctx.deferLoopRunner = createDeferLoopRunner(
     deferLoopStore,

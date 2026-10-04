@@ -75,6 +75,25 @@ export function createFailedDeferDelivery(
   ].join("\n"));
 }
 
+/** Tells the chat that a recurring defer keeps failing. The defer stays active, so the chat decides what to do. */
+export function createFailingLoopDelivery(
+  input: Pick<DeferredWorkResultMessage, "deferId" | "kind"> & {
+    parentSessionId: string;
+    name?: string;
+  },
+  failures: number,
+  lastError: string,
+  nextRunAt: string,
+): DeferredResultDelivery {
+  const label = input.name ? `"${input.name}" (${input.deferId})` : input.deferId;
+  return createReturnedDeferDelivery(input, [
+    `The last ${failures} checks of the recurring defer ${label} failed, so nothing was checked in that time.`,
+    `Last error: ${lastError}`,
+    "",
+    `The defer is still active: it will try again at ${nextRunAt} and on its usual schedule after that, and you will not be told about further failures. Leave it running if the error looks temporary. If the error will not clear by itself, fix the cause, or cancel the defer and say so.`,
+  ].join("\n"), { continues: true });
+}
+
 export function parseReturnedDeferPrompt(prompt: string): DeferredWorkResultMessage | undefined {
   const match = RETURNED_RESULT_PATTERN.exec(prompt);
   if (!match || match[2] !== match[3]) return undefined;
