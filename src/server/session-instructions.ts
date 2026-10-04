@@ -39,6 +39,9 @@ export const AGENT_LIFECYCLE_GUIDANCE = `
 * Agents launched with mode "sync" are one-shot: never call write_agent on them. Keep sync as the default for one-off work.
 * Launch an agent in background mode when you may need to send it follow-ups, such as a correction or another review round. This is the one exception to using background mode only while doing independent work.
 * To wait for a background agent, call read_agent once with wait: true. If it is still running, end your turn and continue when its completion notification arrives; do not call read_agent repeatedly.
+* A message sent with write_agent to an agent that is still working is not seen until its current turn ends. Queued messages are then delivered one at a time, each as a new turn, however old they are by then. To change the course of a working agent, wait until it is idle, or have its brief name a file it re-reads and put the change there; do not send it a series of addenda.
+* An agent you replace, or whose work you no longer want, does not stop by itself: starting a successor or removing its files leaves it working through its queue. Stop it with agent_stop.
+* Every background agent stays listed and counts against the limit on live agents that this Bridge shares between all chats, even while idle. When you have an agent's result and will not message it again, dismiss it with agent_dismiss.
 `.trim();
 
 /**

@@ -12,6 +12,7 @@ import { registerReportIntentTool } from "../tools/report-intent-tool.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
 import { registerScheduleTools } from "../tools/schedule-tools.js";
 import { registerSelfAdminTools } from "../tools/self-admin-tools.js";
+import { registerSessionAgentTools } from "../tools/session-agent-tools.js";
 import { registerSessionTools } from "../tools/session-tools.js";
 import { registerTagTools } from "../tools/tag-tools.js";
 import { registerTaskTools } from "../tools/task-tools.js";
@@ -60,6 +61,7 @@ export function registerAllBridgeTools(
   registerBrowserFetchTools(server, ctx);
   registerBrowserExecTools(server, ctx);
   registerSessionTools(server, ctx, { hiddenTools });
+  registerSessionAgentTools(server, ctx, { hiddenTools });
   registerAttachmentTools(server, ctx, { hiddenTools });
   registerVisualTools(server, ctx, { hiddenTools });
   registerDeferTools(server, ctx, { hiddenTools });
