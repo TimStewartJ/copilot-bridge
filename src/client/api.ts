@@ -2815,6 +2815,20 @@ export async function cancelSessionAgent(
   );
 }
 
+/**
+ * Takes an agent that is not working off the session's list for good, ending it first when it
+ * waits for a follow-up. Rejects with the server's reason when the agent was not dismissed.
+ */
+export async function dismissSessionAgent(
+  sessionId: string,
+  agentId: string,
+): Promise<{ dismissed: true }> {
+  return apiFetch<{ dismissed: true }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/dismiss`,
+    {},
+  );
+}
+
 
 // ── Models API ──────────────────────────────────────────────────
 

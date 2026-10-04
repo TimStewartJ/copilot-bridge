@@ -173,6 +173,156 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
+  /** A runtime that removes only ended agents, as the real one does. */
+  function dismissibleSession(initial: AgentBackgroundTask[]) {
+    let tasks = initial;
+    const cancelTask = vi.fn(async (id: string) => {
+      const task = tasks.find((candidate) => candidate.id === id);
+      if (!task || (task.status !== "idle" && task.status !== "running")) return { cancelled: false };
+      task.status = "cancelled";
+      return { cancelled: true };
+    });
+    const removeTask = vi.fn(async (id: string) => {
+      const task = tasks.find((candidate) => candidate.id === id);
+      if (!task || task.status === "running" || task.status === "idle") return { removed: false };
+      tasks = tasks.filter((candidate) => candidate.id !== id);
+      return { removed: true };
+    });
+    const session = {
+      sessionId: "s1",
+      listTasks: vi.fn(async () => ({ tasks: tasks.map((task) => ({ ...task })) })),
+      cancelTask,
+      removeTask,
+    } as unknown as AgentSession;
+    return { session, cancelTask, removeTask };
+  }
+
+  it("dismisses an idle background agent by ending it and taking it off the runtime's list", async () => {
+    const { bus, events } = makeBus();
+    const onTasksChanged = vi.fn();
+    const { session, cancelTask, removeTask } = dismissibleSession([
+      agentTask({ id: "idle-agent", status: "idle" }),
+      agentTask({ id: "other-idle", status: "idle" }),
+      agentTask({ id: "working", status: "running" }),
+    ]);
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session, onTasksChanged });
+    await registry.refresh("s1", "test");
+    expect(registry.getTrackedAgentCount("s1")).toBe(3);
+    onTasksChanged.mockClear();
+
+    await expect(registry.dismissTask("s1", "idle-agent")).resolves.toEqual({ dismissed: true });
+
+    expect(cancelTask.mock.calls).toEqual([["idle-agent"]]);
+    expect(removeTask.mock.calls).toEqual([["idle-agent"]]);
+    // The agent no longer counts as a live context, and whoever waits for capacity is told.
+    expect(registry.getTrackedAgentCount("s1")).toBe(2);
+    expect(registry.getSnapshot("s1").tasks.map((task) => task.id)).toEqual(["other-idle", "working"]);
+    expect(onTasksChanged).toHaveBeenCalledWith("s1");
+    expect(events.filter((event) => event.type === "session:agents").at(-1)?.backgroundAgents)
+      .toMatchObject({ running: 1, idle: 1, total: 2, source: "live" });
+    registry.dispose();
+  });
+
+  it("dismisses an agent that has ended without cancelling it", async () => {
+    const { bus } = makeBus();
+    const { session, cancelTask, removeTask } = dismissibleSession([
+      agentTask({ id: "done", status: "completed" }),
+      agentTask({ id: "stopped", status: "cancelled" }),
+    ]);
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    // No earlier reading is needed: the list is read as part of the dismissal.
+    await expect(registry.dismissTask("s1", "done")).resolves.toEqual({ dismissed: true });
+    await expect(registry.dismissTask("s1", "stopped")).resolves.toEqual({ dismissed: true });
+
+    expect(cancelTask).not.toHaveBeenCalled();
+    expect(removeTask.mock.calls).toEqual([["done"], ["stopped"]]);
+    expect(registry.getTrackedAgentCount("s1")).toBe(0);
+    registry.dispose();
+  });
+
+  it("leaves a working agent alone when asked to dismiss it", async () => {
+    const { bus } = makeBus();
+    const { session, cancelTask, removeTask } = dismissibleSession([
+      agentTask({ id: "working", status: "running" }),
+    ]);
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    await expect(registry.dismissTask("s1", "working")).resolves.toEqual({ dismissed: false, reason: "running" });
+
+    expect(cancelTask).not.toHaveBeenCalled();
+    expect(removeTask).not.toHaveBeenCalled();
+    expect(registry.getTrackedAgentCount("s1")).toBe(1);
+    registry.dispose();
+  });
+
+  it("says when the agent to dismiss is not tracked, or its session is not loaded", async () => {
+    const { bus } = makeBus();
+    const { session, removeTask } = dismissibleSession([agentTask({ id: "idle-agent", status: "idle" })]);
+    let live: AgentSession | undefined = session;
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => live });
+
+    await expect(registry.dismissTask("s1", "gone")).resolves.toEqual({ dismissed: false, reason: "not-found" });
+
+    live = undefined;
+    await expect(registry.dismissTask("s1", "idle-agent")).resolves.toEqual({ dismissed: false, reason: "unavailable" });
+    expect(removeTask).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
+  it("tries the removal again when the runtime is slow to show an idle agent as ended", async () => {
+    const { bus } = makeBus();
+    let removeCalls = 0;
+    let removed = false;
+    const session = {
+      sessionId: "s1",
+      listTasks: vi.fn(async () => ({ tasks: removed ? [] : [agentTask({ id: "idle-agent", status: "idle" })] })),
+      cancelTask: vi.fn(async () => ({ cancelled: true })),
+      removeTask: vi.fn(async () => {
+        removed = ++removeCalls === 2;
+        return { removed };
+      }),
+    } as unknown as AgentSession;
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    await expect(registry.dismissTask("s1", "idle-agent")).resolves.toEqual({ dismissed: true });
+    expect(session.removeTask).toHaveBeenCalledTimes(2);
+    registry.dispose();
+  });
+
+  it("reports a refusal when the runtime keeps the agent on its list", async () => {
+    const { bus } = makeBus();
+    const session = {
+      sessionId: "s1",
+      listTasks: vi.fn(async () => ({ tasks: [agentTask({ id: "idle-agent", status: "idle" })] })),
+      cancelTask: vi.fn(async () => ({ cancelled: false })),
+      // The runtime's own answer is not trusted: only the list says whether the agent is gone.
+      removeTask: vi.fn(async () => ({ removed: true })),
+    } as unknown as AgentSession;
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    await expect(registry.dismissTask("s1", "idle-agent")).resolves.toEqual({ dismissed: false, reason: "refused" });
+    expect(registry.getTrackedAgentCount("s1")).toBe(1);
+    registry.dispose();
+  });
+
+  it("keeps reading the list after a dismissal the runtime rejected", async () => {
+    const { bus } = makeBus();
+    const session = {
+      sessionId: "s1",
+      listTasks: vi.fn(async () => ({ tasks: [agentTask({ id: "idle-agent", status: "idle" })] })),
+      cancelTask: vi.fn(async () => { throw new Error("cancel failed"); }),
+      removeTask: vi.fn(async () => ({ removed: false })),
+    } as unknown as AgentSession;
+    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
+
+    await expect(registry.dismissTask("s1", "idle-agent")).rejects.toThrow("cancel failed");
+    await expect(registry.refresh("s1", "after")).resolves.toBeUndefined();
+    await expect(registry.reapFinishedSyncTasks("s1")).resolves.toBe(0);
+    expect(registry.getTrackedAgentCount("s1")).toBe(1);
+    registry.dispose();
+  });
+
   it("suppresses duplicate emissions when counts are unchanged", async () => {
     const { bus, events } = makeBus();
     const session = fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "running" })] }));

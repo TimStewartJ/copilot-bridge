@@ -408,6 +408,38 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.cancelSessionAgent).toHaveBeenCalledWith("s1", "explore-docs");
   });
 
+  it("POST /api/sessions/:id/agents/:agentId/dismiss dismisses through the session manager", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.dismissSessionAgent = vi.fn(async () => ({ dismissed: true as const }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    const res = await request(app).post("/api/sessions/s1/agents/explore-docs/dismiss").send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ dismissed: true });
+    expect(sessionManager.dismissSessionAgent).toHaveBeenCalledWith("s1", "explore-docs");
+  });
+
+  it("POST /api/sessions/:id/agents/:agentId/dismiss says why an agent was not dismissed", async () => {
+    const cases = [
+      ["unavailable", 409, /not loaded/],
+      ["not-found", 404, /no longer tracked/],
+      ["running", 409, /Stop it first/],
+      ["refused", 409, /did not remove/],
+    ] as const;
+    let reason: (typeof cases)[number][0] = "unavailable";
+    const sessionManager = createMockSessionManager();
+    sessionManager.dismissSessionAgent = vi.fn(async () => ({ dismissed: false as const, reason }));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+
+    for (const [refusal, status, message] of cases) {
+      reason = refusal;
+      const res = await request(app).post("/api/sessions/s1/agents/explore-docs/dismiss").send({});
+      expect(res.status, reason).toBe(status);
+      expect(res.body.reason).toBe(reason);
+      expect(res.body.error).toMatch(message);
+    }
+  });
+
   it("GET /api/sessions includes unarchived sessions linked only to archived tasks", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([

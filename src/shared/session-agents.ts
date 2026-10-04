@@ -107,6 +107,23 @@ export function isTerminalAgentStatus(status: AgentTaskStatus): boolean {
   return TERMINAL_AGENT_STATUSES.includes(status);
 }
 
+/**
+ * Why an agent was not dismissed.
+ * - `unavailable`: the session is not loaded, so its runtime cannot be asked.
+ * - `not-found`: the runtime no longer tracks the agent.
+ * - `running`: the agent is working; it has to be stopped first.
+ * - `refused`: the runtime kept the agent on its list.
+ */
+export type AgentDismissRefusal = "unavailable" | "not-found" | "running" | "refused";
+
+/**
+ * Outcome of dismissing an agent: ending one that waits for a follow-up and taking it off the
+ * runtime's list. Only an agent off that list stops counting as one of the session's live contexts.
+ */
+export type AgentDismissResult =
+  | { dismissed: true }
+  | { dismissed: false; reason: AgentDismissRefusal };
+
 export function emptyBackgroundAgentsSummary(
   source: AgentCountsSource = "unknown",
 ): BackgroundAgentsSummary {
