@@ -39,6 +39,7 @@ import {
   initializeSchedulerAndDeferredRunners,
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
+import { restoreHibernateHandoff, saveHibernateHandoff } from "./device-hibernate-handoff.js";
 import { createApiCacheControlMiddleware, createResponseCompressionMiddleware } from "./response-transport.js";
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import { createStorageMaintenance } from "./storage-maintenance.js";
@@ -79,7 +80,9 @@ const { ctx: defaultContext } = createAppContext({
   enableStartupDocsSnapshot: true,
 });
 const sessionManager = defaultContext.sessionManager;
-const shutdownCoordinator = createServerShutdownCoordinator(defaultContext);
+const shutdownCoordinator = createServerShutdownCoordinator(defaultContext, {
+  saveHandoff: () => saveHibernateHandoff(runtimePaths.dataDir),
+});
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
 app.use("/api", createApiCacheControlMiddleware(), createApiRouter(defaultContext, { shutdownCoordinator }));
@@ -300,6 +303,13 @@ async function main(): Promise<void> {
 
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);
+
+  // A hibernation the user asked for before the last server stopped, typically for a deploy.
+  try {
+    await restoreHibernateHandoff(defaultContext, runtimePaths.dataDir);
+  } catch (error) {
+    console.error("[device] Taking over the pending hibernation failed:", error);
+  }
 
   try {
     defaultContext.sessionOverlayMaintenance = createSessionOverlayMaintenance(defaultContext);

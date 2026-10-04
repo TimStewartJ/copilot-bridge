@@ -6,6 +6,7 @@ import {
   disarmHibernateOnIdle,
   getHibernateOnIdleStatus,
   getHibernateStatus,
+  handOffHibernateIntent,
   scheduleHibernate,
   HIBERNATE_IDLE_POLL_INTERVAL_MS,
 } from "../device-hibernate.js";
@@ -278,5 +279,24 @@ describe("device-hibernate idle watcher", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(requestDeviceHibernateMock, "scheduled fires once").toHaveBeenCalledOnce();
     expect(getHibernateOnIdleStatus().armed, "idle watcher disarmed").toBe(false);
+  });
+});
+
+describe("device-hibernate handoff", () => {
+  it("reports nothing to hand off while nothing is pending", () => {
+    expect(handOffHibernateIntent()).toBeNull();
+  });
+
+  it("returns what is pending and a later arm or schedule is live again", async () => {
+    const { scheduledAt } = scheduleHibernate(command, 30_000);
+    armHibernateOnIdle({ command, graceMs: 60_000, getActiveSessionCount: () => 0 });
+
+    expect(handOffHibernateIntent()).toEqual({ onIdleGraceMs: 60_000, scheduledAt });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(requestDeviceHibernateMock, "handed off: nothing fires here").not.toHaveBeenCalled();
+
+    scheduleHibernate(command, 30_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
   });
 });

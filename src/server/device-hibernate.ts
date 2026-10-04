@@ -2,17 +2,21 @@
 //
 // Holds a single in-memory pending hibernation timer so the API can schedule,
 // inspect, and cancel a future hibernation. A generation token guards against a
-// stale timer callback clearing newer pending state. Pending schedules are
-// intentionally not persisted: a bridge restart clears them, and clients reflect
-// the real server state by re-fetching status.
+// stale timer callback clearing newer pending state. Clients reflect the real
+// server state by re-fetching status.
 //
 // The idle watcher is the "hibernate on idle" mode: while armed it samples the
 // active session count on a poll interval and hibernates once every session has
-// stayed idle for the whole grace window. It is also in-memory only, so waking
-// the device leaves the watcher disarmed instead of hibernating again in a loop.
+// stayed idle for the whole grace window. It disarms itself before it hibernates,
+// so waking the device does not hibernate again in a loop.
+//
+// Both live in memory only. A server that shuts down hands them to its
+// replacement through device-hibernate-handoff.ts; a deploy restart would
+// otherwise drop a hibernation the user asked for.
 
 import { requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
+import { isRestartPending } from "./restart-state.js";
 
 export type HibernateScheduleStatus = {
   pending: boolean;
@@ -37,11 +41,28 @@ export type HibernateOnIdleStatus = {
   blockedReason: string | null;
 };
 
+/** A hibernation that is still to come, as one server passes it to the next. */
+export type HibernateIntent = {
+  /** Grace window of the armed idle watcher, or null when it is not armed. */
+  onIdleGraceMs: number | null;
+  /** When the timed hibernation is due, or null when none is scheduled. */
+  scheduledAt: number | null;
+};
+
+/** What the idle watcher reads from the running server. An `AppContext` satisfies it. */
+export type HibernateIdleSources = {
+  sessionManager: { getLifecycleBlockingSessionCount(): number };
+  managementJobStore?: { listActive(): Array<{ type: string; status: string }> };
+  runtimePaths?: { dataDir: string };
+};
+
 type PendingHibernate = {
   token: number;
   timer: LongTimeout;
   scheduledAt: number;
   delayMs: number;
+  /** Set once the next server owns this hibernation; this process must no longer fire it. */
+  handedOff: boolean;
 };
 
 type IdleWatch = {
@@ -55,6 +76,8 @@ type IdleWatch = {
   idleSince: number | null;
   activeSessions: number;
   blockedReason: string | null;
+  /** Set once the next server owns this watcher; this process must no longer fire it. */
+  handedOff: boolean;
 };
 
 /** How often the armed idle watcher re-samples the active session count. */
@@ -78,7 +101,7 @@ export function scheduleHibernate(
   const token = ++tokenCounter;
   const scheduledAt = Date.now() + safeDelayMs;
   const timer = safeSetTimeout(() => {
-    if (!pending || pending.token !== token) return;
+    if (!pending || pending.token !== token || pending.handedOff) return;
     pending = null;
     // The device is going down now; leaving the watcher armed would hibernate
     // again shortly after the next wake.
@@ -88,7 +111,7 @@ export function scheduleHibernate(
     });
   }, safeDelayMs);
   timer.unref();
-  pending = { token, timer, scheduledAt, delayMs: safeDelayMs };
+  pending = { token, timer, scheduledAt, delayMs: safeDelayMs, handedOff: false };
   return getHibernateStatus();
 }
 
@@ -186,7 +209,7 @@ export function armHibernateOnIdle(options: {
   const interval = setInterval(() => {
     if (!idleWatch || idleWatch.token !== token) return;
     const watch = idleWatch;
-    if (!sampleIdleWatch(watch)) return;
+    if (!sampleIdleWatch(watch) || watch.handedOff) return;
     disarmHibernateOnIdle();
     // A timed schedule is redundant once the device is hibernating.
     cancelHibernate();
@@ -207,9 +230,47 @@ export function armHibernateOnIdle(options: {
     idleSince: null,
     activeSessions: 0,
     blockedReason: null,
+    handedOff: false,
   };
   sampleIdleWatch(idleWatch);
   return getHibernateOnIdleStatus();
+}
+
+/**
+ * Arms the idle watcher against the server's own activity: running sessions, deploy and update
+ * jobs, and a restart that is requested or under way.
+ */
+export function armHibernateOnIdleForServer(
+  sources: HibernateIdleSources,
+  command: DeviceHibernateCommand,
+  graceMs: number,
+): HibernateOnIdleStatus {
+  return armHibernateOnIdle({
+    command,
+    graceMs,
+    getActiveSessionCount: () => sources.sessionManager.getLifecycleBlockingSessionCount(),
+    getBlockingReason: () => {
+      const job = sources.managementJobStore?.listActive()[0];
+      if (job) return `A ${job.type} management job is ${job.status}`;
+      const dataDir = sources.runtimePaths?.dataDir;
+      return dataDir && isRestartPending(dataDir) ? "A restart is pending" : null;
+    },
+  });
+}
+
+/**
+ * Returns the hibernation that is still to come and stops this process from firing it, for a
+ * server that is shutting down. Status keeps reporting it, so a client that polls through the
+ * restart does not see it switch off and on again.
+ */
+export function handOffHibernateIntent(): HibernateIntent | null {
+  if (!pending && !idleWatch) return null;
+  if (pending) pending.handedOff = true;
+  if (idleWatch) idleWatch.handedOff = true;
+  return {
+    onIdleGraceMs: idleWatch?.graceMs ?? null,
+    scheduledAt: pending?.scheduledAt ?? null,
+  };
 }
 
 export function disarmHibernateOnIdle(): boolean {
