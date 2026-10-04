@@ -4,6 +4,7 @@ import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 import { parseDeferId } from "../defer-ids.js";
 import { createReturnedDeferDelivery } from "../defer-result-message.js";
+import { endDeferLoop } from "./helpers.js";
 
 function findTool(tools: ReturnType<typeof getBridgeToolDefinitions>, name: string) {
   const tool = tools.find((t) => t.name === name);
@@ -190,7 +191,7 @@ describe("unified defer tools", () => {
   });
 
   it("lists inactive defers when requested", async () => {
-    const { ctx } = createTestApp();
+    const { ctx, db } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const listTool = findTool(tools, "defer_list");
@@ -200,7 +201,7 @@ describe("unified defer tools", () => {
     const cancelled = await createTool.handler({ prompt: "cancelled once", delaySeconds: 120 }, makeInvocation("session-A")) as any;
     const failed = await createTool.handler({ prompt: "failed loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A")) as any;
     ctx.deferredPromptStore!.cancelById(parseDeferId(cancelled.deferId)!.id);
-    ctx.deferLoopStore!.markFailedById(parseDeferId(failed.deferId)!.id, "resumeSession timed out after 60s");
+    endDeferLoop(db, parseDeferId(failed.deferId)!.id, "failed", "resumeSession timed out after 60s");
 
     const defaultResult = await listTool.handler({}, makeInvocation("session-A")) as any;
     expect(defaultResult.deferrals.map((item: any) => item.status).sort()).toEqual(["active", "pending"]);
@@ -262,7 +263,7 @@ describe("unified defer tools", () => {
   });
 
   it("reactivates cancelled one-shot and expired recurring defers for the owning session", async () => {
-    const { ctx } = createTestApp();
+    const { ctx, db } = createTestApp();
     const oncePoke = vi.fn();
     const loopPoke = vi.fn();
     ctx.deferredPromptRunner = { start: vi.fn(), poke: oncePoke, shutdown: vi.fn() } as any;
@@ -278,7 +279,7 @@ describe("unified defer tools", () => {
     const once = await createTool.handler({ prompt: "once", delaySeconds: 60 }, makeInvocation("session-A")) as any;
     const interval = await createTool.handler({ prompt: "loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A")) as any;
     ctx.deferredPromptStore!.cancelById(parseDeferId(once.deferId)!.id);
-    ctx.deferLoopStore!.markExpired(parseDeferId(interval.deferId)!.id);
+    endDeferLoop(db, parseDeferId(interval.deferId)!.id, "expired");
     oncePoke.mockClear();
     loopPoke.mockClear();
 
@@ -320,7 +321,7 @@ describe("unified defer tools", () => {
   });
 
   it("retries a failed parent delivery without rerunning the source defer", async () => {
-    const { ctx } = createTestApp();
+    const { ctx, db } = createTestApp();
     const deliveryPoke = vi.fn();
     ctx.deferredPromptRunner = {
       start: vi.fn(),
@@ -333,18 +334,14 @@ describe("unified defer tools", () => {
       intervalSeconds: 300,
       nextRunAt: new Date().toISOString(),
     });
-    ctx.deferLoopStore!.markCompleted(loop.id);
+    endDeferLoop(db, loop.id, "completed");
     const delivery = ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: loop.deferId, kind: "interval", parentSessionId: "session-A" },
       "Build completed",
       { deliveryId: "delivery-1" },
     ));
     const claimed = ctx.deferredPromptStore!.claimDue(delivery.id, 60_000)!;
-    ctx.deferredPromptStore!.markFailed(
-      delivery.id,
-      claimed.claimToken,
-      "Backend unavailable",
-    );
+    ctx.deferredPromptStore!.fail(delivery.id, "Backend unavailable", { claimToken: claimed.claimToken });
     const tools = getBridgeToolDefinitions(ctx);
     const listTool = findTool(tools, "defer_list");
     const reactivateTool = findTool(tools, "defer_reactivate");

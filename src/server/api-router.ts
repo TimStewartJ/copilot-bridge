@@ -126,6 +126,7 @@ import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-stat
 import { PendingInteractionError } from "./pending-interaction-validation.js";
 import { emitSessionDeferSummary, createDeferSummaryLookup, type DeferSummary } from "./defer-summary.js";
 import { parseDeferId } from "./defer-ids.js";
+import { reactivateDefer } from "./defer-reactivate.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
@@ -2879,7 +2880,8 @@ export function createApiRouter(
     const defers = sortDeferActivityItems([
       ...(ctx.deferredPromptStore?.listForSession(sessionId).map(formatOneShotDeferActivity) ?? []),
       ...(ctx.deferLoopStore?.listForSession(sessionId).map(formatLoopDeferActivity) ?? []),
-    ].map((item) => failedDeliveryIds.has(item.deferId)
+    // A stopped defer is restarted by Reactivate; only one that cannot be restarted offers its lost result again.
+    ].map((item) => failedDeliveryIds.has(item.deferId) && !item.canReactivate
       ? { ...item, canReactivate: true, failedDelivery: true }
       : item));
     res.json({
@@ -2960,92 +2962,16 @@ export function createApiRouter(
   router.post("/sessions/:id/defers/:deferId/reactivate", (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Defer reactivation")) return;
 
-    const sessionId = req.params.id;
-    const deferId = req.params.deferId;
-    const parsed = parseDeferId(deferId);
-    if (!parsed) return res.status(404).json({ error: `Defer ${deferId} not found.` });
-
-    if (parsed.kind === "once") {
-      const store = ctx.deferredPromptStore;
-      if (!store) return res.status(503).json({ error: "Deferred prompt store is unavailable." });
-
-      const existing = store.get(parsed.id);
-      if (!existing || existing.sessionId !== sessionId) {
-        return res.status(404).json({ error: `Defer ${deferId} not found.` });
-      }
-      const retriedDeliveries =
-        store.reactivateFailedDeliveryForSource(sessionId, deferId);
-      if (retriedDeliveries > 0) {
-        ctx.deferredPromptRunner?.poke();
-        return res.json({
-          ok: true,
-          deferId,
-          kind: "once",
-          status: existing.status,
-          deliveryRetried: true,
-        });
-      }
-      if (existing.status !== "failed" && existing.status !== "cancelled") {
-        return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be reactivated.` });
-      }
-
-      if (!store.reactivate(parsed.id)) {
-        const current = store.get(parsed.id);
-        return res.status(409).json({
-          error: `Defer ${deferId} is ${current?.status ?? existing.status} and cannot be reactivated.`,
-        });
-      }
-      const reactivated = store.get(parsed.id);
-      emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
-      ctx.deferredPromptRunner?.poke();
-      return res.json({
-        ok: true,
-        deferId,
-        kind: "once",
-        status: "pending",
-        nextRunAt: reactivated?.runAt ?? existing.runAt,
+    const { deferId } = req.params;
+    const result = reactivateDefer(ctx, req.params.id, deferId);
+    if (!result.ok) {
+      const status = result.reason === "unavailable" ? 503 : result.reason === "not_found" ? 404 : 409;
+      return res.status(status).json({
+        error: result.reason === "not_found" ? `Defer ${deferId} not found.` : result.message,
       });
     }
-
-    const store = ctx.deferLoopStore;
-    if (!store) return res.status(503).json({ error: "Recurring defer store is unavailable." });
-
-    const existing = store.get(parsed.id);
-    if (!existing || existing.sessionId !== sessionId) {
-      return res.status(404).json({ error: `Defer ${deferId} not found.` });
-    }
-    const retriedDeliveries =
-      ctx.deferredPromptStore?.reactivateFailedDeliveryForSource(sessionId, deferId) ?? 0;
-    if (retriedDeliveries > 0) {
-      ctx.deferredPromptRunner?.poke();
-      return res.json({
-        ok: true,
-        deferId,
-        kind: "interval",
-        status: existing.status,
-        deliveryRetried: true,
-      });
-    }
-    if (existing.status !== "failed" && existing.status !== "cancelled" && existing.status !== "expired") {
-      return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be reactivated.` });
-    }
-
-    if (!store.reactivate(parsed.id)) {
-      const current = store.get(parsed.id);
-      return res.status(409).json({
-        error: `Defer ${deferId} is ${current?.status ?? existing.status} and cannot be reactivated.`,
-      });
-    }
-    const reactivated = store.get(parsed.id);
-    emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
-    ctx.deferLoopRunner?.poke();
-    return res.json({
-      ok: true,
-      deferId,
-      kind: "interval",
-      status: "active",
-      nextRunAt: reactivated?.nextRunAt ?? existing.nextRunAt,
-    });
+    const { ok, ...body } = result;
+    return res.json({ ok, deferId, ...body });
   });
 
   // Warm a session for passive chat navigation, returning when ready.

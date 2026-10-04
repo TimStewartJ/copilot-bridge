@@ -8,7 +8,11 @@ import {
   buildDeferWorkerPrompt,
   createDisposableDeferWorker,
   createDisposableDeferWorkerSessionId,
+  DEFER_WORKER_TIMEOUT_MS,
   isDisposableDeferWorkerSessionId,
+  type DeferWorkerInput,
+  type DeferWorkerResult,
+  type DisposableDeferWorker,
 } from "../defer-worker.js";
 import { DEFER_CHECKPOINT_MAX_BYTES } from "../defer-checkpoint.js";
 
@@ -121,6 +125,17 @@ function createLifecycleProbe() {
   return { beginLifecycle: () => completeLifecycle, completeLifecycle, completed };
 }
 
+/** Runs one check the way the runner does: take a worker, run, give it back. */
+async function runCheck(worker: DisposableDeferWorker, input: DeferWorkerInput): Promise<DeferWorkerResult> {
+  const lease = worker.tryAcquire();
+  if (!lease) throw new Error("No defer worker is free.");
+  try {
+    return await lease.run(input);
+  } finally {
+    lease.release();
+  }
+}
+
 const workerInput = {
   deferId: "interval_1",
   kind: "interval" as const,
@@ -136,7 +151,7 @@ async function runWorkerScript(
 ) {
   const lifecycle = createLifecycleProbe();
   try {
-    return await createWorkerWithScript(script, label, lifecycle.beginLifecycle).run(workerInput);
+    return await runCheck(createWorkerWithScript(script, label, lifecycle.beginLifecycle), workerInput);
   } finally {
     await lifecycle.completed;
   }
@@ -207,7 +222,7 @@ describe("defer worker", () => {
       recordSpan,
     });
 
-    await expect(worker.run(workerInput)).resolves.toMatchObject({
+    await expect(runCheck(worker, workerInput)).resolves.toMatchObject({
       action: "return",
       message: "Build passed.",
       checkpoint: { status: "succeeded", buildId: 42 },
@@ -309,7 +324,7 @@ describe("defer worker", () => {
       recordSpan,
     });
 
-    const result = worker.run(workerInput);
+    const result = runCheck(worker, workerInput);
     await started;
     worker.abortAll();
 
@@ -324,6 +339,204 @@ describe("defer worker", () => {
       "parent-session",
       expect.objectContaining({ action: "error", error: BRIDGE_RESTARTING_MESSAGE }),
     );
+  });
+
+  it("stops a check that outlives the time limit and reports it as a failed try", async () => {
+    let endTurn!: () => void;
+    let turnStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      turnStarted = resolve;
+    });
+    const abort = vi.fn(async () => endTurn());
+    const deleteSession = vi.fn(async () => undefined);
+    const lifecycle = createLifecycleProbe();
+    const copilotHome = makeTestDir("defer-worker-timeout");
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({ mcpServers: {} }),
+      listModels: async () => [],
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
+      reserveCapacity: async () => () => undefined,
+      createSession: async (config) => ({
+        sessionId: config.sessionId as string,
+        sendAndWait: () => new Promise<void>((resolve) => {
+          endTurn = resolve;
+          turnStarted();
+        }),
+        abort,
+      }) as any,
+      deleteSession,
+      getCopilotHome: () => copilotHome,
+    });
+
+    // Only the limit itself runs on fake time; cleanup does real file work.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const result = runCheck(worker, workerInput);
+      await started;
+      vi.advanceTimersByTime(DEFER_WORKER_TIMEOUT_MS - 1);
+      expect(abort).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      vi.useRealTimers();
+
+      await expect(result).rejects.toThrow("ran longer than 30 minutes");
+      expect(abort).toHaveBeenCalledOnce();
+      await lifecycle.completed;
+      expect(deleteSession).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cleans up a stopped check even when its session never answers the abort", async () => {
+    let turnStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      turnStarted = resolve;
+    });
+    // A hung runtime: the abort is acknowledged but the turn never ends.
+    const abort = vi.fn(async () => undefined);
+    const deleteSession = vi.fn(async () => undefined);
+    const releaseCapacity = vi.fn();
+    const lifecycle = createLifecycleProbe();
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({ mcpServers: {} }),
+      listModels: async () => [],
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
+      reserveCapacity: async () => releaseCapacity,
+      createSession: async (config) => ({
+        sessionId: config.sessionId as string,
+        sendAndWait: () => new Promise<void>(() => {
+          turnStarted();
+        }),
+        abort,
+      }) as any,
+      deleteSession,
+      getCopilotHome: () => makeTestDir("defer-worker-hung"),
+      // The turn never ends here, so do not sit out the real grace period.
+      stopGraceMs: 0,
+    });
+
+    const result = runCheck(worker, workerInput);
+    await started;
+    worker.abortAll();
+
+    await expect(result).rejects.toThrow(BRIDGE_RESTARTING_MESSAGE);
+    // Without this the capacity reservation and the restart blocker would be held for good.
+    await lifecycle.completed;
+    expect(abort).toHaveBeenCalledOnce();
+    expect(deleteSession).toHaveBeenCalledOnce();
+    expect(releaseCapacity).toHaveBeenCalledOnce();
+  });
+
+  it("lets an aborted turn end before the session is removed", async () => {
+    let endTurn!: () => void;
+    let turnStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      turnStarted = resolve;
+    });
+    const order: string[] = [];
+    // The runtime acknowledges the abort first and ends the turn a little later.
+    const abort = vi.fn(async () => {
+      setTimeout(() => {
+        order.push("turn ended");
+        endTurn();
+      }, 20);
+    });
+    const lifecycle = createLifecycleProbe();
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({ mcpServers: {} }),
+      listModels: async () => [],
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
+      reserveCapacity: async () => () => {
+        order.push("capacity released");
+      },
+      createSession: async (config) => ({
+        sessionId: config.sessionId as string,
+        sendAndWait: () => new Promise<void>((resolve) => {
+          endTurn = resolve;
+          turnStarted();
+        }),
+        abort,
+      }) as any,
+      deleteSession: async () => {
+        order.push("session deleted");
+      },
+      getCopilotHome: () => makeTestDir("defer-worker-abort-order"),
+    });
+
+    const result = runCheck(worker, workerInput);
+    await started;
+    worker.abortAll();
+    await expect(result).rejects.toThrow(BRIDGE_RESTARTING_MESSAGE);
+    await lifecycle.completed;
+
+    expect(order).toEqual(["turn ended", "session deleted", "capacity released"]);
+  });
+
+  it("does not start a check that was stopped while its session was being created", async () => {
+    let finishCreate!: (session: unknown) => void;
+    let createStarted!: () => void;
+    const creating = new Promise<void>((resolve) => {
+      createStarted = resolve;
+    });
+    const sendAndWait = vi.fn(async () => undefined);
+    const deleteSession = vi.fn(async () => undefined);
+    const lifecycle = createLifecycleProbe();
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({ mcpServers: {} }),
+      listModels: async () => [],
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
+      reserveCapacity: async () => () => undefined,
+      createSession: (config) => new Promise((resolve) => {
+        finishCreate = (session) => resolve(session as any);
+        createStarted();
+        void config;
+      }),
+      deleteSession,
+      getCopilotHome: () => makeTestDir("defer-worker-stopped-early"),
+    });
+
+    const result = runCheck(worker, workerInput);
+    await creating;
+    worker.abortAll();
+    await expect(result).rejects.toThrow(BRIDGE_RESTARTING_MESSAGE);
+
+    finishCreate({ sessionId: "late-session", sendAndWait, abort: vi.fn(async () => undefined) });
+    await lifecycle.completed;
+    expect(sendAndWait).not.toHaveBeenCalled();
+    // The session that did get created is still removed.
+    expect(deleteSession).toHaveBeenCalledOnce();
+  });
+
+  it("fails the try with the capacity error itself when no context is free", async () => {
+    const capacityError = new Error("All 32 live Copilot contexts are currently in use.");
+    const createSession = vi.fn();
+    const lifecycle = createLifecycleProbe();
+    const worker = createDisposableDeferWorker({
+      getSettings: () => ({ mcpServers: {} }),
+      listModels: async () => [],
+      buildSessionConfig: () => ({}),
+      getParentWorkingDirectory: () => undefined,
+      beginLifecycle: lifecycle.beginLifecycle,
+      reserveCapacity: async () => {
+        throw capacityError;
+      },
+      createSession,
+      deleteSession: async () => undefined,
+      getCopilotHome: () => makeTestDir("defer-worker-no-capacity"),
+    });
+
+    // The runner tells a wait from a failure by the error's type, so the worker must not wrap it.
+    await expect(runCheck(worker, workerInput)).rejects.toBe(capacityError);
+    await lifecycle.completed;
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("restricts one-shot and final recurring submissions in the native schema and handler", async () => {
@@ -344,7 +557,7 @@ describe("defer worker", () => {
       getCopilotHome: () => copilotHome,
     });
 
-    await worker.run({
+    await runCheck(worker, {
       deferId: "interval_final",
       kind: "interval",
       parentSessionId: "parent-session",
@@ -425,7 +638,7 @@ describe("defer worker", () => {
       recordUsage,
     });
 
-    const result = await worker.run({
+    const result = await runCheck(worker, {
       deferId: "interval_1",
       kind: "interval",
       parentSessionId: "parent-session",
@@ -557,7 +770,7 @@ describe("defer worker", () => {
       logger,
     });
 
-    await expect(worker.run({
+    await expect(runCheck(worker, {
       deferId: "once_2",
       kind: "once",
       parentSessionId: "parent-session",
@@ -603,7 +816,7 @@ describe("defer worker", () => {
       getCopilotHome: () => copilotHome,
     });
 
-    await worker.run({
+    await runCheck(worker, {
       deferId: "interval_2",
       kind: "interval",
       parentSessionId: "parent-session",
@@ -650,7 +863,7 @@ describe("defer worker", () => {
       getCopilotHome: () => copilotHome,
     });
 
-    await worker.run({
+    await runCheck(worker, {
       deferId: "interval_3",
       kind: "interval",
       parentSessionId: "parent-session",
@@ -732,7 +945,7 @@ describe("defer worker", () => {
       getCopilotHome: () => copilotHome,
     });
 
-    await worker.run({
+    await runCheck(worker, {
       deferId: "once_1",
       kind: "once",
       parentSessionId: "parent-session",

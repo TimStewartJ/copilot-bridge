@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { request } from "../test-support/api-routes.js";
 import { createTestApp } from "../test-support/api-routes.js";
+import { endDeferLoop } from "../server/__tests__/helpers.js";
 
 describe("api router defer reactivation", () => {
   it("reactivates a cancelled one-shot defer", async () => {
@@ -44,14 +45,15 @@ describe("api router defer reactivation", () => {
   });
 
   it("reactivates a failed interval defer", async () => {
-    const { app, ctx } = createTestApp();
+    const { app, ctx, db } = createTestApp();
     const loop = ctx.deferLoopStore!.create({
       sessionId: "session-1",
       prompt: "poll later",
       intervalSeconds: 300,
       nextRunAt: "2030-01-01T00:00:00.000Z",
     });
-    expect(ctx.deferLoopStore!.markFailedById(loop.id, "backend disconnected")).toBe(true);
+    // Recurring defers no longer fail, but rows that failed before that change can still be restarted.
+    endDeferLoop(db, loop.id, "failed", "backend disconnected");
     const poke = vi.fn();
     ctx.deferLoopRunner = {
       poke,

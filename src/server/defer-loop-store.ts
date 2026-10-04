@@ -84,26 +84,16 @@ export function createDeferLoopStore(db: DatabaseSync) {
     WHERE status = 'active' AND (nextRunAt <= ? OR expiresAt <= ?)
     ORDER BY nextRunAt ASC, createdAt ASC
   `);
-  const selectNextActive = db.prepare(`
-    SELECT * FROM defer_loops
-    WHERE status = 'active'
-    ORDER BY nextRunAt ASC, createdAt ASC
-    LIMIT 1
+  // Earliest future run or running lease expiry: when the runner has to look again.
+  const selectNextWakeAt = db.prepare(`
+    SELECT MIN(wakeAt) AS wakeAt FROM (
+      SELECT MIN(nextRunAt) AS wakeAt FROM defer_loops WHERE status = 'active' AND nextRunAt > ?
+      UNION ALL
+      SELECT MIN(leaseExpiresAt) AS wakeAt FROM defer_loops WHERE status = 'running'
+    )
   `);
-  const selectNextFutureActive = db.prepare(`
+  const selectExpiredRunning = db.prepare(`
     SELECT * FROM defer_loops
-    WHERE status = 'active' AND nextRunAt > ?
-    ORDER BY nextRunAt ASC, createdAt ASC
-    LIMIT 1
-  `);
-  const selectNextRunningLease = db.prepare(`
-    SELECT * FROM defer_loops
-    WHERE status = 'running' AND leaseExpiresAt IS NOT NULL
-    ORDER BY leaseExpiresAt ASC, updatedAt ASC
-    LIMIT 1
-  `);
-  const selectExpiredRunningSessionIds = db.prepare(`
-    SELECT DISTINCT sessionId FROM defer_loops
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
   `);
   const selectSummaryForSession = db.prepare(`
@@ -137,28 +127,34 @@ export function createDeferLoopStore(db: DatabaseSync) {
     SET leaseExpiresAt = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
-  const releaseClaimWithoutAttemptStmt = db.prepare(`
+  // The check did not start: give the try back and leave the loop due.
+  const releaseStmt = db.prepare(`
     UPDATE defer_loops
     SET status = 'active',
         claimToken = NULL,
         leaseExpiresAt = NULL,
-        attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE attempts END,
+        attempts = MAX(attempts - 1, 0),
+        lastError = COALESCE(?, lastError),
         updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
-  const retryStmt = db.prepare(`
+  const noteWaitStmt = db.prepare(`
     UPDATE defer_loops
-    SET status = 'active',
+    SET lastError = ?
+    WHERE id = ? AND status = 'active' AND lastError IS NOT ?
+  `);
+  // A successful check clears the failure streak; a failed one keeps the count its claim added.
+  const settleOccurrenceStmt = db.prepare(`
+    UPDATE defer_loops
+    SET status = ?,
+        runCount = ?,
+        nextRunAt = ?,
+        checkpoint = COALESCE(?, checkpoint),
+        attempts = CASE WHEN ? IS NULL THEN 0 ELSE attempts END,
         claimToken = NULL,
         leaseExpiresAt = NULL,
-        nextRunAt = ?,
         lastError = ?,
         updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
-  `);
-  const markFailedStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
   const reactivateStmt = db.prepare(`
@@ -166,11 +162,6 @@ export function createDeferLoopStore(db: DatabaseSync) {
     SET status = 'active', claimToken = NULL, leaseExpiresAt = NULL, attempts = 0, lastError = NULL,
         nextRunAt = ?, expiresAt = ?, updatedAt = ?
     WHERE id = ? AND status IN ('failed', 'cancelled', 'expired')
-  `);
-  const markFailedByIdStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'failed', claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
-    WHERE id = ? AND status IN ('active', 'running')
   `);
   const markCancelledById = db.prepare(`
     UPDATE defer_loops
@@ -192,11 +183,6 @@ export function createDeferLoopStore(db: DatabaseSync) {
       LIMIT ?
     )
   `);
-  const markCompletedStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'completed', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
-    WHERE id = ? AND status IN ('active', 'running')
-  `);
   const markTerminalFromActiveStmt = db.prepare(`
     UPDATE defer_loops
     SET status = ?,
@@ -206,35 +192,6 @@ export function createDeferLoopStore(db: DatabaseSync) {
         lastError = NULL,
         updatedAt = ?
     WHERE id = ? AND status = 'active'
-  `);
-  const markTerminalFromClaimStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = ?,
-        attempts = 0,
-        claimToken = NULL,
-        leaseExpiresAt = NULL,
-        lastError = NULL,
-        updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
-  `);
-  const markExpiredStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'expired', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
-    WHERE id = ? AND status IN ('active', 'running')
-  `);
-  const markClaimedExpiredStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'expired', claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
-    WHERE id = ? AND status = 'running' AND claimToken = ?
-  `);
-  const reclaimExpiredStmt = db.prepare(`
-    UPDATE defer_loops
-    SET status = 'active',
-        claimToken = NULL,
-        leaseExpiresAt = NULL,
-        lastError = 'Deferred execution lease expired before completion.',
-        updatedAt = ?
-    WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
   `);
 
   function toRow(raw: any): DeferLoop {
@@ -291,27 +248,13 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (selectDue.all(now, now) as any[]).map(toRow);
   }
 
-  function getNextActive(): DeferLoop | undefined {
-    const row = selectNextActive.get();
-    return row ? toRow(row) : undefined;
+  function getNextWakeAt(now = new Date().toISOString()): string | undefined {
+    return (selectNextWakeAt.get(now) as { wakeAt: string | null }).wakeAt ?? undefined;
   }
 
-  function getNextFutureActive(now = new Date().toISOString()): DeferLoop | undefined {
-    const row = selectNextFutureActive.get(now);
-    return row ? toRow(row) : undefined;
-  }
-
-  function getNextFutureWakeAt(now = new Date().toISOString()): string | undefined {
-    const row = db.prepare(`SELECT MIN(wakeAt) AS wakeAt FROM (
-      SELECT nextRunAt AS wakeAt FROM defer_loops WHERE status='active' AND nextRunAt>?
-      UNION ALL SELECT expiresAt AS wakeAt FROM defer_loops WHERE status='active' AND expiresAt>?
-    )`).get(now, now) as { wakeAt: string | null };
-    return row.wakeAt ?? undefined;
-  }
-
-  function getNextRunningLeaseExpiry(): DeferLoop | undefined {
-    const row = selectNextRunningLease.get();
-    return row ? toRow(row) : undefined;
+  /** Loops whose claim outlived its lease: the server stopped while their check was running. */
+  function listExpiredRunning(now = new Date().toISOString()): DeferLoop[] {
+    return (selectExpiredRunning.all(now) as any[]).map(toRow);
   }
 
   function getSummaryForSession(sessionId: string): DeferSummary {
@@ -335,10 +278,6 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return row?.found === 1;
   }
 
-  function listExpiredRunningSessionIds(now = new Date().toISOString()): string[] {
-    return (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>).map((row) => row.sessionId);
-  }
-
   function claimDue(id: string, leaseMs: number, now = new Date().toISOString()): { loop: DeferLoop; claimToken: string } | undefined {
     const claimToken = randomUUID();
     const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
@@ -355,16 +294,21 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
-  function releaseClaimWithoutAttempt(id: string, claimToken: string): boolean {
-    const result = releaseClaimWithoutAttemptStmt.run(new Date().toISOString(), id, claimToken);
+  /** Give a claimed loop back without counting the try; it stays due. */
+  function release(id: string, claimToken: string, options: { error?: string } = {}): boolean {
+    const result = releaseStmt.run(options.error ?? null, new Date().toISOString(), id, claimToken);
     return (result as any).changes > 0;
   }
 
-  function retry(id: string, claimToken: string, nextRunAt: string, lastError?: string): boolean {
-    const result = retryStmt.run(nextRunAt, lastError ?? null, new Date().toISOString(), id, claimToken);
-    return (result as any).changes > 0;
+  /** Record why a due loop is not being started; cleared by its next successful check. */
+  function noteWait(id: string, reason: string): void {
+    noteWaitStmt.run(reason, id, reason);
   }
 
+  /**
+   * Record one finished check and schedule the next. With `error` the check failed: it still
+   * counts as a run and the failure streak in `attempts` is kept.
+   */
   function settleOccurrence(
     id: string,
     claimToken: string,
@@ -374,6 +318,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
       status?: Exclude<DeferLoopOccurrenceStatus, "active">;
       delivery?: DeferredResultDelivery;
       checkpoint?: DeferCheckpoint;
+      error?: string;
     } = {},
   ): DeferLoop | undefined {
     db.exec("BEGIN IMMEDIATE");
@@ -386,25 +331,16 @@ export function createDeferLoopStore(db: DatabaseSync) {
       const runCount = row.runCount + 1;
       const status = options.status
         ?? getDeferLoopOccurrenceStatus(toRow(row), runCount, nextRunAt);
-      db.prepare(`
-        UPDATE defer_loops
-        SET status = ?,
-            runCount = ?,
-            nextRunAt = ?,
-            checkpoint = COALESCE(?, checkpoint),
-            attempts = 0,
-            claimToken = NULL,
-            leaseExpiresAt = NULL,
-            lastError = NULL,
-            updatedAt = ?
-        WHERE id = ? AND status = 'running' AND claimToken = ?
-      `).run(
+      const error = options.error ?? null;
+      settleOccurrenceStmt.run(
         status,
         runCount,
         nextRunAt,
         options.checkpoint === undefined
           ? null
           : serializeDeferCheckpoint(options.checkpoint),
+        error,
+        error,
         now,
         id,
         claimToken,
@@ -422,55 +358,16 @@ export function createDeferLoopStore(db: DatabaseSync) {
     }
   }
 
-  function markCompleted(id: string): boolean {
-    const result = markCompletedStmt.run(new Date().toISOString(), id);
-    return (result as any).changes > 0;
-  }
-
+  /** End a loop that is not running (run limit or expiry reached) and queue its final message for the chat. */
   function markTerminalWithMessage(
     id: string,
     status: Exclude<DeferLoopOccurrenceStatus, "active">,
     message: DeferredResultDelivery,
-    options: { claimToken?: string; now?: string } = {},
+    now = new Date().toISOString(),
   ): boolean {
-    const now = options.now ?? new Date().toISOString();
     db.exec("BEGIN IMMEDIATE");
     try {
-      const result = options.claimToken
-        ? markTerminalFromClaimStmt.run(status, now, id, options.claimToken)
-        : markTerminalFromActiveStmt.run(status, now, id);
-      if ((result as any).changes === 0) {
-        db.exec("ROLLBACK");
-        return false;
-      }
-      if (!insertDelivery(message, now)) {
-        throw new Error(`Deferred delivery ${message.id} already exists.`);
-      }
-      db.exec("COMMIT");
-      return true;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  function markFailed(id: string, claimToken: string, lastError: string): boolean {
-    const result = markFailedStmt.run(lastError, new Date().toISOString(), id, claimToken);
-    return (result as any).changes > 0;
-  }
-
-  function failWithMessage(
-    id: string,
-    lastError: string,
-    message: DeferredResultDelivery,
-    options: { claimToken?: string; now?: string } = {},
-  ): boolean {
-    const now = options.now ?? new Date().toISOString();
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const result = options.claimToken
-        ? markFailedStmt.run(lastError, now, id, options.claimToken)
-        : markFailedByIdStmt.run(lastError, now, id);
+      const result = markTerminalFromActiveStmt.run(status, now, id);
       if ((result as any).changes === 0) {
         db.exec("ROLLBACK");
         return false;
@@ -509,21 +406,6 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes > 0;
   }
 
-  function markFailedById(id: string, lastError: string): boolean {
-    const result = markFailedByIdStmt.run(lastError, new Date().toISOString(), id);
-    return (result as any).changes > 0;
-  }
-
-  function markExpired(id: string): boolean {
-    const result = markExpiredStmt.run(new Date().toISOString(), id);
-    return (result as any).changes > 0;
-  }
-
-  function markClaimedExpired(id: string, claimToken: string): boolean {
-    const result = markClaimedExpiredStmt.run(new Date().toISOString(), id, claimToken);
-    return (result as any).changes > 0;
-  }
-
   function cancelById(id: string): boolean {
     const result = markCancelledById.run(new Date().toISOString(), id);
     return (result as any).changes > 0;
@@ -554,42 +436,27 @@ export function createDeferLoopStore(db: DatabaseSync) {
     return (result as any).changes as number;
   }
 
-  function reclaimExpiredRunning(now = new Date().toISOString()): number {
-    const result = reclaimExpiredStmt.run(now, now);
-    return (result as any).changes as number;
-  }
-
   return {
     create,
     get,
     listForSession,
     listDue,
-    getNextActive,
-    getNextFutureActive,
-    getNextFutureWakeAt,
-    getNextRunningLeaseExpiry,
+    getNextWakeAt,
+    listExpiredRunning,
     getSummaryForSession,
     listSummariesBySession,
     hasActiveForSession,
-    listExpiredRunningSessionIds,
     claimDue,
     renewClaim,
-    releaseClaimWithoutAttempt,
-    retry,
+    release,
+    noteWait,
     settleOccurrence,
-    markCompleted,
     markTerminalWithMessage,
-    markFailed,
-    markFailedById,
-    failWithMessage,
     reactivate,
-    markExpired,
-    markClaimedExpired,
     cancelById,
     cancelForSession,
     deleteForSession,
     pruneTerminalRows,
-    reclaimExpiredRunning,
   };
 }
 

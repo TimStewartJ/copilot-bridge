@@ -1,11 +1,17 @@
-// Shared defer-runner scaffolding — owns the scheduling/lease/bus lifecycle common to
-// the one-shot deferred-prompt runner and the recurring defer-loop runner.
-// Recomputes all timers from SQLite on startup; no in-memory state is authoritative.
+// Shared defer runner — schedules due work and takes each item through its whole life:
+// wait until the Bridge can take it, claim it, run it, and record the outcome.
+// The one-shot/message runner and the recurring runner each supply a DeferWork.
+// All timers are recomputed from SQLite on startup; no in-memory state is authoritative.
 
 import type { GlobalBus } from "./global-bus.js";
-import { isPromptDeliveryInterruptedError, type SessionManager } from "./session-manager.js";
+import {
+  isPromptDeliveryInterruptedError,
+  SessionCapacityError,
+  type SessionManager,
+} from "./session-manager.js";
 import type { DeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summary.js";
+import type { DeferWorkerLease } from "./defer-worker.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import { isBackendUnavailableError } from "./backend-availability.js";
 
@@ -18,14 +24,17 @@ export const LEASE_MS = 2 * 60_000;
 export const LEASE_RENEW_INTERVAL_MS = Math.floor(LEASE_MS / 2);
 export const MAX_TIMER_DELAY_MS = 2_000_000_000;
 export const DEFER_WATCHDOG_INTERVAL_MS = 60_000;
+const PAST_WAKE_RETRY_MS = 1_000;
+export const LEASE_EXPIRED_ERROR = "Deferred execution lease expired before completion.";
 
-export type DeferDeliveryErrorClassification = "pause" | "retry";
-
-export function classifyDeferDeliveryError(error: unknown): DeferDeliveryErrorClassification {
-  if (isPromptDeliveryInterruptedError(error) || isBackendUnavailableError(error)) {
-    return "pause";
-  }
-  return "retry";
+/**
+ * Whether a failed try says the Bridge could not take the work, not that the work failed.
+ * Such a try is not counted: the item stays due and is tried again when the Bridge can take it.
+ */
+export function isDeferWaitError(error: unknown): boolean {
+  return error instanceof SessionCapacityError
+    || isPromptDeliveryInterruptedError(error)
+    || isBackendUnavailableError(error);
 }
 
 export function computeDeferRetryBackoffMs(attempts: number): number {
@@ -36,79 +45,83 @@ export function computeDeferRetryBackoffMs(attempts: number): number {
   );
 }
 
-export type ProcessOneResult = "changed" | "blocked" | "unchanged" | "claimed";
+/**
+ * "blocked" means the item's chat cannot take anything right now, so nothing queued behind the item is
+ * tried either. "waiting" means only this item is held up (it needs a worker or a new context), so the
+ * pass goes on to the chat's next due item.
+ */
+export type ProcessOneResult = "changed" | "blocked" | "waiting" | "unchanged" | "claimed";
 
-/** Minimal shape the core needs from each due item to enforce one-per-session-per-pass FIFO. */
+/** What the scheduler needs from each due item to enforce one-per-session-per-pass FIFO. */
 export interface DeferRunnerDueItem {
   id: string;
   sessionId: string;
   wakeAt: string;
 }
 
-/**
- * Store-shaped read surface the core depends on. Runner-specific data operations
- * (claimDue/renewClaim/markCompleted/completeOccurrence/etc.) stay in each runner's
- * processOne/finishDelivery, closing over the real typed store.
- */
-export interface DeferRunnerStoreAdapter {
-  /** Next future pending/active wake time (deferred: getNextFuturePending().runAt; loop: getNextFutureActive().nextRunAt). */
-  getNextFutureWakeAt(): string | undefined;
-  /** Next running-lease expiry wake time. */
-  getNextRunningLeaseWakeAt(): string | undefined;
+/** One kind of deferred work: where its items are queued and what trying one means. */
+export interface DeferWork<Item extends { id: string; sessionId: string }> {
+  // ── Queue ──
   listDue(): ReadonlyArray<DeferRunnerDueItem>;
-  reclaimExpiredRunning(now: string): number;
-  listExpiredRunningSessionIds(now: string): string[];
+  /** Earliest future due time or running lease expiry. */
+  getNextWakeAt(): string | undefined;
+  /** Recover items whose claim outlived its lease (the server stopped mid-run). Returns the chats affected. */
+  reclaimExpired(now: string): string[];
   cancelForSession(sessionId: string): number;
+
+  // ── One item ──
+  /** The item, if it is still waiting to run. */
+  load(id: string): Item | undefined;
+  /** True when the item runs in a worker session of its own; false when it is a message for the chat itself. */
+  usesWorker(item: Item): boolean;
+  /** True when the item should still reach a chat that has been archived. */
+  reachesArchived(item: Item): boolean;
+  /** The chat is gone: end the item. Returns whether anything changed. */
+  orphaned(item: Item): boolean;
+  /** Reasons of the item's own to end it before running. Returns whether it ended one, or undefined to go on. */
+  preflight(item: Item): Promise<boolean | undefined> | boolean | undefined;
+  /** Record why the item is not being started yet. */
+  noteWait(item: Item, reason: string): void;
+  claim(id: string): { item: Item; claimToken: string } | undefined;
+  renew(id: string, claimToken: string): boolean;
+  /** Give the claim back without counting the try. */
+  release(id: string, claimToken: string, reason?: string): boolean;
+  /** Do the work and record its outcome. Throwing means this try did not produce one. */
+  run(item: Item, claimToken: string, lease: DeferWorkerLease | undefined): Promise<void>;
+  /** The work was tried and failed: apply this kind's policy. */
+  failed(item: Item, claimToken: string, error: string): void;
+}
+
+/** What the core lends to a DeferWork. */
+export interface DeferRunnerCoreContext {
+  recordSessionAttention(sessionId: string, at?: string): void;
+  emitDeferSummary(sessionId: string): void;
+}
+
+export interface DeferRunnerOptions {
+  telemetryStore?: Pick<TelemetryStore, "recordSpan">;
+  /** Called after an item was tried and has let go of its chat and worker, so work waiting on either can start. */
+  onSettled?: () => void;
 }
 
 /** Log/summary labels per runner. */
 export interface DeferRunnerLabels {
   /** Bracketed log tag, e.g. "deferred-runner" or "defer-loop-runner". */
   tag: string;
-  /** Singular noun for reclaim/cancel logs, e.g. "deferral" or "loop". */
+  /** Singular noun for logs, e.g. "deferral" or "loop". */
   noun: string;
   /** Stable telemetry discriminator for the defer kind. */
   kind: "once" | "interval";
 }
 
-/**
- * Shared scaffolding exposed to each runner's processOne/finishDelivery strategy.
- * The core owns the delivery guard, renewal timers, summaries, and re-arm scheduling.
- */
-export interface DeferRunnerCoreContext {
-  isStarted(): boolean;
-  readonly deliveryGuard: DeferDeliveryGuard;
-  /** Start a lease-renewal interval (guards on started) and track it for shutdown cleanup. */
-  startRenewal(renew: () => void): ReturnType<typeof setInterval>;
-  emitDeferSummary(sessionId: string): void;
-  emitDeferSummaries(sessionIds: Iterable<string>): void;
-  recordSessionAttention(sessionId: string, at?: string): void;
-  /**
-   * Settle a finished delivery: stop the renewal timer, release the session guard,
-   * then either process the next due item for the freed session or re-arm the timer.
-   * Release MUST happen before the readiness check so a same-session follow-up is not stranded.
-   */
-  afterDeliverySettled(
-    renewalTimer: ReturnType<typeof setInterval>,
-    sessionId: string,
-    shouldProcessNext: boolean,
-  ): void;
-}
-
-export interface DeferRunnerOptions {
-  telemetryStore?: Pick<TelemetryStore, "recordSpan">;
-}
-
-export interface DeferRunnerCoreOptions extends DeferRunnerOptions {
-  store: DeferRunnerStoreAdapter;
+export interface DeferRunnerCoreOptions<Item extends { id: string; sessionId: string }> extends DeferRunnerOptions {
   sessionManager: SessionManager;
   globalBus: GlobalBus;
   deliveryGuard: DeferDeliveryGuard;
   summarySources: DeferSummarySources;
   labels: DeferRunnerLabels;
-  additionalReadiness?: () => { ready: boolean; reason?: string; retryAfterMs?: number };
-  /** Pure factory: returns the runner's processOne strategy. Must not synchronously start processing. */
-  createProcessOne: (ctx: DeferRunnerCoreContext) => (id: string) => Promise<ProcessOneResult>;
+  /** Pure factory for this runner's work. Must not start processing. */
+  createWork: (ctx: DeferRunnerCoreContext) => DeferWork<Item>;
 }
 
 export interface DeferRunnerCore {
@@ -117,8 +130,16 @@ export interface DeferRunnerCore {
   shutdown(): void;
 }
 
-export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRunnerCore {
-  const { store, sessionManager, globalBus, deliveryGuard, summarySources, labels } = options;
+type Readiness = { ready: boolean; reason?: string; retryAfterMs?: number };
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function createDeferRunnerCore<Item extends { id: string; sessionId: string }>(
+  options: DeferRunnerCoreOptions<Item>,
+): DeferRunnerCore {
+  const { sessionManager, globalBus, deliveryGuard, summarySources, labels } = options;
   const { tag, noun } = labels;
 
   let nextTimer: ReturnType<typeof setTimeout> | undefined;
@@ -132,11 +153,14 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
   let holdLogged = false;
   const renewalTimers = new Set<ReturnType<typeof setInterval>>();
 
-  // ── Internal helpers ──────────────────────────────────────────────
+  const work = options.createWork({
+    recordSessionAttention: (sessionId, at = new Date().toISOString()) => {
+      sessionManager.markSessionAttention?.(sessionId, at);
+    },
+    emitDeferSummary,
+  });
 
-  function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
+  // ── Internal helpers ──────────────────────────────────────────────
 
   function recordTelemetry(name: string, duration: number, metadata: Record<string, unknown>): void {
     if (!options.telemetryStore) return;
@@ -152,71 +176,66 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     }
   }
 
-  function getOverdueTelemetry(due: ReadonlyArray<DeferRunnerDueItem>, now: number): {
-    overdueCount: number;
-    oldestOverdueAgeMs: number;
-  } {
-    let oldestWakeAt = now;
-    for (const item of due) {
-      const wakeAt = Date.parse(item.wakeAt);
-      if (Number.isFinite(wakeAt)) oldestWakeAt = Math.min(oldestWakeAt, wakeAt);
-    }
-    return {
-      overdueCount: due.length,
-      oldestOverdueAgeMs: Math.max(0, now - oldestWakeAt),
-    };
+  function emitDeferSummary(sessionId: string): void {
+    emitSessionDeferSummary(globalBus, sessionId, summarySources);
   }
 
-  function getNextWakeAt(): string | undefined {
-    const pendingWake = store.getNextFutureWakeAt();
-    const runningWake = store.getNextRunningLeaseWakeAt();
-    if (!pendingWake) return runningWake;
-    if (!runningWake) return pendingWake;
-    return Date.parse(runningWake) < Date.parse(pendingWake) ? runningWake : pendingWake;
+  function getReadiness(): Readiness {
+    return sessionManager.getDeferDeliveryReadiness?.() ?? { ready: true };
   }
 
-  function reclaimExpiredRunning(): void {
-    const now = new Date().toISOString();
-    const sessionIds = store.listExpiredRunningSessionIds(now);
-    const reclaimed = store.reclaimExpiredRunning(now);
-    if (reclaimed > 0) {
-      console.log(`[${tag}] Reclaimed ${reclaimed} expired running ${noun}(s)`);
-      emitDeferSummaries(sessionIds);
-    }
+  function reclaimExpired(): void {
+    const sessionIds = work.reclaimExpired(new Date().toISOString());
+    if (sessionIds.length === 0) return;
+    console.log(`[${tag}] Reclaimed ${sessionIds.length} expired running ${noun}(s)`);
+    for (const sessionId of new Set(sessionIds)) emitDeferSummary(sessionId);
   }
 
-  function getDeferDeliveryReadiness(): { ready: boolean; reason?: string; retryAfterMs?: number } {
-    const sessionReadiness = sessionManager.getDeferDeliveryReadiness?.() ?? { ready: true };
-    if (!sessionReadiness.ready) return sessionReadiness;
-    return options.additionalReadiness?.() ?? sessionReadiness;
-  }
+  // ── Scheduling ────────────────────────────────────────────────────
 
-  function clearHoldLogState(): void {
-    holdLogged = false;
-  }
-
-  function armHoldRetry(retryAfterMs: number | undefined): void {
+  function armTimer(delayMs: number, onFire: () => void): void {
     if (!started) return;
     clearTimeout(nextTimer);
-    const delay = Math.min(Math.max(0, retryAfterMs ?? 5_000), MAX_TIMER_DELAY_MS);
     const scheduledGeneration = generation;
     nextTimer = setTimeout(() => {
       if (!started || scheduledGeneration !== generation) return;
       nextTimer = undefined;
+      onFire();
       processDue().catch((err) => {
-        console.error(`[${tag}] processDue error after delivery hold:`, err);
+        console.error(`[${tag}] Unexpected error in processDue:`, err);
       });
-    }, delay);
+    }, Math.min(Math.max(0, delayMs), MAX_TIMER_DELAY_MS));
   }
 
+  function armNext(): void {
+    if (!started) return;
+    clearTimeout(nextTimer);
+    nextTimer = undefined;
+
+    const nextWakeAt = work.getNextWakeAt();
+    if (!nextWakeAt) return;
+    const wakeAtMs = Date.parse(nextWakeAt);
+    // A wake time already past is a lease the last pass could not recover; look again shortly, not at once.
+    const untilWake = wakeAtMs - Date.now();
+    const delay = untilWake > 0 ? untilWake : PAST_WAKE_RETRY_MS;
+    armTimer(delay, () => {
+      if (delay > MAX_TIMER_DELAY_MS) return;
+      recordTelemetry("defer.runner.timer_wake", 0, {
+        scheduledFor: nextWakeAt,
+        wakeDriftMs: Math.max(0, Date.now() - wakeAtMs),
+      });
+    });
+  }
+
+  /** While the Bridge as a whole cannot take deferred work, leave everything due and look again shortly. */
   function holdIfNotReady(dueCount: number): boolean {
     if (dueCount === 0) {
-      clearHoldLogState();
+      holdLogged = false;
       return false;
     }
-    const readiness = getDeferDeliveryReadiness();
+    const readiness = getReadiness();
     if (readiness.ready) {
-      clearHoldLogState();
+      holdLogged = false;
       return false;
     }
     const reason = readiness.reason ?? "defer delivery is not ready";
@@ -224,16 +243,13 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
       console.info(`[${tag}] Holding ${dueCount} due item(s): ${reason}`);
       holdLogged = true;
     }
-    recordTelemetry("defer.runner.hold", 0, {
-      reason,
-      dueCount,
-    });
-    armHoldRetry(readiness.retryAfterMs);
+    recordTelemetry("defer.runner.hold", 0, { reason, dueCount });
+    armTimer(readiness.retryAfterMs ?? 5_000, () => {});
     return true;
   }
 
   function getDueReadyForAnotherPass(): { ready: boolean; held: boolean } {
-    const due = store.listDue();
+    const due = work.listDue();
     if (holdIfNotReady(due.length)) return { ready: false, held: true };
     return {
       held: false,
@@ -243,66 +259,29 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     };
   }
 
-  function emitDeferSummary(sessionId: string): void {
-    emitSessionDeferSummary(globalBus, sessionId, summarySources);
-  }
-
-  function emitDeferSummaries(sessionIds: Iterable<string>): void {
-    for (const sessionId of new Set(sessionIds)) emitDeferSummary(sessionId);
-  }
-
-  function recordSessionAttention(sessionId: string, at = new Date().toISOString()): void {
-    if (typeof sessionManager.markSessionAttention !== "function") return;
-    sessionManager.markSessionAttention(sessionId, at);
-  }
-
-  function armNext(): void {
-    if (!started) return;
-    clearTimeout(nextTimer);
-    nextTimer = undefined;
-
-    const nextWakeAt = getNextWakeAt();
-    if (!nextWakeAt) return;
-
-    const wakeAtMs = Date.parse(nextWakeAt);
-    const delay = Math.max(0, wakeAtMs - Date.now());
-    const timerDelay = Math.min(delay, MAX_TIMER_DELAY_MS);
-    const scheduledGeneration = generation;
-    nextTimer = setTimeout(() => {
-      if (!started || scheduledGeneration !== generation) return;
-      nextTimer = undefined;
-      if (timerDelay === delay) {
-        recordTelemetry("defer.runner.timer_wake", 0, {
-          scheduledFor: nextWakeAt,
-          wakeDriftMs: Math.max(0, Date.now() - wakeAtMs),
-        });
-      }
-      processDue().catch((err) => {
-        console.error(`[${tag}] Unexpected error in processDue:`, err);
-      });
-    }, timerDelay);
-  }
-
   /**
    * Process all currently due items.
-   * Runs at most one item per session per pass, FIFO by wake time then createdAt.
+   * Starts at most one item per session per pass, FIFO by wake time then createdAt.
    */
-  async function processDue(): Promise<void> {
+  function processDue(): Promise<void> {
     if (processDuePromise) {
       rerunRequested = true;
       return processDuePromise;
     }
-    processDuePromise = processDueLoop().finally(() => {
-      processDuePromise = undefined;
-    });
+    processDuePromise = processDueLoop();
     return processDuePromise;
   }
 
   async function processDueLoop(): Promise<void> {
-    do {
-      rerunRequested = false;
-      await processDueOnce();
-    } while (started && rerunRequested);
+    try {
+      do {
+        rerunRequested = false;
+        await processDueOnce();
+      } while (started && rerunRequested);
+    } finally {
+      // Cleared in the same step as the loop's last check, so a rerun asked for after it starts a new pass.
+      processDuePromise = undefined;
+    }
   }
 
   async function processDueOnce(): Promise<void> {
@@ -310,43 +289,27 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     let held = false;
 
     try {
-      reclaimExpiredRunning();
-      const due = store.listDue();
-      if (due.length > 0) {
-        if (holdIfNotReady(due.length)) {
+      reclaimExpired();
+      const due = work.listDue();
+      if (due.length === 0) return;
+      if (holdIfNotReady(due.length)) {
+        held = true;
+        return;
+      }
+      const bySession = new Map<string, DeferRunnerDueItem[]>();
+      for (const item of due) {
+        const items = bySession.get(item.sessionId);
+        if (items) items.push(item);
+        else bySession.set(item.sessionId, [item]);
+      }
+      const results = await Promise.all([...bySession.values()].map(processSession));
+      const changed = results.includes("changed");
+      if (changed) {
+        const nextPass = getDueReadyForAnotherPass();
+        if (nextPass.ready) {
+          rerunRequested = true;
+        } else if (nextPass.held) {
           held = true;
-          return;
-        }
-        const sessionsSeen = new Set<string>();
-        const toProcess = due.filter((item) => {
-          if (sessionsSeen.has(item.sessionId)) return false;
-          sessionsSeen.add(item.sessionId);
-          return true;
-        });
-
-        const settled = await Promise.allSettled(toProcess.map((item) => processOne(item.id)));
-        const results: ProcessOneResult[] = [];
-        for (let index = 0; index < settled.length; index++) {
-          const result = settled[index];
-          const item = toProcess[index];
-          if (result.status === "fulfilled") {
-            results.push(result.value);
-            continue;
-          }
-          console.error(`[${tag}] Failed to process ${noun} ${item.id}:`, result.reason);
-          recordTelemetry("defer.runner.item_failure", 0, {
-            itemId: item.id,
-            sessionId: item.sessionId,
-            error: errorMessage(result.reason),
-          });
-        }
-        if (results.includes("changed")) {
-          const nextPass = getDueReadyForAnotherPass();
-          if (nextPass.ready) {
-            rerunRequested = true;
-          } else if (nextPass.held) {
-            held = true;
-          }
         }
       }
     } finally {
@@ -354,15 +317,176 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     }
   }
 
+  /** Take a chat's due items in order until one is started, changes, or shows the chat cannot take any. */
+  async function processSession(items: DeferRunnerDueItem[]): Promise<ProcessOneResult> {
+    for (const item of items) {
+      try {
+        const result = await processOne(item.id);
+        if (result !== "waiting") return result;
+      } catch (error) {
+        console.error(`[${tag}] Failed to process ${noun} ${item.id}:`, error);
+        recordTelemetry("defer.runner.item_failure", 0, {
+          itemId: item.id,
+          sessionId: item.sessionId,
+          error: errorMessage(error),
+        });
+        return "unchanged";
+      }
+    }
+    return "waiting";
+  }
+
+  // ── One item ──────────────────────────────────────────────────────
+
+  async function processOne(id: string): Promise<ProcessOneResult> {
+    if (!started) return "unchanged";
+    const item = work.load(id);
+    if (!item) return "unchanged";
+    const { sessionId } = item;
+    if (deliveryGuard.isActive(sessionId)) return "blocked";
+
+    const sessions = await sessionManager.listSessionsFromDisk({ includeArchived: work.reachesArchived(item) });
+    if (!started) return "unchanged";
+    if (deliveryGuard.isActive(sessionId)) return "blocked";
+    if (!sessions.some((session: any) => session.sessionId === sessionId)) {
+      const changed = work.orphaned(item);
+      if (changed) emitDeferSummary(sessionId);
+      return changed ? "changed" : "unchanged";
+    }
+    const ended = await work.preflight(item);
+    if (ended !== undefined) {
+      if (ended) emitDeferSummary(sessionId);
+      return ended ? "changed" : "unchanged";
+    }
+    if (!started) return "unchanged";
+
+    // session:idle is the fast path for a busy chat; the watchdog also retries overdue items.
+    if (sessionManager.isSessionBusy(sessionId)) return "blocked";
+    const usesWorker = work.usesWorker(item);
+    const capacityWait = sessionManager.getSessionCapacityWait?.(usesWorker ? undefined : sessionId);
+    if (capacityWait) {
+      work.noteWait(item, capacityWait);
+      // A check waits for a context of its own; a message waits for its chat, and so do the messages after it.
+      return usesWorker ? "waiting" : "blocked";
+    }
+    if (!deliveryGuard.tryClaim(sessionId)) return "blocked";
+
+    let claimToken: string | undefined;
+    let lease: DeferWorkerLease | undefined;
+    try {
+      if (usesWorker) {
+        lease = sessionManager.tryAcquireDeferWorker();
+        if (!lease) {
+          deliveryGuard.release(sessionId);
+          return "waiting";
+        }
+      }
+      const claimed = work.claim(id);
+      if (!claimed) {
+        lease?.release();
+        deliveryGuard.release(sessionId);
+        return "unchanged"; // someone else claimed it
+      }
+      claimToken = claimed.claimToken;
+      emitDeferSummary(sessionId);
+
+      const token = claimed.claimToken;
+      const renewalTimer = setInterval(() => {
+        if (!started) return;
+        if (!work.renew(id, token)) {
+          console.warn(`[${tag}] Failed to renew lease for ${noun} ${id}`);
+        }
+      }, LEASE_RENEW_INTERVAL_MS);
+      renewalTimers.add(renewalTimer);
+
+      void finish(claimed.item, token, renewalTimer, lease).catch((err) => {
+        console.error(`[${tag}] Unexpected delivery error for ${noun} ${id}:`, err);
+      });
+      return "claimed";
+    } catch (error) {
+      if (claimToken) {
+        try {
+          if (!work.release(id, claimToken)) {
+            console.error(`[${tag}] Failed to roll back interrupted claim setup for ${noun} ${id}`);
+          }
+        } catch (releaseError) {
+          console.error(`[${tag}] Failed to roll back interrupted claim setup for ${noun} ${id}:`, releaseError);
+        }
+      }
+      lease?.release();
+      deliveryGuard.release(sessionId);
+      throw error;
+    }
+  }
+
+  async function finish(
+    item: Item,
+    claimToken: string,
+    renewalTimer: ReturnType<typeof setInterval>,
+    lease: DeferWorkerLease | undefined,
+  ): Promise<void> {
+    const { id, sessionId } = item;
+    // A waiting item stays due, so going straight into another pass would spin on it.
+    let waiting = false;
+    try {
+      await work.run(item, claimToken, lease);
+    } catch (error) {
+      const message = errorMessage(error);
+      if (
+        isDeferWaitError(error)
+        || !getReadiness().ready
+        // A message's capacity refusal arrives as plain text, so ask again whether its chat can be loaded.
+        || (!lease && sessionManager.getSessionCapacityWait?.(sessionId) !== undefined)
+      ) {
+        waiting = true;
+        if (!work.release(id, claimToken, message)) {
+          console.error(`[${tag}] Failed to release ${noun} ${id} without counting the try`);
+        }
+      } else {
+        work.failed(item, claimToken, message);
+      }
+    } finally {
+      lease?.release();
+      clearInterval(renewalTimer);
+      renewalTimers.delete(renewalTimer);
+      // Release before looking for more work, so a same-session follow-up is not stranded.
+      deliveryGuard.release(sessionId);
+      emitDeferSummary(sessionId);
+      // Not after a wait: two runners that each hold a waiting item would wake each other without end.
+      if (!waiting) options.onSettled?.();
+      // A waiting item is retried by the hold poll while the Bridge is not ready, else by the watchdog or an idle chat.
+      const nextPass = !started
+        ? undefined
+        : waiting
+          ? { ready: false, held: holdIfNotReady(work.listDue().length) }
+          : getDueReadyForAnotherPass();
+      if (nextPass?.ready) {
+        processDue().catch((err) => {
+          console.error(`[${tag}] processDue error after delivery settled:`, err);
+        });
+      } else if (!nextPass?.held) {
+        armNext();
+      }
+    }
+  }
+
+  // ── Watchdog ──────────────────────────────────────────────────────
+
   async function runWatchdogSweep(): Promise<void> {
     const sweepGeneration = generation;
     const startedAt = Date.now();
     try {
-      const due = store.listDue();
+      const due = work.listDue();
       await processDue();
       if (!started || sweepGeneration !== generation || due.length === 0) return;
+      let oldestWakeAt = startedAt;
+      for (const item of due) {
+        const wakeAt = Date.parse(item.wakeAt);
+        if (Number.isFinite(wakeAt)) oldestWakeAt = Math.min(oldestWakeAt, wakeAt);
+      }
       recordTelemetry("defer.runner.watchdog_sweep", Date.now() - startedAt, {
-        ...getOverdueTelemetry(due, startedAt),
+        overdueCount: due.length,
+        oldestOverdueAgeMs: Math.max(0, startedAt - oldestWakeAt),
       });
     } catch (error) {
       if (!started || sweepGeneration !== generation) return;
@@ -386,49 +510,6 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     watchdogTimer.unref?.();
   }
 
-  function startRenewal(renew: () => void): ReturnType<typeof setInterval> {
-    const renewalTimer = setInterval(() => {
-      if (!started) return;
-      renew();
-    }, LEASE_RENEW_INTERVAL_MS);
-    renewalTimers.add(renewalTimer);
-    return renewalTimer;
-  }
-
-  function afterDeliverySettled(
-    renewalTimer: ReturnType<typeof setInterval>,
-    sessionId: string,
-    shouldProcessNext: boolean,
-  ): void {
-    clearInterval(renewalTimer);
-    renewalTimers.delete(renewalTimer);
-    deliveryGuard.release(sessionId);
-    if (started && shouldProcessNext) {
-      const nextPass = getDueReadyForAnotherPass();
-      if (nextPass.ready) {
-        processDue().catch((err) => {
-          console.error(`[${tag}] processDue error after delivery settled:`, err);
-        });
-      } else if (!nextPass.held) {
-        armNext();
-      }
-    } else {
-      armNext();
-    }
-  }
-
-  const ctx: DeferRunnerCoreContext = {
-    isStarted: () => started,
-    deliveryGuard,
-    startRenewal,
-    emitDeferSummary,
-    emitDeferSummaries,
-    recordSessionAttention,
-    afterDeliverySettled,
-  };
-
-  const processOne = options.createProcessOne(ctx);
-
   // ── Public API ────────────────────────────────────────────────────
 
   function start(): void {
@@ -436,11 +517,9 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     started = true;
     generation++;
 
-    // Reclaim any running rows whose leases have expired
-    reclaimExpiredRunning();
+    reclaimExpired();
     startWatchdog();
 
-    // Subscribe to global bus events
     busUnsubscribe = globalBus.subscribe((event) => {
       if (event.type === "session:idle" && event.sessionId) {
         // Give the session one tick to settle before we re-try
@@ -455,14 +534,12 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
       }
 
       if (event.type === "session:archived" && event.sessionId && event.archived === true) {
-        const cancelled = store.cancelForSession(event.sessionId);
+        const cancelled = work.cancelForSession(event.sessionId);
         if (cancelled > 0) {
           console.log(`[${tag}] Cancelled ${cancelled} ${noun}(s) for archived session ${event.sessionId}`);
           emitDeferSummary(event.sessionId);
         }
-        return;
       }
-
     });
 
     // Catch up and arm
@@ -473,10 +550,7 @@ export function createDeferRunnerCore(options: DeferRunnerCoreOptions): DeferRun
     console.log(`[${tag}] Started`);
   }
 
-  /**
-   * Re-run due processing immediately.
-   * Call this after inserting a new item so the runner wakes up promptly.
-   */
+  /** Re-run due processing now. Call this after queuing an item so the runner wakes up promptly. */
   function poke(): void {
     if (!started) return;
     processDue().catch((err) => {

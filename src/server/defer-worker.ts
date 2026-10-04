@@ -29,6 +29,9 @@ const DEFER_RESULT_MESSAGE_MAX_CHARS = 16 * 1024;
 const DEFER_RESULT_TOOL_NAME = "defer_result";
 const DEFAULT_DEFER_WORKER_REASONING_EFFORT = "low";
 const DEFAULT_DEFER_WORKER_CONTEXT_TIER = "default";
+/** A check is one bounded look at something. One still running after this long is stuck and is stopped. */
+export const DEFER_WORKER_TIMEOUT_MS = 30 * 60_000;
+const DEFER_WORKER_STOP_GRACE_MS = 10_000;
 
 export type DeferWorkerKind = "once" | "interval";
 export type DeferWorkerAction = "continue" | "notify" | "finish" | "return" | "expired";
@@ -52,10 +55,6 @@ export interface DeferWorkerResult {
   message?: string;
   checkpoint?: DeferCheckpoint;
   deliveryId?: string;
-}
-
-export interface DeferWorkerExecutor {
-  run(input: DeferWorkerInput): Promise<DeferWorkerResult>;
 }
 
 export interface DeferWorkerLease {
@@ -84,6 +83,8 @@ export interface DisposableDeferWorkerDeps {
     result: CopilotUsageSessionScanResult,
   ): void;
   logger?: Pick<Console, "warn">;
+  /** How long a stopped check's turn gets to end before its session is removed anyway. */
+  stopGraceMs?: number;
 }
 
 interface DeferResultSubmission {
@@ -302,7 +303,7 @@ function createDeferResultTool(
   };
 }
 
-export class DisposableDeferWorker implements DeferWorkerExecutor {
+export class DisposableDeferWorker {
   private readonly maxConcurrentWorkers = 2;
   private activeWorkers = 0;
   private readonly abortHandlers = new Set<() => void>();
@@ -312,16 +313,6 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
   /** Abort in-flight checks; they fail as "Bridge is restarting" so runners requeue them without an attempt. */
   abortAll(): void {
     for (const abort of this.abortHandlers) abort();
-  }
-
-  async run(input: DeferWorkerInput): Promise<DeferWorkerResult> {
-    const lease = this.tryAcquire();
-    if (!lease) throw new Error("Deferred worker capacity is full.");
-    try {
-      return await lease.run(input);
-    } finally {
-      lease.release();
-    }
   }
 
   tryAcquire(): DeferWorkerLease | undefined {
@@ -389,13 +380,28 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
     let session: AgentSession | undefined;
     let releaseCapacityReservation: (() => void) | undefined;
     let completionError: string | undefined;
-    let aborted = false;
-    const abort = () => {
-      aborted = true;
-      submission.fail(new Error(BRIDGE_RESTARTING_MESSAGE));
+    let stopped: Error | undefined;
+    let turn: Promise<unknown> | undefined;
+    let rejectStopped!: (error: Error) => void;
+    // Ends the wait on the session even if the session never answers the abort, so cleanup always runs.
+    const stopSignal = new Promise<never>((_resolve, reject) => {
+      rejectStopped = reject;
+    });
+    stopSignal.catch(() => undefined);
+    const stop = (reason: string) => {
+      if (stopped) return;
+      stopped = new Error(reason);
+      submission.fail(stopped);
+      rejectStopped(stopped);
       void session?.abort().catch(() => undefined);
     };
+    const abort = () => stop(BRIDGE_RESTARTING_MESSAGE);
     this.abortHandlers.add(abort);
+    const timeout = setTimeout(
+      () => stop(`Deferred check ran longer than ${DEFER_WORKER_TIMEOUT_MS / 60_000} minutes and was stopped.`),
+      DEFER_WORKER_TIMEOUT_MS,
+    );
+    timeout.unref?.();
 
     try {
       const settings = this.deps.getSettings();
@@ -466,20 +472,34 @@ export class DisposableDeferWorker implements DeferWorkerExecutor {
       };
       releaseCapacityReservation = await this.deps.reserveCapacity(sessionConfig);
       session = await this.deps.createSession(sessionConfig);
-      if (aborted) throw new Error(BRIDGE_RESTARTING_MESSAGE);
-      await session.sendAndWait({
+      // Stopped while the session was being created: it was never told, so do not start the check.
+      if (stopped) throw stopped;
+      turn = session.sendAndWait({
         prompt: buildDeferWorkerPrompt(input),
         attachments: [],
       }, null);
+      await Promise.race([turn, stopSignal]);
       if (!submission.result) {
         throw new Error(`Deferred worker ended without calling ${DEFER_RESULT_TOOL_NAME}.`);
       }
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
-      completionError = aborted ? BRIDGE_RESTARTING_MESSAGE : normalizedError.message;
+      completionError = normalizedError.message;
       submission.fail(normalizedError);
     } finally {
+      clearTimeout(timeout);
       this.abortHandlers.delete(abort);
+      if (stopped && turn) {
+        // Let the aborted turn end before its session is taken away, but do not wait on a hung one.
+        let grace: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          turn.then(() => undefined, () => undefined),
+          new Promise<void>((resolve) => {
+            grace = setTimeout(resolve, this.deps.stopGraceMs ?? DEFER_WORKER_STOP_GRACE_MS);
+          }),
+        ]);
+        clearTimeout(grace);
+      }
       const completedAt = Date.now();
       const result = submission.result;
       const spanMetadata: Record<string, unknown> = {

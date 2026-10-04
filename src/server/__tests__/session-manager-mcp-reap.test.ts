@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
-import { SessionManager } from "../session-manager.js";
+import { SessionCapacityError, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionPromptProfileStore } from "../session-prompt-profile-store.js";
@@ -1232,6 +1232,46 @@ describe("SessionManager bounded session lifecycle", () => {
         },
       });
     manager.endSessionResume(firstLease);
+  });
+
+  it("tells deferred work whether a Copilot context is free, without reserving one", async () => {
+    const { manager } = createManager();
+    manager.maxCachedContexts = 1;
+    manager.sessionObjects.set("loaded-chat", fakeSession("loaded-chat"));
+
+    // A loaded chat that nothing protects can be evicted, so one more context still fits.
+    expect(manager.getSessionCapacityWait()).toBeUndefined();
+    expect(manager.getSessionCapacityWait("unloaded-chat")).toBeUndefined();
+
+    const lease = await manager.beginSessionResume("resuming-chat", {});
+    const full = "All 1 live Copilot contexts are currently in use.";
+    // A check needs a context of its own, and so does a message for a chat that would have to be loaded.
+    expect(manager.getSessionCapacityWait()).toContain(full);
+    expect(manager.getSessionCapacityWait("unloaded-chat")).toContain(full);
+    // A message for a chat that is already loaded needs none.
+    expect(manager.getSessionCapacityWait("loaded-chat")).toBeUndefined();
+
+    manager.endSessionResume(lease);
+    expect(manager.getSessionCapacityWait()).toBeUndefined();
+  });
+
+  it("refuses a deferred worker at once when no context is free, instead of waiting for one", async () => {
+    const { manager, telemetryStore } = createManager({ telemetry: true });
+    manager.maxCachedContexts = 1;
+    const lease = await manager.beginSessionResume("resuming-chat", {});
+
+    // The configured wait (30 s by default) is for chats a person is waiting on. A check goes back to its queue.
+    expect(manager.sessionCapacityWaitTimeoutMs).toBeGreaterThan(0);
+    await expect(manager.deferWorker.deps.reserveCapacity({}))
+      .rejects.toBeInstanceOf(SessionCapacityError);
+    // It is retried on the runner's own schedule, so a span for each try would be noise.
+    expect(telemetryStore!.querySpans({ name: "session.capacity.wait" })).toEqual([]);
+
+    manager.endSessionResume(lease);
+    const release = await manager.deferWorker.deps.reserveCapacity({});
+    expect(manager.getSessionCapacityWait()).toContain("All 1 live Copilot contexts are currently in use.");
+    release();
+    expect(manager.getSessionCapacityWait()).toBeUndefined();
   });
 
   it("waits for capacity and admits the next resume when a slot is released", async () => {
