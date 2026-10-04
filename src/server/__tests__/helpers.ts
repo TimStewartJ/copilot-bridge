@@ -234,6 +234,7 @@ export function createMockSessionManager() {
     }),
     listSessionAgents: async () => ({ tasks: [], source: "unknown" as const }),
     cancelSessionAgent: async () => ({ cancelled: false }),
+    dismissSessionAgent: async () => ({ dismissed: false as const, reason: "unavailable" as const }),
     listSlashCommands: async () => ({ supported: false, commands: [] }),
     getPendingUserInputCount: () => 0,
     getPendingInputSessionIds: () => [],

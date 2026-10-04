@@ -106,6 +106,7 @@ import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
 import { DEFAULT_SEND_MODE, isSendMode } from "../shared/send-mode.js";
 import {
+  type AgentDismissRefusal,
   type BackgroundAgentsSummary,
   type SessionAgentTask,
   emptyBackgroundAgentsSummary,
@@ -448,6 +449,13 @@ function getSessionStatus(
 const AGENT_TEXT_MAX_LENGTH = 2_000;
 /** One agent opened on its own gets its brief and report in full, short of a runaway value. */
 const AGENT_DETAIL_TEXT_MAX_LENGTH = 200_000;
+
+const AGENT_DISMISS_REFUSALS: Record<AgentDismissRefusal, { status: number; error: string }> = {
+  unavailable: { status: 409, error: "The session is not loaded, so its agents cannot be dismissed right now" },
+  "not-found": { status: 404, error: "This agent is no longer tracked for the session" },
+  running: { status: 409, error: "This agent is working. Stop it first, then dismiss it" },
+  refused: { status: 409, error: "The runtime did not remove the agent. Try again in a moment" },
+};
 
 function truncateAgentText(value: string | undefined, maxLength = AGENT_TEXT_MAX_LENGTH): string | undefined {
   if (value === undefined) return undefined;
@@ -3974,6 +3982,20 @@ export function createApiRouter(
         return res.status(409).json({ error: "Background task cancellation is not available for this session" });
       }
       res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // POST /sessions/:id/agents/:agentId/dismiss — take an agent that is not working off the
+  // session's list for good, which frees its place among the live contexts. An idle agent is
+  // ended first. Cancel leaves the agent listed; this does not.
+  router.post("/sessions/:id/agents/:agentId/dismiss", async (req, res) => {
+    try {
+      const result = await ctx.sessionManager.dismissSessionAgent(req.params.id, req.params.agentId);
+      if (result.dismissed) return res.json({ dismissed: true });
+      const refusal = AGENT_DISMISS_REFUSALS[result.reason];
+      res.status(refusal.status).json({ error: refusal.error, reason: result.reason });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

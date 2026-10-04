@@ -5,6 +5,7 @@ import remarkBreaks from "remark-breaks";
 import { Bot, ChevronRight, RefreshCw, X } from "lucide-react";
 import {
   cancelSessionAgent,
+  dismissSessionAgent,
   fetchSessionAgentDetail,
   fetchSessionAgents,
   type AgentCountsSource,
@@ -123,14 +124,18 @@ interface AgentRowProps {
   now: number;
   open: boolean;
   onToggle: (agentId: string) => void;
-  onStopped: () => void;
+  /** The agent was stopped or dismissed, or an attempt showed the list to be out of date. */
+  onChanged: () => void;
 }
 
-function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, open, onToggle, onStopped }: AgentRowProps) {
+/** Stopping ends an agent's work and leaves it listed; dismissing takes it off the list. */
+type AgentAction = "stop" | "dismiss";
+
+function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, open, onToggle, onChanged }: AgentRowProps) {
   const [detail, setDetail] = useState<SessionAgentTask | null>(null);
-  const [confirmingStop, setConfirmingStop] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<AgentAction | null>(null);
+  const [acting, setActing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [showFullReport, setShowFullReport] = useState(false);
 
   const name = task.name ?? agent?.name ?? task.agentType ?? "agent";
@@ -165,8 +170,8 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
 
   useEffect(() => {
     if (open) return;
-    setConfirmingStop(false);
-    setStopError(null);
+    setConfirming(null);
+    setActionError(null);
   }, [open]);
 
   const shown = detail ?? task;
@@ -174,19 +179,39 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
   const brief = shown.prompt?.trim() || undefined;
   const reportLabel = working ? "Latest update" : task.status === "completed" ? "Result" : "Latest report";
   const canStop = NON_TERMINAL.has(task.status);
+  // A working agent is stopped first: dismissing is for one that is waiting or has ended.
+  const canDismiss = !working;
+  const wentIdle = task.status === "idle" ? timeAgo(task.idleSince) : "";
+  const asking: AgentAction | null =
+    (confirming === "stop" && canStop) || (confirming === "dismiss" && canDismiss) ? confirming : null;
 
   const stop = async () => {
-    setStopping(true);
-    setStopError(null);
+    setActing(true);
+    setActionError(null);
     try {
       const result = await cancelSessionAgent(sessionId, task.id);
-      if (!result.cancelled) setStopError("The agent could not be stopped. It may have finished already.");
-      setConfirmingStop(false);
-      onStopped();
+      if (!result.cancelled) setActionError("The agent could not be stopped. It may have finished already.");
+      setConfirming(null);
+      onChanged();
     } catch (error) {
-      setStopError(`Could not stop the agent: ${error instanceof Error ? error.message : String(error)}`);
+      setActionError(`Could not stop the agent: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setStopping(false);
+      setActing(false);
+    }
+  };
+
+  const dismiss = async () => {
+    setActing(true);
+    setActionError(null);
+    try {
+      await dismissSessionAgent(sessionId, task.id);
+      setConfirming(null);
+    } catch (error) {
+      setActionError(`Could not dismiss the agent: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setActing(false);
+      // A refusal usually means the list is out of date: the agent began working, or is gone.
+      onChanged();
     }
   };
 
@@ -256,28 +281,54 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
               task.model,
               stepCount > 0 ? plural(stepCount, "step") : undefined,
               task.startedAt ? `started ${timeAgo(task.startedAt)}` : undefined,
+              wentIdle ? `went idle ${wentIdle}` : undefined,
             ]}
           />
-          {canStop && (confirmingStop ? (
+          {asking === "stop" && (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1" role="group" aria-label={`Stop ${name}`}>
               <span className={cx("min-w-0", DS.text.rowDetail)}>
                 {working
                   ? `Stop ${name}? What it has done so far stays in the transcript.`
                   : `Stop ${name}? It will take no more follow-ups.`}
               </span>
-              <Button size="sm" variant="danger" disabled={stopping} onClick={() => { void stop(); }}>
-                {stopping ? "Stopping…" : "Stop agent"}
+              <Button size="sm" variant="danger" disabled={acting} onClick={() => { void stop(); }}>
+                {acting ? "Stopping…" : "Stop agent"}
               </Button>
-              <Button size="sm" variant="ghost" disabled={stopping} onClick={() => setConfirmingStop(false)}>
+              <Button size="sm" variant="ghost" disabled={acting} onClick={() => setConfirming(null)}>
                 Keep it
               </Button>
             </div>
-          ) : (
-            <Button size="sm" variant="ghost" className="-ml-2.5" onClick={() => { setStopError(null); setConfirmingStop(true); }}>
-              Stop agent…
-            </Button>
-          ))}
-          {stopError && <p role="alert" className="text-xs text-error">{stopError}</p>}
+          )}
+          {asking === "dismiss" && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1" role="group" aria-label={`Dismiss ${name}`}>
+              <span className={cx("min-w-0", DS.text.rowDetail)}>
+                {task.status === "idle"
+                  ? `Dismiss ${name}? It ends for good and leaves this list, which frees its place among the session's live agents. What it has done stays in the transcript.`
+                  : `Dismiss ${name}? It leaves this list, which frees its place among the session's live agents. What it has done stays in the transcript.`}
+              </span>
+              <Button size="sm" variant={task.status === "idle" ? "danger" : "secondary"} disabled={acting} onClick={() => { void dismiss(); }}>
+                {acting ? "Dismissing…" : "Dismiss agent"}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={acting} onClick={() => setConfirming(null)}>
+                Keep it
+              </Button>
+            </div>
+          )}
+          {!asking && (canStop || canDismiss) && (
+            <div className="-ml-2.5 flex flex-wrap items-center gap-x-1">
+              {canStop && (
+                <Button size="sm" variant="ghost" onClick={() => { setActionError(null); setConfirming("stop"); }}>
+                  Stop agent…
+                </Button>
+              )}
+              {canDismiss && (
+                <Button size="sm" variant="ghost" onClick={() => { setActionError(null); setConfirming("dismiss"); }}>
+                  Dismiss agent…
+                </Button>
+              )}
+            </div>
+          )}
+          {actionError && <p role="alert" className="text-xs text-error">{actionError}</p>}
         </div>
       )}
       {showFullReport && report && (
@@ -341,7 +392,8 @@ function AgentsSheet({ summary, onClose, children }: { summary: string; onClose:
 /**
  * The agents working in the background of a session, including the ones that outlive the turn
  * that launched them. It is one line that says how many are working, and opens onto a row for each:
- * what it is doing, how long it has worked, its latest report and a way to stop it.
+ * what it is doing, how long it has worked, its latest report, a way to stop it, and a way to
+ * dismiss one that is no longer working.
  *
  * The bar appears only while the session list reports live agents, so it never presents an old
  * reading as current. Opening it reads the runtime's own list of the agents it tracks.
@@ -508,7 +560,7 @@ export default function SessionAgentsBar({
               now={now}
               open={openAgentId === task.id}
               onToggle={toggleAgent}
-              onStopped={reload}
+              onChanged={reload}
             />
           ))}
         </ul>

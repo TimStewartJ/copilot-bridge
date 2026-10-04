@@ -38,6 +38,7 @@ import {
 } from "./background-commands.js";
 import {
   type AgentCountsSource,
+  type AgentDismissResult,
   type AgentExecutionMode,
   type AgentTaskStatus,
   type BackgroundAgentsAggregate,
@@ -92,7 +93,8 @@ interface RegistryEntry {
   /** Last emitted counts signature, to suppress redundant bus traffic. */
   lastSignature?: string;
   refreshPromise?: Promise<void>;
-  reapPromise?: Promise<number>;
+  /** The reap or dismissal in flight. They change the runtime's list, so they run one at a time. */
+  mutationPromise?: Promise<unknown>;
   pollTimer?: ReturnType<typeof setInterval>;
   pollStartedAt?: number;
 }
@@ -216,26 +218,13 @@ export class SessionAgentRegistry {
     }
     if (!entry) return 0;
 
-    const previousReap = entry.reapPromise;
-    const reapPromise = (async (): Promise<number> => {
-      if (previousReap) await previousReap;
-      if (entry.refreshPromise) await entry.refreshPromise;
-
+    return this.runTaskMutation(entry, async (): Promise<number> => {
       const session = this.deps.getLiveSession(sessionId);
       if (!session) return 0;
 
       try {
         const removedIds = new Set<string>();
-        const readTasks = async (): Promise<SessionAgentTask[] | undefined> => {
-          const result = await session.listTasks();
-          if (this.deps.getLiveSession(sessionId) !== session) return undefined;
-          const rawTasks = Array.isArray(result?.tasks) ? result.tasks : [];
-          const tasks = rawTasks
-            .filter((task) => task.kind === "agent")
-            .map((task) => this.normalizeTask(task));
-          this.commitTasks(sessionId, entry, session, tasks, this.readRunningCommands(entry, rawTasks));
-          return tasks;
-        };
+        const readTasks = () => this.readAndCommitTasks(sessionId, entry, session);
         let tasks = await readTasks();
         if (!tasks) return 0;
 
@@ -281,13 +270,47 @@ export class SessionAgentRegistry {
         );
         return 0;
       }
-    })();
-    entry.reapPromise = reapPromise;
-    try {
-      return await reapPromise;
-    } finally {
-      if (entry.reapPromise === reapPromise) entry.reapPromise = undefined;
+    });
+  }
+
+  /**
+   * Take one agent off the runtime's list for good. An agent that waits for a follow-up is ended
+   * first, because the runtime only removes an agent that has ended. A working agent is left
+   * alone. The answer comes from reading the list again, not from what the runtime replied.
+   */
+  async dismissTask(sessionId: string, agentId: string): Promise<AgentDismissResult> {
+    if (!this.deps.getLiveSession(sessionId)) return { dismissed: false, reason: "unavailable" };
+    let entry = this.entries.get(sessionId);
+    if (!entry) {
+      await this.refresh(sessionId, "dismiss");
+      entry = this.entries.get(sessionId);
     }
+    if (!entry) return { dismissed: false, reason: "unavailable" };
+    const tracked = entry;
+
+    return this.runTaskMutation(tracked, async (): Promise<AgentDismissResult> => {
+      const session = this.deps.getLiveSession(sessionId);
+      if (!session) return { dismissed: false, reason: "unavailable" };
+      const find = async (): Promise<SessionAgentTask | null | undefined> => {
+        const tasks = await this.readAndCommitTasks(sessionId, tracked, session);
+        return tasks && (tasks.find((task) => task.id === agentId) ?? null);
+      };
+
+      let task = await find();
+      if (task === undefined) return { dismissed: false, reason: "unavailable" };
+      if (task === null) return { dismissed: false, reason: "not-found" };
+
+      // The runtime can take a moment to show an ended agent as ended, so removal gets a second try.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (task.status === "running") return { dismissed: false, reason: "running" };
+        if (task.status === "idle") await session.cancelTask(agentId);
+        await session.removeTask(agentId);
+        task = await find();
+        if (task === undefined) return { dismissed: false, reason: "unavailable" };
+        if (task === null) return { dismissed: true };
+      }
+      return { dismissed: false, reason: "refused" };
+    });
   }
 
   /** True while any tracked agent task is actively running. */
@@ -328,8 +351,8 @@ export class SessionAgentRegistry {
     const listTasks = session.listTasks.bind(session);
 
     const existing = this.entries.get(sessionId);
-    if (existing?.reapPromise) {
-      await existing.reapPromise;
+    if (existing?.mutationPromise) {
+      await existing.mutationPromise.catch(() => undefined);
       return this.refresh(sessionId, reason);
     }
     if (existing?.refreshPromise) return existing.refreshPromise;
@@ -428,6 +451,38 @@ export class SessionAgentRegistry {
 
   private createEntry(): RegistryEntry {
     return { tasks: [], commands: [], commandsSignature: "", refreshedAt: 0, hadLiveRefresh: false };
+  }
+
+  /** Runs a change to the runtime's task list after any earlier change and any refresh in flight. */
+  private async runTaskMutation<T>(entry: RegistryEntry, mutate: () => Promise<T>): Promise<T> {
+    const previous = entry.mutationPromise;
+    const mutation = (async (): Promise<T> => {
+      if (previous) await previous.catch(() => undefined);
+      if (entry.refreshPromise) await entry.refreshPromise;
+      return mutate();
+    })();
+    entry.mutationPromise = mutation;
+    try {
+      return await mutation;
+    } finally {
+      if (entry.mutationPromise === mutation) entry.mutationPromise = undefined;
+    }
+  }
+
+  /** Reads the runtime's list and records it. Undefined when the session object was replaced meanwhile. */
+  private async readAndCommitTasks(
+    sessionId: string,
+    entry: RegistryEntry,
+    session: AgentSession,
+  ): Promise<SessionAgentTask[] | undefined> {
+    const result = await session.listTasks();
+    if (this.deps.getLiveSession(sessionId) !== session) return undefined;
+    const rawTasks = Array.isArray(result?.tasks) ? result.tasks : [];
+    const tasks = rawTasks
+      .filter((task) => task.kind === "agent")
+      .map((task) => this.normalizeTask(task));
+    this.commitTasks(sessionId, entry, session, tasks, this.readRunningCommands(entry, rawTasks));
+    return tasks;
   }
 
   /**
@@ -559,7 +614,7 @@ export class SessionAgentRegistry {
     if (this.entries.size <= this.maxEntries) return;
     const evictable: Array<{ id: string; entry: RegistryEntry }> = [];
     for (const [id, entry] of this.entries) {
-      if (id === keepSessionId || entry.refreshPromise || entry.reapPromise) continue;
+      if (id === keepSessionId || entry.refreshPromise || entry.mutationPromise) continue;
       if (this.deps.getLiveSession(id)) continue;
       evictable.push({ id, entry });
     }

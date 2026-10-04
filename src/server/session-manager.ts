@@ -167,6 +167,7 @@ import { SessionAgentRegistry } from "./session-agent-registry.js";
 import { settleTranscriptAgents } from "./transcript-agent-settle.js";
 import type {
   AgentCountsSource,
+  AgentDismissResult,
   BackgroundAgentsAggregate,
   BackgroundAgentsSummary,
   SessionAgentTask,
@@ -6240,6 +6241,19 @@ export class SessionManager {
     if (!session) return undefined;
     const result = await session.cancelTask(agentId);
     await this.agentRegistry.refresh(sessionId, "cancel");
+    return result;
+  }
+
+  /**
+   * Take a background agent that is not working off the runtime's list, ending it first when it
+   * waits for a follow-up. Unlike cancellation this frees the agent's place among the live
+   * contexts, and the agent cannot be sent another message afterwards.
+   */
+  async dismissSessionAgent(sessionId: string, agentId: string): Promise<AgentDismissResult> {
+    const result = await this.agentRegistry.dismissTask(sessionId, agentId);
+    console.log(
+      `[sdk] [${sessionId.slice(0, 8)}] Dismiss agent ${agentId}: ${result.dismissed ? "dismissed" : result.reason}`,
+    );
     return result;
   }
 
