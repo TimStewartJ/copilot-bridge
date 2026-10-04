@@ -1,4 +1,4 @@
-# smart-turn-js
+# @timstewartj/smart-turn
 
 Run [Smart Turn v3](https://github.com/pipecat-ai/smart-turn), Pipecat's open end-of-turn detection
 model, from JavaScript.
@@ -14,7 +14,7 @@ This is an independent implementation. It is not affiliated with Pipecat or Dail
 
 ```ts
 import * as ort from "onnxruntime-node";
-import { createSmartTurnDetector } from "smart-turn-js";
+import { createSmartTurnDetector } from "@timstewartj/smart-turn";
 
 const session = await ort.InferenceSession.create("smart-turn-v3.2-cpu.onnx");
 const detector = createSmartTurnDetector({ Tensor: ort.Tensor, session });
@@ -27,7 +27,7 @@ const { probability, complete } = await detector.predict(samples);
 ## Install
 
 ```sh
-npm install smart-turn-js
+npm install @timstewartj/smart-turn
 ```
 
 ESM only. No dependencies, and nothing from Node.js: bring `onnxruntime-node` or `onnxruntime-web`

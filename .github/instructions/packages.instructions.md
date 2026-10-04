@@ -13,7 +13,8 @@ description: "In-tree packages: code published to npm by itself; keep it free of
 - The Bridge imports a package only as `src/packages/<name>/src/index.js`. If the Bridge needs something that is not exported, export it from the package's `index.ts` on purpose, and document it in the package README.
 - Everything exported from `index.ts` is public API. Changing or removing it is a breaking change for people outside this repository once the package is released.
 - Keep the package README true: it is the page a user of the published package reads. Numbers in it must come from a measurement you can repeat.
-- Do not run `npm publish`, remove `"private": true`, or change a package name or version unless the user asked for a release.
+- Do not run `npm publish`, and do not change a package's name or version, unless the user asked for a release. `"private": true` stays in every package's `package.json`: a release is the built tarball, never the folder (see "Releasing a version" in `src/packages/README.md`).
+- When you change a package's `src/`, add a line under `## Unreleased` at the top of its `CHANGELOG.md`. A released version can never be changed, and that section is what tells users what the next one brings.
 
 ## Tests and checks
 

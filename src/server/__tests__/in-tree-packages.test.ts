@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -21,6 +21,9 @@ interface InTreePackage {
   dir: string;
   manifest: {
     name: string;
+    version: string;
+    private?: boolean;
+    repository?: { type?: string; url?: string; directory?: string };
     type?: string;
     license?: string;
     engines?: { node?: string };
@@ -58,11 +61,11 @@ const packageNameOf = (specifier: string): string =>
 
 describe("in-tree packages", () => {
   it("finds the packages", () => {
-    expect(packages.map((entry) => entry.manifest.name).sort()).toEqual(["smart-turn-js", "spawn-offthread", "voice-agent-text"]);
+    expect(packages.map((entry) => entry.manifest.name).sort()).toEqual(["@timstewartj/smart-turn", "spawn-offthread", "voice-agent-text"]);
   });
 
   it.each(packages)("$manifest.name is laid out the way scripts/packages.mjs publishes it", ({ dir, manifest }) => {
-    for (const file of ["README.md", "LICENSE", "tsconfig.json", "tsconfig.build.json", "src/index.ts", "test/smoke.mjs"]) {
+    for (const file of ["README.md", "LICENSE", "CHANGELOG.md", "tsconfig.json", "tsconfig.build.json", "src/index.ts", "test/smoke.mjs"]) {
       expect(existsSync(join(dir, file)), `${manifest.name} needs ${file}`).toBe(true);
     }
     expect(manifest).toMatchObject({
@@ -72,6 +75,24 @@ describe("in-tree packages", () => {
       sideEffects: false,
       exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } },
     });
+  });
+
+  it.each(packages)("$manifest.name is released as a built tarball, never as its folder", ({ dir, manifest }) => {
+    // The folder holds source, not the build, so npm has to refuse to publish it.
+    // scripts/packages.mjs leaves the flag out of the manifest it packs.
+    expect(manifest.private, `keep "private": true in the package.json of ${manifest.name}`).toBe(true);
+    // When a GitHub workflow publishes, npm compares this with the repository letter for letter.
+    expect(manifest.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/TimStewartJ/copilot-bridge.git",
+      directory: `src/packages/${basename(dir)}`,
+    });
+    const heading = `## ${manifest.version}`;
+    const changelog = readFileSync(join(dir, "CHANGELOG.md"), "utf-8").split(/\r?\n/);
+    expect(
+      changelog.some((line) => line === heading || line.startsWith(`${heading} `)),
+      `CHANGELOG.md of ${manifest.name} needs a "${heading}" section`,
+    ).toBe(true);
   });
 
   it.each(packages)("$manifest.name depends on nothing else in this repository", ({ dir, manifest }) => {
