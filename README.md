@@ -651,7 +651,7 @@ src/
 │   └── browser-*.ts               # Browser and web tooling
 ├── packages/                      # Code published to npm by itself (README.md); imports nothing from the Bridge
 │   ├── spawn-offthread/           # child_process on worker threads (the server's process host)
-│   ├── smart-turn-js/             # Smart Turn v3 end-of-turn detection for hands-free voice
+│   ├── smart-turn/                # Smart Turn v3 end-of-turn detection for hands-free voice
 │   └── voice-agent-text/          # What to speak from a streamed reply, chunking, interruptions
 └── client/
     ├── App.tsx                    # Root app shell + routing

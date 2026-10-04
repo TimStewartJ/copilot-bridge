@@ -21,7 +21,7 @@ import {
 import { CLIP_CHUNK_PLAN, joinTranscripts, planSpeechChunks, type SampleRange } from "./voice-clip.js";
 import { decodeRecording } from "./voice-recording.js";
 import { VOICE_MODEL_FILES } from "./voice-catalog.js";
-import { createSmartTurnDetector, type SmartTurnDetector } from "../../packages/smart-turn-js/src/index.js";
+import { createSmartTurnDetector, type SmartTurnDetector } from "../../packages/smart-turn/src/index.js";
 
 const SAMPLE_RATE = 16_000;
 const VAD_WINDOW = 512;

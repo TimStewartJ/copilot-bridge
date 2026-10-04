@@ -18,12 +18,12 @@
   "author": "Tim Stewart <timstewartj@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/timstewartj/copilot-bridge.git",
+    "url": "git+https://github.com/TimStewartJ/copilot-bridge.git",
     "directory": "src/packages/spawn-offthread"
   },
-  "homepage": "https://github.com/timstewartj/copilot-bridge/tree/master/src/packages/spawn-offthread#readme",
+  "homepage": "https://github.com/TimStewartJ/copilot-bridge/tree/master/src/packages/spawn-offthread#readme",
   "bugs": {
-    "url": "https://github.com/timstewartj/copilot-bridge/issues"
+    "url": "https://github.com/TimStewartJ/copilot-bridge/issues"
   },
   "type": "module",
   "engines": {
