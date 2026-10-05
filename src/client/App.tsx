@@ -108,6 +108,7 @@ import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/docs/DocsView";
 import SearchView from "./components/SearchView";
+import { FileViewerHost } from "./components/FilePreview";
 
 const HelmView = lazy(() => import("./helm/HelmView"));
 import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
@@ -2352,6 +2353,7 @@ function AppShell() {
         />
       )}
     </div>
+    <FileViewerHost />
     {searchOpen && <SearchView
       tasks={tasks}
       sessions={sessions}

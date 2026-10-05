@@ -586,7 +586,7 @@ function getMessageAnchorKey(message: ChatMessage, fallbackIndex: number): strin
   return `${message.role}:${fallbackIndex}`;
 }
 
-const MESSAGE_TOUCH_CONTROL_SELECTOR = "button, input, textarea, select, [contenteditable]:not([contenteditable=\"false\"]), a, img";
+const MESSAGE_TOUCH_CONTROL_SELECTOR = "button, input, textarea, select, [contenteditable]:not([contenteditable=\"false\"]), a, img, audio, video";
 const MESSAGE_NATIVE_CONTEXT_SELECTOR = MESSAGE_TOUCH_CONTROL_SELECTOR;
 
 function targetMatchesSelector(target: EventTarget | null, selector: string): boolean {

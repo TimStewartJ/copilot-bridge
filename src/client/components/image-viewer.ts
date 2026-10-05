@@ -2,6 +2,7 @@ import PhotoSwipe, { type SlideData } from "photoswipe";
 import "photoswipe/style.css";
 import "./image-viewer.css";
 import { prefersReducedMotion } from "../lib/motion";
+import { isVectorImage } from "./file-preview";
 
 /**
  * The full-screen image viewer. PhotoSwipe owns the gestures a phone photo viewer has: pinch to
@@ -50,10 +51,17 @@ function measureBySource(src: string): Promise<Size> {
   });
 }
 
+/** The size a vector image opens at: its own may be tiny or absent, and it is sharp at any size. */
+const VECTOR_LONG_SIDE = 2000;
+
 async function measure(image: ViewerImage): Promise<Size> {
   const cached = sizeCache.get(image.src);
   if (cached) return cached;
-  const size = measureFromElement(image.element) ?? await measureBySource(image.src);
+  let size = measureFromElement(image.element) ?? await measureBySource(image.src);
+  if (isVectorImage(image.src)) {
+    const scale = VECTOR_LONG_SIDE / Math.max(size.width, size.height);
+    size = { width: Math.round(size.width * scale), height: Math.round(size.height * scale) };
+  }
   sizeCache.set(image.src, size);
   return size;
 }

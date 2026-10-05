@@ -11,7 +11,9 @@ import ToolCallTree from "./ToolCallTree";
 import CodeBlock from "./CodeBlock";
 import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
 import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChatBridgeLink } from "./BridgeReference";
-import { MessageAttachments, OutboundAttachment, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
+import { MessageAttachments, openFile, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
+import { OutboundAttachment } from "./FilePreview";
+import { filePreviewKind, type PreviewFile } from "./file-preview";
 import { APP_PROSE } from "./shared/prose-classes";
 import { MessageActionToolbar } from "./MessageActions";
 import { DS, cx } from "../design/tokens";
@@ -118,6 +120,26 @@ function standaloneLink(node: unknown): { url: string; label: string } | null {
   return { url: properties.href, label: extractNodeText(link) };
 }
 
+/**
+ * The files of a paragraph that holds nothing but links to files the agent sent, one or several,
+ * on a line each or with a mark between them. Such a paragraph becomes their cards.
+ */
+function attachmentParagraph(node: unknown): PreviewFile[] | null {
+  if (!isRecord(node) || !Array.isArray(node.children)) return null;
+  const files: PreviewFile[] = [];
+  for (const child of node.children) {
+    if (!isRecord(child)) return null;
+    if (child.type === "text" && typeof child.value === "string" && !/[\p{L}\p{N}]/u.test(child.value)) continue;
+    if (child.type !== "element") return null;
+    if (child.tagName === "br") continue;
+    const href = child.tagName === "a" && isRecord(child.properties) ? child.properties.href : null;
+    const file = typeof href === "string" ? parseOutboundAttachmentLink(href) : null;
+    if (!file) return null;
+    files.push(file);
+  }
+  return files.length > 0 ? files : null;
+}
+
 function standaloneWorkReference(node: unknown): {
   url: string;
   label: string;
@@ -139,11 +161,11 @@ const ChatMarkdownParagraph: NonNullable<Components["p"]> = ({ node, children, .
   if (workReference) {
     return <ChatWorkReferencePreview {...workReference} />;
   }
-  const link = standaloneLink(node);
-  const outbound = link ? parseOutboundAttachmentLink(link.url) : null;
-  if (outbound) {
-    return <OutboundAttachment {...outbound} />;
+  const files = attachmentParagraph(node);
+  if (files) {
+    return <>{files.map((file, index) => <OutboundAttachment key={`${file.url}-${index}`} {...file} />)}</>;
   }
+  const link = standaloneLink(node);
   const bridgeTarget = link ? parseChatBridgeLink(link.url) : null;
   if (link && bridgeTarget) {
     return <BridgeReferenceCard target={bridgeTarget} label={meaningfulLabel(link.label, link.url)} />;
@@ -156,7 +178,16 @@ const ChatMarkdownLink: NonNullable<Components["a"]> = ({ node, children, href, 
   if (bridgeTarget) {
     return <BridgeReferenceChip target={bridgeTarget} label={meaningfulLabel(extractNodeText(node), href ?? "")} />;
   }
-  return <a href={href} {...props}>{children}</a>;
+  // A sent file named inside a sentence opens like its card would, instead of leaving the chat.
+  const file = parseOutboundAttachmentLink(href);
+  if (file && filePreviewKind(file.name)) {
+    return (
+      <button type="button" onClick={() => openFile(file)} className={cx("text-left text-accent hover:underline", DS.focus)} title={`Open ${file.name}`}>
+        {extractNodeText(node) === `Download ${file.name}` ? file.name : children}
+      </button>
+    );
+  }
+  return <a href={href} {...(file ? { download: file.name } : {})} {...props}>{children}</a>;
 };
 
 /** A markdown image in a reply opens in the full-screen viewer, like any other image in the chat. */

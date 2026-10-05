@@ -21,6 +21,12 @@ export const MAX_VEGA_LITE_SOURCE_BYTES = 500_000; // 500 KB
 export const MAX_VEGA_LITE_DEPTH = 20;
 
 export const HTML_MIME_TYPE = "text/html";
+/**
+ * The policy every HTML document from a session is served under, as a published visual or a sent
+ * file: an opaque origin with scripts, so it can never act as the Bridge, and no network.
+ */
+export const HTML_SANDBOX_CSP =
+  "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 export const MAX_HTML_SOURCE_BYTES = 1_048_576; // 1 MB
 
 const MIME_TO_EXT: Record<string, string> = {

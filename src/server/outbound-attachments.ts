@@ -4,18 +4,29 @@ import { err, ok, type Result } from "./tool-results.js";
 import { isPathAtOrUnder } from "./path-utils.js";
 
 const MIME_TYPES_BY_EXTENSION: Record<string, string> = {
+  avif: "image/avif",
   bmp: "image/bmp",
   csv: "text/csv",
   gif: "image/gif",
+  htm: "text/html",
   html: "text/html",
   jpeg: "image/jpeg",
   jpg: "image/jpeg",
   json: "application/json",
+  log: "text/plain",
+  m4a: "audio/mp4",
   md: "text/markdown",
+  mov: "video/quicktime",
+  mp3: "audio/mpeg",
+  mp4: "video/mp4",
+  ogg: "audio/ogg",
   pdf: "application/pdf",
   png: "image/png",
   svg: "image/svg+xml",
+  tsv: "text/tab-separated-values",
   txt: "text/plain",
+  wav: "audio/wav",
+  webm: "video/webm",
   webp: "image/webp",
   xml: "application/xml",
   yml: "application/yaml",
@@ -23,6 +34,7 @@ const MIME_TYPES_BY_EXTENSION: Record<string, string> = {
 };
 
 const INLINE_RENDERABLE_MIME_TYPES = new Set([
+  "image/avif",
   "image/bmp",
   "image/gif",
   "image/jpeg",
