@@ -1,6 +1,6 @@
 {
   "name": "@timstewartj/smart-turn",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Run the Smart Turn v3 end-of-turn detection model from JavaScript: dependency-free Whisper log-mel preprocessing and a thin wrapper for the ONNX Runtime you already use.",
   "keywords": [
