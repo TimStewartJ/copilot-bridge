@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requestDeviceHibernate, type DeviceHibernateCommand } from "../platform.js";
@@ -14,9 +14,12 @@ import {
 import {
   HIBERNATE_HANDOFF_FILE_NAME,
   HIBERNATE_HANDOFF_MAX_AGE_MS,
+  HIBERNATE_HANDOFF_REFRESH_MS,
   HIBERNATE_HANDOFF_SETTLE_MS,
   restoreHibernateHandoff,
   saveHibernateHandoff,
+  startHibernateHandoffKeeper,
+  stopHibernateHandoffKeeper,
 } from "../device-hibernate-handoff.js";
 import { makeTestDir } from "./helpers.js";
 
@@ -70,11 +73,16 @@ beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await stopHibernateHandoffKeeper();
   startNewServer();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
+
+function savedHandoff(): unknown {
+  return JSON.parse(readFileSync(handoffFile(), "utf8"));
+}
 
 describe("hibernate handoff across a server restart", () => {
   it("writes nothing when no hibernation is pending", async () => {
@@ -234,5 +242,147 @@ describe("hibernate handoff across a server restart", () => {
     expect(result).toEqual({ restored: false, reason: "unsupported" });
     expect(errorSpy).toHaveBeenCalled();
     expect(getHibernateOnIdleStatus().armed).toBe(false);
+  });
+});
+
+describe("a pending hibernation is kept on disk while the server runs", () => {
+  /** A server that dies stops writing and leaves the file as it last wrote it. */
+  async function serverDies(keeper: { stop(): Promise<void> }): Promise<void> {
+    await keeper.stop();
+    startNewServer();
+  }
+
+  it("saves the idle watcher when it is armed, so the server that follows a crash takes it over", async () => {
+    vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(false);
+
+    activeSessions = 1;
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => activeSessions });
+    await keeper.settled();
+    expect(savedHandoff()).toEqual({ version: 1, writtenAt: Date.now(), onIdleGraceMs: GRACE_MS, scheduledAt: null });
+
+    await serverDies(keeper);
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(await restore()).toEqual({ restored: true, onIdleGraceMs: GRACE_MS, scheduledAt: null });
+    expect(getHibernateOnIdleStatus()).toMatchObject({ armed: true, graceMs: GRACE_MS });
+  });
+
+  it("rewrites the copy every minute, so a crash hours after arming is still taken over", async () => {
+    vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    activeSessions = 1;
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => activeSessions });
+    await keeper.settled();
+    const armedAt = Date.now();
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 60_000);
+    await keeper.settled();
+    expect(savedHandoff()).toMatchObject({ onIdleGraceMs: GRACE_MS });
+    expect((savedHandoff() as { writtenAt: number }).writtenAt).toBeGreaterThan(armedAt + HIBERNATE_HANDOFF_MAX_AGE_MS);
+    expect(Date.now() - (savedHandoff() as { writtenAt: number }).writtenAt).toBeLessThanOrEqual(HIBERNATE_HANDOFF_REFRESH_MS);
+
+    await serverDies(keeper);
+    expect(await restore()).toMatchObject({ restored: true, onIdleGraceMs: GRACE_MS });
+  });
+
+  it("saves a timed hibernation, and both when both are pending", async () => {
+    vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    const { scheduledAt } = scheduleHibernate(command, 30 * 60_000);
+    await keeper.settled();
+    expect(savedHandoff()).toMatchObject({ onIdleGraceMs: null, scheduledAt });
+
+    activeSessions = 1;
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => activeSessions });
+    await keeper.settled();
+    expect(savedHandoff()).toMatchObject({ onIdleGraceMs: GRACE_MS, scheduledAt });
+  });
+
+  it("removes the copy when the hibernation is turned off", async () => {
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => 1 });
+    scheduleHibernate(command, 30 * 60_000);
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(true);
+
+    disarmHibernateOnIdle();
+    await keeper.settled();
+    expect(savedHandoff()).toMatchObject({ onIdleGraceMs: null });
+
+    cancelHibernate();
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(false);
+  });
+
+  it("removes the copy when the hibernation fires, so the next start does not hibernate again", async () => {
+    vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => activeSessions });
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS + HIBERNATE_IDLE_POLL_INTERVAL_MS);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(false);
+
+    scheduleHibernate(command, 60_000);
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requestDeviceHibernateMock).toHaveBeenCalledTimes(2);
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(false);
+  });
+
+  it("removes a copy that a server which died left behind when nothing is pending any more", async () => {
+    writeHandoff({ version: 1, writtenAt: Date.now(), onIdleGraceMs: GRACE_MS, scheduledAt: null });
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    await keeper.settled();
+    expect(existsSync(handoffFile())).toBe(false);
+  });
+
+  it("keeps the hibernation armed when the copy cannot be written, and writes it at the next pass", async () => {
+    vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    rmSync(dataDir, { recursive: true });
+    const keeper = startHibernateHandoffKeeper(dataDir);
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => 1 });
+    await keeper.settled();
+    expect(getHibernateOnIdleStatus().armed).toBe(true);
+    expect(errorSpy).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(HIBERNATE_HANDOFF_REFRESH_MS);
+    await keeper.settled();
+    expect(errorSpy, "one message for a run of failures").toHaveBeenCalledOnce();
+
+    mkdirSync(dataDir, { recursive: true });
+    await vi.advanceTimersByTimeAsync(HIBERNATE_HANDOFF_REFRESH_MS);
+    await keeper.settled();
+    expect(savedHandoff()).toMatchObject({ onIdleGraceMs: GRACE_MS });
+  });
+
+  it("stops rewriting the copy once the server has handed it to the next one", async () => {
+    vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
+    startHibernateHandoffKeeper(dataDir);
+    activeSessions = 1;
+    armHibernateOnIdle({ command, graceMs: GRACE_MS, getActiveSessionCount: () => activeSessions });
+
+    expect(await saveHibernateHandoff(dataDir)).toBe(true);
+    // The next server reads the file and removes it while this one is still shutting down.
+    rmSync(handoffFile());
+    await vi.advanceTimersByTimeAsync(3 * HIBERNATE_HANDOFF_REFRESH_MS);
+    disarmHibernateOnIdle();
+    expect(existsSync(handoffFile())).toBe(false);
+  });
+
+  it("removes the copy at shutdown when nothing is pending", async () => {
+    writeHandoff({ version: 1, writtenAt: Date.now(), onIdleGraceMs: GRACE_MS, scheduledAt: null });
+    expect(await saveHibernateHandoff(dataDir)).toBe(false);
+    expect(existsSync(handoffFile())).toBe(false);
   });
 });

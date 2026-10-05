@@ -240,7 +240,7 @@ import {
   type DeferWorkerLease,
   type DisposableDeferWorker,
 } from "./defer-worker.js";
-import type { InterruptedRun } from "./restart-resume.js";
+import { cancelScheduledRestartResume, type InterruptedRun } from "./restart-resume.js";
 import {
   COPILOT_USAGE_PARSER_VERSION,
   type CopilotUsageSessionScanResult,
@@ -624,6 +624,8 @@ export interface SessionManagerDeps {
   taskHistoryStore?: TaskHistoryStore;
   sessionMetaStore?: SessionMetaStore;
   interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
+  /** Called when a run ends in the ordinary way while a resume the Bridge had put off is still to come. */
+  onPostponedResumeSuperseded?: (sessionId: string) => void;
   /** Markers for commands running in attached shells, so one the Bridge stops can be reported. */
   backgroundCommandStore?: Pick<
     BackgroundCommandStore,
@@ -782,6 +784,16 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     taskHistoryStore: ctx.taskHistoryStore,
     sessionMetaStore: ctx.sessionMetaStore,
     interruptedRunStore: ctx.interruptedRunStore,
+    onPostponedResumeSuperseded: (sessionId) => {
+      if (ctx.isStaging || !ctx.deferredPromptStore) return;
+      const cancelled = cancelScheduledRestartResume(
+        { deferredPromptStore: ctx.deferredPromptStore, globalBus: ctx.globalBus },
+        sessionId,
+      );
+      if (cancelled > 0) {
+        console.log(`[restart-resume] [${sessionId.slice(0, 8)}] The chat was continued before its postponed resume was due; that resume is cancelled`);
+      }
+    },
     backgroundCommandStore: ctx.backgroundCommandStore,
     onBackgroundCommandsStopped: (sessionId) => {
       // A staged preview never starts turns on its own; the notice still goes out with the next message.
@@ -1061,7 +1073,7 @@ export class SessionManager {
         this.deps.interruptedRunStore?.markAccepted(sessionId, attentionMode);
       },
       clearAcceptedRun: (sessionId) => {
-        this.deps.interruptedRunStore?.clear(sessionId);
+        if (this.deps.interruptedRunStore?.clear(sessionId)) this.deps.onPostponedResumeSuperseded?.(sessionId);
       },
       logger: console,
     });

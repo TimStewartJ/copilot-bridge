@@ -1,5 +1,6 @@
 // Copilot Web Bridge — Express server
 
+import "./guard-stdio-writes.js";
 import "./log-timestamps.js";
 import "./load-bridge-env.js";
 import { prepareDashboardRetirement } from "./dashboard-retirement.js";
@@ -25,7 +26,7 @@ import { createApiRouter } from "./api-router.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { prepareNeutralWorkspaceDir } from "./neutral-workspace.js";
 import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
-import { queueBootRecoveryPrompts } from "./restart-resume.js";
+import { createNotResumedOverlay, queueBootRecoveryPrompts } from "./restart-resume.js";
 import { recoverBackgroundCommandsOnBoot } from "./background-commands.js";
 import { setProcessLaunchObserver } from "./process-host.js";
 import { runOnPerformanceCores } from "./platform.js";
@@ -39,7 +40,11 @@ import {
   initializeSchedulerAndDeferredRunners,
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
-import { restoreHibernateHandoff, saveHibernateHandoff } from "./device-hibernate-handoff.js";
+import {
+  restoreHibernateHandoff,
+  saveHibernateHandoff,
+  startHibernateHandoffKeeper,
+} from "./device-hibernate-handoff.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { createApiCacheControlMiddleware, createResponseCompressionMiddleware } from "./response-transport.js";
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
@@ -261,12 +266,24 @@ async function main(): Promise<void> {
         deferredPromptStore,
         deferredPromptRunner: defaultContext.deferredPromptRunner,
         globalBus: defaultContext.globalBus,
+        announce: (sessionId, message) => {
+          defaultContext.sessionMetaStore.setTerminalOverlay(sessionId, createNotResumedOverlay(message));
+          sessionManager.markSessionAttention(sessionId);
+        },
       }, interruptedRunStore);
-      resumedSessionIds = recovery.resumed;
-      if (recovery.resumed.length + recovery.skippedCooldown.length > 0) {
+      // What happens to these runs is decided here: the notice about cut-off commands below must
+      // not start one that waits for its later resume, or one that is left for the user.
+      resumedSessionIds = [
+        ...recovery.resumed,
+        ...recovery.retryScheduled.map((retry) => retry.sessionId),
+        ...recovery.gaveUp,
+      ];
+      if (recovery.resumed.length + recovery.retryScheduled.length + recovery.gaveUp.length > 0) {
         console.warn(
           `[restart-resume] Runs interrupted by the last server exit: resumed [${recovery.resumed.join(", ")}], `
-          + `not resumed again within the cooldown [${recovery.skippedCooldown.join(", ")}]`,
+          + `resumed later because they were resumed within the cooldown [${
+            recovery.retryScheduled.map((retry) => `${retry.sessionId} at ${retry.resumeAt}`).join(", ")
+          }], not resumed again [${recovery.gaveUp.join(", ")}]`,
         );
       }
     }
@@ -305,12 +322,14 @@ async function main(): Promise<void> {
   // Initialize scheduler after session manager is ready
   initializeSchedulerAndDeferredRunners(defaultContext);
 
-  // A hibernation the user asked for before the last server stopped, typically for a deploy.
+  // A hibernation the user asked for before the last server stopped: for a deploy, or because it died.
   try {
     await restoreHibernateHandoff(defaultContext, runtimePaths.dataDir);
   } catch (error) {
     console.error("[device] Taking over the pending hibernation failed:", error);
   }
+  // From here on a pending hibernation is kept on disk, so a server that dies does not lose it.
+  startHibernateHandoffKeeper(runtimePaths.dataDir);
 
   try {
     defaultContext.sessionOverlayMaintenance = createSessionOverlayMaintenance(defaultContext);

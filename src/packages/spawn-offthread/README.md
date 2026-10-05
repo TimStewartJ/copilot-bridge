@@ -140,6 +140,10 @@ are not killed or waited for, so stop the ones you care about first.
   messages is never stuck behind another slow process creation. The thread ends when the child closes.
 - A worker thread keeps the copy of `process.env` it started with. `child_process` reads the live
   one, so the host reads `process.env` on the calling thread, at call time, whenever you pass no `env`.
+- The host puts no listener on your `process.stdout` and `process.stderr`. Node pipes a worker
+  thread's output into them, and that pipe turns one failed `console.log` write (a full disk, a
+  closed pipe) into an unhandled `'error'` that ends the program. The host removes the pipes and
+  passes its workers' output on itself, dropping a write that fails the way `console.log` does.
 
 Each call costs the calling thread one message to a worker and one back, plus that copy of the
 environment: about 0.8 ms per launch in the benchmark above.

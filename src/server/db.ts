@@ -750,11 +750,13 @@ function initSchema(db: DatabaseSync): void {
 
     -- Accepted runs still in flight. A row that survives to the next boot marks a run
     -- cut off by a server kill or crash, since graceful shutdown drives runs to idle.
+    -- retryScheduled is 1 while lastResumedAt names a resume that was put off, not one made at once.
     CREATE TABLE IF NOT EXISTS interrupted_run_markers (
       sessionId TEXT PRIMARY KEY,
       attentionMode TEXT NOT NULL,
       acceptedAt TEXT NOT NULL,
-      lastResumedAt TEXT
+      lastResumedAt TEXT,
+      retryScheduled INTEGER NOT NULL DEFAULT 0
     );
 
     -- Commands the agent left running in a session's attached shell. stoppedAt is NULL while the
@@ -938,6 +940,19 @@ function initSchema(db: DatabaseSync): void {
   if (!backgroundCommandColumns.has("pid")) {
     try {
       db.exec("ALTER TABLE background_command_markers ADD COLUMN pid INTEGER");
+    } catch (error) {
+      // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+
+  const interruptedRunColumns = new Set(
+    (db.prepare("PRAGMA table_info(interrupted_run_markers)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  if (!interruptedRunColumns.has("retryScheduled")) {
+    try {
+      db.exec("ALTER TABLE interrupted_run_markers ADD COLUMN retryScheduled INTEGER NOT NULL DEFAULT 0");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;

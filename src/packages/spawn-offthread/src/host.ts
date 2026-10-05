@@ -32,6 +32,7 @@ import {
   type SerializedHostError,
 } from "./protocol.js";
 import { resolveWorkerEntry } from "./worker-entry.js";
+import { relayWorkerOutput } from "./worker-output.js";
 
 export type ProcessHostMode = "worker" | "inline";
 
@@ -92,7 +93,9 @@ const DEADLINE_GRACE_MS = 1_000;
 
 function startWorkerThread(): HostWorker {
   const { entry, execArgv } = resolveWorkerEntry("worker", import.meta.url);
-  return new Worker(entry, { workerData: { [WORKER_FLAG]: true }, ...(execArgv ? { execArgv } : {}) });
+  const worker = new Worker(entry, { workerData: { [WORKER_FLAG]: true }, ...(execArgv ? { execArgv } : {}) });
+  relayWorkerOutput(worker);
+  return worker;
 }
 
 function warnUnhandledChildError(error: Error, pid: number | undefined): void {

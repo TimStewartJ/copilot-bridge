@@ -1,3 +1,4 @@
+import "./guard-stdio-writes.js";
 import "./log-timestamps.js";
 import "./load-bridge-env.js";
 import express from "express";
