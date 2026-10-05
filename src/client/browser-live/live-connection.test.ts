@@ -138,6 +138,48 @@ describe("BrowserLiveConnection", () => {
     connection.stop();
   });
 
+  it("sends what the toolbar asks for as soon as the socket is open", async () => {
+    const { network, connection } = await connect();
+    const socket = network.latestSocket();
+    const commands = [
+      { type: "navigate", url: "https://example.com/" },
+      { type: "history", direction: "back" },
+      { type: "reload" },
+      { type: "tab", action: "select", tabId: "t2" },
+    ] as const;
+
+    expect(connection.send(commands[0])).toBe(false);
+    socket.open();
+    // Unlike a click, these need no page size.
+    for (const command of commands) expect(connection.send(command)).toBe(true);
+
+    expect(socket.sent).toEqual(commands);
+    connection.stop();
+  });
+
+  it("keeps the browser's tabs as the server last told them, and ignores what is not a list of tabs", async () => {
+    const { network, connection } = await connect();
+    const socket = network.latestSocket();
+    socket.open();
+    expect(connection.getSnapshot().tabs).toEqual([]);
+    const tabs = [
+      { id: "t1", title: "Sign in", url: "https://accounts.example.com/signin", active: true },
+      { id: "t2", title: "", url: "about:blank", active: false },
+    ];
+
+    socket.receive({ type: "tabs", tabs });
+    expect(connection.getSnapshot().tabs).toEqual(tabs);
+
+    socket.onmessage?.({ data: JSON.stringify({ type: "tabs" }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: "tabs", tabs: "t1" }) });
+    expect(connection.getSnapshot().tabs).toEqual(tabs);
+
+    // An entry without an id names no tab.
+    socket.onmessage?.({ data: JSON.stringify({ type: "tabs", tabs: [null, { title: "No id" }, { id: "t3", title: 5, active: "yes" }] }) });
+    expect(connection.getSnapshot().tabs).toEqual([{ id: "t3", title: "", url: "", active: false }]);
+    connection.stop();
+  });
+
   it("reconnects with a new ticket after the connection drops, and waits for the new page size", async () => {
     const { network, connection } = await connect();
     network.latestSocket().open();

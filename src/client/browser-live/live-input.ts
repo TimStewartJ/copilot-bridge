@@ -2,6 +2,7 @@ import { API_BASE } from "../api";
 import {
   BROWSER_LIVE_MODIFIERS,
   BROWSER_LIVE_WS_PATH,
+  normalizeBrowserLiveUrl,
   type BrowserLiveKeyboardMessage,
   type BrowserLiveTicket,
 } from "../../shared/browser-live.js";
@@ -40,6 +41,26 @@ export function buildBrowserLiveWebSocketUrl(
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ browserSessionId: ticket.browserSessionId, token: ticket.token });
   return `${protocol}//${location.host}${API_BASE}${BROWSER_LIVE_WS_PATH}?${params.toString()}`;
+}
+
+/** A host on this machine or network, which is rarely served over https. */
+const LOCAL_HOST = /^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?(\/|$)/i;
+
+/**
+ * The web address a person meant by what they typed into the address field: `example.com` is
+ * `https://example.com/`. Null for anything that is not the address of a web page.
+ */
+export function addressToUrl(text: string): string | null {
+  const typed = text.trim();
+  if (!typed || /[\s\\]/.test(typed)) return null;
+  const web = /^https?:\/\//i.test(typed);
+  // Another kind of address, such as file://, is not a host to put https:// in front of.
+  if (!web && /^[a-z][a-z0-9+.-]*:\//i.test(typed)) return null;
+  const url = normalizeBrowserLiveUrl(web ? typed : `${LOCAL_HOST.test(typed) ? "http" : "https"}://${typed}`);
+  if (!url) return null;
+  // `mailto:someone@example.com` would otherwise be read as a sign-in to the host example.com.
+  if (!web && new URL(url).username) return null;
+  return url;
 }
 
 function clamp(value: number, min: number, max: number): number {

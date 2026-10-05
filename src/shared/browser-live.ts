@@ -76,10 +76,26 @@ export interface BrowserLiveClosedMessage {
   message: string;
 }
 
+export interface BrowserLiveTab {
+  /** Names the tab in a `tab` message. */
+  id: string;
+  title: string;
+  url: string;
+  /** The tab the view shows and input goes to. */
+  active: boolean;
+}
+
+/** The browser's open tabs, sent when they change. A popup window is a tab too. */
+export interface BrowserLiveTabsMessage {
+  type: "tabs";
+  tabs: BrowserLiveTab[];
+}
+
 export type BrowserLiveServerMessage =
   | BrowserLiveFrameMessage
   | BrowserLiveViewportMessage
   | BrowserLiveUrlMessage
+  | BrowserLiveTabsMessage
   | BrowserLiveClosedMessage;
 
 export interface BrowserLiveAckMessage {
@@ -115,10 +131,44 @@ export interface BrowserLiveKeyboardMessage {
   modifiers?: number;
 }
 
+/** Opens an address in the tab the view shows. Web pages only. */
+export interface BrowserLiveNavigateMessage {
+  type: "navigate";
+  url: string;
+}
+
+export interface BrowserLiveHistoryMessage {
+  type: "history";
+  direction: "back" | "forward";
+}
+
+export interface BrowserLiveReloadMessage {
+  type: "reload";
+}
+
+/** Shows another tab, or closes one. The last tab cannot be closed. */
+export interface BrowserLiveTabMessage {
+  type: "tab";
+  action: "select" | "close";
+  tabId: string;
+}
+
+/** What a viewer does to the browser around the page, as its own toolbar would. */
+export type BrowserLivePageCommand =
+  | BrowserLiveNavigateMessage
+  | BrowserLiveHistoryMessage
+  | BrowserLiveReloadMessage
+  | BrowserLiveTabMessage;
+
 export type BrowserLiveClientMessage =
   | BrowserLiveAckMessage
   | BrowserLiveMouseMessage
-  | BrowserLiveKeyboardMessage;
+  | BrowserLiveKeyboardMessage
+  | BrowserLivePageCommand;
+
+export function isBrowserLivePageCommand(message: BrowserLiveClientMessage): message is BrowserLivePageCommand {
+  return message.type === "navigate" || message.type === "history" || message.type === "reload" || message.type === "tab";
+}
 
 const MOUSE_EVENTS: ReadonlySet<string> = new Set<BrowserLiveMouseMessage["eventType"]>([
   "mouseMoved", "mousePressed", "mouseReleased", "mouseWheel",
@@ -130,6 +180,23 @@ const KEYBOARD_EVENTS: ReadonlySet<string> = new Set<BrowserLiveKeyboardMessage[
   "keyDown", "keyUp", "char",
 ]);
 const MAX_KEY_NAME_LENGTH = 32;
+const MAX_URL_LENGTH = 2048;
+/** How agent-browser names a tab: t1, t2, … */
+const TAB_ID = /^t\d{1,6}$/;
+
+/**
+ * The address as the browser will open it, when it is one of a web page. Everything else a
+ * browser can open (files of the host, its own settings pages, scripts) is refused.
+ */
+export function normalizeBrowserLiveUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > MAX_URL_LENGTH) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const ALL_MODIFIERS = BROWSER_LIVE_MODIFIERS.alt | BROWSER_LIVE_MODIFIERS.ctrl
   | BROWSER_LIVE_MODIFIERS.meta | BROWSER_LIVE_MODIFIERS.shift;
 
@@ -194,6 +261,20 @@ export function parseBrowserLiveClientMessage(value: unknown): BrowserLiveClient
         ...(modifiers !== undefined ? { modifiers } : {}),
       };
     }
+    case "navigate": {
+      const url = normalizeBrowserLiveUrl(input.url);
+      return url ? { type: "navigate", url } : undefined;
+    }
+    case "history":
+      return input.direction === "back" || input.direction === "forward"
+        ? { type: "history", direction: input.direction }
+        : undefined;
+    case "reload":
+      return { type: "reload" };
+    case "tab":
+      return (input.action === "select" || input.action === "close") && typeof input.tabId === "string" && TAB_ID.test(input.tabId)
+        ? { type: "tab", action: input.action, tabId: input.tabId }
+        : undefined;
     default:
       return undefined;
   }
