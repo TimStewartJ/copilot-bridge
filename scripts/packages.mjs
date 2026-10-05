@@ -6,17 +6,25 @@
 //   typecheck               type-check every package with its own tsconfig, not the Bridge's
 //   pack   [--out <dir>]    compile every package and write an installable tarball for each
 //   verify [--out <dir>]    pack, install the tarballs into a scratch project, run each smoke test
+//   release-check <package> [--dry-run]
+//                           say whether the package's version can be released from this checkout
 //
-// Without --out both work in a new temporary directory. pack prints it, because the tarballs are
-// its result. verify removes it once everything passed and leaves it in place after a failure.
-// Add package names or folder names after the command to limit it to those packages.
+// Without --out, pack and verify work in a new temporary directory. pack prints it, because the
+// tarballs are its result. verify removes it once everything passed and leaves it in place after a
+// failure. Add package names or folder names after the command to limit it to those packages.
 //
 // A tarball from pack is what a release publishes (see src/packages/README.md). Its package.json
 // is the folder's without "private", which stays in the folder so npm refuses to publish the
 // source, and with the commit it was built from as gitHead.
+//
+// release-check is the first step of the Publish Package workflow, and works the same on a
+// developer's machine. It asks npm which versions exist and origin whether the release tag does.
+// With --dry-run it reports a version that is already released instead of failing on it, so the
+// workflow can be tried out between releases.
 
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -36,6 +44,9 @@ const packagesDir = join(repoRoot, "src", "packages");
 const tscCli = join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 const REQUIRED_TARBALL_FILES = ["package.json", "README.md", "LICENSE", "dist/index.js", "dist/index.d.ts"];
 const FORBIDDEN_TARBALL_PATH = /(^|\/)(src|test)\/|\.test\.|\.ts$(?<!\.d\.ts)/;
+const REGISTRY = "https://registry.npmjs.org";
+// A pre-release would need a dist-tag other than "latest", which the release workflow does not set.
+const RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function fail(message) {
   console.error(`[packages] ${message}`);
@@ -177,15 +188,96 @@ function verify(packages, outRoot) {
   console.log(`[packages] verified ${tarballs.map((entry) => entry.manifest.name).join(", ")}`);
 }
 
+function compareReleaseVersions(left, right) {
+  const [a, b] = [left, right].map((version) => version.split(".").map(Number));
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+/** What a package's changelog still lacks for a release of this version. */
+function changelogProblems(dir, version) {
+  const file = join(dir, "CHANGELOG.md");
+  if (!existsSync(file)) return ["it has no CHANGELOG.md"];
+  const lines = readFileSync(file, "utf8").split(/\r?\n/);
+  const isHeading = (line, title) => line === `## ${title}` || line.startsWith(`## ${title} `);
+  const problems = [];
+  if (!lines.some((line) => isHeading(line, version))) problems.push(`CHANGELOG.md has no "## ${version}" section`);
+  const unreleased = lines.findIndex((line) => isHeading(line, "Unreleased"));
+  if (unreleased >= 0) {
+    const next = lines.findIndex((line, index) => index > unreleased && line.startsWith("## "));
+    const entries = lines.slice(unreleased + 1, next < 0 ? lines.length : next).filter((line) => line.trim() !== "");
+    if (entries.length > 0) problems.push(`CHANGELOG.md still lists ${entries.length} line(s) under "## Unreleased"; move them to "## ${version}"`);
+  }
+  return problems;
+}
+
+/** The versions of a package that are public on npm, or undefined when npm does not know the package. */
+async function publishedVersions(name) {
+  let response;
+  try {
+    response = await fetch(`${REGISTRY}/${name.replace("/", "%2f")}`, {
+      headers: { accept: "application/vnd.npm.install-v1+json" },
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    return fail(`could not ask npm about ${name}: ${error.message}`);
+  }
+  if (response.status === 404) return undefined;
+  if (!response.ok) return fail(`npm answered ${response.status} when asked about ${name}`);
+  return Object.keys((await response.json()).versions ?? {});
+}
+
+function remoteTagExists(tag) {
+  const result = spawnSync("git", ["ls-remote", "--tags", "origin", `refs/tags/${tag}`], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0) fail(`could not ask origin whether the tag ${tag} exists: ${(result.error?.message ?? result.stderr).trim()}`);
+  return result.stdout.trim() !== "";
+}
+
+async function releaseCheck({ dir, manifest }, dryRun) {
+  const { name, version } = manifest;
+  const folder = basename(dir);
+  const tag = `${folder}-v${version}`;
+  // Wrong whatever npm holds: these fail a dry run too.
+  const problems = changelogProblems(dir, version);
+  if (!RELEASE_VERSION.test(version)) problems.push(`its version ${version} is not of the form 1.2.3`);
+  if (!sourceCommit(dir)) problems.push("its folder has local changes or is not in a git checkout, and a release is built from a commit");
+  // True between releases: a dry run reports these and goes on.
+  const released = [];
+  const published = await publishedVersions(name);
+  const highest = published?.filter((candidate) => RELEASE_VERSION.test(candidate)).sort(compareReleaseVersions).at(-1);
+  if (!published) {
+    released.push("npm does not know the package; its first version is published from the owner's machine (see src/packages/README.md)");
+  } else if (published.includes(version)) {
+    released.push(`${version} is already on npm; set the next version in its package.json`);
+  } else if (highest && RELEASE_VERSION.test(version) && compareReleaseVersions(version, highest) < 0) {
+    released.push(`${version} is lower than ${highest}, which is on npm`);
+  }
+  if (remoteTagExists(tag)) released.push(`the tag ${tag} exists, so ${version} was released or staged before`);
+
+  if (dryRun) for (const note of released) console.log(`[packages] dry run, ${name}: ${note}`);
+  const blocking = dryRun ? problems : [...problems, ...released];
+  if (blocking.length > 0) fail(`${name}@${version} cannot be released:\n${blocking.map((problem) => `  - ${problem}`).join("\n")}`);
+
+  console.log(`[packages] ${name}@${version} ${dryRun ? "passed the checks of a dry run" : `can be released as ${tag}`} (highest version on npm: ${highest ?? "none"})`);
+  // In a GitHub Actions job, hand the result to the following steps.
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `folder=${folder}\nname=${name}\nversion=${version}\ntag=${tag}\n`);
+  }
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const outIndex = rest.indexOf("--out");
 const outArg = outIndex >= 0 ? rest[outIndex + 1] : undefined;
 if (outIndex >= 0 && !outArg) fail("--out needs a directory");
-const names = rest.filter((_, index) => outIndex < 0 || (index !== outIndex && index !== outIndex + 1));
+const dryRun = rest.includes("--dry-run");
+if (dryRun && command !== "release-check") fail("--dry-run only applies to release-check");
+const names = rest.filter((arg, index) => arg !== "--dry-run" && (outIndex < 0 || (index !== outIndex && index !== outIndex + 1)));
 const packages = listPackages(names);
 
 if (command === "typecheck") {
   typecheck(packages);
+} else if (command === "release-check") {
+  if (names.length !== 1 || packages.length !== 1) fail("release-check needs exactly one package: its name or its folder name");
+  await releaseCheck(packages[0], dryRun);
 } else if (command === "pack" || command === "verify") {
   const outRoot = outArg ? resolve(outArg) : mkdtempSync(join(tmpdir(), "bridge-packages-"));
   // Packing empties <out>/<package name> first, and the Bridge build stamp hashes src/.
@@ -203,5 +295,5 @@ if (command === "typecheck") {
     console.log(`[packages] output: ${outRoot}`);
   }
 } else {
-  fail("usage: node scripts/packages.mjs <typecheck|pack|verify> [--out <dir>] [package ...]");
+  fail("usage: node scripts/packages.mjs <typecheck|pack|verify> [--out <dir>] [package ...]\n       node scripts/packages.mjs release-check <package> [--dry-run]");
 }

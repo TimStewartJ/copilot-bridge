@@ -11,9 +11,10 @@ compiles it, and installing or deploying the Bridge works exactly as before.
 | [`@timstewartj/smart-turn`](smart-turn/README.md) | The Smart Turn v3 end-of-turn model from JavaScript: preprocessing and an ONNX Runtime wrapper | `src/server/voice/voice-engine-worker.ts` |
 | [`voice-agent-text`](voice-agent-text/README.md) | What to say from a streamed LLM reply, how to chunk it for TTS, how to read an interruption | `src/server/voice/voice-text.ts` |
 
-The folders are named after the packages, without the scope. Each package is released to npm by
-hand, as described under [Releasing a version](#releasing-a-version). `npm view <name> versions`
-shows what is published, and the package's `CHANGELOG.md` what each version contains.
+The folders are named after the packages, without the scope. A GitHub workflow releases a package
+to npm once the owner of the npm account has approved the version, as described under
+[Releasing a version](#releasing-a-version). `npm view <name> versions` shows what is published, and
+the package's `CHANGELOG.md` what each version contains.
 
 ## Rules
 
@@ -52,6 +53,7 @@ src/packages/<name>/
 npm run check:packages    # server typecheck, per-package typecheck, package unit tests
 npm run packages:verify   # build, pack, install the tarballs in a scratch project, run each smoke test
 npm run packages:pack -- --out E:\Temp\packages   # just the tarballs
+npm run packages:release-check -- <folder name>   # can this package's version be released?
 ```
 
 `check:pr` runs the per-package typecheck, and `npm test` runs the package tests. Build output
@@ -65,18 +67,51 @@ folder holds TypeScript source and no build, and its `package.json` stays `"priv
 `npm publish` refuses it. The packed `package.json` leaves that flag out and records the commit it
 was built from as `gitHead`.
 
+The `Publish Package` workflow (`.github/workflows/publish-package.yml`) makes the release, and it
+is the only way a version is released: nobody publishes one from a machine. The workflow can only
+stage a version on npm. A staged version is not public: npm publishes it when the owner of the npm
+account approves it with a second factor, and not before. No npm token is stored anywhere. In each
+package's settings on npm, that workflow file of this repository is the package's trusted
+publisher, staging is all it is allowed to do, and access tokens cannot publish.
+
 1. In an ordinary change, set `version` in the package's `package.json` and move the entries under
    `## Unreleased` in its `CHANGELOG.md` to a `## <version>` section.
-2. Once that change is on `master`, in a checkout of it with no local changes, run
-   `npm run packages:verify` and then `npm run packages:pack -- --out <dir> <folder name>`. The
-   directory must be outside the repository.
-3. The owner of the npm account publishes the file: `npm publish <dir>/<file>.tgz`. npm asks for a
-   second factor, so an agent cannot do this step. A package with a scope needs `--access public`
-   the first time.
-4. Tag the commit `<folder name>-v<version>` and push the tag.
+   `npm run packages:release-check -- <folder name>` says what is still missing.
+2. Once that change is on `master`, start the workflow for the package: on GitHub under Actions, or
+   with `gh workflow run publish-package.yml -f package=<folder name>`. It runs the package checks,
+   builds the tarball, stages it on npm with a provenance statement, and tags the commit
+   `<folder name>-v<version>`. The summary of the run has the stage id and the tarball's checksum.
+3. The owner of the npm account approves the staged version: on npmjs.com among the package's
+   staged versions, or with `npm stage approve <stage id>`. Only then is it public.
+
+If the owner rejects the staged version instead, delete the tag. The version can then be staged
+again from a later commit.
+
+A dry run (`-f dry_run=true`) does everything but stage and tag. It fails unless npm accepts the
+workflow as the package's trusted publisher, so run one after changing the workflow or a package's
+settings on npm. It also works for a version that is already released.
 
 A published version can never be changed or published again. To correct one, release the next
 version and mark the bad one with `npm deprecate`.
+
+### The first version of a new package
+
+The workflow cannot release it: npm lets a trusted publisher be added only to a package that
+exists. This is the one release that does not go through the workflow. The owner of the npm account
+publishes that version from a logged-in machine.
+
+1. With the change on `master`, in a checkout of it with no local changes, run
+   `npm run packages:verify` and then `npm run packages:pack -- --out <dir> <folder name>`. The
+   directory must be outside the repository.
+2. `npm publish <dir>/<file>.tgz`, with `--access public` for a package with a scope. npm asks for
+   a second factor. That version has no provenance statement.
+3. Tag the commit `<folder name>-v<version>` and push the tag.
+4. Make the workflow the package's trusted publisher, allowed to stage only, and keep access tokens
+   from publishing. With npm 11.15.0 or newer:
+   `npm trust github <name> --file publish-package.yml --repository TimStewartJ/copilot-bridge --allow-stage-publish`
+   and `npm access set mfa=publish <name>`. Or on npmjs.com, in the package's settings: Trusted
+   Publisher, and under Publishing access "Require two-factor authentication and disallow tokens".
+5. Add the folder to the `package` options in the workflow.
 
 The Bridge keeps importing the in-tree source after a release. If a package later moves to its
 own repository, add it to the root `package.json` and change the one import path that uses it.
