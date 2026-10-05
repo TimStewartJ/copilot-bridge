@@ -26,6 +26,7 @@ import {
   normalizePendingUserInputRequest,
 } from "./pending-interaction-validation.js";
 import type { PendingUserInputRequestView } from "./user-input-types.js";
+import type { BrowserHandoffView } from "../shared/browser-live.js";
 import type { PendingElicitationRequestView } from "./elicitation-types.js";
 import {
   type SessionRunController,
@@ -442,6 +443,8 @@ export interface SessionRunnerDeps {
   getPendingInteractionCount(sessionId: string): number;
   /** Answers questions nobody has answered within the wait Bridge allows. Never rejects. */
   autoAnswerOverdueInteractions(sessionId: string): Promise<void>;
+  /** The browser handoff a pending form of this chat stands for, when it is one. */
+  matchBrowserHandoff?(sessionId: string, request: PendingElicitationRequestView): BrowserHandoffView | undefined;
   /**
    * Answers a question in the user's place before it is shown. Undefined means Bridge never
    * answers this question itself; otherwise the promise says whether the runtime took the reply.
@@ -1593,7 +1596,9 @@ export class SessionRunner {
           turnHadSideEffects = true;
           try {
             const requestedAt = getEventTimestampIso(event);
-            const request = normalizePendingElicitationRequest(data, requestedAt);
+            const form = normalizePendingElicitationRequest(data, requestedAt);
+            const browserHandoff = this.deps.matchBrowserHandoff?.(sessionId, form);
+            const request = browserHandoff ? { ...form, browserHandoff } : form;
             showOrAnswerQuestion({ kind: "elicitation", request }, () => {
               bus.emitElicitationRequested(request, requestedAt);
               this.deps.recordPendingInteractionEvent(sessionId, "elicitation", "requested", requestedAt);

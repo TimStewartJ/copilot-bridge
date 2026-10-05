@@ -1,6 +1,7 @@
 import type { BrowserCommand } from "./agent-browser.js";
-import { ab } from "./agent-browser.js";
-import { err, ok, type Result } from "./tool-results.js";
+import { ab, isAgentBrowserInstalled } from "./agent-browser.js";
+import type { PageBlockFields } from "./browser-page-check.js";
+import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
 
 export type BrowserAutomationCommandName =
   | "open"
@@ -212,7 +213,7 @@ export function normalizeBrowserAutomationCapture(rawCapture: unknown): Result<B
   return ok(capture);
 }
 
-export function toBrowserCommand(input: BrowserAutomationCommand): BrowserCommand {
+function toBrowserCommand(input: BrowserAutomationCommand): BrowserCommand {
   return [input.command, ...input.args];
 }
 
@@ -266,4 +267,48 @@ export async function captureFinalBrowserState(
     finalState.snapshot = { ok: result.ok, output: result.output, selector: capture.selector };
   }
   return finalState;
+}
+
+const AGENT_BROWSER_INSTALL_GUIDANCE =
+  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
+
+/** The failure a browser tool answers with when the agent-browser CLI is missing; undefined when it is there. */
+export async function agentBrowserMissingFailure(): Promise<ReturnType<typeof toolFailure> | undefined> {
+  if (await isAgentBrowserInstalled()) return undefined;
+  return toolFailure("agent-browser is not installed.", {
+    detail: AGENT_BROWSER_INSTALL_GUIDANCE,
+    sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
+  });
+}
+
+/**
+ * The result of a list of steps that stopped at one that failed. `fields` identify the browser
+ * in the result, `logLines` in the session log.
+ */
+export function browserStepFailure<T extends object>(
+  failure: BrowserAutomationRunFailure,
+  fields: T,
+  pageBlock: PageBlockFields,
+  logLines: readonly string[],
+) {
+  const stepOutput = truncateBrowserFailureText(failure.failedStep.output);
+  // A failure reaches the agent as its text alone, so what the page turned out to be goes there.
+  const detail = joinFailureSections(
+    failure.error,
+    stepOutput && stepOutput !== failure.error ? stepOutput : undefined,
+    (pageBlock.blocked ?? pageBlock.captcha)?.guidance,
+  ) ?? failure.error;
+  return toolFailureWithContext(failure.error, {
+    ...pageBlock,
+    ...fields,
+    failedStep: failure.failedStep,
+    steps: failure.steps,
+  }, {
+    detail,
+    sessionLog: joinFailureSections(
+      ...logLines,
+      `Failed step: ${failure.failedStep.index + 1} ${failure.failedStep.command}`,
+      formatBrowserStepTimeline(failure.steps),
+    ),
+  });
 }

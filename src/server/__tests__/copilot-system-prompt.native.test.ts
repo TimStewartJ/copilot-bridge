@@ -213,6 +213,10 @@ function assertBridgePrompt(prompt: string, model: string, promptProfile: Prompt
   expect(askUserContext).toBeGreaterThan(longRunning);
   expect(browser).toBeGreaterThan(askUserContext);
   expect(browser).toBeLessThan(prompt.indexOf("<system_notifications>"));
+  const browserBlocks = prompt.indexOf("<browser_blocks>");
+  expect(browserBlocks).toBeGreaterThan(browser);
+  expect(browserBlocks).toBeLessThan(prompt.indexOf("<system_notifications>"));
+  expect(prompt).toContain("browser_session_handoff");
 
   expect(prompt).not.toContain("Respond concisely to the user");
   // The session folder has no instruction files and is outside any git work tree.

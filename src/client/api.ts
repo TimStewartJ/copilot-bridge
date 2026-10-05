@@ -21,15 +21,23 @@ import type {
   AuthenticatedServiceCheck,
   BrowserDiagnosticsResponse,
   BrowserProbeResponse,
+  PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
+import type { BrowserLiveTicket } from "../shared/browser-live.js";
 export type {
   AuthenticatedServiceCheck,
+  BrowserBuildDiagnostics,
+  BrowserBuildKind,
   BrowserDiagnosticsIssue,
   BrowserDiagnosticsResponse,
   BrowserDiagnosticsSummary,
   BrowserDiagnosticsTone,
+  BrowserExecutableSource,
+  BrowserLaunchDiagnostics,
   BrowserProbeResponse,
+  PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
+export type { BrowserHandoffView, BrowserLiveTicket } from "../shared/browser-live.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { BridgeSearchRequest, BridgeSearchResponse } from "../shared/search.js";
 import type { AgentInstruction } from "../shared/subagent.js";
@@ -2439,6 +2447,16 @@ export async function probeBrowserContext(
 
 export async function checkAdoBrowserAuthentication(): Promise<AuthenticatedServiceCheck> {
   return apiFetch<AuthenticatedServiceCheck>("/api/browser/diagnostics/authenticated/check/ado", {});
+}
+
+/** Removes the browsing data of every public profile that no browser is using. */
+export async function resetPublicBrowserData(): Promise<PublicBrowserResetResponse> {
+  return apiFetch<PublicBrowserResetResponse>("/api/browser/diagnostics/public/reset", {});
+}
+
+/** Asks for permission to open one browser session's live view. The ticket is short-lived. */
+export async function requestBrowserLiveTicket(browserSessionId: string): Promise<BrowserLiveTicket> {
+  return apiFetch<BrowserLiveTicket>(`/api/browser/sessions/${encodeURIComponent(browserSessionId)}/live`, {});
 }
 
 export interface DeviceHibernateOnIdleStatus {

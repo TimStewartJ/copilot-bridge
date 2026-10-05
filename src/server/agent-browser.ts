@@ -5,6 +5,7 @@ import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
+import { buildBrowserEnv, getBrowserLaunchConfig, type BrowserLaunchConfig, type BrowserTarget } from "./browser-launch.js";
 import { getProcessHost, type HostExecOptions } from "./process-host.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 
@@ -14,8 +15,6 @@ const execFileAsync = (file: string, args: readonly string[], options: HostExecO
   getProcessHost().execFile(file, args, options);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
 const RUNTIME_FILES = [...LOCK_FILES, "DevToolsActivePort", "lockfile"];
-
-export const BROWSER_RUNTIME_FILES: readonly string[] = RUNTIME_FILES;
 
 export function hasBrowserRuntimeActivity(profileDir: string): boolean {
   try {
@@ -33,9 +32,16 @@ export function hasBrowserRuntimeActivity(profileDir: string): boolean {
   }
   return false;
 }
+
+export {
+  getBrowserLaunchConfig,
+  type BrowserLaunchConfig,
+  type BrowserTarget,
+} from "./browser-launch.js";
+
 const SHUTDOWN_OUTPUT_SUMMARY_MAX_LENGTH = 500;
-export const BROWSER_PROFILE_SIGTERM_GRACE_MS = 500;
-export const BROWSER_LOCK_OWNER_KILL_GRACE_MS = 250;
+const BROWSER_PROFILE_SIGTERM_GRACE_MS = 500;
+const BROWSER_LOCK_OWNER_KILL_GRACE_MS = 250;
 const BROWSER_PROCESS_NAMES = new Set([
   "chrome",
   "chrome.exe",
@@ -47,6 +53,7 @@ const BROWSER_PROCESS_NAMES = new Set([
   "msedge.exe",
   "microsoft-edge",
 ]);
+const NO_USABLE_SANDBOX = "No usable sandbox";
 const WEDGE_SIGNATURES = [
   "DevToolsActivePort",
   "Chrome exited early",
@@ -75,22 +82,12 @@ interface AgentBrowserJsonEnvelope {
   error?: unknown;
 }
 
-export interface BrowserTarget {
-  sessionName: string;
-  profileDir: string;
-  executablePath?: string;
-  headed?: boolean;
-  /**
-   * How long the session's agent-browser daemon may go without a command before it closes its
-   * browser and exits by itself. It counts from the last command it received, so it has to be
-   * longer than any single command.
-   */
-  idleTimeoutMs?: number;
-  /**
-   * The session name and profile are used once and thrown away. Shutting such a target down
-   * also stops its agent-browser daemon when the daemon does not close the browser itself.
-   */
-  disposable?: boolean;
+export interface BrowserCommandResult {
+  ok: boolean;
+  /** The command's result as text, or the failure text. */
+  output: string;
+  /** What a successful command returned, for callers that need more than the text. */
+  data?: Record<string, unknown>;
 }
 
 export interface BrowserCommandOptions {
@@ -104,17 +101,10 @@ export interface BrowserCommandOptions {
   browserTarget?: BrowserTarget;
 }
 
-export interface BrowserLaunchConfig {
-  executablePath?: string;
-  masterProfileDirectory?: string;
-  headed?: boolean;
-}
-
-export type BrowserExecutablePathSource = "settings" | "environment" | "auto-detect";
-
 export type BrowserCommand = readonly [string, ...string[]];
 export type BrowserCommandFailureCode =
   | "binary_missing"
+  | "launch.no_usable_sandbox"
   | "launch.devtools_active_port"
   | "transport.broken_pipe"
   | "transport.connection_refused"
@@ -130,6 +120,8 @@ export interface BrowserProcessCleanupResult {
   clearedRuntimeFiles: number;
   /** agent-browser daemons stopped because they owned the profile's browser. */
   stoppedDaemonPids?: number[];
+  /** The host's processes could not be listed, so empty lists say nothing about the profile. */
+  processListFailed?: boolean;
 }
 
 export interface BrowserShutdownResult extends BrowserProcessCleanupResult {
@@ -142,45 +134,13 @@ export interface BrowserShutdownResult extends BrowserProcessCleanupResult {
   closeOutputSummary?: string;
 }
 
-function normalizeConfiguredPath(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-export function getBrowserLaunchConfig(settings?: {
-  browser?: BrowserLaunchConfig | null;
-}): BrowserLaunchConfig {
-  const executablePath = normalizeConfiguredPath(settings?.browser?.executablePath);
-  const masterProfileDirectory = normalizeConfiguredPath(settings?.browser?.masterProfileDirectory);
-  const headed = settings?.browser?.headed === true;
-  return {
-    ...(executablePath ? { executablePath } : {}),
-    ...(masterProfileDirectory ? { masterProfileDirectory } : {}),
-    ...(headed ? { headed } : {}),
-  };
-}
-
-export function getEffectiveBrowserExecutablePath(
-  launchConfig: BrowserLaunchConfig = {},
-  env: NodeJS.ProcessEnv = process.env,
-): { path?: string; source: BrowserExecutablePathSource } {
-  const settingsPath = normalizeConfiguredPath(launchConfig.executablePath);
-  if (settingsPath) return { path: settingsPath, source: "settings" };
-
-  const environmentPath = normalizeConfiguredPath(env.AGENT_BROWSER_EXECUTABLE_PATH);
-  if (environmentPath) return { path: environmentPath, source: "environment" };
-
-  return { source: "auto-detect" };
-}
-
 export function getBridgeBrowserTarget(
   copilotHome = process.env.COPILOT_HOME ?? join(homedir(), ".copilot"),
   launchConfig: BrowserLaunchConfig = {},
 ): BrowserTarget {
-  const executablePath = normalizeConfiguredPath(launchConfig.executablePath);
+  const { executablePath, masterProfileDirectory } = getBrowserLaunchConfig({ browser: launchConfig });
   const defaultProfileDir = join(copilotHome, "browser-profile");
-  const profileDir = normalizeConfiguredPath(launchConfig.masterProfileDirectory) ?? defaultProfileDir;
+  const profileDir = masterProfileDirectory ?? defaultProfileDir;
   const suffixSeed = executablePath || profileDir !== defaultProfileDir
     ? `${copilotHome}\u0000${profileDir}\u0000${executablePath ?? ""}`
     : copilotHome;
@@ -193,42 +153,6 @@ export function getBridgeBrowserTarget(
   };
 }
 
-const BLANK_START_PAGE = "about:blank";
-
-/**
- * The inherited browser launch arguments plus a blank start page. A browser started without
- * a URL opens its new-tab page. In Edge that is a news feed, which loads on every launch and
- * keeps a processor busy for as long as the tab exists.
- */
-export function withBlankStartPage(inheritedArgs: string | undefined): string {
-  const inherited = inheritedArgs?.trim();
-  if (!inherited) return BLANK_START_PAGE;
-  // agent-browser separates arguments by newlines or by commas; keep whichever is in use.
-  const separator = inherited.includes("\n") ? "\n" : ",";
-  const present = inherited.split(separator).some((arg) => arg.trim() === BLANK_START_PAGE);
-  return present ? inherited : `${inherited}${separator}${BLANK_START_PAGE}`;
-}
-
-function browserEnv(target: BrowserTarget): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    AGENT_BROWSER_NAMESPACE: "copilot-bridge",
-    AGENT_BROWSER_SESSION: target.sessionName,
-    AGENT_BROWSER_PROFILE: target.profileDir,
-    AGENT_BROWSER_ARGS: withBlankStartPage(process.env.AGENT_BROWSER_ARGS),
-    ...(target.executablePath ? { AGENT_BROWSER_EXECUTABLE_PATH: target.executablePath } : {}),
-    ...(target.idleTimeoutMs !== undefined ? { AGENT_BROWSER_IDLE_TIMEOUT_MS: String(target.idleTimeoutMs) } : {}),
-  };
-  if (target.headed) {
-    env.AGENT_BROWSER_HEADED = "true";
-  } else {
-    delete env.AGENT_BROWSER_HEADED;
-  }
-  // A blank value, as in a copied .env.example, means no setting rather than a setting of nothing.
-  if (!env.AGENT_BROWSER_IDLE_TIMEOUT_MS?.trim()) delete env.AGENT_BROWSER_IDLE_TIMEOUT_MS;
-  return env;
-}
-
 /** Where agent-browser keeps the socket, port and pid files of its daemons (its `get_socket_dir`). */
 function daemonStateDirectory(env: NodeJS.ProcessEnv): string {
   if (env.AGENT_BROWSER_SOCKET_DIR) return env.AGENT_BROWSER_SOCKET_DIR;
@@ -239,7 +163,7 @@ function daemonStateDirectory(env: NodeJS.ProcessEnv): string {
 /**
  * Removes the state files of a daemon that was killed. A daemon removes them itself when it
  * exits, and agent-browser clears them for a session name that is used again, which the name of
- * a disposable target never is.
+ * a target the Bridge closes after each use may not be for a long time.
  */
 async function removeDaemonStateFiles(sessionName: string, env: NodeJS.ProcessEnv): Promise<void> {
   const directory = daemonStateDirectory(env);
@@ -300,7 +224,7 @@ export function safeRecordBrowserSpan(
   }
 }
 
-export function recordBrowserSpan(
+function recordBrowserSpan(
   telemetryStore: TelemetryStore | undefined,
   name: string,
   duration: number,
@@ -325,6 +249,8 @@ function commandSpanName(command: BrowserCommand): string {
   if (command[0] === "get" && command[1] === "title") return "browser.command.get_title";
   if (command[0] === "get" && command[1] === "url") return "browser.command.get_url";
   if (command[0] === "get" && command[1] === "cdp-url") return "browser.command.get_cdp_url";
+  if (command[0] === "eval") return "browser.command.eval";
+  if (command[0] === "stream") return "browser.command.stream";
   return "browser.command.other";
 }
 
@@ -336,6 +262,8 @@ function failureSignature(output: string): string | null {
 }
 
 function failureCode(output: string): BrowserCommandFailureCode {
+  // Reported together with a DevToolsActivePort failure, which says nothing about the cause.
+  if (output.includes(NO_USABLE_SANDBOX)) return "launch.no_usable_sandbox";
   if (output.includes("which:") || output.includes("not found")) return "binary_missing";
   if (output.includes("DevToolsActivePort")) return "launch.devtools_active_port";
   if (output.includes("Broken pipe") || output.includes("broken pipe")) return "transport.broken_pipe";
@@ -631,7 +559,7 @@ async function runBrowserCommand(
   command: BrowserCommand,
   timeout = DEFAULT_TIMEOUT,
   options: BrowserCommandOptions = {},
-): Promise<{ ok: boolean; output: string }> {
+): Promise<BrowserCommandResult> {
   const browserOpId = options.browserOpId ?? randomUUID();
   const browserTarget = options.browserTarget ?? getBridgeBrowserTarget();
   const spanName = commandSpanName(command);
@@ -647,7 +575,7 @@ async function runBrowserCommand(
 
   logBrowser("command.start", { commandName: spanName, ...metadata });
   const startedAt = Date.now();
-  const result = await runAgentBrowserJsonCommand(command, timeout, browserEnv(browserTarget));
+  const result = await runAgentBrowserJsonCommand(command, timeout, await buildBrowserEnv(browserTarget));
   const duration = Date.now() - startedAt;
 
   recordBrowserSpan(options.telemetryStore, spanName, duration, {
@@ -686,6 +614,9 @@ function agentBrowserJsonOutput(command: BrowserCommand, envelope: AgentBrowserJ
   if (command[0] === "get" && command[1] === "title" && typeof data.title === "string") return data.title;
   if (command[0] === "get" && command[1] === "text" && typeof data.text === "string") return data.text;
   if (command[0] === "snapshot" && typeof data.snapshot === "string") return data.snapshot;
+  if (command[0] === "eval" && data.result !== undefined) {
+    return typeof data.result === "string" ? data.result : JSON.stringify(data.result);
+  }
   if (command[0] === "open") {
     const title = typeof data.title === "string" ? data.title : "";
     const url = typeof data.url === "string" ? data.url : "";
@@ -715,7 +646,7 @@ async function runAgentBrowserJsonCommand(
   command: BrowserCommand,
   timeout: number,
   env: NodeJS.ProcessEnv,
-): Promise<{ ok: boolean; output: string }> {
+): Promise<BrowserCommandResult> {
   let stdout = "";
   let stderr = "";
   let failure: unknown;
@@ -741,7 +672,13 @@ async function runAgentBrowserJsonCommand(
   }
 
   const envelope = parseAgentBrowserEnvelope(stdout);
-  if (envelope) return { ok: envelope.success, output: agentBrowserJsonOutput(command, envelope) };
+  if (envelope) {
+    return {
+      ok: envelope.success,
+      output: agentBrowserJsonOutput(command, envelope),
+      ...(envelope.success && envelope.data ? { data: envelope.data } : {}),
+    };
+  }
   if (failure === undefined) return { ok: true, output: (stdout || stderr).trim() };
 
   const timedOut = (failure as { killed?: boolean }).killed === true;
@@ -772,7 +709,7 @@ export async function run(
   }
 }
 
-export async function runFile(
+async function runFile(
   file: string,
   args: string[],
   timeout = DEFAULT_TIMEOUT,
@@ -794,6 +731,28 @@ export async function runFile(
   } catch (err: any) {
     return { ok: false, output: err.stderr || err.stdout || String(err) };
   }
+}
+
+let agentBrowserVersion: { expiresAt: number; value: Promise<string | undefined> } | undefined;
+
+/** The installed agent-browser's version, such as "0.38.2". Undefined when it cannot be read. */
+export function getAgentBrowserVersion(): Promise<string | undefined> {
+  const now = Date.now();
+  if (agentBrowserVersion && agentBrowserVersion.expiresAt > now) return agentBrowserVersion.value;
+  const value = runFile("agent-browser", ["--version"], 5_000)
+    .then((result) => (result.ok ? result.output.match(/\d+\.\d+\.\d+/)?.[0] : undefined));
+  agentBrowserVersion = { expiresAt: now + 60_000, value };
+  return value;
+}
+
+/**
+ * What to do about a failure the user can fix, for the message an agent or the diagnostics page
+ * shows. Undefined when the output says nothing more useful than itself.
+ */
+export function browserFailureAdvice(output: string): string | undefined {
+  if (failureCode(output) !== "launch.no_usable_sandbox") return undefined;
+  return "Chrome cannot use its sandbox on this host. Install Google Chrome from its package so the "
+    + "system allows it, or add --no-sandbox to AGENT_BROWSER_ARGS in the Bridge .env.";
 }
 
 export async function isAgentBrowserInstalled(): Promise<boolean> {
@@ -844,11 +803,18 @@ async function killProfileBoundBrowserProcesses(
   profileDir: string,
   metadata: Record<string, unknown>,
   options: { stopDaemons?: boolean } = {},
-): Promise<{ terminatedPids: number[]; killedPids: number[]; remainingPids: number[]; stoppedDaemonPids: number[] }> {
+): Promise<{
+  terminatedPids: number[];
+  killedPids: number[];
+  remainingPids: number[];
+  stoppedDaemonPids: number[];
+  processListFailed?: boolean;
+}> {
   const terminatedPids: number[] = [];
   const killedPids: number[] = [];
   const remainingPids: number[] = [];
   const stoppedDaemonPids: number[] = [];
+  let processListFailed = false;
   // A killed process can stay in the process table for seconds; it must not be handled twice.
   const handledPids = new Set<number>();
   const passes = options.stopDaemons ? DISPOSABLE_PROFILE_KILL_PASSES : 1;
@@ -862,6 +828,7 @@ async function killProfileBoundBrowserProcesses(
         ...metadata,
         error: err instanceof Error ? err.message : String(err),
       });
+      processListFailed = true;
       break;
     }
     const processes = allProcesses.filter((processInfo) =>
@@ -929,7 +896,7 @@ async function killProfileBoundBrowserProcesses(
       }
     }
   }
-  return { terminatedPids, killedPids, remainingPids, stoppedDaemonPids };
+  return { terminatedPids, killedPids, remainingPids, stoppedDaemonPids, ...(processListFailed ? { processListFailed } : {}) };
 }
 
 async function forceCloseProfileBoundBrowserProcesses(
@@ -992,6 +959,16 @@ function buildBrowserShutdownResult(
 }
 
 /**
+ * Whether a shutdown left no browser on the profile. Without a process list, only the daemon's
+ * own word that it closed the browser says so.
+ */
+export function browserIsGone(
+  shutdown: Pick<BrowserShutdownResult, "remainingPids"> & Partial<Pick<BrowserShutdownResult, "closeOk" | "processListFailed">>,
+): boolean {
+  return shutdown.remainingPids.length === 0 && !(shutdown.processListFailed && shutdown.closeOk === false);
+}
+
+/**
  * Run an agent-browser command using a bridge-owned session.
  * On Chrome launch failure, clears stale dead locks or kills a live wedged Chrome once and retries.
  */
@@ -999,49 +976,48 @@ export async function ab(
   command: BrowserCommand,
   timeout = DEFAULT_TIMEOUT,
   options: BrowserCommandOptions = {},
-): Promise<{ ok: boolean; output: string }> {
+): Promise<BrowserCommandResult> {
   const browserOpId = options.browserOpId ?? randomUUID();
   const browserTarget = options.browserTarget ?? getBridgeBrowserTarget();
   const commandName = commandSpanName(command);
-  const result = await runBrowserCommand(command, timeout, {
-    ...options,
-    browserTarget,
-    browserOpId,
-    attempt: options.attempt ?? 1,
-  });
+  const attemptOptions = { ...options, browserTarget, browserOpId };
+  const result = await runBrowserCommand(command, timeout, { ...attemptOptions, attempt: options.attempt ?? 1 });
   if (result.ok || options.skipRecovery) return result;
 
   const signature = failureSignature(result.output);
   if (!signature) return result;
+  // Nothing in the profile is wrong; the host refuses the browser, and so it will again.
+  if (failureCode(result.output) === "launch.no_usable_sandbox") return result;
 
-  if (failureCode(result.output) === "transport.connection_refused") {
-    await delay(BROWSER_LOCK_OWNER_KILL_GRACE_MS);
-    const retryStartedAt = Date.now();
-    const retry = await runBrowserCommand(command, timeout, {
-      ...options,
-      browserTarget,
-      browserOpId,
-      attempt: 2,
-      skipRecovery: true,
-    });
-    recordBrowserSpan(options.telemetryStore, "browser.recovery.retry", Date.now() - retryStartedAt, {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-      retryOutcome: retry.ok ? "succeeded" : "failed",
-    });
-    if (retry.ok) return retry;
-  }
-
-  const lock = readLockOwner(browserTarget.profileDir);
-  recordBrowserSpan(options.telemetryStore, "browser.recovery.detected", 0, {
+  const recovery = {
     browserOpId,
     toolName: options.toolName,
     browserSession: browserTarget.sessionName,
     commandName,
     signature,
+  };
+  const record = (name: string, duration: number, metadata: Record<string, unknown> = {}): void =>
+    recordBrowserSpan(options.telemetryStore, `browser.${name}`, duration, { ...recovery, ...metadata });
+  /** Runs the command a second time, once whatever stood in its way has been dealt with. */
+  const retry = async (failedAs?: "failed"): Promise<BrowserCommandResult> => {
+    const startedAt = Date.now();
+    const again = await runBrowserCommand(command, timeout, { ...attemptOptions, attempt: 2 });
+    record("recovery.retry", Date.now() - startedAt, {
+      retryOutcome: again.ok
+        ? "succeeded"
+        : failedAs ?? (failureSignature(again.output) === signature ? "failed_same_signature" : "failed_new_signature"),
+    });
+    return again;
+  };
+
+  if (failureCode(result.output) === "transport.connection_refused") {
+    await delay(BROWSER_LOCK_OWNER_KILL_GRACE_MS);
+    const again = await retry("failed");
+    if (again.ok) return again;
+  }
+
+  const lock = readLockOwner(browserTarget.profileDir);
+  record("recovery.detected", 0, {
     failureCode: failureCode(result.output),
     lockPid: lock?.pid ?? undefined,
     lockPidAlive: lock?.alive ?? false,
@@ -1049,204 +1025,68 @@ export async function ab(
   });
 
   if (clearStaleLocks(browserTarget.profileDir)) {
-    logBrowser("recovery.clear_stale_lock", {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-    });
-    recordBrowserSpan(options.telemetryStore, "browser.recovery.clear_stale_lock", 0, {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-    });
-    const retryStartedAt = Date.now();
-    const retry = await runBrowserCommand(command, timeout, {
-      ...options,
-      browserTarget,
-      browserOpId,
-      attempt: 2,
-    });
-    recordBrowserSpan(options.telemetryStore, "browser.recovery.retry", Date.now() - retryStartedAt, {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-      retryOutcome: retry.ok
-        ? "succeeded"
-        : failureSignature(retry.output) === signature
-          ? "failed_same_signature"
-          : "failed_new_signature",
-    });
-    return retry;
+    logBrowser("recovery.clear_stale_lock", recovery);
+    record("recovery.clear_stale_lock", 0);
+    return retry();
   }
 
-  if (!lock && isLaunchProfileWedge(result.output)) {
-    const recoveryMetadata = {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-    };
-    logBrowser("recovery.no_lock_file", recoveryMetadata);
+  if (!lock) {
+    logBrowser("recovery.no_lock_file", recovery);
+    if (!isLaunchProfileWedge(result.output)) return result;
 
     const killStartedAt = Date.now();
     // The command is retried on the same session, so its daemon stays.
     const { stoppedDaemonPids: _stoppedDaemonPids, ...killResult } =
-      await killProfileBoundBrowserProcesses(browserTarget.profileDir, recoveryMetadata);
-    if (killResult.terminatedPids.length > 0 || killResult.killedPids.length > 0) {
-      const clearedRuntimeFiles = clearProfileRuntimeFiles(browserTarget.profileDir);
-      const killDuration = Date.now() - killStartedAt;
-      logBrowser("recovery.kill_profile_processes", {
-        ...recoveryMetadata,
-        ...killResult,
-        clearedRuntimeFiles,
-        durationMs: killDuration,
-      });
-      recordBrowserSpan(options.telemetryStore, "browser.recovery.kill_profile_processes", killDuration, {
-        ...recoveryMetadata,
-        ...killResult,
-        clearedRuntimeFiles,
-      });
-
-      const retryStartedAt = Date.now();
-      const retry = await runBrowserCommand(command, timeout, {
-        ...options,
-        browserTarget,
-        browserOpId,
-        attempt: 2,
-      });
-      recordBrowserSpan(options.telemetryStore, "browser.recovery.retry", Date.now() - retryStartedAt, {
-        ...recoveryMetadata,
-        retryOutcome: retry.ok
-          ? "succeeded"
-          : failureSignature(retry.output) === signature
-            ? "failed_same_signature"
-            : "failed_new_signature",
-      });
-      return retry;
+      await killProfileBoundBrowserProcesses(browserTarget.profileDir, recovery);
+    if (killResult.terminatedPids.length === 0 && killResult.killedPids.length === 0) {
+      record("recovery.no_profile_processes", Date.now() - killStartedAt);
+      return result;
     }
-    recordBrowserSpan(options.telemetryStore, "browser.recovery.no_profile_processes", Date.now() - killStartedAt, {
-      ...recoveryMetadata,
-    });
+    const clearedRuntimeFiles = clearProfileRuntimeFiles(browserTarget.profileDir);
+    const killDuration = Date.now() - killStartedAt;
+    logBrowser("recovery.kill_profile_processes", { ...recovery, ...killResult, clearedRuntimeFiles, durationMs: killDuration });
+    record("recovery.kill_profile_processes", killDuration, { ...killResult, clearedRuntimeFiles });
+    return retry();
+  }
+
+  if (!lock.alive || !lock.pid) return result;
+
+  const probeStartedAt = Date.now();
+  const probe = await runBrowserCommand(["get", "url"], 5_000, {
+    ...attemptOptions,
+    attempt: 1,
+    metadata: { ...(options.metadata ?? {}), probeFor: commandName },
+  });
+  record("health.probe", Date.now() - probeStartedAt, {
+    success: probe.ok,
+    lockPid: lock.pid,
+    lockPidSignalable: lock.signalable,
+  });
+  if (probe.ok) return result;
+
+  if (!lock.signalable || !isLikelyChromeForProfile(lock.pid, browserTarget.profileDir)) {
+    logBrowser("recovery.skip_kill_unverified_lock_owner", { ...recovery, lockPid: lock.pid });
+    record("recovery.skip_unverified_lock_owner", 0, { lockPid: lock.pid, lockPidSignalable: lock.signalable });
     return result;
   }
 
-  if (lock?.alive && lock.pid) {
-    const probeStartedAt = Date.now();
-    const probe = await runBrowserCommand(["get", "url"], 5_000, {
-      ...options,
-      browserTarget,
-      browserOpId,
-      attempt: 1,
-      skipRecovery: true,
-      metadata: { ...(options.metadata ?? {}), probeFor: commandName },
-    });
-    recordBrowserSpan(options.telemetryStore, "browser.health.probe", Date.now() - probeStartedAt, {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-      success: probe.ok,
+  const killStartedAt = Date.now();
+  try {
+    process.kill(lock.pid);
+  } catch (err) {
+    logBrowser("recovery.kill_lock_owner_failed", {
+      ...recovery,
       lockPid: lock.pid,
-      lockPidSignalable: lock.signalable,
+      error: err instanceof Error ? err.message : String(err),
     });
-
-    if (!probe.ok && lock.signalable && isLikelyChromeForProfile(lock.pid, browserTarget.profileDir)) {
-      const killStartedAt = Date.now();
-      try {
-        process.kill(lock.pid);
-      } catch (err) {
-        logBrowser("recovery.kill_lock_owner_failed", {
-          browserOpId,
-          toolName: options.toolName,
-          browserSession: browserTarget.sessionName,
-          commandName,
-          signature,
-          lockPid: lock.pid,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return result;
-      }
-      await delay(BROWSER_LOCK_OWNER_KILL_GRACE_MS);
-      clearStaleLocks(browserTarget.profileDir);
-      const killDuration = Date.now() - killStartedAt;
-      logBrowser("recovery.kill_lock_owner", {
-        browserOpId,
-        toolName: options.toolName,
-        browserSession: browserTarget.sessionName,
-        commandName,
-        signature,
-        lockPid: lock.pid,
-        durationMs: killDuration,
-      });
-      recordBrowserSpan(options.telemetryStore, "browser.recovery.kill_lock_owner", killDuration, {
-        browserOpId,
-        toolName: options.toolName,
-        browserSession: browserTarget.sessionName,
-        commandName,
-        signature,
-        lockPid: lock.pid,
-        lockPidSignalable: lock.signalable,
-      });
-      const retryStartedAt = Date.now();
-      const retry = await runBrowserCommand(command, timeout, {
-        ...options,
-        browserTarget,
-        browserOpId,
-        attempt: 2,
-      });
-      recordBrowserSpan(options.telemetryStore, "browser.recovery.retry", Date.now() - retryStartedAt, {
-        browserOpId,
-        toolName: options.toolName,
-        browserSession: browserTarget.sessionName,
-        commandName,
-        signature,
-        retryOutcome: retry.ok
-          ? "succeeded"
-          : failureSignature(retry.output) === signature
-            ? "failed_same_signature"
-            : "failed_new_signature",
-      });
-      return retry;
-    }
-
-    if (!probe.ok) {
-      logBrowser("recovery.skip_kill_unverified_lock_owner", {
-        browserOpId,
-        toolName: options.toolName,
-        browserSession: browserTarget.sessionName,
-        commandName,
-        signature,
-        lockPid: lock.pid,
-      });
-      recordBrowserSpan(options.telemetryStore, "browser.recovery.skip_unverified_lock_owner", 0, {
-        browserOpId,
-        toolName: options.toolName,
-        browserSession: browserTarget.sessionName,
-        commandName,
-        signature,
-        lockPid: lock.pid,
-        lockPidSignalable: lock.signalable,
-      });
-    }
-  } else if (!lock) {
-    logBrowser("recovery.no_lock_file", {
-      browserOpId,
-      toolName: options.toolName,
-      browserSession: browserTarget.sessionName,
-      commandName,
-      signature,
-    });
+    return result;
   }
-
-  return result;
+  await delay(BROWSER_LOCK_OWNER_KILL_GRACE_MS);
+  clearStaleLocks(browserTarget.profileDir);
+  const killDuration = Date.now() - killStartedAt;
+  logBrowser("recovery.kill_lock_owner", { ...recovery, lockPid: lock.pid, durationMs: killDuration });
+  record("recovery.kill_lock_owner", killDuration, { lockPid: lock.pid, lockPidSignalable: lock.signalable });
+  return retry();
 }
 
 export async function withBridgeBrowserSession<T>(
@@ -1264,13 +1104,13 @@ export async function shutdownBridgeBrowser(
 ): Promise<BrowserShutdownResult> {
   return withBridgeBrowserSession(browserTarget, async () => {
     const startedAt = Date.now();
-    const env = browserEnv(browserTarget);
+    const env = await buildBrowserEnv(browserTarget);
     const closeResult = await runAgentBrowserJsonCommand(["close"], 10_000, env);
     const forceCloseResult = await forceCloseProfileBoundBrowserProcesses(browserTarget.profileDir, telemetryStore, {
       browserSession: browserTarget.sessionName,
       ...(!closeResult.ok ? { closeFailureCode: failureCode(closeResult.output) } : {}),
       cleanupPhase: "primary_shutdown",
-    }, { stopDaemons: browserTarget.disposable === true });
+    }, { stopDaemons: browserTarget.stopDaemonOnShutdown === true });
     if (forceCloseResult.stoppedDaemonPids?.length) {
       await removeDaemonStateFiles(browserTarget.sessionName, env);
     }

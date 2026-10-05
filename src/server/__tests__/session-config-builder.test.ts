@@ -8,6 +8,7 @@ import { BRIDGE_DEFAULT_SUBAGENTS, type SubagentSettings } from "../../shared/su
 import { LEGACY_RESPONSE_QUALITY_BLOCK } from "../response-style-migration.js";
 import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
+  BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
   removeCliOutputSurfaceNote,
   removeConciseReplyDirective,
@@ -387,6 +388,11 @@ describe("session-config-builder", () => {
       content: expect.stringContaining('mode "sync" are one-shot'),
     });
     expect(cfg.systemMessage.sections.tool_instructions.content).toContain("<browser_escalation>");
+    // What to do about a page that blocks the browser follows how to reach for a browser.
+    const toolInstructions: string = cfg.systemMessage.sections.tool_instructions.content;
+    expect(toolInstructions).toContain(BROWSER_GUIDANCE);
+    expect(toolInstructions.indexOf("<browser_blocks>")).toBeGreaterThan(toolInstructions.indexOf("</browser_escalation>"));
+    expect(toolInstructions.match(/<browser_blocks>/g)).toHaveLength(1);
     expect(cfg.systemMessage.sections.tool_instructions.content).toContain("<ask_user_context>");
     expect(cfg.systemMessage.sections.tool_instructions.content).toContain("The user cannot see your thinking.");
     // Only real SDK section IDs: unknown IDs are appended wherever the runtime chooses.
@@ -403,6 +409,22 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content).toContain("<work_reference_links>");
     expect(cfg.systemMessage.content).toContain("full Markdown link instead of only a numeric ID");
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
+  });
+
+  it("tells agents what a blocked page or a CAPTCHA in a browser result calls for", () => {
+    const blocks = BROWSER_GUIDANCE.match(/<browser_blocks>\n([\s\S]*?)\n<\/browser_blocks>/)?.[1] ?? "";
+
+    // The result fields by the names the browser tools use, and the tool that hands a page to the user.
+    expect(blocks).toContain("`blocked`");
+    expect(blocks).toContain("`captcha`");
+    expect(blocks).toContain("browser_session_handoff");
+    // A refusal has nothing to hand over.
+    const refusal = blocks.split("\n").find((line) => line.includes("refusal offers nothing")) ?? "";
+    expect(refusal).toContain("another source");
+    expect(refusal).not.toContain("browser_session_handoff");
+    // The escalation ladder is still there, ahead of it.
+    expect(BROWSER_GUIDANCE.startsWith("<browser_escalation>")).toBe(true);
+    expect(BROWSER_GUIDANCE.endsWith("</browser_blocks>")).toBe(true);
   });
 
   describe("sub-agent settings", () => {

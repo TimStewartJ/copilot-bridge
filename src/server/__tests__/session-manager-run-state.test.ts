@@ -6,6 +6,8 @@ import { writeRestartState } from "../restart-state.js";
 import { SessionManager } from "../session-manager.js";
 import { AUTOMATIC_ANSWERS } from "../../shared/automatic-answer.js";
 
+import { BrowserBroker } from "../browser-broker.js";
+import { BrowserSessionStore } from "../browser-session-store.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
@@ -23,6 +25,7 @@ describe("SessionManager run state", () => {
     copilotHome?: string;
     runtimePaths?: RuntimePaths;
     telemetry?: boolean;
+    browserSessionStore?: BrowserSessionStore;
     settingsStore?: {
       getMcpServers: () => Record<string, never>;
       getSettings: () => { mcpServers: Record<string, never> };
@@ -55,6 +58,7 @@ describe("SessionManager run state", () => {
       config: { sessionMcpServers: {} },
       telemetryStore,
       sessionContextStore,
+      browserSessionStore: opts.browserSessionStore,
       clientEnv: runtimePaths.env,
       copilotHome,
       runtimePaths,
@@ -2422,6 +2426,214 @@ describe("SessionManager run state", () => {
       timestamp: "2026-07-23T12:00:02.000Z",
     });
     await flushMicrotasks();
+  });
+
+  describe("browser handoff forms", () => {
+    const BROWSER_SESSION_ID = "bs_1a2b3c4d";
+    const REASON = "Pass the human check on shop.example.test.";
+    const REQUESTED_AT = "2026-07-23T12:00:00.000Z";
+
+    /** The form browser_session_handoff raises: one choice field, named for that one request. */
+    function handoffForm(requestId: string, fieldName: string) {
+      return {
+        requestId,
+        message: `The browser needs you: ${REASON}`,
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            [fieldName]: {
+              type: "string",
+              title: "Open the browser, do this, then answer",
+              enum: ["done", "not_done"],
+              enumNames: ["Done, continue", "I couldn't do it"],
+            },
+          },
+          required: [fieldName],
+        },
+      };
+    }
+
+    async function startRun(sessionId: string, opts: { browserSessions?: boolean; autopilot?: boolean } = {}) {
+      const browserSessions = opts.browserSessions === false
+        ? undefined
+        : new BrowserSessionStore({
+          browserBroker: new BrowserBroker({ copilotHome: join(makeTestDir("handoff-browser-sessions"), ".copilot") }),
+        });
+      const created = createManager({ telemetry: true, browserSessionStore: browserSessions });
+      const made = makeSession();
+      created.manager.backend = { resumeSession: vi.fn().mockResolvedValue(made.session) };
+      if (opts.autopilot) {
+        created.manager.startWork(sessionId, "hello", undefined, { mode: "autopilot" });
+      } else {
+        created.manager.startWork(sessionId, "hello");
+      }
+      await flushMicrotasks();
+      const shown: any[] = [];
+      created.eventBusRegistry.getBus(sessionId)?.subscribe((event: any) => {
+        if (event.type === "elicitation_requested") shown.push(event);
+      });
+      const raise = async (data: Record<string, unknown>) => {
+        made.getHandler()?.({ type: "elicitation.requested", timestamp: REQUESTED_AT, data });
+        await flushMicrotasks();
+      };
+      const pending = async (): Promise<any[]> =>
+        (await created.manager.hydratePendingInteractions(sessionId)).pendingElicitations;
+      const finish = async () => {
+        made.getReleaseSend()?.();
+        await flushMicrotasks();
+        made.getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
+        await flushMicrotasks();
+        expect(created.manager.getSessionRunState(sessionId)).toBe("idle");
+        await browserSessions?.closeAll();
+      };
+      return { ...created, ...made, browserSessions, shown, raise, pending, finish };
+    }
+
+    it("marks the form of an open handoff of this chat with the browser session and the reason", async () => {
+      const sessionId = "session-handoff-form";
+      const run = await startRun(sessionId);
+      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+
+      await run.raise(handoffForm("el-handoff", handoff.fieldName));
+
+      expect(run.shown).toHaveLength(1);
+      expect(run.shown[0]).toMatchObject({
+        type: "elicitation_requested",
+        requestId: "el-handoff",
+        message: `The browser needs you: ${REASON}`,
+        mode: "form",
+        requestedAt: REQUESTED_AT,
+      });
+      // Exactly what a client needs to open the live view; not which chat asked.
+      expect(run.shown[0].browserHandoff).toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
+      // A client that connects later is told the same.
+      const [view] = await run.pending();
+      expect(view).toMatchObject({ requestId: "el-handoff", requestedAt: REQUESTED_AT });
+      expect(view.browserHandoff).toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
+      expect(Object.keys(view.requestedSchema.properties)).toEqual([handoff.fieldName]);
+      expect(run.manager.getPendingUserInputCount(sessionId)).toBe(1);
+
+      // It is answered like any other form.
+      run.pendingElicitations.push({ requestId: "el-handoff" });
+      await expect(run.manager.submitElicitationResponse(sessionId, "el-handoff", {
+        action: "accept",
+        content: { [handoff.fieldName]: "done" },
+      })).resolves.toMatchObject({ requestId: "el-handoff", action: "accept" });
+      expect(run.session.tryRespondToElicitation).toHaveBeenCalledWith("el-handoff", {
+        action: "accept",
+        content: { [handoff.fieldName]: "done" },
+      });
+      handoff.end();
+      await run.finish();
+    });
+
+    it("recognises the handoff among the fields of a larger form", async () => {
+      const sessionId = "session-handoff-among-fields";
+      const run = await startRun(sessionId);
+      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+      const form = handoffForm("el-handoff", handoff.fieldName);
+
+      await run.raise({
+        ...form,
+        requestedSchema: {
+          type: "object",
+          properties: { note: { type: "string" }, ...form.requestedSchema.properties },
+        },
+      });
+
+      expect(run.shown[0].browserHandoff).toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
+      handoff.end();
+      await run.finish();
+    });
+
+    it("leaves a form with other fields as it is while a handoff is open", async () => {
+      const sessionId = "session-handoff-other-form";
+      const run = await startRun(sessionId);
+      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+
+      await run.raise({
+        requestId: "el-ask",
+        message: "Approve?",
+        mode: "form",
+        requestedSchema: { type: "object", properties: { approved: { type: "boolean" } } },
+      });
+      // A field name of the same kind that no open handoff has.
+      await run.raise(handoffForm("el-lookalike", "handoff_00000000"));
+
+      expect(run.shown.map((event) => event.requestId)).toEqual(["el-ask", "el-lookalike"]);
+      for (const event of run.shown) expect(event).not.toHaveProperty("browserHandoff");
+      for (const view of await run.pending()) expect(view).not.toHaveProperty("browserHandoff");
+      handoff.end();
+      await run.finish();
+    });
+
+    it("does not show one chat the handoff of another", async () => {
+      const sessionId = "session-handoff-this-chat";
+      const run = await startRun(sessionId);
+      const elsewhere = run.browserSessions!.beginHandoff("session-handoff-other-chat", BROWSER_SESSION_ID, REASON);
+
+      await run.raise(handoffForm("el-foreign", elsewhere.fieldName));
+
+      expect(run.shown.map((event) => event.requestId)).toEqual(["el-foreign"]);
+      expect(run.shown[0]).not.toHaveProperty("browserHandoff");
+      expect((await run.pending())[0]).not.toHaveProperty("browserHandoff");
+      // The chat that asked still gets it.
+      expect(run.browserSessions!.matchHandoff("session-handoff-other-chat", [elsewhere.fieldName]))
+        .toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
+      elsewhere.end();
+      await run.finish();
+    });
+
+    it("no longer marks a form once the handoff has ended", async () => {
+      const sessionId = "session-handoff-ended";
+      const run = await startRun(sessionId);
+      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+      handoff.end();
+
+      await run.raise(handoffForm("el-late", handoff.fieldName));
+
+      expect(run.shown.map((event) => event.requestId)).toEqual(["el-late"]);
+      expect(run.shown[0]).not.toHaveProperty("browserHandoff");
+      expect((await run.pending())[0]).not.toHaveProperty("browserHandoff");
+      await run.finish();
+    });
+
+    it("shows the form unchanged when the manager has no browser sessions", async () => {
+      const sessionId = "session-handoff-no-browser";
+      const run = await startRun(sessionId, { browserSessions: false });
+
+      await run.raise(handoffForm("el-plain", "handoff_1a2b3c4d"));
+
+      expect(run.shown.map((event) => event.requestId)).toEqual(["el-plain"]);
+      expect(run.shown[0]).not.toHaveProperty("browserHandoff");
+      await run.finish();
+    });
+
+    it("answers a handoff in Autopilot for the user, whom nobody is there to hand the browser to", async () => {
+      const sessionId = "session-handoff-autopilot";
+      const run = await startRun(sessionId, { autopilot: true });
+      run.session.tryRespondToElicitation.mockImplementation(async (...[requestId, response]: any[]) => {
+        run.getHandler()?.({
+          type: "elicitation.completed",
+          data: { requestId, action: response.action },
+          timestamp: new Date().toISOString(),
+        });
+        return true;
+      });
+      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+
+      await run.raise(handoffForm("el-handoff", handoff.fieldName));
+
+      // Neither choice of the form: the tool reads this reply as nobody having acted.
+      expect(run.session.tryRespondToElicitation.mock.calls).toEqual([
+        ["el-handoff", { action: "accept", content: { [handoff.fieldName]: AUTOMATIC_ANSWERS.autopilot } }],
+      ]);
+      expect(run.shown).toEqual([]);
+      expect(await run.pending()).toEqual([]);
+      handoff.end();
+      await run.finish();
+    });
   });
 
   it("includes the final assistant message preview on normal idle events", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSession } from "../agent-backend/index.js";
+import type { AgentElicitationResponse, AgentSession } from "../agent-backend/index.js";
 import type { PendingElicitationRequestView } from "../elicitation-types.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { PendingInteractionError } from "../pending-interaction-validation.js";
@@ -316,5 +316,96 @@ describe("SessionManager elicitation terminal cleanup", () => {
     await Reflect.get(manager, "pendingInteractionCleanups").get("session-1");
 
     expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", { action: "cancel" });
+  });
+});
+
+describe("SessionManager.requestElicitation", () => {
+  const handoffForm = {
+    message: "The browser needs you: pass the check on example.test",
+    requestedSchema: {
+      type: "object",
+      properties: {
+        handoff_1a2b3c4d: { type: "string", enum: ["done", "not_done"] },
+      },
+      required: ["handoff_1a2b3c4d"],
+    },
+  };
+
+  /** A manager whose loaded session can ask its user a form, as the Copilot backend's can. */
+  function createAskingManager() {
+    const created = createManager();
+    const requestElicitation = vi.fn<NonNullable<AgentSession["requestElicitation"]>>();
+    const sessions = Reflect.get(created.manager, "sessionObjects") as Map<string, AgentSession>;
+    sessions.set("session-1", makeAgentSessionStub({
+      sessionId: "session-1",
+      requestElicitation,
+    }) as unknown as AgentSession);
+    return { ...created, requestElicitation };
+  }
+
+  it("forwards the form to the chat's agent session and returns its answer", async () => {
+    const { manager, requestElicitation } = createAskingManager();
+    const answer: AgentElicitationResponse = { action: "accept", content: { handoff_1a2b3c4d: "done" } };
+    requestElicitation.mockResolvedValue(answer);
+
+    expect(manager.canRequestElicitation("session-1")).toBe(true);
+    await expect(manager.requestElicitation("session-1", handoffForm)).resolves.toBe(answer);
+
+    expect(requestElicitation).toHaveBeenCalledTimes(1);
+    expect(requestElicitation).toHaveBeenCalledWith(handoffForm);
+  });
+
+  it.each([
+    { action: "decline" },
+    { action: "cancel" },
+  ] satisfies AgentElicitationResponse[])("returns a $action as the answer, not as a failure", async (answer) => {
+    const { manager, requestElicitation } = createAskingManager();
+    requestElicitation.mockResolvedValue(answer);
+
+    await expect(manager.requestElicitation("session-1", handoffForm)).resolves.toEqual(answer);
+  });
+
+  it("stays open until the form is answered", async () => {
+    const { manager, requestElicitation } = createAskingManager();
+    let answerForm!: (answer: AgentElicitationResponse) => void;
+    requestElicitation.mockReturnValue(new Promise((resolve) => {
+      answerForm = resolve;
+    }));
+    let settled = false;
+
+    const asking = manager.requestElicitation("session-1", handoffForm).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    answerForm({ action: "accept", content: { handoff_1a2b3c4d: "not_done" } });
+    await expect(asking).resolves.toEqual({ action: "accept", content: { handoff_1a2b3c4d: "not_done" } });
+  });
+
+  it("passes on the agent session's failure", async () => {
+    const { manager, requestElicitation } = createAskingManager();
+    requestElicitation.mockRejectedValue(new Error("session connection closed"));
+
+    await expect(manager.requestElicitation("session-1", handoffForm)).rejects.toThrow("session connection closed");
+  });
+
+  it("fails clearly for a chat whose session is not loaded", async () => {
+    const { manager, requestElicitation } = createAskingManager();
+
+    expect(manager.canRequestElicitation("session-unknown")).toBe(false);
+    await expect(manager.requestElicitation("session-unknown", handoffForm))
+      .rejects.toThrow("This chat cannot ask its user a question right now.");
+    expect(requestElicitation).not.toHaveBeenCalled();
+  });
+
+  it("fails clearly when the backend's session cannot ask the user", async () => {
+    // The stub has every required AgentSession method; asking the user is an optional one.
+    const { manager, session } = createManager();
+
+    expect(session.requestElicitation).toBeUndefined();
+    expect(manager.canRequestElicitation("session-1")).toBe(false);
+    await expect(manager.requestElicitation("session-1", handoffForm))
+      .rejects.toThrow("This chat cannot ask its user a question right now.");
   });
 });

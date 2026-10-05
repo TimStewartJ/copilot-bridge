@@ -1,40 +1,51 @@
 import { randomUUID } from "node:crypto";
+import type { BrowserHandoffView } from "../shared/browser-live.js";
 import type { TelemetryStore } from "./telemetry-store.js";
-import type { BrowserLaunchConfig, BrowserTarget } from "./agent-browser.js";
+import type { BrowserTarget } from "./agent-browser.js";
 import { safeRecordBrowserSpan } from "./agent-browser.js";
 import {
   BROWSER_SESSION_IDLE_TIMEOUT_MS,
-  BrowserBroker,
+  type BrowserBroker,
   type BrowserBrokerLease,
   type BrowserContext,
 } from "./browser-broker.js";
 import { err, ok, type ErrorResult, type OkResult } from "./tool-results.js";
 
-/** Legacy input retained during the browser-context migration. */
-export type BrowserSessionMode = "persistent" | "isolated";
-
 export interface BrowserSessionRecord {
   id: string;
   context: BrowserContext;
-  mode: BrowserSessionMode;
   ownerSessionId: string;
   purpose?: string;
   browserTarget: BrowserTarget;
   createdAt: number;
   lastUsedAt: number;
   activeCount: number;
-  publicTargetId?: string;
+  publicSlot?: number;
 }
 
 interface BrowserSessionStoreOptions {
-  copilotHome?: string;
+  browserBroker: BrowserBroker;
   telemetryStore?: TelemetryStore;
   idleTimeoutMs?: number;
-  getBrowserLaunchConfig?: () => BrowserLaunchConfig;
-  browserBroker?: BrowserBroker;
+}
+
+/** The broker's view of a session's browser. */
+export function sessionLease(record: BrowserSessionRecord): BrowserBrokerLease {
+  return { context: record.context, browserTarget: record.browserTarget, publicSlot: record.publicSlot };
 }
 
 type BrowserSessionUseResult<T> = (OkResult<T> & { record: BrowserSessionRecord }) | ErrorResult;
+
+/** A request, still open, for the user to act in a browser session. */
+export interface BrowserHandoff {
+  /**
+   * Name of the single field of the form that asks the user. It is unique to the request, which
+   * is how the form is recognised when the runtime reports it.
+   */
+  fieldName: string;
+  /** Call when the user has answered or the request is gone. */
+  end(): void;
+}
 
 export class BrowserSessionStore {
   private readonly telemetryStore?: TelemetryStore;
@@ -42,16 +53,14 @@ export class BrowserSessionStore {
   private readonly browserBroker: BrowserBroker;
   private readonly sessions = new Map<string, BrowserSessionRecord>();
   private readonly disposalRuns = new Map<string, Promise<boolean>>();
+  private readonly closeListeners = new Set<(browserSessionId: string) => void>();
+  private readonly handoffs = new Map<string, BrowserHandoffView & { chatSessionId: string }>();
   private readonly sweepHandle: NodeJS.Timeout;
 
-  constructor(options: BrowserSessionStoreOptions = {}) {
+  constructor(options: BrowserSessionStoreOptions) {
     this.telemetryStore = options.telemetryStore;
     this.idleTimeoutMs = options.idleTimeoutMs ?? BROWSER_SESSION_IDLE_TIMEOUT_MS;
-    this.browserBroker = options.browserBroker ?? new BrowserBroker({
-      copilotHome: options.copilotHome,
-      telemetryStore: options.telemetryStore,
-      getBrowserLaunchConfig: options.getBrowserLaunchConfig,
-    });
+    this.browserBroker = options.browserBroker;
     this.sweepHandle = setInterval(() => {
       void this.sweepIdleSessions().catch((error) => {
         console.error("[browser-session] Idle session sweep failed:", error);
@@ -63,33 +72,27 @@ export class BrowserSessionStore {
   async createSession(ownerSessionId: string, context: BrowserContext, purpose?: string): Promise<BrowserSessionRecord> {
     const createdAt = Date.now();
     const id = `bs_${randomUUID().slice(0, 8)}`;
-    const mode: BrowserSessionMode = context === "authenticated" ? "persistent" : "isolated";
-    const metadata = {
-      browserSessionId: id,
-      browserContext: context,
-      browserSessionMode: mode,
-      ownerSessionId,
-      purpose,
-    };
     const lease = await this.browserBroker.createSessionTarget(context);
 
     const record: BrowserSessionRecord = {
       id,
       context,
-      mode,
       ownerSessionId,
       purpose,
       browserTarget: lease.browserTarget,
       createdAt,
       lastUsedAt: createdAt,
       activeCount: 0,
-      publicTargetId: lease.publicTargetId,
+      publicSlot: lease.publicSlot,
     };
     this.sessions.set(id, record);
     safeRecordBrowserSpan(this.telemetryStore, "browser.session.start", 0, {
-      ...metadata,
+      browserSessionId: id,
+      browserContext: context,
+      ownerSessionId,
+      purpose,
       browserSession: lease.browserTarget.sessionName,
-      publicTargetId: lease.publicTargetId,
+      publicSlot: lease.publicSlot,
     });
     return { ...record };
   }
@@ -97,6 +100,49 @@ export class BrowserSessionStore {
   getSession(id: string): BrowserSessionRecord | undefined {
     const record = this.sessions.get(id);
     return record ? { ...record } : undefined;
+  }
+
+  /** Counts as a use: a person acting in the browser keeps the session from expiring as idle. */
+  touch(id: string): void {
+    const record = this.sessions.get(id);
+    if (record) record.lastUsedAt = Date.now();
+  }
+
+  /**
+   * Calls the listener with the id of a session whose browser is about to be closed, however that
+   * came about, so that whatever else uses the browser stops before it goes.
+   */
+  onSessionClosing(listener: (browserSessionId: string) => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  /** Registers that a chat is about to ask its user to act in one of its browser sessions. */
+  beginHandoff(chatSessionId: string, browserSessionId: string, reason: string): BrowserHandoff {
+    const fieldName = `handoff_${randomUUID().slice(0, 8)}`;
+    this.handoffs.set(fieldName, { chatSessionId, browserSessionId, reason });
+    return { fieldName, end: () => { this.handoffs.delete(fieldName); } };
+  }
+
+  /** The handoff a chat's pending form belongs to, going by the form's field names. */
+  matchHandoff(chatSessionId: string, fieldNames: readonly string[]): BrowserHandoffView | undefined {
+    for (const fieldName of fieldNames) {
+      const handoff = this.handoffs.get(fieldName);
+      if (handoff?.chatSessionId === chatSessionId) {
+        return { browserSessionId: handoff.browserSessionId, reason: handoff.reason };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Runs something that needs the session's browser but is not one of the owning chat's tool
+   * calls, such as showing it to the user. The session is not closed while it runs.
+   */
+  async holdSession<T>(id: string, fn: (record: BrowserSessionRecord) => Promise<T>): Promise<BrowserSessionUseResult<T>> {
+    const record = this.sessions.get(id);
+    if (!record || this.disposalRuns.has(id)) return err(`Browser session not found: ${id}`);
+    return this.runWithRecord(record, fn);
   }
 
   async useSession<T>(
@@ -110,6 +156,13 @@ export class BrowserSessionStore {
     if (record.ownerSessionId !== ownerSessionId) {
       return err("Browser session belongs to a different Copilot session");
     }
+    return this.runWithRecord(record, fn);
+  }
+
+  private async runWithRecord<T>(
+    record: BrowserSessionRecord,
+    fn: (record: BrowserSessionRecord) => Promise<T>,
+  ): Promise<BrowserSessionUseResult<T>> {
     record.activeCount += 1;
     record.lastUsedAt = Date.now();
     try {
@@ -181,22 +234,23 @@ export class BrowserSessionStore {
     const current = this.sessions.get(record.id);
     if (!current) return false;
     if (reason === "idle_timeout" && current.activeCount > 0) return false;
+    for (const listener of this.closeListeners) {
+      try {
+        listener(current.id);
+      } catch (error) {
+        console.error("[browser-session] Close listener failed:", error);
+      }
+    }
     if (current.context === "public") {
-      const lease: BrowserBrokerLease = {
-        context: current.context,
-        browserTarget: current.browserTarget,
-        publicTargetId: current.publicTargetId,
-      };
-      await this.browserBroker.disposeSessionTarget(lease, {
+      await this.browserBroker.disposeSessionTarget(sessionLease(current), {
         toolName: "browser_session_close",
         browserOpId: current.id,
         metadata: {
           browserSessionId: current.id,
           browserContext: current.context,
-          browserSessionMode: current.mode,
           ownerSessionId: current.ownerSessionId,
           reason,
-          publicTargetId: current.publicTargetId,
+          publicSlot: current.publicSlot,
         },
       });
     }
@@ -205,25 +259,11 @@ export class BrowserSessionStore {
     safeRecordBrowserSpan(this.telemetryStore, "browser.session.close", 0, {
       browserSessionId: current.id,
       browserContext: current.context,
-      browserSessionMode: current.mode,
       browserSession: current.browserTarget.sessionName,
       ownerSessionId: current.ownerSessionId,
       reason,
-      publicTargetId: current.publicTargetId,
+      publicSlot: current.publicSlot,
     });
     return true;
   }
-}
-
-const sessionStores = new WeakMap<object, BrowserSessionStore>();
-
-export function getOrCreateBrowserSessionStore(
-  key: object,
-  options: BrowserSessionStoreOptions = {},
-): BrowserSessionStore {
-  const existing = sessionStores.get(key);
-  if (existing) return existing;
-  const store = new BrowserSessionStore(options);
-  sessionStores.set(key, store);
-  return store;
 }

@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, ShieldAlert } from "lucide-react";
+import { AppWindow, ExternalLink, Loader2, ShieldAlert } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import type {
@@ -8,6 +8,8 @@ import type {
   ElicitationTextField,
   PendingElicitationRequestView,
 } from "../api";
+import { BROWSER_HANDOFF_ANSWERS, type BrowserHandoffAnswer } from "../../shared/browser-live.js";
+import { BrowserLiveDialog } from "../browser-live/BrowserLiveDialog";
 import PromptMarkdown from "./chat/PromptMarkdown";
 import { DS, cx } from "../design/tokens";
 import { Button, ChoiceButton, Panel, TextArea, TextInput } from "../design/primitives";
@@ -208,6 +210,7 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [liveBrowserOpen, setLiveBrowserOpen] = useState(false);
   const submittingRef = useRef(false);
   const controlsDisabled = submitting || submitted;
 
@@ -298,6 +301,54 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
           {error && <div className="mt-3 text-xs text-error" role="alert">{error}</div>}
           {status}
         </Panel>
+      </div>
+    );
+  }
+
+  // A handoff is a form with one choice field. Without that field there is nothing to answer
+  // with, so the request falls through to the ordinary form.
+  const handoff = request.browserHandoff;
+  const handoffField = schemaEntries[0]?.[0];
+  if (handoff && handoffField) {
+    const answer = (value: BrowserHandoffAnswer) => {
+      setLiveBrowserOpen(false);
+      void submit({ action: "accept", content: { [handoffField]: value } });
+    };
+    return (
+      <div className={CHAT_RAIL_CLASS}>
+        <Panel className="max-w-xl">
+          <div className={DS.text.attention}>Browser needs you</div>
+          <div className="mt-1 whitespace-pre-wrap break-words text-sm font-medium leading-6 text-text-primary">
+            {handoff.reason || request.message}
+          </div>
+          <div className="mt-2"><SourceLabel source={request.elicitationSource} /></div>
+          <p className="mt-3 text-xs leading-relaxed text-text-secondary">
+            Open the browser, do what is asked there, then say how it went.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              icon={<AppWindow size={14} aria-hidden="true" />}
+              onClick={() => setLiveBrowserOpen(true)}
+              disabled={controlsDisabled}
+            >
+              Open browser
+            </Button>
+            <Button onClick={() => answer(BROWSER_HANDOFF_ANSWERS.done)} disabled={controlsDisabled}>Done, continue</Button>
+            <Button variant="ghost" onClick={() => answer(BROWSER_HANDOFF_ANSWERS.notDone)} disabled={controlsDisabled}>
+              I couldn't do it
+            </Button>
+          </div>
+          {error && <div className="mt-3 text-xs text-error" role="alert">{error}</div>}
+          {status}
+        </Panel>
+        {liveBrowserOpen && (
+          <BrowserLiveDialog
+            browserSessionId={handoff.browserSessionId}
+            reason={handoff.reason}
+            onClose={() => setLiveBrowserOpen(false)}
+            onAnswer={answer}
+          />
+        )}
       </div>
     );
   }

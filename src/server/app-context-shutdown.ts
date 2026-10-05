@@ -6,6 +6,7 @@
 // not pay for that graph.
 
 import type { AppContext } from "./app-context.js";
+import { shutdownBrowserLive } from "./browser-runtime.js";
 import { stopAllStagingBackends } from "./staging-backend-manager.js";
 import {
   createDeadline,
@@ -34,6 +35,7 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.helm?.dispose();
+    shutdownBrowserLive(ctx);
     const handsFreeOutcome = await settleByDeadline(async () => {
       await ctx.voiceGateway?.shutdown();
     }, deadline);

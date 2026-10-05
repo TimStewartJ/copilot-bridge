@@ -5,13 +5,12 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand } from "./agent-browser.js";
-import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan } from "./agent-browser.js";
-import {
-  getOrCreateBrowserBroker,
-  type BrowserBrokerLease,
-  type BrowserContext,
-} from "./browser-broker.js";
-import { joinFailureSections, toolFailure } from "./tool-results.js";
+import { ab, safeRecordBrowserSpan } from "./agent-browser.js";
+import { agentBrowserMissingFailure } from "./browser-automation.js";
+import type { BrowserBrokerLease, BrowserContext } from "./browser-broker.js";
+import { getBrowserRuntime } from "./browser-runtime.js";
+import { checkPage, pageBlockFields, type PageBlockFields } from "./browser-page-check.js";
+import { joinFailureSections, toolFailure, toolFailureWithContext } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
@@ -24,14 +23,14 @@ function safeHost(url: string): string | undefined {
   }
 }
 
-const AGENT_BROWSER_INSTALL_GUIDANCE =
-  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
-
 function browserFetchFailure(
   summary: string,
   context: { url: string; selector?: string },
+  pageBlock: PageBlockFields = {},
 ) {
-  return toolFailure(summary, {
+  return toolFailureWithContext(summary, pageBlock, {
+    // A failure reaches the agent as its text alone, so what the page turned out to be goes there.
+    detail: (pageBlock.blocked ?? pageBlock.captcha)?.guidance,
     sessionLog: joinFailureSections(
       `URL: ${context.url}`,
       context.selector ? `Selector: ${context.selector}` : undefined,
@@ -41,17 +40,16 @@ function browserFetchFailure(
 }
 
 export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[] {
-  const browserBroker = getOrCreateBrowserBroker(ctx, {
-    copilotHome: ctx.copilotHome,
-    telemetryStore: ctx.telemetryStore,
-    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
-  });
+  const browserBroker = getBrowserRuntime(ctx).broker;
   return [
     defineBridgeTool("browser_fetch", {
       description:
         "Fetch a web page using a real browser and return its content as an accessibility snapshot. " +
-        "Uses a disposable unauthenticated public browser by default. Set context=authenticated only " +
+        "Uses the public browser by default, which is not signed in to anything and keeps its cookies " +
+        "between uses. Set context=authenticated only " +
         "when the page explicitly requires the dedicated signed-in Bridge profile. " +
+        "When a site answers with a human check or a refusal instead of the page, the result says so in " +
+        "`blocked` with what to do next. " +
         "Use this to confirm rendered or canonical pages after web_search or browser_web_search, or instead of web_fetch " +
         "when a site requires JavaScript rendering, blocks bots, returns empty/broken content via " +
         "web_fetch, or is a single-page app (SPA). For multi-step interactive flows, use browser_exec " +
@@ -95,25 +93,11 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
         const urlHost = safeHost(url);
         const toolStart = Date.now();
         let success = false;
+        let blockKind: string | undefined;
         let browserSession: string | undefined;
 
-        const check = await isAgentBrowserInstalled();
-        if (!check) {
-          safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
-            browserOpId,
-            toolName: "browser_fetch",
-            browserContext: context,
-          });
-          return toolFailure("agent-browser is not installed.", {
-            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
-            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
-          });
-        }
-        safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
-          browserOpId,
-          toolName: "browser_fetch",
-          browserContext: context,
-        });
+        const missing = await agentBrowserMissingFailure();
+        if (missing) return missing;
 
         const runFlow = async (lease: BrowserBrokerLease) => {
           browserSession = lease.browserTarget.sessionName;
@@ -126,36 +110,32 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
               urlHost,
               selectorPresent: !!selector,
               browserContext: context,
-              publicTargetId: lease.publicTargetId,
+              publicSlot: lease.publicSlot,
               authenticatedReason: reason || undefined,
             },
           };
 
           const openResult = await ab(["open", url], undefined, commandOptions);
           if (!openResult.ok) {
+            // A refusal without a body fails the navigation and still leaves a page that says so.
             return browserFetchFailure(`Failed to open URL: ${openResult.output.slice(0, 200)}`, {
               url,
               selector,
-            });
+            }, pageBlockFields(await checkPage(commandOptions)));
           }
 
+          // One command waits for the page to stop changing and reads what kind of page it is.
           const waitStart = Date.now();
-          const waitResult = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
+          const pageCheck = await checkPage(commandOptions, { settle: true });
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_fetch.wait", Date.now() - waitStart, {
             browserOpId,
             browserSession: lease.browserTarget.sessionName,
             browserContext: context,
             authenticatedReason: reason || undefined,
-            publicTargetId: lease.publicTargetId,
-            success: waitResult.ok,
+            publicSlot: lease.publicSlot,
+            success: !!pageCheck.signals,
             urlHost,
           });
-          if (!waitResult.ok) {
-            return browserFetchFailure(`Failed waiting for page load: ${waitResult.output.slice(0, 200)}`, {
-              url,
-              selector,
-            });
-          }
 
           const snapshotCommand: BrowserCommand = selector
             ? ["snapshot", "-i", "-s", selector]
@@ -168,13 +148,18 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             });
           }
 
-          const titleResult = await ab(["get", "title"], undefined, commandOptions);
-          const urlResult = await ab(["get", "url"], undefined, commandOptions);
+          // The check reads both already; the separate commands are for a page it could not read.
+          const pageUrl = pageCheck.signals?.url ?? await ab(["get", "url"], undefined, commandOptions)
+            .then((result) => (result.ok ? result.output : url));
+          const pageTitle = pageCheck.signals?.title ?? await ab(["get", "title"], undefined, commandOptions)
+            .then((result) => (result.ok ? result.output : undefined));
 
           success = true;
+          blockKind = pageCheck.block?.kind;
           return {
-            url: urlResult.ok ? urlResult.output : url,
-            title: titleResult.ok ? titleResult.output : undefined,
+            ...pageBlockFields(pageCheck),
+            url: pageUrl,
+            title: pageTitle,
             snapshot: snapshot.output,
             context,
           };
@@ -192,7 +177,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             },
           }, runFlow);
         } catch (err: any) {
-          return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 200)}`, {
+          return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 400)}`, {
             url,
             selector,
           });
@@ -202,6 +187,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             browserOpId,
             browserSession,
             success,
+            blockKind,
             urlHost,
             selectorPresent: !!selector,
             browserContext: context,
