@@ -35,6 +35,12 @@ if (process.env.BRIDGE_TEST_REAL_PROCESS_SNAPSHOTS !== "1") {
   }));
 }
 
+// Where agent-browser is installed differs per machine too, and on Windows decides whether its
+// commands go through the command shell with their arguments quoted for it.
+vi.doMock("../server/agent-browser-command.js", () => ({
+  getAgentBrowserCommand: () => ({ file: "agent-browser", shell: false }),
+}));
+
 // Which browsers are installed and what agent-browser's configuration says differ per machine.
 // Unless a test says otherwise there is no system browser and no configuration file.
 vi.doMock("../server/browser-launch-host.js", () => ({

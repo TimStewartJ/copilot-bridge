@@ -3,9 +3,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
+import { getAgentBrowserCommand } from "./agent-browser-command.js";
 import { buildBrowserEnv, getBrowserLaunchConfig, type BrowserLaunchConfig, type BrowserTarget } from "./browser-launch.js";
+import { windowsShellInvocation } from "./platform.js";
 import { getProcessHost, type HostExecOptions } from "./process-host.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 
@@ -65,7 +67,6 @@ const WEDGE_SIGNATURES = [
 ];
 const laneQueues = new Map<string, Promise<void>>();
 const laneDepths = new Map<string, number>();
-let resolvedAgentBrowserCommand: { file: string; shell: boolean } | undefined;
 
 interface BrowserProcessInfo {
   pid: number;
@@ -177,35 +178,6 @@ async function removeDaemonStateFiles(sessionName: string, env: NodeJS.ProcessEn
 
 function logBrowser(event: string, data: Record<string, unknown>): void {
   console.log(`[browser] ${JSON.stringify({ event, ...data })}`);
-}
-
-function getAgentBrowserCommand(): { file: string; shell: boolean } {
-  if (resolvedAgentBrowserCommand) return resolvedAgentBrowserCommand;
-  if (platform() !== "win32") {
-    resolvedAgentBrowserCommand = { file: "agent-browser", shell: false };
-    return resolvedAgentBrowserCommand;
-  }
-
-  for (const pathDirectory of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    const candidates = [
-      join(pathDirectory, "node_modules", "agent-browser", "bin", "agent-browser-win32-x64.exe"),
-      ...(basename(pathDirectory).toLowerCase() === ".bin"
-        ? [join(dirname(pathDirectory), "agent-browser", "bin", "agent-browser-win32-x64.exe")]
-        : []),
-    ];
-    for (const candidate of candidates) {
-      try {
-        lstatSync(candidate);
-        resolvedAgentBrowserCommand = { file: candidate, shell: false };
-        return resolvedAgentBrowserCommand;
-      } catch {
-        // Keep searching the executable PATH.
-      }
-    }
-  }
-
-  resolvedAgentBrowserCommand = { file: "agent-browser", shell: true };
-  return resolvedAgentBrowserCommand;
 }
 
 export function safeRecordBrowserSpan(
@@ -639,13 +611,6 @@ function parseAgentBrowserEnvelope(stdout: string): AgentBrowserJsonEnvelope | n
 }
 
 /**
- * What the Windows command shell reads as its own syntax in an argument: an address with `&` in
- * it would end the command there and run the rest as another. Only a fallback goes through the
- * shell (see getAgentBrowserCommand), and it passes arguments on as they are.
- */
-const COMMAND_SHELL_SYNTAX = /[&|<>^"\r\n]/;
-
-/**
  * The CLI client can print its JSON result without exiting promptly, so the command completes
  * as soon as stdout holds a complete JSON value and the lingering client is killed.
  */
@@ -658,23 +623,23 @@ async function runAgentBrowserJsonCommand(
   let stderr = "";
   let failure: unknown;
   try {
-    const agentBrowserCommand = getAgentBrowserCommand();
-    if (agentBrowserCommand.shell && command.some((argument) => COMMAND_SHELL_SYNTAX.test(argument))) {
+    const invocation = agentBrowserInvocation([...command, "--json"]);
+    if (!invocation) {
       return {
         ok: false,
-        output: "agent-browser is started through the Windows command shell here, which would read part of "
-          + "this command as a command of its own. Reinstall it (npm install -g agent-browser) so the Bridge "
-          + "finds its executable.",
+        output: "agent-browser is started through the Windows command shell here, which cannot be given a "
+          + "line break or a command this long. Reinstall agent-browser (npm install -g agent-browser) so "
+          + "the Bridge finds its executable and needs no shell.",
       };
     }
     ({ stdout, stderr } = await getProcessHost().execFile(
-      agentBrowserCommand.file,
-      [...command, "--json"],
+      invocation.file,
+      invocation.args,
       {
         encoding: "utf-8",
         maxBuffer: 10 * 1024 * 1024,
         env,
-        shell: agentBrowserCommand.shell,
+        windowsVerbatimArguments: invocation.verbatim,
         timeout,
         completeWhen: "stdout-json",
       },
@@ -724,28 +689,13 @@ export async function run(
   }
 }
 
-async function runFile(
-  file: string,
-  args: string[],
-  timeout = DEFAULT_TIMEOUT,
-  execOptions: { env?: NodeJS.ProcessEnv } = {},
-): Promise<{ ok: boolean; output: string }> {
-  const command = file === "agent-browser"
-    ? getAgentBrowserCommand()
-    : { file, shell: platform() === "win32" };
-  try {
-    const { stdout, stderr } = await execFileAsync(command.file, args, {
-      encoding: "utf-8",
-      timeout,
-      maxBuffer: 10 * 1024 * 1024,
-      env: execOptions.env,
-      shell: command.shell,
-    });
-    const output = stdout || stderr;
-    return { ok: true, output: output.trim() };
-  } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
-  }
+/**
+ * The program and arguments that run agent-browser with these arguments. Undefined when it only
+ * starts through the Windows command shell and they cannot be passed through it.
+ */
+function agentBrowserInvocation(args: string[]): { file: string; args: string[]; verbatim?: true } | undefined {
+  const command = getAgentBrowserCommand();
+  return command.shell ? windowsShellInvocation(command.file, args) : { file: command.file, args };
 }
 
 let agentBrowserVersion: { expiresAt: number; value: Promise<string | undefined> } | undefined;
@@ -754,8 +704,15 @@ let agentBrowserVersion: { expiresAt: number; value: Promise<string | undefined>
 export function getAgentBrowserVersion(): Promise<string | undefined> {
   const now = Date.now();
   if (agentBrowserVersion && agentBrowserVersion.expiresAt > now) return agentBrowserVersion.value;
-  const value = runFile("agent-browser", ["--version"], 5_000)
-    .then((result) => (result.ok ? result.output.match(/\d+\.\d+\.\d+/)?.[0] : undefined));
+  const invocation = agentBrowserInvocation(["--version"])!;
+  const value = execFileAsync(invocation.file, invocation.args, {
+    encoding: "utf-8",
+    timeout: 5_000,
+    windowsVerbatimArguments: invocation.verbatim,
+  }).then(
+    ({ stdout, stderr }) => (stdout || stderr).match(/\d+\.\d+\.\d+/)?.[0],
+    () => undefined,
+  );
   agentBrowserVersion = { expiresAt: now + 60_000, value };
   return value;
 }
