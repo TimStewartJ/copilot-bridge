@@ -107,13 +107,27 @@ function rawDataToString(data: RawData): string {
 }
 
 /** A message of agent-browser's stream, or null for anything that is not a JSON object. */
-function parseStreamMessage(data: RawData): { type?: unknown; seq?: unknown; data?: unknown; url?: unknown } | null {
+function parseStreamMessage(
+  data: RawData,
+): { type?: unknown; seq?: unknown; data?: unknown; url?: unknown; tabs?: unknown } | null {
   try {
     const message: unknown = JSON.parse(rawDataToString(data));
     return typeof message === "object" && message !== null ? message : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Which tab the browser shows and at which address, going by the `tabs` of a stream message.
+ * Two messages with the same answer are about the same page.
+ */
+function visibleTab(tabs: unknown): string {
+  const shown: unknown = Array.isArray(tabs)
+    ? tabs.find((tab: unknown) => typeof tab === "object" && tab !== null && (tab as { active?: unknown }).active === true)
+    : undefined;
+  const { tabId, targetId, url } = (shown ?? {}) as { tabId?: unknown; targetId?: unknown; url?: unknown };
+  return JSON.stringify([tabId, targetId, url].map((value) => (typeof value === "string" ? value : "")));
 }
 
 export class BrowserLiveGateway {
@@ -337,6 +351,7 @@ export class BrowserLiveGateway {
     let pageRead: Promise<void> | undefined;
     let lastViewport = "";
     let lastUrl = "";
+    let lastVisibleTab: string | undefined;
     let ended = false;
 
     const end = (message: BrowserLiveClosedMessage): void => {
@@ -466,10 +481,16 @@ export class BrowserLiveGateway {
         if (!this.lastCheck?.ok) this.recordCheck(true);
         send({ type: "frame", seq: message.seq, data: message.data });
       } else if (message.type === "url" && typeof message.url === "string") {
+        const navigated = message.url !== lastUrl;
         sendUrl(message.url);
-        void readPage();
+        if (navigated) void readPage();
       } else if (message.type === "tabs") {
-        // Another tab became the visible one; it may have another size and address.
+        // agent-browser sends its tabs after every command it runs, and reading the page is
+        // one. Only another visible tab, or another address of it, is a reason to read again:
+        // a read for every message would cause the next message, without end.
+        const visible = visibleTab(message.tabs);
+        if (visible === lastVisibleTab) return;
+        lastVisibleTab = visible;
         void readPage();
       }
     });
