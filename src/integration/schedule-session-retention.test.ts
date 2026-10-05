@@ -98,6 +98,33 @@ describe("schedule session retention", () => {
     ]);
   });
 
+  it("announces several archived sessions in one event", async () => {
+    const schedule = scheduleStore.createSchedule({ ...baseSchedule, autoArchiveKeep: 1 });
+    sessionMetaStore.recordScheduleRun(schedule.id, "latest", "2026-01-05T00:00:00.000Z");
+    sessionMetaStore.recordScheduleRun(schedule.id, "older", "2026-01-04T00:00:00.000Z");
+    sessionMetaStore.recordScheduleRun(schedule.id, "oldest", "2026-01-03T00:00:00.000Z");
+    const bus = createGlobalBus();
+    const events: StatusEvent[] = [];
+    bus.subscribe((event) => events.push(event));
+
+    const result = await enforceScheduleSessionRetention({
+      schedule,
+      sessionMetaStore,
+      sessionManager: {
+        listSessionsFromDisk: async () => [{ sessionId: "latest" }, { sessionId: "older" }, { sessionId: "oldest" }],
+        isSessionBusy: () => false,
+      } as any,
+      globalBus: bus,
+      deferredPromptStore: createDeferredPromptStore(db),
+      deferLoopStore: createDeferLoopStore(db),
+    });
+
+    expect(result.archivedSessionIds).toEqual(["older", "oldest"]);
+    expect(events).toEqual([
+      { type: "session:archived", sessionIds: ["older", "oldest"], archived: true },
+    ]);
+  });
+
   it("skips archival when defer stores are unavailable", async () => {
     const schedule = scheduleStore.createSchedule({ ...baseSchedule, autoArchiveKeep: 1 });
     sessionMetaStore.recordScheduleRun(schedule.id, "newer", "2026-01-02T00:00:00.000Z");

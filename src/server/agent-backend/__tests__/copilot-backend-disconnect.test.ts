@@ -6,7 +6,12 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../../backend-availability.js";
-import { BACKEND_PING_ATTEMPTS, BACKEND_PING_RETRY_DELAY_MS, CopilotBackend } from "../copilot-backend.js";
+import {
+  BACKEND_PING_ATTEMPTS,
+  BACKEND_PING_BEHIND_ATTEMPTS,
+  BACKEND_PING_RETRY_DELAY_MS,
+  CopilotBackend,
+} from "../copilot-backend.js";
 import { AGENT_RPC_TIMEOUTS_MS } from "../rpc-timeouts.js";
 
 const PING_TIMEOUT_MS = AGENT_RPC_TIMEOUTS_MS["backend.ping"];
@@ -34,9 +39,19 @@ function createFakeConnection() {
   };
 }
 
-function createFakeClient(options: { ping?: () => Promise<unknown> } = {}) {
+/**
+ * One ping timing out where the runtime's output is watched: silence is judged after the retry
+ * delay and one more millisecond, which lets the pipe be read once more.
+ */
+const WATCHED_PING_WINDOW_MS = PING_TIMEOUT_MS + BACKEND_PING_RETRY_DELAY_MS + 1;
+
+function createFakeClient(options: { ping?: () => Promise<unknown>; stdout?: boolean } = {}) {
   const connection = createFakeConnection();
-  const cliProcess = Object.assign(new EventEmitter(), { pid: 4242, stdin: new EventEmitter() });
+  const cliProcess = Object.assign(new EventEmitter(), {
+    pid: 4242,
+    stdin: new EventEmitter(),
+    ...(options.stdout ? { stdout: new EventEmitter() } : {}),
+  });
   const client: any = {
     state: "disconnected",
     connection: null as ReturnType<typeof createFakeConnection> | null,
@@ -315,6 +330,135 @@ describe("CopilotBackend disconnect detection", () => {
     await expect(backend.probeHealth()).resolves.toBe(true);
     expect(onDisconnect).not.toHaveBeenCalled();
     expect(backend.getConnectionStatus()).toMatchObject({ state: "connected" });
+  });
+
+  it("does not count a timed-out ping while the runtime is still sending, and takes a late answer", async () => {
+    vi.useFakeTimers();
+    const pings: Array<() => void> = [];
+    const { client, cliProcess } = createFakeClient({
+      stdout: true,
+      ping: () => new Promise((resolve) => { pings.push(() => resolve({ message: "pong" })); }),
+    });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+    const stdout = (cliProcess as any).stdout as EventEmitter;
+
+    let settled: boolean | undefined;
+    const probe = backend.probeHealth(undefined, "rpc-timeout:session.getActivity");
+    void probe.then((healthy) => { settled = healthy; });
+    // Twice as many windows as a silent runtime gets, each with output from the runtime.
+    for (let window = 0; window < BACKEND_PING_ATTEMPTS * 2; window++) {
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS - 1);
+      stdout.emit("data", Buffer.from("x"));
+      await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS - PING_TIMEOUT_MS + 1);
+    }
+    expect(settled).toBeUndefined();
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(client.ping).toHaveBeenCalledTimes(BACKEND_PING_ATTEMPTS * 2 + 1);
+    expect(silentLogger.warn).toHaveBeenCalledWith(expect.stringContaining("behind on reading its replies"));
+
+    // The reply to the first ping is reached at last, long after its own limit.
+    pings[0]!();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(probe).resolves.toBe(true);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(backend.getConnectionStatus()).toMatchObject({ state: "connected" });
+  });
+
+  it("counts output that is only read after the ping's timer fired", async () => {
+    vi.useFakeTimers();
+    const { client, cliProcess } = createFakeClient({ stdout: true, ping: () => new Promise(() => {}) });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+    const stdout = (cliProcess as any).stdout as EventEmitter;
+
+    void backend.probeHealth();
+    for (let window = 0; window < BACKEND_PING_ATTEMPTS; window++) {
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
+      // After a stall the timeout fires first; the pipe is read during the retry delay.
+      stdout.emit("data", Buffer.from("x"));
+      await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS - PING_TIMEOUT_MS);
+    }
+    expect(onDisconnect).not.toHaveBeenCalled();
+  });
+
+  it("still declares a silent runtime lost after consecutive pings when its output is watched", async () => {
+    vi.useFakeTimers();
+    const { client, cliProcess } = createFakeClient({ stdout: true, ping: () => new Promise(() => {}) });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+    const stdout = (cliProcess as any).stdout as EventEmitter;
+
+    const probe = backend.probeHealth(undefined, "rpc-timeout:session.send");
+    // Output during the first ping only: that ping is forgiven, the three silent ones after it are not.
+    stdout.emit("data", Buffer.from("x"));
+    await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS * BACKEND_PING_ATTEMPTS);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS - 1);
+    expect(onDisconnect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(probe).resolves.toBe(false);
+    expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "rpc-timeout",
+      detail: expect.stringContaining(`${BACKEND_PING_ATTEMPTS} consecutive pings`),
+    }));
+    expect(stdout.listenerCount("data")).toBe(0);
+  });
+
+  it("gives up on a runtime that keeps sending but never answers a ping", async () => {
+    vi.useFakeTimers();
+    const { client, cliProcess } = createFakeClient({ stdout: true, ping: () => new Promise(() => {}) });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+    const stdout = (cliProcess as any).stdout as EventEmitter;
+
+    const probe = backend.probeHealth(undefined, "watchdog");
+    for (let window = 0; window < BACKEND_PING_BEHIND_ATTEMPTS; window++) {
+      stdout.emit("data", Buffer.from("x"));
+      await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS);
+    }
+    expect(onDisconnect).not.toHaveBeenCalled();
+    stdout.emit("data", Buffer.from("x"));
+    await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS);
+    await expect(probe).resolves.toBe(false);
+    expect(onDisconnect).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "health-probe-failed",
+      detail: expect.stringContaining(`answered none of ${BACKEND_PING_BEHIND_ATTEMPTS + 1} pings`),
+    }));
+  });
+
+  it("ignores a late failure of a ping it gave up on", async () => {
+    vi.useFakeTimers();
+    const rejects: Array<(error: Error) => void> = [];
+    let pings = 0;
+    const { client, cliProcess } = createFakeClient({
+      stdout: true,
+      ping: () => (++pings === 1
+        ? new Promise((_, reject) => { rejects.push(reject); })
+        : new Promise(() => {})),
+    });
+    const backend = new CopilotBackend(client, { logger: silentLogger });
+    const onDisconnect = vi.fn();
+    backend.onDisconnect(onDisconnect);
+    await backend.start();
+    const stdout = (cliProcess as any).stdout as EventEmitter;
+
+    void backend.probeHealth();
+    stdout.emit("data", Buffer.from("x"));
+    await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS);
+    expect(client.ping).toHaveBeenCalledTimes(2);
+    rejects[0]!(new Error("request cancelled"));
+    await vi.advanceTimersByTimeAsync(1);
+    // Only the ping being waited on reports a failure at once.
+    expect(onDisconnect).not.toHaveBeenCalled();
   });
 
   it("turns a hung session RPC into a liveness probe and a disconnect when the channel is dead", async () => {

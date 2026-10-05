@@ -736,6 +736,27 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
+    it("cancels pending deferrals for every session of a bulk archive", async () => {
+      const store = createDeferredPromptStore(db);
+      const bus = createGlobalBus();
+      const future = new Date(Date.now() + 60_000).toISOString();
+      store.create("session-1", "Later", future);
+      store.create("session-2", "Later", future);
+      store.create("session-3", "Later", future);
+
+      const sm = makeMockSessionManager({ sessions: ["session-1", "session-2", "session-3"] });
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
+      runner.start();
+
+      bus.emit({ type: "session:archived", sessionIds: ["session-1", "session-2"], archived: true });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(store.listForSession("session-1")[0].status).toBe("cancelled");
+      expect(store.listForSession("session-2")[0].status).toBe("cancelled");
+      expect(store.listForSession("session-3")[0].status).toBe("pending");
+      runner.shutdown();
+    });
+
     it("does not cancel deferrals when a session is unarchived", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();

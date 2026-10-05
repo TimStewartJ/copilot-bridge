@@ -703,6 +703,14 @@ function wrapCopilotSession(
 /** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
 export const BACKEND_PING_ATTEMPTS = 3;
 export const BACKEND_PING_RETRY_DELAY_MS = 1_000;
+/**
+ * A ping the runtime answered can still time out here: the SDK hands over one inbound message
+ * per event-loop turn, so while the Bridge's main thread is busy a reply waits behind everything
+ * that arrived before it. A timed-out ping therefore counts as a miss only when the runtime sent
+ * nothing at all meanwhile. This many such pings (at least five minutes) are forgiven in one probe
+ * before a runtime that keeps sending but never answers is declared lost after all.
+ */
+export const BACKEND_PING_BEHIND_ATTEMPTS = 50;
 
 function identityKey(identity: ProcessIdentity): string {
   return `${identity.pid}:${identity.startMarker}`;
@@ -748,6 +756,9 @@ export class CopilotBackend implements AgentBackend {
   private stopping = false;
   private detachTransportWatchers: (() => void) | undefined;
   private healthProbe: Promise<boolean> | undefined;
+  /** Chunks read from the runtime's stdout. A count, not a time: only "anything since?" is asked. */
+  private inboundChunks = 0;
+  private inboundObserved = false;
   private readonly logger: Pick<Console, "warn" | "error">;
   private startPromise: Promise<unknown> | undefined;
   /** Set once by the first fence request and never cleared: a fenced backend never starts again. */
@@ -1059,10 +1070,22 @@ export class CopilotBackend implements AgentBackend {
    * declares the backend disconnected (once) after consecutive misses. A
    * closed transport, exited process, or non-timeout failure still reports
    * immediately.
+   *
+   * A timed-out ping is a miss only when the runtime was silent. When it sent
+   * anything since the ping went out, it is alive and the Bridge is behind on
+   * reading its replies (see BACKEND_PING_BEHIND_ATTEMPTS): the probe keeps
+   * pinging without counting, and any of its pings answering, however late,
+   * ends it as healthy.
    */
   probeHealth(timeoutMs?: number, reason = "health-probe"): Promise<boolean> {
     if (this.healthProbe) return this.healthProbe;
     const probe = (async (): Promise<boolean> => {
+      const startedAtMs = Date.now();
+      let answered = false;
+      let noteAnswer!: () => void;
+      const anyAnswer = new Promise<void>((resolve) => { noteAnswer = resolve; });
+      let misses = 0;
+      let behind = 0;
       for (let attempt = 1; ; attempt++) {
         if (this.stopping) return false;
         if (this.lastDisconnect) return false;
@@ -1071,29 +1094,84 @@ export class CopilotBackend implements AgentBackend {
           this.emitDisconnect("health-probe-failed", `${reason}: client state is ${String(client.state)}`);
           return false;
         }
+        const heardBefore = this.inboundChunks;
+        // The probe keeps each ping itself: boundRpc drops a reply that arrives after its limit.
+        let ping: Promise<unknown>;
         try {
-          await boundRpc("backend.ping", () => client.ping("bridge-health"), {}, timeoutMs);
+          ping = Promise.resolve(client.ping("bridge-health"));
+        } catch (error) {
+          ping = Promise.reject(error);
+        }
+        // A late failure of an abandoned ping (the connection closing, say) is reported by its own watcher.
+        void ping.then(() => { answered = true; noteAnswer(); }, () => undefined);
+        try {
+          await boundRpc("backend.ping", () => Promise.race([ping, anyAnswer]), {}, timeoutMs);
           if (attempt > 1) {
-            this.logger.warn(`[copilot-backend] ${reason}: backend.ping answered on attempt ${attempt}/${BACKEND_PING_ATTEMPTS}; keeping the backend`);
+            this.logger.warn(
+              `[copilot-backend] ${reason}: backend.ping answered after ${Math.round((Date.now() - startedAtMs) / 1_000)}s `
+              + `(attempt ${attempt}); keeping the backend`,
+            );
           }
           return true;
         } catch (error) {
           if (this.stopping) return false;
           const detail = error instanceof Error ? error.message : String(error);
-          if (isAgentRpcTimeoutError(error) && attempt < BACKEND_PING_ATTEMPTS) {
-            this.logger.warn(
-              `[copilot-backend] ${reason}: backend.ping timed out (attempt ${attempt}/${BACKEND_PING_ATTEMPTS}); retrying before declaring the backend lost`,
-            );
+          const kind = reason.startsWith("rpc-timeout") ? "rpc-timeout" : "health-probe-failed";
+          if (!isAgentRpcTimeoutError(error)) {
+            this.emitDisconnect(kind, `${reason}: ${detail}${misses > 0 ? ` (${misses + 1} consecutive pings)` : ""}`);
+            return false;
+          }
+          const retryDelay = () => Promise.race([anyAnswer, new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, BACKEND_PING_RETRY_DELAY_MS);
+            timer.unref?.();
+          })]);
+          if (this.inboundObserved) {
+            // Judge silence only after the delay. After a long stall the timeout fires before the
+            // pipe is read, or even before the ping was written, so a reply needs these turns to show.
+            await retryDelay();
+            // A timer runs before its turn's I/O. A second timer cannot run before the next turn,
+            // so the pipe is read once more before silence is judged.
             await new Promise<void>((resolve) => {
-              const timer = setTimeout(resolve, BACKEND_PING_RETRY_DELAY_MS);
+              const timer = setTimeout(resolve, 1);
               timer.unref?.();
             });
+            if (this.stopping || this.lastDisconnect) return false;
+            if (answered) {
+              this.logger.warn(
+                `[copilot-backend] ${reason}: backend.ping answered late, after ${Math.round((Date.now() - startedAtMs) / 1_000)}s; `
+                + "keeping the backend",
+              );
+              return true;
+            }
+            if (this.inboundChunks !== heardBefore) {
+              behind += 1;
+              if (behind > BACKEND_PING_BEHIND_ATTEMPTS) {
+                this.emitDisconnect(
+                  kind,
+                  `${reason}: the runtime kept sending but answered none of ${behind} pings in `
+                  + `${Math.round((Date.now() - startedAtMs) / 1_000)}s`,
+                );
+                return false;
+              }
+              misses = 0;
+              if (behind === 1) {
+                this.logger.warn(
+                  `[copilot-backend] ${reason}: backend.ping timed out, but the runtime is still sending, so the Bridge `
+                  + "is behind on reading its replies; not counting this as a miss and pinging again",
+                );
+              }
+              continue;
+            }
+          }
+          misses += 1;
+          if (misses < BACKEND_PING_ATTEMPTS) {
+            this.logger.warn(
+              `[copilot-backend] ${reason}: backend.ping timed out (attempt ${misses}/${BACKEND_PING_ATTEMPTS}); retrying before declaring the backend lost`,
+            );
+            if (!this.inboundObserved) await retryDelay();
             continue;
           }
-          this.emitDisconnect(
-            reason.startsWith("rpc-timeout") ? "rpc-timeout" : "health-probe-failed",
-            `${reason}: ${detail}${attempt > 1 ? ` (${attempt} consecutive pings)` : ""}`,
-          );
+          this.emitDisconnect(kind, `${reason}: ${detail}${misses > 1 ? ` (${misses} consecutive pings)` : ""}`);
           return false;
         }
       }
@@ -1132,6 +1210,19 @@ export class CopilotBackend implements AgentBackend {
       };
       child.once("exit", onExit);
       disposers.push(() => child.off?.("exit", onExit));
+      // Only once the SDK's reader is attached: a first `data` listener would start the stream
+      // flowing and swallow what the reader has not seen. The factory builds stdio backends only;
+      // over TCP stdout carries logs, not replies, and must not be read as a sign of life.
+      const stdout = connection ? child.stdout : undefined;
+      if (stdout && typeof stdout.on === "function") {
+        const onData = () => { this.inboundChunks += 1; };
+        stdout.on("data", onData);
+        this.inboundObserved = true;
+        disposers.push(() => {
+          stdout.off?.("data", onData);
+          this.inboundObserved = false;
+        });
+      }
       const stdin = child.stdin;
       if (stdin && typeof stdin.on === "function") {
         const onStdinError = (error: unknown) => {

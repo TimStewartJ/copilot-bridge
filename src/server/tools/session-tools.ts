@@ -1,6 +1,13 @@
+import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { normalizeSessionTitle } from "../../shared/session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
+import { mapWithConcurrency } from "../map-with-concurrency.js";
+import { isCanonicalSessionId } from "../outbound-attachments.js";
+import { hasActiveDeferredWork } from "../schedule-session-retention.js";
+import { setSessionsArchived } from "../session-archive.js";
 import {
   defineSessionBridgeTool,
   registerBridgeToolDefinitions,
@@ -11,6 +18,8 @@ import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-
 export interface RegisterSessionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
+
+export const SESSION_ARCHIVE_MAX_SESSIONS = 500;
 
 /**
  * Session ids are opaque — only trim them. The title normalizer strips quotes
@@ -98,6 +107,85 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
         }
         return toolFailure(message);
       }
+    },
+  }),
+  defineSessionBridgeTool("session_archive", {
+    description: "Archive chat sessions to tidy the lists, or restore archived ones. Pass every session in one call. "
+      + "A chat that is running, waiting on the user, or has deferred work or a result pending is left as it is and reported. "
+      + "Archiving hides a chat and deletes nothing.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionIds: {
+          type: "array",
+          items: { type: "string" },
+          description: `IDs of the sessions to archive or restore, at most ${SESSION_ARCHIVE_MAX_SESSIONS} per call.`,
+        },
+        archived: { type: "boolean", description: "True archives (default); false restores." },
+      },
+      required: ["sessionIds"],
+    },
+    handler: async (args: any) => {
+      if (!Array.isArray(args.sessionIds)) return toolFailure("sessionIds must be an array of session IDs");
+      const archived = args.archived !== false;
+      const sessionIds = [...new Set<string>(
+        args.sessionIds
+          .filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+          .map((sessionId: string) => sessionId.trim())
+          .filter(Boolean),
+      )];
+      if (sessionIds.length === 0) return toolFailure("sessionIds is empty");
+      if (sessionIds.length > SESSION_ARCHIVE_MAX_SESSIONS) {
+        return toolFailure(`At most ${SESSION_ARCHIVE_MAX_SESSIONS} sessions per call`);
+      }
+
+      // Writing the flag for an unknown id would leave a row for a session that does not exist.
+      const sessionStateDir = join(ctx.copilotHome ?? join(homedir(), ".copilot"), "session-state");
+      const exists = await mapWithConcurrency(sessionIds, 32, async (sessionId) =>
+        isCanonicalSessionId(sessionId)
+        && await stat(join(sessionStateDir, sessionId)).then((stats) => stats.isDirectory(), () => false));
+
+      const hasQueuedResult = (sessionId: string): boolean =>
+        ctx.deferredPromptStore?.listDeliveriesForSession(sessionId)
+          .some((delivery) => delivery.status === "pending" || delivery.status === "running") ?? false;
+
+      // No await from here to the write, so a chat cannot start a run between its check and the change.
+      const skipped: Array<{ sessionId: string; reason: string }> = [];
+      const targets: string[] = [];
+      let alreadyInState = 0;
+      sessionIds.forEach((sessionId, index) => {
+        if (!exists[index]) {
+          skipped.push({ sessionId, reason: "not found" });
+        } else if (ctx.sessionMetaStore.isArchived(sessionId) === archived) {
+          alreadyInState += 1;
+        } else if (archived && ctx.sessionManager.isSessionBusy(sessionId)) {
+          skipped.push({ sessionId, reason: "running" });
+        } else if (archived && ctx.sessionManager.getPendingUserInputCount(sessionId) > 0) {
+          skipped.push({ sessionId, reason: "waiting on the user" });
+        } else if (archived && hasActiveDeferredWork(sessionId, ctx)) {
+          // Archiving cancels a chat's deferred work.
+          skipped.push({ sessionId, reason: "deferred work pending" });
+        } else if (archived && hasQueuedResult(sessionId)) {
+          // And withdraws a deploy or update result that has not reached the chat yet.
+          skipped.push({ sessionId, reason: "a result is waiting to be delivered" });
+        } else {
+          targets.push(sessionId);
+        }
+      });
+      const result = setSessionsArchived(ctx, targets, archived);
+      for (const [sessionId, error] of Object.entries(result.errors)) skipped.push({ sessionId, reason: error });
+
+      const verb = archived ? "Archived" : "Restored";
+      return {
+        success: true,
+        archived,
+        changed: result.sessionIds.length,
+        alreadyInState,
+        skipped,
+        message: `${verb} ${result.sessionIds.length} of ${sessionIds.length} session(s)`
+          + (alreadyInState > 0 ? `; ${alreadyInState} already ${archived ? "archived" : "active"}` : "")
+          + (skipped.length > 0 ? `; ${skipped.length} skipped` : ""),
+      };
     },
   }),
   ];
