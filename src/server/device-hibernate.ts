@@ -10,9 +10,9 @@
 // stayed idle for the whole grace window. It disarms itself before it hibernates,
 // so waking the device does not hibernate again in a loop.
 //
-// Both live in memory only. A server that shuts down hands them to its
-// replacement through device-hibernate-handoff.ts; a deploy restart would
-// otherwise drop a hibernation the user asked for.
+// Both live in memory only. device-hibernate-handoff.ts keeps a copy on disk
+// while one is pending and hands it to the next server, so neither a deploy
+// restart nor a server that dies drops a hibernation the user asked for.
 
 import { requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
@@ -86,6 +86,32 @@ export const HIBERNATE_IDLE_POLL_INTERVAL_MS = 5_000;
 let pending: PendingHibernate | null = null;
 let idleWatch: IdleWatch | null = null;
 let tokenCounter = 0;
+let intentListener: (() => void) | null = null;
+
+/**
+ * Registers the one listener that is told whenever the hibernation still to come has changed:
+ * armed, scheduled, turned off, or fired. Null removes it.
+ */
+export function setHibernateIntentListener(listener: (() => void) | null): void {
+  intentListener = listener;
+}
+
+function notifyIntentChanged(): void {
+  try {
+    intentListener?.();
+  } catch (error) {
+    console.error("[device] Hibernate intent listener failed:", error);
+  }
+}
+
+/** The hibernation that is still to come, or null when none is. */
+export function getHibernateIntent(): HibernateIntent | null {
+  if (!pending && !idleWatch) return null;
+  return {
+    onIdleGraceMs: idleWatch?.graceMs ?? null,
+    scheduledAt: pending?.scheduledAt ?? null,
+  };
+}
 
 export function getHibernateStatus(): HibernateScheduleStatus {
   if (!pending) return { pending: false, scheduledAt: null, delayMs: null };
@@ -105,13 +131,14 @@ export function scheduleHibernate(
     pending = null;
     // The device is going down now; leaving the watcher armed would hibernate
     // again shortly after the next wake.
-    disarmHibernateOnIdle();
+    if (!disarmHibernateOnIdle()) notifyIntentChanged();
     void requestDeviceHibernate(command).catch((error) => {
       console.error("[device] Hibernate request failed:", error);
     });
   }, safeDelayMs);
   timer.unref();
   pending = { token, timer, scheduledAt, delayMs: safeDelayMs, handedOff: false };
+  notifyIntentChanged();
   return getHibernateStatus();
 }
 
@@ -119,6 +146,7 @@ export function cancelHibernate(): boolean {
   if (!pending) return false;
   pending.timer.cancel();
   pending = null;
+  notifyIntentChanged();
   return true;
 }
 
@@ -233,6 +261,7 @@ export function armHibernateOnIdle(options: {
     handedOff: false,
   };
   sampleIdleWatch(idleWatch);
+  notifyIntentChanged();
   return getHibernateOnIdleStatus();
 }
 
@@ -264,18 +293,16 @@ export function armHibernateOnIdleForServer(
  * restart does not see it switch off and on again.
  */
 export function handOffHibernateIntent(): HibernateIntent | null {
-  if (!pending && !idleWatch) return null;
+  const intent = getHibernateIntent();
   if (pending) pending.handedOff = true;
   if (idleWatch) idleWatch.handedOff = true;
-  return {
-    onIdleGraceMs: idleWatch?.graceMs ?? null,
-    scheduledAt: pending?.scheduledAt ?? null,
-  };
+  return intent;
 }
 
 export function disarmHibernateOnIdle(): boolean {
   if (!idleWatch) return false;
   clearInterval(idleWatch.interval);
   idleWatch = null;
+  notifyIntentChanged();
   return true;
 }

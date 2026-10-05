@@ -1,5 +1,6 @@
 // Launcher — immortal parent process that manages the bridge server
 
+import "./server/guard-stdio-writes.js";
 import "./log-timestamps.js";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";

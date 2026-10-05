@@ -1,6 +1,6 @@
 {
   "name": "spawn-offthread",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "child_process on worker threads: start processes without freezing the Node.js event loop while the operating system creates them.",
   "keywords": [
