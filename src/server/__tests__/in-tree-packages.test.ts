@@ -157,32 +157,41 @@ describe("the workflow that releases an in-tree package", () => {
     expect([...workflow.on.workflow_dispatch.inputs.package.options].sort()).toEqual(packages.map((entry) => basename(entry.dir)).sort());
   });
 
-  it("runs only when someone starts it, and stages a version without ever publishing one", () => {
-    // npm publishes a staged version only after the account's owner approved it with a second
-    // factor. A direct publish from here would need no one, and a published version is permanent.
+  it("runs only when someone starts it, and publishes the version in one place", () => {
+    // Nobody approves a version between this workflow and npm, and a published version is
+    // permanent. So a release must take someone starting it, never a push or a tag.
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     const commands = Object.values(workflow.jobs).flatMap(commandsOf);
-    expect(commands.filter((command) => /\bnpm stage publish\b/.test(command))).toHaveLength(1);
-    expect(commands.filter((command) => /\bnpm publish\b/.test(command))).toEqual([]);
+    expect(commands.filter((command) => /\bnpm publish\b/.test(command))).toHaveLength(1);
+    expect(commands.filter((command) => /\bnpm stage\b/.test(command))).toEqual([]);
   });
 
   it("hands npm the tarball as a path it cannot take for a GitHub repository", () => {
     // npm reads "release/<file>.tgz" as the repository "release/<file>.tgz" on GitHub and tries to
     // fetch it. A path that starts with "./" is a file.
-    const staged = Object.values(workflow.jobs).flatMap(commandsOf).flatMap((command) => command.match(/\bnpm stage publish \S+/g) ?? []);
-    expect(staged).toEqual(['npm stage publish "./release/$FILE"']);
+    const published = Object.values(workflow.jobs).flatMap(commandsOf).flatMap((command) => command.match(/\bnpm publish \S+/g) ?? []);
+    expect(published).toEqual(['npm publish "./release/$FILE"']);
   });
 
   it("lets only a job that runs no code from the repository ask npm for a token", () => {
-    // Whatever runs in that job can stage a tarball of its own making. It gets the tarball the
+    // Whatever runs in that job can publish a tarball of its own making. It gets the tarball the
     // build job made, and installs nothing but the npm that hands it over.
     expect(workflow.permissions).toEqual({});
     const withToken = Object.entries(workflow.jobs).filter(([, job]) => job.permissions?.["id-token"] !== undefined);
-    expect(withToken.map(([id, job]) => [id, job.permissions])).toEqual([["stage", { "id-token": "write" }]]);
-    const stage = withToken[0]![1];
-    expect(stage.steps.filter((step) => step.uses?.startsWith("actions/checkout"))).toEqual([]);
-    const installs = commandsOf(stage).flatMap((command) => command.match(/\bnpm (?:ci|i|install)\b.*/g) ?? []);
+    expect(withToken.map(([id, job]) => [id, job.permissions])).toEqual([["publish", { "id-token": "write" }]]);
+    const publish = withToken[0]![1];
+    expect(publish.steps.filter((step) => step.uses?.startsWith("actions/checkout"))).toEqual([]);
+    const installs = commandsOf(publish).flatMap((command) => command.match(/\bnpm (?:ci|i|install)\b.*/g) ?? []);
     expect(installs).toEqual(['npm install --global "npm@$NPM_VERSION"']);
-    expect(commandsOf(stage).filter((command) => /\bnpm run\b|\bnpx\b|\bnode scripts\b/.test(command))).toEqual([]);
+    expect(commandsOf(publish).filter((command) => /\bnpm run\b|\bnpx\b|\bnode scripts\b/.test(command))).toEqual([]);
+  });
+
+  it("releases from master only", () => {
+    // The trusted publisher on npm names the workflow file, not a branch: without this step a
+    // changed copy of the workflow on any branch could publish.
+    const first = workflow.jobs.build!.steps[0] as { if?: string; run?: string };
+    expect(first.if).toBe("github.ref != 'refs/heads/master'");
+    expect(first.run).toContain("exit 1");
+    expect(workflow.jobs.publish).toMatchObject({ needs: "build" });
   });
 });
