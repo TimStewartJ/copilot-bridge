@@ -2,14 +2,17 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 // src/packages/* holds code that is published on its own (see src/packages/README.md). A package
 // is only publishable while it depends on nothing else in this repository, and the Bridge can only
 // swap the in-tree copy for the published one while it uses nothing but the package's entry
-// point. This test walks the real files so neither rule can erode silently.
+// point. This test walks the real files so neither rule can erode silently. It also reads the
+// workflow that releases a package, which may ask npm for a token and so has rules of its own.
 
 const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PACKAGES_DIR = join(SRC_DIR, "packages");
+const PUBLISH_WORKFLOW = join(SRC_DIR, "..", ".github", "workflows", "publish-package.yml");
 // Bridge modules that may reach past a package's entry point, and why.
 const INTERNAL_IMPORTS_ALLOWED: Record<string, string> = {
   "server/process-host-worker.ts":
@@ -134,5 +137,45 @@ describe("in-tree packages", () => {
     }
     expect(violations, "Import an in-tree package as src/packages/<name>/src/index.js, the same surface its published build has.").toEqual([]);
     expect([...unusedExceptions], "exceptions that no longer apply must be removed").toEqual([]);
+  });
+});
+
+interface WorkflowJob {
+  permissions?: Record<string, string>;
+  steps: { uses?: string; run?: string }[];
+}
+
+describe("the workflow that releases an in-tree package", () => {
+  const workflow = parseYaml(readFileSync(PUBLISH_WORKFLOW, "utf-8")) as {
+    on: { workflow_dispatch: { inputs: { package: { options: string[] } } } };
+    permissions: Record<string, string>;
+    jobs: Record<string, WorkflowJob>;
+  };
+  const commandsOf = (job: WorkflowJob): string[] => job.steps.map((step) => step.run ?? "");
+
+  it("offers every package", () => {
+    expect([...workflow.on.workflow_dispatch.inputs.package.options].sort()).toEqual(packages.map((entry) => basename(entry.dir)).sort());
+  });
+
+  it("runs only when someone starts it, and stages a version without ever publishing one", () => {
+    // npm publishes a staged version only after the account's owner approved it with a second
+    // factor. A direct publish from here would need no one, and a published version is permanent.
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+    const commands = Object.values(workflow.jobs).flatMap(commandsOf);
+    expect(commands.filter((command) => /\bnpm stage publish\b/.test(command))).toHaveLength(1);
+    expect(commands.filter((command) => /\bnpm publish\b/.test(command))).toEqual([]);
+  });
+
+  it("lets only a job that runs no code from the repository ask npm for a token", () => {
+    // Whatever runs in that job can stage a tarball of its own making. It gets the tarball the
+    // build job made, and installs nothing but the npm that hands it over.
+    expect(workflow.permissions).toEqual({});
+    const withToken = Object.entries(workflow.jobs).filter(([, job]) => job.permissions?.["id-token"] !== undefined);
+    expect(withToken.map(([id, job]) => [id, job.permissions])).toEqual([["stage", { "id-token": "write" }]]);
+    const stage = withToken[0]![1];
+    expect(stage.steps.filter((step) => step.uses?.startsWith("actions/checkout"))).toEqual([]);
+    const installs = commandsOf(stage).flatMap((command) => command.match(/\bnpm (?:ci|i|install)\b.*/g) ?? []);
+    expect(installs).toEqual(['npm install --global "npm@$NPM_VERSION"']);
+    expect(commandsOf(stage).filter((command) => /\bnpm run\b|\bnpx\b|\bnode scripts\b/.test(command))).toEqual([]);
   });
 });

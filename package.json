@@ -54,6 +54,7 @@
     "preview:smoke": "tsx src/server/preview-smoke.ts",
     "preview:smoke:full": "tsx src/server/preview-smoke.ts --validate",
     "packages:pack": "node scripts/packages.mjs pack",
+    "packages:release-check": "node scripts/packages.mjs release-check",
     "packages:verify": "node scripts/packages.mjs verify"
   },
   "dependencies": {

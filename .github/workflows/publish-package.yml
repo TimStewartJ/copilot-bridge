@@ -1,0 +1,244 @@
+name: Publish Package
+
+# Stages a new version of one in-tree package (src/packages) on npm. A staged version is not
+# public: the owner of the npm account approves it on npmjs.com with a second factor, and only
+# then does npm publish it. This workflow cannot publish by itself. On npm, each package names this
+# file as its trusted publisher and allows it to stage, nothing more, so no npm token is stored
+# anywhere. How a release goes: src/packages/README.md, "Releasing a version".
+#
+# The job that may ask npm for a token runs no code from the repository: it takes the tarball the
+# first job built and hands it to npm. Keep it that way. src/server/__tests__/in-tree-packages.test.ts
+# checks that, and that every package can be chosen below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to release: its folder under src/packages"
+        required: true
+        type: choice
+        options:
+          - smart-turn
+          - spawn-offthread
+          - voice-agent-text
+      dry_run:
+        description: "Dry run: check, build and ask npm for a token, but stage nothing"
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: publish-package-${{ inputs.package }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Staging needs npm 11.15.0 or newer, and the npm that comes with Node can be older. After
+  # changing this, do a dry run: the stage job reads a line of npm's log.
+  NPM_VERSION: "11.21.0"
+
+jobs:
+  build:
+    name: Check and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.check.outputs.name }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      file: ${{ steps.pack.outputs.file }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+
+    steps:
+      - name: Refuse to release from another branch
+        if: github.ref != 'refs/heads/master'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::A package is released from master, not from $REF."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # No dependency cache: a release is built from what the lockfile names, fetched now.
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check that the version can be released
+        id: check
+        env:
+          PACKAGE: ${{ inputs.package }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/packages.mjs release-check "$PACKAGE" --dry-run
+          else
+            node scripts/packages.mjs release-check "$PACKAGE"
+          fi
+
+      # The same checks the Packages workflow runs.
+      - name: Package typecheck
+        run: npm run typecheck:packages
+
+      - name: Package unit tests
+        run: npm run test:packages
+
+      - name: Package tests with real processes
+        run: npx vitest run --project native src/packages
+
+      - name: Pack, install and smoke-test as a dependency
+        run: npm run packages:verify
+
+      - name: Build the release tarball
+        id: pack
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          out="$RUNNER_TEMP/release"
+          node scripts/packages.mjs pack --out "$out" "$PACKAGE"
+          cd "$out"
+          file="$(ls *.tgz)"
+          built_from="$(tar -xOf "$file" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).gitHead')"
+          if [ "$built_from" != "$GITHUB_SHA" ]; then
+            echo "::error::$file records commit $built_from, not $GITHUB_SHA."
+            exit 1
+          fi
+          integrity="sha512-$(openssl dgst -sha512 -binary "$file" | base64 -w 0)"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+          echo "Built $file from $GITHUB_SHA: $integrity"
+
+      - name: Hand the tarball to the next job
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/release/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  stage:
+    name: Stage on npm
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Get the tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: release-tarball
+          path: release
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install the npm that can stage
+        run: |
+          npm install --global "npm@$NPM_VERSION"
+          npm --version
+
+      - name: Stage the version
+        id: stage
+        env:
+          NAME: ${{ needs.build.outputs.name }}
+          FILE: ${{ needs.build.outputs.file }}
+          INTEGRITY: ${{ needs.build.outputs.integrity }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          received="sha512-$(openssl dgst -sha512 -binary "release/$FILE" | base64 -w 0)"
+          if [ "$received" != "$INTEGRITY" ]; then
+            echo "::error::release/$FILE is not the file the build job made."
+            exit 1
+          fi
+
+          # --provenance: left to itself, npm adds the statement only when a check of its own
+          # succeeds, and stages without one otherwise. Asked for, a version without one is not staged.
+          flags=(--provenance)
+          if [ "$DRY_RUN" = "true" ]; then
+            # Nothing is sent. --force lets the dry run get past a version that is already on npm.
+            flags+=(--dry-run --force)
+          fi
+          status=0
+          npm stage publish "release/$FILE" --loglevel verbose "${flags[@]}" 2>&1 | tee stage.log || status=$?
+
+          # npm asks for its token before anything else, in a dry run too, and says so only at this
+          # log level. A dry run sends nothing, so that line is its only proof that npm accepts this
+          # workflow; after a failure it tells a refused workflow from any other error.
+          if [ "$status" -ne 0 ] || [ "$DRY_RUN" = "true" ]; then
+            if ! grep -q "Successfully retrieved and set token" stage.log; then
+              echo "::error::npm did not accept this workflow as a trusted publisher of $NAME. Compare the package's trusted publisher on npmjs.com with this run: repository $GITHUB_REPOSITORY, workflow file publish-package.yml."
+              exit 1
+            fi
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          stage_id="$(sed -n 's/.*(staged with id \([^)]*\)).*/\1/p' stage.log | head -n 1)"
+          echo "stage_id=$stage_id" >> "$GITHUB_OUTPUT"
+
+      - name: Say what happens next
+        env:
+          NAME: ${{ needs.build.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          FILE: ${{ needs.build.outputs.file }}
+          INTEGRITY: ${{ needs.build.outputs.integrity }}
+          STAGE_ID: ${{ steps.stage.outputs.stage_id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "### Dry run: $NAME $VERSION was not staged"
+              echo ""
+              echo "The checks passed, the tarball was built, and npm accepted this workflow as a trusted publisher of the package."
+            else
+              echo "### $NAME $VERSION is staged on npm"
+              echo ""
+              echo "It is not public yet. The owner of the npm account approves it on [npmjs.com](https://www.npmjs.com/package/$NAME), among the package's staged versions, or with \`npm stage approve $STAGE_ID\`. Both ask for a second factor. See [staged publishing](https://docs.npmjs.com/staged-publishing)."
+            fi
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`$FILE\` |"
+            echo "| Integrity | \`$INTEGRITY\` |"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+            if [ -n "$STAGE_ID" ]; then
+              echo "| Stage id | \`$STAGE_ID\` |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  tag:
+    name: Tag the commit
+    needs: [build, stage]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" --silent -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA"
+          echo "Tagged \`$GITHUB_SHA\` as \`$TAG\`." >> "$GITHUB_STEP_SUMMARY"
