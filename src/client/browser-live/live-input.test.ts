@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { API_BASE } from "../api";
 import { BROWSER_LIVE_MODIFIERS } from "../../shared/browser-live.js";
 import {
+  addressToUrl,
   buildBrowserLiveWebSocketUrl,
   chainScroll,
   fitDisplaySize,
@@ -44,6 +45,35 @@ describe("buildBrowserLiveWebSocketUrl", () => {
       { protocol: "http:", host: "localhost:3000" },
     );
     expect(url.startsWith("ws://localhost:3000")).toBe(true);
+  });
+});
+
+describe("addressToUrl", () => {
+  it.each([
+    ["example.com", "https://example.com/"],
+    ["  example.com/login?next=1  ", "https://example.com/login?next=1"],
+    ["http://x.test/a", "http://x.test/a"],
+    // A host on this machine or network is rarely served over https.
+    ["localhost:3000", "http://localhost:3000/"],
+    ["192.168.1.5/x", "http://192.168.1.5/x"],
+  ])("reads %j as %s", (typed, url) => {
+    expect(addressToUrl(typed)).toBe(url);
+  });
+
+  it.each([
+    "",
+    "   ",
+    "two words",
+    "javascript:alert(1)",
+    "about:blank",
+    // Another kind of address is not a host to put https:// in front of.
+    "file:///etc/passwd",
+    "file:/etc/passwd",
+    "chrome://settings",
+    "mailto:someone@example.com",
+    "C:\\Users\\me",
+  ])("finds no web address in %j", (typed) => {
+    expect(addressToUrl(typed)).toBeNull();
   });
 });
 

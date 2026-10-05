@@ -7,6 +7,7 @@ import {
   fetchBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
   probeBrowserContext,
+  requestSignedInBrowserLiveTicket,
   resetPublicBrowserData,
   type AppSettings,
   type BrowserBuildDiagnostics,
@@ -18,6 +19,7 @@ import {
   type BrowserDiagnosticsResponse,
   type BrowserDiagnosticsTone,
 } from "../../api";
+import { BrowserLiveDialog } from "../../browser-live/BrowserLiveDialog";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
 import { Badge, Button, Details, Field, FieldList, Notice, SettingList, SettingRow, StatusIcon, Switch } from "../../design/primitives";
@@ -124,6 +126,7 @@ export function BrowserDiagnosticsSection({
   const [diagnostics, setDiagnostics] = useState<BrowserDiagnosticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
+  const [signedInBrowserOpen, setSignedInBrowserOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [probing, setProbing] = useState<"public" | "authenticated" | null>(null);
   const [checkingAdo, setCheckingAdo] = useState(false);
@@ -387,22 +390,45 @@ export function BrowserDiagnosticsSection({
           control={<Switch id="browser-headed" checked={headedValue} onChange={(event) => updateBrowserHeaded(event.target.checked)} />}
         />
         <SettingRow
-          label="Authenticated browser window"
-          hint="Open the signed-in profile to sign in or pass a check by hand."
+          label="Sign in to sites"
+          hint="Open the signed-in browser here, from any device, to sign in or pass a check by hand. Agents wait for it while you have it open."
+          control={(
+            <Button size="sm" onClick={() => setSignedInBrowserOpen(true)} disabled={launching || closing}
+              icon={<Globe2 size={12} />}>
+              Open
+            </Button>
+          )}
+        />
+        <SettingRow
+          label="Signed-in browser on the server"
+          hint="For someone at the machine the Bridge runs on: open its window there, or close the browser."
           control={(
             <>
-              <Button size="sm" onClick={() => void launchHeaded()} disabled={launching || closing}
+              <Button size="sm" variant="ghost" onClick={() => void launchHeaded()} disabled={launching || closing}
                 icon={busyButton(launching) ?? <Monitor size={12} />}>
-                Launch
+                Open window
               </Button>
               <Button size="sm" variant="ghost" onClick={() => void closeHeaded()} disabled={launching || closing}
                 icon={busyButton(closing) ?? <X size={12} />}>
-                Close
+                Close browser
               </Button>
             </>
           )}
         />
       </SettingList>
+
+      {signedInBrowserOpen && (
+        <BrowserLiveDialog
+          browserSessionId="signed-in-browser"
+          title="Signed-in browser"
+          reason="Sign in to the sites agents should reach. What you type goes to the browser and to nobody else."
+          requestTicket={requestSignedInBrowserLiveTicket}
+          onClose={() => {
+            setSignedInBrowserOpen(false);
+            refresh();
+          }}
+        />
+      )}
 
       {(message || error) && (
         error

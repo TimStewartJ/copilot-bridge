@@ -3,6 +3,7 @@ import type {
   BrowserLiveClientMessage,
   BrowserLiveClosedMessage,
   BrowserLiveServerMessage,
+  BrowserLiveTab,
   BrowserLiveTicket,
 } from "../../shared/browser-live.js";
 import { buildBrowserLiveWebSocketUrl, type LiveViewport } from "./live-input";
@@ -24,6 +25,8 @@ export interface BrowserLiveSnapshot {
   canRetry: boolean;
   viewport: LiveViewport | null;
   url: string | null;
+  /** The browser's open tabs, once it has said. One of them is the page on show. */
+  tabs: readonly BrowserLiveTab[];
   /** Whether a picture of the page has arrived yet. */
   hasFrame: boolean;
 }
@@ -100,6 +103,18 @@ function parseServerMessage(data: unknown): BrowserLiveServerMessage | null {
         : null;
     case "url":
       return typeof message.url === "string" ? { type: "url", url: message.url } : null;
+    case "tabs":
+      return Array.isArray(message.tabs)
+        ? {
+            type: "tabs",
+            tabs: message.tabs.flatMap((tab: unknown) => {
+              const { id, title, url, active } = (tab && typeof tab === "object" ? tab : {}) as Record<string, unknown>;
+              return typeof id === "string"
+                ? [{ id, title: typeof title === "string" ? title : "", url: typeof url === "string" ? url : "", active: active === true }]
+                : [];
+            }),
+          }
+        : null;
     case "closed":
       return {
         type: "closed",
@@ -120,7 +135,7 @@ interface QueuedFrame {
 export class BrowserLiveConnection {
   private readonly deps: BrowserLiveDeps;
   private readonly listeners = new Set<() => void>();
-  private snapshot: BrowserLiveSnapshot = { phase: "connecting", canRetry: true, viewport: null, url: null, hasFrame: false };
+  private snapshot: BrowserLiveSnapshot = { phase: "connecting", canRetry: true, viewport: null, url: null, tabs: [], hasFrame: false };
   /** Bumped on every start and stop, so work begun for an earlier run notices it is stale. */
   private run = 0;
   private running = false;
@@ -316,6 +331,10 @@ export class BrowserLiveConnection {
       if (this.snapshot.url !== message.url || this.snapshot.phase !== "live") {
         this.update({ phase: "live", url: message.url });
       }
+      return;
+    }
+    if (message.type === "tabs") {
+      this.update({ tabs: message.tabs });
       return;
     }
     if (this.snapshot.phase !== "live" || !this.snapshot.hasFrame) this.update({ phase: "live", hasFrame: true });

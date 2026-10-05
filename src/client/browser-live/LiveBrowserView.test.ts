@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { installSelectAwareDomShim } from "../test-dom-shim";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -8,6 +9,7 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../test-react-harness";
+import type { BrowserLiveTicket } from "../../shared/browser-live.js";
 import { LiveBrowserView } from "./LiveBrowserView";
 import { createFakeLiveNetwork } from "./test-live-fakes";
 
@@ -17,6 +19,12 @@ function findButton(root: any, text: string): any {
   ));
   if (!button) throw new Error(`Button not found: ${text}`);
   return button;
+}
+
+function findField(root: any, tag: string, label: string): any {
+  const field = findAllByTag(root, tag).find((candidate) => getReactProps(candidate)?.["aria-label"] === label);
+  if (!field) throw new Error(`Field not found: ${label}`);
+  return field;
 }
 
 function keyEvent(overrides: Record<string, unknown>) {
@@ -61,13 +69,15 @@ describe("LiveBrowserView", () => {
     harness = null;
   });
 
-  async function mount() {
+  async function mount(props: { requestTicket?: () => Promise<BrowserLiveTicket> } = {}) {
     const network = createFakeLiveNetwork();
-    const mounted = await createReactDomHarness();
+    // The tab list is a <select>.
+    const mounted = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     harness = mounted;
     await mounted.render(createElement(LiveBrowserView, {
       browserSessionId: "bs_ab12cd34",
       deps: network.deps,
+      ...props,
     }));
     await waitUntilAct(mounted.act, () => network.sockets.length === 1, { label: "first socket" });
     const container = mounted.dom.container;
@@ -79,7 +89,10 @@ describe("LiveBrowserView", () => {
       harness: mounted,
       container,
       surface: canvas.parentNode,
-      textRow: () => findAllByTag(container, "INPUT")[0],
+      textRow: () => findField(container, "INPUT", "Text to type in the page"),
+      address: () => findField(container, "INPUT", "Page address"),
+      /** What the address field shows. */
+      shownAddress: () => getReactProps(findField(container, "INPUT", "Page address"))!.value as string,
       text: () => container.textContent ?? "",
       goLive: async () => {
         await mounted.act(async () => {
@@ -95,11 +108,11 @@ describe("LiveBrowserView", () => {
     const view = await mount();
     expect(view.text()).toContain("Connecting…");
     expect(view.text()).toContain("Waiting for the page…");
-    expect(view.text()).toContain("No address yet");
+    expect(view.shownAddress()).toBe("");
 
     await view.goLive();
     expect(view.text()).toContain("Live");
-    expect(view.text()).toContain("https://accounts.example.com/signin");
+    expect(view.shownAddress()).toBe("https://accounts.example.com/signin");
 
     await view.harness.act(async () => {
       view.network.latestSocket().receive({ type: "frame", seq: 1, data: "AAAA" });
@@ -281,6 +294,143 @@ describe("LiveBrowserView", () => {
       ["keyDown", 9], ["keyUp", 9],
       ["keyDown", 27], ["keyUp", 27],
       ["keyDown", 8], ["keyUp", 8],
+    ]);
+  });
+
+  it("gets its ticket from the request it was given instead of asking for the session's", async () => {
+    const view = await mount({
+      requestTicket: async () => ({ browserSessionId: "bs_signedin", token: "own-ticket", expiresAt: "2026-01-01T00:01:00.000Z" }),
+    });
+
+    expect(view.network.ticketRequests).toEqual([]);
+    expect(view.network.latestSocket().url).toContain("browserSessionId=bs_signedin&token=own-ticket");
+  });
+
+  it("goes back, forward and reloads from the toolbar once the view is live", async () => {
+    const view = await mount();
+    for (const label of ["Back", "Forward", "Reload"]) expect(getReactProps(findButton(view.container, label))!.disabled).toBe(true);
+
+    await view.goLive();
+    await view.harness.act(async () => {
+      for (const label of ["Back", "Forward", "Reload"]) getReactProps(findButton(view.container, label))!.onClick();
+    });
+
+    expect(view.network.latestSocket().sent).toEqual([
+      { type: "history", direction: "back" },
+      { type: "history", direction: "forward" },
+      { type: "reload" },
+    ]);
+  });
+
+  /** Puts the keyboard in the address field and types into it. */
+  async function typeAddress(view: Awaited<ReturnType<typeof mount>>, typed: string): Promise<void> {
+    await view.harness.act(async () => {
+      getReactProps(view.address())!.onFocus({ currentTarget: { select: vi.fn() } });
+    });
+    await view.harness.act(async () => {
+      getReactProps(view.address())!.onChange({ target: { value: typed } });
+    });
+  }
+
+  async function pressInAddress(view: Awaited<ReturnType<typeof mount>>, key: string) {
+    const event = keyEvent({ key });
+    await view.harness.act(async () => {
+      getReactProps(view.address())!.onKeyDown(event);
+    });
+    return event;
+  }
+
+  it("opens the address typed into the address field on Enter and gives the keyboard to the page", async () => {
+    const view = await mount();
+    await view.goLive();
+
+    await typeAddress(view, " example.com/login ");
+    await pressInAddress(view, "Enter");
+
+    expect(view.network.latestSocket().sent).toEqual([{ type: "navigate", url: "https://example.com/login" }]);
+    expect(document.activeElement).toBe(view.surface);
+  });
+
+  it("marks what is not a web address as invalid and sends nothing", async () => {
+    const view = await mount();
+    await view.goLive();
+
+    await typeAddress(view, "not an address");
+    await pressInAddress(view, "Enter");
+    expect(getReactProps(view.address())!["aria-invalid"]).toBe(true);
+    expect(view.network.latestSocket().sent).toEqual([]);
+
+    // The mark is about what was entered, and goes when that changes.
+    await typeAddress(view, "example.com");
+    expect(getReactProps(view.address())!["aria-invalid"]).toBeUndefined();
+  });
+
+  it("keeps what is being typed when the page moves on, and shows the page's address once the field is left", async () => {
+    const view = await mount();
+    await view.goLive();
+
+    await typeAddress(view, "exam");
+    await view.harness.act(async () => {
+      view.network.latestSocket().receive({ type: "url", url: "https://accounts.example.com/done" });
+    });
+    expect(view.shownAddress()).toBe("exam");
+
+    await view.harness.act(async () => {
+      getReactProps(view.address())!.onBlur();
+    });
+    expect(view.shownAddress()).toBe("https://accounts.example.com/done");
+  });
+
+  it("puts the page's address back on Escape when it was edited, and leaves a second Escape to whatever holds the view", async () => {
+    const view = await mount();
+    await view.goLive();
+    await typeAddress(view, "exam");
+
+    const first = await pressInAddress(view, "Escape");
+    expect(view.shownAddress()).toBe("https://accounts.example.com/signin");
+    expect(first.preventDefault).toHaveBeenCalled();
+    expect(first.stopPropagation).toHaveBeenCalled();
+
+    const second = await pressInAddress(view, "Escape");
+    expect(second.preventDefault).not.toHaveBeenCalled();
+    expect(second.stopPropagation).not.toHaveBeenCalled();
+    expect(view.network.latestSocket().sent).toEqual([]);
+  });
+
+  it("offers the browser's tabs once there is more than one: showing another, and closing the one on show", async () => {
+    const view = await mount();
+    await view.goLive();
+    const first = { id: "t1", title: "Sign in", url: "https://accounts.example.com/signin", active: true };
+    const tabsControls = () => [
+      ...findAllByTag(view.container, "SELECT"),
+      ...findAllByTag(view.container, "BUTTON").filter((button) => button.textContent?.trim() === "Close tab"),
+    ];
+
+    await view.harness.act(async () => {
+      view.network.latestSocket().receive({ type: "tabs", tabs: [first] });
+    });
+    expect(tabsControls()).toEqual([]);
+
+    await view.harness.act(async () => {
+      view.network.latestSocket().receive({
+        type: "tabs",
+        tabs: [first, { id: "t7", title: "", url: "https://example.org/popup", active: false }],
+      });
+    });
+    const select = findField(view.container, "SELECT", "Tab");
+    expect(getReactProps(select)!.value).toBe("t1");
+    const options = findAllByTag(select, "OPTION").map((option) => option.textContent);
+    expect(options[0]).toContain("Sign in");
+    // A tab without a title goes by its address.
+    expect(options[1]).toContain("https://example.org/popup");
+
+    await view.harness.act(async () => {
+      getReactProps(select)!.onChange({ target: { value: "t7" } });
+      getReactProps(findButton(view.container, "Close tab"))!.onClick();
+    });
+    expect(view.network.latestSocket().sent).toEqual([
+      { type: "tab", action: "select", tabId: "t7" },
+      { type: "tab", action: "close", tabId: "t1" },
     ]);
   });
 

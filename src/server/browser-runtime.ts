@@ -9,11 +9,14 @@ import { getBrowserLaunchConfig } from "./browser-launch.js";
 import { BrowserBroker } from "./browser-broker.js";
 import { BrowserLiveGateway } from "./browser-live.js";
 import { BrowserSessionStore } from "./browser-session-store.js";
+import { UserBrowserSession } from "./browser-user-session.js";
 
 export interface BrowserRuntime {
   broker: BrowserBroker;
   sessions: BrowserSessionStore;
   live: BrowserLiveGateway;
+  /** The signed-in browser as the user opens it from Settings. */
+  userSession: UserBrowserSession;
 }
 
 const runtimes = new WeakMap<object, BrowserRuntime>();
@@ -28,7 +31,8 @@ export function getBrowserRuntime(ctx: AppContext): BrowserRuntime {
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     });
     const sessions = new BrowserSessionStore({ browserBroker: broker, telemetryStore });
-    runtime = { broker, sessions, live: new BrowserLiveGateway({ sessions, broker, telemetryStore }) };
+    const live = new BrowserLiveGateway({ sessions, broker, telemetryStore });
+    runtime = { broker, sessions, live, userSession: new UserBrowserSession({ sessions, broker, live }) };
     runtimes.set(ctx, runtime);
   }
   return runtime;

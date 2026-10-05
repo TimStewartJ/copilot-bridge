@@ -8,7 +8,7 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../../test-react-harness";
-import type { BrowserDiagnosticsResponse } from "../../api";
+import { ApiError, type BrowserDiagnosticsResponse } from "../../api";
 import { BrowserDiagnosticsSection } from "./BrowserDiagnosticsSection";
 
 const apiMocks = vi.hoisted(() => ({
@@ -17,6 +17,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchBrowserDiagnostics: vi.fn(),
   launchHeadedDiagnosticsBrowser: vi.fn(),
   probeBrowserContext: vi.fn(),
+  requestSignedInBrowserLiveTicket: vi.fn(),
   resetPublicBrowserData: vi.fn(),
 }));
 
@@ -140,6 +141,7 @@ beforeEach(() => {
   });
   apiMocks.launchHeadedDiagnosticsBrowser.mockReset();
   apiMocks.closeHeadedDiagnosticsBrowser.mockReset();
+  apiMocks.requestSignedInBrowserLiveTicket.mockReset();
   apiMocks.resetPublicBrowserData.mockReset();
   apiMocks.resetPublicBrowserData.mockResolvedValue({ ok: true, cleared: 2, inUse: 1 });
 });
@@ -325,6 +327,40 @@ describe("BrowserDiagnosticsSection", () => {
       (harness.dom.container.textContent ?? "").includes("Public profiles are locked."),
     );
     expect(harness.dom.container.textContent).not.toContain("Cleared 1 profile.");
+  });
+
+  it("opens the signed-in browser in a view of its own, and removes the view when it is closed", async () => {
+    // The server's refusal stands in for a browser: the view shows it and opens no connection.
+    apiMocks.requestSignedInBrowserLiveTicket.mockRejectedValue(
+      new ApiError("An agent is waiting for you in this browser (sign in to the store).", 409),
+    );
+    const harness = await renderSection();
+    const viewTitles = () => findAllByTag(harness.dom.container, "H2").map((heading) => heading.textContent);
+    expect(viewTitles()).not.toContain("Signed-in browser");
+
+    await clickButton(harness, "Open");
+    await waitUntilAct(harness.act, () =>
+      (harness.dom.container.textContent ?? "").includes("An agent is waiting for you in this browser"),
+    );
+    expect(viewTitles()).toContain("Signed-in browser");
+    expect(apiMocks.requestSignedInBrowserLiveTicket).toHaveBeenCalledOnce();
+
+    await clickButton(harness, "Close");
+    expect(viewTitles()).not.toContain("Signed-in browser");
+    expect(harness.dom.container.textContent).not.toContain("An agent is waiting for you in this browser");
+  });
+
+  it.each([
+    ["Open window", apiMocks.launchHeadedDiagnosticsBrowser, "Browser window opened on the server."],
+    ["Close browser", apiMocks.closeHeadedDiagnosticsBrowser, "Browser closed."],
+  ])("%s acts on the signed-in browser of the machine the Bridge runs on", async (label, api, message) => {
+    api.mockResolvedValue({ ok: true, message });
+    const harness = await renderSection();
+
+    await clickButton(harness, label);
+
+    expect(api).toHaveBeenCalledOnce();
+    await waitUntilAct(harness.act, () => (harness.dom.container.textContent ?? "").includes(message));
   });
 
   it("runs public readiness and Azure DevOps authentication checks", async () => {

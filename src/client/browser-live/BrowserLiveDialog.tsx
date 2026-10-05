@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
-import { BROWSER_HANDOFF_ANSWERS, type BrowserHandoffAnswer } from "../../shared/browser-live.js";
+import { BROWSER_HANDOFF_ANSWERS, type BrowserHandoffAnswer, type BrowserLiveTicket } from "../../shared/browser-live.js";
 import { useModalDialog } from "../components/shared/useModalDialog";
 import { Button } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
@@ -43,14 +43,19 @@ function useVisibleBox(): CSSProperties | undefined {
  */
 export function BrowserLiveDialog({
   browserSessionId,
+  title = "Browser",
   reason,
+  requestTicket,
   onClose,
   onAnswer,
   deps,
 }: {
   browserSessionId: string;
-  /** What the agent needs done in the browser, shown above the page. */
+  title?: string;
+  /** What is to be done in the browser, shown above the page. */
   reason?: string;
+  /** See LiveBrowserView. */
+  requestTicket?: () => Promise<BrowserLiveTicket>;
   /** Closes the view and leaves any request unanswered. */
   onClose: () => void;
   /** Present when the view answers a handoff; the host closes the view when it is called. */
@@ -138,13 +143,14 @@ export function BrowserLiveDialog({
       >
         <div className="flex shrink-0 items-start gap-3 px-3 pt-2 sm:px-4 sm:pt-3">
           <div className="min-w-0 flex-1">
-            <h2 id={titleId} className={DS.text.sectionTitle}>Browser</h2>
+            <h2 id={titleId} className={DS.text.sectionTitle}>{title}</h2>
             {reason && <p className="mt-0.5 line-clamp-2 break-words text-xs leading-relaxed text-text-secondary">{reason}</p>}
           </div>
           <Button variant="ghost" onClick={onClose}>Close</Button>
         </div>
         <LiveBrowserView
           browserSessionId={browserSessionId}
+          requestTicket={requestTicket}
           deps={deps}
           className="flex-1"
         />

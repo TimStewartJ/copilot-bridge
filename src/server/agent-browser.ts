@@ -639,6 +639,13 @@ function parseAgentBrowserEnvelope(stdout: string): AgentBrowserJsonEnvelope | n
 }
 
 /**
+ * What the Windows command shell reads as its own syntax in an argument: an address with `&` in
+ * it would end the command there and run the rest as another. Only a fallback goes through the
+ * shell (see getAgentBrowserCommand), and it passes arguments on as they are.
+ */
+const COMMAND_SHELL_SYNTAX = /[&|<>^"\r\n]/;
+
+/**
  * The CLI client can print its JSON result without exiting promptly, so the command completes
  * as soon as stdout holds a complete JSON value and the lingering client is killed.
  */
@@ -652,6 +659,14 @@ async function runAgentBrowserJsonCommand(
   let failure: unknown;
   try {
     const agentBrowserCommand = getAgentBrowserCommand();
+    if (agentBrowserCommand.shell && command.some((argument) => COMMAND_SHELL_SYNTAX.test(argument))) {
+      return {
+        ok: false,
+        output: "agent-browser is started through the Windows command shell here, which would read part of "
+          + "this command as a command of its own. Reinstall it (npm install -g agent-browser) so the Bridge "
+          + "finds its executable.",
+      };
+    }
     ({ stdout, stderr } = await getProcessHost().execFile(
       agentBrowserCommand.file,
       [...command, "--json"],

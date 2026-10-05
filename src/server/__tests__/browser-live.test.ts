@@ -1,7 +1,7 @@
 import { EventEmitter, once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 
 import {
@@ -9,6 +9,7 @@ import {
   BROWSER_LIVE_WS_PATH,
   parseBrowserLiveClientMessage,
   type BrowserLiveClosedMessage,
+  type BrowserLiveTab,
   type BrowserLiveTicket,
 } from "../../shared/browser-live.js";
 import type { BrowserCommandResult, BrowserTarget } from "../agent-browser.js";
@@ -26,6 +27,7 @@ import {
   type BrowserLiveGatewayOptions,
 } from "../browser-live.js";
 import { BrowserSessionStore, type BrowserSessionRecord } from "../browser-session-store.js";
+import type { TelemetryStore } from "../telemetry-store.js";
 import { makeTestDir } from "./helpers.js";
 
 const T0 = Date.parse("2026-01-15T12:00:00.000Z");
@@ -37,7 +39,8 @@ const ALL_MODIFIERS = BROWSER_LIVE_MODIFIERS.alt | BROWSER_LIVE_MODIFIERS.ctrl
 
 type RunCommand = NonNullable<BrowserLiveGatewayOptions["runCommand"]>;
 type CliAnswer = BrowserCommandResult | Promise<BrowserCommandResult>;
-type CliCommandName = "stream status" | "stream enable" | "eval";
+/** `eval` for a script run in the page, whatever the script; any other command in full, as "tab close t2". */
+type CliCommandName = string;
 type CliCall = { command: string[]; timeout: number | undefined; options: Parameters<RunCommand>[2] };
 type ShutdownTarget = NonNullable<BrowserBrokerOptions["shutdownTarget"]>;
 
@@ -65,16 +68,27 @@ class Queue<T> {
 /** Everything one end of a socket receives, parsed, and how the socket closed. */
 class Inbox {
   private readonly messages = new Queue<unknown>();
+  /**
+   * Every list of tabs received, in order. They are kept out of `next`, so that a test about
+   * the page does not depend on when the view is told its tabs.
+   */
+  readonly tabLists: BrowserLiveTab[][] = [];
   readonly closed: Promise<{ code: number; reason: string }>;
 
   constructor(socket: WebSocket) {
     socket.on("message", (data) => {
       const text = data.toString();
+      let message: unknown;
       try {
-        this.messages.push(JSON.parse(text));
+        message = JSON.parse(text);
       } catch {
-        this.messages.push(text);
+        message = text;
       }
+      const tabs = (message as { type?: unknown; tabs?: unknown } | null)?.type === "tabs"
+        ? (message as { tabs?: unknown }).tabs
+        : undefined;
+      if (Array.isArray(tabs)) this.tabLists.push(tabs as BrowserLiveTab[]);
+      else this.messages.push(message);
     });
     this.closed = new Promise((resolve) => {
       socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
@@ -111,6 +125,8 @@ type UpgradeAttempt = Endpoint | { status: number };
 interface ClientRequest {
   origin?: string;
   headers?: Record<string, string>;
+  /** False for a client that does not answer the gateway's pings. */
+  autoPong?: boolean;
 }
 
 function successfulShutdown() {
@@ -118,8 +134,8 @@ function successfulShutdown() {
 }
 
 /** What `eval` answers for the gateway's page script: the script's JSON text. */
-function page(width: number, height: number, url: string): BrowserCommandResult {
-  return { ok: true, output: JSON.stringify([width, height, url]) };
+function page(width: number, height: number, url: string, title = ""): BrowserCommandResult {
+  return { ok: true, output: JSON.stringify([width, height, url, title]) };
 }
 
 function closed(reason: BrowserLiveClosedMessage["reason"], message: string): BrowserLiveClosedMessage {
@@ -137,6 +153,27 @@ async function handled(endpoint: Endpoint): Promise<void> {
   await pong;
 }
 
+/**
+ * A view's own timers (its reads of the page, its pings, its idle limit) then run only when a
+ * test lets time pass. Call it before the view is opened. Sockets stay real.
+ */
+function freezeViewTimers(): void {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"], now: T0 });
+}
+
+/**
+ * Lets time pass for a view opened after `freezeViewTimers`, at most ten seconds at a time, and
+ * gives its client the chance to answer each ping the gateway sent meanwhile, as a real one does.
+ */
+async function elapse(view: View, ms: number): Promise<void> {
+  const client = view.client;
+  for (let left = ms; left > 0; left -= 10_000) {
+    await vi.advanceTimersByTimeAsync(Math.min(left, 10_000));
+    // The first round trip ends after the client has seen the ping, the second after the gateway has its answer.
+    for (let round = 0; round < 2; round++) await Promise.race([handled(client), client.inbox.closed]);
+  }
+}
+
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -148,6 +185,8 @@ function deferred<T = void>() {
 function leaseOf(session: BrowserSessionRecord): BrowserBrokerLease {
   return { context: session.context, browserTarget: session.browserTarget, publicSlot: session.publicSlot };
 }
+
+const TOOLBAR_COMMANDS: ReadonlySet<string> = new Set(["open", "back", "forward", "reload", "tab"]);
 
 /**
  * A stand-in for the agent-browser CLI. By default the stream is on, at `streamPort`, and the
@@ -168,6 +207,10 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
     status: (): CliAnswer => streaming,
     enable: (): CliAnswer => streaming,
     page: (): CliAnswer => ({ ok: false, output: "The page is not ready." }),
+    /** For what a viewer's toolbar asks of the browser: an address, a step in history, a tab. */
+    toolbar: (_command: string[]): CliAnswer => ({ ok: true, output: "" }),
+    /** How many tabs `tab list` finds. */
+    tabCount: (): number | Promise<number> => 1,
   };
   const runCommand: RunCommand = async (command, timeout, options) => {
     calls.push({ command: [...command], timeout, options });
@@ -181,6 +224,11 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
     if (name === "eval") return answers.page();
     if (name === "stream status") return answers.status();
     if (name === "stream enable") return answers.enable();
+    if (name === "tab list") {
+      const tabs = Array.from({ length: await answers.tabCount() }, (_unused, index) => ({ tabId: `t${index + 1}` }));
+      return { ok: true, output: "", data: { tabs } };
+    }
+    if (TOOLBAR_COMMANDS.has(command[0])) return answers.toolbar([...command]);
     throw new Error(`Unexpected agent-browser command: ${name}`);
   };
   return {
@@ -194,6 +242,14 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
       return new Promise<void>((resolve) => waiters.push({ name, count: total, resolve }));
     },
     commands: (): string[] => calls.map((call) => nameOf(call.command)),
+    /** What was run for a viewer's toolbar, in order. */
+    toolbarCommands: (): string[] => calls
+      .filter((call) => TOOLBAR_COMMANDS.has(call.command[0]) && nameOf(call.command) !== "tab list")
+      .map((call) => nameOf(call.command)),
+    /** The telemetry store each run of the command was given. */
+    telemetryOf: (name: CliCommandName): unknown[] => calls
+      .filter((call) => nameOf(call.command) === name)
+      .map((call) => call.options.telemetryStore),
   };
 }
 
@@ -272,7 +328,7 @@ afterEach(async () => {
  * A gateway over a real session store and broker, an HTTP server that hands it upgrades the way
  * the Bridge server does, and a WebSocket server standing in for agent-browser's stream.
  */
-async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream"> = {}) {
+async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream" | "telemetryStore"> = {}) {
   let upstreamAccepts = true;
   const upstreamServer = new WebSocketServer({
     host: "127.0.0.1",
@@ -1037,7 +1093,9 @@ describe("BrowserLiveGateway relay to the client", () => {
     for (const dropped of [
       { type: "status", connected: true, screencasting: true, viewportWidth: 1280, viewportHeight: 720 },
       { type: "error", message: "Screencast failed" },
-      { type: "tabs", tabs: [{ id: "t1", url: "https://example.com/", active: true }] },
+      // agent-browser echoes what it runs, scripts included.
+      { type: "command", action: "evaluate", script: "document.cookie" },
+      { type: "result", success: true, data: "session=1" },
       { type: "closed", reason: "session_ended", message: "Not from the Bridge" },
       { type: "viewport", width: 1, height: 1 },
       { type: "frame", seq: "1", data: "QQ==" },
@@ -1056,6 +1114,7 @@ describe("BrowserLiveGateway relay to the client", () => {
     send(view.upstream, { type: "frame", seq: 2, data: "Qg==" });
 
     expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 2, data: "Qg==" });
+    expect(view.client.inbox.tabLists).toEqual([]);
   });
 
 });
@@ -1152,7 +1211,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("drops input that arrives before the browser's stream is open", async () => {
+  it("drops input, and what the toolbar asks for, that arrives before the browser's stream is open", async () => {
     const h = await createHarness();
     const session = await h.createSession();
     const ticket = await h.gateway.createTicket(session.id);
@@ -1166,6 +1225,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
     const client = await h.open(h.liveUrl(ticket));
     await h.cli.called("stream status", statusCalls + 1);
     send(client, { type: "input_mouse", eventType: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 });
+    send(client, { type: "reload" });
     await handled(client);
 
     releaseStatus();
@@ -1174,6 +1234,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
     send(client, { type: "ack", seq: 1 });
 
     expect(await upstream.inbox.next()).toStrictEqual({ type: "ack", seq: 1 });
+    expect(h.cli.toolbarCommands()).toEqual([]);
   });
 
   it("closes a client that sends a message larger than 16 KiB without forwarding it", async () => {
@@ -1296,6 +1357,56 @@ describe("parseBrowserLiveClientMessage", () => {
       .toStrictEqual(key({ key: "a" }));
   });
 
+  it("accepts what a viewer's toolbar asks of the browser, and an address as the browser will open it", () => {
+    for (const message of [
+      { type: "history", direction: "back" },
+      { type: "history", direction: "forward" },
+      { type: "reload" },
+      { type: "tab", action: "select", tabId: "t1" },
+      { type: "tab", action: "close", tabId: "t23" },
+      { type: "navigate", url: "http://localhost:3000/a?b=c#d" },
+    ]) {
+      expect(parse({ ...message, script: "document.cookie", seq: 1 })).toStrictEqual(message);
+    }
+    expect(parse({ type: "navigate", url: "HTTPS://Example.com" })).toStrictEqual({ type: "navigate", url: "https://example.com/" });
+  });
+
+  it("rejects an address that is not a web page's, or is longer than 2048 characters", () => {
+    const longest = `https://example.com/${"a".repeat(2028)}`;
+    expect(parse({ type: "navigate", url: longest })).toStrictEqual({ type: "navigate", url: longest });
+    for (const url of [
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "data:text/html,<p>hi</p>",
+      "chrome://settings",
+      "about:blank",
+      "example.com",
+      "",
+      `${longest}a`,
+      5,
+      null,
+      undefined,
+      ["https://example.com/"],
+    ]) {
+      expect(parse({ type: "navigate", url }), String(url)).toBeUndefined();
+    }
+  });
+
+  it("rejects a step in history or a tab message that names anything else than the protocol has", () => {
+    for (const direction of [undefined, "", "up", "BACK", -1, ["back"]]) {
+      expect(parse({ type: "history", direction }), String(direction)).toBeUndefined();
+    }
+    for (const action of [undefined, "", "new", "list", "CLOSE", ["close"]]) {
+      expect(parse({ type: "tab", action, tabId: "t1" }), String(action)).toBeUndefined();
+    }
+    // The id goes into an agent-browser command line.
+    for (const tabId of [undefined, "", "1", "t", "T1", "t1;rm", "t1 t2", "--help", "t1234567", 1, ["t1"]]) {
+      for (const action of ["select", "close"]) {
+        expect(parse({ type: "tab", action, tabId }), `${action} ${String(tabId)}`).toBeUndefined();
+      }
+    }
+  });
+
   it("rejects every other kind of message, and what is not an object", () => {
     for (const message of [
       { type: "eval", script: "document.cookie" },
@@ -1319,6 +1430,11 @@ describe("parseBrowserLiveClientMessage", () => {
 });
 
 describe("BrowserLiveGateway page size and address", () => {
+  // A view also reads the page every few seconds. Here that happens only when a test lets time pass.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+
   it("sends the page's address and viewport, read with eval, when the stream opens", async () => {
     const h = await createHarness();
     const session = await h.createSession();
@@ -1468,31 +1584,407 @@ describe("BrowserLiveGateway page size and address", () => {
     expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
   });
 
-  it("reads the page again every 30 seconds, and each read counts as a use of the session", async () => {
+  it("records no telemetry span for its reads of the page, which are too frequent for one each", async () => {
+    const telemetryStore = {} as TelemetryStore;
+    const h = await createHarness({ telemetryStore });
+    const view = await h.openView((await h.createSession()).id);
+
+    send(view.client, { type: "reload" });
+    await h.cli.called("eval", 2);
+
+    expect(h.cli.telemetryOf("reload")).toEqual([telemetryStore]);
+    expect(h.cli.telemetryOf("eval")).toEqual([undefined, undefined]);
+  });
+});
+
+describe("BrowserLiveGateway reading the page over time", () => {
+  const TWO_TABS = [
+    { tabId: "t1", targetId: "A", title: "Example", url: "https://example.com/", active: true },
+    { tabId: "t2", targetId: "B", title: "Other", url: "https://example.org/", active: false },
+  ];
+
+  it("reads the page every 4 seconds while input was recent or several tabs are open, and otherwise every 30 seconds", async () => {
+    freezeViewTimers();
     const h = await createHarness();
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    vi.setSystemTime(T0);
     const session = await h.createSession();
     h.cli.answers.page = () => page(1280, 720, "https://example.com/");
     const view = await h.openView(session.id);
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
     expect(h.cli.count("eval")).toBe(1);
 
-    h.cli.answers.page = () => page(1024, 768, "https://example.com/");
-    vi.advanceTimersByTime(29_999);
+    // Nobody has done anything in the view yet, so nothing in it can have opened a tab.
+    await elapse(view, 28_000);
     expect(h.cli.count("eval")).toBe(1);
-    vi.advanceTimersByTime(1);
-
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1024, height: 768 });
+    await elapse(view, 4_000);
     expect(h.cli.count("eval")).toBe(2);
-    expect(h.store.getSession(session.id)?.lastUsedAt).toBe(T0 + 30_000);
+    // Each read counts as a use of the session.
+    expect(h.store.getSession(session.id)?.lastUsedAt).toBe(T0 + 32_000);
+
+    // Something was done in it: every 4 seconds for the next 20.
+    send(view.client, { type: "input_mouse", eventType: "mouseMoved", x: 1, y: 1 });
+    await view.upstream.inbox.next();
+    await elapse(view, 3_999);
+    expect(h.cli.count("eval")).toBe(2);
+    await elapse(view, 1);
+    expect(h.cli.count("eval")).toBe(3);
+    await elapse(view, 12_000);
+    expect(h.cli.count("eval")).toBe(6);
+
+    // Then no read for the next 28 seconds, and one soon after.
+    await elapse(view, 28_000);
+    expect(h.cli.count("eval")).toBe(6);
+    await elapse(view, 4_000);
+    expect(h.cli.count("eval")).toBe(7);
+
+    // A second tab can close, or a third open, without anything being done in the view.
+    send(view.upstream, { type: "tabs", tabs: TWO_TABS });
+    await h.cli.called("eval", 8);
+    await elapse(view, 8_000);
+    expect(h.cli.count("eval")).toBe(10);
 
     // A closed view stops reading the page.
-    view.client.socket.close();
+    view.client.socket.close(1000);
     await view.upstream.inbox.closed;
-    vi.advanceTimersByTime(60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.cli.count("eval")).toBe(10);
+  });
+
+  it.each([
+    ["the end of a click", { type: "input_mouse", eventType: "mouseReleased", x: 1, y: 1, button: "left", clickCount: 1 }, true],
+    ["a key going up", { type: "input_keyboard", eventType: "keyUp", key: "Enter" }, true],
+    ["typed text", { type: "input_keyboard", eventType: "char", text: "a" }, true],
+    ["the pointer moving", { type: "input_mouse", eventType: "mouseMoved", x: 1, y: 1 }, false],
+    ["the start of a click", { type: "input_mouse", eventType: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 }, false],
+    ["a key going down", { type: "input_keyboard", eventType: "keyDown", key: "Enter" }, false],
+  ])("after %s, reads the page 600 ms and 2.5 s later: %s", async (_name, input, reads) => {
+    freezeViewTimers();
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+
+    send(view.client, input);
+    await view.upstream.inbox.next();
+    await vi.advanceTimersByTimeAsync(599);
+    expect(h.cli.count("eval")).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.cli.count("eval")).toBe(reads ? 2 : 1);
+    await vi.advanceTimersByTimeAsync(1_900);
+    expect(h.cli.count("eval")).toBe(reads ? 3 : 1);
+  });
+
+  it("waits for the last of several clicks and keys before it reads the page", async () => {
+    freezeViewTimers();
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+    const typed = { type: "input_keyboard", eventType: "char", text: "a" };
+
+    send(view.client, typed);
+    await view.upstream.inbox.next();
+    await vi.advanceTimersByTimeAsync(599);
+    send(view.client, typed);
+    await view.upstream.inbox.next();
+    await vi.advanceTimersByTimeAsync(599);
+    expect(h.cli.count("eval")).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1);
     expect(h.cli.count("eval")).toBe(2);
+    await vi.advanceTimersByTimeAsync(1_900);
+    expect(h.cli.count("eval")).toBe(3);
+  });
+
+  it("closes a view nobody has used for 10 minutes, where acks are not a use of it", async () => {
+    freezeViewTimers();
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+
+    await elapse(view, 5 * 60_000);
+    send(view.client, { type: "input_mouse", eventType: "mouseMoved", x: 1, y: 1 });
+    expect(await view.upstream.inbox.next()).toMatchObject({ type: "input_mouse" });
+    await elapse(view, 7 * 60_000);
+    send(view.client, { type: "ack", seq: 1 });
+    expect(await view.upstream.inbox.next()).toStrictEqual({ type: "ack", seq: 1 });
+    // Ten minutes after it was opened and not yet ten after the pointer moved.
+    await elapse(view, 2 * 60_000);
+    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
+    expect(view.client.inbox.unread).toBe(0);
+
+    await elapse(view, 64_000);
+
+    expect(await view.client.inbox.next()).toStrictEqual({
+      type: "closed",
+      reason: "stream_ended",
+      message: expect.stringContaining("nobody used it"),
+    });
+    expect(await view.client.inbox.closed).toEqual({ code: 1000, reason: "stream_ended" });
+    await view.upstream.inbox.closed;
+  });
+
+  it("ends a view whose client no longer answers its pings, and keeps one whose client does", async () => {
+    freezeViewTimers();
+    const h = await createHarness();
+    const session = await h.createSession();
+    const answering = await h.openView(session.id);
+    const silent = await h.openView(session.id, { autoPong: false });
+
+    await elapse(answering, 20_000);
+    expect(silent.client.socket.readyState).toBe(WebSocket.OPEN);
+    await elapse(answering, 20_000);
+
+    // Not a close the gateway and the client agreed on: the connection is cut.
+    expect((await silent.client.inbox.closed).code).toBe(1006);
+    await silent.upstream.inbox.closed;
+    send(answering.upstream, { type: "frame", seq: 1, data: "QQ==" });
+    expect(await answering.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
+  });
+});
+
+describe("BrowserLiveGateway toolbar", () => {
+  // The page is read after each command. Its other reads happen only when a test lets time pass.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+
+  it.each([
+    ["opens an address", { type: "navigate", url: "https://example.com/next" }, "open https://example.com/next"],
+    ["goes back", { type: "history", direction: "back" }, "back"],
+    ["goes forward", { type: "history", direction: "forward" }, "forward"],
+    ["reloads", { type: "reload" }, "reload"],
+    ["shows another tab", { type: "tab", action: "select", tabId: "t2" }, "tab t2"],
+  ])("%s in the browser and reads the page again", async (_name, message, command) => {
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+    h.cli.answers.page = () => page(1280, 720, "https://example.com/next");
+
+    send(view.client, message);
+
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/next" });
+    expect(h.cli.toolbarCommands()).toEqual([command]);
+  });
+
+  it.each([
+    ["closes a tab while another is open", 2, ["tab close t2"]],
+    ["does not close the last tab", 1, []],
+  ])("%s", async (_name, tabCount, commands) => {
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+    h.cli.answers.tabCount = () => tabCount;
+
+    send(view.client, { type: "tab", action: "close", tabId: "t2" });
+    await h.cli.called("eval", 2);
+
+    expect(h.cli.toolbarCommands()).toEqual(commands);
+  });
+
+  it("runs a command while the browser is the user's, when an agent's own operations are refused", async () => {
+    const h = await createHarness();
+    const session = await h.createSession();
+    const handBack = h.broker.holdTarget(leaseOf(session), "Sign in to the store");
+    const view = await h.openView(session.id);
+
+    send(view.client, { type: "reload" });
+    await h.cli.called("eval", 2);
+
+    expect(h.cli.toolbarCommands()).toEqual(["reload"]);
+    handBack();
+  });
+
+  it.each([
+    [
+      "waiting for the browser",
+      { type: "reload" },
+      (h: Harness, session: BrowserSessionRecord, view: View) => {
+        const done = deferred();
+        void h.broker.withTarget(leaseOf(session), { toolName: "test", browserOpId: "op-1", skipReadiness: true }, () => done.promise);
+        return { underWay: () => handled(view.client), carryOn: () => done.resolve() };
+      },
+    ],
+    [
+      "finding out whether its tab is the last one",
+      { type: "tab", action: "close", tabId: "t2" },
+      (h: Harness) => {
+        const listed = deferred<number>();
+        h.cli.answers.tabCount = () => listed.promise;
+        return { underWay: () => h.cli.called("tab list", 1), carryOn: () => listed.resolve(2) };
+      },
+    ],
+  ])("does not run a command that was still %s when the view ended", async (_name, message, holdUp) => {
+    const h = await createHarness();
+    const session = await h.createSession();
+    const view = await h.openView(session.id);
+    const held = holdUp(h, session, view);
+
+    send(view.client, message);
+    await held.underWay();
+    view.client.socket.close(1000);
+    await view.upstream.inbox.closed;
+    held.carryOn();
+    // The browser runs one operation at a time, so this one comes after what was held up.
+    await h.broker.withTarget(leaseOf(session), { toolName: "test", browserOpId: "op-2", skipReadiness: true }, async () => undefined);
+
+    expect(h.cli.toolbarCommands()).toEqual([]);
+  });
+
+  it("runs one command at a time and then only the last of those asked for meanwhile, without holding up input", async () => {
+    const h = await createHarness();
+    const session = await h.createSession();
+    const view = await h.openView(session.id);
+    const loaded = deferred<BrowserCommandResult>();
+    h.cli.answers.toolbar = (command) => (command[1] === "https://example.com/slow" ? loaded.promise : { ok: true, output: "" });
+    const move = { type: "input_mouse", eventType: "mouseMoved", x: 10, y: 20 };
+
+    send(view.client, { type: "navigate", url: "https://example.com/slow" });
+    await h.cli.called("open https://example.com/slow", 1);
+    send(view.client, { type: "reload" });
+    send(view.client, { type: "history", direction: "back" });
+    send(view.client, { type: "navigate", url: "https://example.com/last" });
+    send(view.client, move);
+
+    // The page is there to be clicked while it loads.
+    expect(await view.upstream.inbox.next()).toStrictEqual(move);
+    // The session is not closed under a command.
+    await expect(h.store.closeSession(session.id, OWNER)).resolves.toEqual({ ok: false, error: "Browser session is busy" });
+    expect(h.cli.toolbarCommands()).toEqual(["open https://example.com/slow"]);
+
+    loaded.resolve({ ok: true, output: "" });
+    // The page is read after each of the two commands that ran.
+    await h.cli.called("eval", 3);
+    expect(h.cli.toolbarCommands()).toEqual(["open https://example.com/slow", "open https://example.com/last"]);
+  });
+});
+
+describe("BrowserLiveGateway tabs", () => {
+  // The page is read every few seconds only when a test lets time pass.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+
+  const tab = (number: number, fields: Record<string, unknown> = {}) => ({
+    tabId: `t${number}`,
+    targetId: `target-${number}`,
+    title: `Tab ${number}`,
+    url: `https://example.com/${number}`,
+    active: number === 1,
+    ...fields,
+  });
+  /** What a view is told about `tab(number)`. */
+  const told = (number: number, fields: Partial<BrowserLiveTab> = {}): BrowserLiveTab => ({
+    id: `t${number}`,
+    title: `Tab ${number}`,
+    url: `https://example.com/${number}`,
+    active: number === 1,
+    ...fields,
+  });
+  /** Resolves once the view has everything the gateway made of what the stream sent so far. */
+  const relayed = async (view: View): Promise<void> => {
+    await handled(view.upstream);
+    await handled(view.client);
+  };
+
+  it("tells the view the browser's tabs when they change: at most 20, with titles of at most 200 characters", async () => {
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+
+    send(view.upstream, { type: "tabs", tabs: [tab(1), tab(2, { title: "x".repeat(300) })], timestamp: 1 });
+    send(view.upstream, { type: "tabs", tabs: [tab(1), tab(2, { title: "x".repeat(300) })], timestamp: 2 });
+    await relayed(view);
+    expect(view.client.inbox.tabLists).toStrictEqual([[told(1), told(2, { title: "x".repeat(200) })]]);
+
+    send(view.upstream, { type: "tabs", tabs: Array.from({ length: 25 }, (_unused, index) => tab(index + 1)), timestamp: 3 });
+    await relayed(view);
+    expect(view.client.inbox.tabLists).toHaveLength(2);
+    expect(view.client.inbox.tabLists[1]).toStrictEqual(Array.from({ length: 20 }, (_unused, index) => told(index + 1)));
+  });
+
+  /**
+   * A view of a browser whose one tab, `tab(1)`, has been read twice since it was on show, and
+   * what the view is told about that tab.
+   */
+  async function openOnFirstTab() {
+    // Longer than the address a view is told.
+    const address = `https://example.com/1/now?${"q".repeat(2_100)}`;
+    const h = await createHarness();
+    h.cli.answers.page = () => page(1280, 720, address, "Tab 1 now");
+    const view = await h.openView((await h.createSession()).id);
+    send(view.upstream, { type: "tabs", tabs: [tab(1)] });
+    await h.cli.called("eval", 2);
+    // The page is read again soon only while the view is in use.
+    send(view.client, { type: "input_mouse", eventType: "mouseMoved", x: 1, y: 1 });
+    await view.upstream.inbox.next();
+    await vi.advanceTimersByTimeAsync(4_000);
+    await h.cli.called("eval", 3);
+    await relayed(view);
+    return { h, view, readNow: told(1, { title: "Tab 1 now", url: address.slice(0, 2_048) }) };
+  }
+  const SECOND_SHOWN = [tab(1, { active: false }), tab(2, { active: true })];
+
+  it("describes the tab on show by what the page says now, and a tab no longer on show by what two reads in a row found in it", async () => {
+    // agent-browser's own title and address of a tab are those it had when the tab was first seen.
+    const { h, view, readNow } = await openOnFirstTab();
+    expect(view.client.inbox.tabLists.at(-1)).toStrictEqual([readNow]);
+
+    const secondRead = deferred<BrowserCommandResult>();
+    h.cli.answers.page = () => secondRead.promise;
+    send(view.upstream, { type: "tabs", tabs: SECOND_SHOWN });
+    await h.cli.called("eval", 4);
+    await relayed(view);
+    // What was read in the first tab says nothing about the second.
+    expect(view.client.inbox.tabLists.at(-1)).toStrictEqual([{ ...readNow, active: false }, told(2, { active: true })]);
+
+    secondRead.resolve(page(1280, 720, "https://example.com/2/now", "Tab 2 now"));
+    await relayed(view);
+    expect(view.client.inbox.tabLists.at(-1)).toStrictEqual([
+      { ...readNow, active: false },
+      told(2, { title: "Tab 2 now", url: "https://example.com/2/now", active: true }),
+    ]);
+  });
+
+  it("does not describe a tab no longer on show by what a later read of it found changed", async () => {
+    const { h, view } = await openOnFirstTab();
+    h.cli.answers.page = () => page(1280, 720, "https://example.com/1/later", "Tab 1 later");
+    await vi.advanceTimersByTimeAsync(4_000);
+    await h.cli.called("eval", 4);
+    await relayed(view);
+    expect(view.client.inbox.tabLists.at(-1)).toStrictEqual([told(1, { title: "Tab 1 later", url: "https://example.com/1/later" })]);
+
+    h.cli.answers.page = () => page(1280, 720, "https://example.com/2/now", "Tab 2 now");
+    send(view.upstream, { type: "tabs", tabs: SECOND_SHOWN });
+    await h.cli.called("eval", 5);
+    await relayed(view);
+
+    // One read is not enough to go by, so the first tab is back to what agent-browser says of it.
+    expect(view.client.inbox.tabLists.at(-1)).toStrictEqual([
+      told(1, { active: false }),
+      told(2, { title: "Tab 2 now", url: "https://example.com/2/now", active: true }),
+    ]);
+  });
+});
+
+describe("BrowserLiveGateway.onViewersChanged", () => {
+  it("says how many views of a session are open when one opens or ends, and whether the one that ended was cut off", async () => {
+    const h = await createHarness();
+    const session = await h.createSession();
+    const changes: Array<[string, number, boolean]> = [];
+    h.gateway.onViewersChanged((browserSessionId, viewers, dropped) => changes.push([browserSessionId, viewers, dropped]));
+
+    const views = [await h.openView(session.id), await h.openView(session.id), await h.openView(session.id)];
+    // A view that is closed, a page that is left, and a connection that broke.
+    const endings = [
+      (socket: WebSocket) => socket.close(1000),
+      (socket: WebSocket) => socket.close(1001),
+      (socket: WebSocket) => socket.terminate(),
+    ];
+    for (const [index, view] of views.entries()) {
+      endings[index](view.client.socket);
+      // The gateway closes a view's stream once it has dropped the view.
+      await view.upstream.inbox.closed;
+    }
+
+    expect(changes).toEqual([
+      [session.id, 1, false],
+      [session.id, 2, false],
+      [session.id, 3, false],
+      [session.id, 2, false],
+      [session.id, 1, false],
+      [session.id, 0, true],
+    ]);
   });
 });
 
@@ -1608,7 +2100,7 @@ describe("BrowserLiveGateway closing", () => {
     expect(h.upstreamConnections.size).toBe(0);
   });
 
-  it("closes the view as ended when the session was closed between the ticket and the socket", async () => {
+  it("closes the view as ended when the session was closed between the ticket and the socket, and ignores what its client sent meanwhile", async () => {
     const h = await createHarness();
     const session = await h.createSession();
     const ticket = await h.gateway.createTicket(session.id);
@@ -1616,10 +2108,15 @@ describe("BrowserLiveGateway closing", () => {
     const statusCalls = h.cli.count("stream status");
 
     const client = await h.open(h.liveUrl(ticket));
+    // What the client sent before it heard is ignored. A listener that throws on it is an
+    // uncaught exception in the process.
+    send(client, { type: "reload" });
+    send(client, { type: "input_mouse", eventType: "mouseReleased", x: 1, y: 1, button: "left", clickCount: 1 });
 
     expect(await client.inbox.next()).toStrictEqual(closed("session_ended", "The browser session has ended."));
     expect(await client.inbox.closed).toEqual({ code: 1000, reason: "session_ended" });
     expect(h.cli.count("stream status")).toBe(statusCalls);
+    expect(h.cli.toolbarCommands()).toEqual([]);
     expect(h.upstreamConnections.size).toBe(0);
   });
 });
