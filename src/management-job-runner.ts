@@ -1,3 +1,4 @@
+import "./server/guard-stdio-writes.js";
 import "./server/load-bridge-env.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

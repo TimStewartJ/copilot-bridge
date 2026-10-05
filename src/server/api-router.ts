@@ -2367,7 +2367,7 @@ export function createApiRouter(
 
   // POST /device/hibernate/on-idle — arm or disarm "hibernate once all sessions
   // are idle". The watcher disarms itself before hibernating, so a wake leaves it off; a server
-  // restart carries it over (device-hibernate-handoff.ts).
+  // restart or crash carries it over (device-hibernate-handoff.ts).
   router.post("/device/hibernate/on-idle", (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
 
