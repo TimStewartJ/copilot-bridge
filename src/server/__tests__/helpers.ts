@@ -316,6 +316,7 @@ export function createMockSessionManager() {
     invalidateTaskSessionConfig: () => 0,
     invalidateSessionConfig: () => false,
     evictIdleCachedSessions: async () => ({ evictedSessions: 0, protectedSessions: 0 }),
+    unloadIdleSession: async () => false,
     setSessionModel: async (_id: string, model: string, reasoningEffort?: string, contextTier?: string) => ({
       model,
       ...(reasoningEffort ? { reasoningEffort } : {}),

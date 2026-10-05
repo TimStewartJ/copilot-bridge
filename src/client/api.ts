@@ -1,5 +1,11 @@
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
+import type {
+  SessionModelMoveJob,
+  SessionModelMoveRequest,
+  SessionModelMoveState,
+  SessionModelUsage,
+} from "../shared/session-model-move.js";
 import type { UnifiedHelmSettings } from "../shared/helm-settings.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import { isRecord } from "../shared/is-record.js";
@@ -1110,6 +1116,32 @@ export async function patchSessionModel(
     throw new Error(err.error || res.statusText);
   }
   return res.json();
+}
+
+// ── Moving chats from one model to another ────────────────────────
+
+/** How many chats that are not archived use each model. Reads every chat's model, so it takes seconds. */
+export function fetchSessionModelUsage(options: { refresh?: boolean } = {}): Promise<SessionModelUsage> {
+  return apiFetch<SessionModelUsage>(
+    `/api/session-model-move/models${options.refresh ? "?refresh=true" : ""}`,
+    undefined,
+    { reportTelemetry: false },
+  );
+}
+
+/** The running move, or the last one since the server started. */
+export function fetchSessionModelMove(): Promise<SessionModelMoveState> {
+  return apiFetch<SessionModelMoveState>("/api/session-model-move", undefined, { reportTelemetry: false });
+}
+
+/** Starts moving every chat that is not archived from one model to another; the move runs on the server. */
+export async function startSessionModelMove(request: SessionModelMoveRequest): Promise<SessionModelMoveJob> {
+  const result = await apiFetch<{ job: SessionModelMoveJob }>("/api/session-model-move", request);
+  return result.job;
+}
+
+export function cancelSessionModelMove(): Promise<SessionModelMoveState> {
+  return apiFetch<SessionModelMoveState>("/api/session-model-move/cancel", {});
 }
 
 export async function deleteSession(id: string): Promise<void> {

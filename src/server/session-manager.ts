@@ -6330,6 +6330,18 @@ export class SessionManager {
   }
 
   /**
+   * Unloads one cached session unless a turn, a hold, a running agent or a protected command
+   * needs it loaded. Resolves true when the session was unloaded and its runtime handle released.
+   */
+  async unloadIdleSession(sessionId: string, reason: string): Promise<boolean> {
+    const cleanup = await this.enqueueCache("evict", sessionId, () => {
+      if (this.getProtectedSessionTreeIds().has(sessionId)) return undefined;
+      return this.evictCachedSessionUnsafe(sessionId, undefined, reason);
+    });
+    return cleanup ? await cleanup : false;
+  }
+
+  /**
    * Explicitly switch the model for a single session.
    *
    * Reuses the cached session object when available; otherwise resumes with
