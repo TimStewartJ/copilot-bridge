@@ -166,6 +166,13 @@ describe("the workflow that releases an in-tree package", () => {
     expect(commands.filter((command) => /\bnpm publish\b/.test(command))).toEqual([]);
   });
 
+  it("hands npm the tarball as a path it cannot take for a GitHub repository", () => {
+    // npm reads "release/<file>.tgz" as the repository "release/<file>.tgz" on GitHub and tries to
+    // fetch it. A path that starts with "./" is a file.
+    const staged = Object.values(workflow.jobs).flatMap(commandsOf).flatMap((command) => command.match(/\bnpm stage publish \S+/g) ?? []);
+    expect(staged).toEqual(['npm stage publish "./release/$FILE"']);
+  });
+
   it("lets only a job that runs no code from the repository ask npm for a token", () => {
     // Whatever runs in that job can stage a tarball of its own making. It gets the tarball the
     // build job made, and installs nothing but the npm that hands it over.
