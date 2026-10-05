@@ -11,10 +11,12 @@ import {
   FileText,
   FileVideo,
   Loader2,
+  Maximize2,
   X,
 } from "lucide-react";
 import { API_BASE, type Attachment } from "../api";
 import { DS, cx } from "../design/tokens";
+import { fileExtension, filePreviewKind, isVectorImage, showFile, type PreviewFile } from "./file-preview";
 import type { ViewerImage } from "./image-viewer";
 
 /**
@@ -39,22 +41,16 @@ const DATA_EXTENSIONS = new Set(["json", "jsonl", "yaml", "yml", "xml", "toml", 
 const SHEET_EXTENSIONS = new Set(["csv", "tsv", "xls", "xlsx", "ods"]);
 const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "7z", "rar", "cab"]);
 const TEXT_EXTENSIONS = new Set(["txt", "md", "log", "rtf", "doc", "docx", "pdf", "pptx", "ppt"]);
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"]);
-
-export function fileExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase() : "";
-}
 
 export function isImageFileName(name: string): boolean {
-  return IMAGE_EXTENSIONS.has(fileExtension(name));
+  return filePreviewKind(name) === "image";
 }
 
 export function describeFile(name: string, mimeType?: string): FileDescription {
   const ext = fileExtension(name);
   const mime = (mimeType ?? "").toLowerCase();
   const kind = ext ? ext.toUpperCase() : "File";
-  if (mime.startsWith("image/") || IMAGE_EXTENSIONS.has(ext)) return { Icon: FileImage, kind: ext ? kind : "Image" };
+  if (mime.startsWith("image/") || isImageFileName(name)) return { Icon: FileImage, kind: ext ? kind : "Image" };
   if (mime.startsWith("audio/")) return { Icon: FileAudio, kind: ext ? kind : "Audio" };
   if (mime.startsWith("video/")) return { Icon: FileVideo, kind: ext ? kind : "Video" };
   if (SHEET_EXTENSIONS.has(ext)) return { Icon: FileSpreadsheet, kind };
@@ -122,10 +118,10 @@ export function attachmentImageSrc(att: Attachment, sessionId?: string): string 
   return null;
 }
 
-/** A download link for a sent file, when the server still has it. */
-function attachmentDownloadUrl(att: Attachment, sessionId?: string): string | undefined {
+/** Where a sent file can be read from, when the server still has it. */
+function attachmentFileUrl(att: Attachment, sessionId?: string): string | undefined {
   if (!sessionId || att.type !== "file" || !isSessionUpload(att.path, sessionId)) return undefined;
-  return `${sessionFileUrl(sessionId, att.path.split(/[\\/]/).pop() ?? attachmentName(att))}?download=1`;
+  return sessionFileUrl(sessionId, att.path.split(/[\\/]/).pop() ?? attachmentName(att));
 }
 
 function attachmentMeta(att: Attachment): { mimeType?: string; size?: number } {
@@ -148,14 +144,17 @@ interface FileCardProps {
   size?: number;
   /** When set, the card downloads the file. */
   href?: string;
+  /** When set, the card opens the file instead, and downloading is left to the viewer. */
+  onOpen?: () => void;
   /** The shorter card used in the composer tray, where it sits beside 56px thumbnails. */
   compact?: boolean;
 }
 
 /** A file as one object: its kind as an icon, its name, and what it is. */
-export function FileCard({ name, mimeType, size, href, compact = false }: FileCardProps) {
+export function FileCard({ name, mimeType, size, href, onOpen, compact = false }: FileCardProps) {
   const { Icon, kind } = describeFile(name, mimeType);
   const meta = [kind, formatFileSize(size)].filter(Boolean).join(" · ");
+  const ActionIcon = onOpen ? Maximize2 : Download;
   const body = (
     <>
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-selected text-text-secondary">
@@ -165,9 +164,9 @@ export function FileCard({ name, mimeType, size, href, compact = false }: FileCa
         <span className="block truncate text-[13px] font-medium leading-5 text-text-primary">{name}</span>
         <span className="block truncate text-xs leading-4 text-text-faint">{meta}</span>
       </span>
-      {href && (
+      {(href || onOpen) && (
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors group-hover/file:text-text-primary">
-          <Download size={15} aria-hidden />
+          <ActionIcon size={15} aria-hidden />
         </span>
       )}
     </>
@@ -176,6 +175,19 @@ export function FileCard({ name, mimeType, size, href, compact = false }: FileCa
     "group/file flex max-w-full min-w-0 items-center gap-3 rounded-xl border border-surface-edge bg-surface-group p-2 pr-2.5",
     compact ? "h-14 w-60" : "w-72",
   );
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={cx(frame, "transition-colors hover:bg-surface-selected", DS.focus)}
+        aria-label={`Open ${name}`}
+        title={`Open ${name}`}
+      >
+        {body}
+      </button>
+    );
+  }
   if (href) {
     return (
       <a
@@ -196,12 +208,65 @@ export function FileCard({ name, mimeType, size, href, compact = false }: FileCa
   );
 }
 
+interface PreviewCaptionProps {
+  Icon: IconComponent;
+  title: string;
+  /** What it is, in a few quiet words: "PDF", "Chart · 12 KB". */
+  meta: string;
+  note?: string;
+  /** Opens it full screen. Left out for content that needs no larger view, such as an audio player. */
+  onExpand?: () => void;
+  downloadUrl: string;
+  downloadName: string;
+  className?: string;
+}
+
+/**
+ * The line under a file or a visual shown in the chat: what it is, with Expand and Download
+ * beside it, so the content above stays the only thing in the frame.
+ */
+export function PreviewCaption({ Icon, title, meta, note, onExpand, downloadUrl, downloadName, className }: PreviewCaptionProps) {
+  const actionClass = cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost);
+  return (
+    <figcaption className={cx("flex min-w-0 items-start gap-2 px-0.5", className)}>
+      <Icon size={14} className="mt-[3px] shrink-0 text-text-faint" aria-hidden />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-medium leading-5 text-text-primary" title={title}>{title}</div>
+        <div className="truncate text-xs tabular-nums leading-4 text-text-faint">{meta}</div>
+        {note && <p className="mt-1 text-[13px] leading-relaxed text-text-secondary">{note}</p>}
+      </div>
+      <div className="-my-1 flex shrink-0 items-center">
+        {onExpand && (
+          <button type="button" onClick={onExpand} title="Expand" className={actionClass} aria-label={`View full size: ${title}`}>
+            <Maximize2 size={14} aria-hidden />
+          </button>
+        )}
+        <a
+          href={downloadUrl}
+          download={downloadName}
+          title={`Download ${downloadName}`}
+          className={actionClass}
+          aria-label={`Download ${downloadName}`}
+        >
+          <Download size={14} aria-hidden />
+        </a>
+      </div>
+    </figcaption>
+  );
+}
+
 export interface GalleryImage {
   src: string;
   name: string;
   /** Where Download points; the image's own source when omitted. */
   downloadUrl?: string;
   alt?: string;
+}
+
+/** Opens a file full screen: an image in the image viewer, anything else the chat can show in the file viewer. */
+export function openFile(file: PreviewFile): void {
+  if (filePreviewKind(file.name) === "image") showImages([{ src: file.url, name: file.name }], 0);
+  else showFile(file);
 }
 
 /** Open images full screen. The viewer is loaded on first use. */
@@ -263,9 +328,13 @@ export function ImageGallery({ images, align = "start" }: ImageGalleryProps) {
             alt={image.alt ?? image.name}
             loading="lazy"
             onError={() => markFailed(image.src)}
-            className={single
-              ? "block max-h-80 w-auto max-w-[min(100%,22rem)] object-contain"
-              : "block h-28 w-28 object-cover sm:h-32 sm:w-32"}
+            className={cx(
+              "block",
+              !single && "h-28 w-28 object-cover sm:h-32 sm:w-32",
+              single && "max-h-80 object-contain",
+              single && (isVectorImage(image.src) ? "w-72 max-w-full" : "w-auto max-w-[min(100%,22rem)]"),
+              isVectorImage(image.src) && "bg-white",
+            )}
           />
         </button>
       ))}
@@ -301,14 +370,19 @@ export function MessageAttachments({
       <ImageGallery images={images} align={align} />
       {files.length > 0 && (
         <div className={cx("flex max-w-full flex-wrap gap-1.5", align === "end" ? "justify-end" : "justify-start")}>
-          {files.map((att, index) => (
-            <FileCard
-              key={`${attachmentName(att)}-${index}`}
-              name={attachmentName(att)}
-              href={attachmentDownloadUrl(att, sessionId)}
-              {...attachmentMeta(att)}
-            />
-          ))}
+          {files.map((att, index) => {
+            const name = attachmentName(att);
+            const url = attachmentFileUrl(att, sessionId);
+            return (
+              <FileCard
+                key={`${name}-${index}`}
+                name={name}
+                href={url}
+                onOpen={url && filePreviewKind(name) ? () => openFile({ url, name }) : undefined}
+                {...attachmentMeta(att)}
+              />
+            );
+          })}
         </div>
       )}
     </div>
@@ -393,20 +467,4 @@ export function parseOutboundAttachmentLink(href: string | null | undefined): { 
     name = match[1];
   }
   return { url: href, name };
-}
-
-/** A file from the agent: a preview when it is an image, otherwise a card that downloads it. */
-export function OutboundAttachment({ url, name }: { url: string; name: string }) {
-  if (isImageFileName(name) && fileExtension(name) !== "svg") {
-    return (
-      <div className="not-prose my-2 flex min-w-0">
-        <ImageGallery images={[{ src: url, name, downloadUrl: url }]} />
-      </div>
-    );
-  }
-  return (
-    <div className="not-prose my-2">
-      <FileCard name={name} href={url} />
-    </div>
-  );
 }

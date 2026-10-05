@@ -20,10 +20,11 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
   return [
   defineSessionBridgeTool("send_attachment", {
     description:
-      "Publish a file as an attachment the user can open or download. " +
+      "Send the user a file. The chat shows images, Markdown, text and code, CSV, HTML, PDF, audio and video " +
+      "as a preview the user can open and read in place; any file can be downloaded, and other formats only that. " +
       "Use this when the user asks you to send them a file, export, image, report, or other artifact. " +
       "Provide exactly one of `path` or `content`. When using `path`, absolute paths work best and relative paths resolve from the bridge repository root. " +
-      "After calling this tool, include the returned `markdown` snippet verbatim in your next assistant response so the attachment appears in chat.",
+      "After calling this tool, put the returned `markdown` snippet verbatim in your next assistant response, in a paragraph of its own, so the file appears in chat.",
     parameters: {
       type: "object",
       properties: {
@@ -50,7 +51,7 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
       const rendered = renderPublishedAttachment(attachmentApiBasePath, invocation.sessionId, attachment);
       const instructions =
         `Attachment "${attachment.displayName}" is ready. ` +
-        `In your next response, include this markdown exactly:\n\n${rendered.recommendedMarkdown}`;
+        `In your next response, include this markdown exactly, in a paragraph of its own:\n\n${rendered.recommendedMarkdown}`;
       return {
         success: true,
         content: instructions,

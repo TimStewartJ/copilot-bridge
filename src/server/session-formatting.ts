@@ -54,7 +54,7 @@ export function renderPublishedAttachment(
 } {
   const urlPath = buildSessionAttachmentUrlPath(apiBasePath, sessionId, attachment.attachmentId);
   const escapedDisplayName = escapeAttachmentMarkdownText(attachment.displayName);
-  const linkMarkdown = `[${escapeAttachmentMarkdownText(`Download ${attachment.displayName}`)}](${urlPath})`;
+  const linkMarkdown = `[${escapedDisplayName}](${urlPath})`;
   const imageMarkdown = attachment.inline ? `![${escapedDisplayName}](${urlPath})` : undefined;
   return {
     urlPath,

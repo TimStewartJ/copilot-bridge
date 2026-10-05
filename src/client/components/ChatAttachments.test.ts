@@ -10,6 +10,11 @@ import {
 
 const viewerMocks = vi.hoisted(() => ({ openImageViewer: vi.fn(async () => {}) }));
 vi.mock("./image-viewer", () => viewerMocks);
+const previewMocks = vi.hoisted(() => ({ showFile: vi.fn() }));
+vi.mock("./file-preview", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./file-preview")>(),
+  showFile: previewMocks.showFile,
+}));
 
 type ChatAttachmentsModule = typeof import("./ChatAttachments");
 let mod: ChatAttachmentsModule;
@@ -25,6 +30,7 @@ beforeAll(async () => {
 }, COMPONENT_IMPORT_WARMUP_TIMEOUT_MS);
 
 beforeEach(() => {
+  previewMocks.showFile.mockClear();
   viewerMocks.openImageViewer.mockClear();
 });
 
@@ -109,15 +115,28 @@ describe("MessageAttachments", () => {
 });
 
 describe("ComposerAttachmentTray", () => {
-  it("links a sent file from history to the session's copy", async () => {
+  it("opens a sent file from the session's copy when the chat can show it, and downloads it otherwise", async () => {
     const harness = await createReactDomHarness();
+    const filesDir = `C:\\h\\.copilot\\session-state\\${id}\\files`;
     try {
       await harness.render(createElement(mod.MessageAttachments, {
         sessionId: id,
-        attachments: [{ type: "file", path: `C:\\h\\.copilot\\session-state\\${id}\\files\\data.csv`, displayName: "data.csv" }],
+        attachments: [
+          { type: "file", path: `${filesDir}\\data.csv`, displayName: "data.csv" },
+          { type: "file", path: `${filesDir}\\bundle.zip`, displayName: "bundle.zip" },
+        ],
       }));
       const link = findAllByTag(harness.dom.container, "A")[0];
-      expect(link.getAttribute("href")).toBe(`/api/sessions/${id}/files/data.csv?download=1`);
+      expect(link.getAttribute("href")).toBe(`/api/sessions/${id}/files/bundle.zip`);
+      expect(link.getAttribute("download")).toBe("bundle.zip");
+
+      const open = findAllByTag(harness.dom.container, "BUTTON").find((button) => (
+        button.getAttribute?.("aria-label") === "Open data.csv"
+      ));
+      await harness.act(async () => {
+        getReactProps(open)?.onClick?.({});
+      });
+      expect(previewMocks.showFile).toHaveBeenCalledWith({ url: `/api/sessions/${id}/files/data.csv`, name: "data.csv" });
     } finally {
       await harness.cleanup();
     }
@@ -131,31 +150,6 @@ describe("ComposerAttachmentTray", () => {
       await harness.render(createElement(mod.ComposerAttachmentTray, { attachments: [], uploadingCount: 1, onRemove: () => {} }));
       const status = findAllByTag(harness.dom.container, "DIV").find((node) => node.getAttribute?.("role") === "status");
       expect(status?.getAttribute("aria-label")).toBe("Uploading attachment");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-});
-
-describe("OutboundAttachment", () => {
-  it("offers a non-image file as a download card", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(mod.OutboundAttachment, { url: "/api/x/report.csv", name: "report.csv" }));
-      const link = findAllByTag(harness.dom.container, "A")[0];
-      expect(link.getAttribute("href")).toBe("/api/x/report.csv");
-      expect(link.getAttribute("download")).toBe("report.csv");
-      expect(harness.dom.container.textContent).toContain("CSV");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("previews an image file inline", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(mod.OutboundAttachment, { url: "/api/x/chart.png", name: "chart.png" }));
-      expect(findAllByTag(harness.dom.container, "IMG")[0]?.getAttribute("src")).toBe("/api/x/chart.png");
     } finally {
       await harness.cleanup();
     }

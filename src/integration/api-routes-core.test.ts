@@ -621,6 +621,49 @@ describe("Attachment routes", () => {
     expect(res.headers["content-disposition"]).toBeUndefined();
   });
 
+  it("GET /api/sessions/:id/attachments/:attachmentId serves a web page for the chat's frame only under the sandbox policy", async () => {
+    const copilotHome = makeTestDir("route-home");
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    for (const displayName of ["page.html", "logo.svg"]) {
+      const published = publishOutboundAttachment({ copilotHome, sessionId, content: "<script>alert(1)</script>", displayName });
+      if (!published.ok) throw new Error(published.error);
+    }
+    const base = `/api/sessions/${sessionId}/attachments`;
+
+    const framed = await request(attachmentApp).get(`${base}/page.html?inline=1`);
+    expect(framed.status).toBe(200);
+    expect(framed.headers["content-type"]).toMatch(/^text\/html/);
+    expect(framed.headers["content-disposition"]).toBeUndefined();
+    expect(framed.headers["content-security-policy"]).toContain("sandbox allow-scripts;");
+    expect(framed.headers["content-security-policy"]).toContain("connect-src 'none'");
+    expect(framed.headers["x-content-type-options"]).toBe("nosniff");
+
+    for (const path of [`${base}/page.html`, `${base}/page.html?inline=1&download=1`, `${base}/logo.svg?inline=1`]) {
+      const downloaded = await request(attachmentApp).get(path);
+      expect(downloaded.status, path).toBe(200);
+      expect(downloaded.headers["content-disposition"], path).toContain("attachment;");
+      expect(downloaded.headers["x-content-type-options"], path).toBe("nosniff");
+    }
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId serves the start of a file for a preview", async () => {
+    const copilotHome = makeTestDir("route-home");
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    for (const [displayName, content] of [["notes.md", "0123456789".repeat(200)], ["empty.txt", ""]]) {
+      const published = publishOutboundAttachment({ copilotHome, sessionId, content, displayName });
+      if (!published.ok) throw new Error(published.error);
+    }
+    const base = `/api/sessions/${sessionId}/attachments`;
+
+    const start = await request(attachmentApp).get(`${base}/notes.md`).set("Range", "bytes=0-1499");
+    expect(start.status).toBe(206);
+    expect(start.headers["content-range"]).toBe("bytes 0-1499/2000");
+    expect(start.text).toBe("0123456789".repeat(150));
+
+    const empty = await request(attachmentApp).get(`${base}/empty.txt`).set("Range", "bytes=0-1499");
+    expect(empty.status).toBe(416);
+  });
+
   it("GET /api/sessions/:id/attachments/:attachmentId serves files from dot-directory copilot homes", async () => {
     const parent = makeTestDir("route-home");
     const copilotHome = join(parent, ".copilot");
@@ -674,16 +717,26 @@ describe("Attachment routes", () => {
     mkdirSync(join(filesDir, "outgoing"), { recursive: true });
     writeFileSync(join(filesDir, "photo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     writeFileSync(join(filesDir, "notes.csv"), "a,b\n1,2\n");
+    writeFileSync(join(filesDir, "page.html"), "<script>alert(1)</script>");
     writeFileSync(join(filesDir, "outgoing", "nested.txt"), "nested");
 
     const image = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png`);
     expect(image.status).toBe(200);
     expect(image.headers["content-type"]).toMatch(/^image\/png/);
     expect(image.headers["content-disposition"]).toBeUndefined();
+    expect(image.headers["cache-control"]).toBe("private, max-age=3600");
 
     const csv = await request(filesApp).get(`/api/sessions/${sessionId}/files/notes.csv`);
     expect(csv.status).toBe(200);
     expect(csv.headers["content-disposition"]).toContain("attachment;");
+    expect(csv.headers["x-content-type-options"]).toBe("nosniff");
+
+    // A web page the user attached is untrusted too: shown only under the sandbox policy.
+    const page = await request(filesApp).get(`/api/sessions/${sessionId}/files/page.html`);
+    expect(page.headers["content-disposition"]).toContain("attachment;");
+    const framed = await request(filesApp).get(`/api/sessions/${sessionId}/files/page.html?inline=1`);
+    expect(framed.headers["content-disposition"]).toBeUndefined();
+    expect(framed.headers["content-security-policy"]).toContain("sandbox allow-scripts;");
 
     const forcedDownload = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png?download=1`);
     expect(forcedDownload.headers["content-disposition"]).toContain("attachment;");

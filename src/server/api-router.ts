@@ -58,7 +58,8 @@ import type { VoiceJobManager } from "./voice-job-manager.js";
 import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
-import { isCanonicalSessionId, resolveOutboundAttachment, resolveSessionUploadedFile } from "./outbound-attachments.js";
+import { isCanonicalSessionId, resolveOutboundAttachment, resolveSessionUploadedFile, type ResolvedOutboundAttachment } from "./outbound-attachments.js";
+import type { Result } from "./tool-results.js";
 import {
   createWorkspaceAvailabilityLookup,
   resolveAvailableWorkspaceCwd,
@@ -77,6 +78,7 @@ import type { SessionWorkspace } from "./session-workspace-store.js";
 import {
   feedCardVisualOwner,
   HTML_MIME_TYPE,
+  HTML_SANDBOX_CSP,
   isCanonicalArtifactId,
   loadVisualArtifactMetaForOwner,
   resolveVisualArtifactForOwner,
@@ -2574,37 +2576,55 @@ export function createApiRouter(
     req.on("close", () => { close(); });
   });
 
+  /**
+   * Sends a file kept in a session: one the agent sent with send_attachment, or one the user
+   * attached to a prompt. Raster images are served for display and everything else as a download,
+   * which is all `fetch`, `<img>`, `<audio>` and `<video>` need to preview a file in the chat.
+   * `?inline` serves an HTML file for the chat's sandboxed frame, under the policy that keeps it
+   * from acting as the Bridge even when opened by itself; `?download` always downloads.
+   */
+  function sendSessionFile(req: express.Request, res: express.Response, file: Result<ResolvedOutboundAttachment>): void {
+    if (!file.ok) {
+      res.status(file.error.includes("unsafe") ? 403 : 404).json({ error: file.error });
+      return;
+    }
+    const { filePath, displayName, mimeType, inline } = file.value;
+    const onSendError = (err: NodeJS.ErrnoException | null) => {
+      if (!err || res.headersSent) return;
+      const statusCode = (err as NodeJS.ErrnoException & { statusCode?: number }).statusCode;
+      res.status(typeof statusCode === "number" ? statusCode : 500).json({ error: err.message });
+    };
+    res.type(mimeType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    const sandboxed = mimeType === HTML_MIME_TYPE && req.query.inline !== undefined;
+    if (req.query.download !== undefined || !(inline || sandboxed)) {
+      res.download(filePath, displayName, { dotfiles: "allow" }, onSendError);
+      return;
+    }
+    if (sandboxed) {
+      res.setHeader("Content-Security-Policy", HTML_SANDBOX_CSP);
+      res.setHeader("Referrer-Policy", "no-referrer");
+    } else {
+      res.setHeader("Cache-Control", "private, max-age=3600");
+    }
+    res.sendFile(filePath, { dotfiles: "allow" }, onSendError);
+  }
+
+  /** A file name from the URL that names one file in a folder and nothing above it. */
+  function sessionFileName(value: unknown): string | undefined {
+    const name = String(value ?? "").trim();
+    return name && basename(name) === name && !name.includes("..") ? name : undefined;
+  }
+
   router.get("/sessions/:id/attachments/:attachmentId", (req, res) => {
     if (!isCanonicalSessionId(req.params.id)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
-    const attachmentId = String(req.params.attachmentId ?? "").trim();
+    const attachmentId = sessionFileName(req.params.attachmentId);
     if (!attachmentId) {
-      return res.status(400).json({ error: "attachmentId is required" });
-    }
-    if (basename(attachmentId) !== attachmentId || attachmentId.includes("..")) {
       return res.status(400).json({ error: "attachmentId is invalid" });
     }
-
-    const attachment = resolveOutboundAttachment(getCopilotHome(ctx), req.params.id, attachmentId);
-    if (!attachment.ok) {
-      return res.status(attachment.error === "Attachment path is unsafe" ? 403 : 404).json({ error: attachment.error });
-    }
-
-    const onSendError = (err: NodeJS.ErrnoException | null) => {
-      if (!err || res.headersSent) return;
-      const errWithStatus = err as NodeJS.ErrnoException & { statusCode?: number };
-      const statusCode = typeof errWithStatus.statusCode === "number"
-        ? errWithStatus.statusCode
-        : 500;
-      res.status(statusCode).json({ error: err.message });
-    };
-
-    res.type(attachment.value.mimeType);
-    if (attachment.value.inline) {
-      return res.sendFile(attachment.value.filePath, { dotfiles: "allow" }, onSendError);
-    }
-    return res.download(attachment.value.filePath, attachment.value.displayName, { dotfiles: "allow" }, onSendError);
+    return sendSessionFile(req, res, resolveOutboundAttachment(getCopilotHome(ctx), req.params.id, attachmentId));
   });
 
   // Files the user attached to a prompt. Sent images come back from history without their bytes,
@@ -2613,25 +2633,11 @@ export function createApiRouter(
     if (!isCanonicalSessionId(req.params.id)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
-    const fileName = String(req.params.fileName ?? "").trim();
-    if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) {
+    const fileName = sessionFileName(req.params.fileName);
+    if (!fileName) {
       return res.status(400).json({ error: "fileName is invalid" });
     }
-    const file = resolveSessionUploadedFile(getCopilotHome(ctx), req.params.id, fileName);
-    if (!file.ok) {
-      return res.status(file.error === "File path is unsafe" ? 403 : 404).json({ error: file.error });
-    }
-    const onSendError = (err: NodeJS.ErrnoException | null) => {
-      if (!err || res.headersSent) return;
-      const statusCode = (err as NodeJS.ErrnoException & { statusCode?: number }).statusCode;
-      res.status(typeof statusCode === "number" ? statusCode : 500).json({ error: err.message });
-    };
-    res.type(file.value.mimeType);
-    if (file.value.inline && req.query.download === undefined) {
-      res.setHeader("Cache-Control", "private, max-age=3600");
-      return res.sendFile(file.value.filePath, { dotfiles: "allow" }, onSendError);
-    }
-    return res.download(file.value.filePath, file.value.displayName, { dotfiles: "allow" }, onSendError);
+    return sendSessionFile(req, res, resolveSessionUploadedFile(getCopilotHome(ctx), req.params.id, fileName));
   });
 
   function sendVisualArtifact(owner: VisualArtifactOwner, artifactId: string, res: express.Response, mode: "inline" | "download"): void {
@@ -2651,10 +2657,7 @@ export function createApiRouter(
     }
     res.type(resolved.value.mimeType);
     if (resolved.value.mimeType === HTML_MIME_TYPE) {
-      res.setHeader(
-        "Content-Security-Policy",
-        "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'",
-      );
+      res.setHeader("Content-Security-Policy", HTML_SANDBOX_CSP);
       res.setHeader("Referrer-Policy", "no-referrer");
       res.setHeader("X-Content-Type-Options", "nosniff");
     }
