@@ -1051,6 +1051,34 @@ describe("useSessionStream pending interactions", () => {
     });
   });
 
+  it("keeps the browser handoff a pending form stands for", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, {
+        type: "elicitation_requested",
+        requestId: "elicit-1",
+        message: "The browser needs you: pass the check",
+        mode: "form",
+        requestedSchema: { properties: {} },
+        browserHandoff: { browserSessionId: "bs_12345678", reason: "pass the check", extra: "dropped" },
+      }, () => getState().pendingElicitations.length === 1);
+      await emitAndWait(act, source, {
+        type: "elicitation_requested",
+        requestId: "elicit-2",
+        message: "Pick one",
+        mode: "form",
+        requestedSchema: { properties: {} },
+        browserHandoff: { reason: "no session" },
+      }, () => getState().pendingElicitations.length === 2);
+
+      expect(getState().pendingElicitations[0].browserHandoff)
+        .toEqual({ browserSessionId: "bs_12345678", reason: "pass the check" });
+      expect(getState().pendingElicitations[1].browserHandoff).toBeUndefined();
+    });
+  });
+
   it("surfaces pending elicitation cancellation when a run aborts", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));

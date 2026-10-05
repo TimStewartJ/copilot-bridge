@@ -40,6 +40,7 @@ import {
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
 import { restoreHibernateHandoff, saveHibernateHandoff } from "./device-hibernate-handoff.js";
+import { getBrowserRuntime } from "./browser-runtime.js";
 import { createApiCacheControlMiddleware, createResponseCompressionMiddleware } from "./response-transport.js";
 import { createSessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import { createStorageMaintenance } from "./storage-maintenance.js";
@@ -377,7 +378,7 @@ function gracefulExit(signal: string): void {
   void shutdownCoordinator.request(`${signal} received`);
 }
 
-/** WebSocket upgrades: voice mode on this server, or forwarded to a staged preview backend. */
+/** WebSocket upgrades: voice mode and live browser views on this server, or forwarded to a staged preview backend. */
 function handleServerUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
   let pathname = "/";
   try {
@@ -389,7 +390,8 @@ function handleServerUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer)
   const staging = pathname.match(/^\/staging\/([^/]+)\/api\//);
   const handled = staging
     ? proxyStagingUpgrade(staging[1]!, req, socket, head)
-    : defaultContext.voiceGateway?.handleUpgrade(req, socket, head) === true;
+    : defaultContext.voiceGateway?.handleUpgrade(req, socket, head) === true
+      || getBrowserRuntime(defaultContext).live.handleUpgrade(req, socket, head);
   if (!handled) {
     socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     socket.destroy();

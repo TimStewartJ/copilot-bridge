@@ -1,3 +1,4 @@
+import type { BrowserHandoffView } from "../shared/browser-live.js";
 import type { UserInputCancelReason } from "./user-input-types.js";
 
 export const MAX_ELICITATION_FIELDS = 20;
@@ -100,6 +101,8 @@ export interface PendingElicitationRequestView {
   elicitationSource?: string;
   url?: string;
   requestedAt?: string;
+  /** Set when the form asks the user to act in a live browser session. */
+  browserHandoff?: BrowserHandoffView;
 }
 
 export interface ElicitationRequestedStreamEvent extends PendingElicitationRequestView {

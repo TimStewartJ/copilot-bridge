@@ -434,6 +434,16 @@ class CopilotAgentSession implements AgentSession {
     return (result as any)?.success === true;
   }
 
+  requestElicitation(request: { message: string; requestedSchema: unknown }): Promise<AgentElicitationResponse> {
+    const elicit = this.session?.rpc?.ui?.elicitation;
+    if (typeof elicit !== "function") {
+      return Promise.reject(new Error("Asking the user from a tool is not available in this Copilot SDK build"));
+    }
+    // Not bounded like other calls: it waits for a person, and Bridge's own rules for an
+    // unanswered question end the wait.
+    return elicit.call(this.session.rpc.ui, request);
+  }
+
   async setSendMode(opts: { mode: string }): Promise<unknown> {
     const setMode = this.session?.rpc?.mode?.set;
     if (typeof setMode !== "function") {

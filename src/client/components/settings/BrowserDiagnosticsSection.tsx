@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Globe2, Loader2, Monitor, RotateCw, ShieldCheck, X } from "lucide-react";
+import { Globe2, Loader2, Monitor, RotateCw, ShieldCheck, Trash2, X } from "lucide-react";
 import {
   ApiError,
   checkAdoBrowserAuthentication,
@@ -7,15 +7,20 @@ import {
   fetchBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
   probeBrowserContext,
+  resetPublicBrowserData,
   type AppSettings,
+  type BrowserBuildDiagnostics,
+  type BrowserBuildKind,
+  type BrowserExecutableSource,
   type BrowserHeadedCloseFailureDetails,
+  type BrowserLaunchDiagnostics,
   type BrowserSettings,
   type BrowserDiagnosticsResponse,
   type BrowserDiagnosticsTone,
 } from "../../api";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
-import { Badge, Button, Details, Field, FieldList, Notice, SettingList, SettingRow, Switch } from "../../design/primitives";
+import { Badge, Button, Details, Field, FieldList, Notice, SettingList, SettingRow, StatusIcon, Switch } from "../../design/primitives";
 import { useSettingsWriter } from "../../hooks/queries/useSettings";
 import { DraftTextField } from "./DraftTextField";
 
@@ -25,6 +30,47 @@ const SUMMARY_TONE: Record<BrowserDiagnosticsTone, "neutral" | "warning" | "dang
   warning: "warning",
   error: "danger",
 };
+
+const BROWSER_KIND_LABEL: Record<BrowserBuildKind, string> = {
+  chrome: "Google Chrome",
+  edge: "Microsoft Edge",
+  chromium: "Chromium",
+  "chrome-for-testing": "Chrome for Testing",
+  unknown: "Unknown browser",
+};
+
+const EXECUTABLE_SOURCE_LABEL: Record<BrowserExecutableSource, string> = {
+  settings: "set in Settings",
+  environment: "set by the environment",
+  system: "found on this machine",
+  "auto-detect": "chosen by agent-browser",
+};
+
+const LAUNCH_INHERITED_LABEL: Record<BrowserLaunchDiagnostics["inheritedFrom"], string> = {
+  environment: "Arguments other than the Bridge's own come from the environment.",
+  "agent-browser-config": "Arguments other than the Bridge's own come from agent-browser's config file.",
+  none: "Only the Bridge's own arguments are used.",
+};
+
+/** Sites treat these builds as automation, and a browser this many days old as suspect. */
+const AUTOMATION_BUILDS: ReadonlySet<BrowserBuildKind> = new Set(["chrome-for-testing", "chromium"]);
+const STALE_BROWSER_DAYS = 60;
+
+function count(value: number, noun: string): string {
+  return `${value} ${noun}${value === 1 ? "" : "s"}`;
+}
+
+/** "Google Chrome 154.0.8037.97": the kind in plain words, then the number the executable reports. */
+function describeBrowserBuild(browser: BrowserBuildDiagnostics): string {
+  if (browser.kind === "unknown") return browser.version ?? BROWSER_KIND_LABEL.unknown;
+  const number = browser.version?.match(/\d+(?:\.\d+)+/)?.[0];
+  return number ? `${BROWSER_KIND_LABEL[browser.kind]} ${number}` : BROWSER_KIND_LABEL[browser.kind];
+}
+
+function describeBrowserAge(days: number | undefined): string | undefined {
+  if (days === undefined) return undefined;
+  return days <= 0 ? "updated today" : `updated ${count(days, "day")} ago`;
+}
 
 function formatTimestamp(value: string | undefined): string {
   if (!value) return "unknown";
@@ -81,6 +127,7 @@ export function BrowserDiagnosticsSection({
   const [closing, setClosing] = useState(false);
   const [probing, setProbing] = useState<"public" | "authenticated" | null>(null);
   const [checkingAdo, setCheckingAdo] = useState(false);
+  const [clearingPublic, setClearingPublic] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
@@ -198,6 +245,22 @@ export function BrowserDiagnosticsSection({
     }
   };
 
+  const clearPublicData = async () => {
+    setClearingPublic(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const result = await resetPublicBrowserData();
+      const left = result.inUse > 0 ? `; ${result.inUse} in use ${result.inUse === 1 ? "was" : "were"} left alone` : "";
+      setMessage(`Cleared ${count(result.cleared, "profile")}${left}.`);
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setClearingPublic(false);
+    }
+  };
+
   const config = diagnostics?.config;
   const summary = diagnostics?.summary;
   const executablePathValue = draft.browser?.executablePath ?? "";
@@ -205,11 +268,11 @@ export function BrowserDiagnosticsSection({
   const headedValue = draft.browser?.headed === true;
   const binaryState = !config
     ? "checking"
-    : !config.executablePathConfigured
-      ? "auto-detect"
-      : config.executablePathExists
-        ? "found"
-        : "missing";
+    : config.executablePathExists
+      ? "found"
+      : config.executablePathConfigured
+        ? "missing"
+        : "auto-detect";
   const profileState = !config
     ? "checking"
     : config.masterProfileDirectoryExists
@@ -219,6 +282,16 @@ export function BrowserDiagnosticsSection({
   const publicContext = diagnostics?.contexts.public;
   const authContext = diagnostics?.contexts.authenticated;
   const adoState = authContext?.serviceChecks.find((check) => check.service === "ado")?.state ?? "unknown";
+  const browserBuild = config?.browser;
+  const browserFacts = config && browserBuild
+    ? [describeBrowserBuild(browserBuild), EXECUTABLE_SOURCE_LABEL[config.executablePathSource], describeBrowserAge(browserBuild.installedDaysAgo)]
+      .filter(Boolean).join(" · ")
+    : undefined;
+  const browserIsAutomationBuild = browserBuild !== undefined && AUTOMATION_BUILDS.has(browserBuild.kind);
+  const browserStaleDays = browserBuild?.installedDaysAgo !== undefined && browserBuild.installedDaysAgo > STALE_BROWSER_DAYS
+    ? browserBuild.installedDaysAgo
+    : undefined;
+  const warningIcon = <StatusIcon kind="warning" decorative />;
   const busyButton = (active: boolean) => active ? <Loader2 size={11} className="animate-spin" /> : null;
 
   return (
@@ -230,14 +303,62 @@ export function BrowserDiagnosticsSection({
           control={summary ? <Badge tone={SUMMARY_TONE[summary.tone]}>{summary.label}</Badge> : undefined}
         />
         <SettingRow
+          label="Browser in use"
+          hint={browserFacts ?? (loading ? "Checking which browser runs…" : "Unknown.")}
+        >
+          {(browserIsAutomationBuild || browserStaleDays !== undefined) && (
+            <div className="space-y-2">
+              {browserIsAutomationBuild && (
+                <Notice tone="warning" icon={warningIcon}>
+                  Sites can tell this build from regular Chrome. Install Google Chrome for fewer blocks.
+                </Notice>
+              )}
+              {browserStaleDays !== undefined && (
+                <Notice tone="warning" icon={warningIcon}>
+                  This browser has not been updated for {browserStaleDays} days; sites distrust old versions.
+                </Notice>
+              )}
+            </div>
+          )}
+        </SettingRow>
+        <SettingRow
+          label="Live view"
+          hint="Watch a browser an agent is using, and take over when a site needs you. Checking the public browser tests it."
+          control={config ? (
+            <Badge tone={config.liveView && !config.liveView.ok ? "warning" : "neutral"}>
+              {!config.liveView ? "Not checked yet" : config.liveView.ok ? "Working" : "Not working"}
+            </Badge>
+          ) : undefined}
+        >
+          {config?.liveView && !config.liveView.ok && (
+            <Notice tone="warning" icon={warningIcon}>
+              {config.liveView.message ?? "The browser could not be shown."} If agent-browser was updated recently, the
+              update may have changed how it shows a browser; otherwise update it:
+              <code className={cx(DS.text.literal, "mt-1 block")}>npm install -g agent-browser@latest</code>
+            </Notice>
+          )}
+        </SettingRow>
+        <SettingRow
           label={<span className="inline-flex items-center gap-1.5"><Globe2 size={13} className="text-text-secondary" />Public browser</span>}
           hint={publicContext
-            ? `Disposable, for search and fetches · ${publicContext.state} · probe ${publicContext.functionalProbe.state}`
-            : "Disposable and unauthenticated. Used by search and ordinary browser fetches."}
+            ? `Not signed in, for search and fetches · ${publicContext.state} · probe ${publicContext.functionalProbe.state}`
+            : "Not signed in. Used by search and ordinary browser fetches."}
           control={(
             <Button size="sm" variant="ghost" onClick={() => void probeContext("public")} disabled={probing !== null}
               icon={busyButton(probing === "public") ?? <RotateCw size={11} />}>
               Check public browser
+            </Button>
+          )}
+        />
+        <SettingRow
+          label="Public browsing data"
+          hint={publicContext
+            ? `${count(publicContext.profiles, "profile")}, ${publicContext.profilesInUse} in use. Public profiles keep cookies between uses.`
+            : "Public profiles keep cookies between uses."}
+          control={(
+            <Button size="sm" variant="ghost" onClick={() => void clearPublicData()} disabled={clearingPublic}
+              icon={busyButton(clearingPublic) ?? <Trash2 size={11} />}>
+              Clear public browsing data
             </Button>
           )}
         />
@@ -260,9 +381,9 @@ export function BrowserDiagnosticsSection({
           )}
         />
         <SettingRow
-          label="Run authenticated browser headed"
+          label="Run browsers with a window"
           htmlFor="browser-headed"
-          hint="Only the signed-in profile. Public browsing stays headless."
+          hint="Applies to public and signed-in browsers. Sites can tell a browser without a window; a window needs a display (on a Linux server, Xvfb)."
           control={<Switch id="browser-headed" checked={headedValue} onChange={(event) => updateBrowserHeaded(event.target.checked)} />}
         />
         <SettingRow
@@ -314,6 +435,24 @@ export function BrowserDiagnosticsSection({
           </div>
         </Details>
 
+        <Details
+          label="Launch arguments"
+          detail={config ? count(config.launch.args.length, "argument") : undefined}
+        >
+          <div className="space-y-1.5 pt-1">
+            {config && <p className={DS.field.help}>{LAUNCH_INHERITED_LABEL[config.launch.inheritedFrom]}</p>}
+            {config?.launch.args.length ? (
+              <ul className="space-y-0.5">
+                {config.launch.args.map((arg, index) => (
+                  <li key={`${index}-${arg}`} className={cx(DS.text.literal, "break-all")}>{arg}</li>
+                ))}
+              </ul>
+            ) : (
+              config && <p className={DS.field.help}>The browser starts with no extra arguments.</p>
+            )}
+          </div>
+        </Details>
+
         <Details label="Paths and technical details" open={open || undefined}>
           <div className="space-y-3 pt-2">
             <DraftTextField
@@ -335,7 +474,13 @@ export function BrowserDiagnosticsSection({
               onCommit={(value) => updateBrowserSetting("masterProfileDirectory", value)}
             />
             <FieldList>
-              <Field label="agent-browser" mono>{!diagnostics ? "checking" : diagnostics.agentBrowserInstalled ? "installed" : "missing"}</Field>
+              <Field label="agent-browser" mono>
+                {!diagnostics
+                  ? "checking"
+                  : !diagnostics.agentBrowserInstalled
+                    ? "missing"
+                    : config?.agentBrowserVersion ? `installed · ${config.agentBrowserVersion}` : "installed"}
+              </Field>
               <Field label="Binary" mono>{binaryState}</Field>
               <Field label="Effective browser" mono>{config ? (config.executablePath ?? "agent-browser auto-detect") : "checking"}</Field>
               <Field label="Browser source" mono>{config?.executablePathSource ?? "checking"}</Field>
@@ -348,7 +493,7 @@ export function BrowserDiagnosticsSection({
                   <Field label="Transport" mono>{`${diagnostics.runtime.transport.kind} · ${diagnostics.runtime.transport.state} · ${diagnostics.runtime.transport.namespace}`}</Field>
                   <Field label="Last probe" mono>{formatTimestamp(diagnostics.runtime.transport.lastSuccessfulProbeAt)}</Field>
                   <Field label="Public queue" mono>{`${publicContext!.activeOperations} active / ${publicContext!.queueDepth} queued · limit ${publicContext!.concurrencyLimit}`}</Field>
-                  <Field label="Public root" mono>{publicContext!.disposableProfileRoot}</Field>
+                  <Field label="Public profiles" mono>{publicContext!.profileRoot}</Field>
                   <Field label="Authenticated queue" mono>{`${authContext!.activeOperations} active / ${authContext!.queueDepth} queued`}</Field>
                 </>
               )}

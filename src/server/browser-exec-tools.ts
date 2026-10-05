@@ -3,66 +3,37 @@
 
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
-import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan } from "./agent-browser.js";
+import { ab, safeRecordBrowserSpan } from "./agent-browser.js";
+import type { BrowserBrokerLease, BrowserContext } from "./browser-broker.js";
+import { getBrowserRuntime } from "./browser-runtime.js";
 import {
-  getOrCreateBrowserBroker,
-  type BrowserBrokerLease,
-  type BrowserContext,
-} from "./browser-broker.js";
-import { captureFinalBrowserState, formatBrowserStepTimeline, normalizeBrowserAutomationCapture, normalizeBrowserAutomationCommands, runBrowserAutomationCommands, truncateBrowserFailureText, type BrowserAutomationCaptureInput, type BrowserAutomationCommand, type BrowserAutomationRunFailure } from "./browser-automation.js";
-import { err, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
+  agentBrowserMissingFailure,
+  browserStepFailure,
+  captureFinalBrowserState,
+  normalizeBrowserAutomationCapture,
+  normalizeBrowserAutomationCommands,
+  runBrowserAutomationCommands,
+  type BrowserAutomationCaptureInput,
+  type BrowserAutomationCommand,
+} from "./browser-automation.js";
+import { checkPage, pageBlockFields } from "./browser-page-check.js";
+import { err, ok, toolFailure, type Result } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
 
-type BrowserExecLane = "auto" | "primary" | "clone";
-
 interface BrowserExecNormalizedInput {
   context: BrowserContext;
-  legacyLane?: BrowserExecLane;
   reason?: string;
   allowedOrigins?: string[];
   commands: BrowserAutomationCommand[];
   capture?: BrowserAutomationCaptureInput;
 }
 
-const AGENT_BROWSER_INSTALL_GUIDANCE =
-  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
-
-function browserExecStepFailure(
-  failure: BrowserAutomationRunFailure,
-  context: BrowserContext,
-) {
-  const stepOutput = truncateBrowserFailureText(failure.failedStep.output);
-  const detail = joinFailureSections(
-    failure.error,
-    stepOutput && stepOutput !== failure.error ? stepOutput : undefined,
-  ) ?? failure.error;
-  return toolFailureWithContext(failure.error, {
-    context,
-    failedStep: failure.failedStep,
-    steps: failure.steps,
-  }, {
-    detail,
-    sessionLog: joinFailureSections(
-      `Browser context: ${context}`,
-      `Failed step: ${failure.failedStep.index + 1} ${failure.failedStep.command}`,
-      formatBrowserStepTimeline(failure.steps),
-    ),
-  });
-}
-
 export function normalizeBrowserExecInput(args: any): Result<BrowserExecNormalizedInput> {
   const context = args.context;
   if (context !== undefined && context !== "public" && context !== "authenticated") {
     return err("context must be one of: public, authenticated");
-  }
-  const lane = args.lane as BrowserExecLane | undefined;
-  if (lane !== undefined && lane !== "auto" && lane !== "primary" && lane !== "clone") {
-    return err("lane must be one of: auto, primary, clone");
-  }
-  if (context !== undefined && lane !== undefined) {
-    return err("provide context or legacy lane, not both");
   }
   const reason = typeof args.reason === "string" ? args.reason.trim() : undefined;
   if (args.reason !== undefined && !reason) {
@@ -89,8 +60,8 @@ export function normalizeBrowserExecInput(args: any): Result<BrowserExecNormaliz
   const capture = normalizeBrowserAutomationCapture(args.capture);
   if (!capture.ok) return err(capture.error);
 
-  const resolvedContext = context ?? (lane === "primary" ? "authenticated" : "public");
-  if (resolvedContext === "authenticated" && !reason && lane !== "primary") {
+  const resolvedContext: BrowserContext = context ?? "public";
+  if (resolvedContext === "authenticated" && !reason) {
     return err("reason is required for authenticated browser access");
   }
 
@@ -104,7 +75,6 @@ export function normalizeBrowserExecInput(args: any): Result<BrowserExecNormaliz
 
   return ok({
     context: resolvedContext,
-    ...(lane ? { legacyLane: lane } : {}),
     ...(reason ? { reason } : {}),
     ...(allowedOrigins ? { allowedOrigins } : {}),
     commands: commands.value,
@@ -112,25 +82,16 @@ export function normalizeBrowserExecInput(args: any): Result<BrowserExecNormaliz
   });
 }
 
-export function resolveBrowserExecContext(
-  lane: BrowserExecLane,
-  _commands: BrowserExecNormalizedInput["commands"],
-): BrowserContext {
-  return lane === "primary" ? "authenticated" : "public";
-}
-
 export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] {
-  const browserBroker = getOrCreateBrowserBroker(ctx, {
-    copilotHome: ctx.copilotHome,
-    telemetryStore: ctx.telemetryStore,
-    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
-  });
+  const browserBroker = getBrowserRuntime(ctx).broker;
   return [
     defineBridgeTool("browser_exec", {
       description:
         "Execute structured browser automation through a Bridge-managed browser security context. " +
-        "The public context is disposable and unauthenticated. Use authenticated only when the task " +
+        "The public context is not signed in to anything and keeps its cookies between uses; its browser " +
+        "is closed when the call returns. Use authenticated only when the task " +
         "explicitly requires the dedicated signed-in Bridge profile. " +
+        "When the page is a site's human check or refusal, the result says so in `blocked` with what to do next. " +
         "Use this for hardened freeform browsing when browser_fetch is too narrow but you still " +
         "want Bridge-owned profile handling, serialization, readiness checks, and recovery. " +
         "Element refs (for example, @e12) are valid only within the same browser_exec call as the snapshot that produced them, " +
@@ -155,12 +116,6 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             items: { type: "string" },
             description:
               "Optional HTTP(S) origin allowlist for authenticated navigation, such as https://msazure.visualstudio.com.",
-          },
-          lane: {
-            type: "string",
-            enum: ["auto", "primary", "clone"],
-            description:
-              "Deprecated compatibility input. primary maps to authenticated; auto and clone map to public. Use context instead.",
           },
           commands: {
             type: "array",
@@ -214,27 +169,8 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
         let success = false;
         let browserSession: string | undefined;
 
-        const check = await isAgentBrowserInstalled();
-        if (!check) {
-          safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
-            browserOpId,
-            toolName: "browser_exec",
-            browserContext: context,
-            legacyLane: normalizedInput.legacyLane,
-            authenticatedReason: normalizedInput.reason,
-            allowedOrigins: normalizedInput.allowedOrigins,
-          });
-          return toolFailure("agent-browser is not installed.", {
-            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
-            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
-          });
-        }
-        safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
-          browserOpId,
-          toolName: "browser_exec",
-          browserContext: context,
-          legacyLane: normalizedInput.legacyLane,
-        });
+        const missing = await agentBrowserMissingFailure();
+        if (missing) return missing;
 
         const runFlow = async (lease: BrowserBrokerLease) => {
           browserSession = lease.browserTarget.sessionName;
@@ -245,8 +181,7 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             browserTarget: lease.browserTarget,
             metadata: {
               browserContext: context,
-              legacyLane: normalizedInput.legacyLane,
-              publicTargetId: lease.publicTargetId,
+              publicSlot: lease.publicSlot,
               stepCount: normalizedInput.commands.length,
               stepNames,
             },
@@ -254,9 +189,16 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
 
           const execution = await runBrowserAutomationCommands(normalizedInput.commands, commandOptions);
           if (!execution.ok) {
-            return browserExecStepFailure(execution.error, context);
+            // A step often fails because the site put a check where the page was expected.
+            return browserStepFailure(
+              execution.error,
+              { context },
+              pageBlockFields(await checkPage(commandOptions)),
+              [`Browser context: ${context}`],
+            );
           }
           const finalState = await captureFinalBrowserState(normalizedInput.capture, commandOptions);
+          const pageBlock = pageBlockFields(await checkPage(commandOptions));
           if (context === "authenticated" && normalizedInput.allowedOrigins?.length) {
             const currentUrl = await ab(["get", "url"], undefined, commandOptions);
             if (!currentUrl.ok) {
@@ -269,8 +211,8 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
           }
           success = true;
           return {
+            ...pageBlock,
             context,
-            ...(normalizedInput.legacyLane ? { deprecatedLane: normalizedInput.legacyLane } : {}),
             steps: execution.value.steps,
             finalState,
           };
@@ -283,7 +225,6 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             metadata: {
               browserOpId,
               browserContext: context,
-              legacyLane: normalizedInput.legacyLane,
               authenticatedReason: normalizedInput.reason,
               allowedOrigins: normalizedInput.allowedOrigins,
               stepCount: normalizedInput.commands.length,
@@ -291,7 +232,7 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             },
           }, runFlow);
         } catch (err: any) {
-          const detail = `Browser exec failed: ${String(err).slice(0, 200)}`;
+          const detail = `Browser exec failed: ${String(err).slice(0, 400)}`;
           return toolFailure("Browser exec failed.", {
             detail,
             sessionLog: detail,
@@ -303,7 +244,6 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             browserSession,
             success,
             browserContext: context,
-            legacyLane: normalizedInput.legacyLane,
             authenticatedReason: normalizedInput.reason,
             stepCount: normalizedInput.commands.length,
           });
@@ -312,7 +252,6 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
               browserOpId,
               browserSession,
               browserContext: context,
-              legacyLane: normalizedInput.legacyLane,
               authenticatedReason: normalizedInput.reason,
               stepCount: normalizedInput.commands.length,
             });

@@ -47,6 +47,8 @@
     "check:launcher": "npm run typecheck:server && npm run test:launcher",
     "check:staging": "npm run typecheck:server && npm run test:staging",
     "check:native": "npm run typecheck:server && npm run test:native",
+    "check:browser": "vitest run --config vitest.browser.config.ts",
+    "report:browser-blocks": "tsx src/server/browser-page-check-report.ts",
     "check:pr": "npm run test:xplat-audit && npm run test:design-audit && npm run typecheck:client && npm run typecheck:packages && npm run build && npm run test",
     "check:deploy": "tsx src/server/deploy-check.ts",
     "check:deploy:staging": "npm run check:pr && npm run preview:smoke",

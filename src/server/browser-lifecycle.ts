@@ -6,14 +6,8 @@
 // BridgeBrowserLifecycle. Tests that do not care about browser cleanup get the
 // safe no-op default automatically when no lifecycle is injected.
 
-import {
-  hasBrowserRuntimeActivity,
-  type BrowserLaunchConfig,
-  type BrowserShutdownResult,
-  type BrowserTarget,
-} from "./agent-browser.js";
-import { BrowserBroker } from "./browser-broker.js";
-import type { TelemetryStore } from "./telemetry-store.js";
+import { hasBrowserRuntimeActivity, type BrowserShutdownResult, type BrowserTarget } from "./agent-browser.js";
+import type { BrowserBroker } from "./browser-broker.js";
 
 export type BrowserShutdownSkipReason = "no_browser_activity" | "disabled";
 
@@ -25,44 +19,22 @@ export interface BrowserLifecycle {
   shutdown(): Promise<BrowserShutdownOutcome>;
 }
 
-export interface BridgeBrowserLifecycleSettingsSource {
-  getSettings(): { browser?: BrowserLaunchConfig | null } | undefined;
-}
-
-export interface BridgeBrowserLifecycleOptions {
-  copilotHome?: string;
-  settingsStore?: BridgeBrowserLifecycleSettingsSource;
-  telemetryStore?: TelemetryStore;
-  browserBroker?: BrowserBroker;
-}
-
 class BridgeBrowserLifecycle implements BrowserLifecycle {
-  private readonly browserBroker: BrowserBroker;
-
-  constructor(private readonly opts: BridgeBrowserLifecycleOptions) {
-    this.browserBroker = opts.browserBroker ?? new BrowserBroker({
-      copilotHome: opts.copilotHome,
-      telemetryStore: opts.telemetryStore,
-      getBrowserLaunchConfig: () => opts.settingsStore?.getSettings()?.browser ?? {},
-    });
-  }
+  constructor(private readonly browserBroker: BrowserBroker) {}
 
   async shutdown(): Promise<BrowserShutdownOutcome> {
-    const target = this.resolveTarget();
+    const target = this.browserBroker.getAuthenticatedTarget();
     if (!hasBrowserRuntimeActivity(target.profileDir)) {
       return { skipped: true, reason: "no_browser_activity", target };
     }
     const result = await this.browserBroker.shutdownAuthenticated();
     return { ...result, skipped: false, target };
   }
-
-  private resolveTarget(): BrowserTarget {
-    return this.browserBroker.getAuthenticatedTarget();
-  }
 }
 
-export function createBridgeBrowserLifecycle(opts: BridgeBrowserLifecycleOptions): BrowserLifecycle {
-  return new BridgeBrowserLifecycle(opts);
+/** Closes the authenticated browser of the given broker, which the rest of the Bridge shares. */
+export function createBridgeBrowserLifecycle(browserBroker: BrowserBroker): BrowserLifecycle {
+  return new BridgeBrowserLifecycle(browserBroker);
 }
 
 export const noopBrowserLifecycle: BrowserLifecycle = {

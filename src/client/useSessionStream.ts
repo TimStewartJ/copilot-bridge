@@ -382,6 +382,10 @@ function normalizePendingElicitationRequest(
     };
   }
   if (input.mode === "form" && isRecord(input.requestedSchema)) {
+    const handoff = input.browserHandoff;
+    const browserHandoff = isRecord(handoff) && typeof handoff.browserSessionId === "string"
+      ? { browserSessionId: handoff.browserSessionId, reason: optionalString(handoff.reason) ?? "" }
+      : undefined;
     return {
       requestId: input.requestId,
       message: input.message,
@@ -389,6 +393,7 @@ function normalizePendingElicitationRequest(
       requestedSchema: input.requestedSchema as unknown as ElicitationSchema,
       ...(requestedAt ? { requestedAt } : {}),
       ...(elicitationSource ? { elicitationSource } : {}),
+      ...(browserHandoff ? { browserHandoff } : {}),
     };
   }
   return undefined;

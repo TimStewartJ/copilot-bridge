@@ -9,23 +9,25 @@ import type {
   BrowserFunctionalProbe,
   BrowserProbeResponse,
   BrowserRuntimeState,
+  PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
 import type { AppContext } from "./app-context.js";
 import {
   ab,
-  getEffectiveBrowserExecutablePath,
+  getAgentBrowserVersion,
   getBrowserLaunchConfig,
   isAgentBrowserInstalled,
   safeRecordBrowserSpan,
   type BrowserShutdownResult,
 } from "./agent-browser.js";
-import {
-  getOrCreateBrowserBroker,
-  type BrowserBroker,
-  type BrowserBrokerLease,
-  type BrowserContext,
-  type BrowserContextHealth,
+import type {
+  BrowserBroker,
+  BrowserBrokerLease,
+  BrowserContext,
+  BrowserContextHealth,
 } from "./browser-broker.js";
+import { describeBrowserBuild, resolveBrowserExecutable, resolveBrowserLaunchArgs } from "./browser-launch.js";
+import { getBrowserRuntime } from "./browser-runtime.js";
 import type { TelemetrySpan } from "./telemetry-store.js";
 
 export type {
@@ -37,6 +39,20 @@ export type {
 const DIAGNOSTICS_WINDOW_HOURS = 24;
 const DIAGNOSTICS_WINDOW_MS = DIAGNOSTICS_WINDOW_HOURS * 60 * 60 * 1000;
 const MAX_DIAGNOSTIC_SPANS = 2_000;
+/** One issue per site protection that turned a browser away, most frequent first. */
+function blockedPageIssues(spans: readonly TelemetrySpan[]): BrowserDiagnosticsIssue[] {
+  const byName = new Map<string, TelemetrySpan[]>();
+  for (const span of spans) {
+    const product = getMetadataString(span, "by");
+    if (!product || getMetadataString(span, "kind") === "captcha") continue;
+    // A block no product was recognised in is the site's, so those are told apart by site.
+    const by = product === "This site" ? getMetadataString(span, "urlHost") ?? "an unknown site" : product;
+    byName.set(by, [...(byName.get(by) ?? []), span]);
+  }
+  return [...byName.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .flatMap(([by, group]) => toIssue(`page.blocked.${by.toLowerCase().replace(/[^a-z0-9.-]+/g, "_")}`, `Blocked by ${by}`, group) ?? []);
+}
 
 export interface BrowserHeadedLaunchResponse {
   ok: true;
@@ -210,7 +226,7 @@ function describeDiagnosticsSummary(input: {
     return {
       tone: "warning",
       label: "Search challenges detected",
-      detail: `Bridge observed ${searchChallengeCount} browser_web_search challenge event(s) in the last ${DIAGNOSTICS_WINDOW_HOURS} hours. Launch a headed browser with this profile when manual verification is needed.`,
+      detail: `Search engines asked for a human check ${searchChallengeCount} time(s) in the last ${DIAGNOSTICS_WINDOW_HOURS} hours. Search moves on to the next engine and leaves the one that asked alone for a while.`,
     };
   }
   if (input.recoveryCount > 0) {
@@ -235,11 +251,7 @@ function describeDiagnosticsSummary(input: {
 }
 
 function getBrowserBroker(ctx: AppContext): BrowserBroker {
-  return getOrCreateBrowserBroker(ctx, {
-    copilotHome: ctx.copilotHome,
-    telemetryStore: ctx.telemetryStore,
-    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
-  });
+  return getBrowserRuntime(ctx).broker;
 }
 
 function toFunctionalProbe(health: BrowserContextHealth): BrowserFunctionalProbe {
@@ -287,8 +299,16 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
   const broker = getBrowserBroker(ctx);
   const brokerSnapshot = broker.getSnapshot();
   const target = broker.getAuthenticatedTarget();
-  const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
-  const executablePathConfigured = effectiveExecutablePath.source !== "auto-detect";
+  const liveView = getBrowserRuntime(ctx).live.getLastCheck();
+  const [effectiveExecutablePath, launchArgs, agentBrowserVersion, publicProfiles] = await Promise.all([
+    resolveBrowserExecutable(launchConfig),
+    resolveBrowserLaunchArgs(),
+    getAgentBrowserVersion(),
+    broker.getPublicProfileStats().catch(() => ({ profiles: 0, inUse: 0 })),
+  ]);
+  const browserBuild = await describeBrowserBuild(effectiveExecutablePath);
+  const executablePathConfigured = effectiveExecutablePath.source === "settings"
+    || effectiveExecutablePath.source === "environment";
   const masterProfileDirectoryConfigured = !!launchConfig.masterProfileDirectory;
   const executablePathExists = executablePathConfigured
     ? existsSync(effectiveExecutablePath.path!)
@@ -310,6 +330,7 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
     toIssue("search.ddg_challenge", "DuckDuckGo challenge during browser_web_search", duckDuckGoChallengeSpans),
     toIssue("browser.recovery.detected", "Browser recovery path invoked", recoverySpans),
     toIssue("browser.broker.readiness.failed", "Browser context readiness failed", readinessFailureSpans),
+    ...blockedPageIssues(recentTelemetry(ctx, "browser.page.blocked", since)),
   ].filter((issue): issue is BrowserDiagnosticsIssue => issue !== null);
 
   const agentBrowserInstalled = await isAgentBrowserInstalled();
@@ -326,7 +347,7 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
   ].filter((value): value is string => !!value).sort().at(-1);
   const authenticatedServiceChecks = broker.getAuthenticatedServiceChecks();
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     checkedAt,
     windowHours: DIAGNOSTICS_WINDOW_HOURS,
     summary: describeDiagnosticsSummary({
@@ -352,6 +373,10 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
       masterProfileDirectoryConfigured,
       masterProfileDirectoryExists,
       headed: target.headed === true,
+      browser: browserBuild,
+      launch: launchArgs,
+      ...(agentBrowserVersion ? { agentBrowserVersion } : {}),
+      ...(liveView ? { liveView } : {}),
     },
     runtime: {
       agentBrowserInstalled,
@@ -367,7 +392,9 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
       public: {
         context: "public",
         ...toContextRuntime(brokerSnapshot.public),
-        disposableProfileRoot: brokerSnapshot.public.profileRoot,
+        profileRoot: brokerSnapshot.public.profileRoot,
+        profiles: publicProfiles.profiles,
+        profilesInUse: publicProfiles.inUse,
         concurrencyLimit: brokerSnapshot.public.maxConcurrency,
       },
       authenticated: {
@@ -383,6 +410,11 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
   };
 }
 
+/** Removes the cookies, cache and history of the public browser profiles nothing is using. */
+export async function resetPublicBrowserProfiles(ctx: AppContext): Promise<PublicBrowserResetResponse> {
+  return { ok: true, ...await getBrowserBroker(ctx).resetPublicProfiles() };
+}
+
 export async function probeBrowserContext(
   ctx: AppContext,
   contextValue: unknown,
@@ -394,7 +426,13 @@ export async function probeBrowserContext(
     throw new Error("agent-browser is not installed.");
   }
   const context: BrowserContext = contextValue;
-  const health = await getBrowserBroker(ctx).probe(context);
+  const { broker, live } = getBrowserRuntime(ctx);
+  // The public probe's browser is nobody's, so it also serves to check that a browser can be
+  // shown to the user. The outcome is kept by the gateway and reported with the diagnostics.
+  const health = await broker.probe(
+    context,
+    context === "public" ? (lease) => live.checkStream(lease.browserTarget) : undefined,
+  );
   return {
     ok: health.status === "ready",
     context,
@@ -528,7 +566,7 @@ export async function launchHeadedDiagnosticsBrowser(
 
   const url = normalizeHeadedLaunchUrl(urlValue);
   const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
-  const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
+  const effectiveExecutablePath = await resolveBrowserExecutable(launchConfig);
   const broker = getBrowserBroker(ctx);
   const headedTarget = {
     ...broker.getAuthenticatedTarget(),
@@ -592,7 +630,7 @@ export async function closeHeadedDiagnosticsBrowser(
   }
 
   const launchConfig = getBrowserLaunchConfig(ctx.settingsStore.getSettings());
-  const effectiveExecutablePath = getEffectiveBrowserExecutablePath(launchConfig);
+  const effectiveExecutablePath = await resolveBrowserExecutable(launchConfig);
   const broker = getBrowserBroker(ctx);
   const headedTarget = { ...broker.getAuthenticatedTarget(), headed: true };
   const browserOpId = randomUUID();

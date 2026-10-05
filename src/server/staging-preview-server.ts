@@ -3,6 +3,7 @@ import "./load-bridge-env.js";
 import express from "express";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
+import { getBrowserRuntime } from "./browser-runtime.js";
 import { closeHttpServer } from "./http-server-shutdown.js";
 import { prepareDashboardRetirement } from "./dashboard-retirement.js";
 
@@ -155,6 +156,7 @@ async function main(): Promise<void> {
   server = createServer(app);
   server.on("upgrade", (req, socket, head) => {
     if (ctx.voiceGateway?.handleUpgrade(req, socket, head)) return;
+    if (getBrowserRuntime(ctx).live.handleUpgrade(req, socket, head)) return;
     socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     socket.destroy();
   });

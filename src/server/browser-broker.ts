@@ -1,20 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import type { AuthenticatedServiceCheck } from "../shared/browser-diagnostics.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import {
   ab,
+  browserFailureAdvice,
+  browserIsGone,
   getBridgeBrowserTarget,
   safeRecordBrowserSpan,
   shutdownBridgeBrowser,
   type BrowserCommand,
   type BrowserCommandOptions,
+  type BrowserCommandResult,
   type BrowserLaunchConfig,
   type BrowserTarget,
 } from "./agent-browser.js";
+import { PublicProfilePool } from "./browser-public-profiles.js";
+import { getProcessHost } from "./process-host.js";
 
 export type BrowserContext = "public" | "authenticated";
 export type BrowserContextStatus = "stopped" | "starting" | "ready" | "degraded" | "unavailable";
@@ -45,7 +47,15 @@ export interface BrowserBrokerSnapshot {
 export interface BrowserBrokerLease {
   context: BrowserContext;
   browserTarget: BrowserTarget;
-  publicTargetId?: string;
+  /** The public profile the lease holds until it is disposed. Public leases only. */
+  publicSlot?: number;
+  /** The public profile did not exist before this lease, so nothing in it can be in a browser's way. */
+  publicProfileIsNew?: boolean;
+}
+
+export interface PublicProfileStats {
+  profiles: number;
+  inUse: number;
 }
 
 export interface BrowserBrokerOperationOptions {
@@ -53,10 +63,21 @@ export interface BrowserBrokerOperationOptions {
   browserOpId: string;
   metadata?: Record<string, unknown>;
   skipReadiness?: boolean;
+  /** Part of what a person is doing in a held browser (see holdTarget), so it runs during the hold. */
+  duringHold?: boolean;
+}
+
+/** The browser would not start. Says nothing about a page. */
+export class BrowserUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BrowserUnavailableError";
+  }
 }
 
 export interface BrowserBrokerOptions {
-  copilotHome?: string;
+  /** The Bridge's data folder. Names its browsers too, so two Bridges on a host never share one. */
+  copilotHome: string;
   telemetryStore?: TelemetryStore;
   getBrowserLaunchConfig?: () => BrowserLaunchConfig;
   publicConcurrency?: number;
@@ -64,7 +85,7 @@ export interface BrowserBrokerOptions {
     command: BrowserCommand,
     timeout: number | undefined,
     options: BrowserCommandOptions,
-  ) => Promise<{ ok: boolean; output: string }>;
+  ) => Promise<BrowserCommandResult>;
   shutdownTarget?: (
     target: BrowserTarget,
     telemetryStore?: TelemetryStore,
@@ -84,26 +105,16 @@ interface MutableBrowserContextHealth {
 }
 
 const BROWSER_NAMESPACE = "copilot-bridge";
-const PUBLIC_PROFILE_ROOT = "browser-public";
 const DEFAULT_PUBLIC_CONCURRENCY = 5;
 const READINESS_TIMEOUT_MS = 45_000;
 const READINESS_RETRY_DELAYS_MS = [250, 750, 1_500] as const;
-const STALE_PUBLIC_PROFILE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-/**
- * Waits between attempts to remove a public profile. A browser that had to be killed can keep
- * files of its profile open for a moment after its processes are gone. The attempts are counted
- * here because rm's own `maxRetries` applies to every nested folder again, which multiplies the
- * wait with the depth of the file that is still open.
- */
-const PROFILE_REMOVE_RETRY_DELAYS_MS = [100, 200, 400, 800, 1_500, 2_000] as const;
-
 /** How long a browser_session handle may go unused before the Bridge closes it. */
 export const BROWSER_SESSION_IDLE_TIMEOUT_MS = 30 * 60_000;
 /**
  * How long the daemon of a public browser may go without a command before it closes the
  * browser and exits by itself. This is the backstop for a browser the Bridge failed to close
  * or lost track of (a server that was killed, a cleanup that missed a process), so it is
- * longer than the Bridge's own limit, which removes the profile as well.
+ * longer than the Bridge's own limit.
  */
 export const PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS = BROWSER_SESSION_IDLE_TIMEOUT_MS + 15 * 60_000;
 
@@ -133,10 +144,10 @@ export class BrowserBroker {
   private readonly publicConcurrency: number;
   private readonly runCommand: NonNullable<BrowserBrokerOptions["runCommand"]>;
   private readonly shutdownTarget: NonNullable<BrowserBrokerOptions["shutdownTarget"]>;
-  private readonly removeProfile: NonNullable<BrowserBrokerOptions["removeProfile"]>;
-  private readonly profileRemoveRetryDelaysMs: readonly number[];
+  private readonly publicProfiles: PublicProfilePool;
   private readonly publicWaiters: Array<() => void> = [];
-  private readonly activePublicProfiles = new Set<string>();
+  /** Browsers a person is acting in, by session name, with what they were asked to do. */
+  private readonly heldTargets = new Map<string, { purpose: string }>();
   private readonly targetTails = new Map<string, Promise<void>>();
   private publicAvailable: number;
   private authenticatedTail: Promise<void> = Promise.resolve();
@@ -155,8 +166,8 @@ export class BrowserBroker {
     },
   };
 
-  constructor(options: BrowserBrokerOptions = {}) {
-    this.copilotHome = options.copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
+  constructor(options: BrowserBrokerOptions) {
+    this.copilotHome = options.copilotHome;
     this.telemetryStore = options.telemetryStore;
     this.getBrowserLaunchConfig = options.getBrowserLaunchConfig ?? (() => ({}));
     this.publicConcurrency = options.publicConcurrency ?? DEFAULT_PUBLIC_CONCURRENCY;
@@ -164,8 +175,14 @@ export class BrowserBroker {
     this.runCommand = options.runCommand ?? ((command, timeout, commandOptions) =>
       ab(command, timeout, commandOptions));
     this.shutdownTarget = options.shutdownTarget ?? shutdownBridgeBrowser;
-    this.removeProfile = options.removeProfile ?? ((profileDir) => rm(profileDir, { recursive: true, force: true }));
-    this.profileRemoveRetryDelaysMs = options.profileRemoveRetryDelaysMs ?? PROFILE_REMOVE_RETRY_DELAYS_MS;
+    this.publicProfiles = new PublicProfilePool({
+      copilotHome: this.copilotHome,
+      daemonIdleTimeoutMs: PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS,
+      getBrowserLaunchConfig: this.getBrowserLaunchConfig,
+      shutdownTarget: (target) => this.shutdownTarget(target, this.telemetryStore),
+      removeProfile: options.removeProfile ?? ((profileDir) => getProcessHost().removeTree(profileDir)),
+      removeRetryDelaysMs: options.profileRemoveRetryDelaysMs,
+    });
   }
 
   getAuthenticatedTarget(): BrowserTarget {
@@ -178,7 +195,7 @@ export class BrowserBroker {
       namespace: this.namespace,
       public: {
         ...toHealth("public", this.health.public),
-        profileRoot: this.getPublicProfileRoot(),
+        profileRoot: this.publicProfiles.root,
         maxConcurrency: this.publicConcurrency,
       },
       authenticated: {
@@ -197,6 +214,10 @@ export class BrowserBroker {
     this.authenticatedServiceChecks.set(check.service, { ...check });
   }
 
+  /**
+   * Runs one operation in a browser that is closed again afterwards. A public browser keeps its
+   * profile for the next operation.
+   */
   async withEphemeralContext<T>(
     context: BrowserContext,
     options: BrowserBrokerOperationOptions,
@@ -207,33 +228,93 @@ export class BrowserBroker {
       return this.withTarget({ context, browserTarget: target }, options, fn);
     }
 
-    const lease = await this.createSessionTarget("public");
-    let operationError: unknown;
+    // Capacity first: a call that is only waiting its turn holds no profile.
+    const release = await this.acquirePublic();
     try {
-      return await this.withTarget(lease, options, fn);
-    } catch (error) {
-      operationError = error;
-      throw error;
-    } finally {
-      try {
-        await this.disposeSessionTarget(lease, {
-          toolName: options.toolName,
-          browserOpId: options.browserOpId,
-          metadata: options.metadata,
-        });
-      } catch (cleanupError) {
-        // The operation's own outcome stands: its caller can do nothing about a browser or a
-        // profile folder left behind, and both are cleared later (the daemon's idle limit, the
-        // sweep of stale profiles).
-        console.error(
-          `[browser] Public browser cleanup failed after the operation ${operationError ? "failed" : "succeeded"}:`,
-          cleanupError,
-        );
+      const first = await this.runEphemeralPublic(options, fn, false);
+      if (first.ok) return first.value;
+      if (!(first.failure instanceof BrowserUnavailableError)) throw first.failure;
+      if (first.profileIsNew) {
+        // Nothing was in the profile, so the host cannot start browsers. The folder goes again,
+        // or every failed call would leave one behind.
+        await this.discardPublicProfile(first.slot, options);
+        throw first.failure;
       }
+      // On a profile that has never been used, the same failure is the host's and a start is
+      // the proof that the first profile was what stood in the way.
+      const second = await this.runEphemeralPublic(options, fn, true);
+      const startedOnUnused = second.ok || !(second.failure instanceof BrowserUnavailableError);
+      await this.discardPublicProfile(startedOnUnused ? first.slot : second.slot, options);
+      if (second.ok) return second.value;
+      throw startedOnUnused ? second.failure : first.failure;
+    } finally {
+      release();
     }
   }
 
-  async createSessionTarget(context: BrowserContext): Promise<BrowserBrokerLease> {
+  private async runEphemeralPublic<T>(
+    options: BrowserBrokerOperationOptions,
+    fn: (lease: BrowserBrokerLease) => Promise<T>,
+    unused: boolean,
+  ): Promise<
+    | { ok: true; value: T; slot: number }
+    | { ok: false; failure: unknown; slot: number; profileIsNew: boolean }
+  > {
+    const lease = await this.createSessionTarget("public", { unused });
+    const slot = lease.publicSlot!;
+    let outcome: Awaited<ReturnType<typeof this.runEphemeralPublic<T>>>;
+    try {
+      outcome = { ok: true, value: await this.runOnTarget(lease, options, fn), slot };
+    } catch (failure) {
+      outcome = { ok: false, failure, slot, profileIsNew: lease.publicProfileIsNew === true };
+    }
+    try {
+      await this.disposeSessionTarget(lease, {
+        toolName: options.toolName,
+        browserOpId: options.browserOpId,
+        metadata: options.metadata,
+      });
+    } catch (cleanupError) {
+      // The operation's own outcome stands: its caller can do nothing about a browser left
+      // behind. Nobody will try this cleanup again, so the profile is given up; it is checked
+      // for the leftover before its next use, and the daemon's idle limit closes a browser
+      // nobody uses.
+      this.publicProfiles.release(slot);
+      console.error(
+        `[browser] Public browser cleanup failed after the operation ${outcome.ok ? "succeeded" : "failed"}:`,
+        cleanupError,
+      );
+    }
+    return outcome;
+  }
+
+  /** Removes a public profile no browser should start on again, unless something took it meanwhile. */
+  private async discardPublicProfile(slot: number, options: BrowserBrokerOperationOptions): Promise<void> {
+    let removed = false;
+    try {
+      removed = await this.publicProfiles.removeIfIdle(slot);
+    } catch (error) {
+      console.warn(
+        `[browser] Failed to remove public profile ${slot}, on which the browser does not start:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    safeRecordBrowserSpan(this.telemetryStore, "browser.public.profile_reset", 0, {
+      browserOpId: options.browserOpId,
+      toolName: options.toolName,
+      publicSlot: slot,
+      removed,
+    });
+  }
+
+  /**
+   * A browser target to keep across several operations. A public one holds a profile of its own
+   * until disposeSessionTarget.
+   */
+  async createSessionTarget(
+    context: BrowserContext,
+    options: { unused?: boolean } = {},
+  ): Promise<BrowserBrokerLease> {
     if (context === "authenticated") {
       return {
         context,
@@ -241,82 +322,88 @@ export class BrowserBroker {
       };
     }
 
-    const publicTargetId = randomUUID().slice(0, 8);
-    const profileDir = join(this.getPublicProfileRoot(), `profile-${publicTargetId}`);
-    await this.cleanupStalePublicProfiles();
-    await mkdir(profileDir, { recursive: true });
-    this.activePublicProfiles.add(profileDir);
-    const launchConfig = this.getBrowserLaunchConfig();
+    const profile = await this.publicProfiles.lease(options);
     return {
       context,
-      publicTargetId,
-      browserTarget: {
-        sessionName: `copilot-bridge-public-${publicTargetId}`,
-        profileDir,
-        idleTimeoutMs: PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS,
-        disposable: true,
-        ...(launchConfig.executablePath ? { executablePath: launchConfig.executablePath } : {}),
-      },
+      publicSlot: profile.slot,
+      publicProfileIsNew: profile.isNew,
+      browserTarget: profile.browserTarget,
     };
   }
 
+  /**
+   * Closes a session target's browser and frees its profile. Throws when the browser could not
+   * be closed cleanly: the profile then stays with the caller, who can try again, and is checked
+   * for a leftover browser before its next use.
+   */
   async disposeSessionTarget(
     lease: BrowserBrokerLease,
     options: BrowserBrokerOperationOptions,
   ): Promise<void> {
-    if (lease.context === "authenticated") return;
+    const slot = lease.publicSlot;
+    if (lease.context === "authenticated" || slot === undefined) return;
 
     const startedAt = Date.now();
     let shutdown: Awaited<ReturnType<typeof shutdownBridgeBrowser>> | undefined;
     let shutdownError: unknown;
-    let removeError: unknown;
     try {
       shutdown = await this.shutdownTarget(lease.browserTarget, this.telemetryStore);
     } catch (error) {
       shutdownError = error;
-    } finally {
-      try {
-        await this.removePublicProfile(lease.browserTarget.profileDir);
-      } catch (error) {
-        removeError = error;
-      } finally {
-        this.activePublicProfiles.delete(lease.browserTarget.profileDir);
-      }
+    }
+    this.heldTargets.delete(lease.browserTarget.sessionName);
+    const closed = !shutdownError && !!shutdown && browserIsGone(shutdown);
+    if (closed) {
+      this.publicProfiles.release(slot);
+    } else {
+      // The caller still holds the profile and may try again; nothing else is given it meanwhile.
+      this.publicProfiles.markUnclean(slot);
     }
 
     safeRecordBrowserSpan(this.telemetryStore, "browser.public.cleanup", Date.now() - startedAt, {
       browserOpId: options.browserOpId,
       toolName: options.toolName,
       browserContext: lease.context,
-      publicTargetId: lease.publicTargetId,
+      publicSlot: slot,
       closeOk: shutdown?.closeOk,
       remainingPids: shutdown?.remainingPids,
       shutdownOk: !shutdownError,
-      removeOk: !removeError,
       ...options.metadata,
     });
 
-    if (shutdownError && removeError) {
-      throw new AggregateError(
-        [shutdownError, removeError],
-        "Public browser shutdown and profile removal both failed",
-      );
+    if (shutdownError) throw shutdownError;
+    if (!closed) {
+      throw new Error(shutdown?.remainingPids.length
+        ? `Public browser processes remained after cleanup: ${shutdown.remainingPids.join(", ")}`
+        : "The public browser did not confirm that it closed, and the host's processes could not be listed.");
     }
-    if (shutdownError) {
-      throw shutdownError;
-    }
-    if (removeError) {
-      throw new Error(
-        `Failed to remove public browser profile: ${
-          removeError instanceof Error ? removeError.message : String(removeError)
-        }`,
-      );
-    }
-    if (shutdown && shutdown.remainingPids.length > 0) {
-      throw new Error(
-        `Public browser processes remained after cleanup: ${shutdown.remainingPids.join(", ")}`,
-      );
-    }
+  }
+
+  /**
+   * Gives a browser to a person until the returned function is called. Other operations on it
+   * fail meanwhile instead of navigating away under them or waiting for as long as they take.
+   * Throws when someone already has it.
+   */
+  holdTarget(lease: BrowserBrokerLease, purpose: string): () => void {
+    const sessionName = lease.browserTarget.sessionName;
+    this.assertNotHeld(lease, {});
+    const hold = { purpose };
+    this.heldTargets.set(sessionName, hold);
+    return () => {
+      if (this.heldTargets.get(sessionName) === hold) this.heldTargets.delete(sessionName);
+    };
+  }
+
+  /** How many public profiles exist and how many a browser is using. */
+  getPublicProfileStats(): Promise<PublicProfileStats> {
+    return this.publicProfiles.stats();
+  }
+
+  /** Removes the browsing data of every public profile no browser is using. */
+  async resetPublicProfiles(): Promise<{ cleared: number; inUse: number }> {
+    const result = await this.publicProfiles.reset();
+    safeRecordBrowserSpan(this.telemetryStore, "browser.public.reset", 0, result);
+    return result;
   }
 
   async withTarget<T>(
@@ -324,10 +411,40 @@ export class BrowserBroker {
     options: BrowserBrokerOperationOptions,
     fn: (lease: BrowserBrokerLease) => Promise<T>,
   ): Promise<T> {
+    this.assertNotHeld(lease, options);
     const release = lease.context === "authenticated"
       ? await this.acquireAuthenticated()
       : await this.acquirePublic();
+    try {
+      return await this.runOnTarget(lease, options, fn);
+    } finally {
+      release();
+    }
+  }
+
+  private assertNotHeld(lease: BrowserBrokerLease, options: { duringHold?: boolean }): void {
+    const hold = options.duringHold ? undefined : this.heldTargets.get(lease.browserTarget.sessionName);
+    if (!hold) return;
+    throw new Error(
+      `The user has this browser right now (${hold.purpose}). Try again after they hand it back.`,
+    );
+  }
+
+  /** Runs an operation on a target whose context capacity the caller already holds. */
+  private async runOnTarget<T>(
+    lease: BrowserBrokerLease,
+    options: BrowserBrokerOperationOptions,
+    fn: (lease: BrowserBrokerLease) => Promise<T>,
+  ): Promise<T> {
     const releaseTarget = await this.acquireTarget(lease.browserTarget.sessionName);
+    try {
+      // Checked once the target is this operation's: the browser may have been given to the
+      // user while it waited for an earlier operation to finish. Says nothing about its health.
+      this.assertNotHeld(lease, options);
+    } catch (error) {
+      releaseTarget();
+      throw error;
+    }
     const state = this.health[lease.context];
     state.activeOperations += 1;
     try {
@@ -350,17 +467,20 @@ export class BrowserBroker {
     } finally {
       state.activeOperations = Math.max(0, state.activeOperations - 1);
       releaseTarget();
-      release();
     }
   }
 
-  async probe(context: BrowserContext, toolName = "browser_diagnostics_probe"): Promise<BrowserContextHealth> {
+  /** Starts a browser of the context and reports its health. `inBrowser` runs in it once it is up. */
+  async probe(
+    context: BrowserContext,
+    inBrowser: (lease: BrowserBrokerLease) => Promise<unknown> = async () => undefined,
+  ): Promise<BrowserContextHealth> {
     const browserOpId = randomUUID();
     try {
       await this.withEphemeralContext(context, {
-        toolName,
+        toolName: "browser_diagnostics_probe",
         browserOpId,
-      }, async () => undefined);
+      }, inBrowser);
     } catch {
       // The health state carries the exact failure for diagnostics.
     }
@@ -396,54 +516,6 @@ export class BrowserBroker {
     }
   }
 
-  private getPublicProfileRoot(): string {
-    return join(this.copilotHome, PUBLIC_PROFILE_ROOT);
-  }
-
-  private async removePublicProfile(profileDir: string): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await this.removeProfile(profileDir);
-        return;
-      } catch (error) {
-        if (attempt >= this.profileRemoveRetryDelaysMs.length) throw error;
-        await delay(this.profileRemoveRetryDelaysMs[attempt]);
-      }
-    }
-  }
-
-  private async cleanupStalePublicProfiles(): Promise<void> {
-    const root = this.getPublicProfileRoot();
-    try {
-      const entries = await readdir(root, { withFileTypes: true });
-      const now = Date.now();
-      await Promise.all(entries.map(async (entry) => {
-        if (!entry.isDirectory() || !entry.name.startsWith("profile-")) return;
-        const profileDir = join(root, entry.name);
-        if (this.activePublicProfiles.has(profileDir)) return;
-        try {
-          const profileStat = await stat(profileDir);
-          if ((now - profileStat.mtimeMs) > STALE_PUBLIC_PROFILE_MAX_AGE_MS) {
-            await rm(profileDir, { recursive: true, force: true });
-          }
-        } catch (error) {
-          console.warn(
-            `[browser] Failed to inspect stale public profile ${entry.name}:`,
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-      }));
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "ENOENT") {
-        console.warn(
-          "[browser] Failed to sweep stale public browser profiles:",
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
-  }
-
   private async ensureReady(
     lease: BrowserBrokerLease,
     options: BrowserBrokerOperationOptions,
@@ -465,7 +537,7 @@ export class BrowserBroker {
         browserTarget: lease.browserTarget,
         metadata: {
           browserContext: lease.context,
-          publicTargetId: lease.publicTargetId,
+          publicSlot: lease.publicSlot,
           readinessAttempt: attempt + 1,
           ...options.metadata,
         },
@@ -488,7 +560,7 @@ export class BrowserBroker {
         browserOpId: options.browserOpId,
         toolName: options.toolName,
         browserContext: lease.context,
-        publicTargetId: lease.publicTargetId,
+        publicSlot: lease.publicSlot,
         success: true,
         attempts: attempt + 1,
         ...options.metadata,
@@ -496,7 +568,8 @@ export class BrowserBroker {
       return;
     }
 
-    const message = lastOutput.trim() || "agent-browser did not complete the readiness handshake";
+    const message = browserFailureAdvice(lastOutput)
+      ?? (lastOutput.trim() || "agent-browser did not complete the readiness handshake");
     state.status = "unavailable";
     state.lastFailureAt = new Date().toISOString();
     state.lastError = message.slice(0, 500);
@@ -504,12 +577,12 @@ export class BrowserBroker {
       browserOpId: options.browserOpId,
       toolName: options.toolName,
       browserContext: lease.context,
-      publicTargetId: lease.publicTargetId,
+      publicSlot: lease.publicSlot,
       success: false,
       error: state.lastError,
       ...options.metadata,
     });
-    throw new Error(`Browser ${lease.context} context is unavailable: ${message.slice(0, 200)}`);
+    throw new BrowserUnavailableError(`Browser ${lease.context} context is unavailable: ${message.slice(0, 300)}`);
   }
 
   private markSuccess(context: BrowserContext): void {
@@ -589,17 +662,4 @@ export class BrowserBroker {
       }
     };
   }
-}
-
-const browserBrokers = new WeakMap<object, BrowserBroker>();
-
-export function getOrCreateBrowserBroker(
-  key: object,
-  options: BrowserBrokerOptions = {},
-): BrowserBroker {
-  const existing = browserBrokers.get(key);
-  if (existing) return existing;
-  const broker = new BrowserBroker(options);
-  browserBrokers.set(key, broker);
-  return broker;
 }
