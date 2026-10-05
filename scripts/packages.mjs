@@ -251,7 +251,7 @@ async function releaseCheck({ dir, manifest }, dryRun) {
   } else if (highest && RELEASE_VERSION.test(version) && compareReleaseVersions(version, highest) < 0) {
     released.push(`${version} is lower than ${highest}, which is on npm`);
   }
-  if (remoteTagExists(tag)) released.push(`the tag ${tag} exists, so ${version} was released or staged before`);
+  if (remoteTagExists(tag)) released.push(`the tag ${tag} exists, so ${version} was released before`);
 
   if (dryRun) for (const note of released) console.log(`[packages] dry run, ${name}: ${note}`);
   const blocking = dryRun ? problems : [...problems, ...released];
