@@ -580,3 +580,36 @@ describe("SessionManager.setSessionModel", () => {
     });
   });
 });
+
+describe("SessionManager.unloadIdleSession", () => {
+  it("unloads a session a cold model switch loaded and releases its handle", async () => {
+    const manager = createManager();
+    const session = createMockSession("previous-model");
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    await manager.setSessionModel("cold-session", "gpt-5.5");
+    expect(manager.isSessionWarm("cold-session")).toBe(true);
+
+    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(true);
+
+    expect(manager.isSessionWarm("cold-session")).toBe(false);
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a session loaded while Bridge holds it", async () => {
+    const manager = createManager();
+    const session = createMockSession("gpt-5.5");
+    manager.sessionObjects.set("held-session", session);
+    manager.sessionHolds.start("held-session", "model-switching");
+
+    await expect(manager.unloadIdleSession("held-session", "test")).resolves.toBe(false);
+
+    expect(manager.isSessionWarm("held-session")).toBe(true);
+    expect(session.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("reports nothing to unload for a session that is not loaded", async () => {
+    const manager = createManager();
+
+    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(false);
+  });
+});

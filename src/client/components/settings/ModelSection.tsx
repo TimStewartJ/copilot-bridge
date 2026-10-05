@@ -50,9 +50,12 @@ export function describeClientAge(createdAt: string | null | undefined): { iso: 
 export function ModelSection({
   draft,
   setDraft,
+  children,
 }: {
   draft: AppSettings;
   setDraft: (d: AppSettings) => void;
+  /** Rarely used lines that belong with the model, shown closed beneath the catalog details. */
+  children?: React.ReactNode;
 }) {
   const { data: models, isLoading, error } = useModelsQuery();
   const { data: clientInfo } = useModelClientInfoQuery();
@@ -213,6 +216,7 @@ export function ModelSection({
           {clientAge && <p title={`SDK client created ${new Date(clientAge.iso).toLocaleString()}`}>Active SDK client started {timeAgo(clientAge.iso)}</p>}
         </div>
       </Details>
+      {children}
     </SettingsSection>
   );
 }
