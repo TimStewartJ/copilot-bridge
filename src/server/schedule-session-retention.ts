@@ -4,6 +4,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { Schedule } from "./schedule-store.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
+import { setSessionsArchived } from "./session-archive.js";
 
 type RetentionSessionManager = Pick<SessionManager, "isSessionBusy" | "listSessionsFromDisk">;
 
@@ -28,7 +29,8 @@ export interface ScheduleSessionRetentionResult {
   retainableSessionIds: string[];
 }
 
-function hasActiveDeferredWork(
+/** Archiving cancels a session's deferred work, so a session with any pending is left alone. */
+export function hasActiveDeferredWork(
   sessionId: string,
   deps: Pick<ScheduleSessionRetentionDeps, "deferredPromptStore" | "deferLoopStore">,
 ): boolean {
@@ -70,7 +72,7 @@ export async function enforceScheduleSessionRetention(
 
   const sessions = await deps.sessionManager.listSessionsFromDisk({ includeArchived: true });
   const existingSessionIds = new Set(sessions.map((session: { sessionId: string }) => session.sessionId));
-  const archivedSessionIds: string[] = [];
+  const toArchive: string[] = [];
   const skippedSessionIds: string[] = [];
   const retainableSessionIds: string[] = [];
 
@@ -85,9 +87,15 @@ export async function enforceScheduleSessionRetention(
     }
 
     if (deps.sessionMetaStore.isArchived(sessionId)) continue;
-    deps.sessionMetaStore.setArchived(sessionId, true);
-    deps.globalBus.emit({ type: "session:archived", sessionId, archived: true });
-    archivedSessionIds.push(sessionId);
+    toArchive.push(sessionId);
+  }
+
+  // No await between the checks above and these writes, so a session cannot turn busy in between.
+  const { sessionIds: archivedSessionIds, errors } = setSessionsArchived(deps, toArchive, true);
+  for (const sessionId of Object.keys(errors)) {
+    console.warn(`[schedule-retention] Could not archive session ${sessionId}: ${errors[sessionId]}`);
+    skippedSessionIds.push(sessionId);
+    retainableSessionIds.push(sessionId);
   }
 
   return { archivedSessionIds, skippedSessionIds, retainableSessionIds };

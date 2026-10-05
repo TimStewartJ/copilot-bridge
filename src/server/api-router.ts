@@ -33,6 +33,7 @@ import {
 import * as scheduler from "./scheduler.js";
 import type { Schedule } from "./schedule-store.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
+import { setSessionsArchived } from "./session-archive.js";
 import {
   findUnknownFields,
   formatUnknownFieldsError,
@@ -1416,8 +1417,10 @@ export function createApiRouter(
       emitReadStateChanged();
     },
     setArchived: (sessionIds, archived) => {
-      for (const sessionId of sessionIds) setSessionArchived(sessionId, archived);
+      const { errors } = setSessionsArchived(ctx, sessionIds, archived);
       invalidateEnrichedCache("helm:session:archive");
+      const failure = Object.values(errors)[0];
+      if (failure !== undefined) throw new Error(failure);
     },
     sendMessage: async (sessionId, prompt) => {
       if (ctx.sessionMetaStore.getMeta(sessionId)?.archived) setSessionArchived(sessionId, false);
@@ -4042,15 +4045,14 @@ export function createApiRouter(
     }
     const errors: Record<string, string> = {};
     let deletedAny = false;
+    if (action === "archive" || action === "unarchive") {
+      // One announcement for the whole batch, not one per session.
+      Object.assign(errors, setSessionsArchived(ctx, sessionIds, action === "archive").errors);
+      return res.json({ ok: Object.keys(errors).length === 0, errors });
+    }
     for (const sid of sessionIds) {
       try {
         switch (action) {
-          case "archive":
-            setSessionArchived(sid, true);
-            break;
-          case "unarchive":
-            setSessionArchived(sid, false);
-            break;
           case "delete": {
             await deleteSessionWithOwnedState(sid, "route:session-batch:delete");
             deletedAny = true;

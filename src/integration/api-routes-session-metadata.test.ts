@@ -100,6 +100,28 @@ describe("Session metadata routes", () => {
     expect(after.body.sessions.map((session: { sessionId: string }) => session.sessionId)).toEqual(["s2"]);
   });
 
+  it("POST /api/sessions/batch announces a bulk archive once", async () => {
+    const events: Array<{ type: string }> = [];
+    ctx.globalBus.subscribe((event) => { if (event.type === "session:archived") events.push(event); });
+
+    const archive = await request(app)
+      .post("/api/sessions/batch")
+      .send({ sessionIds: ["s1", "s2", "s3", "s2"], action: "archive" });
+    expect(archive.body).toEqual({ ok: true, errors: {} });
+    const restore = await request(app)
+      .post("/api/sessions/batch")
+      .send({ sessionIds: ["s1"], action: "unarchive" });
+    expect(restore.body).toEqual({ ok: true, errors: {} });
+
+    expect(events).toEqual([
+      { type: "session:archived", sessionIds: ["s1", "s2", "s3"], archived: true },
+      { type: "session:archived", sessionId: "s1", archived: false },
+    ]);
+    expect(ctx.sessionMetaStore.isArchived("s1")).toBe(false);
+    expect(ctx.sessionMetaStore.isArchived("s2")).toBe(true);
+    expect(ctx.sessionMetaStore.isArchived("s3")).toBe(true);
+  });
+
   it("POST /api/sessions/batch requires sessionIds", async () => {
     const res = await request(app)
       .post("/api/sessions/batch")

@@ -131,6 +131,7 @@ import { consumeTaskCompletionClaim, createTaskCompletionFeedback, createTaskCom
 import { DS, cx } from "./design/tokens";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
+import { archivedEventSessionIds } from "../shared/session-archive-event.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
@@ -467,14 +468,20 @@ function AppShell() {
     setArchivedLoaded(true);
   }, [archivedLoaded]);
 
-  const trackArchiveTransition = useCallback((sessionId: string, archived: boolean) => {
+  const trackArchiveTransitions = useCallback((sessionIds: readonly string[], archived: boolean) => {
+    if (sessionIds.length === 0) return;
     setRestoringArchivedSessionIds((prev) => {
       const next = new Set(prev);
-      if (archived) next.delete(sessionId);
-      else next.add(sessionId);
+      for (const sessionId of sessionIds) {
+        if (archived) next.delete(sessionId);
+        else next.add(sessionId);
+      }
       return next.size === prev.size && [...next].every((id) => prev.has(id)) ? prev : next;
     });
   }, []);
+  const trackArchiveTransition = useCallback((sessionId: string, archived: boolean) => {
+    trackArchiveTransitions([sessionId], archived);
+  }, [trackArchiveTransitions]);
 
   useEffect(() => {
     if (restoringArchivedSessionIds.size === 0) return;
@@ -574,15 +581,18 @@ function AppShell() {
         }
         invalidateDashboard();
         break;
-      case "session:archived":
-        if (event.sessionId && typeof event.archived === "boolean") {
-          trackArchiveTransition(event.sessionId, event.archived);
-          patchSessionInCache(event.sessionId, { archived: event.archived });
+      case "session:archived": {
+        // A bulk change arrives as one event naming every session, so the lists are fetched once.
+        const archivedIds = archivedEventSessionIds(event);
+        if (archivedIds.length > 0 && typeof event.archived === "boolean") {
+          trackArchiveTransitions(archivedIds, event.archived);
+          patchSessionsInCache(archivedIds, { archived: event.archived });
         }
         invalidateAllSessionQueries();
         // Tasks list only their active sessions, so archiving changes their lists and counts.
         void invalidateTasks();
         break;
+      }
       case "session:agents":
         if (event.sessionId && event.backgroundAgents) {
           patchSessionInCache(event.sessionId, { backgroundAgents: event.backgroundAgents });
@@ -673,7 +683,7 @@ function AppShell() {
         invalidateOpenChecklistItems();
         break;
     }
-  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, trackArchiveTransition, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, patchSessionsInCache, trackArchiveTransitions, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
   const restarted = restartNotice?.kind === "restarted";
   useEffect(() => {
     if (!restarted) return;
@@ -1783,7 +1793,7 @@ function AppShell() {
       const result = await batchSessionAction(action, sessionIds);
       if (action === "archive" || action === "unarchive") {
         const successfulIds = getSuccessfulBatchSessionIds(sessionIds, result.errors);
-        for (const id of successfulIds) trackArchiveTransition(id, action === "archive");
+        trackArchiveTransitions(successfulIds, action === "archive");
         patchSessionsInCache(successfulIds, {
           archived: action === "archive",
           archivedAt: action === "archive" ? new Date().toISOString() : undefined,
@@ -1807,7 +1817,7 @@ function AppShell() {
         return next;
       });
     }
-  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, retireComposer, patchSessionsInCache, invalidateAllSessionQueries, invalidateTasks]);
+  }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, retireComposer, patchSessionsInCache, trackArchiveTransitions, invalidateAllSessionQueries, invalidateTasks]);
 
   // ── Mobile: detect breakpoint ─────────────────────────────────
   // On mobile (< md / 768px), we show stacked full-screen views.
