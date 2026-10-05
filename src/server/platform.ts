@@ -712,6 +712,62 @@ export async function moveFreshPath(source: string, destination: string, options
   await (options.removePath ?? ((path) => rm(path, { recursive: true, force: true })))(source).catch(() => undefined);
 }
 
+/** A program to start directly, with `windowsVerbatimArguments` when `verbatim` is set. */
+export interface WindowsShellInvocation {
+  file: string;
+  args: string[];
+  verbatim: true;
+}
+
+// cmd.exe reads at most 8191 characters in a line. The launcher's own line, which the arguments
+// are written into, has the same limit; the rest is left for its text.
+const WINDOWS_SHELL_LINE_LIMIT = 7500;
+
+/**
+ * How to run a command that only the Windows command shell can start, which is what a `.cmd`
+ * launcher is, so that the program behind it gets every argument unchanged whatever it holds.
+ * Undefined for a command that cannot be passed that way: one with a line break, or too long.
+ *
+ * Node's own `shell: true` joins the arguments as they are, so an `&` in a web address ends the
+ * command and runs the rest as another. It also leaves two of the shell's settings to the
+ * registry; both are fixed here, because the quoting depends on them.
+ *
+ * - Inside quotation marks the shell reads `& | < > ^ ( )` and spaces as text. The launcher
+ *   passes its arguments on with the quotation marks, and the program takes them off.
+ * - A quotation mark in the argument is written twice, which the program reads as one and which
+ *   leaves the shell inside the quoting. Backslashes before one, and before the closing mark,
+ *   are doubled, or the program would take the last for an escape of that mark.
+ * - The shell replaces `%NAME%` even inside quotation marks, and some names give a quotation
+ *   mark (`%CMDCMDLINE:~-1%`), which would end the quoting from inside. `%%cd:~,%` leaves the
+ *   shell a `%` followed by a variable that is always there and of which nothing is taken, so
+ *   no name is ever read out of the argument. That needs command extensions (`/e:on`).
+ * - `!NAME!` is replaced only with delayed expansion, which `/v:off` turns off.
+ * - A command given by name stays unquoted: a launcher that the shell finds by a quoted name
+ *   gets the current folder for `%~dp0` instead of its own, and then cannot find its program.
+ *
+ * The quoting is that of Rust's standard library (CVE-2024-24576). Whether it holds is tested
+ * on Windows itself, in windows-shell-argument.native.test.ts.
+ */
+export function windowsShellInvocation(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): WindowsShellInvocation | undefined {
+  const quote = (word: string): string => `"${word
+    .replace(/(\\*)"/g, "$1$1\"\"")
+    .replace(/(\\+)$/, "$1$1")
+    .replace(/%/g, "%%cd:~,%")}"`;
+  if ([command, ...args].some((word) => /[\r\n\0]/.test(word))) return undefined;
+  const line = [/^[A-Za-z0-9._-]+$/.test(command) ? command : quote(command), ...args.map(quote)].join(" ");
+  if (line.length > WINDOWS_SHELL_LINE_LIMIT) return undefined;
+  return {
+    // Not %ComSpec%, which may name another shell with other rules.
+    file: win32.join(env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe"),
+    args: ["/d", "/e:on", "/v:off", "/s", "/c", `"${line}"`],
+    verbatim: true,
+  };
+}
+
 export interface NpmInvocation {
   /** Executable to spawn directly, never through a shell. */
   command: string;

@@ -32,6 +32,13 @@ vi.mock("node:fs", () => ({
   unlinkSync: unlinkSyncMock,
 }));
 
+// Replaced once for the file, with a switch: two replacements of one module that are both still
+// waiting for the next import are applied in no fixed order.
+const agentBrowserCommand = vi.hoisted(() => ({ shell: false }));
+vi.mock("../agent-browser-command.js", () => ({
+  getAgentBrowserCommand: () => ({ file: "agent-browser", shell: agentBrowserCommand.shell }),
+}));
+
 vi.mock("node:fs/promises", () => ({
   readdir: readdirMock,
   rm: rmMock,
@@ -92,6 +99,7 @@ const BRIDGE_LAUNCH_ARGS = [
 describe("agent-browser wrapper", () => {
   beforeEach(() => {
     vi.resetModules();
+    agentBrowserCommand.shell = false;
     execMock.mockReset();
     execFileMock.mockReset();
     readlinkSyncMock.mockReset();
@@ -327,62 +335,66 @@ describe("agent-browser wrapper", () => {
 
   });
 
-  describe("on Windows, where agent-browser may only start through the command shell", () => {
-    /** Forces the platform branch; process creation and the file system are mocked already. */
-    async function importOnWindows() {
-      vi.doMock("node:os", async (importOriginal) => ({
-        ...(await importOriginal<typeof import("node:os")>()),
-        platform: () => "win32",
-      }));
+  describe("when agent-browser only starts through the Windows command shell", () => {
+    beforeEach(() => {
+      agentBrowserCommand.shell = true;
+    });
+
+    async function importOpen() {
       const mod = await import("../agent-browser.js");
       const browserTarget = mod.getBridgeBrowserTarget(COPILOT_HOME);
       return (argument: string) => mod.ab(["open", argument], 5_000, { browserTarget });
     }
 
-    afterEach(() => {
-      vi.doUnmock("node:os");
+    it("starts the shell itself with the command quoted for it, so an address with & in it stays one argument", async () => {
+      const open = await importOpen();
+
+      await expect(open("https://duck.com/?q=rust%20book&ia=web")).resolves.toMatchObject({ ok: true });
+
+      expect(execFileMock).toHaveBeenCalledOnce();
+      const [file, args, options] = execFileMock.mock.calls[0];
+      expect(file).toMatch(/cmd\.exe$/);
+      expect(args.slice(0, -1)).toEqual(["/d", "/e:on", "/v:off", "/s", "/c"]);
+      expect(args.at(-1)).toBe("\"agent-browser \"open\" \"https://duck.com/?q=rust%%cd:~,%20book&ia=web\" \"--json\"\"");
+      expect(options).toMatchObject({ windowsVerbatimArguments: true });
+      expect(options.shell).toBeUndefined();
     });
 
-    it.each([
-      ["&", "https://example.com/?a=1&calc.exe"],
-      ["|", "https://example.com/|more"],
-      ["<", "https://example.com/<in"],
-      [">", "https://example.com/>out"],
-      ["^", "https://example.com/^"],
-      ["a quotation mark", "https://example.com/\"x"],
-      ["a line break", "https://example.com/\ncalc.exe"],
-    ])("refuses a command with %s in an argument, which the shell would read as its own syntax, and runs nothing", async (_name, argument) => {
-      const open = await importOnWindows();
+    it("refuses a command with a line break in an argument, which the shell cannot be given, and runs nothing", async () => {
+      const open = await importOpen();
 
-      const result = await open(argument);
+      const result = await open("https://example.com/\ncalc.exe");
 
       expect(result.ok).toBe(false);
       expect(result.output).toContain("Windows command shell");
       expect(execFileMock).not.toHaveBeenCalled();
     });
 
-    it("runs a command without such an argument through the shell", async () => {
-      const open = await importOnWindows();
+    it("reads the version through the shell as well", async () => {
+      execFileMock.mockImplementation(callbackSuccess("agent-browser 0.38.2\n"));
+      const mod = await import("../agent-browser.js");
 
-      await expect(open("https://example.com/next?a=1")).resolves.toMatchObject({ ok: true });
+      await expect(mod.getAgentBrowserVersion()).resolves.toBe("0.38.2");
 
-      expect(execFileMock).toHaveBeenCalledOnce();
-      expect(execFileMock.mock.calls[0][2]).toMatchObject({ shell: true });
-    });
-
-    it("runs a command with such an argument when it found agent-browser's executable, which needs no shell", async () => {
-      vi.stubEnv("PATH", join(COPILOT_HOME, "npm"));
-      lstatSyncMock.mockImplementation(() => ({}));
-      const open = await importOnWindows();
-
-      await expect(open("https://example.com/?a=1&b=2")).resolves.toMatchObject({ ok: true });
-
-      expect(execFileMock).toHaveBeenCalledOnce();
       const [file, args, options] = execFileMock.mock.calls[0];
-      expect(file).toContain("agent-browser-win32-x64.exe");
-      expect(args).toContain("https://example.com/?a=1&b=2");
-      expect(options).toMatchObject({ shell: false });
+      expect(file).toMatch(/cmd\.exe$/);
+      expect(args.at(-1)).toBe("\"agent-browser \"--version\"\"");
+      expect(options).toMatchObject({ windowsVerbatimArguments: true });
     });
+  });
+
+  it("passes arguments as they are when agent-browser starts without a shell", async () => {
+    const mod = await import("../agent-browser.js");
+
+    await mod.ab(["open", "https://example.com/?a=1&b=\"2\"%20"], 5_000, {
+      browserTarget: mod.getBridgeBrowserTarget(COPILOT_HOME),
+    });
+
+    const [file, args, options] = execFileMock.mock.calls[0];
+    expect(file).toBe("agent-browser");
+    expect(args).toContain("https://example.com/?a=1&b=\"2\"%20");
+    expect(options.windowsVerbatimArguments).toBeUndefined();
+    expect(options.shell).toBeUndefined();
   });
 
   describe("a host that refuses the browser its sandbox", () => {
