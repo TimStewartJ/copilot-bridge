@@ -4,6 +4,7 @@ export { ConfigCard } from "./ConfigCard";
 export { ProviderEditor } from "./ProviderEditor";
 export { SystemPromptSection } from "./SystemPromptSection";
 export { ModelSection } from "./ModelSection";
+export { ModelMoveDisclosure } from "./ModelMoveDisclosure";
 export { ReasoningEffortSection } from "./ReasoningEffortSection";
 export { DeferWorkerSection } from "./DeferWorkerSection";
 export { SubagentModelsSection } from "./SubagentModelsSection";

@@ -218,6 +218,12 @@ import { openSseConnection } from "./sse-response.js";
 import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
 import { isLocalStagingModule } from "./path-utils.js";
 import { createSessionForkJobManager } from "./session-fork-job-manager.js";
+import {
+  createSessionModelMover,
+  parseSessionModelMoveRequest,
+  SessionModelMoveInProgressError,
+  SessionModelMoveRequestError,
+} from "./session-model-move.js";
 import { queueRestartRecoveryPrompts } from "./restart-resume.js";
 import type { BridgeSearchRequest, SearchKind, SearchScope } from "../shared/search.js";
 import {
@@ -2624,6 +2630,70 @@ export function createApiRouter(
       if (/busy/i.test(message)) return res.status(409).json({ error: message });
       res.status(500).json({ error: message });
     }
+  });
+
+  // ── Moving chats from one model to another ─────────────────────────
+
+  const sessionModelMover = createSessionModelMover({
+    // The same chats the session list shows, newest first, so the chats in use move first.
+    listSessions: async () => (await sessionList.read())
+      .map((session) => ({
+        sessionId: session.sessionId,
+        ...(typeof session.summary === "string" && session.summary ? { title: session.summary } : {}),
+      })),
+    getSessionModelState: (sessionId) => ctx.sessionManager.getSessionModelState(sessionId),
+    isSessionBusy: (sessionId) => ctx.sessionManager.isSessionBusy(sessionId),
+    isSessionLoaded: (sessionId) => ctx.sessionManager.isSessionWarm(sessionId),
+    setSessionModel: (sessionId, model, reasoningEffort, contextTier, options) =>
+      ctx.sessionManager.setSessionModel(sessionId, model, reasoningEffort, contextTier, options),
+    unloadSession: (sessionId) => ctx.sessionManager.unloadIdleSession(sessionId, "model move finished with the chat"),
+    listModels: () => ctx.sessionManager.listModels(),
+  });
+
+  // GET /session-model-move/models — how many chats that are not archived use each model
+  router.get("/session-model-move/models", async (req, res) => {
+    try {
+      const refresh = Array.isArray(req.query.refresh) ? req.query.refresh[0] : req.query.refresh;
+      res.json(await sessionModelMover.getUsage({ refresh: /^(1|true|yes|on)$/i.test(String(refresh ?? "")) }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // GET /session-model-move — the running move, or the last one since the server started
+  router.get("/session-model-move", (_req, res) => {
+    res.json({ job: sessionModelMover.getJob() ?? null });
+  });
+
+  // POST /session-model-move — switch every chat that is not archived from one model to another.
+  // Answers 202 with the job once the chats are counted; the move itself runs in the background.
+  router.post("/session-model-move", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Moving chats to another model")) return;
+    const parsed = parseSessionModelMoveRequest(req.body);
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const { request } = parsed;
+    try {
+      if (request.dryRun) return res.json(await sessionModelMover.plan(request));
+      const validation = await ctx.sessionManager.validateModelSelection({
+        model: request.toModel,
+        ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+        ...(request.contextTier ? { contextTier: request.contextTier } : {}),
+      });
+      if (!validation.ok) return res.status(400).json({ error: validation.error });
+      res.status(202).json({ job: await sessionModelMover.start(request) });
+    } catch (err) {
+      if (err instanceof SessionModelMoveRequestError) return res.status(400).json({ error: err.message });
+      if (err instanceof SessionModelMoveInProgressError) {
+        return res.status(409).json({ error: err.message, job: err.job });
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /session-model-move/cancel — stop after the chat being switched; moved chats stay moved
+  router.post("/session-model-move/cancel", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Stopping the model move")) return;
+    res.json({ job: sessionModelMover.cancel() ?? null });
   });
 
 

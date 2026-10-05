@@ -46,6 +46,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 - **Tool-rich automation** - built-in task/doc/schedule tools, web search, browser fetch/exec/session tools, and optional desktop computer use. Computer use is the Computer Use plugin that ships with the Copilot SDK, loaded per session when Settings > Integrations > Computer use is on. First-prompt tool initialization is shared by runtime handle and must finish before sending. Slow discovery at 30 seconds reports progress, not failure; the hard readiness budget covers both bounded backend RPCs. Failed initialization never counts as ready. Timing and outcome are recorded as `session.tools.initialization` telemetry spans.
 - **Eager tool definitions** - every Copilot session is created and resumed with tool search disabled, including helpers, scheduled/defer work, and custom agents. Available MCP and external tools are supplied up front rather than hidden behind discovery; the policy survives model changes and is inherited by subagents. Existing server selections, tool allowlists/exclusions, and permission policies still apply. This increases prompt/context usage for tool-rich sessions. Existing conversations pick up the policy when their runtime handle is resumed after deployment; native tests verify actual model request payloads with more than 30 tools, not just configuration flags.
 - **Workspace customization** - model, reasoning effort, agent identity, custom instructions, theme, favicon, and MCP server registry from the UI.
+- **Moving chats to another model** - "Move existing chats to another model", a closed line under Settings > Chat > New chats, switches every chat that is not archived from one model to another, for when a model is replaced. The same move is available to scripts; see [Moving chats to another model](#moving-chats-to-another-model).
 - **Session details** - a compact chat bar shows MCP connections, context usage, and session cost. Expand it for a full-width details panel with current context usage and headroom. Token breakdowns and provider capabilities stay under Usage details; there is no context-history graph, turn inspector, or context-event list. MCP failures, pending connections, and sign-in actions open automatically. The MCP status endpoint owns the client snapshot; stream, login, and reload events request a refresh rather than overwriting it. While the chat is visible, connection observations refresh every 30 seconds independently of tool readiness (every 2 seconds during initialization), on window focus, and through Refresh. Pending/unknown stream observations are probed immediately; unresolved probe results are cached for only 2 seconds to bound request bursts. Repeated pending startup events cannot discard an in-flight probe, while newer resolved changes and authoritative empty lists remain protected. No status read resumes a cold session. Compact rows show the last check time; exact timestamps, provenance, and session IDs remain in tooltips and the API. Settings use the newest observation rather than cache insertion order, and replayed observations are never fresh. Tool readiness remains separate (`initializing`, `ready`, `failed`, or null); initialization failures retain their cause and are not silently retried. Connection status does not establish tool authorization or request validity. Recent tool failures distinguish resource-denied/403 permission failures, expired authentication, invalid input, and query/server failures (including Kusto assertions wrapped in 400 responses); none is treated as a connection outage or triggers automatic reauthentication. A call the runtime refused because the server was still connecting and its saved tool list could not be confirmed ("MCP tool catalog changed before tool ...") is reported as `catalog-changed`: the call was not sent, and repeating it is safe. Stale MCP runtime-session recovery is limited to transport failures. Context telemetry remains available through the API and retained in SQLite until session deletion; only the historical inspection UI is removed.
 - **Remote-friendly local deployment** - dev tunnels or your own ingress, optional startup webhooks, and canonical public URL support for previews.
 - **Helm** - Bridge's orchestration manager (`/helm`), inside the normal layout next to your tasks and chats. Ask what needs you, hear what finished, read replies, answer a session's question, hand work to sessions on stronger models, and keep tasks, schedules, checklists and docs tidy. Helm only coordinates: it has Bridge's management tools and nothing that edits code, browses or deploys, and it uses GPT-6 Luna by default when available, with fast-model fallbacks (choose another in its settings).
@@ -281,6 +282,55 @@ npm run test:slow-report # full Vitest pass + top slowest files
 Use `check:fast` during day-to-day editing, then run the area-specific `check:*` lane that matches the work you touched. Use `check:pr` before asking for review or refreshing a branch, and reserve `check:deploy` for release-quality validation. Coverage is CI-owned: the GitHub Actions CI workflow runs `test:coverage` on PRs, pushes, manual dispatches, and its nightly schedule; local deploy validation still runs the full non-coverage test lanes through `check:pr`. Client type-checking (`npm run typecheck:client`) is a plain `tsc --noEmit` over `tsconfig.client.json` and must stay at zero diagnostics. Vitest forces `NODE_ENV=test` so launcher/staging validations inherited from a production process do not load production-only React test behavior.
 
 Windows process-tree identity snapshots use `CreateToolhelp32Snapshot` and `GetProcessTimes` on a dedicated worker thread. They do not start PowerShell or query WMI/CIM. Native creation times retain the microsecond precision of persisted CIM markers. Unqueryable entries during process creation or exit are re-observed within the existing snapshot and fencing budgets. No process is signalled through an unknown identity, and unknown survivors never count as exited. Incomplete snapshots, recycled PIDs, and worker failures retain the existing refusal behavior. Snapshot, fencing, and RPC deadlines are unchanged; POSIX snapshots continue to use `ps`.
+
+### Moving chats to another model
+
+A move switches every chat that is not archived from one model to another. It covers the chats the
+session list shows, so archived chats, Helm conversations and temporary worker sessions are left alone.
+The model for new chats, schedules, deferred workers and sub-agents is a setting of its own and does not
+change.
+
+The server takes the chats one at a time, most recent first, through the same switch the model picker in
+a chat uses. A chat that is not loaded is loaded for the switch and unloaded again. Each chat keeps its
+reasoning effort when the new model supports it and otherwise gets the nearest level the new model has; a chat on long
+context keeps it when the new model offers long context. A chat is left as it is, and reported, when:
+
+| Outcome | Meaning |
+| --- | --- |
+| `busy` | A turn or another operation was in flight. |
+| `needs-compaction` | The conversation does not fit the new model and `compact` was not set. |
+| `changed` | The chat was no longer on the old model when its turn came. |
+| `failed` | The switch raised an error or the runtime did not apply it. |
+
+Three failures in a row stop the move (`status: "stopped"`), so a runtime that is down does not fail every
+chat in turn. Running a move again only touches the chats still on the old model. One move runs at a time,
+and the server keeps the last one in memory until it restarts.
+
+| Request | Purpose |
+| --- | --- |
+| `GET /api/session-model-move/models` | Chats per model: `{ scannedAt, sessionCount, unknownCount, models: [{ model, sessionCount, busyCount }] }`. Reads every chat's model, which takes seconds. The count is reused for 60 seconds, by a dry run and a move as well; `?refresh=true` reads again. |
+| `POST /api/session-model-move` | Body `{ fromModel, toModel, reasoningEffort?, contextTier?, compact?, sessionIds?, dryRun? }`. `dryRun: true` answers 200 with the chats that would move. Otherwise it answers 202 with `{ job }` and the move runs in the background. 400 for a body it cannot use or a `toModel` the runtime does not offer, 409 with the running `job` while another move runs. |
+| `GET /api/session-model-move` | `{ job }` for the running or last move, or `{ job: null }`. The job has `status` (`running`, `completed`, `cancelled`, `stopped`), `total`, `processed`, `counts` per outcome, and `results` with one entry per chat. |
+| `POST /api/session-model-move/cancel` | Stops after the chat being switched. Chats already moved stay moved. |
+
+`reasoningEffort` and `contextTier` apply to every moved chat. `compact: true` compacts a conversation that
+does not fit and then moves it, which costs a model call on the old model. `sessionIds` limits the move to
+those chats; each `moved` result carries `previousReasoningEffort` and `previousContextTier`, so a script
+can put the same chats back.
+
+```powershell
+$api = "http://localhost:3333/api/session-model-move"
+$move = @{ fromModel = "old-model-id"; toModel = "new-model-id" }
+
+# What would move
+Invoke-RestMethod "$api" -Method Post -ContentType "application/json" -Body (@{ dryRun = $true } + $move | ConvertTo-Json)
+
+# Move, then wait for the result
+Invoke-RestMethod "$api" -Method Post -ContentType "application/json" -Body ($move | ConvertTo-Json) | Out-Null
+do { Start-Sleep 5; $job = (Invoke-RestMethod "$api").job } while ($job.status -eq "running")
+$job.counts
+$job.results | Where-Object outcome -ne "moved" | Format-Table title, outcome, detail
+```
 
 ### Pagination query parameters
 

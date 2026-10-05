@@ -8,6 +8,7 @@ import { AlertTriangle, Check, Loader2, RotateCw, Settings } from "lucide-react"
 import {
   SystemPromptSection,
   ModelSection,
+  ModelMoveDisclosure,
   DeferWorkerSection,
   SubagentModelsSection,
   ComputerUseSection,
@@ -313,7 +314,9 @@ export default function SettingsView() {
               </Notice>
             )}
             <CategoryPanel category="chat" activeCategory={activeCategory}>
-              <ModelSection draft={draft} setDraft={setDraft} />
+              <ModelSection draft={draft} setDraft={setDraft}>
+                <ModelMoveDisclosure />
+              </ModelSection>
               <DeferWorkerSection draft={draft} setDraft={setDraft} />
               <SubagentModelsSection draft={draft} setDraft={setDraft} />
               <ImageBudgetSection draft={draft} setDraft={setDraft} />
