@@ -1,10 +1,10 @@
 name: Publish Package
 
-# Stages a new version of one in-tree package (src/packages) on npm. A staged version is not
-# public: the owner of the npm account approves it on npmjs.com with a second factor, and only
-# then does npm publish it. This workflow cannot publish by itself. On npm, each package names this
-# file as its trusted publisher and allows it to stage, nothing more, so no npm token is stored
-# anywhere. How a release goes: src/packages/README.md, "Releasing a version".
+# Publishes a new version of one in-tree package (src/packages) on npm. The version is public as
+# soon as the run has passed: nobody approves it in between, and a published version can never be
+# changed. On npm, each package names this file as its trusted publisher and allows it to publish,
+# so no npm token is stored anywhere. Whoever can push to master and start this workflow can
+# release a package. How a release goes: src/packages/README.md, "Releasing a version".
 #
 # The job that may ask npm for a token runs no code from the repository: it takes the tarball the
 # first job built and hands it to npm. Keep it that way. src/server/__tests__/in-tree-packages.test.ts
@@ -22,7 +22,7 @@ on:
           - spawn-offthread
           - voice-agent-text
       dry_run:
-        description: "Dry run: check, build and ask npm for a token, but stage nothing"
+        description: "Dry run: check, build and ask npm for a token, but publish nothing"
         required: true
         default: false
         type: boolean
@@ -38,8 +38,8 @@ defaults:
     shell: bash
 
 env:
-  # Staging needs npm 11.15.0 or newer, and the npm that comes with Node can be older. After
-  # changing this, do a dry run: the stage job reads a line of npm's log.
+  # Publishing as a trusted publisher needs npm 11.5.1 or newer, and the npm that comes with Node
+  # can be older. After changing this, do a dry run: the publish job reads a line of npm's log.
   NPM_VERSION: "11.21.0"
 
 jobs:
@@ -119,7 +119,7 @@ jobs:
             exit 1
           fi
           integrity="sha512-$(openssl dgst -sha512 -binary "$file" | base64 -w 0)"
-          # The SHA-1 is what npm shows beside a staged version, for comparing before approving.
+          # The SHA-1 is what npm shows as a version's shasum, for comparing afterwards.
           shasum="$(sha1sum "$file" | cut -d ' ' -f 1)"
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
@@ -134,8 +134,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  stage:
-    name: Stage on npm
+  publish:
+    name: Publish on npm
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -155,13 +155,12 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - name: Install the npm that can stage
+      - name: Install the npm that publishes
         run: |
           npm install --global "npm@$NPM_VERSION"
           npm --version
 
-      - name: Stage the version
-        id: stage
+      - name: Publish the version
         env:
           NAME: ${{ needs.build.outputs.name }}
           FILE: ${{ needs.build.outputs.file }}
@@ -175,7 +174,8 @@ jobs:
           fi
 
           # --provenance: left to itself, npm adds the statement only when a check of its own
-          # succeeds, and stages without one otherwise. Asked for, a version without one is not staged.
+          # succeeds, and publishes without one otherwise. Asked for, a version without one is not
+          # published.
           flags=(--provenance)
           if [ "$DRY_RUN" = "true" ]; then
             # Nothing is sent. --force lets the dry run get past a version that is already on npm.
@@ -183,15 +183,16 @@ jobs:
           fi
           status=0
           # The path starts with "./": npm takes "release/<file>" for a GitHub repository of that name.
-          npm stage publish "./release/$FILE" --loglevel verbose "${flags[@]}" 2>&1 | tee stage.log || status=$?
+          npm publish "./release/$FILE" --loglevel verbose "${flags[@]}" 2>&1 | tee publish.log || status=$?
 
           # npm asks for its token before it sends anything, in a dry run too, and says so only at
           # this log level. A dry run sends nothing, so that line is its only proof that npm accepts
-          # this workflow. After a failure, npm's other oidc lines tell a refused workflow from an
+          # this workflow. It does not prove that the workflow may publish: npm checks that when the
+          # version arrives. After a failure, npm's other oidc lines tell a refused workflow from an
           # error of another kind.
           if [ "$status" -ne 0 ] || [ "$DRY_RUN" = "true" ]; then
-            if ! grep -q "Successfully retrieved and set token" stage.log; then
-              if grep -q "verbose oidc" stage.log; then
+            if ! grep -q "Successfully retrieved and set token" publish.log; then
+              if grep -q "verbose oidc" publish.log; then
                 echo "::error::npm did not accept this workflow as a trusted publisher of $NAME. Compare the package's trusted publisher on npmjs.com with this run: repository $GITHUB_REPOSITORY, workflow file publish-package.yml."
               elif [ "$status" -ne 0 ]; then
                 echo "::error::npm stopped before it asked for a token. Its own error is in the log above."
@@ -202,30 +203,30 @@ jobs:
             fi
           fi
           if [ "$status" -ne 0 ]; then
+            if grep -q "verbose oidc Successfully retrieved and set token" publish.log; then
+              echo "::error::npm accepted this workflow and then refused the version. If its error above is about permission, the package's trusted publisher on npmjs.com does not allow \"npm publish\"."
+            fi
             exit "$status"
           fi
-          stage_id="$(sed -n 's/.*(staged with id \([^)]*\)).*/\1/p' stage.log | head -n 1)"
-          echo "stage_id=$stage_id" >> "$GITHUB_OUTPUT"
 
-      - name: Say what happens next
+      - name: Say what was done
         env:
           NAME: ${{ needs.build.outputs.name }}
           VERSION: ${{ needs.build.outputs.version }}
           FILE: ${{ needs.build.outputs.file }}
           INTEGRITY: ${{ needs.build.outputs.integrity }}
           SHASUM: ${{ needs.build.outputs.shasum }}
-          STAGE_ID: ${{ steps.stage.outputs.stage_id }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           {
             if [ "$DRY_RUN" = "true" ]; then
-              echo "### Dry run: $NAME $VERSION was not staged"
+              echo "### Dry run: $NAME $VERSION was not published"
               echo ""
               echo "The checks passed, the tarball was built, and npm accepted this workflow as a trusted publisher of the package."
             else
-              echo "### $NAME $VERSION is staged on npm"
+              echo "### $NAME $VERSION is published on npm"
               echo ""
-              echo "It is not public yet. The owner of the npm account approves it on [npmjs.com](https://www.npmjs.com/): the menu at the avatar, Staged Packages. Or with \`npm stage approve $STAGE_ID\`. Both ask for a second factor. The entry there shows the shasum below. See [staged publishing](https://docs.npmjs.com/staged-publishing)."
+              echo "It is public: [$NAME $VERSION](https://www.npmjs.com/package/$NAME/v/$VERSION). The registry can take a minute to show a new version. Its shasum there should be the one below."
             fi
             echo ""
             echo "| | |"
@@ -234,14 +235,11 @@ jobs:
             echo "| Shasum | \`$SHASUM\` |"
             echo "| Integrity | \`$INTEGRITY\` |"
             echo "| Commit | \`$GITHUB_SHA\` |"
-            if [ -n "$STAGE_ID" ]; then
-              echo "| Stage id | \`$STAGE_ID\` |"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   tag:
     name: Tag the commit
-    needs: [build, stage]
+    needs: [build, publish]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
