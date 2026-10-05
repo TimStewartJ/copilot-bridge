@@ -1371,6 +1371,74 @@ describe("BrowserLiveGateway page size and address", () => {
     expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1024, height: 768 });
   });
 
+  it("does not read the page again for the tabs agent-browser announces after each of its commands", async () => {
+    const h = await createHarness();
+    let afterCommand = (): void => undefined;
+    h.cli.answers.page = () => {
+      afterCommand();
+      return page(1280, 720, "https://example.com/");
+    };
+    const view = await h.openView((await h.createSession()).id);
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
+    let stamp = 0;
+    const announceTabs = (): void => send(view.upstream, {
+      type: "tabs",
+      tabs: [{ tabId: "t1", targetId: "A", title: "Example", url: "https://example.com/", active: true }],
+      timestamp: ++stamp,
+    });
+    afterCommand = announceTabs;
+
+    // What agent-browser sends when the stream opens. The read it prompts is a command too.
+    announceTabs();
+    await h.cli.called("eval", 2);
+
+    // The frame comes after the announcement of that read, so the gateway has seen both.
+    send(view.upstream, { type: "frame", seq: 1, data: "QQ==" });
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
+    expect(stamp).toBe(2);
+    expect(h.cli.count("eval")).toBe(2);
+  });
+
+  it("reads the page again for tabs that show another tab or another address, and for nothing else in them", async () => {
+    const h = await createHarness();
+    h.cli.answers.page = () => page(1280, 720, "https://example.com/");
+    const view = await h.openView((await h.createSession()).id);
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
+    const first = { tabId: "t1", targetId: "A", title: "Example", url: "https://example.com/", active: true };
+    const second = { tabId: "t2", targetId: "B", title: "Other", url: "https://example.org/", active: false };
+    const unchanged = async (reads: number): Promise<void> => {
+      await handled(view.upstream);
+      expect(h.cli.count("eval")).toBe(reads);
+    };
+
+    send(view.upstream, { type: "tabs", tabs: [first], timestamp: 1 });
+    await h.cli.called("eval", 2);
+    send(view.upstream, { type: "tabs", tabs: [{ ...first, title: "Renamed" }], timestamp: 2 });
+    send(view.upstream, { type: "tabs", tabs: [first, second], timestamp: 3 });
+    await unchanged(2);
+
+    send(view.upstream, { type: "tabs", tabs: [{ ...first, active: false }, { ...second, active: true }], timestamp: 4 });
+    await h.cli.called("eval", 3);
+    send(view.upstream, { type: "tabs", tabs: [{ ...second, url: "https://example.org/next", active: true }], timestamp: 5 });
+    await h.cli.called("eval", 4);
+    await unchanged(4);
+  });
+
+  it("does not read the page for an address of the stream it already sent", async () => {
+    const h = await createHarness();
+    h.cli.answers.page = () => page(1280, 720, "https://example.com/");
+    const view = await h.openView((await h.createSession()).id);
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
+
+    send(view.upstream, { type: "url", url: "https://example.com/" });
+    await handled(view.upstream);
+
+    expect(h.cli.count("eval")).toBe(1);
+  });
+
   it("does not read the page twice at once", async () => {
     const h = await createHarness();
     const pageRead = deferred<BrowserCommandResult>();
