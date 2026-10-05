@@ -14,6 +14,7 @@ import { emitSessionDeferSummary, type DeferSummarySources } from "./defer-summa
 import type { DeferWorkerLease } from "./defer-worker.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import { isBackendUnavailableError } from "./backend-availability.js";
+import { archivedEventSessionIds } from "../shared/session-archive-event.js";
 
 // ── Shared timing/lease constants ─────────────────────────────────
 
@@ -533,11 +534,13 @@ export function createDeferRunnerCore<Item extends { id: string; sessionId: stri
         return;
       }
 
-      if (event.type === "session:archived" && event.sessionId && event.archived === true) {
-        const cancelled = work.cancelForSession(event.sessionId);
-        if (cancelled > 0) {
-          console.log(`[${tag}] Cancelled ${cancelled} ${noun}(s) for archived session ${event.sessionId}`);
-          emitDeferSummary(event.sessionId);
+      if (event.type === "session:archived" && event.archived === true) {
+        for (const sessionId of archivedEventSessionIds(event)) {
+          const cancelled = work.cancelForSession(sessionId);
+          if (cancelled > 0) {
+            console.log(`[${tag}] Cancelled ${cancelled} ${noun}(s) for archived session ${sessionId}`);
+            emitDeferSummary(sessionId);
+          }
         }
       }
     });

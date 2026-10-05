@@ -10,7 +10,7 @@ export type StatusEvent =
   | { type: "session:mode"; sessionId?: string; agentMode?: SendMode }
   | { type: "session:title"; sessionId?: string; title?: string }
   | { type: "session:intent"; sessionId?: string; intent?: string }
-  | { type: "session:archived"; sessionId?: string; archived?: boolean }
+  | { type: "session:archived"; sessionId?: string; sessionIds?: string[]; archived?: boolean }
   | { type: "session:agents"; sessionId?: string; backgroundAgents?: BackgroundAgentsSummary }
   | { type: "sessions:changed" }
   | {
