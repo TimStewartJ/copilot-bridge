@@ -182,6 +182,7 @@ import {
 } from "./browser-diagnostics.js";
 import { BrowserUnavailableError } from "./browser-broker.js";
 import { BrowserLiveSessionNotFoundError, BrowserLiveUnavailableError } from "./browser-live.js";
+import { BrowserHandedOffError } from "./browser-user-session.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
@@ -5919,6 +5920,18 @@ export function createApiRouter(
         ? 404
         : err instanceof BrowserLiveUnavailableError || err instanceof BrowserUnavailableError ? 409 : 500;
       res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/authenticated/live", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Signed-in browser view")) return;
+    try {
+      res.json(await getBrowserRuntime(ctx).userSession.openLiveView());
+    } catch (err) {
+      const refused = err instanceof BrowserHandedOffError
+        || err instanceof BrowserLiveUnavailableError
+        || err instanceof BrowserUnavailableError;
+      res.status(refused ? 409 : 500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

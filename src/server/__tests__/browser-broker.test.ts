@@ -1294,6 +1294,19 @@ describe("a browser the user is acting in", () => {
     expect(health).not.toHaveProperty("lastFailureAt");
   });
 
+  it("says what the user was given it for, for as long as they have it", async () => {
+    const { broker } = createBroker("browser-broker-held-for");
+    const lease = await broker.createSessionTarget("public");
+    expect(broker.heldFor(lease)).toBeUndefined();
+
+    const handBack = broker.holdTarget(lease, "sign in to the store");
+    expect(broker.heldFor(lease)).toBe("sign in to the store");
+    expect(broker.heldFor(await broker.createSessionTarget("public"))).toBeUndefined();
+
+    handBack();
+    expect(broker.heldFor(lease)).toBeUndefined();
+  });
+
   it("runs what is part of the user's own use of it", async () => {
     const { broker, runCommand } = createBroker("browser-broker-held-during");
     const lease = await broker.createSessionTarget("public");

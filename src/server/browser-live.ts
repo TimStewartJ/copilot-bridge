@@ -8,16 +8,19 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 
 import {
   BROWSER_LIVE_WS_PATH,
+  isBrowserLivePageCommand,
   parseBrowserLiveClientMessage,
   type BrowserLiveCheck,
   type BrowserLiveClientMessage,
   type BrowserLiveClosedMessage,
+  type BrowserLivePageCommand,
+  type BrowserLiveTab,
   type BrowserLiveServerMessage,
   type BrowserLiveTicket,
 } from "../shared/browser-live.js";
 import { ab, type BrowserCommand, type BrowserCommandOptions, type BrowserCommandResult, type BrowserTarget } from "./agent-browser.js";
 import type { BrowserBroker } from "./browser-broker.js";
-import type { BrowserSessionStore } from "./browser-session-store.js";
+import { sessionLease, type BrowserSessionStore } from "./browser-session-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 
 /** Long enough to open the socket after asking for it, short enough to be useless if it leaks. */
@@ -32,12 +35,36 @@ const TEXT_BATCH_CHARACTERS = 64;
 /** Typing waits while this much is still on its way to the browser. */
 const STREAM_BACKLOG_BYTES = 256 * 1024;
 /**
- * How often an open live view reads the page's size and address again. Each read also counts as
- * a use of the session, which keeps the browser from being closed as idle while a person is in it.
+ * agent-browser notices a tab or popup that opened or closed only when it runs a command, and
+ * until then its stream shows the tab it knew. Reading the page (its size and address) is that
+ * command, so an open view reads it this often while tabs are likely to change: for a while
+ * after input, and while more than one is open. Otherwise it reads at the slow rate.
  */
-const PAGE_POLL_MS = 30_000;
+const PAGE_POLL_MS = 4_000;
+const SLOW_PAGE_POLL_MS = 30_000;
+const RECENT_INPUT_MS = 20_000;
+/**
+ * A click or a key press is what opens and closes tabs, so the page is read again this long
+ * after the last one, and once more for a tab that took a moment to appear.
+ */
+const INPUT_FOLLOW_UP_READS_MS = [600, 2_500] as const;
+/**
+ * A view nobody has touched for this long is closed; it can be opened again. Its reads keep the
+ * session in use, and for some sessions the browser is kept from agents while it is on show, so
+ * a view left open in a forgotten tab must not last.
+ */
+const VIEW_IDLE_MS = 10 * 60_000;
+/** A connection that does not answer a ping by the next one is gone, whatever the socket says. */
+const HEARTBEAT_MS = 20_000;
+/** Opening an address waits for the page to load. */
+const PAGE_COMMAND_TIMEOUT_MS = 30_000;
+const MAX_TABS = 20;
+const MAX_TAB_TITLE_LENGTH = 200;
+const MAX_TAB_URL_LENGTH = 2_048;
 const base64 = (script: string): string => Buffer.from(script, "utf-8").toString("base64");
-const PAGE_SCRIPT_BASE64 = base64("JSON.stringify([innerWidth, innerHeight, location.href])");
+// The array is turned into text outside the page. A page can replace its own JSON.stringify, and
+// with it what the address field of a view shows; it cannot replace its location.
+const PAGE_SCRIPT_BASE64 = base64("[innerWidth, innerHeight, location.href, document.title]");
 const CHECK_INPUT_ID = "bridge-live-check";
 /** A page that is one text box, so that a click anywhere near its corner lands in it. */
 const CHECK_PAGE_SCRIPT_BASE64 = base64(
@@ -130,6 +157,44 @@ function visibleTab(tabs: unknown): string {
   return JSON.stringify([tabId, targetId, url].map((value) => (typeof value === "string" ? value : "")));
 }
 
+/** The browser's tabs as a viewer is told them, from the `tabs` of a stream message. */
+function liveTabs(tabs: unknown): BrowserLiveTab[] {
+  if (!Array.isArray(tabs)) return [];
+  const text = (value: unknown, max: number): string => (typeof value === "string" ? value.slice(0, max) : "");
+  return tabs.slice(0, MAX_TABS).flatMap((tab: unknown) => {
+    const { tabId, title, url, active } = (typeof tab === "object" && tab !== null ? tab : {}) as Record<string, unknown>;
+    return typeof tabId === "string" && tabId.length <= 16
+      ? [{ id: tabId, title: text(title, MAX_TAB_TITLE_LENGTH), url: text(url, MAX_TAB_URL_LENGTH), active: active === true }]
+      : [];
+  });
+}
+
+/** The agent-browser command that does what a viewer asked of the browser. */
+function pageCommand(message: BrowserLivePageCommand): BrowserCommand {
+  switch (message.type) {
+    case "navigate":
+      return ["open", message.url];
+    case "history":
+      return [message.direction];
+    case "reload":
+      return ["reload"];
+    case "tab":
+      return message.action === "close" ? ["tab", "close", message.tabId] : ["tab", message.tabId];
+  }
+}
+
+/** Input that can open or close a tab: the end of a click, and keys. */
+function mayChangeTabs(message: BrowserLiveClientMessage): boolean {
+  return (message.type === "input_mouse" && message.eventType === "mouseReleased")
+    || (message.type === "input_keyboard" && message.eventType !== "keyDown");
+}
+
+/**
+ * `viewers` is how many live views of the session are open now. `dropped` says the one that
+ * just ended lost its connection without closing it, so it may be back in a moment.
+ */
+export type BrowserLiveViewerListener = (browserSessionId: string, viewers: number, dropped: boolean) => void;
+
 export class BrowserLiveGateway {
   private readonly wss = new WebSocketServer({
     noServer: true,
@@ -144,6 +209,7 @@ export class BrowserLiveGateway {
   private readonly runCommand: NonNullable<BrowserLiveGatewayOptions["runCommand"]>;
   private readonly connectStream: NonNullable<BrowserLiveGatewayOptions["connectStream"]>;
   private readonly stopListening: () => void;
+  private readonly viewerListeners = new Set<BrowserLiveViewerListener>();
   private lastCheck: BrowserLiveCheck | undefined;
 
   constructor(options: BrowserLiveGatewayOptions) {
@@ -338,6 +404,23 @@ export class BrowserLiveGateway {
     this.wss.close();
   }
 
+  /** Calls the listener whenever a live view of a session opens or ends. */
+  onViewersChanged(listener: BrowserLiveViewerListener): () => void {
+    this.viewerListeners.add(listener);
+    return () => this.viewerListeners.delete(listener);
+  }
+
+  private viewersChanged(browserSessionId: string, dropped = false): void {
+    const viewers = this.connections.get(browserSessionId)?.size ?? 0;
+    for (const listener of this.viewerListeners) {
+      try {
+        listener(browserSessionId, viewers, dropped);
+      } catch (error) {
+        console.error("[browser-live] Viewer listener failed:", error);
+      }
+    }
+  }
+
   private closeConnections(browserSessionId: string, message: BrowserLiveClosedMessage): void {
     for (const close of [...(this.connections.get(browserSessionId) ?? [])]) close(message);
   }
@@ -352,22 +435,52 @@ export class BrowserLiveGateway {
     let lastViewport = "";
     let lastUrl = "";
     let lastVisibleTab: string | undefined;
+    let lastTabs = "[]";
+    let streamTabs: BrowserLiveTab[] = [];
+    // agent-browser reports a tab's title and address as they were when it first saw the tab.
+    // The tab on show is described by the latest read of it instead, and what two reads in a
+    // row found in a tab is kept for when it is no longer on show. One read is not enough to go
+    // by: its result and the news of which tab is on show arrive in either order.
+    let page: { tabId: string | undefined; title: string; url: string } | undefined;
+    const seenInTab = new Map<string, { title: string; url: string }>();
+    let tabCount = 1;
+    let followUpReads: NodeJS.Timeout[] = [];
+    const openedAt = Date.now();
+    let lastInputAt = 0;
+    let lastReadAt = 0;
+    let answersPings = true;
     let ended = false;
 
-    const end = (message: BrowserLiveClosedMessage): void => {
+    const end = (message: BrowserLiveClosedMessage, dropped = false): void => {
       if (ended) return;
       ended = true;
       clearInterval(pageTimer);
+      clearInterval(heartbeat);
+      for (const timer of followUpReads) clearTimeout(timer);
       const open = this.connections.get(browserSessionId);
       open?.delete(end);
       if (open?.size === 0) this.connections.delete(browserSessionId);
       send(message);
       client.close(1000, message.reason);
       stream?.close();
+      this.viewersChanged(browserSessionId, dropped);
     };
+    const heartbeat = setInterval(() => {
+      if (!answersPings) {
+        client.terminate();
+        return;
+      }
+      answersPings = false;
+      client.ping();
+    }, HEARTBEAT_MS);
+    heartbeat.unref?.();
+    client.on("pong", () => {
+      answersPings = true;
+    });
     const peers = this.connections.get(browserSessionId) ?? new Set<(message: BrowserLiveClosedMessage) => void>();
     peers.add(end);
     this.connections.set(browserSessionId, peers);
+    this.viewersChanged(browserSessionId);
 
     // Input goes to the browser in the order it came, text a few characters at a time so that a
     // long paste neither holds the server up nor piles up in front of a slow browser.
@@ -398,13 +511,27 @@ export class BrowserLiveGateway {
       } catch {
         return;
       }
-      if (!message) return;
-      if (message.type !== "ack") this.sessions.touch(browserSessionId);
+      // A socket that is being closed still delivers what was already on its way.
+      if (!message || ended) return;
+      if (message.type !== "ack") {
+        lastInputAt = Date.now();
+        this.sessions.touch(browserSessionId);
+      }
       const accepted = message;
+      if (isBrowserLivePageCommand(accepted)) {
+        queuePageCommand(accepted);
+        return;
+      }
       inputTail = inputTail.then(() => forward(accepted)).catch(() => undefined);
+      if (mayChangeTabs(accepted)) readSoon();
     });
-    client.on("close", () => end({ type: "closed", reason: "stream_ended", message: "The live view was closed." }));
-    client.on("error", () => end({ type: "closed", reason: "stream_ended", message: "The live view connection failed." }));
+    // A view that is closed, or whose page is left, says so (1000, 1001). Anything else is a
+    // connection that broke.
+    client.on("close", (code) => end(
+      { type: "closed", reason: "stream_ended", message: "The live view was closed." },
+      code !== 1000 && code !== 1001,
+    ));
+    client.on("error", () => end({ type: "closed", reason: "stream_ended", message: "The live view connection failed." }, true));
 
     const record = this.sessions.getSession(browserSessionId);
     if (!record) {
@@ -429,11 +556,33 @@ export class BrowserLiveGateway {
       if (pageRead) readAgain = true;
       pageRead ??= (async () => {
         try {
-          const result = await this.runCommand(["eval", "-b", PAGE_SCRIPT_BASE64], STREAM_COMMAND_TIMEOUT_MS, commandOptions);
+          lastReadAt = Date.now();
+          // Too frequent to be worth a span each.
+          const result = await this.runCommand(
+            ["eval", "-b", PAGE_SCRIPT_BASE64],
+            STREAM_COMMAND_TIMEOUT_MS,
+            { ...commandOptions, telemetryStore: undefined },
+          );
           if (!result.ok || ended) return;
-          const [width, height, url] = JSON.parse(result.output) as [number, number, string];
+          const [width, height, url, title] = JSON.parse(result.output) as [number, number, string, string];
           this.sessions.touch(browserSessionId);
-          if (typeof url === "string") sendUrl(url);
+          if (typeof url === "string") {
+            sendUrl(url);
+            const read = {
+              tabId: streamTabs.find((tab) => tab.active)?.id,
+              title: typeof title === "string" ? title.slice(0, MAX_TAB_TITLE_LENGTH) : "",
+              url: url.slice(0, MAX_TAB_URL_LENGTH),
+            };
+            if (read.tabId) {
+              if (page?.tabId === read.tabId && page.title === read.title && page.url === read.url) {
+                seenInTab.set(read.tabId, { title: read.title, url: read.url });
+              } else {
+                seenInTab.delete(read.tabId);
+              }
+            }
+            page = read;
+            sendTabs();
+          }
           const viewport = `${width}x${height}`;
           if (!(width > 0 && height > 0) || viewport === lastViewport) return;
           lastViewport = viewport;
@@ -449,6 +598,66 @@ export class BrowserLiveGateway {
         }
       })();
       return pageRead;
+    };
+
+    const sendTabs = (): void => {
+      const tabs = streamTabs.map((tab) => ({
+        ...tab,
+        ...(tab.active && page?.tabId === tab.id ? { title: page.title, url: page.url } : seenInTab.get(tab.id)),
+      }));
+      const listed = JSON.stringify(tabs);
+      if (listed === lastTabs) return;
+      lastTabs = listed;
+      send({ type: "tabs", tabs });
+    };
+    const readSoon = (): void => {
+      for (const timer of followUpReads) clearTimeout(timer);
+      followUpReads = INPUT_FOLLOW_UP_READS_MS.map((delay) => {
+        const timer = setTimeout(() => void readPage(), delay);
+        timer.unref?.();
+        return timer;
+      });
+    };
+    // Apart from input: opening an address takes as long as the page takes to load, and the
+    // page is there to be clicked meanwhile. One runs at a time; of those asked for meanwhile
+    // only the last is run, as a browser treats a second address typed while the first loads.
+    let commandRunning = false;
+    let nextCommand: BrowserLivePageCommand | undefined;
+    const runPageCommand = async (message: BrowserLivePageCommand): Promise<void> => {
+      // Before the stream is open there is no page on show to act on.
+      if (ended || stream?.readyState !== WebSocket.OPEN) return;
+      // One operation on the browser at a time, like an agent's own, and none on a session
+      // that is being closed. A command that fails changes nothing; the page shows what is.
+      await this.sessions.holdSession(browserSessionId, (current) => this.broker.withTarget(
+        sessionLease(current),
+        { toolName: "browser_live", browserOpId: randomBytes(8).toString("hex"), duringHold: true, skipReadiness: true },
+        async () => {
+          // The wait for the browser may have outlasted the view, and with it the user's hold
+          // on the browser.
+          if (ended) return;
+          if (message.type === "tab" && message.action === "close") {
+            // A browser without a tab has nothing to show, and its window closes.
+            const listed = await this.runCommand(["tab", "list"], STREAM_COMMAND_TIMEOUT_MS, commandOptions);
+            const tabs = listed.ok ? listed.data?.tabs : undefined;
+            if (ended || !Array.isArray(tabs) || tabs.length <= 1) return;
+          }
+          await this.runCommand(pageCommand(message), PAGE_COMMAND_TIMEOUT_MS, commandOptions);
+        },
+      ));
+      await readPage();
+    };
+    const queuePageCommand = (message: BrowserLivePageCommand): void => {
+      if (commandRunning) {
+        nextCommand = message;
+        return;
+      }
+      commandRunning = true;
+      void (async () => {
+        for (let command: BrowserLivePageCommand | undefined = message; command; command = nextCommand, nextCommand = undefined) {
+          await runPageCommand(command).catch(() => undefined);
+        }
+        commandRunning = false;
+      })();
     };
 
     let port: number;
@@ -471,7 +680,15 @@ export class BrowserLiveGateway {
     stream = this.connectStream(`ws://127.0.0.1:${port}/?pacing=ack&maxFps=${STREAM_MAX_FPS}`);
     stream.on("open", () => {
       void readPage();
-      pageTimer = setInterval(() => void readPage(), PAGE_POLL_MS);
+      pageTimer = setInterval(() => {
+        const now = Date.now();
+        if (now - Math.max(openedAt, lastInputAt) >= VIEW_IDLE_MS) {
+          end({ type: "closed", reason: "stream_ended", message: "The view was closed because nobody used it for a while." });
+          return;
+        }
+        const tabsMayChange = tabCount > 1 || now - lastInputAt < RECENT_INPUT_MS;
+        if (tabsMayChange || now - lastReadAt >= SLOW_PAGE_POLL_MS) void readPage();
+      }, PAGE_POLL_MS);
       pageTimer.unref?.();
     });
     stream.on("message", (data) => {
@@ -488,6 +705,14 @@ export class BrowserLiveGateway {
         // agent-browser sends its tabs after every command it runs, and reading the page is
         // one. Only another visible tab, or another address of it, is a reason to read again:
         // a read for every message would cause the next message, without end.
+        streamTabs = liveTabs(message.tabs);
+        tabCount = streamTabs.length;
+        for (const id of seenInTab.keys()) {
+          if (!streamTabs.some((tab) => tab.id === id)) seenInTab.delete(id);
+        }
+        // What the last read found was in the tab that was on show until now.
+        if (page && page.tabId !== streamTabs.find((tab) => tab.active)?.id) page = undefined;
+        sendTabs();
         const visible = visibleTab(message.tabs);
         if (visible === lastVisibleTab) return;
         lastVisibleTab = visible;

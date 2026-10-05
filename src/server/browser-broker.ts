@@ -148,6 +148,7 @@ export class BrowserBroker {
   private readonly publicWaiters: Array<() => void> = [];
   /** Browsers a person is acting in, by session name, with what they were asked to do. */
   private readonly heldTargets = new Map<string, { purpose: string }>();
+  private readonly holdSuccessors = new Map<string, Set<() => void>>();
   private readonly targetTails = new Map<string, Promise<void>>();
   private publicAvailable: number;
   private authenticatedTail: Promise<void> = Promise.resolve();
@@ -390,8 +391,34 @@ export class BrowserBroker {
     const hold = { purpose };
     this.heldTargets.set(sessionName, hold);
     return () => {
-      if (this.heldTargets.get(sessionName) === hold) this.heldTargets.delete(sessionName);
+      if (this.heldTargets.get(sessionName) !== hold) return;
+      this.heldTargets.delete(sessionName);
+      const next = this.holdSuccessors.get(sessionName);
+      this.holdSuccessors.delete(sessionName);
+      // In the same breath, so that nothing gets at the browser in between.
+      for (const take of next ?? []) take();
     };
+  }
+
+  /**
+   * Calls `take` the moment the user's current hold on a browser is given up, before anything
+   * else can have the browser: for a second reason to keep it for the user that outlasts the
+   * first. The returned function withdraws the request.
+   */
+  afterHold(lease: BrowserBrokerLease, take: () => void): () => void {
+    const sessionName = lease.browserTarget.sessionName;
+    const waiting = this.holdSuccessors.get(sessionName) ?? new Set<() => void>();
+    waiting.add(take);
+    this.holdSuccessors.set(sessionName, waiting);
+    return () => {
+      waiting.delete(take);
+      if (waiting.size === 0 && this.holdSuccessors.get(sessionName) === waiting) this.holdSuccessors.delete(sessionName);
+    };
+  }
+
+  /** What the user was given a browser for, while they have it. */
+  heldFor(lease: BrowserBrokerLease): string | undefined {
+    return this.heldTargets.get(lease.browserTarget.sessionName)?.purpose;
   }
 
   /** How many public profiles exist and how many a browser is using. */

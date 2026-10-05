@@ -470,3 +470,70 @@ describe("POST /api/browser/sessions/:browserSessionId/live", () => {
     expect(streamCommands()).toEqual([]);
   });
 });
+
+describe("POST /api/browser/authenticated/live", () => {
+  function requestSignedInBrowser(app: Parameters<typeof request>[0], headers = SAME_ORIGIN) {
+    return request(app)
+      .post("/api/browser/authenticated/live")
+      .set("Host", headers.host)
+      .set("Origin", headers.origin)
+      .send({});
+  }
+
+  it("returns a ticket for a session on the signed-in browser, and for the same session the next time", async () => {
+    const local = createTestApp();
+    const runtime = browserRuntimeOf(local.ctx);
+    answerStreamCommands({ status: { ok: true, output: "", data: { enabled: true, port: 9333 } } });
+
+    const res = await requestSignedInBrowser(local.app);
+    const again = await requestSignedInBrowser(local.app);
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["browserSessionId", "expiresAt", "token"]);
+    expect(runtime.sessions.getSession(res.body.browserSessionId)).toMatchObject({
+      context: "authenticated",
+      browserTarget: runtime.broker.getAuthenticatedTarget(),
+    });
+    expect(again.body.browserSessionId).toBe(res.body.browserSessionId);
+    expect(again.body.token).not.toBe(res.body.token);
+  });
+
+  it("answers 409 and says what for when an agent has handed the signed-in browser to the user", async () => {
+    const local = createTestApp();
+    const { broker } = browserRuntimeOf(local.ctx);
+    const handBack = broker.holdTarget(
+      { context: "authenticated", browserTarget: broker.getAuthenticatedTarget() },
+      "sign in to the store",
+    );
+
+    const res = await requestSignedInBrowser(local.app);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("sign in to the store");
+    expect(res.body).not.toHaveProperty("token");
+    handBack();
+  });
+
+  it("answers 409 when the installed agent-browser has no stream command", async () => {
+    const local = createTestApp();
+    browserRuntimeOf(local.ctx);
+    answerStreamCommands({ status: { ok: false, output: "Unknown command: stream" } });
+
+    const res = await requestSignedInBrowser(local.app);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("cannot show a live browser");
+    expect(res.body).not.toHaveProperty("token");
+  });
+
+  it("rejects cross-site requests before anything is asked of the browser", async () => {
+    const local = createTestApp();
+    browserRuntimeOf(local.ctx);
+
+    const res = await requestSignedInBrowser(local.app, CROSS_SITE);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("must be started from the Bridge UI");
+    expect(abMock).not.toHaveBeenCalled();
+  });
+});

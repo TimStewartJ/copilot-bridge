@@ -1,10 +1,12 @@
-import { CornerDownLeft, Delete } from "lucide-react";
+import { ArrowLeft, ArrowRight, CornerDownLeft, Delete, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { Button, EmptyHint, IconButton, Notice, SegmentedControl, StatusIcon, TextInput } from "../design/primitives";
+import type { BrowserLivePageCommand, BrowserLiveTicket } from "../../shared/browser-live.js";
+import { Button, EmptyHint, IconButton, Notice, SegmentedControl, Select, StatusIcon, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import type { BrowserLiveDeps, BrowserLivePhase } from "./live-connection";
 import {
+  addressToUrl,
   chainScroll,
   fitDisplaySize,
   keyDownMessages,
@@ -81,15 +83,23 @@ function liveKey(event: KeyboardEventLike): LiveKeyEvent {
  */
 export function LiveBrowserView({
   browserSessionId,
+  requestTicket,
   deps,
   className,
 }: {
+  /** The browser session to show, or a name for the view when `requestTicket` finds the session. */
   browserSessionId: string;
+  /** Gets permission to open the view of a browser that is not one chat's session. */
+  requestTicket?: () => Promise<BrowserLiveTicket>;
   /** Replaces the network in tests. */
   deps?: Partial<BrowserLiveDeps>;
   className?: string;
 }) {
-  const { connection, state } = useBrowserLive(browserSessionId, deps);
+  const { connection, state } = useBrowserLive(browserSessionId, requestTicket ? { ...deps, requestTicket } : deps);
+  /** What is being typed into the address field. Null while it shows where the page is. */
+  const [address, setAddress] = useState<string | null>(null);
+  const [addressRefused, setAddressRefused] = useState(false);
+  const addressRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState<ZoomValue>("1");
   const [stageSize, setStageSize] = useState<LiveSize | null>(null);
   const [keyboardOnPage, setKeyboardOnPage] = useState(false);
@@ -242,9 +252,14 @@ export function LiveBrowserView({
     for (const message of namedKeyMessages(name)) connection.send(message);
   }, [connection]);
 
+  const pageCommand = useCallback((command: BrowserLivePageCommand) => {
+    connection.send(command);
+  }, [connection]);
+
   const viewport = state.viewport;
   const display = viewport && stageSize ? fitDisplaySize(stageSize, viewport, Number(zoom)) : null;
   const live = state.phase === "live";
+  const shownTab = state.tabs.find((tab) => tab.active);
 
   return (
     <div className={cx("flex min-h-0 min-w-0 flex-col", className)}>
@@ -263,14 +278,88 @@ export function LiveBrowserView({
           value={zoom}
           onChange={setZoom}
         />
-        <div
-          aria-label="Page address"
-          title={state.url ?? undefined}
-          className={cx(DS.text.literal, "min-w-0 basis-full truncate sm:flex-1 sm:basis-0")}
-        >
-          {state.url || "No address yet"}
+        {/* Pressing these must not take focus from the text row, or a phone hides its keyboard. */}
+        <div className="flex min-w-0 basis-full items-center gap-1 sm:flex-1 sm:basis-0">
+          <IconButton label="Back" size="md" disabled={!live} onMouseDown={keepFocus} onClick={() => pageCommand({ type: "history", direction: "back" })}>
+            <ArrowLeft size={15} aria-hidden="true" />
+          </IconButton>
+          <IconButton label="Forward" size="md" disabled={!live} onMouseDown={keepFocus} onClick={() => pageCommand({ type: "history", direction: "forward" })}>
+            <ArrowRight size={15} aria-hidden="true" />
+          </IconButton>
+          <IconButton label="Reload" size="md" disabled={!live} onMouseDown={keepFocus} onClick={() => pageCommand({ type: "reload" })}>
+            <RotateCw size={14} aria-hidden="true" />
+          </IconButton>
+          <TextInput
+            ref={addressRef}
+            className={cx(DS.text.literal, "min-w-0 flex-1")}
+            value={address ?? state.url ?? ""}
+            placeholder="Web address"
+            aria-label="Page address"
+            aria-invalid={addressRefused || undefined}
+            title={address === null ? state.url ?? undefined : undefined}
+            disabled={!live}
+            inputMode="url"
+            enterKeyHint="go"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onFocus={(event) => {
+              setAddress(state.url ?? "");
+              event.currentTarget.select();
+            }}
+            onBlur={() => {
+              setAddress(null);
+              setAddressRefused(false);
+            }}
+            onChange={(event) => {
+              setAddress(event.target.value);
+              setAddressRefused(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Escape") {
+                // Like a browser's own field: the first Escape puts the page's address back.
+                if (address === null || address === (state.url ?? "")) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setAddress(state.url ?? "");
+                setAddressRefused(false);
+                return;
+              }
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              const url = addressToUrl(address ?? "");
+              if (!url) {
+                setAddressRefused(true);
+                return;
+              }
+              pageCommand({ type: "navigate", url });
+              // On to the page: the keyboard is for it now, and a phone puts its own away.
+              surfaceRef.current?.focus({ preventScroll: true });
+            }}
+          />
         </div>
       </div>
+      {state.tabs.length > 1 && (
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5 px-3 pb-2 sm:px-4">
+          <Select
+            aria-label="Tab"
+            inputSize="sm"
+            className="min-w-0 flex-1"
+            value={shownTab?.id ?? ""}
+            disabled={!live}
+            onChange={(event) => pageCommand({ type: "tab", action: "select", tabId: event.target.value })}
+          >
+            {state.tabs.map((tab, index) => (
+              <option key={tab.id} value={tab.id}>{`${index + 1}. ${tab.title || tab.url || "New tab"}`}</option>
+            ))}
+          </Select>
+          <Button size="sm" disabled={!live || !shownTab} onClick={() => shownTab && pageCommand({ type: "tab", action: "close", tabId: shownTab.id })}>
+            Close tab
+          </Button>
+        </div>
+      )}
 
       {state.phase === "ended" && (
         <Notice
@@ -310,6 +399,9 @@ export function LiveBrowserView({
             event.preventDefault();
             const touchInput = event.pointerType === "touch";
             if (!touchInput) surfaceRef.current?.focus({ preventScroll: true });
+            // A tap leaves the text row its focus, and with it the phone's keyboard. The address
+            // field is done with once the page is touched.
+            else if (document.activeElement === addressRef.current) addressRef.current?.blur();
             const point = pagePoint(event.clientX, event.clientY);
             if (!point) return;
             if (touchInput) {

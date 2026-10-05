@@ -327,6 +327,64 @@ describe("agent-browser wrapper", () => {
 
   });
 
+  describe("on Windows, where agent-browser may only start through the command shell", () => {
+    /** Forces the platform branch; process creation and the file system are mocked already. */
+    async function importOnWindows() {
+      vi.doMock("node:os", async (importOriginal) => ({
+        ...(await importOriginal<typeof import("node:os")>()),
+        platform: () => "win32",
+      }));
+      const mod = await import("../agent-browser.js");
+      const browserTarget = mod.getBridgeBrowserTarget(COPILOT_HOME);
+      return (argument: string) => mod.ab(["open", argument], 5_000, { browserTarget });
+    }
+
+    afterEach(() => {
+      vi.doUnmock("node:os");
+    });
+
+    it.each([
+      ["&", "https://example.com/?a=1&calc.exe"],
+      ["|", "https://example.com/|more"],
+      ["<", "https://example.com/<in"],
+      [">", "https://example.com/>out"],
+      ["^", "https://example.com/^"],
+      ["a quotation mark", "https://example.com/\"x"],
+      ["a line break", "https://example.com/\ncalc.exe"],
+    ])("refuses a command with %s in an argument, which the shell would read as its own syntax, and runs nothing", async (_name, argument) => {
+      const open = await importOnWindows();
+
+      const result = await open(argument);
+
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Windows command shell");
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+
+    it("runs a command without such an argument through the shell", async () => {
+      const open = await importOnWindows();
+
+      await expect(open("https://example.com/next?a=1")).resolves.toMatchObject({ ok: true });
+
+      expect(execFileMock).toHaveBeenCalledOnce();
+      expect(execFileMock.mock.calls[0][2]).toMatchObject({ shell: true });
+    });
+
+    it("runs a command with such an argument when it found agent-browser's executable, which needs no shell", async () => {
+      vi.stubEnv("PATH", join(COPILOT_HOME, "npm"));
+      lstatSyncMock.mockImplementation(() => ({}));
+      const open = await importOnWindows();
+
+      await expect(open("https://example.com/?a=1&b=2")).resolves.toMatchObject({ ok: true });
+
+      expect(execFileMock).toHaveBeenCalledOnce();
+      const [file, args, options] = execFileMock.mock.calls[0];
+      expect(file).toContain("agent-browser-win32-x64.exe");
+      expect(args).toContain("https://example.com/?a=1&b=2");
+      expect(options).toMatchObject({ shell: false });
+    });
+  });
+
   describe("a host that refuses the browser its sandbox", () => {
     /** The failure code and signature of the one command that ran. */
     async function classify(output: string) {

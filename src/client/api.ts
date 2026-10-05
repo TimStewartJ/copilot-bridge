@@ -2459,6 +2459,11 @@ export async function requestBrowserLiveTicket(browserSessionId: string): Promis
   return apiFetch<BrowserLiveTicket>(`/api/browser/sessions/${encodeURIComponent(browserSessionId)}/live`, {});
 }
 
+/** Permission to open a live view of the signed-in browser, which belongs to no chat. */
+export async function requestSignedInBrowserLiveTicket(): Promise<BrowserLiveTicket> {
+  return apiFetch<BrowserLiveTicket>("/api/browser/authenticated/live", {});
+}
+
 export interface DeviceHibernateOnIdleStatus {
   armed: boolean;
   armedAt: number | null;
