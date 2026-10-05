@@ -16,6 +16,12 @@ vi.mock("../api", async () => {
   return { ...actual, fetchWorkReferencePreview: apiMocks.fetchWorkReferencePreview };
 });
 
+const previewMocks = vi.hoisted(() => ({ showFile: vi.fn() }));
+vi.mock("./file-preview", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./file-preview")>(),
+  showFile: previewMocks.showFile,
+}));
+
 let MessageBubble: typeof import("./MessageBubble").default;
 
 beforeAll(async () => {
@@ -28,6 +34,7 @@ beforeAll(async () => {
 }, COMPONENT_IMPORT_WARMUP_TIMEOUT_MS);
 
 beforeEach(() => {
+  previewMocks.showFile.mockClear();
   apiMocks.fetchWorkReferencePreview.mockReset();
 });
 
@@ -274,6 +281,67 @@ describe("MessageBubble images", () => {
       await harness.render(createElement(MessageBubble, { message, sessionId }));
       const img = findAllByTag(harness.dom.container, "IMG")[0];
       expect(img?.getAttribute("src")).toBe(`/api/sessions/${sessionId}/files/shot.png`);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
+describe("MessageBubble sent files", () => {
+  const base = "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments";
+
+  it("turns a paragraph of nothing but sent files into their cards", async () => {
+    const harness = await createReactDomHarness();
+    const message = {
+      role: "assistant",
+      content: `Both builds:\n\n[one.zip](${base}/one.zip)\n[Download two.zip](${base}/two.zip) · [three.zip](${base}/three.zip)\n\nDone.`,
+    } satisfies ChatMessage;
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+
+      const links = findAllByTag(harness.dom.container, "A");
+      expect(links.map((link) => link.getAttribute("aria-label"))).toEqual(["Download one.zip", "Download two.zip", "Download three.zip"]);
+      expect(harness.dom.container.textContent).toContain("Done.");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("leaves a paragraph that also holds another link or words as a paragraph", async () => {
+    const harness = await createReactDomHarness();
+    const message = {
+      role: "assistant",
+      content: `[one.zip](${base}/one.zip) [docs](https://example.com/docs)\n\n**[two.zip](${base}/two.zip)**`,
+    } satisfies ChatMessage;
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+
+      expect(findAllByTag(harness.dom.container, "P")).toHaveLength(2);
+      expect(findAllByTag(harness.dom.container, "A").map((link) => link.getAttribute("aria-label"))).toEqual([null, null, null]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("opens a sent file named inside a sentence instead of leaving the chat", async () => {
+    const harness = await createReactDomHarness();
+    const message = {
+      role: "assistant",
+      content: `Full patch: [Download change.diff](${base}/change.diff) and [the bundle](${base}/all.zip).`,
+    } satisfies ChatMessage;
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+
+      const open = findAllByTag(harness.dom.container, "BUTTON").find((button) => button.getAttribute?.("title") === "Open change.diff");
+      expect(open?.textContent).toBe("change.diff");
+      const download = findAllByTag(harness.dom.container, "A")[0];
+      expect(download.textContent).toBe("the bundle");
+      expect(download.getAttribute("download")).toBe("all.zip");
+
+      await harness.act(async () => {
+        getReactProps(open)?.onClick?.({});
+      });
+      expect(previewMocks.showFile).toHaveBeenCalledWith({ url: `${base}/change.diff`, name: "change.diff" });
     } finally {
       await harness.cleanup();
     }

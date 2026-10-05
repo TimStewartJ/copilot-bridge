@@ -137,3 +137,8 @@
 :root[data-motion="reduce"] .bridge-pswp .pswp__hide-on-close {
   --pswp-transition-duration: 0ms;
 }
+
+/* A vector image is usually drawn for a light page, and its lines may take the page's text colour. */
+.bridge-pswp .pswp__img[src$=".svg"] {
+  background: #fff;
+}

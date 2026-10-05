@@ -43,7 +43,7 @@ describe("send_attachment tool", () => {
       displayName: "report.csv",
       mimeType: "text/csv",
       url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/report.csv",
-      markdown: "[Download report.csv](/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/report.csv)",
+      markdown: "[report.csv](/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/report.csv)",
     });
     expect(readFileSync(join(copilotHome, "session-state", createInvocation().sessionId, "files", "outgoing", "report.csv"), "utf-8")).toBe("total\n3\n");
   });
@@ -74,7 +74,7 @@ describe("send_attachment tool", () => {
       success: true,
       attachmentId: "note.md",
       displayName: "note.md",
-      markdown: "[Download note.md](/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
+      markdown: "[note.md](/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
     });
   });
 
@@ -90,7 +90,7 @@ describe("send_attachment tool", () => {
     const result = await tool.handler({ content: "fake image", displayName }, createInvocation());
     const url = "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/Cafe%CC%81%20%5Bfinal%5D%20%28Bob%27s%20copy%29.png";
     const imageMarkdown = `![Cafe\u0301 \\[final\\] (Bob's copy).png](${url})`;
-    const linkMarkdown = `[Download Cafe\u0301 \\[final\\] (Bob's copy).png](${url})`;
+    const linkMarkdown = `[Cafe\u0301 \\[final\\] (Bob's copy).png](${url})`;
 
     expect(result).toMatchObject({
       success: true,
@@ -118,7 +118,7 @@ describe("send_attachment tool", () => {
     expect(result).toMatchObject({
       success: true,
       url: "/staging/preview-123/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md",
-      markdown: "[Download note.md](/staging/preview-123/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
+      markdown: "[note.md](/staging/preview-123/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
     });
   });
 
@@ -145,7 +145,7 @@ describe("send_attachment tool", () => {
     expect(result).toMatchObject({
       success: true,
       url: "/staging/preview-xyz/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md",
-      markdown: "[Download note.md](/staging/preview-xyz/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
+      markdown: "[note.md](/staging/preview-xyz/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
     });
   });
 });
