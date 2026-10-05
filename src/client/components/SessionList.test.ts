@@ -147,20 +147,64 @@ describe("SessionList external-use indicator", () => {
 });
 
 describe("SessionList log size", () => {
-  it("shows the log size only when it is large, and keeps it in the tooltip", async () => {
+  const MB = 1024 * 1024;
+
+  async function openRowMenu(harness: { act: any; dom: { container: any } }, summary: string) {
+    const row = findAllByTag(harness.dom.container, "BUTTON").find((candidate) =>
+      candidate.textContent?.includes(summary) && typeof getReactProps(candidate)?.onContextMenu === "function");
+    if (!row) throw new Error(`Session row not found: ${summary}`);
+    await harness.act(async () => {
+      getReactProps(row)?.onContextMenu?.({ preventDefault: vi.fn(), clientX: 10, clientY: 10 });
+    });
+  }
+
+  it("flags a large log on its row with a word, and leaves an ordinary one to the tooltip", async () => {
     const { dom, cleanup } = await renderSessionList([
-      createSession({ sessionId: "small", summary: "Small session", eventLogSizeBytes: 4 * 1024 * 1024 }),
-      createSession({ sessionId: "large", summary: "Large session", eventLogSizeBytes: 125 * 1024 * 1024 }),
+      createSession({ sessionId: "small", summary: "Small session", eventLogSizeBytes: 4 * MB }),
+      createSession({ sessionId: "large", summary: "Large session", eventLogSizeBytes: 125 * MB }),
+      createSession({ sessionId: "huge", summary: "Huge session", eventLogSizeBytes: 1807 * MB }),
     ]);
 
     try {
-      expect(dom.container.textContent).not.toContain("4.0 MB");
-      expect(dom.container.textContent).toContain("125.0 MB");
-      const small = findAllByTag(dom.container, "BUTTON")
-        .find((button) => button.textContent?.includes("Small session"));
-      expect(getReactProps(small)?.title).toBe("Small session · 4.0 MB");
+      const rowFor = (summary: string) => findAllByTag(dom.container, "BUTTON")
+        .find((button) => button.textContent?.includes(summary));
+      expect(rowFor("Small session")?.textContent).not.toContain("MB");
+      expect(getReactProps(rowFor("Small session"))?.title).toBe("Small session · 4.0 MB log");
+      expect(rowFor("Large session")?.textContent).toContain("Large · 125 MB");
+      expect(rowFor("Huge session")?.textContent).toContain("Very large · 1.8 GB");
+
+      const flags = findAllByTag(dom.container, "SPAN")
+        .filter((span) => typeof getReactProps(span)?.title === "string" && /large/i.test(span.textContent ?? ""));
+      const classes = flags.map((span) => String(getReactProps(span)?.className));
+      // Only the size that costs the reader time carries the warning colour.
+      expect(classes.filter((className) => className.includes("text-warning"))).toHaveLength(1);
+      expect(flags.find((span) => span.textContent?.includes("Very large") && getReactProps(span)?.title)
+        ?.getAttribute("title")).toContain("a second or more");
     } finally {
       await cleanup();
+    }
+  });
+
+  it("shows every chat's log size in its row menu, with what a large one means", async () => {
+    const harness = await renderSessionList([
+      createSession({ sessionId: "small", summary: "Small session", eventLogSizeBytes: 4 * MB }),
+      createSession({ sessionId: "large", summary: "Large session", eventLogSizeBytes: 125 * MB }),
+      createSession({ sessionId: "empty", summary: "Empty session", eventLogSizeBytes: 0 }),
+    ]);
+
+    try {
+      await openRowMenu(harness, "Small session");
+      expect(harness.dom.container.textContent).toContain("Chat log size4.0 MB");
+      expect(harness.dom.container.textContent).not.toContain("Larger than most chats");
+
+      await openRowMenu(harness, "Large session");
+      expect(harness.dom.container.textContent).toContain("Chat log size125 MB · Large");
+      expect(harness.dom.container.textContent).toContain("Larger than most chats");
+
+      await openRowMenu(harness, "Empty session");
+      expect(harness.dom.container.textContent).not.toContain("Chat log size");
+    } finally {
+      await harness.cleanup();
     }
   });
 });

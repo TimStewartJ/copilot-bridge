@@ -13,7 +13,7 @@ import {
 import { queryClient, queryKeys } from "../queryClient";
 import { writeClipboardText } from "../lib/clipboard";
 import { timeAgo } from "../time";
-import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Plus, Square, SquareCheckBig, RotateCw, Bot, Terminal } from "lucide-react";
+import { ChevronDown, ChevronRight, Archive, ArchiveRestore, ClipboardList, Copy, Check, CheckCheck, Link, Unlink, Loader2, Trash2, Clock, EyeOff, Pencil, GitFork, Plus, Square, SquareCheckBig, RotateCw, Bot, Terminal, HardDrive, TriangleAlert } from "lucide-react";
 import { DS } from "../design/tokens";
 import { Button, StatusIcon } from "../design/primitives";
 import TaskPickerDialog from "./TaskPickerDialog";
@@ -28,18 +28,10 @@ import DeferredWorkSheet from "./DeferredWorkSheet";
 import SessionModelDialog, { canKeepCurrentReasoningEffortForModel } from "./SessionModelDialog";
 import { getPromptProfileInfo } from "../../shared/prompt-profiles.js";
 import { findTaskForSession } from "../lib/task-session-links";
+import { describeSessionLogSize } from "../lib/session-log-size";
 
-/** A session log this large is worth noticing; smaller ones keep their size in the tooltip only. */
-export const LARGE_SESSION_LOG_BYTES = 50 * 1024 * 1024;
 /** Archived rows are drawn this many at a time; a task can hold thousands. */
 export const ARCHIVED_SESSION_RENDER_PAGE = 25;
-
-function formatSize(bytes?: number): string {
-  if (!bytes) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -300,6 +292,7 @@ export default function SessionList({
   }, [rawCloseMenu]);
 
   const ctxSession = ctxMenu ? sessions.find((ss) => ss.sessionId === ctxMenu.id) : null;
+  const ctxLogSize = describeSessionLogSize(ctxSession?.eventLogSizeBytes);
 
   // Find which task (if any) the context-menu'd session is linked to
   const ctxLinkedTask = ctxMenu && tasks
@@ -397,6 +390,7 @@ export default function SessionList({
     const isSelected = selectedIds?.has(id);
     const needsUserInput = session.needsUserInput || (session.pendingUserInputCount ?? 0) > 0;
     const deferLabel = formatDeferSummaryLabel(session.deferSummary);
+    const logSize = describeSessionLogSize(session.eventLogSizeBytes);
     const deferRunning = (session.deferSummary?.runningCount ?? 0) > 0;
     const backgroundAgents = session.backgroundAgents;
     const showBackgroundAgents = hasSurfacedBackgroundAgents(backgroundAgents);
@@ -493,7 +487,7 @@ export default function SessionList({
           onClick={handleClick}
           title={[
             session.summary || id,
-            session.eventLogSizeBytes ? formatSize(session.eventLogSizeBytes) : null,
+            logSize ? (logSize.label ? `${logSize.label} · ${logSize.size}` : `${logSize.size} log`) : null,
           ].filter(Boolean).join(" · ")}
           className={`w-full min-w-0 overflow-hidden text-left px-3 ${s.itemPadding} rounded-md text-sm select-none no-callout transition-all duration-150 ${
             selectMode && isSelected
@@ -555,10 +549,23 @@ export default function SessionList({
                 </span>
               </>
             )}
+            {logSize?.label && (
+              <>
+                {" · "}
+                <span
+                  className={logSize.level === "very-large"
+                    ? "inline-flex items-center gap-0.5 align-middle font-medium text-warning"
+                    : "font-medium text-text-secondary"}
+                  title={logSize.hint ?? undefined}
+                >
+                  {logSize.level === "very-large" && (
+                    <TriangleAlert size={9} className="shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="tabular-nums">{logSize.label} · {logSize.size}</span>
+                </span>
+              </>
+            )}
             {session.context?.branch && ` · ${session.context.branch}`}
-            {session.eventLogSizeBytes && session.eventLogSizeBytes >= LARGE_SESSION_LOG_BYTES
-              ? ` · ${formatSize(session.eventLogSizeBytes)}`
-              : ""}
             {session.workspace?.overridesTaskWorkspace && (
               <>
                 {" · "}
@@ -834,7 +841,29 @@ export default function SessionList({
               />
             </>
           )}
-          {(hasEditSection || canDeleteFromMenu) && <CtxDivider />}
+          {(hasEditSection || canDeleteFromMenu || ctxLogSize) && <CtxDivider />}
+          {ctxLogSize && (
+            <div className="flex items-start gap-2 px-3 py-2 text-xs">
+              <HardDrive size={14} className="mt-0.5 shrink-0 text-text-muted" />
+              <div className="min-w-0">
+                <div className="text-text-faint">Chat log size</div>
+                <div className="tabular-nums text-text-secondary">
+                  {ctxLogSize.size}
+                  {ctxLogSize.label && (
+                    <>
+                      {" · "}
+                      <span className={ctxLogSize.level === "very-large" ? "font-medium text-warning" : "font-medium"}>
+                        {ctxLogSize.label}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {ctxLogSize.hint && (
+                  <div className="max-w-56 text-[10px] text-text-faint">{ctxLogSize.hint}</div>
+                )}
+              </div>
+            </div>
+          )}
           {canForkFromMenu && (
             <CtxItem
               icon={<GitFork size={14} />}
