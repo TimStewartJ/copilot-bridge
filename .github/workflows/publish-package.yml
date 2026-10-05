@@ -178,14 +178,22 @@ jobs:
             flags+=(--dry-run --force)
           fi
           status=0
-          npm stage publish "release/$FILE" --loglevel verbose "${flags[@]}" 2>&1 | tee stage.log || status=$?
+          # The path starts with "./": npm takes "release/<file>" for a GitHub repository of that name.
+          npm stage publish "./release/$FILE" --loglevel verbose "${flags[@]}" 2>&1 | tee stage.log || status=$?
 
-          # npm asks for its token before anything else, in a dry run too, and says so only at this
-          # log level. A dry run sends nothing, so that line is its only proof that npm accepts this
-          # workflow; after a failure it tells a refused workflow from any other error.
+          # npm asks for its token before it sends anything, in a dry run too, and says so only at
+          # this log level. A dry run sends nothing, so that line is its only proof that npm accepts
+          # this workflow. After a failure, npm's other oidc lines tell a refused workflow from an
+          # error of another kind.
           if [ "$status" -ne 0 ] || [ "$DRY_RUN" = "true" ]; then
             if ! grep -q "Successfully retrieved and set token" stage.log; then
-              echo "::error::npm did not accept this workflow as a trusted publisher of $NAME. Compare the package's trusted publisher on npmjs.com with this run: repository $GITHUB_REPOSITORY, workflow file publish-package.yml."
+              if grep -q "verbose oidc" stage.log; then
+                echo "::error::npm did not accept this workflow as a trusted publisher of $NAME. Compare the package's trusted publisher on npmjs.com with this run: repository $GITHUB_REPOSITORY, workflow file publish-package.yml."
+              elif [ "$status" -ne 0 ]; then
+                echo "::error::npm stopped before it asked for a token. Its own error is in the log above."
+              else
+                echo "::error::npm did not ask for a token, so this dry run says nothing about the trusted publisher of $NAME."
+              fi
               exit 1
             fi
           fi
