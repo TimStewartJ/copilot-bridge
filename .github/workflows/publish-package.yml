@@ -55,6 +55,7 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
       file: ${{ steps.pack.outputs.file }}
       integrity: ${{ steps.pack.outputs.integrity }}
+      shasum: ${{ steps.pack.outputs.shasum }}
 
     steps:
       - name: Refuse to release from another branch
@@ -118,9 +119,12 @@ jobs:
             exit 1
           fi
           integrity="sha512-$(openssl dgst -sha512 -binary "$file" | base64 -w 0)"
+          # The SHA-1 is what npm shows beside a staged version, for comparing before approving.
+          shasum="$(sha1sum "$file" | cut -d ' ' -f 1)"
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
-          echo "Built $file from $GITHUB_SHA: $integrity"
+          echo "shasum=$shasum" >> "$GITHUB_OUTPUT"
+          echo "Built $file from $GITHUB_SHA: $integrity (shasum $shasum)"
 
       - name: Hand the tarball to the next job
         uses: actions/upload-artifact@v6
@@ -209,6 +213,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           FILE: ${{ needs.build.outputs.file }}
           INTEGRITY: ${{ needs.build.outputs.integrity }}
+          SHASUM: ${{ needs.build.outputs.shasum }}
           STAGE_ID: ${{ steps.stage.outputs.stage_id }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
@@ -220,12 +225,13 @@ jobs:
             else
               echo "### $NAME $VERSION is staged on npm"
               echo ""
-              echo "It is not public yet. The owner of the npm account approves it on [npmjs.com](https://www.npmjs.com/package/$NAME), among the package's staged versions, or with \`npm stage approve $STAGE_ID\`. Both ask for a second factor. See [staged publishing](https://docs.npmjs.com/staged-publishing)."
+              echo "It is not public yet. The owner of the npm account approves it on [npmjs.com](https://www.npmjs.com/): the menu at the avatar, Staged Packages. Or with \`npm stage approve $STAGE_ID\`. Both ask for a second factor. The entry there shows the shasum below. See [staged publishing](https://docs.npmjs.com/staged-publishing)."
             fi
             echo ""
             echo "| | |"
             echo "|---|---|"
             echo "| File | \`$FILE\` |"
+            echo "| Shasum | \`$SHASUM\` |"
             echo "| Integrity | \`$INTEGRITY\` |"
             echo "| Commit | \`$GITHUB_SHA\` |"
             if [ -n "$STAGE_ID" ]; then

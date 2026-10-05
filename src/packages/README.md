@@ -80,9 +80,10 @@ publisher, staging is all it is allowed to do, and access tokens cannot publish.
 2. Once that change is on `master`, start the workflow for the package: on GitHub under Actions, or
    with `gh workflow run publish-package.yml -f package=<folder name>`. It runs the package checks,
    builds the tarball, stages it on npm with a provenance statement, and tags the commit
-   `<folder name>-v<version>`. The summary of the run has the stage id and the tarball's checksum.
-3. The owner of the npm account approves the staged version: on npmjs.com among the package's
-   staged versions, or with `npm stage approve <stage id>`. Only then is it public.
+   `<folder name>-v<version>`. The summary of the run has the stage id and the tarball's checksums.
+3. The owner of the npm account approves the staged version: on npmjs.com in the menu at the
+   avatar, under Staged Packages, or with `npm stage approve <stage id>`. Only then is it public.
+   The entry there shows a shasum; it should be the one in the run's summary.
 
 If the owner rejects the staged version instead, delete the tag. The version can then be staged
 again from a later commit.
