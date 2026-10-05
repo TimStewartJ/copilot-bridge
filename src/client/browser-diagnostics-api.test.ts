@@ -4,6 +4,8 @@ import {
   checkAdoBrowserAuthentication,
   closeHeadedDiagnosticsBrowser,
   probeBrowserContext,
+  requestBrowserLiveTicket,
+  resetPublicBrowserData,
 } from "./api";
 
 afterEach(() => {
@@ -57,6 +59,48 @@ describe("browser context diagnostics APIs", () => {
       "/api/browser/diagnostics/authenticated/check/ado",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+});
+
+describe("public browser reset and live view APIs", () => {
+  it("clears public browsing data", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, cleared: 3, inUse: 1 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resetPublicBrowserData()).resolves.toEqual({ ok: true, cleared: 3, inUse: 1 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/browser/diagnostics/public/reset",
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+  });
+
+  it("asks for a live view ticket for one browser session", async () => {
+    const ticket = { browserSessionId: "bs_ab12cd34", token: "secret", expiresAt: "2026-10-04T18:30:00.000Z" };
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ticket }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(requestBrowserLiveTicket("bs_ab12cd34")).resolves.toEqual(ticket);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/browser/sessions/bs_ab12cd34/live",
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+  });
+
+  it("reports the server's reason when a live view is refused", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      json: async () => ({ error: "This browser session has ended." }),
+    })));
+
+    const request = requestBrowserLiveTicket("bs/odd id");
+    await expect(request).rejects.toBeInstanceOf(ApiError);
+    await expect(request).rejects.toMatchObject({ status: 404, message: "This browser session has ended." });
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/browser/sessions/bs%2Fodd%20id/live");
   });
 });
 

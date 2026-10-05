@@ -272,6 +272,7 @@ npm run check:integration # type-check + API, workflow, persistence/lifecycle, a
 npm run check:launcher # server type-check + launcher lane
 npm run check:staging # server type-check + staging tooling lane + native process tests
 npm run check:native  # server type-check + native process tests only
+npm run check:browser # live-view check against the installed agent-browser and a real browser (not part of check:pr)
 npm run check:pr      # fast gate + all lanes + full build
 npm run check:deploy  # PR gate + preview smoke
 npm run test:slow-report # full Vitest pass + top slowest files
@@ -541,10 +542,34 @@ Recording is observational: it does not delay or change recovery.
 The browser tools drive a browser through `agent-browser`, whose background daemon holds the browser open between commands. Three rules keep such a browser from outliving its use:
 
 - **It starts on a blank page.** A browser launched without a URL opens its new-tab page. In Edge that is a news feed. Right after launch it cost about 0.3 of a processor and 350 MB more than a blank tab, and it keeps running for as long as the tab stays open.
-- **Closing a public browser also stops its daemon.** A public browser (the disposable, signed-out kind) is closed with the daemon's `close` command. When that does not finish in 10 seconds the Bridge kills the daemon and then the browser's processes, and looks once more: a daemon whose browser dies under a command it is still serving starts a new browser on the same profile.
+- **Closing a public browser also stops its daemon.** A public browser (the signed-out kind) is closed with the daemon's `close` command. When that does not finish in 10 seconds the Bridge kills the daemon and then the browser's processes, and looks once more: a daemon whose browser dies under a command it is still serving starts a new browser on the same profile.
 - **An idle daemon exits by itself.** The daemon of a public browser closes the browser and exits after 45 minutes without a command (`AGENT_BROWSER_IDLE_TIMEOUT_MS`), which covers a browser the Bridge lost track of. A `browser_session` handle already expires after 30 unused minutes. The limit counts from the last command received, so it has to stay longer than any single command.
 
-A public browser's profile folder is removed when the browser is closed. A browser that had to be killed can keep files open for a moment after its processes are gone, so the removal is tried again for up to 5 seconds. A cleanup that still fails is written to the error log and does not change the result of the tool call that used the browser. The folder left behind is removed once it is six hours old, the next time a public browser starts.
+A public browser keeps its profile. One-shot tools (`browser_fetch`, `browser_exec`, `browser_web_search`) close the browser when the call returns, and a `browser_session` handle closes it when the handle ends, but the cookies, cache and history stay in `<COPILOT_HOME>/browser-public/slot-N`, so a site sees a returning visitor and a check passed once stays passed. Each browser takes the lowest free slot, which keeps slot 1 the warmest; more slots exist only for browsers that run at the same time.
+
+- Before a slot's first use after a server start, and after a cleanup that failed, the Bridge closes whatever browser is still running on it. A slot whose browser will not die is skipped.
+- When the browser does not start on a profile, a one-shot call is tried once more on a profile that has never been used. If it starts there, the first profile was in the way and is removed. If it does not, the host is at fault and every profile is kept.
+- A slot nothing has used for 14 days is removed. **Settings → Browser → Clear public browsing data** empties every slot that is not in use.
+
+Anything an agent or the user signs in to in a public browser stays signed in for later chats. Use the signed-in Bridge profile for accounts that matter, and clear the public data to sign out.
+
+#### Which browser, and how it starts
+
+The Bridge picks the executable in this order: the path in Settings, `AGENT_BROWSER_EXECUTABLE_PATH`, the system's own Chrome or Edge (the usual install folders on Windows and macOS; on Linux `/opt/google/chrome/chrome`, `/usr/bin/google-chrome-stable`, Edge, then `google-chrome-stable` on `PATH`), and last the Chrome for Testing build that `agent-browser install` downloads. Prefer an installed, self-updating Chrome: Chrome for Testing names itself in the browser's brand list and never updates, and sites treat both as signs of automation. Settings → Browser shows which build runs and how old it is.
+
+Every browser starts with the arguments in `AGENT_BROWSER_ARGS` (or, when that is unset, the `args` of agent-browser's own `config.json`), plus two of the Bridge's own: `--disable-blink-features=AutomationControlled`, without which `navigator.webdriver` is true, and `--enable-unsafe-swiftshader`, which lets a host without a GPU offer WebGL at all. The Bridge never adds `--no-sandbox`. On a Linux host where Chrome cannot use its sandbox (a Chrome that was not installed from its package, on a distribution that restricts user namespaces) the browser tools fail with a message that says so; install Chrome from its package, or add `--no-sandbox` to `AGENT_BROWSER_ARGS`.
+
+The "Run browsers with a window" setting applies to public browsers as well as the signed-in one. A browser without a window identifies itself as headless.
+
+#### Blocks, and handing the browser to the user
+
+After a page loads, the Bridge reads what kind of page it is. A human check or a refusal comes back in the tool result as `blocked`, and a CAPTCHA inside a normal page as `captcha`, each with what the agent should do next. Settings → Browser counts the blocks of the last 24 hours by who blocked.
+
+The decision rests on what every block page has in common, so it does not depend on knowing the product behind it: the page says little, and it either asks for a person (in words, or with nothing but a CAPTCHA) or the server answered 403 or 429. A short table of elements that protection products put on a page (`PAGE_MARKERS` in `src/server/browser-page-check.ts`) only refines that: it names the product, and it catches the few that lay their check over a page that otherwise looks normal. A product that changes its markup is therefore still reported, as "This site". To see what the check makes of real sites, run `npm run report:browser-blocks` (optionally with URLs).
+
+`browser_session_handoff` asks the user to act in a browser session. It appears in the chat and on Home like any question, with an **Open browser** button that shows the live page; the user clicks and types there, then hands back, and the tool returns the page as they left it. What the user types goes to the browser and is never shown to the model. While the user has the browser, other operations on it fail with a message that says so, instead of navigating away under them. The request follows the rules of every question: in Autopilot it is answered at once as unattended, and after 30 minutes without an answer it is answered automatically.
+
+The live view relays the stream that agent-browser (0.38 or newer) serves for a browser. That is the one part of the Bridge that depends on how a particular agent-browser version behaves, so the Bridge can test it: **Settings → Browser → Check public browser** opens a page, clicks and types in it through the stream, and reports the outcome under "Live view". `npm run check:browser` runs the same check from a terminal. Run either after updating agent-browser (`npm install -g agent-browser@latest`).
 
 Agents can also run `agent-browser` from their shell. Those browsers are not managed by the Bridge and outlive the shell, the session and the server. The Bridge puts `AGENT_BROWSER_IDLE_TIMEOUT_MS=3600000` into the agent runtime's environment, so they close after an hour without a command.
 

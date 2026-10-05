@@ -34,3 +34,12 @@ if (process.env.BRIDGE_TEST_REAL_PROCESS_SNAPSHOTS !== "1") {
     },
   }));
 }
+
+// Which browsers are installed and what agent-browser's configuration says differ per machine.
+// Unless a test says otherwise there is no system browser and no configuration file.
+vi.doMock("../server/browser-launch-host.js", () => ({
+  isExecutableFile: async () => false,
+  readJsonFile: async () => undefined,
+  readModifiedAt: async () => undefined,
+  readBrowserVersion: async () => undefined,
+}));

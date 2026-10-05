@@ -1,3 +1,5 @@
+import type { BrowserLiveCheck } from "./browser-live.js";
+
 export type BrowserDiagnosticsTone = "success" | "warning" | "error";
 export type BrowserRuntimeState = "ready" | "starting" | "degraded" | "unavailable" | "stopped";
 export type BrowserFunctionalProbeState = "passed" | "failed" | "not_run";
@@ -31,8 +33,20 @@ export interface BrowserContextRuntimeDiagnostics {
 
 export interface PublicBrowserDiagnostics extends BrowserContextRuntimeDiagnostics {
   context: "public";
-  disposableProfileRoot: string;
+  /** Folder holding the public profiles, which keep their cookies and cache between uses. */
+  profileRoot: string;
+  /** Profiles on disk, and how many of them a browser is using right now. */
+  profiles: number;
+  profilesInUse: number;
   concurrencyLimit: number;
+}
+
+export interface PublicBrowserResetResponse {
+  ok: true;
+  /** Profiles whose browsing data was removed. */
+  cleared: number;
+  /** Profiles left alone because a browser is using them. */
+  inUse: number;
 }
 
 export interface AuthenticatedServiceCheck {
@@ -53,6 +67,26 @@ export interface AuthenticatedBrowserDiagnostics extends BrowserContextRuntimeDi
   serviceChecks: AuthenticatedServiceCheck[];
 }
 
+/** Where the browser executable comes from. `auto-detect` leaves the choice to agent-browser. */
+export type BrowserExecutableSource = "settings" | "environment" | "system" | "auto-detect";
+
+export type BrowserBuildKind = "chrome" | "edge" | "chromium" | "chrome-for-testing" | "unknown";
+
+export interface BrowserBuildDiagnostics {
+  kind: BrowserBuildKind;
+  /** What the executable reports as its version, such as "Google Chrome 154.0.8037.97". */
+  version?: string;
+  /** Days since the executable was installed or last updated. */
+  installedDaysAgo?: number;
+}
+
+export interface BrowserLaunchDiagnostics {
+  /** Every argument the browser is started with, the Bridge's own included. */
+  args: string[];
+  /** Where the arguments other than the Bridge's own come from. */
+  inheritedFrom: "environment" | "agent-browser-config" | "none";
+}
+
 export interface BrowserRuntimeDiagnostics {
   agentBrowserInstalled: boolean;
   transport: {
@@ -65,7 +99,7 @@ export interface BrowserRuntimeDiagnostics {
 }
 
 export interface BrowserDiagnosticsResponse {
-  schemaVersion: 2;
+  schemaVersion: 3;
   checkedAt: string;
   windowHours: number;
   summary: BrowserDiagnosticsSummary;
@@ -73,13 +107,18 @@ export interface BrowserDiagnosticsResponse {
   config: {
     sessionName: string;
     executablePath?: string;
-    executablePathSource: "settings" | "environment" | "auto-detect";
+    executablePathSource: BrowserExecutableSource;
     executablePathConfigured: boolean;
     executablePathExists?: boolean;
     masterProfileDirectory: string;
     masterProfileDirectoryConfigured: boolean;
     masterProfileDirectoryExists: boolean;
     headed: boolean;
+    browser: BrowserBuildDiagnostics;
+    launch: BrowserLaunchDiagnostics;
+    agentBrowserVersion?: string;
+    /** Whether a browser can be shown to the user to watch and act in. Absent until it was tried. */
+    liveView?: BrowserLiveCheck;
   };
   runtime: BrowserRuntimeDiagnostics;
   contexts: {

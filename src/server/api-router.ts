@@ -178,7 +178,11 @@ import {
   getBrowserDiagnostics,
   launchHeadedDiagnosticsBrowser,
   probeBrowserContext,
+  resetPublicBrowserProfiles,
 } from "./browser-diagnostics.js";
+import { BrowserUnavailableError } from "./browser-broker.js";
+import { BrowserLiveSessionNotFoundError, BrowserLiveUnavailableError } from "./browser-live.js";
+import { getBrowserRuntime } from "./browser-runtime.js";
 import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError, serializeDocContent } from "./docs-store.js";
@@ -5894,6 +5898,27 @@ export function createApiRouter(
         return;
       }
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/diagnostics/public/reset", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Public browser data reset")) return;
+    try {
+      res.json(await resetPublicBrowserProfiles(ctx));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/browser/sessions/:browserSessionId/live", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Live browser view")) return;
+    try {
+      res.json(await getBrowserRuntime(ctx).live.createTicket(req.params.browserSessionId));
+    } catch (err) {
+      const status = err instanceof BrowserLiveSessionNotFoundError
+        ? 404
+        : err instanceof BrowserLiveUnavailableError || err instanceof BrowserUnavailableError ? 409 : 500;
+      res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

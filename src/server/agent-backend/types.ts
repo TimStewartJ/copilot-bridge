@@ -390,6 +390,13 @@ export interface AgentSession {
   /** Resolve an elicitation request. False means another responder already won or the ID is stale. */
   tryRespondToElicitation(requestId: string, response: AgentElicitationResponse): Promise<boolean>;
 
+  /**
+   * Ask the user a form on the Bridge's own behalf, from inside a tool. The runtime reports it
+   * like any other pending question, and the promise settles with whatever answers it. Absent on
+   * backends that cannot.
+   */
+  requestElicitation?(request: { message: string; requestedSchema: unknown }): Promise<AgentElicitationResponse>;
+
   /** Switch the session's send mode. */
   setSendMode(opts: { mode: string }): Promise<unknown>;
 

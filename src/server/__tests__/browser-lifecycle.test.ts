@@ -1,34 +1,25 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { BrowserBroker } from "../browser-broker.js";
+import { createBridgeBrowserLifecycle, noopBrowserLifecycle } from "../browser-lifecycle.js";
 import { makeTestDir } from "./helpers.js";
 
-const { shutdownBridgeBrowserMock } = vi.hoisted(() => ({
-  shutdownBridgeBrowserMock: vi.fn(),
-}));
+const shutdownTarget = vi.fn();
 
-vi.mock("../agent-browser.js", async () => {
-  const actual = await vi.importActual<typeof import("../agent-browser.js")>("../agent-browser.js");
-  return {
-    ...actual,
-    shutdownBridgeBrowser: shutdownBridgeBrowserMock,
-  };
-});
-
-const { createBridgeBrowserLifecycle, noopBrowserLifecycle } = await import("../browser-lifecycle.js");
-
-function makeTempCopilotHome(): { copilotHome: string; profileDir: string } {
-  const root = makeTestDir("bridge-lifecycle");
-  const copilotHome = join(root, ".copilot");
+/** A lifecycle over a broker whose authenticated profile lives in a temp folder. */
+function makeLifecycle(options: { createProfile?: boolean } = {}) {
+  const copilotHome = join(makeTestDir("bridge-lifecycle"), ".copilot");
   const profileDir = join(copilotHome, "browser-profile");
-  mkdirSync(profileDir, { recursive: true });
-  return { copilotHome, profileDir };
+  if (options.createProfile !== false) mkdirSync(profileDir, { recursive: true });
+  const lifecycle = createBridgeBrowserLifecycle(new BrowserBroker({ copilotHome, shutdownTarget }));
+  return { lifecycle, profileDir };
 }
 
 describe("browser-lifecycle", () => {
   beforeEach(() => {
-    shutdownBridgeBrowserMock.mockReset();
-    shutdownBridgeBrowserMock.mockResolvedValue({
+    shutdownTarget.mockReset();
+    shutdownTarget.mockResolvedValue({
       ok: true,
       closeOk: true,
       terminatedPids: [],
@@ -39,92 +30,57 @@ describe("browser-lifecycle", () => {
   });
 
   describe("createBridgeBrowserLifecycle", () => {
-    it("skips shutdown when profile directory does not exist", async () => {
-      const root = makeTestDir("bridge-lifecycle-missing");
-      const lifecycle = createBridgeBrowserLifecycle({ copilotHome: join(root, "absent") });
+    it.each([
+      ["does not exist", false],
+      ["exists but has no runtime markers", true],
+    ])("skips shutdown when the profile directory %s", async (_name, createProfile) => {
+      const { lifecycle } = makeLifecycle({ createProfile });
 
       const outcome = await lifecycle.shutdown();
 
-      expect(outcome.skipped).toBe(true);
-      if (outcome.skipped) expect(outcome.reason).toBe("no_browser_activity");
-      expect(shutdownBridgeBrowserMock).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ skipped: true, reason: "no_browser_activity" });
+      expect(shutdownTarget).not.toHaveBeenCalled();
     });
 
-    it("skips shutdown when profile directory exists but has no runtime markers", async () => {
-      const env = makeTempCopilotHome();
-      const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
+    it.each([
+      ["SingletonLock", ""],
+      ["DevToolsActivePort", "12345\n"],
+    ])("shuts the broker's authenticated browser down when %s is present", async (marker, content) => {
+      const { lifecycle, profileDir } = makeLifecycle();
+      writeFileSync(join(profileDir, marker), content);
 
       const outcome = await lifecycle.shutdown();
 
-      expect(outcome.skipped).toBe(true);
-      if (outcome.skipped) expect(outcome.reason).toBe("no_browser_activity");
-      expect(shutdownBridgeBrowserMock).not.toHaveBeenCalled();
-    });
-
-    it("runs full shutdown when SingletonLock or DevToolsActivePort is present", async () => {
-      for (const { label, marker, content } of [
-        { label: "SingletonLock", marker: "SingletonLock", content: "" },
-        { label: "DevToolsActivePort", marker: "DevToolsActivePort", content: "12345\n" },
-      ]) {
-        const env = makeTempCopilotHome();
-        writeFileSync(join(env.profileDir, marker), content);
-        const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
-
-        const outcome = await lifecycle.shutdown();
-
-        expect(outcome.skipped, label).toBe(false);
-        expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
-        shutdownBridgeBrowserMock.mockClear();
-      }
+      expect(outcome).toMatchObject({ skipped: false, ok: true, target: { profileDir } });
+      expect(shutdownTarget).toHaveBeenCalledTimes(1);
+      expect(shutdownTarget.mock.calls[0][0]).toMatchObject({ profileDir });
     });
 
     it("detects dangling SingletonLock symlinks on POSIX without following them", async () => {
       if (process.platform === "win32") return;
-      const env = makeTempCopilotHome();
-      symlinkSync("/proc/12345", join(env.profileDir, "SingletonLock"));
-      const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
+      const { lifecycle, profileDir } = makeLifecycle();
+      symlinkSync("/proc/12345", join(profileDir, "SingletonLock"));
 
       const outcome = await lifecycle.shutdown();
 
       expect(outcome.skipped).toBe(false);
-      expect(shutdownBridgeBrowserMock).toHaveBeenCalledTimes(1);
+      expect(shutdownTarget).toHaveBeenCalledTimes(1);
     });
 
-    it("passes launch config from settingsStore through to the resolved target", async () => {
-      const env = makeTempCopilotHome();
-      writeFileSync(join(env.profileDir, "SingletonLock"), "");
-      const lifecycle = createBridgeBrowserLifecycle({
-        copilotHome: env.copilotHome,
-        settingsStore: {
-          getSettings: () => ({
-            browser: { executablePath: "/custom/chrome" },
-          }),
-        },
-      });
-
-      const outcome = await lifecycle.shutdown();
-
-      expect(outcome.skipped).toBe(false);
-      const [target] = shutdownBridgeBrowserMock.mock.calls[0];
-      expect(target.executablePath).toBe("/custom/chrome");
-    });
-
-    it("propagates errors from shutdownBridgeBrowser", async () => {
-      const env = makeTempCopilotHome();
-      writeFileSync(join(env.profileDir, "SingletonLock"), "");
-      shutdownBridgeBrowserMock.mockRejectedValueOnce(new Error("close failed"));
-      const lifecycle = createBridgeBrowserLifecycle({ copilotHome: env.copilotHome });
+    it("propagates errors from the shutdown", async () => {
+      const { lifecycle, profileDir } = makeLifecycle();
+      writeFileSync(join(profileDir, "SingletonLock"), "");
+      shutdownTarget.mockRejectedValueOnce(new Error("close failed"));
 
       await expect(lifecycle.shutdown()).rejects.toThrow("close failed");
     });
   });
 
   describe("noopBrowserLifecycle", () => {
-    it("never calls shutdownBridgeBrowser", async () => {
+    it("never shuts a browser down", async () => {
       const outcome = await noopBrowserLifecycle.shutdown();
-      expect(outcome.skipped).toBe(true);
-      if (outcome.skipped) expect(outcome.reason).toBe("disabled");
-      expect(shutdownBridgeBrowserMock).not.toHaveBeenCalled();
+      expect(outcome).toEqual({ skipped: true, reason: "disabled" });
+      expect(shutdownTarget).not.toHaveBeenCalled();
     });
   });
 });

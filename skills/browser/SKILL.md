@@ -29,7 +29,7 @@ For **online research or truth-checking**, prefer the built-in tools before esca
 
 ## Bridge Browser Rules
 
-The Bridge browser tools separate disposable public browsing from an explicit authenticated context backed by the dedicated Bridge profile.
+The Bridge browser tools separate public browsing, which is signed out and keeps its cookies between uses, from an explicit authenticated context backed by the dedicated Bridge profile.
 This skill runs raw `agent-browser` commands through bash outside that broker, so raw commands are **unmanaged and unauthenticated by default**.
 
 Follow these rules unless the user explicitly asks otherwise:
@@ -162,7 +162,7 @@ agent-browser click @e1
 
 For this skill, raw browser state is separate from the Bridge broker:
 
-- `browser_fetch` and `browser_web_search` use disposable public state
+- `browser_fetch` and `browser_web_search` use the Bridge's public profiles, which keep cookies between uses
 - `browser_exec` and `browser_session_*` use the explicitly selected public or authenticated context
 - raw `agent-browser` commands do **not** inherit either broker-managed context
 - an ad hoc `--profile` or named session creates a third state boundary and must remain public

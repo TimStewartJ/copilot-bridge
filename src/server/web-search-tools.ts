@@ -5,8 +5,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand } from "./agent-browser.js";
-import { ab, getBrowserLaunchConfig, isAgentBrowserInstalled, safeRecordBrowserSpan } from "./agent-browser.js";
-import { getOrCreateBrowserBroker, type BrowserBrokerLease } from "./browser-broker.js";
+import { ab, safeRecordBrowserSpan } from "./agent-browser.js";
+import { agentBrowserMissingFailure } from "./browser-automation.js";
+import type { BrowserBrokerLease } from "./browser-broker.js";
+import { getBrowserRuntime } from "./browser-runtime.js";
+import { checkPage } from "./browser-page-check.js";
 import { joinFailureSections, toolFailure } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
@@ -35,14 +38,6 @@ function isGoogleCaptchaUrl(url: string): boolean {
   }
 }
 
-function isGoogleCaptchaSnapshot(snapshot: string): boolean {
-  const lower = snapshot.toLowerCase();
-  return lower.includes("why did this happen")
-    || lower.includes("unusual traffic")
-    || lower.includes("google requires captcha")
-    || lower.includes("our systems have detected unusual traffic");
-}
-
 function isBingCaptchaUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -55,60 +50,10 @@ function isBingCaptchaUrl(url: string): boolean {
   }
 }
 
-function isBingCaptchaSnapshot(snapshot: string): boolean {
-  const lower = snapshot.toLowerCase();
-  const linkCount = (snapshot.match(/^- link /gm) || []).length;
-  return linkCount < 3
-    && (
-      lower.includes("bing requires captcha")
-      || lower.includes("solve the puzzle")
-      || lower.includes("complete the security check")
-      || (
-        lower.includes("verify you are human")
-        && (lower.includes("captcha") || lower.includes("challenge") || lower.includes("security check"))
-      )
-      || (
-        lower.includes("unusual traffic")
-        && (lower.includes("captcha") || lower.includes("verify") || lower.includes("security check"))
-      )
-    );
-}
-
-function isDuckDuckGoChallengeSnapshot(snapshot: string): boolean {
-  const lower = snapshot.toLowerCase();
-  const checkboxCount = (snapshot.match(/checkbox/gi) || []).length;
-  const linkCount = (snapshot.match(/^- link /gm) || []).length;
-  const staticHtmlChallenge = linkCount < 3
-    && checkboxCount >= 2
-    && lower.includes("submit")
-    && (
-      lower.includes("images not loading")
-      || lower.includes("iframe")
-      || lower.includes("select all squares")
-    );
-  const browserChallenge = linkCount < 3
-    && (
-      lower.includes("checking your browser")
-      || lower.includes("complete the security check")
-      || lower.includes("prove you are human")
-      || (
-        lower.includes("verify you are human")
-        && (lower.includes("captcha") || lower.includes("challenge") || lower.includes("security check"))
-      )
-      || (
-        lower.includes("captcha")
-        && (lower.includes("security check") || lower.includes("challenge"))
-      )
-    );
-  return staticHtmlChallenge || browserChallenge;
-}
-
 function queryFingerprint(query: string): string {
   return createHash("sha256").update(query).digest("hex").slice(0, 12);
 }
 
-const AGENT_BROWSER_INSTALL_GUIDANCE =
-  "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
 const PROVIDER_CAPTCHA_COOLDOWN_MS = 15 * 60 * 1000;
 const ALL_PROVIDERS_EXHAUSTED_GUIDANCE =
   "All browser web search providers failed to return usable results. Do not retry browser_web_search with the same or alternate queries; use a different research tool/source or ask the user for guidance.";
@@ -129,7 +74,6 @@ interface SearchProvider {
   noResultsFailureCode: string;
   getUrl: (query: string) => string;
   isCaptchaUrl?: (url: string) => boolean;
-  isCaptchaSnapshot: (snapshot: string) => boolean;
   challengeFailure: string;
   noResultsFailure: string;
 }
@@ -160,7 +104,6 @@ const SEARCH_PROVIDERS: readonly SearchProvider[] = [
     noResultsFailureCode: "search.google_no_results",
     getUrl: (query) => `https://www.google.com/search?q=${encodeURIComponent(query)}`,
     isCaptchaUrl: isGoogleCaptchaUrl,
-    isCaptchaSnapshot: isGoogleCaptchaSnapshot,
     challengeFailure: "Google requires captcha verification before search results can be returned.",
     noResultsFailure: "Google did not return recognizable search results.",
   },
@@ -175,7 +118,6 @@ const SEARCH_PROVIDERS: readonly SearchProvider[] = [
     noResultsFailureCode: "search.bing_no_results",
     getUrl: (query) => `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
     isCaptchaUrl: isBingCaptchaUrl,
-    isCaptchaSnapshot: isBingCaptchaSnapshot,
     challengeFailure: "Bing requires captcha verification before search results can be returned.",
     noResultsFailure: "Bing did not return recognizable search results.",
   },
@@ -188,7 +130,6 @@ const SEARCH_PROVIDERS: readonly SearchProvider[] = [
     challengeFailureCode: "search.ddg_challenge",
     noResultsFailureCode: "search.ddg_no_results",
     getUrl: (query) => `https://duck.com/?q=${encodeURIComponent(query)}&ia=web`,
-    isCaptchaSnapshot: isDuckDuckGoChallengeSnapshot,
     challengeFailure: "DuckDuckGo requires challenge verification before search results can be returned.",
     noResultsFailure: "DuckDuckGo did not return recognizable search results.",
   },
@@ -241,15 +182,11 @@ function webSearchFailure(
 }
 
 export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
-  const browserBroker = getOrCreateBrowserBroker(ctx, {
-    copilotHome: ctx.copilotHome,
-    telemetryStore: ctx.telemetryStore,
-    getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
-  });
+  const browserBroker = getBrowserRuntime(ctx).broker;
   return [
     defineBridgeTool("browser_web_search", {
       description:
-        "Search the web using a disposable unauthenticated public browser. Returns ranked search-engine results from Google with " +
+        "Search the web using the public browser, which is not signed in to anything. Returns ranked search-engine results from Google with " +
         "automatic Bing and DuckDuckGo fallbacks. Use this when web_search is unavailable or failing, " +
         "or when direct browser-backed search-engine verification is specifically needed. " +
         "After identifying promising results, " +
@@ -275,26 +212,8 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
         let source: string | undefined;
         let browserSession: string | undefined;
 
-        const check = await isAgentBrowserInstalled();
-        if (!check) {
-          safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which.failed", 0, {
-            browserOpId,
-            toolName: "browser_web_search",
-            browserContext: "public",
-            queryHash,
-          });
-          return toolFailure("agent-browser is not installed.", {
-            detail: AGENT_BROWSER_INSTALL_GUIDANCE,
-            sessionLog: AGENT_BROWSER_INSTALL_GUIDANCE,
-          });
-        }
-        safeRecordBrowserSpan(ctx.telemetryStore, "browser.command.which", 0, {
-          browserOpId,
-          toolName: "browser_web_search",
-          browserContext: "public",
-          queryHash,
-        });
-
+        const missing = await agentBrowserMissingFailure();
+        if (missing) return missing;
         const runFlow = async (lease: BrowserBrokerLease) => {
           browserSession = lease.browserTarget.sessionName;
           const commandOptions = {
@@ -306,7 +225,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
               queryHash,
               queryLength,
               browserContext: "public",
-              publicTargetId: lease.publicTargetId,
+              publicSlot: lease.publicSlot,
             },
           };
 
@@ -314,7 +233,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
             browserOpId,
             browserSession: lease.browserTarget.sessionName,
             browserContext: "public",
-            publicTargetId: lease.publicTargetId,
+            publicSlot: lease.publicSlot,
             queryHash,
             ...extra,
           });
@@ -325,7 +244,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
               browserOpId,
               browserSession: lease.browserTarget.sessionName,
               browserContext: "public",
-              publicTargetId: lease.publicTargetId,
+              publicSlot: lease.publicSlot,
               from: fromProvider.source,
               to: toProvider.source,
               queryHash,
@@ -335,7 +254,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
               browserOpId,
               browserSession: lease.browserTarget.sessionName,
               browserContext: "public",
-              publicTargetId: lease.publicTargetId,
+              publicSlot: lease.publicSlot,
               from: fromProvider.source,
               to: toProvider.source,
               queryHash,
@@ -369,26 +288,17 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
               };
             }
 
-            const wait = await ab(["wait", "--load", "networkidle"], undefined, commandOptions);
-            if (!wait.ok) {
-              recordFailure(provider, Date.now() - providerStart, "navigation.wait_networkidle_timeout");
+            // Waits for the results to stop changing and reads whether the page is a check instead.
+            const pageCheck = await checkPage(commandOptions, { settle: true });
+            const isChallenge = (pageCheck.block && pageCheck.block.kind !== "captcha")
+              || (!!pageCheck.signals && provider.isCaptchaUrl?.(pageCheck.signals.url) === true);
+            if (isChallenge) {
+              recordFailure(provider, Date.now() - providerStart, provider.challengeFailureCode);
               return {
                 ok: false,
-                challenge: false,
-                summary: `Failed to wait for ${provider.label} results: ${wait.output.slice(0, 200)}`,
+                challenge: true,
+                summary: provider.challengeFailure,
               };
-            }
-
-            if (provider.isCaptchaUrl) {
-              const currentUrl = await ab(["get", "url"], undefined, commandOptions);
-              if (currentUrl.ok && provider.isCaptchaUrl(currentUrl.output)) {
-                recordFailure(provider, Date.now() - providerStart, provider.challengeFailureCode);
-                return {
-                  ok: false,
-                  challenge: true,
-                  summary: provider.challengeFailure,
-                };
-              }
             }
 
             const snapshot = await takeSnapshot(provider.resultsSelector, commandOptions);
@@ -403,15 +313,6 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
                 ok: false,
                 challenge: false,
                 summary: `Failed to capture ${provider.label} results: ${snapshot.output.slice(0, 200)}`,
-              };
-            }
-
-            if (provider.isCaptchaSnapshot(snapshot.output)) {
-              recordFailure(provider, providerDuration, provider.challengeFailureCode);
-              return {
-                ok: false,
-                challenge: true,
-                summary: provider.challengeFailure,
               };
             }
 
@@ -435,7 +336,6 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
 
           let priorFailure: string | undefined;
           let lastFailure: string | undefined;
-          let lastFailureSource: string | undefined;
           let lastAttemptedProvider: SearchProvider | undefined;
           let attemptedProviderCount = 0;
           let challengeFailureCount = 0;
@@ -444,7 +344,6 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
           const rememberFailure = (provider: SearchProvider, summary: string) => {
             if (lastFailure) priorFailure = joinFailureSections(priorFailure, lastFailure);
             lastFailure = summary;
-            lastFailureSource = provider.source;
           };
 
           for (const provider of SEARCH_PROVIDERS) {
@@ -514,7 +413,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
             },
           }, runFlow);
         } catch (err: any) {
-          return webSearchFailure(`Search failed: ${String(err).slice(0, 200)}`, { query });
+          return webSearchFailure(`Search failed: ${String(err).slice(0, 400)}`, { query });
         } finally {
           const duration = Date.now() - toolStart;
           safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_web_search", duration, {
