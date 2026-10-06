@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { BrowserCommand, BrowserCommandResult } from "../agent-browser.js";
-import { normalizeBrowserAutomationCommands, runBrowserAutomationCommands, withScreenshots } from "../browser-automation.js";
+import { runBrowserAutomationCommands, withScreenshots } from "../browser-automation.js";
+import { normalizeBrowserAutomationCommands } from "../browser-steps.js";
 import { saveDownload, takeScreenshot } from "../browser-step-files.js";
 import { toolFailureWithContext } from "../tool-results.js";
 
