@@ -67,7 +67,7 @@ describe("listSessionsFromDisk telemetry", () => {
     await expect(listSessionsFromDisk(deps)).rejects.toThrow();
   });
 
-  it("records separate disk-list phases", async () => {
+  it("records the enumeration and the whole listing", async () => {
     const copilotHome = makeTestDir("session-disk-list");
     writeSessionFiles(copilotHome, "session-a", {
       workspace: "created_at: 2026-04-30T10:00:00.000Z\nsummary: Alpha\n",
@@ -85,13 +85,11 @@ describe("listSessionsFromDisk telemetry", () => {
       summary: "Alpha",
       eventLogSizeBytes: expect.any(Number),
     });
-    expect(spans.map((span) => span.name)).toEqual(expect.arrayContaining([
+    expect(spans.map((span) => span.name)).toEqual([
       "session.listFromDisk.enumerate",
-      "session.listFromDisk.workspace",
-      "session.listFromDisk.eventsStat",
-      "session.listFromDisk.sort",
       "session.listFromDisk",
-    ]));
+    ]);
+    expect(spans[1]!.metadata).toMatchObject({ count: 1, dirCount: 1, skipped: 0, missingWorkspace: 0 });
   });
 
   it("prefers workspace name over summary without hiding helper-looking session ids", async () => {
@@ -1578,27 +1576,41 @@ function writeSession(copilotHome: string, sessionId: string, summary: string) {
   );
 }
 
-describe("SessionManager disk session list cache", () => {
-  it("coalesces concurrent disk scans and serves fresh cache hits", async () => {
-    const copilotHome = makeTestDir("session-manager-list-cache");
+describe("SessionManager disk session reads", () => {
+  it("lists the folders it is not told to skip, and reads named sessions without listing", async () => {
+    const copilotHome = makeTestDir("session-manager-list");
     writeSession(copilotHome, "session-a", "Alpha");
     writeSession(copilotHome, "session-b", "Beta");
     const { manager, telemetryStore } = createManager(copilotHome);
 
-    const [first, second] = await Promise.all([
-      manager.listSessionsFromDisk({ includeArchived: false }),
-      manager.listSessionsFromDisk({ includeArchived: false }),
-    ]);
-    const third = await manager.listSessionsFromDisk({ includeArchived: false });
+    const all = await manager.listSessionsFromDisk({ includeArchived: false });
+    const skipped = await manager.listSessionsFromDisk({ includeArchived: false, skip: new Set(["session-a"]) });
+    const enumerations = telemetryStore.querySpans({ name: "session.listFromDisk.enumerate", limit: 20 }).length;
+    const named = await manager.readSessionsFromDisk(["session-b", "session-gone", "session-a"]);
 
-    expect(first.map((session: any) => session.sessionId).sort()).toEqual(["session-a", "session-b"]);
-    expect(second).toBe(first);
-    expect(third).toBe(first);
+    expect(all.map((session: any) => session.sessionId).sort()).toEqual(["session-a", "session-b"]);
+    expect(skipped.map((session: any) => session.sessionId)).toEqual(["session-b"]);
+    expect(named.map((session: any) => session.sessionId)).toEqual(["session-b", "session-a"]);
+    expect(named[0]).toMatchObject({ summary: "Beta", eventLogSizeBytes: expect.any(Number) });
+    // Reading sessions by id does not enumerate the session-state folder.
+    expect(telemetryStore.querySpans({ name: "session.listFromDisk.enumerate", limit: 20 })).toHaveLength(enumerations);
+  });
 
-    const cacheResults = telemetryStore
-      .querySpans({ name: "session.listFromDisk.cache", limit: 20 })
-      .map((span) => span.metadata?.result);
-    expect(cacheResults).toEqual(expect.arrayContaining(["miss", "coalesced", "hit"]));
+  it("tells a folder it could not read from one that is gone, only for a caller that asks", async () => {
+    const copilotHome = makeTestDir("session-manager-unreadable");
+    writeSession(copilotHome, "session-ok", "Alpha");
+    // A directory where the file belongs: the read fails, and not because nothing is there.
+    mkdirSync(join(copilotHome, "session-state", "session-unreadable", "workspace.yaml"), { recursive: true });
+    const { manager } = createManager(copilotHome);
+    const sessionIds = (sessions: any[]) => sessions.map((session) => session.sessionId);
+
+    // The list and other displays leave out what they cannot read; one bad folder fails nothing.
+    expect(sessionIds(await manager.listSessionsFromDisk())).toEqual(["session-ok"]);
+    expect(sessionIds(await manager.readSessionsFromDisk(["session-unreadable", "session-ok"]))).toEqual(["session-ok"]);
+    expect(sessionIds(await manager.readSessionsFromDisk(["session-gone", "session-ok"], { failOnReadError: true })))
+      .toEqual(["session-ok"]);
+    await expect(manager.readSessionsFromDisk(["session-unreadable", "session-ok"], { failOnReadError: true }))
+      .rejects.toThrow();
   });
 
   it("records disposable title cleanup sweep spans with elapsed durations", async () => {

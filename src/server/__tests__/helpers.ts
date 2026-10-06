@@ -192,6 +192,17 @@ export function createTestBus() {
   return createGlobalBus();
 }
 
+/**
+ * `SessionManager.readSessionsFromDisk` for a double that only says which sessions exist:
+ * the sessions the given listing returns are the ones found when asked for by id.
+ */
+export function sessionsOnDisk(list: (options: { includeArchived: boolean }) => any[] | Promise<any[]>) {
+  return async (sessionIds: readonly string[], options: { includeArchived?: boolean } = {}): Promise<any[]> => {
+    const sessions = await list({ includeArchived: options.includeArchived ?? true });
+    return sessionIds.flatMap((sessionId) => sessions.filter((session) => session.sessionId === sessionId));
+  };
+}
+
 /** Minimal mock SessionManager for API route tests */
 export function createMockSessionManager() {
   const manager = {
@@ -215,6 +226,11 @@ export function createMockSessionManager() {
     }),
     refreshModels: async () => ({ models: [], refreshed: true, activeSessions: 0, refreshedAt: "2026-01-01T00:00:00.000Z", clientCreatedAt: "2026-01-01T00:00:00.000Z" }),
     listSessionsFromDisk: () => [],
+    listPendingSessionCreationIds: () => [] as string[],
+    // The sessions a test lists are also the ones that exist when asked for by id.
+    readSessionsFromDisk(this: any, sessionIds: readonly string[], options?: { includeArchived?: boolean }) {
+      return sessionsOnDisk((listOptions) => this.listSessionsFromDisk(listOptions))(sessionIds, options);
+    },
     getExternalSessionUse: async () => ({
       status: "available" as const,
       inUse: [],
@@ -323,7 +339,6 @@ export function createMockSessionManager() {
       options?.onCreateStarting?.();
       return { sessionId: options?.expectedSessionId ?? "task-session" };
     },
-    invalidateSessionListCache: () => {},
     setSessionWorkspace: (sessionId: string, cwd: string) => ({
       cwd,
       source: "explicit",

@@ -130,11 +130,14 @@ import {
   clearEventLogStatsCache,
   findSessionEventIndex,
   listSessionsFromDisk as listSessionsFromDiskWithDeps,
+  readSessionsFromDisk as readSessionsFromDiskWithDeps,
   readRecentUserMessages,
   readMessagesFromDisk as readMessagesFromDiskWithDeps,
   readSessionEventsTail,
   resolveSessionEventsPath,
   type ReadMessagesFromDiskResult,
+  type SessionDiskReaderDeps,
+  type SessionsFromDiskOptions,
 } from "./session-disk-reader.js";
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -952,12 +955,8 @@ export class SessionManager {
   private readonly imageBudget: ImageBudgetController;
   readonly sessionRuns: Map<string, SessionRunRecord>;
 
-  private sessionDiskListCache = new Map<string, { data: any[]; timestamp: number; generation: number }>();
-  private sessionDiskListBuilds = new Map<string, { generation: number; promise: Promise<any[]> }>();
-  private sessionDiskListCacheGeneration = 0;
   private warmSessionPromises = new Map<string, Promise<void>>();
   private slashCommandListCache = new Map<string, AgentSlashCommandInfo[]>();
-  private static SESSION_DISK_LIST_TTL = 30_000; // 30 seconds
 
   // Parent sessions and their tracked background agents form one cache tree.
   // Parent count, total context weight, and a shared idle TTL bound the MCP
@@ -1052,7 +1051,6 @@ export class SessionManager {
             "evicting a session after its workspace changed",
           );
         }
-        this.invalidateSessionListCache("workspace:changed");
       },
     });
     this.runStateController = new SessionRunStateController({
@@ -1206,7 +1204,6 @@ export class SessionManager {
         this.recordPendingInteractionEvent(sessionId, kind, state, at),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
       touchSessionActivity: (sessionId, at) => this.touchSessionTree(sessionId, at),
-      invalidateSessionListCache: () => this.invalidateSessionListCache("session-runner"),
       applyTurnReasoningEffort: (sessionId, session, reasoningEffort) =>
         this.applyTurnReasoningEffort(sessionId, session, reasoningEffort),
       maybeAutoNameSession: (sessionId, options) => this.maybeAutoNameSession(sessionId, options),
@@ -1676,7 +1673,6 @@ export class SessionManager {
     this.mcpStatus.delete(sessionId);
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
     this.deps.sessionPromptProfileStore?.clearPromptProfile(sessionId);
-    this.invalidateSessionListCache("session:create:failed");
     this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
   }
 
@@ -1710,7 +1706,6 @@ export class SessionManager {
     startedAt: number;
     modelMetadata?: readonly CopilotModelContextMetadata[];
     requestedContextTier?: CopilotContextTier;
-    cacheReason: string;
     spanName: string;
     spanMetadata?: Record<string, unknown>;
     logMessage: (sessionId: string, duration: number) => string;
@@ -1727,7 +1722,6 @@ export class SessionManager {
       startedAt,
       modelMetadata,
       requestedContextTier,
-      cacheReason,
       spanName,
       spanMetadata,
       logMessage,
@@ -1792,7 +1786,6 @@ export class SessionManager {
         this.persistSessionModelState(session.sessionId, state);
       }
       this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
-      this.invalidateSessionListCache(cacheReason);
       this.deps.globalBus.emit({ type: "sessions:changed", sessionId: session.sessionId });
       const duration = Date.now() - startedAt;
       this.recordSpan(spanName, duration, session.sessionId, spanMetadata);
@@ -2261,7 +2254,8 @@ export class SessionManager {
     if (!lastAttentionAt) return;
     try {
       this.deps.sessionMetaStore?.setLastAttentionAt(sessionId, lastAttentionAt);
-      this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
+      // `reason` tells the session list that only a time it reads per response changed.
+      this.deps.globalBus.emit({ type: "sessions:changed", sessionId, reason: "attention" });
     } catch (err) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to persist attention activity:`, err);
     }
@@ -4093,7 +4087,6 @@ export class SessionManager {
       this.releaseTimedOutSessionResumeBarriers();
       this.slashCommandListCache.clear();
       this.notifySessionCapacityChanged();
-      this.invalidateSessionListCache("backend:disconnected");
       console.warn(`[sdk] Dropped ${dropped} cached session handle(s) and ${releasedCleanups} pending cleanup(s) owned by the lost backend`);
     });
   }
@@ -4487,93 +4480,36 @@ export class SessionManager {
     };
   }
 
-  /**
-   * Fast session listing — reads workspace.yaml from disk instead of SDK RPC.
-   * ~170ms for 4000+ sessions vs ~2500ms for SDK listSessions.
-   * Async to avoid blocking the event loop during filesystem I/O.
-   */
-  async listSessionsFromDisk(options: { includeArchived?: boolean } = {}): Promise<any[]> {
-    const includeArchived = options.includeArchived ?? true;
-    const cacheKey = includeArchived ? "all" : "active";
-    const now = Date.now();
-    const cached = this.sessionDiskListCache.get(cacheKey);
-    if (
-      cached
-      && cached.generation === this.sessionDiskListCacheGeneration
-      && (now - cached.timestamp) < SessionManager.SESSION_DISK_LIST_TTL
-    ) {
-      this.recordSpan("session.listFromDisk.cache", 0, undefined, {
-        result: "hit",
-        includeArchived,
-        count: cached.data.length,
-      });
-      return cached.data;
-    }
-
-    const existingBuild = this.sessionDiskListBuilds.get(cacheKey);
-    if (existingBuild?.generation === this.sessionDiskListCacheGeneration) {
-      const tWait = Date.now();
-      const sessions = await existingBuild.promise;
-      this.recordSpan("session.listFromDisk.cache", Date.now() - tWait, undefined, {
-        result: "coalesced",
-        includeArchived,
-        count: sessions.length,
-      });
-      return sessions;
-    }
-
-    this.recordSpan("session.listFromDisk.cache", 0, undefined, {
-      result: cached ? "stale" : "miss",
-      includeArchived,
-    });
-    const generation = this.sessionDiskListCacheGeneration;
-    const resolveEffectiveSessionCwdFromWorkspaceYaml = this.workspaceController.createWorkspaceYamlCwdResolver();
-    const build = listSessionsFromDiskWithDeps({
+  /** Reader deps for reads of several sessions: effective cwds come from one shared resolver. */
+  private sessionListReaderDeps(): SessionDiskReaderDeps {
+    return {
       copilotHome: this.deps.copilotHome,
       sessionMetaStore: this.deps.sessionMetaStore,
       eventBusRegistry: this.deps.eventBusRegistry,
-      resolveEffectiveSessionCwdFromWorkspaceYaml,
+      resolveEffectiveSessionCwdFromWorkspaceYaml: this.workspaceController.createWorkspaceYamlCwdResolver(),
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
       persistLastVisibleActivityAt: (sessionId, lastVisibleActivityAt) =>
         this.persistLastVisibleActivityAt(sessionId, lastVisibleActivityAt),
-    }, { includeArchived }).then((sessions) => {
-      if (generation === this.sessionDiskListCacheGeneration) {
-        this.sessionDiskListCache.set(cacheKey, {
-          data: sessions,
-          timestamp: Date.now(),
-          generation,
-        });
-      }
-      return sessions;
-    }).finally(() => {
-      const currentBuild = this.sessionDiskListBuilds.get(cacheKey);
-      if (currentBuild?.promise === build) {
-        this.sessionDiskListBuilds.delete(cacheKey);
-      }
-    });
-    this.sessionDiskListBuilds.set(cacheKey, { generation, promise: build });
-    return build;
+    };
   }
 
-  /** Invalidate the disk session-list cache (call after create/delete) */
-  invalidateSessionListCache(reason = "unknown"): void {
-    const cacheKeys = [...this.sessionDiskListCache.keys()];
-    const buildKeys = [...this.sessionDiskListBuilds.keys()];
-    this.sessionDiskListCache.clear();
-    this.sessionDiskListBuilds.clear();
-    this.sessionDiskListCacheGeneration += 1;
-    this.recordSpan("session.listFromDisk.invalidate", 0, undefined, {
-      reason,
-      generation: this.sessionDiskListCacheGeneration,
-      cacheKeys,
-      buildKeys,
-    });
+  /**
+   * Sessions that have a folder under session-state, read from workspace.yaml instead of SDK RPC.
+   * Not cached: the session list (session-list.ts) is its one caller and owns the cache. Anything
+   * that asks about particular sessions uses readSessionsFromDisk.
+   */
+  listSessionsFromDisk(options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {}): Promise<any[]> {
+    return listSessionsFromDiskWithDeps(this.sessionListReaderDeps(), options);
+  }
+
+  /** The given sessions as their folders describe them; a session whose folder is gone is left out. */
+  readSessionsFromDisk(sessionIds: readonly string[], options: SessionsFromDiskOptions = {}): Promise<any[]> {
+    return readSessionsFromDiskWithDeps(this.sessionListReaderDeps(), sessionIds, options);
   }
 
   private emitSessionNameChanged(sessionId: string, name: string): void {
     this.deps.eventBusRegistry.getBus(sessionId)?.emit({ type: "title_changed", title: name });
     this.deps.globalBus.emit({ type: "session:title", sessionId, title: name });
-    this.invalidateSessionListCache("session:name");
   }
 
   private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
@@ -5044,7 +4980,6 @@ export class SessionManager {
         ...(modelMetadata ? { modelMetadata } : {}),
         ...(options.contextTier ? { requestedContextTier: options.contextTier } : {}),
         promptProfile,
-        cacheReason: "session:create",
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
         cleanupLabel: "session",
@@ -5108,7 +5043,6 @@ export class SessionManager {
     }
 
     console.log(`[sdk] Forked session ${sourceSessionId.slice(0, 8)} → ${result.sessionId.slice(0, 8)}`);
-    this.invalidateSessionListCache("session:fork");
     this.recordSpan("session.fork", duration, result.sessionId, {
       sourceSessionId,
       bounded: Boolean(toEventId),
@@ -5282,11 +5216,6 @@ export class SessionManager {
         console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to record context truncation after undo:`, error);
       }
       try {
-        this.invalidateSessionListCache("session:history-undo");
-      } catch (error) {
-        console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to invalidate session list after undo:`, error);
-      }
-      try {
         this.deps.globalBus.emit({ type: "session:history-truncated", sessionId });
         this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
       } catch (error) {
@@ -5413,7 +5342,6 @@ export class SessionManager {
         ...(options.contextTier ?? scheduleContext?.contextTier
           ? { requestedContextTier: options.contextTier ?? scheduleContext?.contextTier }
           : {}),
-        cacheReason: "session:create-task",
         spanName: "session.createTask",
         spanMetadata: { taskId },
         logMessage: (sessionId, duration) =>
@@ -5788,7 +5716,6 @@ export class SessionManager {
       timeoutMessage: "warmSession timed out after 60s",
       purpose: "warmup",
     }, () => {
-      this.invalidateSessionListCache("session:warm");
       this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
 
       const duration = Date.now() - t0;
@@ -5810,6 +5737,11 @@ export class SessionManager {
   /** Check if a session object is cached and ready for interaction */
   isSessionWarm(sessionId: string): boolean {
     return this.sessionObjects.has(sessionId);
+  }
+
+  /** Sessions whose creation has handed out their id and not finished: the runtime may not have made their folder yet. */
+  listPendingSessionCreationIds(): string[] {
+    return [...this.pendingSessionCreations.keys()];
   }
 
   async getSessionCreationState(sessionId: string): Promise<"pending" | "present" | "absent"> {
@@ -5872,7 +5804,6 @@ export class SessionManager {
         console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
         throw err;
       }
-      this.invalidateSessionListCache("session:delete:removed");
       // Local state is fully removed at this point. Signal that explicitly so
       // callers that own additional Bridge-side state (session context, defers,
       // task links) can still clean it up instead of orphaning those rows
@@ -6079,7 +6010,6 @@ export class SessionManager {
     if (this.isSessionBusy(sessionId)) throw new Error("Cannot change the profile of a busy session");
     store.setPromptProfile(sessionId, promptProfile);
     await this.evictCachedSession(sessionId, undefined, "prompt profile changed");
-    this.invalidateSessionListCache("prompt-profile:changed");
     return { promptProfile };
   }
 

@@ -205,6 +205,39 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
+  it("names a background creation as pending from its answer until the runtime finishes or fails", async () => {
+    const { manager, backend, db } = createManager();
+    const finish = createDeferred<void>();
+    const refuse = createDeferred<void>();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async (config: any) => {
+        await finish.promise;
+        return createFakeSession(config.sessionId, config.tools ?? []);
+      });
+      const created = await manager.createSession({ background: true });
+      expect(manager.listPendingSessionCreationIds()).toEqual([created.sessionId]);
+      finish.resolve();
+      await vi.waitFor(() => expect(manager.listPendingSessionCreationIds()).toEqual([]));
+
+      backend.createSession.mockImplementationOnce(async () => {
+        await refuse.promise;
+        throw new Error("runtime refused");
+      });
+      const refused = await manager.createSession({ background: true });
+      expect(manager.listPendingSessionCreationIds()).toEqual([refused.sessionId]);
+      refuse.resolve();
+      await vi.waitFor(() => expect(manager.listPendingSessionCreationIds()).toEqual([]));
+    } finally {
+      finish.resolve();
+      refuse.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+      error.mockRestore();
+    }
+  });
+
   it("does not call the backend if persisting the durable creation dispatch fails", async () => {
     const { manager, backend, db } = createManager();
     try {

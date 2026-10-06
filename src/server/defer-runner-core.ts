@@ -346,10 +346,15 @@ export function createDeferRunnerCore<Item extends { id: string; sessionId: stri
     const { sessionId } = item;
     if (deliveryGuard.isActive(sessionId)) return "blocked";
 
-    const sessions = await sessionManager.listSessionsFromDisk({ includeArchived: work.reachesArchived(item) });
+    // Asked of this one session, now: a chat restored a moment ago is there, one whose folder is gone is not.
+    // A folder that could not be read throws instead, and the item stays as it is for a later pass.
+    const [session] = await sessionManager.readSessionsFromDisk([sessionId], {
+      includeArchived: work.reachesArchived(item),
+      failOnReadError: true,
+    });
     if (!started) return "unchanged";
     if (deliveryGuard.isActive(sessionId)) return "blocked";
-    if (!sessions.some((session: any) => session.sessionId === sessionId)) {
+    if (!session) {
       const changed = work.orphaned(item);
       if (changed) emitDeferSummary(sessionId);
       return changed ? "changed" : "unchanged";

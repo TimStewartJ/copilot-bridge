@@ -71,14 +71,26 @@ export interface TaskSessionSummary {
   sessionLinksRevision: string;
 }
 
-export type ClientTask<T extends Task = Task> = Omit<T, "sessionIds"> & TaskSessionSummary;
+/** One task a session is linked to, with the only task field the session list needs. */
+export interface SessionTaskLink {
+  id: string;
+  cwd?: string;
+}
+
+/** A task as stored, minus its session links: a task can link thousands of sessions, and most readers do not use them. */
+export type TaskWithoutSessions = Omit<Task, "sessionIds">;
+
+export type ClientTask<T extends TaskWithoutSessions = Task> = Omit<T, "sessionIds"> & TaskSessionSummary;
 
 const EMPTY_SESSION_LINKS_REVISION = createHash("sha1").digest("hex").slice(0, 16);
 
-export function toClientTask<T extends Task>(task: T, summary: TaskSessionSummary | undefined): ClientTask<T> {
+export function toClientTask<T extends TaskWithoutSessions>(
+  task: T & { sessionIds?: string[] },
+  summary: TaskSessionSummary | undefined,
+): ClientTask<T> {
   const { sessionIds: _sessionIds, ...rest } = task;
   return {
-    ...rest,
+    ...(rest as unknown as Omit<T, "sessionIds">),
     ...(summary ?? {
       activeSessionIds: [],
       sessionCount: 0,
@@ -190,6 +202,11 @@ const STATUS_ORDER: Record<Task["status"], number> = {
 function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): number {
   if (a.kind === b.kind) return 0;
   return a.kind === "ongoing" ? -1 : 1;
+}
+
+/** The order of the task list: active before archived, ongoing first, then the user's order. */
+function compareTaskListOrder(a: Pick<Task, "status" | "kind" | "order">, b: Pick<Task, "status" | "kind" | "order">): number {
+  return STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || compareOngoingFirst(a, b) || a.order - b.order;
 }
 
 export function normalizeOptionalText(value: unknown): string | undefined {
@@ -438,8 +455,13 @@ export function createTaskStore(
   }
 
   function hydrate(row: any): Task {
+    const { workItems, pullRequests, ...task } = hydrateWithoutSessions(row);
+    // Same key order as before the split, so task JSON (and its ETag) is unchanged.
+    return { ...task, sessionIds: listSessionIdsForTask(row.id), workItems, pullRequests };
+  }
+
+  function hydrateWithoutSessions(row: any): TaskWithoutSessions {
     const id = row.id;
-    const sessions = db.prepare("SELECT sessionId FROM task_sessions WHERE taskId = ? ORDER BY linkedAt ASC").all(id) as any[];
     const workItems = db.prepare("SELECT itemId as id, provider FROM task_work_items WHERE taskId = ?").all(id) as any[];
     const prs = db.prepare("SELECT repoId, repoName, prId, provider FROM task_pull_requests WHERE taskId = ?").all(id) as any[];
 
@@ -463,7 +485,6 @@ export function createTaskStore(
       createdAt: row.createdAt,
       completedAt: normalizeOptionalTimestamp(row.completedAt),
       updatedAt: row.updatedAt,
-      sessionIds: sessions.map((s) => s.sessionId),
       workItems: workItems.map((w) => ({ id: w.id, provider: w.provider as ProviderName })),
       pullRequests: prs.map((p) => ({
         repoId: p.repoId,
@@ -493,14 +514,42 @@ export function createTaskStore(
 
   function listTasks(): Task[] {
     const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as any[];
-    const tasks = rows.map(hydrate);
-    return tasks.sort((a, b) => {
-      const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-      if (statusDiff !== 0) return statusDiff;
-      const kindDiff = compareOngoingFirst(a, b);
-      if (kindDiff !== 0) return kindDiff;
-      return a.order - b.order;
-    });
+    return rows.map(hydrate).sort(compareTaskListOrder);
+  }
+
+  /** The task list without each task's session links, for readers that send or use none of them. */
+  function listTasksWithoutSessions(): TaskWithoutSessions[] {
+    const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as any[];
+    return rows.map(hydrateWithoutSessions).sort(compareTaskListOrder);
+  }
+
+  /**
+   * The tasks each of the given sessions is linked to, in task-list order. Sessions without a
+   * link are absent. Reads the links of these sessions only; the whole link table only when no
+   * sessions are named.
+   */
+  function listTaskLinksBySession(sessionIds?: readonly string[]): Map<string, SessionTaskLink[]> {
+    const links = new Map<string, Array<SessionTaskLink & Pick<Task, "status" | "kind" | "order">>>();
+    if (sessionIds?.length === 0) return links;
+    const select = `SELECT ts.sessionId, t.id, t.cwd, t.status, t.kind, t."order"
+      FROM task_sessions ts JOIN tasks t ON t.id = ts.taskId`;
+    const rows = (sessionIds
+      ? db.prepare(`${select} WHERE ts.sessionId IN (SELECT value FROM json_each(?))`).all(JSON.stringify(sessionIds))
+      : db.prepare(select).all()) as any[];
+    for (const row of rows) {
+      const link = {
+        id: row.id as string,
+        cwd: (row.cwd ?? undefined) as string | undefined,
+        status: normalizeStoredTaskStatus(row.status),
+        kind: normalizeTaskKind(row.kind),
+        order: row.order as number,
+      };
+      const existing = links.get(row.sessionId);
+      if (existing) existing.push(link);
+      else links.set(row.sessionId, [link]);
+    }
+    for (const linked of links.values()) linked.sort(compareTaskListOrder);
+    return links;
   }
 
   /**
@@ -764,33 +813,64 @@ export function createTaskStore(
     };
   }
 
-  /** Per-task session summaries for the browser, in one query. Pass a task ID to read just that task. */
+  /** Per-task session summaries for the browser. Pass a task ID to read just that task. */
   function listTaskSessionSummaries(taskId?: string): Map<string, TaskSessionSummary> {
-    const rows = db.prepare(`
-      SELECT ts.taskId, ts.sessionId, COALESCE(b.archived, 0) AS archived
-      FROM task_sessions ts
-      LEFT JOIN bridge_session_state b ON b.sessionId = ts.sessionId
-      ${taskId === undefined ? "" : "WHERE ts.taskId = ?"}
-      ORDER BY ts.taskId, ts.linkedAt ASC, ts.sessionId ASC
-    `).all(...(taskId === undefined ? [] : [taskId])) as Array<{ taskId: string; sessionId: string; archived: number }>;
-    const summaries = new Map<string, TaskSessionSummary>();
-    const hashes = new Map<string, ReturnType<typeof createHash>>();
-    for (const row of rows) {
-      let summary = summaries.get(row.taskId);
-      let hash = hashes.get(row.taskId);
-      if (!summary || !hash) {
-        summary = { activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "" };
-        hash = createHash("sha1");
-        summaries.set(row.taskId, summary);
-        hashes.set(row.taskId, hash);
-      }
-      summary.sessionCount += 1;
-      hash.update(`${row.sessionId}\n`);
-      if (Number(row.archived) === 1) summary.archivedSessionCount += 1;
-      else summary.activeSessionIds.push(row.sessionId);
+    const forTask = taskId === undefined ? "" : "AND ts.taskId = ?";
+    const args = taskId === undefined ? [] : [taskId];
+    // Grouped in SQLite, one row and one hash per task: a task can link thousands of sessions.
+    // The order the revision hashes is stated inside the aggregate; SQLite promises no other.
+    const tasks = db.prepare(`
+      SELECT ts.taskId, count(*) AS total,
+        group_concat(ts.sessionId, char(10) ORDER BY ts.linkedAt, ts.sessionId) AS sessionIds
+      FROM task_sessions ts WHERE 1 ${forTask}
+      GROUP BY ts.taskId
+    `).all(...args) as Array<{ taskId: string; total: number; sessionIds: string }>;
+    const summaries = new Map<string, TaskSessionSummary>(tasks.map((row) => [row.taskId, {
+      activeSessionIds: [],
+      sessionCount: Number(row.total),
+      archivedSessionCount: Number(row.total),
+      sessionLinksRevision: createHash("sha1").update(`${row.sessionIds}\n`).digest("hex").slice(0, 16),
+    }]));
+    // Only the links that are not archived come back as rows; the archived count is the rest.
+    const active = db.prepare(`
+      SELECT ts.taskId, ts.sessionId FROM task_sessions ts
+      WHERE NOT EXISTS (SELECT 1 FROM bridge_session_state b WHERE b.sessionId = ts.sessionId AND b.archived = 1) ${forTask}
+      ORDER BY ts.taskId, ts.linkedAt, ts.sessionId
+    `).all(...args) as Array<{ taskId: string; sessionId: string }>;
+    for (const row of active) {
+      const summary = summaries.get(row.taskId);
+      if (!summary) continue;
+      summary.activeSessionIds.push(row.sessionId);
+      summary.archivedSessionCount -= 1;
     }
-    for (const [id, hash] of hashes) summaries.get(id)!.sessionLinksRevision = hash.digest("hex").slice(0, 16);
     return summaries;
+  }
+
+  /**
+   * One page of a task's archived sessions, most recent activity first, and how many there are.
+   * A session with no recorded activity is placed by when it was linked.
+   */
+  function listArchivedSessionIdsForTask(
+    taskId: string,
+    page: { limit: number; offset: number },
+  ): { sessionIds: string[]; total: number } {
+    const total = db.prepare(`
+      SELECT count(*) AS total FROM task_sessions ts
+      JOIN bridge_session_state b ON b.sessionId = ts.sessionId
+      WHERE ts.taskId = ? AND b.archived = 1
+    `).get(taskId) as { total: number };
+    const rows = db.prepare(`
+      SELECT ts.sessionId FROM task_sessions ts
+      JOIN bridge_session_state b ON b.sessionId = ts.sessionId
+      WHERE ts.taskId = ? AND b.archived = 1
+      ORDER BY COALESCE(
+        max(b.lastVisibleActivityAt, COALESCE(b.lastAttentionAt, b.lastVisibleActivityAt)),
+        b.lastAttentionAt,
+        strftime('%Y-%m-%dT%H:%M:%fZ', ts.linkedAt)
+      ) DESC, ts.sessionId ASC
+      LIMIT ? OFFSET ?
+    `).all(taskId, page.limit, page.offset) as Array<{ sessionId: string }>;
+    return { sessionIds: rows.map((row) => row.sessionId), total: Number(total.total) };
   }
 
   /**
@@ -1062,7 +1142,7 @@ export function createTaskStore(
   }
 
   return {
-    listTasks, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
+    listTasks, listTasksWithoutSessions, listTaskLinksBySession, listArchivedSessionIdsForTask, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
     getTaskSessionCounts, listTaskSessionSummaries,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,

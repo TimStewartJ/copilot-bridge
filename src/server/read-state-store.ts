@@ -22,6 +22,14 @@ export function createReadStateStore(db: DatabaseSync) {
     return result;
   }
 
+  function getReadStateFor(sessionIds: readonly string[]): ReadStateMap {
+    if (sessionIds.length === 0) return {};
+    const rows = db.prepare(
+      "SELECT sessionId, lastReadAt FROM read_state WHERE sessionId IN (SELECT value FROM json_each(?))",
+    ).all(JSON.stringify(sessionIds)) as any[];
+    return Object.fromEntries(rows.map((row) => [row.sessionId, row.lastReadAt]));
+  }
+
   function markRead(sessionId: string, readThroughActivityAt = new Date().toISOString()): string {
     const readThrough = normalizeTimestamp(readThroughActivityAt);
     db.prepare(
@@ -48,7 +56,7 @@ export function createReadStateStore(db: DatabaseSync) {
     db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
   }
 
-  return { getReadState, markRead, isUnread, markUnread };
+  return { getReadState, getReadStateFor, markRead, isUnread, markUnread };
 }
 
 export type ReadStateStore = ReturnType<typeof createReadStateStore>;

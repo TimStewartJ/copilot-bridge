@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { setupTestDb, createTestBus } from "./helpers.js";
@@ -928,5 +929,103 @@ describe("task-store", () => {
       expect(found!.id).toBe(task.id);
     });
 
+  });
+
+  describe("session links read by session and by page", () => {
+    const linkAt = (taskId: string, sessionId: string, linkedAt: string) =>
+      db.prepare("INSERT INTO task_sessions (taskId, sessionId, linkedAt) VALUES (?, ?, ?)").run(taskId, sessionId, linkedAt);
+    const setState = (sessionId: string, state: { archived?: boolean; visible?: string; attention?: string }) =>
+      db.prepare(`INSERT INTO bridge_session_state (sessionId, archived, lastVisibleActivityAt, lastAttentionAt, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, '2026-05-01T00:00:00.000Z', '2026-05-01T00:00:00.000Z')`)
+        .run(sessionId, state.archived ? 1 : 0, state.visible ?? null, state.attention ?? null);
+
+    it("lists the tasks of the given sessions in task-list order, with each task's folder", () => {
+      const second = store.createTask("Second");
+      const first = store.createTask("First");
+      store.updateTask(first.id, { cwd: "/work/first" });
+      store.reorderTasks([first.id, second.id]);
+      store.linkSession(second.id, "shared");
+      store.linkSession(first.id, "shared");
+      store.linkSession(second.id, "single");
+      store.linkSession(second.id, "not-asked-for");
+
+      const links = store.listTaskLinksBySession(["shared", "single", "unlinked"]);
+
+      expect([...links.keys()].sort()).toEqual(["shared", "single"]);
+      expect(links.get("shared")).toMatchObject([{ id: first.id, cwd: "/work/first" }, { id: second.id }]);
+      expect(links.get("single")!.map((task) => task.id)).toEqual([second.id]);
+      expect(store.listTaskLinksBySession([]).size).toBe(0);
+      expect([...store.listTaskLinksBySession().keys()].sort()).toEqual(["not-asked-for", "shared", "single"]);
+    });
+
+    it("lists tasks without their session links, otherwise equal to the task list", () => {
+      const task = store.createTask("With links");
+      store.linkSession(task.id, "session-1");
+      store.createTask("Without links");
+
+      const withoutSessions = store.listTasksWithoutSessions();
+
+      expect(withoutSessions.every((item) => !("sessionIds" in item))).toBe(true);
+      expect(withoutSessions).toEqual(store.listTasks().map(({ sessionIds: _sessionIds, ...rest }) => rest));
+    });
+
+    it("summarises each task's links: active ids in link order, counts, and a revision of every link", () => {
+      const task = store.createTask("Summarised");
+      const empty = store.createTask("No links");
+      linkAt(task.id, "b-first", "2026-05-01 10:00:00");
+      linkAt(task.id, "a-second", "2026-05-01 11:00:00");
+      linkAt(task.id, "archived", "2026-05-01 12:00:00");
+      linkAt(task.id, "no-state-row", "2026-05-01 13:00:00");
+      // Linked at the same moment and stored in the other order: the id decides.
+      linkAt(task.id, "tie-z", "2026-05-01 14:00:00");
+      linkAt(task.id, "tie-c", "2026-05-01 14:00:00");
+      setState("b-first", {});
+      setState("a-second", { visible: "2026-05-02T00:00:00.000Z" });
+      setState("archived", { archived: true });
+
+      const summary = store.listTaskSessionSummaries().get(task.id)!;
+
+      expect(summary).toMatchObject({
+        activeSessionIds: ["b-first", "a-second", "no-state-row", "tie-c", "tie-z"],
+        sessionCount: 6,
+        archivedSessionCount: 1,
+      });
+      expect(store.listTaskSessionSummaries().has(empty.id)).toBe(false);
+      expect(store.listTaskSessionSummaries(task.id).get(task.id)).toEqual(summary);
+      const revision = summary.sessionLinksRevision;
+      // The value browsers already hold: every linked id in link order, one per line, hashed.
+      expect(revision).toBe(createHash("sha1")
+        .update("b-first\na-second\narchived\nno-state-row\ntie-c\ntie-z\n").digest("hex").slice(0, 16));
+      setState("no-state-row", { archived: true });
+      expect(store.listTaskSessionSummaries().get(task.id)).toMatchObject({ archivedSessionCount: 2, sessionLinksRevision: revision });
+      store.unlinkSession(task.id, "archived");
+      expect(store.listTaskSessionSummaries().get(task.id)!.sessionLinksRevision).not.toBe(revision);
+    });
+
+    it("pages a task's archived sessions by latest activity, then by link time", () => {
+      const task = store.createTask("Archive");
+      const other = store.createTask("Other");
+      linkAt(task.id, "old-activity", "2026-05-01 10:00:00");
+      linkAt(task.id, "new-attention", "2026-05-01 10:00:01");
+      linkAt(task.id, "no-activity-linked-late", "2026-05-03 10:00:00");
+      linkAt(task.id, "no-activity-linked-early", "2026-04-01 10:00:00");
+      linkAt(task.id, "still-active", "2026-05-01 10:00:02");
+      linkAt(other.id, "elsewhere", "2026-05-01 10:00:03");
+      setState("old-activity", { archived: true, visible: "2026-05-02T08:00:00.000Z" });
+      setState("new-attention", { archived: true, visible: "2026-05-01T08:00:00.000Z", attention: "2026-05-04T08:00:00.000Z" });
+      setState("no-activity-linked-late", { archived: true });
+      setState("no-activity-linked-early", { archived: true });
+      setState("still-active", { visible: "2026-05-05T08:00:00.000Z" });
+      setState("elsewhere", { archived: true, visible: "2026-05-06T08:00:00.000Z" });
+
+      expect(store.listArchivedSessionIdsForTask(task.id, { limit: 3, offset: 0 })).toEqual({
+        sessionIds: ["new-attention", "no-activity-linked-late", "old-activity"],
+        total: 4,
+      });
+      expect(store.listArchivedSessionIdsForTask(task.id, { limit: 3, offset: 3 })).toEqual({
+        sessionIds: ["no-activity-linked-early"],
+        total: 4,
+      });
+    });
   });
 });

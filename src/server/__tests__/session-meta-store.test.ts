@@ -82,6 +82,29 @@ describe("session-meta-store", () => {
     expect(Object.keys(all)).toHaveLength(2);
   });
 
+  it("listMetaFor returns the sessions asked for, and tells an archived session from one with no row", () => {
+    store.setArchived("archived", true);
+    store.setLastVisibleActivityAt("active", "2026-05-07T21:00:00.000Z");
+    store.setArchived("other", true);
+
+    const meta = store.listMetaFor(["archived", "active", "no-row"]);
+
+    expect(Object.keys(meta).sort()).toEqual(["active", "archived"]);
+    expect(meta.archived).toMatchObject({ archived: true, archivedAt: expect.stringMatching(/^20/) });
+    expect(meta.active).toMatchObject({ archived: false, archivedAt: "", lastVisibleActivityAt: "2026-05-07T21:00:00.000Z" });
+    expect(meta["no-row"]).toBeUndefined();
+    expect(store.listMetaFor([])).toEqual({});
+  });
+
+  it("listArchivedSessionIds returns ids of archived sessions only", () => {
+    store.setArchived("archived", true);
+    store.setArchived("restored", true);
+    store.setArchived("restored", false);
+    store.setLastVisibleActivityAt("active", "2026-05-07T21:00:00.000Z");
+
+    expect(store.listArchivedSessionIds()).toEqual(["archived"]);
+  });
+
   it("omits title-only and workspace-only overlay rows from meta reads", () => {
     const bridgeSessionState = createBridgeSessionStateStore(db);
     bridgeSessionState.setTitleOverride("title-only", "Manual title");

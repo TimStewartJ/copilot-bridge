@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setupTestDb } from "../server/__tests__/helpers.js";
+import { sessionsOnDisk, setupTestDb } from "../server/__tests__/helpers.js";
 import { createDeferLoopStore } from "../server/defer-loop-store.js";
 import { createDeferredPromptStore } from "../server/deferred-prompt-store.js";
 import { createGlobalBus, type StatusEvent } from "../server/global-bus.js";
@@ -41,10 +41,10 @@ describe("schedule session retention", () => {
       schedule,
       sessionMetaStore,
       sessionManager: {
-        listSessionsFromDisk: async () => [
+        readSessionsFromDisk: sessionsOnDisk(async () => [
           { sessionId: "newer" },
           { sessionId: "older" },
-        ],
+        ]),
         isSessionBusy: () => false,
       } as any,
       globalBus: bus,
@@ -72,12 +72,12 @@ describe("schedule session retention", () => {
       schedule,
       sessionMetaStore,
       sessionManager: {
-        listSessionsFromDisk: async () => [
+        readSessionsFromDisk: sessionsOnDisk(async () => [
           { sessionId: "latest" },
           { sessionId: "busy" },
           { sessionId: "deferred" },
           { sessionId: "old" },
-        ],
+        ]),
         isSessionBusy: (sessionId: string) => sessionId === "busy",
       } as any,
       globalBus: bus,
@@ -111,7 +111,7 @@ describe("schedule session retention", () => {
       schedule,
       sessionMetaStore,
       sessionManager: {
-        listSessionsFromDisk: async () => [{ sessionId: "latest" }, { sessionId: "older" }, { sessionId: "oldest" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "latest" }, { sessionId: "older" }, { sessionId: "oldest" }]),
         isSessionBusy: () => false,
       } as any,
       globalBus: bus,
@@ -134,10 +134,10 @@ describe("schedule session retention", () => {
       schedule,
       sessionMetaStore,
       sessionManager: {
-        listSessionsFromDisk: async () => [
+        readSessionsFromDisk: sessionsOnDisk(async () => [
           { sessionId: "newer" },
           { sessionId: "older" },
-        ],
+        ]),
         isSessionBusy: () => false,
       } as any,
       globalBus: createGlobalBus(),

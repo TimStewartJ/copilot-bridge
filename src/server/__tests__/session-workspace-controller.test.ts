@@ -102,9 +102,7 @@ describe("SessionWorkspaceController createWorkspaceYamlCwdResolver", () => {
     const controller = createController({
       taskStore: { listTasks: () => [], findTaskBySessionId: () => undefined },
       sessionWorkspaceStore: {
-        listWorkspaces: () => ({
-          "session-a": { cwd: missingPinnedCwd, updatedAt: "2026-01-01T00:00:00.000Z" },
-        }),
+        getWorkspace: () => ({ cwd: missingPinnedCwd, updatedAt: "2026-01-01T00:00:00.000Z" }),
         deleteWorkspace,
       },
     });
@@ -133,9 +131,7 @@ describe("SessionWorkspaceController createWorkspaceYamlCwdResolver", () => {
     const controller = createController({
       taskStore: { listTasks: () => [task], findTaskBySessionId: () => task },
       sessionWorkspaceStore: {
-        listWorkspaces: () => ({
-          "session-a": { cwd: missingPinnedCwd, updatedAt: "2026-01-01T00:00:00.000Z" },
-        }),
+        getWorkspace: () => ({ cwd: missingPinnedCwd, updatedAt: "2026-01-01T00:00:00.000Z" }),
         deleteWorkspace,
       },
     });
