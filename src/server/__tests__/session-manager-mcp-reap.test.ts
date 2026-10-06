@@ -380,7 +380,195 @@ describe("SessionManager retirement fencing", () => {
     expect(session.disconnect).not.toHaveBeenCalled();
     expect(manager.cleanupOwnership.get(session)).toMatchObject({ phase: "quarantined" });
   });
+
+  describe("when the release deadline passes on a runtime that reported no failure", () => {
+    function gate<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((yes) => { resolve = yes; });
+      return { promise, resolve };
+    }
+
+    /** A cached session whose release stays open until `finish()`, already past the 5 s quarantine. */
+    async function stalledRelease(manager: any) {
+      const release = gate<void>();
+      const session = makeAgentSessionStub({ disconnect: vi.fn(() => release.promise) });
+      await manager.cacheResumedSession("stuck", session);
+      const cleanup = manager.evictAllCachedSessions();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await cleanup;
+      return { session, finish: () => release.resolve() };
+    }
+
+    it("fences one ping after the deadline when the runtime answers and the lease is still held", async () => {
+      const { manager } = createManager();
+      const { backend, next } = runtime(manager);
+      const diagnosticPing = vi.fn(async () => "responsive");
+      const probeHealth = vi.fn(async () => true);
+      Object.assign(backend, { diagnosticPing, probeHealth });
+      await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(54_999);
+      expect(diagnosticPing).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(diagnosticPing).toHaveBeenCalledOnce();
+      expect(probeHealth).not.toHaveBeenCalled();
+      expect(backend.fence).toHaveBeenCalledOnce();
+      expect(next.start).toHaveBeenCalledOnce();
+      expect(manager.getBackendStatus().lastDisconnect.reason).toBe("cleanup-stalled");
+    });
+
+    it("keeps a runtime whose release reply arrives once the Bridge has caught up", async () => {
+      const { manager } = createManager();
+      const { backend } = runtime(manager);
+      const caughtUp = gate<boolean>();
+      const diagnosticPing = vi.fn(async () => "timeout");
+      const probeHealth = vi.fn((_timeoutMs?: number, _reason?: string) => caughtUp.promise);
+      Object.assign(backend, { diagnosticPing, probeHealth });
+      const { session, finish } = await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(55_000);
+      expect(diagnosticPing).toHaveBeenCalledOnce();
+      expect(probeHealth).toHaveBeenCalledWith(undefined, expect.stringMatching(/^cleanup-stalled: session stuck, lease /));
+      expect(manager.cleanupOwnership.get(session)).toMatchObject({ phase: "quarantined" });
+
+      // The backlog drains: the reply the runtime sent long ago is handled, then the probe's pong.
+      finish();
+      await vi.advanceTimersByTimeAsync(0);
+      caughtUp.resolve(true);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(backend.fence).not.toHaveBeenCalled();
+      expect(diagnosticPing).toHaveBeenCalledOnce();
+      expect(manager.cleanupOwnership.size).toBe(0);
+      expect(manager.getSessionCacheState()).toMatchObject({ retainedParents: 0, failedCleanup: 0 });
+      expect(manager.getBackendUnavailableReason()).toBeUndefined();
+    });
+
+    it("gives a release whose later step waited on the Bridge one more budget, and only one", async () => {
+      const { manager } = createManager();
+      const { backend } = runtime(manager);
+      const diagnosticPing = vi.fn(async () => "timeout");
+      // Healthy at once, like a probe that was already in flight and is answered by an earlier ping.
+      const probeHealth = vi.fn(async () => true);
+      Object.assign(backend, { diagnosticPing, probeHealth });
+      await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(55_000);
+      // The pong proves nothing about a reply to a request sent after it, so nothing is fenced yet.
+      expect(diagnosticPing.mock.invocationCallOrder[0]).toBeLessThan(probeHealth.mock.invocationCallOrder[0]!);
+      expect(backend.fence).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(diagnosticPing).toHaveBeenCalledOnce();
+      expect(backend.fence).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      // Behind again at the second deadline: the wait is not extended a second time.
+      expect(diagnosticPing).toHaveBeenCalledTimes(2);
+      expect(probeHealth).toHaveBeenCalledTimes(2);
+      expect(backend.fence).toHaveBeenCalledOnce();
+      expect(manager.getBackendStatus().lastDisconnect.reason).toBe("cleanup-stalled");
+    });
+
+    it("keeps the runtime when the release completes inside the extra budget", async () => {
+      const { manager } = createManager();
+      const { backend } = runtime(manager);
+      const diagnosticPing = vi.fn(async () => "timeout");
+      Object.assign(backend, { diagnosticPing, probeHealth: vi.fn(async () => true) });
+      const { finish } = await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(55_000 + 30_000);
+      finish();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(backend.fence).not.toHaveBeenCalled();
+      expect(diagnosticPing).toHaveBeenCalledOnce();
+      expect(manager.cleanupOwnership.size).toBe(0);
+    });
+
+    it("fences after the extra budget when the runtime then answers and the lease is still held", async () => {
+      const { manager } = createManager();
+      const { backend } = runtime(manager);
+      const diagnosticPing = vi.fn().mockResolvedValueOnce("timeout").mockResolvedValue("responsive");
+      const probeHealth = vi.fn(async () => true);
+      Object.assign(backend, { diagnosticPing, probeHealth });
+      await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(55_000 + 59_999);
+      expect(backend.fence).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(backend.fence).toHaveBeenCalledOnce();
+      expect(probeHealth).toHaveBeenCalledOnce();
+    });
+
+    it.each(["rejected", "refused"] as const)("fences a %s release at the deadline without sending a ping", async (kind) => {
+      const { manager } = createManager();
+      const { backend } = runtime(manager);
+      const diagnosticPing = vi.fn(async () => "timeout");
+      const probeHealth = vi.fn(() => new Promise<boolean>(() => {}));
+      Object.assign(backend, { diagnosticPing, probeHealth });
+      const session = makeAgentSessionStub(kind === "rejected"
+        ? { disconnect: vi.fn().mockRejectedValue(new Error("detach failed")) }
+        : { release: vi.fn(async () => ({ status: "uncertain" as const })), disconnect: vi.fn() });
+      await manager.cacheResumedSession("stuck", session);
+      await manager.evictAllCachedSessions();
+      expect(manager.cleanupOwnership.get(session)).toMatchObject({ phase: "quarantined", failed: true });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(backend.fence).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(backend.fence).toHaveBeenCalledOnce();
+      expect(diagnosticPing).not.toHaveBeenCalled();
+      expect(probeHealth).not.toHaveBeenCalled();
+      expect(manager.getBackendStatus().lastDisconnect.reason).toBe("cleanup-stalled");
+    });
+
+    it("leaves the recovery to the probe when it declares the runtime lost", async () => {
+      const { manager, telemetryStore } = createManager({ telemetry: true });
+      let reportLoss!: (info: { at: string; reason: string; detail: string }) => void;
+      const backend = {
+        fence: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+        onDisconnect: vi.fn((handler: typeof reportLoss) => { reportLoss = handler; return () => {}; }),
+        diagnosticPing: vi.fn(async () => "timeout"),
+        probeHealth: vi.fn(async (_timeoutMs?: number, reason?: string) => {
+          reportLoss({ at: new Date().toISOString(), reason: "health-probe-failed", detail: `${reason}: 3 consecutive pings` });
+          return false;
+        }),
+      };
+      const next = { start: vi.fn(async () => {}), fence: vi.fn(async () => {}), stop: vi.fn(async () => {}) };
+      manager.backend = backend;
+      manager.attachBackendLifecycle(backend);
+      manager.deps.createBackend = vi.fn(() => next);
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(55_000);
+      expect(backend.fence).toHaveBeenCalledOnce();
+      expect(next.start).toHaveBeenCalledOnce();
+      expect(manager.cleanupOwnership.size).toBe(0);
+      expect(manager.getBackendStatus()).toMatchObject({
+        disconnectCount: 1,
+        lastDisconnect: { reason: "health-probe-failed", detail: expect.stringMatching(/^cleanup-stalled: session stuck, /) },
+      });
+      expect(telemetryStore!.querySpans({ name: "backend.disconnect" }).map((span) => span.metadata))
+        .toEqual([expect.objectContaining({ origin: "runtime", reason: "health-probe-failed" })]);
+      expect(error.mock.calls.flat().join("\n")).not.toContain("Cannot fence unowned runtime lease");
+    });
+
+    it("stands aside for a recovery that starts while it waits for the ping", async () => {
+      const { manager } = createManager();
+      let finishFence!: () => void;
+      const { backend, next } = runtime(manager, vi.fn(() => new Promise<void>((resolve) => { finishFence = resolve; })));
+      const ping = gate<string>();
+      Object.assign(backend, { diagnosticPing: vi.fn(() => ping.promise) });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { session } = await stalledRelease(manager);
+      await vi.advanceTimersByTimeAsync(55_000);
+      manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
+      await vi.advanceTimersByTimeAsync(0);
+      ping.resolve("responsive");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(manager.cleanupOwnership.get(session)).toMatchObject({ phase: "quarantined" });
+      expect(manager.getBackendStatus()).toMatchObject({ disconnectCount: 1, lastDisconnect: { reason: "connection-closed" } });
+      expect(error.mock.calls.flat().join("\n")).not.toContain("Cannot fence unowned runtime lease");
+      finishFence();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.fence).toHaveBeenCalledOnce();
+      expect(next.start).toHaveBeenCalledOnce();
+      expect(manager.cleanupOwnership.size).toBe(0);
+    });
+  });
 });
+
 
 describe("SessionManager bounded session lifecycle", () => {
   beforeEach(() => vi.restoreAllMocks());

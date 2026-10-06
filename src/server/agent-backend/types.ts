@@ -617,7 +617,7 @@ export interface AgentBackend {
   /** Current transport state for health reporting. */
   getConnectionStatus?(): AgentBackendConnectionStatus;
 
-  /** Observational ping only: never starts or recovers a backend, or declares it disconnected. */
+  /** Observational ping that settles within the ping limit: never starts or recovers a backend, or declares it disconnected. */
   diagnosticPing?(): Promise<"responsive" | "timeout" | "failed" | "skipped">;
 
   /**

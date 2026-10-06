@@ -96,13 +96,14 @@ describe("SessionManager reloadSession", () => {
     expect(JSON.stringify(record.mock.calls)).not.toContain("private");
   });
 
-  it("captures timeout before recovery at exactly 60s even if diagnostics fail or hang", async () => {
+  it("captures timeout before recovery at exactly 60s even if the checkpoint diagnostics fail or hang", async () => {
     vi.useFakeTimers();
     const manager = createManager();
     const gate = diagnosticGate<ReturnType<typeof makeAgentSessionStub>>();
     const ping = diagnosticGate<string>();
     const backend = {
-      diagnosticPing: vi.fn(() => ping.promise),
+      // The 30 s checkpoint's ping hangs; the one sent at the deadline is answered.
+      diagnosticPing: vi.fn().mockImplementationOnce(() => ping.promise).mockResolvedValue("responsive"),
       getConnectionStatus: () => { throw new Error("private snapshot detail"); },
     };
     manager.backend = backend;
@@ -116,6 +117,7 @@ describe("SessionManager reloadSession", () => {
     await vi.advanceTimersByTimeAsync(1);
     await rejected;
     expect(recover).toHaveBeenCalledOnce();
+    expect(backend.diagnosticPing).toHaveBeenCalledTimes(2);
     const index = record.mock.calls.findIndex(([, , , metadata]) =>
       typeof metadata === "object" && metadata !== null && "outcome" in metadata && metadata.outcome === "timeout");
     expect(index).toBeGreaterThanOrEqual(0);
@@ -436,6 +438,7 @@ describe("SessionManager reloadSession", () => {
     const backend = {
       resumeSession: vi.fn(() => new Promise<never>(() => {})),
       probeHealth: vi.fn().mockResolvedValue(true),
+      diagnosticPing: vi.fn().mockResolvedValue("responsive"),
     };
     const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
     manager.backend = backend;
@@ -450,6 +453,8 @@ describe("SessionManager reloadSession", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       await second;
       expect(backend.probeHealth).toHaveBeenCalledOnce();
+      // Each resume's 30 s checkpoint pings once; the third ping is the second timeout's own.
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(3);
       expect(handleBackendDisconnect).toHaveBeenCalledOnce();
       expect(handleBackendDisconnect).toHaveBeenCalledWith(backend, expect.objectContaining({
         detail: expect.stringContaining("session-stuck-2"),
@@ -465,6 +470,7 @@ describe("SessionManager reloadSession", () => {
     const backend = {
       resumeSession: vi.fn(() => new Promise<never>(() => {})),
       probeHealth: vi.fn().mockResolvedValue(true),
+      diagnosticPing: vi.fn().mockResolvedValue("responsive"),
     };
     const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
     manager.backend = backend;
@@ -475,7 +481,10 @@ describe("SessionManager reloadSession", () => {
       await rejection;
       await vi.advanceTimersByTimeAsync(59_999);
       expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      // Only the 30 s checkpoint has pinged so far; the watchdog sends its own.
+      expect(backend.diagnosticPing).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(1);
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(2);
       expect(handleBackendDisconnect).toHaveBeenCalledWith(backend, expect.objectContaining({
         reason: "rpc-timeout", detail: expect.stringContaining("never settled for session session-never"),
       }), expect.objectContaining({ sessionId: "session-never", operation: "resume" }));
@@ -602,43 +611,169 @@ describe("SessionManager reloadSession", () => {
     }
   });
 
-  it("keeps the barrier and recovers the backend when late cleanup cannot finish", async () => {
-    vi.useFakeTimers();
-    const manager = createManager();
-    const lateSession = makeAgentSessionStub({
-      disconnect: vi.fn(() => new Promise(() => {})),
-    });
-    let resolveResume!: (session: typeof lateSession) => void;
-    const backend = {
-      resumeSession: vi.fn(() => new Promise<typeof lateSession>((resolve) => {
-        resolveResume = resolve;
-      })),
-    };
-    const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
-    manager.backend = backend;
+  describe("when the Bridge was behind on the runtime's replies", () => {
+    /** A backend whose own ping goes unanswered until `caughtUp` resolves the probe. */
+    function behindBackend(resumeSession: ReturnType<typeof vi.fn>) {
+      const caughtUp = diagnosticGate<boolean>();
+      return {
+        caughtUp,
+        backend: {
+          resumeSession,
+          diagnosticPing: vi.fn().mockResolvedValue("timeout"),
+          probeHealth: vi.fn(() => caughtUp.promise),
+        },
+      };
+    }
 
-    try {
-      const firstReload = manager.reloadSession("session-cleanup-timeout");
-      const firstRejection = expect(firstReload).rejects.toThrow("reloadSession timed out after 60s");
+    it("still fails both requests at their timeout but keeps the runtime once both resumes settle", async () => {
+      vi.useFakeTimers();
+      const manager = createManager();
+      const late = [makeAgentSessionStub({ disconnect: vi.fn() }), makeAgentSessionStub({ disconnect: vi.fn() })];
+      const resumes: Array<(session: (typeof late)[number]) => void> = [];
+      const { backend, caughtUp } = behindBackend(vi.fn(() => new Promise((resolve) => { resumes.push(resolve); })));
+      const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+      manager.backend = backend;
+
+      const first = expect(manager.reloadSession("session-behind-1")).rejects.toThrow("timed out after 60s");
+      await vi.advanceTimersByTimeAsync(10_000);
+      const second = expect(manager.reloadSession("session-behind-2")).rejects.toThrow("timed out after 60s");
       await vi.advanceTimersByTimeAsync(60_000);
-      await firstRejection;
+      await Promise.all([first, second]);
+      // The second timeout sends its own ping (after one checkpoint ping per resume) instead of
+      // recycling on the Bridge's clock.
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(3);
+      expect(manager.settlingTimedOutSessionResumes.size).toBe(2);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+
+      // The backlog drains: both resume replies are handled, then the probe's pong.
+      resumes.forEach((resolve, index) => resolve(late[index]!));
+      await vi.advanceTimersByTimeAsync(0);
+      await manager._drainCacheQueue();
+      caughtUp.resolve(true);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      expect(manager.settlingTimedOutSessionResumes.size).toBe(0);
+      expect(late.map((session) => session.disconnect.mock.calls.length)).toEqual([1, 1]);
+      expect(manager.getBackendUnavailableReason()).toBeUndefined();
+    });
+
+    it("recovers after one more budget when the second resume is still stuck then", async () => {
+      vi.useFakeTimers();
+      const manager = createManager();
+      const { backend, caughtUp } = behindBackend(vi.fn(() => new Promise<never>(() => {})));
+      const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+      manager.backend = backend;
+
+      const first = expect(manager.reloadSession("session-wedged-1")).rejects.toThrow("timed out");
+      const second = expect(manager.reloadSession("session-wedged-2")).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.all([first, second]);
+      caughtUp.resolve(true);
+      backend.diagnosticPing.mockResolvedValue("responsive");
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handleBackendDisconnect).toHaveBeenCalledWith(backend, expect.objectContaining({
+        reason: "rpc-timeout", detail: expect.stringContaining("session resume exceeded 60s"),
+      }), expect.objectContaining({ operation: "resume" }));
+    });
+
+    it("does not let the watchdog recycle a runtime whose resume reply was only late", async () => {
+      vi.useFakeTimers();
+      const manager = createManager();
+      const lateSession = makeAgentSessionStub({ disconnect: vi.fn() });
+      let resolveResume!: (session: typeof lateSession) => void;
+      const { backend, caughtUp } = behindBackend(vi.fn(() => new Promise((resolve) => { resolveResume = resolve; })));
+      // The probe started by the request's own timeout is answered; only the watchdog's later ping is not.
+      backend.probeHealth.mockResolvedValueOnce(true);
+      const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+      manager.backend = backend;
+
+      const rejection = expect(manager.reloadSession("session-late")).rejects.toThrow("timed out after 60s");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await rejection;
+      // The 30 s checkpoint pinged once; the watchdog adds its own ping a minute after the timeout.
+      expect(backend.diagnosticPing).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(2);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
 
       resolveResume(lateSession);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(0);
+      await manager._drainCacheQueue();
+      caughtUp.resolve(true);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      expect(lateSession.disconnect).toHaveBeenCalledOnce();
+      expect(manager.settlingTimedOutSessionResumes.size).toBe(0);
+    });
+  });
 
-      expect(handleBackendDisconnect).toHaveBeenCalledWith(
-        backend,
-        expect.objectContaining({
-          reason: "rpc-timeout",
-          detail: expect.stringContaining("session-cleanup-timeout"),
-        }),
-        expect.objectContaining({ sessionId: "session-cleanup-timeout", operation: "resume" }),
-      );
-      await expect(manager.reloadSession("session-cleanup-timeout"))
-        .rejects.toThrow("reconnecting");
-    } finally {
-      vi.useRealTimers();
+  describe("when the session of a timed-out resume arrives late and cannot be released", () => {
+    /** Times one resume out on a runtime that answers, then delivers its session. */
+    async function deliverLateSession(manager: any, lateSession: ReturnType<typeof makeAgentSessionStub>) {
+      let resolveResume!: (session: typeof lateSession) => void;
+      const backend = {
+        resumeSession: vi.fn(() => new Promise<typeof lateSession>((resolve) => { resolveResume = resolve; })),
+        probeHealth: vi.fn().mockResolvedValue(true),
+        diagnosticPing: vi.fn().mockResolvedValue("responsive"),
+      };
+      const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
+      manager.backend = backend;
+      const rejection = expect(manager.reloadSession("session-late-cleanup")).rejects.toThrow("timed out after 60s");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await rejection;
+      resolveResume(lateSession);
+      await vi.advanceTimersByTimeAsync(10_000);
+      // The resume's 30 s checkpoint is the only ping so far.
+      return { backend, handleBackendDisconnect, checkpointPings: backend.diagnosticPing.mock.calls.length };
     }
+    const releaseTrigger = expect.objectContaining({ sessionId: "session-late-cleanup", operation: "release" });
+
+    it("leaves a release that hangs to the lease's own deadline and ping", async () => {
+      vi.useFakeTimers();
+      const manager = createManager();
+      const lateSession = makeAgentSessionStub({ disconnect: vi.fn(() => new Promise(() => {})) });
+      const { backend, handleBackendDisconnect, checkpointPings } = await deliverLateSession(manager, lateSession);
+
+      // Not released within 5 s: the lease is quarantined, which holds new work back, and nothing is recycled yet.
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      expect(manager.cleanupOwnership.get(lateSession)).toMatchObject({ phase: "quarantined" });
+      expect(manager.settlingTimedOutSessionResumes.size).toBe(0);
+      await expect(manager.reloadSession("session-late-cleanup")).rejects.toThrow("reconnecting");
+
+      await vi.advanceTimersByTimeAsync(49_999);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(checkpointPings);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(checkpointPings + 1);
+      expect(handleBackendDisconnect).toHaveBeenCalledOnce();
+      expect(handleBackendDisconnect).toHaveBeenCalledWith(
+        backend, expect.objectContaining({ reason: "cleanup-stalled" }), releaseTrigger,
+      );
+      expect(manager.cleanupOwnership.get(lateSession)).toMatchObject({ phase: "backend-recycling" });
+    });
+
+    it("recycles for a refused release at the lease's deadline, without a ping", async () => {
+      vi.useFakeTimers();
+      const manager = createManager();
+      const lateSession = makeAgentSessionStub({ disconnect: vi.fn().mockRejectedValue(new Error("detach refused")) });
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { backend, handleBackendDisconnect, checkpointPings } = await deliverLateSession(manager, lateSession);
+
+      expect(warning.mock.calls.flat().join("\n")).toContain("Timed-out session resume cleanup failed");
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      expect(manager.cleanupOwnership.get(lateSession)).toMatchObject({ phase: "quarantined", failed: true });
+
+      await vi.advanceTimersByTimeAsync(49_999);
+      expect(handleBackendDisconnect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(backend.diagnosticPing).toHaveBeenCalledTimes(checkpointPings);
+      expect(handleBackendDisconnect).toHaveBeenCalledOnce();
+      expect(handleBackendDisconnect).toHaveBeenCalledWith(
+        backend, expect.objectContaining({ reason: "cleanup-stalled" }), releaseTrigger,
+      );
+    });
   });
 
   it("does not cache a resume that resolves from a superseded backend", async () => {
