@@ -38,10 +38,19 @@ ${content}
 </user_message>`;
 }
 
+const LEADING_OPENING_TAGS = /^(?:\s*<[a-z][\w-]*>)+\s*/i;
+const TRAILING_CLOSING_TAGS = /(?:\s*<\/[a-z][\w-]*>)+\s*$/i;
+
+/** Removes closing tags left at the end of a title, as in "Fix Login Redirect</session-title>". */
+export function stripTrailingClosingTags(title: string): string {
+  return title.replace(TRAILING_CLOSING_TAGS, "");
+}
+
 export function extractGeneratedSessionTitle(rawOutput: unknown): string | undefined {
   if (typeof rawOutput !== "string") return undefined;
   const tagged = rawOutput.match(/<session-title>\s*([\s\S]*?)\s*<\/session-title>/i);
-  const rawTitle = (tagged?.[1] ?? rawOutput).trim();
+  // Some models answer with only one of the two tags, or close with a different tag.
+  const rawTitle = stripTrailingClosingTags((tagged?.[1] ?? rawOutput).replace(LEADING_OPENING_TAGS, "")).trim();
   const title = rawTitle.replace(/^["']+|["']+$/g, "").trim();
   if (title.length < 3 || title.length > 100) return undefined;
   return title;

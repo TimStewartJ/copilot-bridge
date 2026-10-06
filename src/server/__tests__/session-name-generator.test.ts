@@ -32,4 +32,15 @@ describe("session name generator helpers", () => {
     expect(extractGeneratedSessionTitle("<session-title>ok</session-title>")).toBeUndefined();
     expect(extractGeneratedSessionTitle("a".repeat(101))).toBeUndefined();
   });
+
+  it("drops a tag the model left without its partner", () => {
+    expect(extractGeneratedSessionTitle("Bridge-Side AI Agent Infrastructure</session-title>"))
+      .toBe("Bridge-Side AI Agent Infrastructure");
+    expect(extractGeneratedSessionTitle("Personal Finance Action Digest</final>\n")).toBe("Personal Finance Action Digest");
+    expect(extractGeneratedSessionTitle("<session-title>Fix Login Redirect")).toBe("Fix Login Redirect");
+    expect(extractGeneratedSessionTitle("<title>\"Fix Login Redirect\"</title>")).toBe("Fix Login Redirect");
+    expect(extractGeneratedSessionTitle("Compare a < b and b > a")).toBe("Compare a < b and b > a");
+    expect(extractGeneratedSessionTitle("Render <br> Inside Markdown")).toBe("Render <br> Inside Markdown");
+    expect(extractGeneratedSessionTitle("</session-title>")).toBeUndefined();
+  });
 });
