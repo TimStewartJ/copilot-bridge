@@ -1,3 +1,5 @@
+import { stripTrailingClosingTags } from "./session-name-generator.js";
+
 export function isSessionStatePathSegment(sessionId: string): boolean {
   return sessionId !== "." && sessionId !== ".." && !sessionId.includes("/") && !sessionId.includes("\\");
 }
@@ -81,12 +83,18 @@ export function parseWorkspaceYamlBoolean(content: string, key: string): boolean
   return undefined;
 }
 
+// Names generated before the title helper removed stray tags can still end in one.
+function parseSessionName(content: string): string | undefined {
+  const name = parseWorkspaceYamlScalar(content, "name");
+  return name === undefined ? undefined : stripTrailingClosingTags(name) || undefined;
+}
+
 export function parseWorkspaceYamlSessionName(content: string): string | undefined {
-  return parseWorkspaceYamlScalar(content, "name") ?? parseWorkspaceYamlScalar(content, "summary");
+  return parseSessionName(content) ?? parseWorkspaceYamlScalar(content, "summary");
 }
 
 export function parseWorkspaceYamlSessionNameMetadata(content: string): WorkspaceSessionNameMetadata {
-  const name = parseWorkspaceYamlScalar(content, "name");
+  const name = parseSessionName(content);
   const summary = parseWorkspaceYamlScalar(content, "summary");
   const userNamed = parseWorkspaceYamlBoolean(content, "user_named");
   return {

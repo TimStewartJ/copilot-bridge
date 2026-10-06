@@ -328,6 +328,20 @@ describe("session workspace yaml parsing", () => {
     expect(parseWorkspaceYamlSessionName("name: [unterminated\n")).toBeUndefined();
   });
 
+  it("hides a closing tag that an earlier title helper stored at the end of a name", () => {
+    const content = "name: Walmart Meat Delivery Storage Safety</session-title>\nsummary: Old summary\nuser_named: true\n";
+
+    expect(parseWorkspaceYamlSessionName(content)).toBe("Walmart Meat Delivery Storage Safety");
+    expect(parseWorkspaceYamlSessionNameMetadata(content)).toMatchObject({
+      name: "Walmart Meat Delivery Storage Safety",
+      effectiveName: "Walmart Meat Delivery Storage Safety",
+    });
+    expect(parseWorkspaceYamlSessionName("name: Personal Finance Action Digest</final>\n")).toBe("Personal Finance Action Digest");
+    expect(parseWorkspaceYamlSessionName("name: </session-title>\nsummary: First message\n")).toBe("First message");
+    expect(parseWorkspaceYamlSessionName("name: Why <div> Needs </div> Here\n")).toBe("Why <div> Needs </div> Here");
+    expect(parseWorkspaceYamlSessionName("summary: explain </div>\n")).toBe("explain </div>");
+  });
+
   it("reads session name metadata including explicit user naming", () => {
     const content = [
       "name: Manual title",
