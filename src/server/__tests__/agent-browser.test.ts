@@ -287,6 +287,16 @@ describe("agent-browser wrapper", () => {
         expected: { ok: false, output: "the daemon went away" },
       },
       {
+        name: "what any other command answered, without what agent-browser says about itself",
+        command: ["get", "attr", "@e1", "href"] as const,
+        reply: callbackSuccess(jsonResult({ origin: "https://example.com", value: "/next", lifecycle: { reused: true } })),
+        expected: {
+          ok: true,
+          output: "{\"origin\":\"https://example.com\",\"value\":\"/next\"}",
+          data: { origin: "https://example.com", value: "/next", lifecycle: { reused: true } },
+        },
+      },
+      {
         name: "the string an eval produced as it is",
         command: ["eval", "document.title"] as const,
         reply: callbackSuccess(jsonResult({ origin: "https://example.com", result: "Example \"Domain\"" })),

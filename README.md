@@ -720,6 +720,21 @@ The live view relays the stream that agent-browser (0.38 or newer) serves for a 
 
 The view has a browser's own controls: an address field, back, forward and reload, and a tab picker once more than one tab is open. A link or a sign-in popup that opens a new tab is followed, and the view returns to the page behind it when the popup closes. It shows pages only. What a browser draws outside the page (a prompt to save a password, a passkey or permission prompt, a file picker) does not appear in it. A view nobody has used for ten minutes closes and can be opened again.
 
+#### Steps, screenshots and files
+
+`browser_exec` and `browser_session_exec` run a list of steps, and a step is one `agent-browser` command: `{"command": "drag", "args": ["@e4", "@e1"]}`. Nearly every command is a step (hover, drag, mouse, tabs, `get attr`, `eval`, cookies, console and so on), so the Bridge does not need a change for an agent to use one. Two rules keep a step on the browser the Bridge chose for it (`src/server/browser-automation.ts`):
+
+- **The command must be on the step list.** Left out are the commands that would take the browser out of the Bridge's hands: `close`, `connect`, `session`, `stream`, `state`, `auth`, `batch` and their kind, along with the other names agent-browser accepts for them (`quit`, `goto`). A command that a later agent-browser adds is one line there.
+- **Only a step's own few options are passed on.** agent-browser reads its own options (`--session`, `--profile`, `--cdp` and some forty more) wherever they stand in a command, even where a typed value was meant: `fill @e1 --headed` types nothing. Any argument shaped like an option that the step does not list (`snapshot -i`, `drag --human`, `wait --text`) is therefore refused with a message that says so.
+
+Three steps involve a file, and the Bridge runs those itself. A file is an absolute path on the Bridge's machine, or a name alone for a file of the calling chat, such as one the user attached.
+
+- **`screenshot`** returns the picture to the model as a JPEG: the visible page, one element (`@e12`), or the whole page with `--full`; `--annotate` labels the elements with their refs. A file as last argument also keeps the picture. A picture over 3.5 MB or 7,900 px a side is refused, because the model's provider would reject it and with it every later request of the chat; a call takes at most six.
+- **`upload`** gives files to a page: `["@e12", "/path/to/photo.jpg"]`, where the ref is the file input or whatever opens the file chooser, such as a styled "Add photos" button. A browser draws its file chooser outside the page, where agent-browser cannot reach it, and a headed browser would leave a file window open on the server's screen. For the length of the step the Bridge therefore connects to the browser's DevTools address next to agent-browser, asks Chrome to hand over the choosers of the open tab and of the frames in it, has agent-browser click the element, and answers the chooser that opens (`src/server/browser-upload.ts`). The step fails without clicking when a file is missing, and without choosing anything when the click opened no chooser or the page takes one file and got several.
+- **`download`** clicks an element and saves what it downloads: `["@e5", "report.pdf"]`.
+
+Not covered: a page that only accepts dropped files, and a person using the live view still cannot pick a file from their own device.
+
 #### Signing in to sites
 
 Agents reach sites that need an account through the signed-in browser, one profile kept in `<COPILOT_HOME>/browser-profile`. To sign in there, use **Settings → Browser → Sign in to sites → Open**: it shows that browser in the live view, on whatever device the Bridge is open on, with nothing to set up on the server. Go to the site, sign in, close the view. While the view is open the browser is yours: an agent that asks for it is told that you have it, and gets it back as soon as you close the view (after 15 seconds if the connection just dropped).
