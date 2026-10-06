@@ -143,7 +143,6 @@ describe("persisted session discovery", () => {
     expect(afterGrace.body.sessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: "first" })]));
 
     writePersistedSession(copilotHome, "second", "Later SDK session", "hydrafusion");
-    ctx.sessionManager.invalidateSessionListCache("session:create");
     ctx.globalBus.emit({ type: "sessions:changed", sessionId: "second" });
 
     await vi.waitFor(async () => {

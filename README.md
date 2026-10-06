@@ -339,6 +339,55 @@ Changed cache-field names remain counts only. Event/agent IDs are bounded, model
 and agent names are hashed, and request snapshots are never recorded. API/provider
 call IDs are available on usage events, not cache-break events.
 
+### Session list
+
+`src/server/session-list.ts` owns the list behind `GET /api/sessions`, `/api/tasks/overview`,
+`/api/home` and Helm. It keeps two things apart:
+
+- **Rows that are built** hold what changes only structurally: which sessions exist, their
+  names, workspaces, plan file and log size. A build reads the CLI catalog (filtered in its
+  worker thread), the session folders, and one `workspace.yaml` and two stats per listed
+  session. The active list and the list that includes archived sessions are built and kept
+  separately. Rows are served until something a build reads is announced (a session created,
+  forked, deleted, renamed, restored from the archive, a workspace change, a task change) or
+  until they are 30 seconds old; old rows are still served at once and replaced by one build
+  in the background, which is how changes nobody announces (a new plan file, a growing log,
+  a session the CLI created by itself) show up. A session whose creation has answered with its
+  id but whose runtime has not finished has no folder yet; a build takes it from
+  `SessionManager.listPendingSessionCreationIds()` as a bare row, so it is listed as soon as it
+  is linked or running, and the creation's own announcement replaces or removes the row.
+- **Everything else is read per response**, by session id, for the rows in hand: run state,
+  questions, archived flag and time, activity and read times, task links, schedule name and
+  switch, deferred work, intent. Archiving, reading, linking or scheduling therefore needs no
+  build and shows in the very next response. A session that only now became worth listing is
+  shown at once without its file-backed details, and that response starts one background build
+  that adds them; a session builds leave without details does not ask again.
+
+At most one build per list runs at a time. Every announcement increments a counter; a build
+notes the counter before its first read, and a request is only served rows or a build whose
+note is at least the counter at the request's arrival. A burst of announcements during a build
+costs one more build, started when the running one ends, whoever is waiting. A request whose
+client has gone is not answered.
+
+No response and no build of the active list reads a whole table (`bridge_session_state`,
+`read_state`, `task_sessions`); stores offer keyed reads for that (`listMetaFor`,
+`getReadStateFor`, `listTaskLinksBySession`, `listWorkspacesFor`). This matters because the
+synchronous part of a list read blocks the server's main thread, and stretches many times over
+when the machine is busy. Only a list of more than 8,000 sessions, in practice the one that
+includes archived sessions, scans the tables, because that is then cheaper than a lookup per id. `GET /api/tasks/:id/archived-sessions` pages the task's archived links in SQLite and
+reads only the page's sessions. Anything else that asks about particular sessions (the defer
+runners, schedule retention, a schedule's run list) reads those sessions' folders with
+`SessionManager.readSessionsFromDisk` instead of listing all of them. The defer runners and
+schedule retention, which end or prune work for a session that is gone, pass `failOnReadError`:
+only a missing folder or file counts as gone, and any other read error leaves the work as it is.
+
+Spans: `session.enrichedList.cache` (one per list read: `hit`, `stale-served`, `coalesced`,
+`miss`), `session.enrichedList.build` (`stored`, or `discarded` when an announcement arrived
+during it), `session.enrichedList.invalidate` (reason and which lists), `session.cliCatalog.list`,
+`session.listFromDisk.enumerate`, `session.listFromDisk`, `session.workspaceNameOverlay`, and
+`http.request.operation` with operation `sessions.enrichedList` (the wait for rows) and
+`sessions.overlay` (the synchronous per-response work).
+
 ### Cross-Platform Test Rules
 
 - Use the shared helpers in `src/server/__tests__/test-paths.ts` for fake homes, normalized path assertions, and fake executable paths.
@@ -723,6 +772,7 @@ src/
 │   ├── index.ts                   # Express bootstrap
 │   ├── api-router.ts              # REST API surface
 │   ├── session-manager.ts         # Copilot SDK wrapper + tool registry
+│   ├── session-list.ts            # The session list: build, cache, invalidation, per-response overlay
 │   ├── db.ts                      # SQLite schema/bootstrap
 │   ├── task-store.ts              # Tasks, links, ordering
 │   ├── checklist-store.ts         # Task/global checklist items

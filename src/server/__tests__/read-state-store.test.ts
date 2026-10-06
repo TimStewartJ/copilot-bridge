@@ -41,4 +41,12 @@ describe("read-state-store", () => {
     const futureTime = new Date(Date.now() + 1000).toISOString();
     expect(store.isUnread("session-1", futureTime)).toBe(true);
   });
+
+  it("getReadStateFor reads only the sessions asked for", () => {
+    store.markRead("session-1", "2026-05-07T21:00:00.000Z");
+    store.markRead("session-2", "2026-05-07T22:00:00.000Z");
+
+    expect(store.getReadStateFor(["session-2", "never-read"])).toEqual({ "session-2": "2026-05-07T22:00:00.000Z" });
+    expect(store.getReadStateFor([])).toEqual({});
+  });
 });

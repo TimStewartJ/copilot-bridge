@@ -31,16 +31,27 @@ export interface CopilotCliCatalogSession {
   hostType?: string;
 }
 
+/**
+ * Narrows a catalog list in the worker. The catalog holds every session the CLI has indexed, and
+ * each row sent back is deserialised on the server's main thread, so a reader names the sessions
+ * it wants (`ids`) or already has ruled out (`excludeIds`) instead of filtering afterwards.
+ */
+export interface CliCatalogListFilter {
+  ids?: readonly string[];
+  excludeIds?: readonly string[];
+}
+
 export type CliCatalogReadRequest =
-  | { op: "list"; copilotHome: string }
-  | { op: "get" | "has"; copilotHome: string; sessionId: string };
+  | ({ op: "list"; copilotHome: string } & CliCatalogListFilter)
+  | { op: "get"; copilotHome: string; sessionId: string }
+  | { op: "has"; copilotHome: string; sessionId: string };
 
 export type CliSessionStoreRequest =
   | CliCatalogReadRequest
   | { op: "delete"; copilotHome: string; sessionId: string }
   | { op: "sweep"; copilotHome: string; idPrefix: string; cutoffTimestampMs: number };
 
-/** What a catalog read found. `sessions` is set on a "hit" of "list" (every row) and "get" (one row). */
+/** What a catalog read found. `sessions` is set on a "hit" of "list" (the rows asked for) and "get" (one row). */
 export interface CliCatalogRead {
   result: "missing" | "unsupported_schema" | "hit" | "miss";
   sessions?: CopilotCliCatalogSession[];
@@ -85,7 +96,13 @@ function readCatalog(request: CliCatalogReadRequest): CliCatalogRead {
       const row = db.prepare(`${select} WHERE id = ?`).get(request.sessionId);
       return row ? { result: "hit", sessions: [mapSessionRow(row)] } : { result: "miss" };
     }
-    const rows = db.prepare(`${select} ORDER BY COALESCE(updated_at, created_at, id) DESC`).all();
+    const filters = [
+      ...(request.ids ? [["IN", request.ids] as const] : []),
+      ...(request.excludeIds ? [["NOT IN", request.excludeIds] as const] : []),
+    ];
+    const where = filters.map(([operator]) => `id ${operator} (SELECT value FROM json_each(?))`).join(" AND ");
+    const rows = db.prepare(`${select}${where ? ` WHERE ${where}` : ""} ORDER BY COALESCE(updated_at, created_at, id) DESC`)
+      .all(...filters.map(([, ids]) => JSON.stringify(ids)));
     return { result: "hit", sessions: rows.map(mapSessionRow) };
   } finally {
     db.close();

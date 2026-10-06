@@ -91,10 +91,29 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     return hydrateStateRows(rows);
   }
 
-  /** Only rows with a pinned cwd; the session list reads this once per build. */
+  /** Only rows with a pinned cwd. */
   function listPinnedCwdStates(): BridgeSessionStateMap {
     const rows = db.prepare("SELECT * FROM bridge_session_state WHERE pinnedCwd IS NOT NULL").all() as any[];
     return hydrateStateRows(rows);
+  }
+
+  /**
+   * The rows of the given sessions. The table holds every session there has ever been, so a
+   * reader that knows which sessions it wants (a list response, a list build) asks for those.
+   */
+  function listStatesFor(sessionIds: readonly string[]): BridgeSessionStateMap {
+    if (sessionIds.length === 0) return {};
+    const rows = db.prepare(
+      "SELECT * FROM bridge_session_state WHERE sessionId IN (SELECT value FROM json_each(?))",
+    ).all(JSON.stringify(sessionIds)) as any[];
+    return hydrateStateRows(rows);
+  }
+
+  function listArchivedSessionIds(): string[] {
+    // One JSON value instead of a row object per id: nearly every session is archived.
+    const row = db.prepare("SELECT json_group_array(sessionId) AS ids FROM bridge_session_state WHERE archived = 1")
+      .get() as { ids: string };
+    return JSON.parse(row.ids) as string[];
   }
 
   function hydrateStateRows(rows: any[]): BridgeSessionStateMap {
@@ -459,6 +478,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
   return {
     getState,
     listStates,
+    listStatesFor,
+    listArchivedSessionIds,
     listPinnedCwdStates,
     setArchived,
     setTitleOverride,

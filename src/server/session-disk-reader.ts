@@ -60,8 +60,7 @@ const EVENT_LOG_STATS_CACHE_VERSION = 5;
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
 /** Backstop bound on retained cursor checkpoints when the log has very short turns. */
 const EVENT_LOG_TURN_CHECKPOINT_MAX = 2048;
-const SESSION_LIST_WORKSPACE_READ_CONCURRENCY = 32;
-const SESSION_LIST_EVENT_STAT_CONCURRENCY = 64;
+const SESSION_LIST_READ_CONCURRENCY = 32;
 
 /** Every event the transcript reads names its type, so any other line can be skipped unparsed. */
 const MESSAGE_RELEVANT_EVENT_MARKERS = [...TRANSCRIPT_EVENT_TYPES];
@@ -114,12 +113,6 @@ export class SessionMessageNotFoundError extends Error {
 
 function emptyReadResult(): ReadMessagesFromDiskResult {
   return { messages: [], total: 0, hasMore: false, coverage: {}, agents: [] };
-}
-
-interface WorkspaceSessionRead {
-  dirName: string;
-  yamlPath: string;
-  session: any;
 }
 
 interface EventLogStats {
@@ -907,25 +900,97 @@ export function getSessionHistoryCoverage(events: readonly unknown[]): SessionHi
 }
 
 /**
- * Fast session listing - reads workspace.yaml from disk instead of SDK RPC.
- * Async to avoid blocking the event loop during filesystem I/O.
+ * One session as its folder describes it, or undefined when the folder has no readable workspace.yaml.
+ * With `failOnReadError`, undefined only says the folder or the file is not there; anything else
+ * that stops the read is thrown, for a caller that would act on a session being gone.
+ */
+async function readSessionFromDisk(
+  deps: SessionDiskReaderDeps,
+  sessionStateDir: string,
+  sessionId: string,
+  failOnReadError = false,
+): Promise<any | undefined> {
+  const yamlPath = join(sessionStateDir, sessionId, "workspace.yaml");
+  const session: any = { sessionId };
+  let content: string | undefined;
+  try {
+    content = await readFile(yamlPath, "utf-8");
+    const effectiveCwd = await deps.resolveEffectiveSessionCwdFromWorkspaceYaml(sessionId, content);
+    for (const line of content.split(/\r?\n/)) {
+      if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
+    }
+    const name = parseWorkspaceYamlSessionName(content);
+    if (name) session.summary = name;
+    if (effectiveCwd) session.context = { cwd: effectiveCwd };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    const absent = content === undefined && (code === "ENOENT" || code === "ENOTDIR");
+    if (failOnReadError && !absent) throw error;
+    return undefined;
+  }
+  try {
+    const st = await stat(join(sessionStateDir, sessionId, "events.jsonl"));
+    session.eventLogSizeBytes = st.size;
+    session.lastVisibleActivityAt = deps.sessionMetaStore?.getMeta(sessionId)?.lastVisibleActivityAt;
+    session.modifiedTime = session.lastVisibleActivityAt ?? session.startTime ?? st.mtime.toISOString();
+  } catch {
+    session.eventLogSizeBytes = 0;
+    try {
+      const st = await stat(yamlPath);
+      session.modifiedTime = session.startTime ?? st.mtime.toISOString();
+    } catch {
+      // Leave modifiedTime unset if both files disappear during the read.
+    }
+  }
+  session.intentText = deps.eventBusRegistry.getBus(sessionId)?.getIntentText() ?? null;
+  return session;
+}
+
+export interface SessionsFromDiskOptions {
+  includeArchived?: boolean;
+  failOnReadError?: boolean;
+}
+
+/**
+ * The given sessions, read from their own folders: the ones that still have one, in the order
+ * asked for. A caller that knows which sessions it means uses this instead of listing every folder.
+ * A caller that ends or prunes something for a session that is left out passes `failOnReadError`,
+ * so a folder it could not read this time is not taken for one that is gone.
+ */
+export async function readSessionsFromDisk(
+  deps: SessionDiskReaderDeps,
+  sessionIds: readonly string[],
+  options: SessionsFromDiskOptions = {},
+): Promise<any[]> {
+  const sessionStateDir = join(deps.copilotHome ?? join(homedir(), ".copilot"), "session-state");
+  const wanted = options.includeArchived ?? true
+    ? sessionIds
+    : sessionIds.filter((sessionId) => !deps.sessionMetaStore?.isArchived(sessionId));
+  const sessions = await mapWithConcurrency(wanted, SESSION_LIST_READ_CONCURRENCY, (sessionId) =>
+    readSessionFromDisk(deps, sessionStateDir, sessionId, options.failOnReadError));
+  return sessions.filter((session) => session !== undefined);
+}
+
+/**
+ * Session listing from the session-state folders - reads workspace.yaml instead of SDK RPC.
+ * `skip` names the sessions the caller already has or has ruled out; without it, archived
+ * sessions are ruled out here unless `includeArchived`. Only the remaining folders are read.
  */
 export async function listSessionsFromDisk(
   deps: SessionDiskReaderDeps,
-  options: { includeArchived?: boolean } = {},
+  options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {},
 ): Promise<any[]> {
   const t0 = Date.now();
   const copilotHome = deps.copilotHome ?? join(homedir(), ".copilot");
   const sessionStateDir = join(copilotHome, "session-state");
   const includeArchived = options.includeArchived ?? true;
 
-  const tEnumerate = Date.now();
   let entries: any[];
   try {
     entries = await readdir(sessionStateDir, { withFileTypes: true });
   } catch (error) {
     if (!isFileNotFoundError(error)) throw error;
-    deps.recordSpan("session.listFromDisk.enumerate", Date.now() - tEnumerate, undefined, {
+    deps.recordSpan("session.listFromDisk.enumerate", Date.now() - t0, undefined, {
       dirCount: 0,
       includeArchived,
       missing: true,
@@ -933,88 +998,29 @@ export async function listSessionsFromDisk(
     deps.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: 0, includeArchived });
     return [];
   }
-  const dirs = entries
-    .filter((d: any) => d.isDirectory())
-    .map((d: any) => d.name);
-  deps.recordSpan("session.listFromDisk.enumerate", Date.now() - tEnumerate, undefined, {
-    dirCount: dirs.length,
-    includeArchived,
-  });
+  const skip = options.skip
+    ?? new Set(includeArchived ? [] : deps.sessionMetaStore?.listArchivedSessionIds() ?? []);
+  const dirs: string[] = [];
+  let dirCount = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    dirCount += 1;
+    if (!skip.has(entry.name)) dirs.push(entry.name);
+  }
+  deps.recordSpan("session.listFromDisk.enumerate", Date.now() - t0, undefined, { dirCount, includeArchived });
 
-  const meta = deps.sessionMetaStore?.listMeta() ?? {};
-  const tWorkspace = Date.now();
-  let skippedArchived = 0;
-  let missingWorkspace = 0;
-  const workspaceReads = await mapWithConcurrency(dirs, SESSION_LIST_WORKSPACE_READ_CONCURRENCY, async (dirName): Promise<WorkspaceSessionRead | null> => {
-    const sessionMeta = meta[dirName];
-    if (!includeArchived && sessionMeta?.archived) {
-      skippedArchived += 1;
-      return null;
-    }
-
-    const yamlPath = join(sessionStateDir, dirName, "workspace.yaml");
-    try {
-      const content = await readFile(yamlPath, "utf-8");
-      const session: any = { sessionId: dirName };
-      const effectiveCwd = await deps.resolveEffectiveSessionCwdFromWorkspaceYaml(dirName, content);
-
-      for (const line of content.split(/\r?\n/)) {
-        if (line.startsWith("created_at:")) session.startTime = line.slice(12).trim();
-      }
-      const name = parseWorkspaceYamlSessionName(content);
-      if (name) session.summary = name;
-      if (effectiveCwd) session.context = { cwd: effectiveCwd };
-      return { dirName, yamlPath, session };
-    } catch {
-      missingWorkspace += 1;
-      return null;
-    }
-  });
-  const readableWorkspaceSessions = workspaceReads.filter((s): s is WorkspaceSessionRead => s !== null);
-  deps.recordSpan("session.listFromDisk.workspace", Date.now() - tWorkspace, undefined, {
-    dirCount: dirs.length,
-    readCount: readableWorkspaceSessions.length,
-    skippedArchived,
-    missingWorkspace,
-    includeArchived,
-    concurrency: SESSION_LIST_WORKSPACE_READ_CONCURRENCY,
-  });
-
-  const tEventsStat = Date.now();
-  const sessions = await mapWithConcurrency(readableWorkspaceSessions, SESSION_LIST_EVENT_STAT_CONCURRENCY, async ({ dirName, yamlPath, session }) => {
-    const sessionMeta = meta[dirName];
-    const eventsPath = join(sessionStateDir, dirName, "events.jsonl");
-    try {
-      const st = await stat(eventsPath);
-      session.eventLogSizeBytes = st.size;
-      session.lastVisibleActivityAt = sessionMeta?.lastVisibleActivityAt;
-      session.modifiedTime = session.lastVisibleActivityAt ?? session.startTime ?? st.mtime.toISOString();
-    } catch {
-      session.eventLogSizeBytes = 0;
-      try {
-        const st = await stat(yamlPath);
-        session.modifiedTime = session.startTime ?? st.mtime.toISOString();
-      } catch {
-        // Leave modifiedTime unset if both files disappear during the scan.
-      }
-    }
-    session.intentText = deps.eventBusRegistry.getBus(dirName)?.getIntentText() ?? null;
-    return session;
-  });
-  deps.recordSpan("session.listFromDisk.eventsStat", Date.now() - tEventsStat, undefined, {
-    count: sessions.length,
-    includeArchived,
-    concurrency: SESSION_LIST_EVENT_STAT_CONCURRENCY,
-  });
-
-  const tSort = Date.now();
+  const read = await mapWithConcurrency(dirs, SESSION_LIST_READ_CONCURRENCY, (dirName) =>
+    readSessionFromDisk(deps, sessionStateDir, dirName));
+  const sessions = read.filter((session) => session !== undefined);
   sessions.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
-  deps.recordSpan("session.listFromDisk.sort", Date.now() - tSort, undefined, {
+
+  deps.recordSpan("session.listFromDisk", Date.now() - t0, undefined, {
     count: sessions.length,
     includeArchived,
+    dirCount,
+    skipped: dirCount - dirs.length,
+    missingWorkspace: dirs.length - sessions.length,
   });
-
-  deps.recordSpan("session.listFromDisk", Date.now() - t0, undefined, { count: sessions.length, includeArchived });
   return sessions;
 }
 

@@ -1,13 +1,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readCliSessionCatalog } from "./cli-session-store.js";
-import type { CliCatalogRead, CliCatalogReadRequest, CopilotCliCatalogSession } from "./cli-session-store-worker.js";
+import type { CliCatalogListFilter, CliCatalogRead, CliCatalogReadRequest, CopilotCliCatalogSession } from "./cli-session-store-worker.js";
 
 export type { CopilotCliCatalogSession } from "./cli-session-store-worker.js";
 
 /** Read access to the sessions the Copilot CLI has indexed. `undefined` means the catalog could not be read. */
 export interface CopilotCliSessionCatalog {
-  listSessions(): Promise<CopilotCliCatalogSession[] | undefined>;
+  listSessions(filter?: CliCatalogListFilter): Promise<CopilotCliCatalogSession[] | undefined>;
   getSession(sessionId: string): Promise<CopilotCliCatalogSession | undefined>;
   hasSession(sessionId: string): Promise<boolean | undefined>;
 }
@@ -33,7 +33,7 @@ export function createCopilotCliSessionCatalog(deps: {
   }
 
   return {
-    listSessions: async () => (await read({ op: "list", copilotHome }))?.sessions,
+    listSessions: async (filter) => (await read({ op: "list", copilotHome, ...filter }))?.sessions,
     getSession: async (sessionId) => (await read({ op: "get", copilotHome, sessionId }))?.sessions?.[0],
     hasSession: async (sessionId) => {
       const result = (await read({ op: "has", copilotHome, sessionId }))?.result;

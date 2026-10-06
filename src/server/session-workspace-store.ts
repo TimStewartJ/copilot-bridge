@@ -35,8 +35,7 @@ export function createSessionWorkspaceStore(db: DatabaseSync) {
     bridgeSessionStateStore.clearPinnedCwd(sessionId);
   }
 
-  function listWorkspaces(): SessionWorkspaceMap {
-    const states = bridgeSessionStateStore.listPinnedCwdStates();
+  function toWorkspaceMap(states: ReturnType<typeof bridgeSessionStateStore.listStatesFor>): SessionWorkspaceMap {
     const result: SessionWorkspaceMap = {};
     for (const state of Object.values(states)) {
       if (state.pinnedCwd) {
@@ -46,11 +45,20 @@ export function createSessionWorkspaceStore(db: DatabaseSync) {
     return result;
   }
 
+  function listWorkspaces(): SessionWorkspaceMap {
+    return toWorkspaceMap(bridgeSessionStateStore.listPinnedCwdStates());
+  }
+
+  function listWorkspacesFor(sessionIds: readonly string[]): SessionWorkspaceMap {
+    return toWorkspaceMap(bridgeSessionStateStore.listStatesFor(sessionIds));
+  }
+
   return {
     getWorkspace,
     setWorkspace,
     deleteWorkspace,
     listWorkspaces,
+    listWorkspacesFor,
   };
 }
 

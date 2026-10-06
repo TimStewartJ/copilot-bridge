@@ -98,7 +98,7 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
-    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
+    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
     expect(res.body.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         sessionId: "cli-sized-session",
@@ -162,7 +162,7 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
-    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith({ includeArchived: false });
+    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
     expect(res.body.sessions).toEqual([
       expect.objectContaining({
         sessionId: "cli-named-session",
@@ -251,19 +251,8 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
-  it("task changes do not clear the raw disk session list cache", async () => {
+  it("an archived chat leaves the list at once, and the archived list shows it with its archive time", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.invalidateSessionListCache = vi.fn();
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    ctx.taskStore.createTask("Task cache metadata update");
-
-    expect(sessionManager.invalidateSessionListCache).not.toHaveBeenCalled();
-  });
-
-  it("session archive events clear the raw disk session list cache synchronously", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.invalidateSessionListCache = vi.fn();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "archive-me",
@@ -277,13 +266,16 @@ describe("Session routes (mocked)", () => {
     const before = await request(app).get("/api/sessions");
     const patch = await request(app).patch("/api/sessions/archive-me").send({ archived: true });
     const after = await request(app).get("/api/sessions");
+    const archivedList = await request(app).get("/api/sessions?includeArchived=true");
 
     expect(before.status).toBe(200);
-    expect(before.body.sessions).toEqual([expect.objectContaining({ sessionId: "archive-me" })]);
+    expect(before.body.sessions).toEqual([expect.objectContaining({ sessionId: "archive-me", archivedAt: null })]);
     expect(patch.status).toBe(200);
     expect(after.status).toBe(200);
     expect(after.body.sessions).toEqual([]);
-    expect(sessionManager.invalidateSessionListCache).toHaveBeenCalledWith("bus:session:archived");
+    expect(archivedList.body.sessions).toEqual([
+      expect.objectContaining({ sessionId: "archive-me", archived: true, archivedAt: expect.stringMatching(/^20/) }),
+    ]);
   });
 
   it("GET /api/sessions includes a backgroundAgents summary on each row", async () => {
