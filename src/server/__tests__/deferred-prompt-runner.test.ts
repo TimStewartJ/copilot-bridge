@@ -1,6 +1,6 @@
 import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeTestDir, setupTestDb } from "./helpers.js";
+import { makeTestDir, sessionsOnDisk, setupTestDb } from "./helpers.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import { managementJobDeliveryId } from "../management-job-delivery.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
@@ -63,10 +63,10 @@ function makeMockSessionManager(overrides: Partial<{
       },
       release: () => {},
     }),
-    listSessionsFromDisk: async (options: { includeArchived?: boolean } = {}) =>
+    readSessionsFromDisk: sessionsOnDisk(async (options: { includeArchived?: boolean } = {}) =>
       sessions
         .filter((s) => options.includeArchived !== false || !archivedSessions.has(s))
-        .map((s) => ({ sessionId: s })),
+        .map((s) => ({ sessionId: s }))),
     isSessionBusy: (sid: string) => busySessions.has(sid),
     hasPersistedUserMessage: vi.fn(async () => persistedUserMessage),
     startWork: (sessionId: string, prompt: string) => {
@@ -541,7 +541,7 @@ describe("deferred-prompt-runner", () => {
       let resolveDelivery: (() => void) | undefined;
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
           started.push({ sessionId, prompt });
@@ -575,7 +575,7 @@ describe("deferred-prompt-runner", () => {
       let resolveFirst: (() => void) | undefined;
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }, { sessionId: "session-2" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }, { sessionId: "session-2" }]),
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
           started.push({ sessionId, prompt });
@@ -614,7 +614,7 @@ describe("deferred-prompt-runner", () => {
       let resolveDelivery: (() => void) | undefined;
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
           started.push({ sessionId, prompt });
@@ -681,7 +681,7 @@ describe("deferred-prompt-runner", () => {
       let resolveOther: (() => void) | undefined;
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "busy-session" }, { sessionId: "other-session" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "busy-session" }, { sessionId: "other-session" }]),
         isSessionBusy: (sessionId: string) => busySessions.has(sessionId),
         startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
           started.push({ sessionId, prompt });
@@ -892,7 +892,7 @@ describe("deferred-prompt-runner", () => {
       let refused = false;
       const delivered: string[] = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
         isSessionBusy: () => false,
         hasPersistedUserMessage: async () => false,
         getSessionCapacityWait: vi.fn(() => (full ? FULL : undefined)),
@@ -1034,7 +1034,7 @@ describe("deferred-prompt-runner", () => {
       let restartPending = true;
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: async (sessionId: string, prompt: string) => {
           if (restartPending) throw new Error(BRIDGE_RESTARTING_MESSAGE);
@@ -1431,7 +1431,7 @@ describe("deferred-prompt-runner", () => {
         let resolveSecond: (() => void) | undefined;
         const started: Array<{ sessionId: string; prompt: string }> = [];
         const sm = {
-          listSessionsFromDisk: async () => [{ sessionId: "session-1" }, { sessionId: "session-2" }],
+          readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }, { sessionId: "session-2" }]),
           isSessionBusy: () => false,
           startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
             started.push({ sessionId, prompt });
@@ -1610,7 +1610,7 @@ describe("deferred-prompt-runner", () => {
       let resolveFirst: (() => void) | undefined;
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
           started.push({ sessionId, prompt });
@@ -1649,7 +1649,7 @@ describe("deferred-prompt-runner", () => {
       db.exec(`UPDATE deferred_prompts SET attempts = ${MAX_ATTEMPTS - 1} WHERE id = '${first.id}'`);
       const started: Array<{ sessionId: string; prompt: string }> = [];
       const sm = {
-        listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
         isSessionBusy: () => false,
         startWorkAndWaitForDelivery: async (sessionId: string, prompt: string) => {
           started.push({ sessionId, prompt });

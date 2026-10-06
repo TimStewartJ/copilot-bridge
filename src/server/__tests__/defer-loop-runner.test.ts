@@ -1,6 +1,6 @@
 import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setupTestDb } from "./helpers.js";
+import { sessionsOnDisk, setupTestDb } from "./helpers.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import { parseDeferId } from "../defer-ids.js";
 import { createDeferLoopRunner, FAILING_LOOP_NOTICE_AFTER } from "../defer-loop-runner.js";
@@ -44,8 +44,8 @@ function makeMockSessionManager(overrides: Partial<{
       },
       release: () => {},
     }),
-    listSessionsFromDisk: async (options: { includeArchived?: boolean } = {}) =>
-      sessions.map((s) => ({ sessionId: s, archived: false, ...options })),
+    readSessionsFromDisk: sessionsOnDisk(async (options: { includeArchived?: boolean } = {}) =>
+      sessions.map((s) => ({ sessionId: s, archived: false, ...options }))),
     isSessionBusy: (sid: string) => busySessions.has(sid),
     startWorkAndWaitForDelivery: async (sessionId: string, prompt: string, _attachments?: unknown, options?: unknown) => {
       if (startWorkError) throw startWorkError;
@@ -1096,7 +1096,7 @@ describe("defer-loop-runner", () => {
     let releaseDelivery: (() => void) | undefined;
     const started: Array<{ sessionId: string; prompt: string }> = [];
     const sm = {
-      listSessionsFromDisk: async () => [{ sessionId: "session-1" }],
+      readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
       isSessionBusy: () => false,
       startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
         started.push({ sessionId, prompt });

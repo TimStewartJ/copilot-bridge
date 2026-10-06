@@ -246,6 +246,12 @@ Reply with ONLY the title text for a stale helper',
         hostType: "github",
       },
     ]);
+    // Narrowed in the worker, so rows nobody uses never cross to the main thread.
+    expect((await catalog.listSessions({ excludeIds: ["session-1", "not-in-the-catalog"] }))?.map((session) => session.sessionId))
+      .toEqual(["legacy-title-helper", "b17e1000-0000-4000-8000-000000000001"]);
+    expect((await catalog.listSessions({ ids: ["session-1", "not-in-the-catalog"] }))?.map((session) => session.sessionId))
+      .toEqual(["session-1"]);
+    expect(await catalog.listSessions({ ids: [] })).toEqual([]);
   });
 });
 

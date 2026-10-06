@@ -463,7 +463,6 @@ export interface SessionRunnerDeps {
   ): void;
   recordSessionAttention(sessionId: string, at?: string): void;
   touchSessionActivity?(sessionId: string, at: number): void;
-  invalidateSessionListCache(reason?: string): void;
   /** Switches the live session to the effort a turn asked for. Best effort; never fails the turn. */
   applyTurnReasoningEffort?(sessionId: string, session: AgentSession, reasoningEffort: string): Promise<void>;
   maybeAutoNameSession(

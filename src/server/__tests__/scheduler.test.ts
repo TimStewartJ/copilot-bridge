@@ -10,6 +10,7 @@ import {
   validateSupportedCronExpression,
 } from "../scheduler.js";
 import { createTestApp } from "./test-app.js";
+import { sessionsOnDisk } from "./helpers.js";
 import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {
@@ -399,10 +400,10 @@ describe("scheduler restart gating", () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
-      listSessionsFromDisk: vi.fn().mockResolvedValue([
+      readSessionsFromDisk: sessionsOnDisk(vi.fn().mockResolvedValue([
         { sessionId: "old-session", summary: "Old run" },
         { sessionId: "new-session", summary: "New run" },
-      ]),
+      ])),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
       startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -439,11 +440,11 @@ describe("scheduler restart gating", () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn((id: string) => id === "busy-old"),
-      listSessionsFromDisk: vi.fn().mockResolvedValue([
+      readSessionsFromDisk: sessionsOnDisk(vi.fn().mockResolvedValue([
         { sessionId: "new-session" },
         { sessionId: "busy-old" },
         { sessionId: "archivable-old" },
-      ]),
+      ])),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
       startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -487,7 +488,7 @@ describe("scheduler restart gating", () => {
     const { ctx } = createTestApp();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
-      listSessionsFromDisk: vi.fn().mockResolvedValue([]),
+      readSessionsFromDisk: sessionsOnDisk(vi.fn().mockResolvedValue([])),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
       startWorkAndWaitForDelivery: vi.fn(),
       deleteSession: vi.fn().mockResolvedValue(undefined),

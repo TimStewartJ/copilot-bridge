@@ -190,8 +190,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
     return result.changes ?? 0;
   }
 
-  function listMeta(): MetaMap {
-    const states = bridgeSessionStateStore.listStates();
+  function toMetaMap(states: Record<string, BridgeSessionState>): MetaMap {
     const result: MetaMap = {};
     for (const state of Object.values(states)) {
       if (hasMetaFields(state)) {
@@ -199,6 +198,15 @@ export function createSessionMetaStore(db: DatabaseSync) {
       }
     }
     return result;
+  }
+
+  /** Every session's meta. Reads the whole table: for maintenance, and for a list too long to read by id. */
+  function listMeta(): MetaMap {
+    return toMetaMap(bridgeSessionStateStore.listStates());
+  }
+
+  function listMetaFor(sessionIds: readonly string[]): MetaMap {
+    return toMetaMap(bridgeSessionStateStore.listStatesFor(sessionIds));
   }
 
   function listScheduleRuns(scheduleId: string): ScheduleRunRecord[] {
@@ -238,6 +246,8 @@ export function createSessionMetaStore(db: DatabaseSync) {
     recordScheduleRun,
     pruneScheduleRuns,
     listMeta,
+    listMetaFor,
+    listArchivedSessionIds: bridgeSessionStateStore.listArchivedSessionIds,
     listScheduleRuns,
     listSessionIdsBySchedule,
   };

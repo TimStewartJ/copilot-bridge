@@ -135,29 +135,18 @@ export class SessionWorkspaceController {
       ?? ensureNeutralWorkspaceDir(this.deps.runtimePaths);
   }
 
+  /**
+   * Async variant of resolveEffectiveSessionCwdFromWorkspaceYaml for reads of several sessions:
+   * one shared availability lookup, and only keyed store reads for each session.
+   */
   createWorkspaceYamlCwdResolver(): (sessionId: string, workspaceYamlContent: string) => Promise<string | undefined> {
     const getAvailability = createWorkspaceAvailabilityLookup();
-    const pinnedWorkspaces = this.deps.sessionWorkspaceStore?.listWorkspaces?.() ?? {};
-    const taskCwdBySessionId = new Map<string, string | undefined>();
-    const multiTaskSessionIds = new Set<string>();
-    const listedTasks = this.deps.taskStore.listTasks?.() ?? [];
-    for (const task of listedTasks) {
-      for (const sessionId of task.sessionIds) {
-        if (multiTaskSessionIds.has(sessionId)) continue;
-        if (taskCwdBySessionId.has(sessionId)) {
-          taskCwdBySessionId.delete(sessionId);
-          multiTaskSessionIds.add(sessionId);
-          continue;
-        }
-        taskCwdBySessionId.set(sessionId, task.cwd);
-      }
-    }
     // Display-only: the neutral workspace counts as available without recreating it here.
     const getListAvailability: typeof getAvailability = async (cwd) => this.isNeutralWorkspaceCwd(cwd ?? undefined)
       ? { cwd: cwd!.trim(), available: true, clearStalePin: false }
       : await getAvailability(cwd);
     return async (sessionId, workspaceYamlContent) => {
-      const pinnedCwd = pinnedWorkspaces[sessionId]?.cwd;
+      const pinnedCwd = this.deps.sessionWorkspaceStore?.getWorkspace(sessionId)?.cwd;
       const pinnedAvailability = await getListAvailability(pinnedCwd);
       if (pinnedAvailability?.available) return pinnedAvailability.cwd;
 
@@ -171,11 +160,12 @@ export class SessionWorkspaceController {
         );
       }
 
-      const linkedTaskCwd = multiTaskSessionIds.has(sessionId)
-        ? undefined
-        : (taskCwdBySessionId.has(sessionId)
-            ? taskCwdBySessionId.get(sessionId)
-            : this.deps.taskStore.findTaskBySessionId?.(sessionId)?.cwd);
+      // A session linked to several tasks has no single task workspace.
+      const links = this.deps.taskStore.listTaskLinksBySession?.([sessionId]);
+      const linked = links?.get(sessionId) ?? [];
+      const linkedTaskCwd = links
+        ? (linked.length === 1 ? linked[0]!.cwd : undefined)
+        : this.deps.taskStore.findTaskBySessionId?.(sessionId)?.cwd;
       return this.explicitRecordedCwd(await resolveAvailableWorkspaceCwdAsync(parseWorkspaceCwd(workspaceYamlContent), getListAvailability))
         ?? await resolveAvailableWorkspaceCwdAsync(linkedTaskCwd, getAvailability)
         ?? this.deps.runtimePaths?.workspaceDir;

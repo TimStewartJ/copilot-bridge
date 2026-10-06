@@ -6,7 +6,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import { setSessionsArchived } from "./session-archive.js";
 
-type RetentionSessionManager = Pick<SessionManager, "isSessionBusy" | "listSessionsFromDisk">;
+type RetentionSessionManager = Pick<SessionManager, "isSessionBusy" | "readSessionsFromDisk">;
 
 export interface ScheduleSessionRetentionDeps {
   schedule: Schedule;
@@ -70,7 +70,8 @@ export async function enforceScheduleSessionRetention(
     return { archivedSessionIds: [], skippedSessionIds: [], retainableSessionIds: [] };
   }
 
-  const sessions = await deps.sessionManager.listSessionsFromDisk({ includeArchived: true });
+  // A folder that could not be read throws: this pass then archives and prunes nothing, and the next one retries.
+  const sessions = await deps.sessionManager.readSessionsFromDisk([...candidates], { failOnReadError: true });
   const existingSessionIds = new Set(sessions.map((session: { sessionId: string }) => session.sessionId));
   const toArchive: string[] = [];
   const skippedSessionIds: string[] = [];
