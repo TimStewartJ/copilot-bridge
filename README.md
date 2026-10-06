@@ -273,7 +273,7 @@ npm run check:integration # type-check + API, workflow, persistence/lifecycle, a
 npm run check:launcher # server type-check + launcher lane
 npm run check:staging # server type-check + staging tooling lane + native process tests
 npm run check:native  # server type-check + native process tests only
-npm run check:browser # live-view check against the installed agent-browser and a real browser (not part of check:pr)
+npm run check:browser # live view, upload, screenshot, drag and download against the installed agent-browser and a real browser (not part of check:pr)
 npm run check:pr      # fast gate + all lanes + full build
 npm run check:deploy  # PR gate + preview smoke
 npm run test:slow-report # full Vitest pass + top slowest files
@@ -722,7 +722,7 @@ The view has a browser's own controls: an address field, back, forward and reloa
 
 #### Steps, screenshots and files
 
-`browser_exec` and `browser_session_exec` run a list of steps, and a step is one `agent-browser` command: `{"command": "drag", "args": ["@e4", "@e1"]}`. Nearly every command is a step (hover, drag, mouse, tabs, `get attr`, `eval`, cookies, console and so on), so the Bridge does not need a change for an agent to use one. Two rules keep a step on the browser the Bridge chose for it (`src/server/browser-automation.ts`):
+`browser_exec` and `browser_session_exec` run a list of steps, and a step is one `agent-browser` command: `{"command": "drag", "args": ["@e4", "@e1"]}`. Nearly every command is a step (hover, drag, mouse, tabs, `get attr`, `eval`, cookies, console and so on), so the Bridge does not need a change for an agent to use one. Two rules keep a step on the browser the Bridge chose for it. Both are in `src/server/browser-steps.ts`, which says what a step may be and touches no browser; `src/server/browser-automation.ts` runs the steps.
 
 - **The command must be on the step list.** Left out are the commands that would take the browser out of the Bridge's hands: `close`, `connect`, `session`, `stream`, `state`, `auth`, `batch` and their kind, along with the other names agent-browser accepts for them (`quit`, `goto`). A command that a later agent-browser adds is one line there.
 - **Only a step's own few options are passed on.** agent-browser reads its own options (`--session`, `--profile`, `--cdp` and some forty more) wherever they stand in a command, even where a typed value was meant: `fill @e1 --headed` types nothing. Any argument shaped like an option that the step does not list (`snapshot -i`, `drag --human`, `wait --text`) is therefore refused with a message that says so.
@@ -732,6 +732,8 @@ Three steps involve a file, and the Bridge runs those itself. A file is an absol
 - **`screenshot`** returns the picture to the model as a JPEG: the visible page, one element (`@e12`), or the whole page with `--full`; `--annotate` labels the elements with their refs. A file as last argument also keeps the picture. A picture over 3.5 MB or 7,900 px a side is refused, because the model's provider would reject it and with it every later request of the chat; a call takes at most six.
 - **`upload`** gives files to a page: `["@e12", "/path/to/photo.jpg"]`, where the ref is the file input or whatever opens the file chooser, such as a styled "Add photos" button. A browser draws its file chooser outside the page, where agent-browser cannot reach it, and a headed browser would leave a file window open on the server's screen. For the length of the step the Bridge therefore connects to the browser's DevTools address next to agent-browser, asks Chrome to hand over the choosers of the open tab and of the frames in it, has agent-browser click the element, and answers the chooser that opens (`src/server/browser-upload.ts`). The step fails without clicking when a file is missing, and without choosing anything when the click opened no chooser or the page takes one file and got several.
 - **`download`** clicks an element and saves what it downloads: `["@e5", "report.pdf"]`.
+
+Upload, screenshot, drag and download depend on how the installed agent-browser and Chrome behave, so `npm run check:browser` runs them against a real browser (`src/server/__tests__/browser-steps.browser-check.ts`). Run it after updating either.
 
 Not covered: a page that only accepts dropped files, and a person using the live view still cannot pick a file from their own device.
 

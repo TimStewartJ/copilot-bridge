@@ -5,17 +5,19 @@ import { safeRecordBrowserSpan, type BrowserCommandOptions } from "./agent-brows
 import type { BrowserBrokerLease, BrowserBrokerOperationOptions } from "./browser-broker.js";
 import {
   agentBrowserMissingFailure,
-  BROWSER_CAPTURE_PARAMETER,
-  BROWSER_COMMANDS_PARAMETER,
   browserStepFailure,
   captureFinalBrowserState,
-  normalizeBrowserAutomationCapture,
-  normalizeBrowserAutomationCommands,
   runBrowserAutomationCommands,
   withScreenshots,
 } from "./browser-automation.js";
 import { BrowserLiveUnavailableError } from "./browser-live.js";
 import { checkPage, pageBlockFields } from "./browser-page-check.js";
+import {
+  BROWSER_CAPTURE_PARAMETER,
+  BROWSER_COMMANDS_PARAMETER,
+  normalizeBrowserAutomationCapture,
+  normalizeBrowserAutomationCommands,
+} from "./browser-steps.js";
 import { chatStepFiles } from "./browser-step-files.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { sessionLease, type BrowserSessionRecord } from "./browser-session-store.js";

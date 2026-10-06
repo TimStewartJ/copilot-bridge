@@ -8,6 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join } from "node:path";
 import { ab, type BrowserCommandOptions, type BrowserCommandResult } from "./agent-browser.js";
 import type { AppContext } from "./app-context.js";
+import { SCREENSHOT_OPTIONS } from "./browser-steps.js";
 import { getSessionFilesDir, isCanonicalSessionId } from "./outbound-attachments.js";
 import { err, ok, type Result } from "./tool-results.js";
 
@@ -17,8 +18,6 @@ import { err, ok, type Result } from "./tool-results.js";
  */
 const MAX_SCREENSHOT_BYTES = 3_500_000;
 const MAX_SCREENSHOT_SIDE = 7_900;
-/** The options of a `screenshot` step; any other argument is its element or its file. */
-export const SCREENSHOT_OPTIONS: readonly string[] = ["--full", "--annotate"];
 
 export interface BrowserStepFiles {
   /** The folder of the calling chat's files. A file named without a folder is looked up there. */

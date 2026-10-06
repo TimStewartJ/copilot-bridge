@@ -8,17 +8,19 @@ import type { BrowserBrokerLease, BrowserContext } from "./browser-broker.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import {
   agentBrowserMissingFailure,
-  BROWSER_CAPTURE_PARAMETER,
-  BROWSER_COMMANDS_PARAMETER,
   browserStepFailure,
   captureFinalBrowserState,
-  normalizeBrowserAutomationCapture,
-  normalizeBrowserAutomationCommands,
   runBrowserAutomationCommands,
   withScreenshots,
+} from "./browser-automation.js";
+import {
+  BROWSER_CAPTURE_PARAMETER,
+  BROWSER_COMMANDS_PARAMETER,
+  normalizeBrowserAutomationCapture,
+  normalizeBrowserAutomationCommands,
   type BrowserAutomationCaptureInput,
   type BrowserAutomationCommand,
-} from "./browser-automation.js";
+} from "./browser-steps.js";
 import { checkPage, pageBlockFields } from "./browser-page-check.js";
 import { chatStepFiles } from "./browser-step-files.js";
 import { err, ok, toolFailure, type Result } from "./tool-results.js";
