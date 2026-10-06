@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openDatabase } from "../db.js";
 import { createDocsIndex } from "../docs-index.js";
 import { createDocsStore } from "../docs-store.js";
-import { createSearchIndex } from "../search-index.js";
+import { clearSearchIndex, createSearchIndex } from "../search-index.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTaskStore } from "../task-store.js";
@@ -337,6 +337,124 @@ describe("global search index", () => {
 
     sessions.splice(0, 1);
     expect((await index.search({ ...request, q: "replacement" })).chats.total).toBe(0);
+  });
+
+  it("removes the chats that left the catalog a batch at a time and keeps the others", async () => {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir("search-removal");
+    const ids = ["a", "b", "c", "d", "e"].map((letter) => `${letter.repeat(8)}-1111-4111-8111-111111111111`);
+    for (const sessionId of ids) {
+      writeEvents(copilotHome, sessionId, [1, 2, 3].map((n) =>
+        event("user.message", `${sessionId}-${n}`, `needle ${n}`, "2026-09-01T10:00:00.000Z")));
+    }
+    let sessions = ids.map((sessionId) => ({ sessionId }));
+    let yields = 0;
+    const index = createSearchIndex(db, {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => sessions,
+      yieldControl: async () => { yields += 1; },
+      removalBatchSize: 2,
+    });
+    await index.reconcile(request);
+    await index.waitForIdle();
+    const chatsIn = (table: string) => (db.prepare(
+      `SELECT sessionId, count(*) AS total FROM ${table} GROUP BY sessionId ORDER BY sessionId`,
+    ).all() as Array<{ sessionId: string; total: number }>).map((row) => `${row.sessionId.slice(0, 1)}:${row.total}`);
+    expect(chatsIn("search_chat_messages")).toEqual(["a:3", "b:3", "c:3", "d:3", "e:3"]);
+
+    sessions = [sessions[1]!, sessions[3]!];
+    yields = 0;
+    await index.reconcile(request);
+    await index.waitForIdle();
+
+    expect(chatsIn("search_chat_messages")).toEqual(["b:3", "d:3"]);
+    expect(chatsIn("search_chat_titles")).toEqual(["b:1", "d:1"]);
+    expect(chatsIn("search_indexed_sessions")).toEqual(["b:1", "d:1"]);
+    // Three chats left in batches of two, with a yield after each batch.
+    expect(yields).toBeGreaterThanOrEqual(2);
+    const result = await index.search(request);
+    expect(result.chats.total).toBe(2);
+    expect(result.coverage.state).toBe("ready");
+    await index.waitForIdle();
+  });
+
+  it("finishes a removal that was interrupted, and indexes a chat again that came back meanwhile", async () => {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir("search-removal-stop");
+    const [kept, returning, gone] = ["a", "b", "c"].map((letter) => `${letter.repeat(8)}-1111-4111-8111-111111111111`);
+    for (const sessionId of [kept!, returning!, gone!]) {
+      writeEvents(copilotHome, sessionId, [1, 2, 3].map((n) =>
+        event("user.message", `${sessionId}-${n}`, `needle ${n}`, "2026-09-01T10:00:00.000Z")));
+    }
+    const deps = {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles: createSessionTitlesStore(db),
+      removalBatchSize: 1,
+    };
+    // More chats stay than one sweep batch takes, so a sweep queued after the stop would never drain.
+    const others = Array.from({ length: 30 }, (_, n) => ({ sessionId: `dddddddd-1111-4111-8111-${String(n).padStart(12, "0")}` }));
+    let sessions = [{ sessionId: kept! }, ...others, { sessionId: returning! }, { sessionId: gone! }];
+    let stopAtNextYield = false;
+    let shutdown: Promise<void> | undefined;
+    const first = createSearchIndex(db, {
+      ...deps,
+      listSessions: async () => sessions,
+      yieldControl: async () => { if (stopAtNextYield) shutdown ??= first.shutdown(); },
+    });
+    await first.reconcile(request);
+    await first.waitForIdle();
+
+    sessions = [{ sessionId: kept! }, ...others];
+    // Stopped after the first batch of one chat: the second chat is untouched and still known as indexed.
+    stopAtNextYield = true;
+    await first.reconcile(request);
+    await shutdown;
+    const total = (sql: string, ...params: string[]) => (db.prepare(sql).get(...params) as { total: number }).total;
+    expect(total("SELECT count(*) AS total FROM search_chat_messages WHERE sessionId = ?", returning!)).toBe(0);
+    expect(total("SELECT count(*) AS total FROM search_chat_messages WHERE sessionId = ?", gone!)).toBe(3);
+    expect(total("SELECT count(*) AS total FROM search_indexed_sessions WHERE sessionId IN (?, ?)", returning!, gone!)).toBe(1);
+
+    const second = createSearchIndex(db, {
+      ...deps,
+      listSessions: async () => [{ sessionId: kept! }, ...others, { sessionId: returning! }],
+    });
+    await second.reconcile(request);
+    await second.waitForIdle();
+
+    expect(total("SELECT count(*) AS total FROM search_chat_messages WHERE sessionId = ?", kept!)).toBe(3);
+    expect(total("SELECT count(*) AS total FROM search_chat_messages WHERE sessionId = ?", returning!)).toBe(3);
+    expect(total("SELECT count(*) AS total FROM search_chat_messages WHERE sessionId = ?", gone!)).toBe(0);
+    expect(total("SELECT count(*) AS total FROM search_chat_titles")).toBe(32);
+    expect(total("SELECT count(*) AS total FROM search_indexed_sessions")).toBe(32);
+    expect((await second.search(request)).chats.total).toBe(2);
+    await second.waitForIdle();
+  });
+
+  it("builds the index again from the chats on disk after it was cleared", async () => {
+    const { copilotHome, db, index, sessions } = fixture();
+    writeEvents(copilotHome, sessions[0]!.sessionId, [
+      event("user.message", "kept-1", "needle", "2026-09-01T10:00:00.000Z"),
+    ]);
+    writeEvents(copilotHome, sessions[1]!.sessionId, []);
+    expect((await index.search(request)).chats.total).toBe(1);
+    await index.shutdown();
+
+    clearSearchIndex(db);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'search!_%' ESCAPE '!'").all()).toEqual([]);
+
+    const rebuilt = createSearchIndex(db, {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => sessions,
+    });
+    expect((await rebuilt.search(request)).chats.total).toBe(1);
   });
 
   it("quarantines every stale matched candidate beyond the foreground reconciliation batch", async () => {

@@ -27,6 +27,15 @@ const FOREGROUND_INDEX_BYTE_BUDGET = 16 * 1024 * 1024;
 const MESSAGE_INSERT_BATCH_SIZE = 500;
 const CANDIDATE_VALIDATION_LIMIT = 100;
 const CHAT_MATCHES_PER_SESSION = 5;
+const REMOVAL_BATCH_SIZE = 250;
+const SEARCH_TABLES = [
+  "search_chat_titles",
+  "search_chat_messages",
+  "search_tasks",
+  "search_indexed_sessions",
+  "search_index_state",
+  "search_quarantined_sessions",
+] as const;
 
 interface SearchSession {
   sessionId: string;
@@ -43,6 +52,7 @@ interface SearchIndexDeps {
   readSessionTitle?: (sessionId: string) => Promise<string | undefined>;
   yieldControl?: () => Promise<void>;
   foregroundByteBudget?: number;
+  removalBatchSize?: number;
 }
 
 interface SourceFingerprint {
@@ -76,6 +86,16 @@ function runTransaction(db: DatabaseSync, operation: () => void): void {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * Empties the index. For a database copied from another Bridge, whose chats this one does not have;
+ * `createSearchIndex` creates the tables again.
+ */
+export function clearSearchIndex(db: DatabaseSync): void {
+  runTransaction(db, () => {
+    for (const table of SEARCH_TABLES) db.exec(`DROP TABLE IF EXISTS ${table}`);
+  });
 }
 
 function resolveSessionTitle(
@@ -136,6 +156,9 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       timestamp TEXT,
       content TEXT NOT NULL
     );
+    CREATE TEMP TABLE IF NOT EXISTS search_removed_sessions (
+      sessionId TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
   `);
   const indexedSessionColumns = db.prepare("PRAGMA table_info(search_indexed_sessions)").all() as Array<{ name?: string }>;
   if (!indexedSessionColumns.some((column) => column.name === "ctimeMs")) {
@@ -289,6 +312,33 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     });
   }
 
+  /**
+   * Drops chats that left the catalog. The FTS tables have no index on `sessionId`, so a delete by
+   * chat reads the whole table: each batch of chats shares one read, with a yield after it.
+   * Returns false when indexing stopped part-way; the next reconcile removes the rest.
+   */
+  async function removeSessions(sessionIds: readonly string[]): Promise<boolean> {
+    const batchSize = deps.removalBatchSize ?? REMOVAL_BATCH_SIZE;
+    const removed = "SELECT sessionId FROM search_removed_sessions";
+    for (let start = 0; start < sessionIds.length; start += batchSize) {
+      const batch = sessionIds.slice(start, start + batchSize);
+      runTransaction(db, () => {
+        db.exec("DELETE FROM search_removed_sessions");
+        const insert = db.prepare("INSERT INTO search_removed_sessions(sessionId) VALUES (?)");
+        for (const sessionId of batch) insert.run(sessionId);
+        db.exec(`DELETE FROM search_chat_titles WHERE sessionId IN (${removed})`);
+        db.exec(`DELETE FROM search_chat_messages WHERE sessionId IN (${removed})`);
+        db.exec(`DELETE FROM search_indexed_sessions WHERE sessionId IN (${removed})`);
+        db.exec(`DELETE FROM search_quarantined_sessions WHERE sessionId IN (${removed})`);
+        db.exec("DELETE FROM search_removed_sessions");
+      });
+      for (const sessionId of batch) deferredChangedSessionIds.delete(sessionId);
+      await yieldControl();
+      if (stopped) return false;
+    }
+    return true;
+  }
+
   function readCursor(): string | undefined {
     const row = db.prepare(
       "SELECT value FROM search_index_state WHERE key = 'sessionCursor'",
@@ -373,27 +423,22 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     const indexed = new Map(indexedRows.map((row) => [row.sessionId, row]));
     const currentIds = new Set(sessions.map((session) => session.sessionId));
 
+    // Decided before the removal yields: a search arriving meanwhile queues chats of its own.
+    const shouldStartSweep = startNewSweep && pendingSessionIds.length === 0;
     if (!reuseSweepCatalog) {
-      runTransaction(db, () => {
-        for (const row of indexedRows) {
-          if (currentIds.has(row.sessionId)) continue;
-          db.prepare("DELETE FROM search_chat_titles WHERE sessionId = ?").run(row.sessionId);
-          db.prepare("DELETE FROM search_chat_messages WHERE sessionId = ?").run(row.sessionId);
-          db.prepare("DELETE FROM search_indexed_sessions WHERE sessionId = ?").run(row.sessionId);
-          db.prepare("DELETE FROM search_quarantined_sessions WHERE sessionId = ?").run(row.sessionId);
-        }
-      });
+      const removedIds = indexedRows.map((row) => row.sessionId).filter((sessionId) => !currentIds.has(sessionId));
+      if (removedIds.length > 0 && !await removeSessions(removedIds)) return [...sweepErrors];
     }
 
     const unindexedIds = sessions
       .filter((session) => !indexed.has(session.sessionId))
       .map((session) => session.sessionId);
-    const shouldStartSweep = startNewSweep && pendingSessionIds.length === 0;
     if (shouldStartSweep) {
       sweepErrors = [];
       const priority = prioritizedSessionIds(request);
       pendingSessionIds = [
         ...new Set([
+          ...pendingSessionIds,
           ...priority,
           ...unindexedIds,
           ...rotateAfterCursor(sessions.map((session) => session.sessionId)),
