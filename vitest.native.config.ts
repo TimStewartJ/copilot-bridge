@@ -7,6 +7,12 @@ export default defineProject({
     ...nativeProjectScheduling,
     name: "native",
     include: [NATIVE_TEST_FILES],
+    // These tests wait on real processes (the Copilot CLI, staged backends), so how long they take
+    // follows the host: with other validations running, tests that take 3-8 s on an idle machine
+    // took 25-60 s. Not higher: when a runtime shared by a file hangs, each of its tests waits
+    // this long, and the gate has a limit of its own (VALIDATION_TIMEOUT_MS).
+    testTimeout: 120_000,
+    hookTimeout: 120_000,
     env: {
       ...sharedTestConfig.env,
       // Native tests start real processes and mock nothing, so they run the production path:

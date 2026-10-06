@@ -62,6 +62,7 @@ import {
 } from "./staging-command-utils.js";
 import { log } from "./staging-log.js";
 import { parseJsonc } from "./jsonc.js";
+import { clearSearchIndex } from "./search-index.js";
 import { isolateStagingRuntimeState } from "./staging-seed-state.js";
 
 export interface ActiveStagingBackend {
@@ -411,7 +412,8 @@ function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
  * production model, live schedules, or live push subscriptions would act on the
  * user's real devices and workspaces, so any failure here aborts preview
  * seeding rather than being downgraded to a warning. Only the Copilot usage
- * index — cosmetic, and absent on older databases — is cleaned best-effort.
+ * index (cosmetic, and absent on older databases) and the search index are
+ * cleaned best-effort.
  */
 function applyStagingSeedOverrides(dbPath: string): void {
   let stagingDb: DatabaseSync | null = null;
@@ -465,6 +467,14 @@ function applyStagingSeedOverrides(dbPath: string): void {
       }
     } catch (err) {
       log(`Warning: could not clear the Copilot usage index in the staging DB: ${err}`);
+    }
+
+    // The copied index describes production's chats, and the preview has none of them: its first
+    // search would spend minutes removing them.
+    try {
+      clearSearchIndex(db);
+    } catch (err) {
+      log(`Warning: could not clear the search index in the staging DB: ${err}`);
     }
   } finally {
     if (stagingDb) {
