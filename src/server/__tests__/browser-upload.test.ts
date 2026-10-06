@@ -6,7 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { WebSocketServer, type WebSocket } from "ws";
 
 import type { BrowserCommand, BrowserCommandResult } from "../agent-browser.js";
-import { normalizeBrowserAutomationCommands, runBrowserAutomationCommands } from "../browser-automation.js";
+import { runBrowserAutomationCommands } from "../browser-automation.js";
+import { normalizeBrowserAutomationCommands } from "../browser-steps.js";
 import { chatStepFiles } from "../browser-step-files.js";
 import { uploadFiles } from "../browser-upload.js";
 
