@@ -309,14 +309,58 @@ describe("SessionManager backend disconnect recovery", () => {
         recovery: { outcome: "recovered" },
         runtimeLog: { status: "read", matchedBy: "pid", reachesWindowStart: true, lines: [closing] },
       });
-      // The ping has to reach the runtime before fencing starts to kill it.
-      expect(diagnosticPing.mock.invocationCallOrder[0]).toBeLessThan(dead.fence.mock.invocationCallOrder[0]!);
+      // The deadline's own ping comes first. The record's ping is the second, and it has to reach
+      // the runtime before fencing starts to kill it.
+      expect(diagnosticPing).toHaveBeenCalledTimes(2);
+      expect(diagnosticPing.mock.invocationCallOrder[1]).toBeLessThan(dead.fence.mock.invocationCallOrder[0]!);
       expect(telemetryStore.querySpans({ name: "backend.disconnect" })[0]?.metadata).toMatchObject({
         origin: "bridge",
         record: expect.stringMatching(/-cleanup-stalled\.json$/),
       });
     } finally {
       resumedInteractive.emit({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
+      await manager.gracefulShutdown();
+    }
+  });
+
+  it("records a stalled release on a runtime that answers no ping as a loss the runtime caused", async () => {
+    vi.useFakeTimers();
+    const idleCached = makeSession("session-idle");
+    const dead = createFakeBackend("dead", {});
+    const diagnosticPing = vi.fn(async () => "timeout" as const);
+    Object.assign(dead, { diagnosticPing });
+    dead.probeHealth.mockImplementation(async (_timeoutMs?: number, reason?: string) => {
+      dead.simulateDisconnect({ reason: "health-probe-failed", detail: `${reason}: backend.ping timed out (3 consecutive pings)` });
+      return false;
+    });
+    const fresh = createFakeBackend("fresh", {});
+    const runtimePaths = makeTestRuntimePaths("backend-loss");
+    const { manager, telemetryStore } = createManager([dead, fresh], { runtimePaths });
+    try {
+      await manager.initialize();
+      manager.sessionObjects.set("session-idle", idleCached.session);
+      idleCached.session.disconnect.mockImplementation(() => new Promise(() => {}));
+      await manager.evictCachedSession("session-idle");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(manager.getBackendStatus()).toMatchObject({ state: "ready", recoveryCount: 1 }));
+      await vi.waitFor(() => expect(readLossRecords(runtimePaths)[0]?.recovery).toMatchObject({ outcome: "recovered" }));
+
+      // One loss, the probe's: the Bridge does not add a restart of its own.
+      const records = readLossRecords(runtimePaths);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        reason: "health-probe-failed",
+        detail: expect.stringMatching(/^cleanup-stalled: session session-idle, lease .*3 consecutive pings/),
+        origin: "runtime",
+        summary: "The agent backend was lost: it failed a liveness check.",
+        trigger: null,
+        pendingReleases: [{ sessionId: "session-idle", phase: "quarantined", waitedMs: 60_000 }],
+      });
+      expect(manager.getBackendStatus().disconnectCount).toBe(1);
+      expect(dead.fence).toHaveBeenCalledOnce();
+      expect(telemetryStore.querySpans({ name: "backend.disconnect" }).map((span) => span.metadata))
+        .toEqual([expect.objectContaining({ origin: "runtime", reason: "health-probe-failed" })]);
+    } finally {
       await manager.gracefulShutdown();
     }
   });

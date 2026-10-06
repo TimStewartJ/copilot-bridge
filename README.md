@@ -385,10 +385,12 @@ capacity reaping remain separate.
 
 Release waits for already-running raw task operations, not their timeout wrappers.
 After five seconds without confirmed release, the handle is quarantined. New work
-is held; existing runs get the remainder of a fixed 60-second retirement budget.
+is held; existing runs get the remainder of a 60-second retirement budget.
 Late release can clear quarantine before recycling, but timeout never clears ownership.
 
-At the deadline, `cleanup-stalled` uses the same replacement mechanism as transport
+At that deadline the Bridge first checks that it is not itself behind on the runtime's
+replies (see the rule above [Backend loss records](#backend-loss-records)), which can
+add one more minute. Then `cleanup-stalled` uses the same replacement mechanism as transport
 recovery and model refresh: retain owner, confirm its `fence()`, discard old handles
 and reservations, then own/start the replacement. Recovery retries fencing that could
 not observe or finish in time (a timed-out snapshot or observation, an exhausted
@@ -520,6 +522,33 @@ without counting, and ends as healthy as soon as any of its pings is answered,
 however late. A runtime that keeps sending but answers none of fifty such pings (at
 least five minutes) is declared lost after all.
 
+The Bridge also replaces a runtime that reported no failure, when a session release is
+still held 60 seconds after it began, when a second session resume times out while an
+earlier one is still unsettled, or when a timed-out resume has not settled a minute
+later. Those deadlines run on the Bridge's clock, which is the wrong clock when the
+Bridge is the one behind, so each of them is decided by one rule:
+
+- At the deadline the Bridge sends a ping of its own. Answered within its five seconds,
+  it shows that the Bridge has handled everything the runtime wrote before that answer.
+  If the release or resume is still open then, the runtime is replaced: one ping after
+  the deadline.
+- Not answered in time, the liveness probe above decides. A silent runtime is declared
+  lost by it about 23 seconds after the deadline, which is 83 seconds after a release
+  began. A late answer means the Bridge was behind: nothing is replaced, and the wait
+  starts once more, for one more minute and only once, because a release or resume is
+  several requests and a later one may itself have been waiting on the Bridge. After
+  that minute the Bridge pings again and replaces the runtime if the wait is still
+  open, even when that ping is late too.
+- A release the runtime refused, or that failed, has nothing left to arrive. It is
+  replaced at its 60 seconds without a ping. That includes the session of a timed-out
+  resume that arrives late and cannot be released: its lease has the same deadline as
+  any other.
+
+A resume request itself still fails at its 60-second timeout, also when the Bridge was
+only behind; the rule decides whether the runtime is replaced, not whether the request
+waits. A release that takes more than five seconds is still quarantined at once, and
+new work is refused while it is, on the Bridge's clock alone.
+
 ### Backend loss records
 
 Every time the Bridge gives its agent backend up, it writes one JSON file to
@@ -530,8 +559,17 @@ file is what remains to explain a loss later.
 - `origin` separates the two kinds of loss. `runtime`: the channel failed or the runtime
   stopped answering. `bridge`: the Bridge replaced a runtime that had reported no failure,
   because a session release or resume never finished (`cleanup-stalled`, or a resume that
-  timed out); `trigger` names that session. The log line and the status banner say so
-  instead of calling it a disconnect.
+  timed out); `trigger` names that session. Unless the release itself had been refused or
+  had failed, the runtime had just answered the Bridge's ping. The log line and the status
+  banner say so instead of calling it a disconnect.
+- `trigger.waitedMs` can be more than 60 seconds: it includes the time the Bridge took to
+  get its ping answered and, when it had been behind, the extra minute.
+- A stalled release or resume on a runtime that answers no ping is a `runtime` loss, not
+  a `bridge` one: the probe declares it (`health-probe-failed` for a release,
+  `rpc-timeout` for a resume) and `trigger` is null. The session is still named, at the
+  start of `detail` (`cleanup-stalled: session ...` or `rpc-timeout: session resume
+  exceeded ...`), unless a probe was already running for another reason, which keeps
+  its own reason and detail. A stalled release is listed in `pendingReleases` either way.
 - Written at the moment of the loss: the interrupted runs and whether each will be
   continued, the cached sessions and how long each had been idle, releases still pending,
   the last event the runtime delivered, and how long ago the host woke from sleep (a

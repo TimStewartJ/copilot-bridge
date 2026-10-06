@@ -453,6 +453,8 @@ type SessionCleanupRecord = {
   localMcpInstances: number;
   capacityUnits: number;
   promise?: Promise<boolean>;
+  /** The release was refused or threw, so no later answer can complete it. */
+  failed?: boolean;
 };
 
 type SessionRuntimeOwner = {
@@ -1873,6 +1875,7 @@ export class SessionManager {
       this.completeSessionCleanup(sessionId, session, reason);
       return true;
     });
+    void completion.catch(() => { record.failed = true; });
     const result = await settleByDeadline(() => completion, createDeadline(DISCONNECT_TIMEOUT_MS));
     this.recordSpan("session.cache.disconnect", Date.now() - record.startedAt, sessionId, {
       reason, outcome: result.status,
@@ -1890,7 +1893,7 @@ export class SessionManager {
       outcome: result.status,
     });
     console.warn(
-      `[sdk] [${sessionId.slice(0, 8)}] Runtime lease ${record.phase} (${result.status}); fencing due within ${SESSION_RETIREMENT_BUDGET_MS}ms of retirement (${reason})`,
+      `[sdk] [${sessionId.slice(0, 8)}] Runtime lease ${record.phase} (${result.status}); fencing is decided ${SESSION_RETIREMENT_BUDGET_MS}ms after retirement (${reason})`,
     );
     return false;
   }
@@ -1937,19 +1940,24 @@ export class SessionManager {
       capacityUnits,
     };
     this.cleanupOwnership.set(session, record);
-    record.timer = setTimeout(() => {
-      if (this.cleanupOwnership.get(session) !== record) return;
+    record.timer = setTimeout(async () => {
       const backend = record.owner.backend;
+      const owned = () => this.cleanupOwnership.get(session) === record;
+      const detail = `session ${sessionId}, lease ${record.owner.lease}, generation ${record.owner.generation}`;
+      // A release that settled as a failure has nothing left to arrive, however far behind the Bridge is.
+      const stalled = backend && !record.failed
+        ? await this.stillNeedsFencing(backend, `cleanup-stalled: ${detail}`, SESSION_RETIREMENT_BUDGET_MS, owned)
+        : owned();
+      // A recovery that began meanwhile fences this runtime and drops the lease with it.
+      if (!stalled || (backend && this.backendTransition?.owner === backend)) return;
       if (!backend || backend !== this.backend || record.owner.generation !== this.backendGeneration) {
         record.phase = "operator-blocked";
         console.error(`[sdk] Cannot fence unowned runtime lease ${record.owner.lease} for ${sessionId}`);
         return;
       }
       record.phase = "backend-recycling";
-      this.handleBackendDisconnect(backend, {
-        at: new Date().toISOString(), reason: "cleanup-stalled",
-        detail: `session ${sessionId}, lease ${record.owner.lease}, generation ${record.owner.generation}`,
-      }, { sessionId, operation: "release", startedAtMs: record.startedAt, retirementReason: reason });
+      this.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "cleanup-stalled", detail },
+        { sessionId, operation: "release", startedAtMs: record.startedAt, retirementReason: reason });
     }, SESSION_RETIREMENT_BUDGET_MS);
     record.timer.unref?.();
     const cleanup = Promise.resolve().then(() => this.runSessionCleanup(sessionId, session, reason));
@@ -2584,7 +2592,6 @@ export class SessionManager {
   ): Promise<AgentSession> {
     const sid = sessionId.slice(0, 8);
     const owner = this.captureRuntimeOwner(owningBackend);
-    const owningBackendGeneration = owner.generation;
     const token = Symbol(sessionId);
     const startedAt = Date.now();
     let slow = false;
@@ -2602,7 +2609,7 @@ export class SessionManager {
         console.warn(`[sdk] [${sid}] Resume diagnostic snapshot failed`);
       }
       this.recordSpan("session.resume.diagnostic", Date.now() - startedAt, sessionId, {
-        attemptId: owner.lease, generation: owningBackendGeneration, pid: pid ?? null,
+        attemptId: owner.lease, generation: owner.generation, pid: pid ?? null,
         purpose, outcome, timedOut, wrapperEnded, connection, ping,
       });
     };
@@ -2621,95 +2628,64 @@ export class SessionManager {
       () => diagnostic("backend-resolved"),
       () => diagnostic("backend-rejected"),
     );
-    let releaseAfterLateSettlement = true;
-    const releaseBarrier = (): boolean => {
+    const isCurrentBackend = () => this.backend === owningBackend && this.backendGeneration === owner.generation;
+    const holdsBarrier = () => this.settlingTimedOutSessionResumes.get(sessionId)?.token === token;
+    const releaseBarrier = (): void => {
       const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
-      if (barrier?.token !== token) return false;
+      if (barrier?.token !== token) return;
       clearTimeout(barrier.watchdog);
       this.settlingTimedOutSessionResumes.delete(sessionId);
       this.notifySessionCapacityChanged();
-      return true;
+    };
+    const recover = (detail: string) => {
+      if (!isCurrentBackend()) return;
+      this.handleBackendDisconnect(
+        owningBackend,
+        { at: new Date().toISOString(), reason: "rpc-timeout", detail },
+        { sessionId, operation: "resume", startedAtMs: startedAt },
+      );
+    };
+    const recoverIfStuck = async (detail: string, stuck: () => boolean) => {
+      const reason = `rpc-timeout: ${detail}`;
+      if (await this.stillNeedsFencing(owningBackend, reason, SESSION_RESUME_TIMEOUT_MS, stuck)) recover(detail);
     };
     return resumeSessionWithTimeout(this.awaitOwnedSession(owner, resume), timeoutMessage, undefined, {
       onTimeout: () => {
         timedOut = true;
         slow = true;
         diagnostic("timeout");
-        const isCurrentBackend = () =>
-          this.backend === owningBackend && this.backendGeneration === owningBackendGeneration;
         if (!isCurrentBackend()) return;
-        const recover = (detail: string) => {
-          if (!isCurrentBackend()) return;
-          this.handleBackendDisconnect(
-            owningBackend,
-            { at: new Date().toISOString(), reason: "rpc-timeout", detail },
-            { sessionId, operation: "resume", startedAtMs: startedAt },
-          );
-        };
         const detail = `session resume exceeded ${SESSION_RESUME_TIMEOUT_MS / 1_000}s for session ${sessionId}`;
-        const anotherResumeStuck = this.settlingTimedOutSessionResumes.size > 0;
         const watchdog = setTimeout(
-          () => recover(`timed-out resume never settled for session ${sessionId}`),
+          () => void recoverIfStuck(`timed-out resume never settled for session ${sessionId}`, holdsBarrier),
           SESSION_RESUME_TIMEOUT_MS,
         );
         watchdog.unref?.();
         this.settlingTimedOutSessionResumes.set(sessionId, { token, watchdog });
         this.notifySessionCapacityChanged();
+        const hasProbe = typeof owningBackend.probeHealth === "function";
+        const anotherResumeStuck = () => this.settlingTimedOutSessionResumes.size > 1;
         // One slow resume on a runtime that still answers fails only its own request.
-        if (anotherResumeStuck || typeof owningBackend.probeHealth !== "function") {
-          recover(detail);
-          return;
+        if (hasProbe && !anotherResumeStuck()) {
+          void this.probeBackendHealth(`rpc-timeout: ${detail}`).then((healthy) => { if (!healthy) recover(detail); });
+        } else {
+          void recoverIfStuck(detail, () => holdsBarrier() && (!hasProbe || anotherResumeStuck()));
         }
-        owningBackend.probeHealth(undefined, `rpc-timeout: ${detail}`).then(
-          (healthy) => { if (!healthy) recover(detail); },
-          () => recover(detail),
-        );
       },
       disconnectLateSession: async (session) => {
         this.sessionRuntimeOwners.set(session, owner);
-        const barrier = this.settlingTimedOutSessionResumes.get(sessionId);
-        if (barrier?.token !== token) return;
-        if (
-          this.backend !== owningBackend
-          || this.backendGeneration !== owningBackendGeneration
-        ) {
-          if (this.backendTransition?.owner !== owningBackend) releaseBarrier();
-          else releaseAfterLateSettlement = false;
-          return;
-        }
-        try {
+        // A release that fails or hangs here is judged by its own lease's retirement deadline.
+        if (holdsBarrier() && isCurrentBackend()) {
           await this.disposeSession(sessionId, session, "cleaning up timed-out session resume");
-        } catch (error) {
-          if (
-            this.backend === owningBackend
-            && this.backendGeneration === owningBackendGeneration
-          ) {
-            releaseAfterLateSettlement = false;
-            this.handleBackendDisconnect(owningBackend, {
-              at: new Date().toISOString(),
-              reason: "rpc-timeout",
-              detail: `timed-out resume cleanup failed for session ${sessionId}`,
-            }, { sessionId, operation: "resume", startedAtMs: startedAt });
-          }
-          throw error;
         }
       },
       onLateError: (error) => {
         console.warn(`[sdk] [${sid}] Timed-out session resume cleanup failed:`, error);
       },
       onLateSettled: () => {
-        if (releaseAfterLateSettlement && this.backendTransition?.owner !== owningBackend) releaseBarrier();
+        // While this runtime is being fenced, the barrier is released with everything else it owned.
+        if (this.backendTransition?.owner !== owningBackend) releaseBarrier();
       },
-    }).then((session) => {
-      this.sessionRuntimeOwners.set(session, owner);
-      if (
-        this.backend !== owningBackend
-        || this.backendGeneration !== owningBackendGeneration
-      ) {
-        console.warn(`[sdk] [${sid}] Ignoring session resumed by a superseded backend`);
-        throw new Error(BACKEND_DISCONNECTED_MESSAGE);
-      }
-      return session;
     }).finally(() => {
       wrapperEnded = true;
       clearTimeout(checkpoint);
@@ -3823,6 +3799,41 @@ export class SessionManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Catches the Bridge up with the runtime. Replies arrive in order and the SDK hands over one per
+   * event-loop turn, so once a ping sent now is answered, everything the runtime wrote before that
+   * answer has been handled. An answer within the ping's own limit means the Bridge was not behind.
+   * When the ping times out the probe takes over: "was-behind" when it reports the runtime
+   * answering, "lost" otherwise. Lost means the probe declared a silent runtime lost, about 23
+   * seconds in, which starts recovery, or the runtime was already replaced or stopping. A probe
+   * already in flight may be answered by an earlier ping, which proves less; the extra budget in
+   * `stillNeedsFencing` covers that once.
+   */
+  private async catchUpWithRuntime(backend: AgentBackend, reason: string): Promise<"caught-up" | "was-behind" | "lost"> {
+    const ping = await Promise.resolve(backend.diagnosticPing?.() ?? "responsive").catch(() => "failed");
+    // A ping that fails outright or cannot be sent says nothing about lag; like an answer, it leaves the caller's check to decide.
+    if (ping !== "timeout") return "caught-up";
+    return backend === this.backend && await this.probeBackendHealth(reason) ? "was-behind" : "lost";
+  }
+
+  /**
+   * The one rule for replacing a runtime that reported no failure: whether what the Bridge waited
+   * `budgetMs` for still needs it, asked once the Bridge has caught up. The Bridge's own clock
+   * cannot tell, because a Bridge with a busy main thread is the late one. A caller acts one ping
+   * after its deadline when the Bridge was not behind.
+   */
+  private async stillNeedsFencing(backend: AgentBackend, reason: string, budgetMs: number, needed: () => boolean): Promise<boolean> {
+    // A recovery that has begun fences this runtime without the caller.
+    const worthAsking = () => needed() && backend === this.backend && !this.backendTransition;
+    if (worthAsking() && await this.catchUpWithRuntime(backend, reason) === "was-behind") {
+      // A later step of a multi-request operation may itself have waited on the Bridge and only
+      // gone out now, so the wait gets one more budget, once.
+      await new Promise<void>((resolve) => { setTimeout(resolve, budgetMs).unref?.(); });
+      if (worthAsking()) await this.catchUpWithRuntime(backend, reason);
+    }
+    return needed();
   }
 
   /** Snapshot every in-flight run with the metadata callers need to decide what to resume. */
