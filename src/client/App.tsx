@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import { Navigate, Routes, Route, useNavigate, useParams } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { queryKeys } from "./queryClient";
 import {
   createSession,
@@ -58,6 +58,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { addActiveSessionToTask, findTaskForSession, isSessionLinkedToTask } from "./lib/task-session-links";
 import { buildOptimisticSessionModelState } from "./lib/session-model";
+import { createCoalescedInvalidator } from "./lib/coalesced-invalidation";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
@@ -136,8 +137,6 @@ import { archivedEventSessionIds } from "../shared/session-archive-event.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
-/** Window in which a burst of `docs:changed` events becomes one refresh of the Docs view. */
-const DOCS_REFRESH_COALESCE_MS = 400;
 
 interface StartPromptSessionOptions {
   navigateOnError?: boolean;
@@ -276,11 +275,13 @@ function AppShell() {
   const [restartReloadHeld, setRestartReloadHeld] = useState(false);
   useFavicon(settings?.favicon);
 
+  // Refetches that server events start: a burst of events costs two requests per query, not one each.
+  const eventQueries = useMemo(() => createCoalescedInvalidator(queryClient), [queryClient]);
   // Buffer task:changed SSE invalidations during optimistic task mutations so
   // concurrent server-side checklist changes are flushed instead of dropped.
   const taskChangeInvalidator = useMemo(
-    () => createDeferredTaskChangeInvalidator(queryClient),
-    [queryClient],
+    () => createDeferredTaskChangeInvalidator(eventQueries),
+    [eventQueries],
   );
 
   // Derive active IDs and mode from URL
@@ -448,19 +449,15 @@ function AppShell() {
     });
   }, []);
 
-  // Helper to invalidate session/task/group queries
+  // Helper to invalidate session/task/group queries. Nobody awaits the active list, so it shares the event refetches.
   const invalidateSessions = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.sessions({ includeArchived: false }), exact: true }), [queryClient]);
+    eventQueries.invalidateQueries({ queryKey: queryKeys.sessions({ includeArchived: false }), exact: true }), [eventQueries]);
   const invalidateAllSessionQueries = useCallback(() => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["sessions"] }),
     queryClient.invalidateQueries({ queryKey: queryKeys.taskArchivedSessionsRoot }),
   ]).then(() => undefined), [queryClient]);
   const invalidateTasks = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), [queryClient]);
-  const invalidateDashboard = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: ["dashboard"] }), [queryClient]);
-  const invalidateOpenChecklistItems = useCallback(() =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.openChecklistItems }), [queryClient]);
   const invalidateTaskGroups = useCallback(() =>
     queryClient.invalidateQueries({ queryKey: queryKeys.taskGroups }), [queryClient]);
 
@@ -534,53 +531,42 @@ function AppShell() {
       [sessionId]: (prev[sessionId] ?? 0) + 1,
     }));
   }, []);
-  const docsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (docsRefreshTimerRef.current) clearTimeout(docsRefreshTimerRef.current);
-  }, []);
 
   useStatusStream(useCallback((event) => {
+    const sessionId = "sessionId" in event ? event.sessionId : undefined;
+    const isHelmSession = !!sessionId && helmSessionIdsRef.current.has(sessionId);
+    const activeSessionsKey = queryKeys.sessions({ includeArchived: false });
+    const patch = (changes: Partial<Session>) => { if (sessionId) patchSessionInCache(sessionId, changes); };
+    const refetch = (...keys: QueryKey[]) => { for (const queryKey of keys) void eventQueries.invalidateQueries({ queryKey }); };
     switch (event.type) {
       case "session:busy":
-        if (event.sessionId) {
-          patchSessionInCache(event.sessionId, { runState: "busy" });
-          bumpSessionBusySignal(event.sessionId);
-        }
-        invalidateDashboard();
+        patch({ runState: "busy" });
+        bumpSessionBusySignal(sessionId);
+        refetch(queryKeys.dashboard);
         break;
       case "session:stalled":
-        if (event.sessionId) {
-          patchSessionInCache(event.sessionId, { runState: "stalled" });
-        }
-        invalidateDashboard();
+        patch({ runState: "stalled" });
+        refetch(queryKeys.dashboard);
         break;
       case "session:mode":
-        if (event.sessionId) {
-          patchSessionInCache(event.sessionId, { agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
-        }
+        patch({ agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
         break;
       case "session:idle":
-        if (event.sessionId) {
-          clearSessionBusyHint(event.sessionId);
-          patchSessionInCache(event.sessionId, { runState: "idle", intentText: null });
-          if (helmSessionIdsRef.current.has(event.sessionId)) void queryClient.invalidateQueries({ queryKey: helmStateQueryKey });
-        }
+        clearSessionBusyHint(sessionId);
+        patch({ runState: "idle", intentText: null });
+        if (isHelmSession) refetch(helmStateQueryKey);
         // Reload to pick up updated visible activity timestamps so unread dots appear immediately
-        invalidateSessions();
-        invalidateDashboard();
+        refetch(activeSessionsKey, queryKeys.dashboard);
         break;
       case "session:intent":
-        if (event.sessionId) {
-          patchSessionInCache(event.sessionId, { intentText: event.intent ?? null });
-        }
-        invalidateDashboard();
+        patch({ intentText: event.intent ?? null });
         break;
       case "session:title":
-        if (event.sessionId && event.title) {
-          patchSessionInCache(event.sessionId, { summary: event.title });
-          if (helmSessionIdsRef.current.has(event.sessionId)) void queryClient.invalidateQueries({ queryKey: helmStateQueryKey });
+        if (event.title) {
+          patch({ summary: event.title });
+          if (isHelmSession) refetch(helmStateQueryKey);
         }
-        invalidateDashboard();
+        refetch(queryKeys.dashboard);
         break;
       case "session:archived": {
         // A bulk change arrives as one event naming every session, so the lists are fetched once.
@@ -589,49 +575,39 @@ function AppShell() {
           trackArchiveTransitions(archivedIds, event.archived);
           patchSessionsInCache(archivedIds, { archived: event.archived });
         }
-        invalidateAllSessionQueries();
         // Tasks list only their active sessions, so archiving changes their lists and counts.
-        void invalidateTasks();
+        refetch(["sessions"], queryKeys.taskArchivedSessionsRoot, queryKeys.tasks);
         break;
       }
       case "session:agents":
-        if (event.sessionId && event.backgroundAgents) {
-          patchSessionInCache(event.sessionId, { backgroundAgents: event.backgroundAgents });
-        }
+        if (event.backgroundAgents) patch({ backgroundAgents: event.backgroundAgents });
         break;
       case "sessions:changed":
-        // Archived pages refresh on archive transitions only; this event fires for ordinary activity.
-        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-        invalidateDashboard();
+        // One chat's ordinary activity leaves the archived lists alone. An event that names no chat
+        // is a bulk change (a deleted task's chats, cleanup) that can also add to or remove from them.
+        refetch(sessionId ? activeSessionsKey : ["sessions"], queryKeys.dashboard);
         break;
-      case "session:user-input":
-        if (event.sessionId) {
-          const pendingUserInputCount = event.pendingUserInputCount ?? 0;
-          patchSessionInCache(event.sessionId, {
-            pendingUserInputCount,
-            needsUserInput: event.needsUserInput ?? pendingUserInputCount > 0,
-          });
-        }
-        invalidateDashboard();
+      case "session:user-input": {
+        const pendingUserInputCount = event.pendingUserInputCount ?? 0;
+        patch({ pendingUserInputCount, needsUserInput: event.needsUserInput ?? pendingUserInputCount > 0 });
+        refetch(queryKeys.dashboard);
         break;
+      }
       case "session:defer-summary":
-        if (event.sessionId && event.deferSummary) {
-          patchSessionInCache(event.sessionId, { deferSummary: event.deferSummary });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.sessionDefers(event.sessionId) });
+        if (sessionId && event.deferSummary) {
+          patch({ deferSummary: event.deferSummary });
           // Active defers count as automation in task states.
-          void queryClient.invalidateQueries({ queryKey: TASK_OVERVIEW_KEY });
+          refetch(queryKeys.sessionDefers(sessionId), TASK_OVERVIEW_KEY);
         }
         break;
       case "session:history-truncated":
-        if (event.sessionId) {
-          bumpSessionHistorySignal(event.sessionId);
-        }
+        bumpSessionHistorySignal(sessionId);
         break;
       case "server:restart-changed":
         void refetchRestartStatus();
         break;
       case "backend:status":
-        void queryClient.invalidateQueries({ queryKey: queryKeys.bridgeRuntimeStatus });
+        refetch(queryKeys.bridgeRuntimeStatus);
         setBackendStatusBanner((prev) => reduceBackendStatusBannerState(prev, {
           type: "backend:status",
           agentBackend: event.agentBackend,
@@ -639,52 +615,36 @@ function AppShell() {
         break;
       case "schedule:triggered":
         // Schedule started work — refresh session list, task data, and schedule run history
-        invalidateSessions();
-        invalidateTasks();
-        if (event.taskId) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.task(event.taskId) });
-        }
-        if (event.scheduleId) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.scheduleSessions(event.scheduleId) });
-        }
-        if (event.sessionId) {
-          bumpSessionBusySignal(event.sessionId);
-        }
+        refetch(activeSessionsKey, queryKeys.tasks);
+        if (event.taskId) refetch(queryKeys.task(event.taskId));
+        if (event.scheduleId) refetch(queryKeys.scheduleSessions(event.scheduleId));
+        bumpSessionBusySignal(sessionId);
         break;
       case "schedule:changed":
-        queryClient.invalidateQueries({ queryKey: ["task"] });
         // Enabled schedules keep a task out of Gone quiet.
-        void queryClient.invalidateQueries({ queryKey: TASK_OVERVIEW_KEY });
+        refetch(["task"], TASK_OVERVIEW_KEY);
         break;
       case "task:changed":
         taskChangeInvalidator.handleTaskChange(event.taskId);
         break;
       case "management-job:changed":
-        void queryClient.invalidateQueries({ queryKey: queryKeys.managementJobsRoot });
+        refetch(queryKeys.managementJobsRoot);
         break;
       case "docs:changed":
         // An agent (or another tab) wrote docs; refresh whatever the Docs view has open. A bulk
-        // write sends one event per page, so coalesce them into a single refresh.
-        docsRefreshTimerRef.current ??= setTimeout(() => {
-          docsRefreshTimerRef.current = null;
-          void queryClient.invalidateQueries({ queryKey: queryKeys.docsRoot });
-          void queryClient.invalidateQueries({ queryKey: ["related-docs"] });
-        }, DOCS_REFRESH_COALESCE_MS);
+        // write sends one event per page, which the shared refetches turn into two refreshes.
+        refetch(queryKeys.docsRoot, ["related-docs"]);
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
-        // Reading a task's conversation counts toward its engagement.
-        void queryClient.invalidateQueries({ queryKey: TASK_OVERVIEW_KEY });
         break;
       case "status:connected":
         void refetchRestartStatus();
         // Refresh sessions and lightweight Home urgency data on reconnect.
-        invalidateSessions();
-        invalidateDashboard();
-        invalidateOpenChecklistItems();
+        refetch(activeSessionsKey, queryKeys.dashboard, queryKeys.openChecklistItems);
         break;
     }
-  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, patchSessionsInCache, trackArchiveTransitions, invalidateAllSessionQueries, invalidateDashboard, invalidateOpenChecklistItems, invalidateSessions, invalidateTasks, queryClient, refetchRestartStatus, taskChangeInvalidator]));
+  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, patchSessionsInCache, trackArchiveTransitions, eventQueries, refetchRestartStatus, taskChangeInvalidator]));
   const restarted = restartNotice?.kind === "restarted";
   useEffect(() => {
     if (!restarted) return;
@@ -1211,9 +1171,7 @@ function AppShell() {
     materializeSession,
     isSessionBusy,
     navigateToSession,
-    refreshSessions: () => {
-      void invalidateSessions();
-    },
+    refreshSessions: invalidateSessions,
     refreshTasks: () => {
       void invalidateTasks();
     },

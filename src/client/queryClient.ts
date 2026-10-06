@@ -61,7 +61,7 @@ export const queryKeys = {
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,
   dashboard: ["dashboard"] as const,
-  /** Kept outside ["dashboard"]: that prefix is refreshed on every session event, and the map only changes with tasks. */
+  /** Kept outside ["dashboard"]: that prefix is refreshed on most session events, and the map only changes with tasks. */
   workMapRoot: ["work-map"] as const,
   workMap: (includeArchived: boolean, assignedToMe: boolean) =>
     ["work-map", { includeArchived, assignedToMe }] as const,
