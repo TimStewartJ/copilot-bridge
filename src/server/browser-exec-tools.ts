@@ -8,15 +8,19 @@ import type { BrowserBrokerLease, BrowserContext } from "./browser-broker.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import {
   agentBrowserMissingFailure,
+  BROWSER_CAPTURE_PARAMETER,
+  BROWSER_COMMANDS_PARAMETER,
   browserStepFailure,
   captureFinalBrowserState,
   normalizeBrowserAutomationCapture,
   normalizeBrowserAutomationCommands,
   runBrowserAutomationCommands,
+  withScreenshots,
   type BrowserAutomationCaptureInput,
   type BrowserAutomationCommand,
 } from "./browser-automation.js";
 import { checkPage, pageBlockFields } from "./browser-page-check.js";
+import { chatStepFiles } from "./browser-step-files.js";
 import { err, ok, toolFailure, type Result } from "./tool-results.js";
 import { defineBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "./agent-tools-mcp/server.js";
@@ -95,9 +99,9 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
         "Use this for hardened freeform browsing when browser_fetch is too narrow but you still " +
         "want Bridge-owned profile handling, serialization, readiness checks, and recovery. " +
         "Element refs (for example, @e12) are valid only within the same browser_exec call as the snapshot that produced them, " +
-        "so include the snapshot and any ref-targeting click, fill, type, select, or check step in one commands array. " +
+        "so include the snapshot and the steps that use its refs in one commands array. " +
         "If a snapshot ref must be reused across calls, use the browser_session_* tools. " +
-        "For unsupported low-level agent-browser features, use the browser skill.",
+        "A step can be nearly any agent-browser command, including screenshot (you get the picture), drag, upload and download.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -117,47 +121,12 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             description:
               "Optional HTTP(S) origin allowlist for authenticated navigation, such as https://msazure.visualstudio.com.",
           },
-          commands: {
-            type: "array",
-            description: "Structured browser steps to run in order.",
-            items: {
-              type: "object",
-              properties: {
-                command: {
-                  type: "string",
-                  enum: ["open", "wait", "snapshot", "click", "fill", "type", "select", "check", "press", "scroll", "get"],
-                  description: "The agent-browser command name",
-                },
-                args: {
-                  type: "array",
-                  items: { type: "string" },
-                  description:
-                    "String arguments for the command. Element-targeting commands (click, fill, type, select, check) use refs from snapshot output — " +
-                    "pass the ref with @ prefix (e.g. @e42 for an element shown as [ref=e42] in the snapshot). CSS selectors are not supported for element targeting. " +
-                    "The get command reads page or element info: use args ['url'] for the current URL, ['title'] for the page title, or ['text', '@e42'] for an element's text by ref.",
-                },
-                timeoutMs: {
-                  type: "number",
-                  description: "Optional per-command timeout in milliseconds",
-                },
-              },
-              required: ["command"],
-            },
-          },
-          capture: {
-            type: "object",
-            description: "Optional final page state to capture after the command list completes.",
-            properties: {
-              url: { type: "boolean" },
-              title: { type: "boolean" },
-              snapshot: { type: "boolean" },
-              selector: { type: "string" },
-            },
-          },
+          commands: BROWSER_COMMANDS_PARAMETER,
+          capture: BROWSER_CAPTURE_PARAMETER,
         },
         required: ["commands"],
       },
-      handler: async (args: any) => {
+      handler: async (args: any, invocation) => {
         const normalized = normalizeBrowserExecInput(args);
         if (!normalized.ok) return toolFailure(normalized.error);
         const normalizedInput = normalized.value;
@@ -187,15 +156,19 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             },
           };
 
-          const execution = await runBrowserAutomationCommands(normalizedInput.commands, commandOptions);
+          const execution = await runBrowserAutomationCommands(
+            normalizedInput.commands,
+            commandOptions,
+            chatStepFiles(ctx, invocation.sessionId),
+          );
           if (!execution.ok) {
             // A step often fails because the site put a check where the page was expected.
-            return browserStepFailure(
+            return withScreenshots(browserStepFailure(
               execution.error,
               { context },
               pageBlockFields(await checkPage(commandOptions)),
               [`Browser context: ${context}`],
-            );
+            ), execution.error.images);
           }
           const finalState = await captureFinalBrowserState(normalizedInput.capture, commandOptions);
           const pageBlock = pageBlockFields(await checkPage(commandOptions));
@@ -210,12 +183,12 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
             }
           }
           success = true;
-          return {
+          return withScreenshots({
             ...pageBlock,
             context,
             steps: execution.value.steps,
             finalState,
-          };
+          }, execution.value.images);
         };
 
         try {

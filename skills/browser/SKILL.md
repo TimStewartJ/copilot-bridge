@@ -15,6 +15,8 @@ You have access to `agent-browser` through bash for **interactive, multi-step wo
 
 ## When to Use Browser
 
+Most browser work needs no raw commands: a step of `browser_exec` or `browser_session_exec` can be nearly any `agent-browser` command, including `screenshot` (the picture comes back to you), `drag`, `hover`, `mouse`, `tab`, `get attr`, `eval`, `upload` and `download`, and those tools can use the signed-in browser. Use this skill for what a step cannot be: `batch`, `--stdin` input, a browser of your own with its own options.
+
 Use this skill when you need browser control beyond a single page read:
 - **Multi-step flows**: login -> navigate -> extract across multiple pages
 - **Form interactions**: filling forms, clicking buttons, selecting dropdowns
@@ -30,7 +32,7 @@ For **online research or truth-checking**, prefer the built-in tools before esca
 ## Bridge Browser Rules
 
 The Bridge browser tools separate public browsing, which is signed out and keeps its cookies between uses, from an explicit authenticated context backed by the dedicated Bridge profile.
-This skill runs raw `agent-browser` commands through bash outside that broker, so raw commands are **unmanaged and unauthenticated by default**.
+This skill runs raw `agent-browser` commands through bash outside that broker, so raw commands are **unmanaged and unauthenticated by default**: a raw browser is signed out and cannot see a page the signed-in browser has open.
 
 Follow these rules unless the user explicitly asks otherwise:
 
@@ -187,7 +189,7 @@ Useful for:
 - visual layout checks
 - charts/canvas-heavy pages
 
-The resulting file path can be opened with `view`.
+The resulting file path can be opened with `view`. In the Bridge browser tools, the `screenshot` step returns the picture directly.
 
 ## JavaScript Evaluation
 
