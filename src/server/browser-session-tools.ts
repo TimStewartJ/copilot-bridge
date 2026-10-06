@@ -5,14 +5,18 @@ import { safeRecordBrowserSpan, type BrowserCommandOptions } from "./agent-brows
 import type { BrowserBrokerLease, BrowserBrokerOperationOptions } from "./browser-broker.js";
 import {
   agentBrowserMissingFailure,
+  BROWSER_CAPTURE_PARAMETER,
+  BROWSER_COMMANDS_PARAMETER,
   browserStepFailure,
   captureFinalBrowserState,
   normalizeBrowserAutomationCapture,
   normalizeBrowserAutomationCommands,
   runBrowserAutomationCommands,
+  withScreenshots,
 } from "./browser-automation.js";
 import { BrowserLiveUnavailableError } from "./browser-live.js";
 import { checkPage, pageBlockFields } from "./browser-page-check.js";
+import { chatStepFiles } from "./browser-step-files.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { sessionLease, type BrowserSessionRecord } from "./browser-session-store.js";
 import { defineSessionBridgeTool, registerBridgeToolDefinitions } from "./agent-tools-mcp/adapter.js";
@@ -142,7 +146,8 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
     defineSessionBridgeTool("browser_session_exec", {
       description:
         "Execute structured browser automation steps against an explicit browser session handle. " +
-        "Use this when a browser workflow must persist across multiple turns.",
+        "Use this when a browser workflow must persist across multiple turns. " +
+        "A step can be nearly any agent-browser command, including screenshot (you get the picture), drag, upload and download.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -150,38 +155,8 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
             type: "string",
             description: "The browser session handle returned by browser_session_start",
           },
-          commands: {
-            type: "array",
-            description: "Structured browser steps to run in order.",
-            items: {
-              type: "object",
-              properties: {
-                command: {
-                  type: "string",
-                  enum: ["open", "wait", "snapshot", "click", "fill", "type", "select", "check", "press", "scroll", "get"],
-                },
-                args: {
-                  type: "array",
-                  items: { type: "string" },
-                  description:
-                    "String arguments for the command. Element-targeting commands (click, fill, type, select, check) use refs from snapshot output — " +
-                    "pass the ref with @ prefix (e.g. @e42 for an element shown as [ref=e42] in the snapshot).",
-                },
-                timeoutMs: { type: "number" },
-              },
-              required: ["command"],
-            },
-          },
-          capture: {
-            type: "object",
-            description: "Optional final page state to capture after the command list completes.",
-            properties: {
-              url: { type: "boolean" },
-              title: { type: "boolean" },
-              snapshot: { type: "boolean" },
-              selector: { type: "string" },
-            },
-          },
+          commands: BROWSER_COMMANDS_PARAMETER,
+          capture: BROWSER_CAPTURE_PARAMETER,
         },
         required: ["browserSessionId", "commands"],
       },
@@ -198,22 +173,26 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
           { stepCount: commands.value.length },
           async (record, commandOptions) => {
             const session = { browserSessionId: record.id, context: record.context };
-            const execution = await runBrowserAutomationCommands(commands.value, commandOptions);
+            const execution = await runBrowserAutomationCommands(
+              commands.value,
+              commandOptions,
+              chatStepFiles(ctx, invocation.sessionId),
+            );
             if (!execution.ok) {
-              return browserStepFailure(
+              return withScreenshots(browserStepFailure(
                 execution.error,
                 session,
                 pageBlockFields(await checkPage(commandOptions), record.id),
                 [`Browser session: ${record.id}`, `Browser context: ${record.context}`],
-              );
+              ), execution.error.images);
             }
             const finalState = await captureFinalBrowserState(capture.value, commandOptions);
-            return {
+            return withScreenshots({
               ...pageBlockFields(await checkPage(commandOptions), record.id),
               ...session,
               steps: execution.value.steps,
               finalState,
-            };
+            }, execution.value.images);
           },
         );
       },

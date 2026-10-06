@@ -223,7 +223,8 @@ describe("browser_exec tool", () => {
   });
 
   it.each([
-    ["an unsupported command shape", { commands: [{ command: "snapshot", args: ["--full"] }] }, "commands[0] snapshot supports"],
+    ["an unsupported command shape", { commands: [{ command: "snapshot", args: ["-i", "-s"] }] }, "commands[0] snapshot supports"],
+    ["an option that is not the step's", { commands: [{ command: "snapshot", args: ["--full"] }] }, "commands[0] snapshot cannot take \"--full\""],
     ["an unknown context", { context: "private", commands: [{ command: "snapshot" }] }, "context"],
     ["authenticated access without a reason", {
       context: "authenticated",

@@ -596,7 +596,10 @@ function agentBrowserJsonOutput(command: BrowserCommand, envelope: AgentBrowserJ
   }
   if (typeof data.message === "string") return data.message;
   if (typeof data.state === "string") return data.state;
-  return "";
+  // Any other command answers in a shape of its own. `eval` reports the page it ran on even
+  // when the script produced nothing.
+  const { lifecycle: _lifecycle, ...rest } = data;
+  return command[0] === "eval" || Object.keys(rest).length === 0 ? "" : JSON.stringify(rest);
 }
 
 function parseAgentBrowserEnvelope(stdout: string): AgentBrowserJsonEnvelope | null {
