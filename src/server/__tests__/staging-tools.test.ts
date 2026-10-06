@@ -855,6 +855,48 @@ describe("staging tools", () => {
     expect(existsSync(join(seededDataDir, "docs", "note.md"))).toBe(true);
   });
 
+  it("starts a preview without production's search index", async () => {
+    const mod = await loadStagingToolsModule();
+    const productionDataDir = createProductionDataDir();
+    const stagingDir = createTempDir("bridge-stage-staging-");
+    const indexedMessages = (db: DatabaseSync) =>
+      (db.prepare("SELECT COUNT(*) AS count FROM search_chat_messages").get() as { count: number }).count;
+    const productionDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    try {
+      productionDb.exec(`
+        CREATE TABLE search_indexed_sessions (
+          sessionId TEXT PRIMARY KEY, size INTEGER NOT NULL, mtimeMs REAL NOT NULL,
+          ctimeMs REAL NOT NULL DEFAULT -1, digest TEXT NOT NULL, indexedAt TEXT NOT NULL
+        );
+        INSERT INTO search_indexed_sessions VALUES ('production-session', 10, 1, 1, 'digest', '2026-01-01T00:00:00.000Z');
+        CREATE VIRTUAL TABLE search_chat_titles USING fts5(sessionId UNINDEXED, title);
+        INSERT INTO search_chat_titles(sessionId, title) VALUES ('production-session', 'Production chat');
+        CREATE VIRTUAL TABLE search_chat_messages USING fts5(
+          sessionId UNINDEXED, sourceEventId UNINDEXED, role UNINDEXED, timestamp UNINDEXED, content
+        );
+        INSERT INTO search_chat_messages(sessionId, sourceEventId, role, timestamp, content)
+        VALUES ('production-session', 'event-1', 'user', NULL, 'production text');
+      `);
+    } finally {
+      productionDb.close();
+    }
+
+    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+
+    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    try {
+      expect(stagingDb.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'search!_%' ESCAPE '!'").all()).toEqual([]);
+    } finally {
+      stagingDb.close();
+    }
+    const productionAfter = new DatabaseSync(join(productionDataDir, "bridge.db"));
+    try {
+      expect(indexedMessages(productionAfter)).toBe(1);
+    } finally {
+      productionAfter.close();
+    }
+  });
+
   it("inserts or replaces staging model settings when the production app settings row is missing or malformed", async () => {
     const mod = await loadStagingToolsModule();
 

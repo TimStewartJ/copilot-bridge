@@ -1,10 +1,11 @@
 import { CopilotClient } from "@github/copilot-sdk";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { isRecord } from "../../shared/is-record.js";
 import { CopilotBackend } from "../agent-backend/copilot-backend.js";
 import type { AgentSession, AgentSessionConfig } from "../agent-backend/types.js";
@@ -24,7 +25,7 @@ import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
 type Wire = "completions" | "anthropic";
 const MODELS: Record<Wire, string> = { completions: "fake-vision", anthropic: "claude-fake-vision" };
 const MODEL = MODELS.completions;
-const IMAGE_SIDE = 500; // 750 KB of noise, about 1 MB as base64
+const IMAGE_SIDE = 300; // 270 KB of noise, about 360 KB as base64
 
 function pngChunk(type: string, data: Buffer): Buffer {
   const length = Buffer.alloc(4);
@@ -122,9 +123,9 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
   const wire = options.wire ?? "completions";
   const model = MODELS[wire];
   const path = wire === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
-  const home = makeTestDir("image-budget-native");
-  const cwd = join(home, "workspace");
-  await mkdir(cwd);
+  if (!runtime) throw new Error("The CLI runtime did not start");
+  const { home, backend } = runtime;
+  const cwd = makeTestDir("image-budget-native");
   const imagePaths: string[] = [];
   for (let i = 0; i < options.views; i++) {
     const path = join(cwd, `noise-${i}.png`);
@@ -172,23 +173,23 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
     });
   });
 
-  const client = new CopilotClient({
-    ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: home, BRIDGE_WORKSPACE_DIR: join(home, "bridge-workspace") }),
-    useLoggedInUser: false, baseDirectory: join(home, "session-state"), logLevel: "error",
+  let live: AgentSession | undefined;
+  const setup = new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
   });
-  const backend = new CopilotBackend(client);
-  const setup = (async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
-    });
-    await backend.start();
-  })();
   const cleanup = registerTestAppCleanup(async () => {
     try { await setup; }
     finally {
-      try { await backend.stop(); }
-      finally {
+      // A test that failed part-way leaves its session running in the shared runtime.
+      const session = live;
+      live = undefined;
+      try {
+        if (session) {
+          await session.abort().catch(() => {});
+          await session.release();
+        }
+      } finally {
         server.closeAllConnections();
         if (server.listening) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       }
@@ -200,7 +201,6 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
   if (!address || typeof address === "string") throw new Error("Expected a loopback address");
 
   const eventsPaths = new Map<string, string>();
-  let live: AgentSession | undefined;
   let turnRunning = false;
   const continuations: Promise<unknown>[] = [];
   // The production controller, with a host backed by the raw session instead of SessionManager.
@@ -272,6 +272,7 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
     }
     unsubscribe();
     controller.detach(session.sessionId, session);
+    live = undefined;
     await session.release();
     return { reply: (reply as any)?.data?.content as string | undefined, errors: errors.filter((error) => !/abort/i.test(error)), aborts };
   };
@@ -280,11 +281,32 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
 
 const IMAGE_BYTES = Math.ceil((IMAGE_SIDE * (IMAGE_SIDE * 3 + 1)) / 3) * 4;
 
+// One CLI runtime for the file: starting it takes longer than a test's turns. Each test still has
+// its own model server, working folder, session and controller. Its home outlives single tests, so
+// it is removed in afterAll instead of by makeTestDir's per-test cleanup.
+let runtime: { home: string; backend: CopilotBackend } | undefined;
+
+beforeAll(async () => {
+  const home = await mkdtemp(join(tmpdir(), "bridge-image-budget-native-"));
+  const client = new CopilotClient({
+    ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: home, BRIDGE_WORKSPACE_DIR: join(home, "bridge-workspace") }),
+    useLoggedInUser: false, baseDirectory: join(home, "session-state"), logLevel: "error",
+  });
+  runtime = { home, backend: new CopilotBackend(client) };
+  await runtime.backend.start();
+});
+
+afterAll(async () => {
+  if (!runtime) return;
+  try { await runtime.backend.stop(); }
+  finally { await rm(runtime.home, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); }
+});
+
 describe("native image budget", () => {
   // When this starts failing, the CLI recovers by itself and image-budget.ts can be removed.
   it("without a ceiling the CLI cannot get past a provider's byte cap", async ({ signal }) => {
     const { run, requests, cleanup } = await fixture(signal, {
-      capBytes: 9 * IMAGE_BYTES, views: 12, perTurn: 1, budget: { ceilingsMb: {} },
+      capBytes: 3 * IMAGE_BYTES, views: 5, perTurn: 1, budget: { ceilingsMb: {} },
     });
     try {
       const { reply, errors } = await run();
@@ -298,7 +320,7 @@ describe("native image budget", () => {
   it("pauses before the cap, compacts, continues, and finishes", async ({ signal }) => {
     const capBytes = 9 * IMAGE_BYTES;
     const { run, requests, cleanup } = await fixture(signal, {
-      capBytes, views: 12, perTurn: 1, budget: { ceilingsMb: { [MODEL]: capBytes / 1_000_000 } },
+      capBytes, views: 10, perTurn: 1, budget: { ceilingsMb: { [MODEL]: capBytes / 1_000_000 } },
     });
     try {
       const { reply, errors, aborts } = await run();
@@ -331,7 +353,7 @@ describe("native image budget", () => {
   // failing, the CLI recovers from a provider cap on the Claude path too.
   it("without a ceiling the CLI cannot get past a byte cap on the Claude messages wire", async ({ signal }) => {
     const { run, requests, cleanup } = await fixture(signal, {
-      wire: "anthropic", capBytes: 9 * IMAGE_BYTES, views: 12, perTurn: 1, budget: { ceilingsMb: {} },
+      wire: "anthropic", capBytes: 3 * IMAGE_BYTES, views: 5, perTurn: 1, budget: { ceilingsMb: {} },
     });
     try {
       const { reply, errors } = await run();
@@ -345,7 +367,7 @@ describe("native image budget", () => {
   it("pauses before the cap and finishes on the Claude messages wire", async ({ signal }) => {
     const capBytes = 9 * IMAGE_BYTES;
     const { run, requests, cleanup } = await fixture(signal, {
-      wire: "anthropic", capBytes, views: 12, perTurn: 1, budget: { ceilingsMb: { [MODELS.anthropic]: capBytes / 1_000_000 } },
+      wire: "anthropic", capBytes, views: 10, perTurn: 1, budget: { ceilingsMb: { [MODELS.anthropic]: capBytes / 1_000_000 } },
     });
     try {
       const { reply, errors } = await run();
