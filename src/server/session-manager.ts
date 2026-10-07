@@ -1633,6 +1633,11 @@ export class SessionManager {
     return this.pendingSessionCreations.get(sessionId) ?? Promise.resolve(undefined);
   }
 
+  /** The id has been handed out and the runtime has not finished creating the session. */
+  private isSessionCreationPending(sessionId: string): boolean {
+    return this.requestedSessionCreations.has(sessionId) || this.pendingSessionCreations.has(sessionId);
+  }
+
   private beginSessionCreationLifetime(): () => void {
     let completed = false;
     let resolveLifetime!: () => void;
@@ -2522,6 +2527,11 @@ export class SessionManager {
       reserveCachedSession?: boolean;
     } = {},
   ): Promise<SessionResumeLease | null> {
+    // The creation already holds the session's runtime handle. The runtime routes a session's
+    // events and tool requests to the newest handle, so a resume now would take them from it.
+    if (this.isSessionCreationPending(sessionId)) {
+      throw new Error(`Session ${sessionId} is still being created`);
+    }
     if (this.settlingTimedOutSessionResumes.has(sessionId)) {
       throw new Error(BACKEND_RECONNECTING_MESSAGE);
     }
@@ -4519,6 +4529,8 @@ export class SessionManager {
     const client = this.getBackend();
     const owner = this.captureRuntimeOwner(client);
 
+    // A session still being created is named through the handle its creation caches.
+    if (!this.sessionObjects.has(sessionId)) await this.awaitPendingSessionCreation(sessionId);
     const cachedSession = this.sessionObjects.get(sessionId);
     if (cachedSession) return operation(cachedSession);
 
@@ -5749,7 +5761,7 @@ export class SessionManager {
 
   async getSessionCreationState(sessionId: string): Promise<"pending" | "present" | "absent"> {
     if (!isCanonicalSessionId(sessionId)) throw new Error("A canonical session ID is required");
-    if (this.requestedSessionCreations.has(sessionId) || this.pendingSessionCreations.has(sessionId)) return "pending";
+    if (this.isSessionCreationPending(sessionId)) return "pending";
     if (this.sessionObjects.has(sessionId) || await this.hasKnownPersistedSession(sessionId)) return "present";
     const sessions = await this.getBackend().listSessions();
     return sessions.some((session) => session.sessionId === sessionId) ? "present" : "absent";
