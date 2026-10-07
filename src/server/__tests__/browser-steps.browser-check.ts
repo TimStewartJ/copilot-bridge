@@ -11,8 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
-// The shared setup replaces the host lookups, and with them the browser and its launch arguments.
+// The shared setup replaces the host lookups, and with them the browser and its launch arguments,
+// and where agent-browser is installed. Without the second, Windows is asked to start
+// `agent-browser` itself, which there is only npm's launcher script.
 vi.unmock("../browser-launch-host.js");
+vi.unmock("../agent-browser-command.js");
 
 const { runBrowserAutomationCommands } = await import("../browser-automation.js");
 const { BrowserBroker } = await import("../browser-broker.js");
