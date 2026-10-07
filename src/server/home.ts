@@ -73,15 +73,18 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
     }
     const linkedTasks = new Map<string, Task[]>();
     for (const task of allTasks) for (const id of task.sessionIds) linkedTasks.set(id, [...linkedTasks.get(id) ?? [], task]);
-    const visible = sessions.filter(session => {
-      const linked = linkedTasks.get(session.sessionId) ?? [];
-      return linked.length === 0 || linked.some(task => task.status === "active" && !task.muted);
-    });
+    // The task a conversation is shown under: an active unmuted one, else an archived unmuted one when no
+    // linked task is still active. Archiving closes a task without silencing it; muting silences it.
+    const owner = (sessionId: string): Task | undefined => {
+      const linked = (linkedTasks.get(sessionId) ?? []).slice().sort((a, b) => taskRank.get(a.id)! - taskRank.get(b.id)!);
+      return linked.find(task => task.status === "active" && !task.muted)
+        ?? (linked.some(task => task.status === "active") ? undefined : linked.find(task => !task.muted));
+    };
+    const visible = sessions.filter(session => !linkedTasks.has(session.sessionId) || !!owner(session.sessionId));
     const refs = new Map(visible.map(session => {
-      const task = (linkedTasks.get(session.sessionId) ?? []).filter(task => task.status === "active" && !task.muted)
-        .sort((a, b) => taskRank.get(a.id)! - taskRank.get(b.id)!)[0];
+      const task = owner(session.sessionId);
       const ref: HomeSessionRef = { sessionId: session.sessionId, title: clip(session.summary, 160) || "Conversation",
-        ...(task ? { taskId: task.id, taskTitle: task.title } : {}) };
+        ...(task ? { taskId: task.id, taskTitle: task.title, taskArchived: task.status === "archived" } : {}) };
       return [session.sessionId, ref];
     }));
     const sessionById = new Map(visible.map(session => [session.sessionId, session]));

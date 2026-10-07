@@ -41,8 +41,9 @@ export function formatShortDate(value: string, now = new Date()): string {
 
 /** The single most useful status for a task row, or none when nothing needs saying. */
 export function stateBadge(row: TaskOverviewRow, now = new Date()): { label: string; tone: StateTone } | null {
-  if (row.inputCount > 0) return { label: "Answer needed", tone: "warning" };
-  if (row.stalledCount > 0) return { label: "Stalled", tone: "warning" };
+  // A muted task surfaces only for its revisit date, so its row never speaks for its conversations.
+  if (!row.muted && row.inputCount > 0) return { label: "Answer needed", tone: "warning" };
+  if (!row.muted && row.stalledCount > 0) return { label: "Stalled", tone: "warning" };
   if (row.reasons.includes("revisit") && row.nextTouchAt) return { label: `Revisit · ${formatShortDate(row.nextTouchAt, now)}`, tone: "warning" };
   if (row.busyCount > 0) return { label: "Agent working", tone: "info" };
   if (row.state === "set_aside") return { label: row.muted ? "Muted" : "Deferred", tone: "neutral" };

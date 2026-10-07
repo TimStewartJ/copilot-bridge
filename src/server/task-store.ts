@@ -893,6 +893,23 @@ export function createTaskStore(
   }
 
   /**
+   * This task's conversations that are not archived themselves and belong to no active task.
+   * Once the task is archived these are the ones nothing in the working lists still shows.
+   */
+  function listOpenSessionIdsWithoutActiveTask(id: string): string[] {
+    return (db.prepare(`
+      SELECT ts.sessionId FROM task_sessions ts
+      LEFT JOIN bridge_session_state b ON b.sessionId = ts.sessionId
+      WHERE ts.taskId = ? AND COALESCE(b.archived, 0) = 0
+        AND NOT EXISTS (
+          SELECT 1 FROM task_sessions other JOIN tasks t ON t.id = other.taskId
+          WHERE other.sessionId = ts.sessionId AND t.status = 'active'
+        )
+      ORDER BY ts.linkedAt ASC
+    `).all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  /**
    * Delete the task's owned rows. Must run inside an open transaction.
    *
    * `schedules.taskId` has no foreign key, so schedule rows do not cascade with
@@ -1143,7 +1160,7 @@ export function createTaskStore(
 
   return {
     listTasks, listTasksWithoutSessions, listTaskLinksBySession, listArchivedSessionIdsForTask, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
-    archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask,
+    archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask, listOpenSessionIdsWithoutActiveTask,
     getTaskSessionCounts, listTaskSessionSummaries,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
     findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, recordUserMessage, listMomentumSignals,

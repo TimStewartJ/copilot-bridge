@@ -1052,9 +1052,49 @@ function initSchema(db: DatabaseSync): void {
 
   initializeDashboardRetirementSchema(db);
   initializeSessionUserMessagesSchema(db);
+  settleArchivedTaskConversationsOnce(db);
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
   initializeDocsFts(db);
+}
+
+/**
+ * Archiving a task now marks its conversations read, so anything unread under an archived task is new.
+ * Tasks archived before that still hold old unread conversations; this settles them once per database.
+ * Only conversations that are not archived themselves and belong to no active task are touched.
+ */
+function settleArchivedTaskConversationsOnce(db: DatabaseSync): void {
+  const marker = "migration:archived-task-chats-read";
+  if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(marker)) return;
+  const now = new Date().toISOString();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    // The management job runner opens the same database; whoever inserts the marker does the work.
+    const claimed = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)").run(marker, now);
+    if (Number(claimed.changes) > 0) {
+      db.prepare(`
+        INSERT INTO read_state (sessionId, lastReadAt)
+        SELECT DISTINCT ts.sessionId, ?
+        FROM task_sessions ts
+        JOIN tasks owner ON owner.id = ts.taskId
+        LEFT JOIN bridge_session_state b ON b.sessionId = ts.sessionId
+        WHERE COALESCE(b.archived, 0) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM task_sessions other JOIN tasks t ON t.id = other.taskId
+            WHERE other.sessionId = ts.sessionId AND t.status = 'active'
+          )
+        ON CONFLICT(sessionId) DO UPDATE SET
+          lastReadAt = CASE
+            WHEN read_state.lastReadAt < excluded.lastReadAt THEN excluded.lastReadAt
+            ELSE read_state.lastReadAt
+          END
+      `).run(now);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export type { DatabaseSync };

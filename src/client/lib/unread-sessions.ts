@@ -12,8 +12,9 @@ export interface UnreadSession<T extends UnreadTask = UnreadTask> {
 /**
  * Chats holding results the reader has not seen, newest first: the set Home lists as new replies.
  * A chat that is still working is not unread yet, the chat open behind the caller is being read,
- * and a chat whose tasks are all muted or archived stays quiet. Naming a task lists that task's
- * unread chats even when it is muted, as its own session list does.
+ * and a chat whose tasks are all muted stays quiet. A chat with no active task left is listed under
+ * its archived task: archiving marks a task's chats read, so this one arrived afterwards. Naming a
+ * task lists that task's unread chats even when it is muted, as its own session list does.
  */
 export function listUnreadSessions<T extends UnreadTask>({ sessions, tasks, isUnread, activeSessionId, taskId }: {
   sessions: readonly Session[];
@@ -36,7 +37,8 @@ export function listUnreadSessions<T extends UnreadTask>({ sessions, tasks, isUn
       if (!isSessionLinkedToTask(scopedTask, session)) continue;
     } else {
       const linked = tasks.filter((candidate) => isSessionLinkedToTask(candidate, session));
-      task = linked.find((candidate) => candidate.status === "active" && !candidate.muted);
+      task = linked.find((candidate) => candidate.status === "active" && !candidate.muted)
+        ?? (linked.some((candidate) => candidate.status === "active") ? undefined : linked.find((candidate) => !candidate.muted));
       // A link to a task this list does not know is still a link, so it is not a quick chat.
       if (!task && (linked.length > 0 || (session.linkedTaskIds?.length ?? 0) > 0)) continue;
     }

@@ -128,6 +128,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
         : badge && <Badge tone={badge.tone === "warning" ? "warning" : badge.tone === "info" ? "info" : "neutral"}>{badge.label}</Badge>}
       {/* Outside Set aside, say that it was set aside: it surfaced for a reason, not because it resumed. */}
       {row.deferred && row.state !== "set_aside" && <Badge>Deferred</Badge>}
+      {row.muted && row.state !== "set_aside" && <Badge>Muted</Badge>}
       <span className={cx(DS.text.meta, "hidden w-24 shrink-0 text-right sm:block")} title={describeTouch(row)}>{describeIdle(row)}</span>
     </div>;
   };

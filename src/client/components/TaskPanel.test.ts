@@ -589,6 +589,17 @@ describe("TaskPanel", () => {
     }
   });
 
+  it("asks about a reached revisit date above the task's sections, and only while the task is active", async () => {
+    const due = await renderTaskPanelHtml(createTask({ deferred: true, nextTouchAt: "2000-01-01T00:00:00.000Z" }));
+    expect(due).toContain("Time to revisit");
+    expect(due).toContain("Resume task");
+    expect(due.indexOf("Time to revisit")).toBeLessThan(due.indexOf("Where things stand"));
+    // The prompt replaces the header chip, so the date is said once.
+    expect(due).not.toContain("Ready to revisit");
+    await expect(renderTaskPanelHtml(createTask({ nextTouchAt: "9999-01-01T00:00:00.000Z" }))).resolves.not.toContain("Time to revisit");
+    await expect(renderTaskPanelHtml(createTask({ status: "archived", nextTouchAt: "2000-01-01T00:00:00.000Z" }))).resolves.not.toContain("Time to revisit");
+  });
+
   it("counts only active sessions in the Sessions header", async () => {
     const linkedSessions = [
       createSession({ sessionId: "session-1" }),

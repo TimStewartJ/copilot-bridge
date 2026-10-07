@@ -31,6 +31,10 @@ describe("deriveTaskState", () => {
     expect(deriveTaskState(base({ inputCount: 1, stalledCount: 1, nextTouchAt: daysAgo(1) }), NOW))
       .toMatchObject({ state: "needs_you", reasons: ["question", "stalled", "revisit"] });
     expect(deriveTaskState(base({ deferred: true, nextTouchAt: daysAgo(0) }), NOW)).toMatchObject({ state: "needs_you", reasons: ["revisit"] });
+    // Mute silences a task's conversations, never the date someone asked to see it again on.
+    expect(deriveTaskState(base({ muted: true, inputCount: 1, stalledCount: 1, nextTouchAt: daysAgo(1) }), NOW))
+      .toMatchObject({ state: "needs_you", reasons: ["revisit"] });
+    expect(deriveTaskState(base({ muted: true, inputCount: 1, nextTouchAt: daysAgo(-1) }), NOW).state).toBe("set_aside");
     // The rules take no checklist input at all, so overdue to-dos can never change a task's state.
     expect(Object.keys(base()).some(key => /checklist|deadline|action(?!Count)/i.test(key) && key !== "nextAction")).toBe(false);
   });

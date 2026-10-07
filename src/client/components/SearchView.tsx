@@ -338,7 +338,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
               <button type="button" data-search-result="" onClick={() => navigate(getSessionPath({ sessionId: session.sessionId, taskId: task?.id }))} className={DS.row.stacked}>
                 <span className="break-words text-sm font-semibold text-text-primary line-clamp-2">{session.summary?.trim() || "Untitled chat"}</span>
                 <span className="mt-1 flex min-w-0 gap-1 text-xs text-text-muted">
-                  <span className="min-w-0 truncate">{task ? `Task: ${task.title}` : "Quick chat"}</span>{" "}
+                  <span className="min-w-0 truncate">{task ? `Task: ${task.title}${task.status === "archived" ? " (archived)" : ""}` : "Quick chat"}</span>{" "}
                   <span className="shrink-0">· {timeAgo(getSessionActivityTime(session))}</span>
                 </span>
               </button>

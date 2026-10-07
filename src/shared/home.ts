@@ -13,6 +13,8 @@ export interface HomeTask {
 }
 export interface HomeSessionRef {
   sessionId: string; title: string; taskId?: string; taskTitle?: string;
+  /** The conversation's only tasks are archived: it is listed because something new arrived after they were closed. */
+  taskArchived?: boolean;
 }
 export type HomeInput = HomeSessionRef & (
   | { kind: "user_input"; request: PendingUserInputRequestView }

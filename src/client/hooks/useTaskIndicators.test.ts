@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Session, Task } from "../api";
 import {
+  countUnreadTasks,
+  unreadTasksLabel,
   countTaskUnread,
   describeTabAttention,
   getArchivedActivityByTask,
@@ -59,7 +61,7 @@ function createIndicator(overrides: Partial<TaskIndicator> = {}): TaskIndicator 
 }
 
 describe("summarizeTaskTabAttention", () => {
-  it("counts each non-archived, unmuted task once and tracks needs-answer tasks", () => {
+  it("counts each unmuted task once, archived ones too, and tracks needs-answer tasks", () => {
     const tasks = [
       createTask({ id: "task-unread" }),
       createTask({ id: "task-needs-answer" }),
@@ -77,10 +79,13 @@ describe("summarizeTaskTabAttention", () => {
       ["task-archived", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
     ]);
 
+    // Archiving a task marks its conversations read, so what is unread there arrived afterwards.
     expect(summarizeTaskTabAttention(tasks, indicators)).toEqual({
-      count: 3,
-      needsUserInputCount: 2,
+      count: 4,
+      needsUserInputCount: 3,
     });
+    expect(countUnreadTasks(tasks, indicators)).toBe(3);
+    expect(unreadTasksLabel(3)).toBe("3 unread");
   });
 
   it("does not double-count a task with unread and needs-answer sessions", () => {
