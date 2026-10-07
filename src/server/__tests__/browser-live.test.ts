@@ -848,7 +848,7 @@ describe("BrowserLiveGateway file choosers", () => {
     expect(view.client.inbox.unread).toBe(0);
 
     view.client.socket.close(1000);
-    await view.client.inbox.closed;
+    await view.upstream.inbox.closed;
     // The files on their way have no page to go to, and the browser's pages show their own choosers again.
     await expect(h.gateway.chooseFiles(second.id, ["a.jpg"])).resolves.toEqual({ ok: false, error: GONE });
     await chrome.disconnected();
