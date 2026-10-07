@@ -2,8 +2,9 @@
 // Everything the live view relies on agent-browser's stream for is in that check, so this is
 // what tells whether an agent-browser update broke it. The other tests open a live view the
 // way a Bridge client does, for what only shows with the stream of a real agent-browser behind
-// the relay: that a view runs no commands of its own, and that a file chooser a tap opens
-// reaches the viewer instead of the browser's own screen. Run with `npm run check:browser`.
+// the relay: that a view runs no commands of its own, that a file chooser a tap opens reaches the
+// viewer instead of the browser's own screen, and that a sign-in which runs in a popup window
+// can be done in a view. Run with `npm run check:browser`.
 
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -228,6 +229,131 @@ it("asks the viewer for the file when a tap in a view opens the page's file choo
       error: "The page is no longer asking for a file. Use its button again.",
     });
   } finally {
+    view?.terminate();
+    live.shutdown();
+    await sessions.closeAll();
+    for (const server of [pages, bridge]) {
+      server.closeAllConnections();
+      server.close();
+    }
+    await rm(copilotHome, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A sign-in the way Microsoft's runs: the page opens a window, the account is picked there, and
+ * that window tells the page and closes itself. Every page is one button, so a press anywhere
+ * lands on it; `pressed` says which page got each press.
+ */
+function createSignInSite() {
+  const whole = "display:block;width:100vw;height:100vh";
+  const pressed: string[] = [];
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/pressed/")) {
+      pressed.push(req.url.slice("/pressed/".length));
+      res.end();
+      return;
+    }
+    res.setHeader("content-type", "text/html");
+    if (req.url === "/accounts") {
+      res.end(`<body style="margin:0"><button style="${whole}" onclick="fetch('/pressed/popup').then(() => { location = '/signed-in' })">Pick an account</button></body>`);
+    } else if (req.url === "/signed-in") {
+      res.end("<script>opener.postMessage('signed in', '*'); close()</script>");
+    } else {
+      res.end(`<body style="margin:0">
+        <button style="${whole}" onclick="fetch('/pressed/page'); open('/accounts', 'sign-in', 'width=500,height=600')">Sign in</button>
+        <script>addEventListener('message', (event) => { document.title = event.data })</script>
+      </body>`);
+    }
+  });
+  return { server, pressed };
+}
+
+// agent-browser turns to a popup when it opens, and back to the page when it closes. Its stream
+// has to go with it: the picture a view shows, and where a press in the view lands. The stream of
+// agent-browser 0.33 stayed on the page, so a sign-in popup could not be used in a view.
+it.each([
+  ["a press in the view", false],
+  ["the agent, before the view was opened for a handoff", true],
+])("shows a sign-in popup opened by %s, passes a press to it, and goes back to the page when it closes", async (_name, openedByAgent) => {
+  const copilotHome = await mkdtemp(join(tmpdir(), "bridge-browser-check-"));
+  const { server: pages, pressed } = createSignInSite();
+  const broker = new BrowserBroker({ copilotHome });
+  const sessions = new BrowserSessionStore({ browserBroker: broker });
+  const live = new BrowserLiveGateway({ sessions, broker });
+  const bridge = createServer();
+  bridge.on("upgrade", (req, socket, head) => {
+    if (!live.handleUpgrade(req, socket, head)) socket.destroy();
+  });
+  let view: WebSocket | undefined;
+  let handBack: (() => void) | undefined;
+  try {
+    for (const server of [pages, bridge]) {
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+    }
+    const site = `http://127.0.0.1:${(pages.address() as AddressInfo).port}`;
+    const session = await sessions.createSession("browser-check", "public");
+    const onBrowser = (command: [string, ...string[]]) => sessions.useSession(session.id, "browser-check", (record) => broker.withTarget(
+      sessionLease(record),
+      { toolName: "browser_live_check", browserOpId: "browser-check" },
+      () => ab(command, 30_000, { browserTarget: record.browserTarget }),
+    ));
+    expect(await onBrowser(["open", `${site}/`])).toMatchObject({ ok: true, value: { ok: true } });
+    if (openedByAgent) {
+      expect(await onBrowser(["click", "button"])).toMatchObject({ value: { ok: true } });
+      await vi.waitFor(async () => expect(await onBrowser(["get", "url"])).toMatchObject({ value: { output: `${site}/accounts` } }));
+      // The browser is the user's from here on, as in a handoff.
+      handBack = broker.holdTarget(sessionLease(sessions.getSession(session.id)!), "Sign in");
+    }
+
+    const ticket = await live.createTicket(session.id);
+    const query = new URLSearchParams({ browserSessionId: session.id, token: ticket.token });
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${(bridge.address() as AddressInfo).port}${BROWSER_LIVE_WS_PATH}?${query.toString()}`,
+    );
+    view = socket;
+    let frames = 0;
+    const addresses: string[] = [];
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as BrowserLiveServerMessage;
+      if (message.type === "frame") {
+        frames += 1;
+        socket.send(JSON.stringify({ type: "ack", seq: message.seq }));
+      } else if (message.type === "url") {
+        addresses.push(message.url);
+      }
+    });
+    await vi.waitFor(() => expect(frames).toBeGreaterThan(0));
+
+    const press = (): void => {
+      const click = { type: "input_mouse", x: 40, y: 40, button: "left", clickCount: 1 };
+      socket.send(JSON.stringify({ type: "input_mouse", eventType: "mouseMoved", x: 40, y: 40 }));
+      socket.send(JSON.stringify({ ...click, eventType: "mousePressed" }));
+      socket.send(JSON.stringify({ ...click, eventType: "mouseReleased" }));
+    };
+    if (!openedByAgent) press();
+    await vi.waitFor(() => {
+      expect(pressed).toEqual(["page"]);
+      expect(addresses.at(-1)).toBe(`${site}/accounts`);
+    });
+    // The view is told of the popup a moment before the stream is on it.
+    await delay(1_000);
+
+    press();
+    await vi.waitFor(() => {
+      expect(pressed).toEqual(["page", "popup"]);
+      expect(addresses.at(-1)).toBe(`${site}/`);
+    });
+    handBack?.();
+    handBack = undefined;
+    await vi.waitFor(async () => expect(await onBrowser(["get", "title"])).toMatchObject({ value: { output: "signed in" } }));
+
+    // The stream is back on the page: a press reaches it again.
+    press();
+    await vi.waitFor(() => expect(pressed).toEqual(["page", "popup", "page"]));
+  } finally {
+    handBack?.();
     view?.terminate();
     live.shutdown();
     await sessions.closeAll();

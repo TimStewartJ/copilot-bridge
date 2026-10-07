@@ -64,7 +64,7 @@ function baseDiagnostics(): Diagnostics {
         args: ["--no-first-run", "--disable-blink-features=AutomationControlled"],
         inheritedFrom: "environment" as const,
       },
-      agentBrowserVersion: "0.31.2",
+      agentBrowserVersion: "0.38.2",
     },
     runtime: {
       agentBrowserInstalled: true,
@@ -191,7 +191,7 @@ describe("BrowserDiagnosticsSection", () => {
     expect(text).toContain("Google Chrome 154.0.8037.97 · found on this machine · updated 12 days ago");
     expect(text).not.toContain("Sites can tell this build");
     expect(text).not.toContain("has not been updated");
-    expect(text).toContain("installed · 0.31.2");
+    expect(text).toContain("installed · 0.38.2");
   });
 
   it("warns about a build that sites recognise as automation", async () => {
@@ -290,6 +290,41 @@ describe("BrowserDiagnosticsSection", () => {
       // Only a live view that does not work comes with what was found and how to update.
       expect(text.includes("npm install -g agent-browser@latest")).toBe(notice !== undefined);
       if (notice) expect(text).toContain(notice);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it.each([
+    { name: "has not been checked", liveView: undefined },
+    { name: "passed its check", liveView: { ok: true, checkedAt: "2026-09-08T15:58:00.000Z" } },
+  ])("says that agent-browser needs an update when it is older than the Bridge works with and the live view $name", async ({ liveView }) => {
+    // An old agent-browser shows a page and passes the check; a popup is what it does not show.
+    apiMocks.fetchBrowserDiagnostics.mockResolvedValue(diagnostics({ config: { liveView, agentBrowserVersion: "0.33.2" } }));
+    const harness = await renderSection();
+    try {
+      const text = harness.dom.container.textContent ?? "";
+      expect(text).toContain("Needs an update");
+      expect(text).not.toContain("Not checked yet");
+      expect(text).toContain("agent-browser 0.33.2 is older than the Bridge needs (0.38.0 or newer).");
+      expect(text).toContain("a sign-in popup, does not show in the view");
+      expect(text).toContain("npm install -g agent-browser@latest");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("says only why the live view does not work when agent-browser is also too old", async () => {
+    apiMocks.fetchBrowserDiagnostics.mockResolvedValue(diagnostics({
+      config: { liveView: { ok: false, checkedAt: "2026-09-08T15:58:00.000Z", message: "The stream sent no picture of the page." }, agentBrowserVersion: "0.33.2" },
+    }));
+    const harness = await renderSection();
+    try {
+      const text = harness.dom.container.textContent ?? "";
+      expect(text).toContain("Not working");
+      expect(text).toContain("The stream sent no picture of the page.");
+      expect(text).not.toContain("Needs an update");
+      expect(text).not.toContain("is older than the Bridge needs");
     } finally {
       await harness.cleanup();
     }

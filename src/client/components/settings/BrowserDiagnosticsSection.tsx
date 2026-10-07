@@ -20,6 +20,7 @@ import {
   type BrowserDiagnosticsTone,
 } from "../../api";
 import { BrowserLiveDialog } from "../../browser-live/BrowserLiveDialog";
+import { MIN_AGENT_BROWSER_VERSION, isAgentBrowserOutdated } from "../../../shared/browser-diagnostics.js";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
 import { Badge, Button, Details, Field, FieldList, Notice, SettingList, SettingRow, StatusIcon, Switch } from "../../design/primitives";
@@ -295,6 +296,8 @@ export function BrowserDiagnosticsSection({
     ? browserBuild.installedDaysAgo
     : undefined;
   const warningIcon = <StatusIcon kind="warning" decorative />;
+  const liveViewFails = config?.liveView !== undefined && !config.liveView.ok;
+  const agentBrowserOutdated = config?.agentBrowserVersion !== undefined && isAgentBrowserOutdated(config.agentBrowserVersion);
   const busyButton = (active: boolean) => active ? <Loader2 size={11} className="animate-spin" /> : null;
 
   return (
@@ -328,15 +331,25 @@ export function BrowserDiagnosticsSection({
           label="Live view"
           hint="Watch a browser an agent is using, and take over when a site needs you. Checking the public browser tests it."
           control={config ? (
-            <Badge tone={config.liveView && !config.liveView.ok ? "warning" : "neutral"}>
-              {!config.liveView ? "Not checked yet" : config.liveView.ok ? "Working" : "Not working"}
+            <Badge tone={liveViewFails || agentBrowserOutdated ? "warning" : "neutral"}>
+              {liveViewFails
+                ? "Not working"
+                : agentBrowserOutdated ? "Needs an update" : config.liveView ? "Working" : "Not checked yet"}
             </Badge>
           ) : undefined}
         >
-          {config?.liveView && !config.liveView.ok && (
+          {liveViewFails && (
             <Notice tone="warning" icon={warningIcon}>
-              {config.liveView.message ?? "The browser could not be shown."} If agent-browser was updated recently, the
+              {config.liveView?.message ?? "The browser could not be shown."} If agent-browser was updated recently, the
               update may have changed how it shows a browser; otherwise update it:
+              <code className={cx(DS.text.literal, "mt-1 block")}>npm install -g agent-browser@latest</code>
+            </Notice>
+          )}
+          {agentBrowserOutdated && !liveViewFails && (
+            // An old agent-browser shows a page and passes the check, so nothing else says this.
+            <Notice tone="warning" icon={warningIcon}>
+              agent-browser {config?.agentBrowserVersion} is older than the Bridge needs ({MIN_AGENT_BROWSER_VERSION} or
+              newer). With it, a window that a page opens, such as a sign-in popup, does not show in the view. Update it:
               <code className={cx(DS.text.literal, "mt-1 block")}>npm install -g agent-browser@latest</code>
             </Notice>
           )}
