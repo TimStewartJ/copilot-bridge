@@ -57,8 +57,9 @@ interface SearchIndexDeps {
 }
 
 /**
- * What one pass over every chat cost. The two times are spent reading a whole FTS table for one
- * chat (its old rows, its title); they say whether the index needs to record each chat's rows.
+ * What one pass over every chat cost. `deleteMs` is spent reading the whole message table to find
+ * one chat's old rows, and says whether the index needs to record each chat's rows.
+ * `titleLookupMs` is the one read of every indexed title.
  */
 interface SweepCost {
   startedAt: number;
@@ -186,6 +187,10 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   let backgroundScheduled = false;
   let sweepSessions: SearchSession[] = [];
   let sweep: SweepCost | undefined;
+  // Every indexed title, read once for the batches that drain one queue. The table has no index
+  // on `sessionId`, so asking for one chat's title reads all of it: 1.4 ms a chat, 22 s for a pass
+  // over 15,000 chats, against 22 ms for this. The three places that write a title keep it current.
+  let indexedTitles: Map<string, string> | undefined;
   let stopped = false;
   const deferredChangedSessionIds = new Set<string>();
 
@@ -271,11 +276,17 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     };
   }
 
+  function readIndexedTitles(): Map<string, string> {
+    const rows = db.prepare("SELECT sessionId, title FROM search_chat_titles").all() as Array<{ sessionId: string; title: string }>;
+    return new Map(rows.map((row) => [row.sessionId, row.title]));
+  }
+
   function updateSessionTitle(sessionId: string, title: string): void {
     runTransaction(db, () => {
       db.prepare("DELETE FROM search_chat_titles WHERE sessionId = ?").run(sessionId);
       db.prepare("INSERT INTO search_chat_titles(sessionId, title) VALUES (?, ?)").run(sessionId, title);
     });
+    indexedTitles?.set(sessionId, title);
   }
 
   function replaceSession(
@@ -329,6 +340,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       }
       db.exec("DELETE FROM search_pending_messages");
     });
+    indexedTitles?.set(session.sessionId, title);
     return deleteMs;
   }
 
@@ -352,7 +364,10 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
         db.exec(`DELETE FROM search_quarantined_sessions WHERE sessionId IN (${removed})`);
         db.exec("DELETE FROM search_removed_sessions");
       });
-      for (const sessionId of batch) deferredChangedSessionIds.delete(sessionId);
+      for (const sessionId of batch) {
+        deferredChangedSessionIds.delete(sessionId);
+        indexedTitles?.delete(sessionId);
+      }
       await yieldControl();
       if (stopped) return false;
     }
@@ -490,15 +505,16 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       let reindexed = false;
       try {
         const previous = indexed.get(session.sessionId);
-        const lookupStartedAt = performance.now();
-        const titleRow = db.prepare(
-          "SELECT title FROM search_chat_titles WHERE sessionId = ? LIMIT 1",
-        ).get(session.sessionId) as { title?: string } | undefined;
-        if (sweep) sweep.titleLookupMs += performance.now() - lookupStartedAt;
+        if (!indexedTitles) {
+          const readStartedAt = performance.now();
+          indexedTitles = readIndexedTitles();
+          if (sweep) sweep.titleLookupMs += performance.now() - readStartedAt;
+        }
+        const indexedTitle = indexedTitles.get(session.sessionId);
         const title = deps.sessionTitles.getTitle(session.sessionId)?.trim()
           || (await deps.readSessionTitle?.(session.sessionId))?.trim()
           || session.summary?.trim()
-          || titleRow?.title?.trim()
+          || indexedTitle?.trim()
           || "Untitled chat";
         const eventsPath = join(deps.copilotHome, "session-state", session.sessionId, "events.jsonl");
         let currentStat: Awaited<ReturnType<typeof stat>> | null;
@@ -510,7 +526,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
         }
 
         if (!currentStat && previous?.size === -1) {
-          if (titleRow?.title !== title) updateSessionTitle(session.sessionId, title);
+          if (indexedTitle !== title) updateSessionTitle(session.sessionId, title);
           clearQuarantine(session.sessionId);
         } else if (
           currentStat
@@ -518,7 +534,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
           && previous.mtimeMs === currentStat.mtimeMs
           && previous.ctimeMs === currentStat.ctimeMs
         ) {
-          if (titleRow?.title !== title) updateSessionTitle(session.sessionId, title);
+          if (indexedTitle !== title) updateSessionTitle(session.sessionId, title);
           clearQuarantine(session.sessionId);
         } else {
           if (
@@ -557,6 +573,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
 
     if (pendingSessionIds.length === 0) {
       sweepSessions = [];
+      indexedTitles = undefined;
       if (sweep && !stopped) {
         const { startedAt, ...counts } = sweep;
         deps.recordSpan?.("search.sweep", Date.now() - startedAt, {
