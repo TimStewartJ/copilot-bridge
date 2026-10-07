@@ -183,6 +183,14 @@ describe("browser broker", () => {
     expect(authenticated.browserTarget).not.toHaveProperty("idleTimeoutMs");
   });
 
+  it("lets the signed-in browser close by itself only where a Bridge asks for it", () => {
+    const root = makeTestDir("browser-broker-auth-idle");
+
+    expect(new BrowserBroker({ copilotHome: root }).getAuthenticatedTarget().idleTimeoutMs).toBeUndefined();
+    expect(new BrowserBroker({ copilotHome: root, authenticatedIdleTimeoutMs: 60_000 }).getAuthenticatedTarget())
+      .toMatchObject({ idleTimeoutMs: 60_000 });
+  });
+
   it("serializes authenticated operations", async () => {
     const root = makeTestDir("browser-broker-auth");
     const broker = new BrowserBroker({ copilotHome: root });

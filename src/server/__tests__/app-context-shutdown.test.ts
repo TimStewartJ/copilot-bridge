@@ -194,6 +194,16 @@ describe("shutdownAppContextServices", () => {
     await vi.runAllTimersAsync();
   });
 
+  it("stops the search index even with no budget left, and does not wait for it past the budget", async () => {
+    const spies = createShutdownSpies();
+    spies.searchShutdown.mockReturnValue(new Promise<void>(() => {}));
+
+    await shutdownAppContextServices(createFakeContext(spies), createDeadline(0));
+
+    expect(spies.searchShutdown).toHaveBeenCalledTimes(1);
+    expect(spies.usageReaderShutdown).toHaveBeenCalledTimes(1);
+  });
+
   it("shuts every context-owned service down once", async () => {
     const spies = createShutdownSpies();
     const ctx = createFakeContext(spies);

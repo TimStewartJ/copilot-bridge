@@ -51,8 +51,23 @@ interface SearchIndexDeps {
   listSessions: () => Promise<SearchSession[]>;
   readSessionTitle?: (sessionId: string) => Promise<string | undefined>;
   yieldControl?: () => Promise<void>;
+  recordSpan?: (name: string, duration: number, metadata: Record<string, unknown>) => void;
   foregroundByteBudget?: number;
   removalBatchSize?: number;
+}
+
+/**
+ * What one pass over every chat cost. The two times are spent reading a whole FTS table for one
+ * chat (its old rows, its title); they say whether the index needs to record each chat's rows.
+ */
+interface SweepCost {
+  startedAt: number;
+  chats: number;
+  removed: number;
+  reindexed: number;
+  deleteMs: number;
+  slowestDeleteMs: number;
+  titleLookupMs: number;
 }
 
 interface SourceFingerprint {
@@ -170,6 +185,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   let sweepErrors: string[] = [];
   let backgroundScheduled = false;
   let sweepSessions: SearchSession[] = [];
+  let sweep: SweepCost | undefined;
   let stopped = false;
   const deferredChangedSessionIds = new Set<string>();
 
@@ -266,10 +282,13 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     session: SearchSession,
     title: string,
     fingerprint: SourceFingerprint | null,
-  ): void {
+  ): number {
+    let deleteMs = 0;
     runTransaction(db, () => {
+      const deleteStartedAt = performance.now();
       db.prepare("DELETE FROM search_chat_titles WHERE sessionId = ?").run(session.sessionId);
       db.prepare("DELETE FROM search_chat_messages WHERE sessionId = ?").run(session.sessionId);
+      deleteMs = performance.now() - deleteStartedAt;
       db.prepare("DELETE FROM search_quarantined_sessions WHERE sessionId = ?").run(session.sessionId);
       db.prepare("INSERT INTO search_chat_titles(sessionId, title) VALUES (?, ?)").run(session.sessionId, title);
 
@@ -310,6 +329,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       }
       db.exec("DELETE FROM search_pending_messages");
     });
+    return deleteMs;
   }
 
   /**
@@ -425,8 +445,12 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
 
     // Decided before the removal yields: a search arriving meanwhile queues chats of its own.
     const shouldStartSweep = startNewSweep && pendingSessionIds.length === 0;
+    if (shouldStartSweep) {
+      sweep = { startedAt: Date.now(), chats: sessions.length, removed: 0, reindexed: 0, deleteMs: 0, slowestDeleteMs: 0, titleLookupMs: 0 };
+    }
     if (!reuseSweepCatalog) {
       const removedIds = indexedRows.map((row) => row.sessionId).filter((sessionId) => !currentIds.has(sessionId));
+      if (sweep) sweep.removed += removedIds.length;
       if (removedIds.length > 0 && !await removeSessions(removedIds)) return [...sweepErrors];
     }
 
@@ -463,11 +487,14 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       if (stopped) break;
       const session = sessionMap.get(batchIds[index]!);
       if (!session) continue;
+      let reindexed = false;
       try {
         const previous = indexed.get(session.sessionId);
+        const lookupStartedAt = performance.now();
         const titleRow = db.prepare(
           "SELECT title FROM search_chat_titles WHERE sessionId = ? LIMIT 1",
         ).get(session.sessionId) as { title?: string } | undefined;
+        if (sweep) sweep.titleLookupMs += performance.now() - lookupStartedAt;
         const title = deps.sessionTitles.getTitle(session.sessionId)?.trim()
           || (await deps.readSessionTitle?.(session.sessionId))?.trim()
           || session.summary?.trim()
@@ -509,7 +536,13 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
             }
             break;
           }
-          replaceSession(session, title, await stageStableSession(session.sessionId));
+          const deleteMs = replaceSession(session, title, await stageStableSession(session.sessionId));
+          reindexed = true;
+          if (sweep) {
+            sweep.reindexed += 1;
+            sweep.deleteMs += deleteMs;
+            sweep.slowestDeleteMs = Math.max(sweep.slowestDeleteMs, deleteMs);
+          }
           if (currentStat) foregroundBytes += currentStat.size;
           deferredChangedSessionIds.delete(session.sessionId);
         }
@@ -518,10 +551,24 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
         sweepErrors.push(`chat ${session.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       }
       writeCursor(session.sessionId);
-      if ((index + 1) % RECONCILE_YIELD_INTERVAL === 0) await yieldControl();
+      // A re-index reads a whole table to drop the chat's old rows, so each one is its own step.
+      if (reindexed || (index + 1) % RECONCILE_YIELD_INTERVAL === 0) await yieldControl();
     }
 
-    if (pendingSessionIds.length === 0) sweepSessions = [];
+    if (pendingSessionIds.length === 0) {
+      sweepSessions = [];
+      if (sweep && !stopped) {
+        const { startedAt, ...counts } = sweep;
+        deps.recordSpan?.("search.sweep", Date.now() - startedAt, {
+          ...counts,
+          deleteMs: Math.round(counts.deleteMs),
+          slowestDeleteMs: Math.round(counts.slowestDeleteMs),
+          titleLookupMs: Math.round(counts.titleLookupMs),
+          errors: sweepErrors.length,
+        });
+      }
+      sweep = undefined;
+    }
     scheduleBackgroundReconcile();
     return [...sweepErrors];
   }
@@ -856,7 +903,8 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     while (true) {
       await new Promise<void>((resolve) => setImmediate(resolve));
       if (activeWrite) await activeWrite;
-      if (!activeWrite && !backgroundScheduled && pendingSessionIds.length === 0) return;
+      // Work still in flight when indexing stopped can queue chats that nothing will take.
+      if (!activeWrite && !backgroundScheduled && (stopped || pendingSessionIds.length === 0)) return;
     }
   }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSessionTitleUserPrompt,
   createDisposableTitleSessionId,
+  describeTitleReply,
   extractGeneratedSessionTitle,
   isDisposableTitleSessionId,
 } from "../session-name-generator.js";
@@ -42,5 +43,14 @@ describe("session name generator helpers", () => {
     expect(extractGeneratedSessionTitle("Compare a < b and b > a")).toBe("Compare a < b and b > a");
     expect(extractGeneratedSessionTitle("Render <br> Inside Markdown")).toBe("Render <br> Inside Markdown");
     expect(extractGeneratedSessionTitle("</session-title>")).toBeUndefined();
+  });
+
+  it("says how a reply was framed, by what the parser had to drop", () => {
+    expect(describeTitleReply("<session-title>Fix Login Redirect</session-title>")).toBe("tagged");
+    expect(describeTitleReply("Fix Login Redirect</session-title>")).toBe("partial");
+    expect(describeTitleReply("<title>Fix Login Redirect</title>")).toBe("partial");
+    expect(describeTitleReply("Fix Login Redirect")).toBe("bare");
+    expect(describeTitleReply("Render <br> Inside Markdown")).toBe("bare");
+    expect(describeTitleReply(undefined)).toBe("none");
   });
 });
