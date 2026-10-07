@@ -40,6 +40,13 @@ export const VOICE_TIMING = {
    * takes time speaks one sooner. At 2 s nearly every turn opened with "One sec." (21 of 24 on 24 Sep 2026).
    */
   fillerDelayMs: 3_000,
+  /**
+   * While a reply is still being worked out, say so again when this long has passed in silence since
+   * the last thing said: first gap, second gap, and so on, the last one repeating. On 6 Oct 2026 a
+   * 19-second lookup followed "One sec." with 15 s of silence in a car, and the user hung up one
+   * second before the reply.
+   */
+  progressDelaysMs: [8_000, 12_000, 20_000, 30_000],
   bargeInDuckMs: 250,
   bargeInFirstCheckMs: 450,
   bargeInSecondCheckMs: 1_000,
@@ -210,6 +217,8 @@ interface GenerationState {
   fillerChunkId?: number;
   /** A lead-in is being written; tool starts don't speak a canned filler meanwhile. */
   leadInPending?: boolean;
+  /** The "still working" lines said during a long silent wait; they are not part of the reply. */
+  progressChunkIds: Set<number>;
   firstSpeechAudioSent: boolean;
   chunks: Map<number, string>;
   queue: Array<{ chunkId: number; text: string }>;
@@ -222,6 +231,8 @@ interface GenerationState {
   sentAudio: VoiceAudioChunk[];
   audioSecondsSent: number;
   firstAudioAt?: number;
+  /** When everything sent so far will have finished playing, allowing for silent gaps between parts. */
+  playbackEndsAt?: number;
   playedChunkIds: Set<number>;
   sleepAfter: boolean;
   metricsSent: boolean;
@@ -231,6 +242,7 @@ interface GenerationState {
   playbackIdleTimer?: unknown;
   pacingTimer?: unknown;
   fillerTimer?: unknown;
+  progressTimer?: unknown;
 }
 
 interface BargeInState {
@@ -274,6 +286,7 @@ export class VoiceConversation {
   private resumeNote?: string;
   private lastReplyState?: { genId: number; text: string; finished: boolean };
   private fillerSeq = 0;
+  private progressSeq = 0;
   private lastSpeechAt: number;
   private autoSleepTimer?: unknown;
   private readonly pendingEvents: string[] = [];
@@ -826,6 +839,7 @@ export class VoiceConversation {
       messageSpoke: false,
       chunkCount: 0,
       textChunkCount: 0,
+      progressChunkIds: new Set(),
       firstSpeechAudioSent: false,
       chunks: new Map(),
       queue: [],
@@ -886,9 +900,46 @@ export class VoiceConversation {
     this.enqueueChunk(gen, text, { filler: true });
   }
 
+  private remainingPlaybackMs(gen: GenerationState): number {
+    return gen.playbackEndsAt === undefined ? 0 : Math.max(0, gen.playbackEndsAt - this.timers.now());
+  }
+
+  /**
+   * Starts the wait for the next "still working" line, counted from the end of what is playing now.
+   * Called each time something has been said, so only silence lets the wait run out.
+   */
+  private scheduleProgress(gen: GenerationState): void {
+    if (gen.progressTimer) this.timers.clearTimeout(gen.progressTimer);
+    gen.progressTimer = undefined;
+    if (this.gen !== gen || gen.cancelled || gen.agentDone) return;
+    if (gen.kind !== "user" && gen.kind !== "continuation" && gen.kind !== "interrupted") return;
+    const delays = VOICE_TIMING.progressDelaysMs;
+    const delay = delays[Math.min(gen.progressChunkIds.size, delays.length - 1)]!;
+    gen.progressTimer = this.timers.setTimeout(() => {
+      gen.progressTimer = undefined;
+      this.speakProgress(gen);
+    }, this.remainingPlaybackMs(gen) + delay);
+  }
+
+  private speakProgress(gen: GenerationState): void {
+    if (this.gen !== gen || gen.cancelled || gen.agentDone) return;
+    // The user is talking: a held reply is released or replaced, and both start the wait again.
+    if (gen.held) return;
+    if (this.bargeIn || gen.synthesis || gen.queue.length > 0 || this.remainingPlaybackMs(gen) > 0) {
+      this.scheduleProgress(gen);
+      return;
+    }
+    const text = PROGRESS_PHRASES[this.progressSeq++ % PROGRESS_PHRASES.length]!;
+    gen.progressChunkIds.add(gen.chunkCount + 1);
+    this.log("progress", { genId: gen.id, text, ms: Math.round(this.timers.now() - gen.speechEndAt) });
+    this.enqueueChunk(gen, text, { filler: true });
+  }
+
   private onAgentDone(gen: GenerationState, aborted: boolean, error?: string): void {
     if (gen.agentDone) return;
     gen.agentDone = true;
+    if (gen.progressTimer) this.timers.clearTimeout(gen.progressTimer);
+    gen.progressTimer = undefined;
     if (this.gen !== gen || gen.cancelled) return;
     if (error) {
       this.log("agent_error", { genId: gen.id, error });
@@ -961,7 +1012,7 @@ export class VoiceConversation {
           this.sink.send({ type: "assistant_chunk", genId: gen.id, chunkId: next.chunkId, text: next.text });
           if (next.chunkId === gen.fillerChunkId) {
             gen.metrics.fillerMs = Math.round(this.timers.now() - gen.speechEndAt);
-          } else if (!gen.firstSpeechAudioSent) {
+          } else if (!gen.firstSpeechAudioSent && !gen.progressChunkIds.has(next.chunkId)) {
             gen.firstSpeechAudioSent = true;
             gen.metrics.ttsFirstMs = Math.round(this.timers.now() - startedAt);
             gen.metrics.speechEndToFirstAudioMs = Math.round(this.timers.now() - gen.speechEndAt);
@@ -985,6 +1036,7 @@ export class VoiceConversation {
       if (gen.synthesis === handle) gen.synthesis = undefined;
       if (this.gen !== gen || gen.cancelled) return;
       this.pumpSpeech(gen);
+      this.scheduleProgress(gen);
       this.maybeFinishGeneration(gen, { playbackIdle: false });
     });
   }
@@ -998,7 +1050,9 @@ export class VoiceConversation {
         this.setState("speaking");
       }
     }
+    const now = this.timers.now();
     gen.audioSecondsSent += chunk.pcm.length / chunk.sampleRate;
+    gen.playbackEndsAt = Math.max(gen.playbackEndsAt ?? now, now) + (chunk.pcm.length / chunk.sampleRate) * 1000;
     gen.sentAudio.push(chunk);
     this.sink.sendAudio(chunk);
   }
@@ -1019,6 +1073,7 @@ export class VoiceConversation {
       gen.audioSecondsSent += chunk.pcm.length / chunk.sampleRate;
       this.sink.sendAudio(chunk);
     }
+    gen.playbackEndsAt = gen.firstAudioAt + gen.audioSecondsSent * 1000;
     this.log("resend_audio", { genId: gen.id, chunks: missing.length });
     this.maybeFinishGeneration(gen, { playbackIdle: false });
     return missing.length;
@@ -1030,10 +1085,12 @@ export class VoiceConversation {
     const held = gen.heldAudio.splice(0);
     if (held.length === 0 && !gen.agentDone) {
       this.setState("thinking");
+      this.scheduleProgress(gen);
       return;
     }
     if (held.length > 0) this.setState("thinking");
     for (const chunk of held) this.emitAudio(gen, chunk);
+    this.scheduleProgress(gen);
     this.maybeFinishGeneration(gen, { playbackIdle: false });
   }
 
@@ -1051,9 +1108,9 @@ export class VoiceConversation {
         this.log("metrics", { ...gen.metrics });
       }
     }
-    const remainingMs = gen.firstAudioAt === undefined
-      ? 0
-      : Math.max(0, gen.firstAudioAt + gen.audioSecondsSent * 1000 - this.timers.now());
+    // Counted from the end of the last part, not from the first: a reply that follows its lead-in
+    // after a long lookup is still playing when its synthesis ends.
+    const remainingMs = this.remainingPlaybackMs(gen);
     if (!options.playbackIdle && remainingMs > 0) {
       if (gen.playbackIdleTimer) this.timers.clearTimeout(gen.playbackIdleTimer);
       gen.playbackIdleTimer = this.timers.setTimeout(() => this.finishGeneration(gen), remainingMs + VOICE_TIMING.playbackIdleGraceMs);
@@ -1086,6 +1143,7 @@ export class VoiceConversation {
     if (gen.pacingTimer) this.timers.clearTimeout(gen.pacingTimer);
     if (gen.playbackIdleTimer) this.timers.clearTimeout(gen.playbackIdleTimer);
     if (gen.fillerTimer) this.timers.clearTimeout(gen.fillerTimer);
+    if (gen.progressTimer) this.timers.clearTimeout(gen.progressTimer);
     if (gen.firstAudioAt !== undefined || gen.audioSecondsSent > 0) {
       this.sink.send({ type: "stop_audio", genId: gen.id, reason });
     } else if (gen.text.trim()) {
@@ -1111,6 +1169,8 @@ function truncate(text: string, max: number): string {
 }
 
 const FILLER_PHRASES = ["One sec.", "Let me check.", "Checking now.", "Give me a second.", "On it."];
+/** Said during a long wait. They claim nothing about the answer and differ from the lead-ins. */
+const PROGRESS_PHRASES = ["Still working on it.", "Still on it, one moment.", "This is taking a little longer.", "Still here, still working."];
 const INSTANT_TOOLS = new Set(["hands_free"]);
 
 function words(text: string): string[] {
