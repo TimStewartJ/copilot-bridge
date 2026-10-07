@@ -166,8 +166,11 @@ describe("SessionManager run state", () => {
   /**
    * Drives a watchdog tick to its end. A tick alternates real file I/O with a wait on the fake
    * clock before it asks the runtime a second time, so neither an advance nor an await alone finishes it.
+   * The date is put back after every step: how many steps the file I/O takes depends on how busy
+   * the machine is, and the tick must not see that many seconds pass. Pending timers keep their delay.
    */
   async function settleWatchdog(manager: any, sessionId: string): Promise<void> {
+    const now = Date.now();
     let settled = false;
     const idle = manager.waitForSessionWatchdogIdle(sessionId).then(() => {
       settled = true;
@@ -175,6 +178,7 @@ describe("SessionManager run state", () => {
     while (!settled) {
       await new Promise<void>((resolve) => realSetImmediate(resolve));
       await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(now);
     }
     await idle;
     await flushMicrotasks();
