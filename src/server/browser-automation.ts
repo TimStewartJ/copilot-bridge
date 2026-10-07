@@ -3,8 +3,9 @@
 
 import type { BrowserCommand, BrowserCommandResult } from "./agent-browser.js";
 import { ab, isAgentBrowserInstalled } from "./agent-browser.js";
+import { saveDownload } from "./browser-download.js";
 import type { PageBlockFields } from "./browser-page-check.js";
-import { saveDownload, takeScreenshot, type BrowserStepFiles, type BrowserStepImage } from "./browser-step-files.js";
+import { takeScreenshot, type BrowserStepFiles, type BrowserStepImage } from "./browser-step-files.js";
 import type { BrowserAutomationCaptureInput, BrowserAutomationCommand } from "./browser-steps.js";
 import { uploadFiles } from "./browser-upload.js";
 import { err, isToolErrorResult, joinFailureSections, ok, toolFailure, toolFailureWithContext, type Result } from "./tool-results.js";
