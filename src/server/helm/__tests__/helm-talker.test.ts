@@ -32,6 +32,46 @@ describe("HelmTalker", () => {
     expect(dispose).toHaveBeenCalled();
   });
 
+  it("sends one throwaway request when warmed, and a turn that arrives meanwhile waits for it", async () => {
+    let finishWarmUp!: () => void;
+    const order: string[] = [];
+    const session = {
+      sendAndWait: vi.fn(async (args: { prompt: string }, _timeout?: number) => {
+        order.push(`sent ${args.prompt}`);
+        if (args.prompt === "User: hello") await new Promise<void>((resolve) => { finishWarmUp = resolve; });
+        order.push(`answered ${args.prompt}`);
+        return { data: { content: args.prompt === "User: hello" ? "SILENT" : "Let me look." } };
+      }),
+      abort: vi.fn(async () => undefined),
+    };
+    const createHelperSession = vi.fn(async () => ({ session, dispose: async () => undefined }) as never);
+    const log = vi.fn();
+    const talker = new HelmTalker({ listModels: async () => models, createHelperSession, logger: { log, warn: vi.fn() } });
+    talker.warm();
+    talker.warm();
+    const leadIn = talker.leadIn("what's new in the car task?");
+    await vi.waitFor(() => expect(order).toEqual(["sent User: hello"]));
+    finishWarmUp();
+    expect(await leadIn).toBe("Let me look.");
+    expect(order).toEqual(["sent User: hello", "answered User: hello", "sent User: what's new in the car task?", "answered User: what's new in the car task?"]);
+    expect(createHelperSession).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^\[helm-talker\] Warm in \d+ms$/));
+  });
+
+  it("still writes lead-ins when the warm-up request fails", async () => {
+    const session = {
+      sendAndWait: vi.fn(async (args: { prompt: string }) => {
+        if (args.prompt === "User: hello") throw new Error("Timeout");
+        return { data: { content: "Let me look." } };
+      }),
+      abort: vi.fn(async () => undefined),
+    };
+    const talker = new HelmTalker({ listModels: async () => models, createHelperSession: async () => ({ session, dispose: async () => undefined }) as never });
+    talker.warm();
+    expect(await talker.leadIn("anything new?")).toBe("Let me look.");
+    expect(session.abort).toHaveBeenCalledTimes(1);
+  });
+
   it("says nothing when the helper fails or is slow", async () => {
     const session = { sendAndWait: vi.fn(async () => { throw new Error("Timeout"); }), abort: vi.fn(async () => undefined) };
     const talker = new HelmTalker({ listModels: async () => models, createHelperSession: async () => ({ session, dispose: async () => undefined }) as never });
