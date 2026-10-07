@@ -6,6 +6,7 @@ import {
   buildSessionTitleSystemPrompt,
   buildSessionTitleUserPrompt,
   createDisposableTitleSessionId,
+  describeTitleReply,
   extractGeneratedSessionTitle,
   isDisposableTitleSessionId,
 } from "./session-name-generator.js";
@@ -192,13 +193,14 @@ export class SessionNameAutogenerator {
     }
 
     this.generationLastAttempt.set(sessionId, Date.now());
-    const generatedName = await this.generateSessionName(userMessages);
-    if (!generatedName) {
-      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_title" });
+    const generated = await this.generateSessionName(userMessages);
+    const helper = generated ? { model: generated.model, reply: generated.reply } : {};
+    if (!generated?.title) {
+      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_no_title", ...helper });
       return;
     }
     if (hasExplicitSessionName(this.deps.getSessionNameMetadata(sessionId), replaceExistingName)) {
-      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation" });
+      this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation", ...helper });
       return;
     }
     if (replaceExistingName) {
@@ -206,21 +208,24 @@ export class SessionNameAutogenerator {
         ? (await options.session.getName())?.name
         : await this.deps.getSessionName(sessionId);
       if (normalizeComparableName(currentName) !== replaceExistingName) {
-        this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation" });
+        this.recordSpan("session.name.autogen", start, sessionId, { result: "skipped_existing_after_generation", ...helper });
         return;
       }
     }
-    await this.deps.setSessionName(sessionId, generatedName, { session: options.session });
+    await this.deps.setSessionName(sessionId, generated.title, { session: options.session });
     this.recordSpan("session.name.autogen", start, sessionId, {
       result: "generated",
       messageCount: userMessages.length,
       providedMessageCount: providedUserMessages.length || undefined,
       historyMessageCount,
       historyReadFailed: historyReadFailed || undefined,
+      ...helper,
     });
   }
 
-  private async generateSessionName(userMessages: string[]): Promise<string | undefined> {
+  private async generateSessionName(
+    userMessages: string[],
+  ): Promise<{ title?: string; model: string; reply: ReturnType<typeof describeTitleReply> } | undefined> {
     const selection = selectHelperModel(await this.deps.listModels());
     if (!selection) return undefined;
 
@@ -242,7 +247,8 @@ export class SessionNameAutogenerator {
         { prompt: buildSessionTitleUserPrompt(userMessages), attachments: [] },
         TITLE_HELPER_TIMEOUT_MS,
       );
-      return extractGeneratedSessionTitle(response?.data?.content);
+      const content: unknown = response?.data?.content;
+      return { title: extractGeneratedSessionTitle(content), model: selection.model, reply: describeTitleReply(content) };
     } finally {
       try { await helperSession?.disconnect?.(); } catch { /* best-effort */ }
       await this.cleanupDisposableTitleSession(helperSessionId);

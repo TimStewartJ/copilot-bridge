@@ -339,6 +339,97 @@ describe("global search index", () => {
     expect((await index.search({ ...request, q: "replacement" })).chats.total).toBe(0);
   });
 
+  it("re-indexes one chat per step and records what a whole pass cost", async () => {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir("search-sweep");
+    let sessions = ["a", "b", "c"].map((letter) => ({ sessionId: `${letter.repeat(8)}-1111-4111-8111-111111111111` }));
+    for (const { sessionId } of sessions) {
+      writeEvents(copilotHome, sessionId, [event("user.message", `${sessionId}-1`, "needle", "2026-09-01T10:00:00.000Z")]);
+    }
+    let yields = 0;
+    const recordSpan = vi.fn();
+    const index = createSearchIndex(db, {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => sessions,
+      yieldControl: async () => { yields += 1; },
+      recordSpan,
+    });
+
+    await index.reconcile(request);
+    await index.waitForIdle();
+    // Fewer chats than the every-eight-chats yield: these three come from the re-indexes.
+    expect(yields).toBe(3);
+    const counts = { deleteMs: expect.any(Number), slowestDeleteMs: expect.any(Number), titleLookupMs: expect.any(Number), errors: 0 };
+    expect(recordSpan.mock.calls).toEqual([
+      ["search.sweep", expect.any(Number), { chats: 3, removed: 0, reindexed: 3, ...counts }],
+    ]);
+
+    sessions = sessions.slice(1);
+    await index.reconcile(request);
+    await index.waitForIdle();
+    expect(yields).toBe(4);
+    expect(recordSpan.mock.calls[1]).toEqual(
+      ["search.sweep", expect.any(Number), { chats: 2, removed: 1, reindexed: 0, ...counts }],
+    );
+  });
+
+  it("records one pass once, when the background finishes what the search started", async () => {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir("search-sweep-background");
+    const sessions = ["a", "b"].map((letter) => ({ sessionId: `${letter.repeat(8)}-1111-4111-8111-111111111111` }));
+    for (const { sessionId } of sessions) {
+      writeEvents(copilotHome, sessionId, [event("user.message", `${sessionId}-1`, "needle", "2026-09-01T10:00:00.000Z")]);
+    }
+    const recordSpan = vi.fn();
+    const index = createSearchIndex(db, {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => sessions,
+      // Nothing fits the search's own share, so every chat is indexed by later background batches.
+      foregroundByteBudget: 0,
+      recordSpan,
+    });
+
+    await index.reconcile(request);
+    expect(recordSpan).not.toHaveBeenCalled();
+    await index.waitForIdle();
+
+    expect(recordSpan).toHaveBeenCalledExactlyOnceWith(
+      "search.sweep", expect.any(Number), expect.objectContaining({ chats: 2, reindexed: 2 }),
+    );
+  });
+
+  it("shuts down even when work in flight queues a chat after indexing stopped", async () => {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir("search-shutdown-queue");
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    writeEvents(copilotHome, sessionId, [event("user.message", "queued", "needle", "2026-09-01T10:00:00.000Z")]);
+    let shutdown: Promise<void> | undefined;
+    const index = createSearchIndex(db, {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => [{ sessionId }],
+      // Over budget, so the batch puts the chat back in the queue, after shutdown emptied it.
+      foregroundByteBudget: 0,
+      readSessionTitle: async () => {
+        shutdown = index.shutdown();
+        return undefined;
+      },
+    });
+
+    await index.reconcile(request);
+    await shutdown;
+
+    expect((db.prepare("SELECT count(*) AS total FROM search_indexed_sessions").get() as { total: number }).total).toBe(0);
+  });
+
   it("removes the chats that left the catalog a batch at a time and keeps the others", async () => {
     const db = setupTestDb();
     const copilotHome = makeTestDir("search-removal");

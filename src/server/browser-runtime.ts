@@ -24,6 +24,12 @@ export interface BrowserRuntime {
 
 const runtimes = new WeakMap<object, BrowserRuntime>();
 
+/**
+ * A preview is stopped by killing it, so nothing would ever close its signed-in browser. Longer
+ * than a live view stays open without input, during which the view keeps sending commands.
+ */
+const PREVIEW_SIGNED_IN_BROWSER_IDLE_TIMEOUT_MS = 45 * 60_000;
+
 export function getBrowserRuntime(ctx: AppContext): BrowserRuntime {
   let runtime = runtimes.get(ctx);
   if (!runtime) {
@@ -33,6 +39,7 @@ export function getBrowserRuntime(ctx: AppContext): BrowserRuntime {
       copilotHome,
       telemetryStore,
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
+      authenticatedIdleTimeoutMs: ctx.isStaging ? PREVIEW_SIGNED_IN_BROWSER_IDLE_TIMEOUT_MS : undefined,
     });
     const sessions = new BrowserSessionStore({ browserBroker: broker, telemetryStore });
     const logins = new BrowserLogins({ file: join(copilotHome, "browser-logins.json"), scope: copilotHome });

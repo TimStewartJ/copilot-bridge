@@ -80,6 +80,11 @@ export interface BrowserBrokerOptions {
   copilotHome: string;
   telemetryStore?: TelemetryStore;
   getBrowserLaunchConfig?: () => BrowserLaunchConfig;
+  /**
+   * Lets the signed-in browser close by itself after this long without a command. For a Bridge
+   * that can be killed with no later process to take its browser over, such as a preview.
+   */
+  authenticatedIdleTimeoutMs?: number;
   publicConcurrency?: number;
   runCommand?: (
     command: BrowserCommand,
@@ -139,6 +144,7 @@ export class BrowserBroker {
   readonly namespace = BROWSER_NAMESPACE;
 
   private readonly copilotHome: string;
+  private readonly authenticatedIdleTimeoutMs: number | undefined;
   private readonly telemetryStore?: TelemetryStore;
   private readonly getBrowserLaunchConfig: () => BrowserLaunchConfig;
   private readonly publicConcurrency: number;
@@ -169,6 +175,7 @@ export class BrowserBroker {
 
   constructor(options: BrowserBrokerOptions) {
     this.copilotHome = options.copilotHome;
+    this.authenticatedIdleTimeoutMs = options.authenticatedIdleTimeoutMs;
     this.telemetryStore = options.telemetryStore;
     this.getBrowserLaunchConfig = options.getBrowserLaunchConfig ?? (() => ({}));
     this.publicConcurrency = options.publicConcurrency ?? DEFAULT_PUBLIC_CONCURRENCY;
@@ -187,7 +194,8 @@ export class BrowserBroker {
   }
 
   getAuthenticatedTarget(): BrowserTarget {
-    return getBridgeBrowserTarget(this.copilotHome, this.getBrowserLaunchConfig());
+    const target = getBridgeBrowserTarget(this.copilotHome, this.getBrowserLaunchConfig());
+    return this.authenticatedIdleTimeoutMs === undefined ? target : { ...target, idleTimeoutMs: this.authenticatedIdleTimeoutMs };
   }
 
   getSnapshot(): BrowserBrokerSnapshot {

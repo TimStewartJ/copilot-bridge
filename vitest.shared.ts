@@ -1,8 +1,9 @@
-import { scrubAmbientRuntimeEnv } from "./src/test-support/hermetic-test-env.js";
+import { scrubAmbientRuntimeEnv, useRunTempDir } from "./src/test-support/hermetic-test-env.js";
 
 // Runs in the Vitest main process while configs load, before any worker starts,
-// so every worker and child process inherits the scrubbed environment.
+// so every worker and child process inherits the scrubbed environment and the run's temp folder.
 scrubAmbientRuntimeEnv();
+useRunTempDir();
 
 const isWindows = process.platform === "win32";
 

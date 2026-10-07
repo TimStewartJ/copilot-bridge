@@ -20,7 +20,7 @@ describe("session name autogenerator", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
     const setSessionName = vi.fn(async () => {});
-    const generateSessionName = vi.fn(async () => "Concise Session Title");
+    const generateSessionName = vi.fn(async () => ({ title: "Concise Session Title", model: "helper", reply: "tagged" }));
     const createSession = vi.fn(async () => ({
       sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
       disconnect: vi.fn(),
@@ -237,13 +237,13 @@ describe("session name autogenerator", () => {
 
   it("queues a pending fork replacement behind an in-flight warm rename", async () => {
     let metadata: WorkspaceSessionNameMetadata | undefined;
-    let resolveWarmGeneration!: (value: string) => void;
-    const warmGeneration = new Promise<string>((resolve) => {
+    let resolveWarmGeneration!: (value: { title: string }) => void;
+    const warmGeneration = new Promise<{ title: string }>((resolve) => {
       resolveWarmGeneration = resolve;
     });
     const generateSessionName = vi.fn()
       .mockImplementationOnce(() => warmGeneration)
-      .mockResolvedValueOnce("First New Fork Message");
+      .mockResolvedValueOnce({ title: "First New Fork Message" });
     const setSessionName = vi.fn(async () => {});
     const generator = createSessionNameAutogenerator({
       listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
@@ -275,7 +275,7 @@ describe("session name autogenerator", () => {
       includeHistory: false,
       replaceExistingName: "Fork of Original session",
     });
-    resolveWarmGeneration("Copied History Title");
+    resolveWarmGeneration({ title: "Copied History Title" });
 
     await vi.waitFor(() => expect(setSessionName).toHaveBeenCalledTimes(1));
     expect(generateSessionName).toHaveBeenNthCalledWith(2, ["Investigate the new failure mode"]);
@@ -350,7 +350,7 @@ describe("session name autogenerator", () => {
       getSessionNameMetadata: () => metadataSequence.shift(),
       setSessionName,
     });
-    (generator as any).generateSessionName = vi.fn(async () => "Concise Session Title");
+    (generator as any).generateSessionName = vi.fn(async () => ({ title: "Concise Session Title" }));
 
     await (generator as any).generateAndSetMissingSessionName("session-1", { userMessages: ["Please fix this complicated issue"] });
 
@@ -379,7 +379,7 @@ describe("session name autogenerator", () => {
       setSessionName,
       recordSpan,
     });
-    (generator as any).generateSessionName = vi.fn(async () => "Concise Session Title");
+    (generator as any).generateSessionName = vi.fn(async () => ({ title: "Concise Session Title" }));
 
     await (generator as any).generateAndSetMissingSessionName("session-1", { session: {} });
 
@@ -429,6 +429,35 @@ describe("session name autogenerator", () => {
       "session-1",
       { result: "skipped_no_title" },
     );
+  });
+
+  it("records which helper model answered and how it framed the reply", async () => {
+    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
+    tempDirs.push(copilotHome);
+    const replies = ["Concise Session Title</session-title>", "<session-title>ok</session-title>"];
+    const recordSpan = vi.fn();
+    const generator = createSessionNameAutogenerator({
+      listModels: async () => [{ id: "gpt-6-luna", billing: { multiplier: 0 }, supportedReasoningEfforts: ["none"] }] as any,
+      createSession: vi.fn(async () => ({
+        sendAndWait: vi.fn(async () => ({ data: { content: replies.shift() } })),
+        disconnect: vi.fn(),
+      })),
+      deleteSession: vi.fn(async () => {}),
+      getCopilotHome: () => copilotHome,
+      getSessionName: vi.fn(async () => undefined),
+      getSessionNameMetadata: () => undefined,
+      setSessionName: vi.fn(async () => {}),
+      recordSpan,
+    });
+
+    await (generator as any).generateAndSetMissingSessionName("session-1", { userMessages: ["Please fix this"] });
+    await (generator as any).generateAndSetMissingSessionName("session-2", { userMessages: ["Please fix that"] });
+
+    expect(recordSpan).toHaveBeenCalledWith("session.name.autogen", expect.any(Number), "session-1",
+      expect.objectContaining({ result: "generated", model: "gpt-6-luna", reply: "partial" }));
+    // A reply the parser rejects still says which model gave it.
+    expect(recordSpan).toHaveBeenCalledWith("session.name.autogen", expect.any(Number), "session-2",
+      { result: "skipped_no_title", model: "gpt-6-luna", reply: "tagged" });
   });
 
   it("creates the title helper session with the shared session-name helper base config", async () => {
