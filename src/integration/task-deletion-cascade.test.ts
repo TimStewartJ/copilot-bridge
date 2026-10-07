@@ -177,6 +177,48 @@ describe("task deletion session disposition", () => {
     expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
   });
 
+  describe("ifUntouched", () => {
+    it("deletes a task that was only created", async () => {
+      const task = ctx.taskStore.createTask("New Task");
+
+      await request(app).delete(`/api/tasks/${task.id}?ifUntouched=true`).expect(200);
+
+      expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
+    });
+
+    it.each<[string, (taskId: string) => void]>([
+      ["was edited", (taskId) => {
+        // An edit in the same millisecond as the creation would not move updatedAt.
+        db.prepare("UPDATE tasks SET createdAt = ? WHERE id = ?").run("2026-01-01T00:00:00.000Z", taskId);
+        ctx.taskStore.updateTask(taskId, { notes: "Keep this" });
+      }],
+      ["has a work item", (taskId) => {
+        db.prepare("INSERT INTO task_work_items (taskId, itemId, provider) VALUES (?, '123', 'ado')").run(taskId);
+      }],
+      ["has a schedule", (taskId) => {
+        ctx.scheduleStore.createSchedule({ taskId, name: "Daily", prompt: "run", type: "cron", cron: "0 0 * * *" });
+      }],
+      ["has a checklist item", (taskId) => {
+        ctx.checklistStore.createChecklistItem(taskId, "Call the dealer");
+      }],
+      ["has a history entry", (taskId) => {
+        ctx.taskHistoryStore!.addEntry(taskId, "Decided to wait", { source: "user" });
+      }],
+      ["has a tag", (taskId) => {
+        ctx.tagStore!.setEntityTags("task", taskId, [ctx.tagStore!.createTag("release").id]);
+      }],
+    ])("asks for confirmation when the task %s", async (_label, use) => {
+      const task = ctx.taskStore.createTask("New Task");
+      use(task.id);
+
+      const res = await request(app).delete(`/api/tasks/${task.id}?ifUntouched=true`).expect(409);
+
+      expect(res.body.error).toBe("confirmation_required");
+      expect(res.body.preview.sessionCount).toBe(0);
+      expect(ctx.taskStore.getTask(task.id)).toBeDefined();
+    });
+  });
+
   it("archive disposition archives every linked session and deletes the task", async () => {
     const task = ctx.taskStore.createTask("Archive me");
     ctx.taskStore.linkSession(task.id, "session-a");

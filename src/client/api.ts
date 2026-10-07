@@ -1617,18 +1617,21 @@ export async function getTaskDeletionPreview(id: string): Promise<TaskDeletionPr
 /**
  * Deletes a task. `sessionDisposition` decides what happens to linked sessions;
  * without it the server refuses (409 `confirmation_required`) unless the task
- * has none, so a task can never silently orphan its sessions.
+ * has none, so a task can never silently orphan its sessions. `ifUntouched`
+ * makes that parameterless delete stricter: the server also refuses when the
+ * task has been edited or has anything attached.
  *
  * Rejects with an `ApiError` whose `details` carry the server's error body
  * (`preview`, `sessionErrors`) so callers can re-render the dialog.
  */
 export async function deleteTask(
   id: string,
-  opts?: { sessionDisposition?: SessionDisposition; fingerprint?: string },
+  opts?: { sessionDisposition?: SessionDisposition; fingerprint?: string; ifUntouched?: boolean },
 ): Promise<void> {
   const params = new URLSearchParams();
   if (opts?.sessionDisposition) params.set("sessionDisposition", opts.sessionDisposition);
   if (opts?.fingerprint) params.set("fingerprint", opts.fingerprint);
+  if (opts?.ifUntouched) params.set("ifUntouched", "true");
   const suffix = params.toString() ? `?${params}` : "";
 
   const res = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(id)}${suffix}`, {
