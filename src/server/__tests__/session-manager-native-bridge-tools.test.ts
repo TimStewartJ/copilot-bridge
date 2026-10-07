@@ -238,6 +238,37 @@ describe("SessionManager native Bridge tools", () => {
     }
   });
 
+  it("gives a session that is still being created no second runtime handle", async () => {
+    const { manager, backend, db } = createManager();
+    const finish = createDeferred<void>();
+    try {
+      await manager.initialize();
+      backend.createSession.mockImplementationOnce(async (config: any) => {
+        await finish.promise;
+        let name: string | undefined;
+        return Object.assign(createFakeSession(config.sessionId, config.tools ?? []), {
+          setName: vi.fn(async (params: { name: string }) => { name = params.name; }),
+          getName: vi.fn(async () => ({ name })),
+        });
+      });
+      const { sessionId } = await manager.createSession({ background: true });
+
+      // A rename waits for the handle the creation caches; anything that would resume is refused.
+      const renamed = manager.setSessionName(sessionId, "Named while creating");
+      await expect(manager.reloadSession(sessionId)).rejects.toThrow("is still being created");
+      finish.resolve();
+      await renamed;
+
+      const session = await backend.createSession.mock.results[0].value;
+      expect(session.setName).toHaveBeenCalledWith({ name: "Named while creating" });
+      expect(backend.resumeSession).not.toHaveBeenCalled();
+    } finally {
+      finish.resolve();
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
   it("does not call the backend if persisting the durable creation dispatch fails", async () => {
     const { manager, backend, db } = createManager();
     try {
