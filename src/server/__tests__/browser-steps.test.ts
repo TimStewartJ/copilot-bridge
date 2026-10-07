@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { BrowserCommand, BrowserCommandResult } from "../agent-browser.js";
 import { runBrowserAutomationCommands, withScreenshots } from "../browser-automation.js";
 import { normalizeBrowserAutomationCommands } from "../browser-steps.js";
-import { saveDownload, takeScreenshot } from "../browser-step-files.js";
+import { takeScreenshot } from "../browser-step-files.js";
 import { toolFailureWithContext } from "../tool-results.js";
 
 const check = (command: string, ...args: string[]) => normalizeBrowserAutomationCommands([{ command, args }]);
@@ -172,27 +172,6 @@ describe("file steps", () => {
     const runCommand = vi.fn(async (): Promise<BrowserCommandResult> => ({ ok: false, output: "Unknown ref: e9" }));
 
     await expect(takeScreenshot(["@e9"], undefined, {}, { runCommand })).resolves.toEqual({ ok: false, output: "Unknown ref: e9" });
-  });
-
-  it("saves a download in the chat's files", async () => {
-    const runCommand = vi.fn(async (): Promise<BrowserCommandResult> => ({ ok: true, output: "", data: {} }));
-    const saved = join(folder, "new-chat", "report.pdf");
-
-    const result = await saveDownload(["@e5", "report.pdf"], 9_000, {}, { runCommand, filesDir: join(folder, "new-chat") });
-
-    expect(result).toEqual({ ok: true, output: `Saved the download to ${saved}.` });
-    expect(runCommand).toHaveBeenCalledWith(["download", "@e5", saved], 9_000, { skipRecovery: true });
-    await expect(stat(join(folder, "new-chat"))).resolves.toBeTruthy();
-  });
-
-  it("downloads nothing to a file it cannot place", async () => {
-    const runCommand = vi.fn();
-
-    await expect(saveDownload(["@e5", "report.pdf"], undefined, {}, { runCommand }))
-      .resolves.toEqual({ ok: false, output: "download takes absolute file paths: report.pdf" });
-    await expect(saveDownload(["@e5", join("..", "report.pdf")], undefined, {}, { runCommand, filesDir: folder }))
-      .resolves.toMatchObject({ ok: false });
-    expect(runCommand).not.toHaveBeenCalled();
   });
 });
 

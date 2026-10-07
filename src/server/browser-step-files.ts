@@ -1,6 +1,6 @@
 // The browser steps that read or write a file on the Bridge's machine: where the file is, and
-// the two steps that are an agent-browser command plus a file (`screenshot` and `download`).
-// `upload` has a module of its own, browser-upload.ts.
+// `screenshot`, which is an agent-browser command plus a file. `upload` and `download` ask
+// Chrome itself and have modules of their own, browser-upload.ts and browser-download.ts.
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
@@ -107,22 +107,4 @@ export async function takeScreenshot(
   } finally {
     if (!kept) await rm(path, { force: true }).catch(() => {});
   }
-}
-
-/** The `download` step: `<ref> <file>`. Clicks the element and saves what it downloads. */
-export async function saveDownload(
-  args: readonly string[],
-  timeoutMs: number | undefined,
-  commandOptions: BrowserCommandOptions,
-  files: BrowserStepFiles = {},
-): Promise<BrowserCommandResult> {
-  const path = stepFilePath("download", args[1], files.filesDir);
-  if (!path.ok) return { ok: false, output: path.error };
-  try {
-    await mkdir(dirname(path.value), { recursive: true });
-  } catch (error) {
-    return { ok: false, output: `download failed: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const result = await (files.runCommand ?? ab)(["download", args[0], path.value], timeoutMs, { ...commandOptions, skipRecovery: true });
-  return result.ok ? { ok: true, output: `Saved the download to ${path.value}.` } : result;
 }
