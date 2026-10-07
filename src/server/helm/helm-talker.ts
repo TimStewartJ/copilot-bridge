@@ -5,7 +5,12 @@
 import type { AgentModelInfo, AgentSession, AgentSessionConfig } from "../agent-backend/index.js";
 import { selectHelmModel } from "./helm-session-profile.js";
 
-/** Measured on 28 Sep 2026 replays: gpt-6-luna at low picked right 8 of 8 turns, at about 1.5 s. */
+/**
+ * Measured on 6 Oct 2026 with gpt-6-luna: at low, 21 of 21 lead-ins were right, in 1.1 to 3.0 s
+ * (median 1.5 s); at none they were quicker (median 1.1 s), but one helper of four went wrong three
+ * times (named a calendar nobody mentioned, ended a line with the word SILENT, stayed silent on a
+ * request).
+ */
 const TALKER_EFFORT = "low";
 /**
  * A lead-in later than this is of no use. The real limit is earlier and set by the conversation: the
@@ -13,14 +18,6 @@ const TALKER_EFFORT = "low";
  * one to two of those seconds are spent deciding that the user has finished.
  */
 const TALKER_TIMEOUT_MS = 3_000;
-/**
- * A new helper session takes 2 to 3.5 s over its first request, because the runtime connects its
- * built-in GitHub tools and the model on first use, and 0.8 to 1.5 s over later ones. On the first
- * real call (6 Oct 2026) the first turn's lead-in took over 3 s and "One sec." played instead. So the
- * first request is a throwaway one, sent when hands-free connects.
- */
-const WARM_UP_PROMPT = "User: hello";
-const WARM_UP_TIMEOUT_MS = 10_000;
 const MAX_LEAD_IN_CHARS = 90;
 
 export const HELM_TALKER_SYSTEM_PROMPT = [
@@ -34,53 +31,39 @@ export const HELM_TALKER_SYSTEM_PROMPT = [
 export function parseLeadIn(content: unknown): string | undefined {
   if (typeof content !== "string") return undefined;
   const line = content.trim().split("\n")[0]!.replace(/^[A-Z-]+:\s*/, "").replace(/[*_`#"“”]/g, "").trim();
-  if (!line || /^silent\b/i.test(line) || line.length > MAX_LEAD_IN_CHARS) return undefined;
+  // SILENT anywhere means the model mixed its two answers; it must never be spoken.
+  if (!line || /^silent\b/i.test(line) || line.includes("SILENT") || line.length > MAX_LEAD_IN_CHARS) return undefined;
   return line;
 }
 
 export interface HelmTalkerDeps {
   listModels(): Promise<AgentModelInfo[]>;
   createHelperSession(config: AgentSessionConfig): Promise<{ session: AgentSession; dispose(): Promise<void> }>;
-  logger?: Pick<Console, "log" | "warn">;
+  logger?: Pick<Console, "warn">;
 }
 
 type Helper = { session: AgentSession; dispose(): Promise<void> };
 
 /**
- * One helper session per hands-free connection: a warm session answers in about 0.8–1.5 s, a new
- * one takes 2–3.5 s. Each turn is sent on its own, with only Helm's last reply for context.
+ * One helper session per hands-free connection, opened when it connects. Each turn is sent on its
+ * own, with only Helm's last reply for context. A helper's first request used to take a second
+ * longer than its later ones (2.6 to 3.7 s against 1.4 to 2.5 s), which is why "One sec." beat it
+ * on the first turn of the first real call; that second was the runtime connecting its built-in
+ * GitHub tools, which helper sessions now leave off (see `BUILT_IN_GITHUB_MCP_SERVER`).
  */
 export class HelmTalker {
   private helper?: Promise<Helper | undefined>;
-  private warming?: Promise<void>;
   private busy = false;
 
   constructor(private readonly deps: HelmTalkerDeps) {}
 
-  /** Opens the helper session and sends it one throwaway request, so the first real turn finds it warm. */
   warm(): void {
-    if (this.helper) return;
-    const helper = this.helper = this.open();
-    const startedAt = performance.now();
-    const warming = this.warming = (async () => {
-      const opened = await helper;
-      if (!opened) return;
-      try {
-        await opened.session.sendAndWait({ prompt: WARM_UP_PROMPT, attachments: [] }, WARM_UP_TIMEOUT_MS);
-        this.deps.logger?.log(`[helm-talker] Warm in ${Math.round(performance.now() - startedAt)}ms`);
-      } catch {
-        await opened.session.abort().catch(() => undefined);
-      }
-    })().finally(() => {
-      if (this.warming === warming) this.warming = undefined;
-    });
+    this.helper ??= this.open();
   }
 
   async leadIn(text: string, lastReply?: string): Promise<string | undefined> {
     if (this.busy || !text.trim()) return undefined;
     this.busy = true;
-    // A turn that arrives while the warm-up request is still out waits for it: one session, one request at a time.
-    await this.warming;
     const helper = await (this.helper ??= this.open());
     try {
       if (!helper) return undefined;

@@ -133,6 +133,8 @@ describe("SessionManager with the Helm profile", () => {
       expect(helmConfig.tools.map((tool: { name: string }) => tool.name)).toEqual(["bridge_overview", "task_list"]);
       expect(helmConfig.availableTools).toEqual(["bridge_overview", "task_list"]);
       expect(helmConfig.mcpServers).toEqual({});
+      // Helm can use none of GitHub's tools, and connecting them holds its first reply back.
+      expect(helmConfig.disabledMcpServers).toEqual(["github-mcp-server"]);
       expect(helmConfig.memory).toEqual({ enabled: false });
 
       const plainConfig = backend.createSession.mock.calls[1]![0];
@@ -140,6 +142,7 @@ describe("SessionManager with the Helm profile", () => {
       expect(plainConfig.tools.map((tool: { name: string }) => tool.name)).toContain("staging_deploy");
       expect(plainConfig.availableTools).toBeUndefined();
       expect(Object.keys(plainConfig.mcpServers)).toContain("custom");
+      expect(plainConfig.disabledMcpServers).toBeUndefined();
     } finally {
       await manager.gracefulShutdown();
       db.close();
@@ -162,6 +165,7 @@ describe("SessionManager with the Helm profile", () => {
       expect(resumeConfig.availableTools).toEqual(["bridge_overview", "task_list"]);
       expect(resumeConfig.tools.map((tool: { name: string }) => tool.name)).not.toContain("staging_deploy");
       expect(resumeConfig.mcpServers).toEqual({});
+      expect(resumeConfig.disabledMcpServers).toEqual(["github-mcp-server"]);
       // Resume keeps trusting the session's persisted model.
       expect(resumeConfig.model).toBeUndefined();
     } finally {
