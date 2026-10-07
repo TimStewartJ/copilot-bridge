@@ -1,73 +1,14 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { WebSocketServer, type WebSocket } from "ws";
 
 import type { BrowserCommand, BrowserCommandResult } from "../agent-browser.js";
 import { runBrowserAutomationCommands } from "../browser-automation.js";
 import { normalizeBrowserAutomationCommands } from "../browser-steps.js";
 import { chatStepFiles } from "../browser-step-files.js";
-import { uploadFiles } from "../browser-upload.js";
-
-interface CdpRequest {
-  id: number;
-  method: string;
-  params: Record<string, any>;
-  sessionId?: string;
-}
-
-/** Stands in for Chrome's DevTools endpoint: one page with one frame of another site in it. */
-class FakeChrome {
-  readonly server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-  readonly requests: CdpRequest[] = [];
-  private socket: WebSocket | undefined;
-  /** Requests answered only when the test says so. */
-  held: string[] = [];
-
-  constructor() {
-    this.server.on("connection", (socket) => {
-      this.socket = socket;
-      socket.on("message", (data) => {
-        const request = JSON.parse(data.toString()) as CdpRequest;
-        this.requests.push(request);
-        if (this.held.includes(request.method)) return;
-        if (request.method === "Target.setAutoAttach" && request.sessionId === "page") {
-          this.event("Target.attachedToTarget", { sessionId: "frame", targetInfo: { type: "iframe" } }, "page");
-        }
-        const result = request.method === "Target.attachToTarget" ? { sessionId: "page" } : {};
-        socket.send(JSON.stringify({ id: request.id, result }));
-      });
-    });
-  }
-
-  get url(): string {
-    return `ws://127.0.0.1:${(this.server.address() as AddressInfo).port}/devtools/browser/fake`;
-  }
-
-  event(method: string, params: Record<string, unknown>, sessionId: string): void {
-    this.socket?.send(JSON.stringify({ method, params, sessionId }));
-  }
-
-  /** The requests of one kind, as `session:detail`. */
-  sent(method: string, detail: (params: Record<string, any>) => unknown = () => ""): string[] {
-    return this.requests.filter((request) => request.method === method)
-      .map((request) => `${request.sessionId}:${String(detail(request.params))}`);
-  }
-
-  reset(): void {
-    this.requests.length = 0;
-    this.held = [];
-    this.socket?.terminate();
-    this.socket = undefined;
-  }
-
-  /** Resolves once the Bridge has closed its connection. */
-  async disconnected(): Promise<void> {
-    await vi.waitFor(() => expect(this.server.clients.size).toBe(0));
-  }
-}
+import { FileChooserWatch, uploadFiles, type FileChooser } from "../browser-upload.js";
+import { FakeChrome } from "./fake-chrome.js";
 
 const chrome = new FakeChrome();
 let folder: string;
@@ -229,6 +170,48 @@ describe("uploadFiles", () => {
     });
     expect(runCommand.mock.calls.map(([command]) => command[0])).not.toContain("click");
     await chrome.disconnected();
+  });
+});
+
+describe("FileChooserWatch on every tab", () => {
+  it("is handed the choosers of the browser's tabs and their frames until it is closed", async () => {
+    chrome.attributes = ["type", "file", "accept", "image/*"];
+    const choosers: FileChooser[] = [];
+
+    const watch = await FileChooserWatch.open(chrome.url, { onChooser: (chooser) => choosers.push(chooser) });
+
+    // No tab is named: Chrome is asked for all of them, and each is asked for its frames.
+    expect(chrome.sent("Target.attachToTarget")).toEqual([]);
+    expect(chrome.sent("Target.setAutoAttach", (params) => params.filter[0].type)).toEqual(["undefined:page", "page:iframe", "frame:iframe"]);
+    expect(chrome.sent("Page.setInterceptFileChooserDialog", (params) => params.enabled)).toEqual(["page:true", "frame:true"]);
+
+    chrome.event("Page.fileChooserOpened", { mode: "selectMultiple", backendNodeId: 14 }, "frame");
+    await vi.waitFor(() => expect(choosers).toEqual([{ sessionId: "frame", backendNodeId: 14, multiple: true }]));
+    await expect(watch.accept(choosers[0])).resolves.toBe("image/*");
+    await watch.setFiles(choosers[0], [photo]);
+    expect(chrome.sent("DOM.setFileInputFiles", (params) => `${params.backendNodeId} ${params.files}`)).toEqual([`frame:14 ${photo}`]);
+    // A page that reloaded since: Chrome does not find the node, and is not given the files.
+    chrome.failing = ["DOM.resolveNode"];
+    await expect(watch.setFiles(choosers[0], [photo])).rejects.toThrow("DOM.resolveNode");
+    expect(chrome.sent("DOM.setFileInputFiles")).toHaveLength(1);
+    chrome.failing = [];
+
+    // A frame that went away is not asked to stop. The answer to a request arrives after the event.
+    chrome.event("Target.detachedFromTarget", { sessionId: "frame" }, "page");
+    await watch.accept(choosers[0]);
+    await watch.close();
+    expect(chrome.sent("Page.setInterceptFileChooserDialog", (params) => params.enabled).slice(2)).toEqual(["page:false"]);
+    await chrome.disconnected();
+  });
+
+  it("names no kinds of file for an input that has none, or that is gone", async () => {
+    const watch = await FileChooserWatch.open(chrome.url, { onChooser: () => {} });
+    const chooser = { sessionId: "page", backendNodeId: 9, multiple: false };
+
+    await expect(watch.accept(chooser)).resolves.toBeUndefined();
+    chrome.failing = ["DOM.describeNode"];
+    await expect(watch.accept(chooser)).resolves.toBeUndefined();
+    await watch.close();
   });
 });
 

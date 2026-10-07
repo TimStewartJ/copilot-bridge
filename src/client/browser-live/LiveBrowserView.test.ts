@@ -434,6 +434,77 @@ describe("LiveBrowserView", () => {
     ]);
   });
 
+  it("asks for the files a page wants with the device's own picker, and sends what was picked", async () => {
+    const view = await mount();
+    await view.goLive();
+    const picker = () => findAllByTag(view.container, "INPUT").find((input) => getReactProps(input)?.type === "file");
+    expect(picker()).toBeUndefined();
+
+    await view.harness.act(async () => {
+      view.network.latestSocket().receive({ type: "file_chooser", id: "c1", multiple: true, accept: "image/*" });
+    });
+    expect(view.text()).toContain("The page asks for files");
+    expect(getReactProps(picker())).toMatchObject({ multiple: true, accept: "image/*" });
+    // The button opens the picker inside the reader's own tap, which a phone requires.
+    const opened = vi.fn();
+    picker().click = opened;
+    await view.harness.act(async () => {
+      getReactProps(findButton(view.container, "Choose files"))!.onClick();
+    });
+    expect(opened).toHaveBeenCalledTimes(1);
+
+    view.network.setFileSender(() => Promise.reject(new Error("The connection was lost.")));
+    const target = { files: [new File(["a"], "a.jpg")], value: "C:\\fakepath\\a.jpg" };
+    await view.harness.act(async () => {
+      getReactProps(picker())!.onChange({ target });
+    });
+    // The same file can be picked again.
+    expect(target.value).toBe("");
+    expect(view.text()).toContain("The connection was lost.");
+
+    view.network.setFileSender(async () => {});
+    await view.harness.act(async () => {
+      getReactProps(picker())!.onChange({ target: { files: [new File(["a"], "a.jpg")], value: "" } });
+    });
+    expect(view.network.sentFiles).toEqual([{ chooserId: "c1", names: ["a.jpg"] }, { chooserId: "c1", names: ["a.jpg"] }]);
+    expect(view.text()).not.toContain("The page asks for");
+  });
+
+  it("offers no more picking for a request the page gave up on", async () => {
+    const view = await mount();
+    await view.goLive();
+    await view.harness.act(async () => {
+      view.network.latestSocket().receive({ type: "file_chooser", id: "c1", multiple: false });
+    });
+    view.network.setFileSender(() => Promise.reject(Object.assign(new Error("The page is no longer asking for a file. Use its button again."), { status: 409 })));
+    const picker = findAllByTag(view.container, "INPUT").find((input) => getReactProps(input)?.type === "file");
+    await view.harness.act(async () => {
+      getReactProps(picker)!.onChange({ target: { files: [new File(["a"], "a.jpg")], value: "" } });
+    });
+
+    expect(view.text()).toContain("The file did not reach the page");
+    expect(view.text()).toContain("Use its button again.");
+    expect(view.text()).not.toContain("The page asks for");
+    const buttons = findAllByTag(view.container, "BUTTON").map((button) => button.textContent?.trim());
+    expect(buttons).toContain("Close");
+    expect(buttons).not.toContain("Choose file");
+  });
+
+  it("puts the page's request for a file away when the reader declines", async () => {
+    const view = await mount();
+    await view.goLive();
+    await view.harness.act(async () => {
+      view.network.latestSocket().receive({ type: "file_chooser", id: "c1", multiple: false });
+    });
+    expect(view.text()).toContain("The page asks for a file");
+
+    await view.harness.act(async () => {
+      getReactProps(findButton(view.container, "Cancel"))!.onClick();
+    });
+    expect(view.text()).not.toContain("The page asks for a file");
+    expect(view.network.sentFiles).toEqual([]);
+  });
+
   it("shows why the view ended and tries again on request", async () => {
     const view = await mount();
     await view.goLive();

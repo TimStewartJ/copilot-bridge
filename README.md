@@ -718,7 +718,9 @@ The decision rests on what every block page has in common, so it does not depend
 
 The live view relays the stream that agent-browser (0.38 or newer) serves for a browser. That is the one part of the Bridge that depends on how a particular agent-browser version behaves, so the Bridge can test it: **Settings → Browser → Check public browser** opens a page, clicks and types in it through the stream, and reports the outcome under "Live view". `npm run check:browser` runs the same check from a terminal. Run either after updating agent-browser (`npm install -g agent-browser@latest`).
 
-The view has a browser's own controls: an address field, back, forward and reload, and a tab picker once more than one tab is open. A link or a sign-in popup that opens a new tab is followed, and the view returns to the page behind it when the popup closes. It shows pages only. What a browser draws outside the page (a prompt to save a password, a passkey or permission prompt, a file picker) does not appear in it. A view nobody has used for ten minutes closes and can be opened again.
+The view has a browser's own controls: an address field, back, forward and reload, and a tab picker once more than one tab is open. A link or a sign-in popup that opens a new tab is followed, and the view returns to the page behind it when the popup closes. It shows pages only. What a browser draws outside the page (a prompt to save a password, a passkey or permission prompt) does not appear in it, with one exception: files.
+
+When a tap in the view opens a page's file chooser, the view asks for the file instead: **The page asks for a file**, with a button that opens the picker of the device the view is on, so a photo on a phone can go into a page of the browser on the server. While a view is open the Bridge has Chrome hand over the file choosers of every tab (`FileChooserWatch` in `src/server/browser-upload.ts`, the same mechanism as the `upload` step) and tells the view of each (`file_chooser`). The picked files are posted to `/api/browser/live/files`, written to `<COPILOT_HOME>/browser-live-files/<browser session>/` under the names they had, and given to the page. A file can be 100 MB and a chooser takes up to 20; an upload has the five minutes Node gives a server to receive one request. Chrome reads a chosen file when the page reads or submits it, so the files stay until their browser session closes; the folder is emptied when the Bridge starts. A chooser belongs to the view that was told of it and ends with that view's connection, and a page that has moved on since no longer takes the files; in both cases the view says so, and the page's button has to be used again. While files are on their way, a tap that opens another chooser does nothing. A view nobody has used for ten minutes closes and can be opened again.
 
 #### Steps, screenshots and files
 
@@ -735,7 +737,7 @@ Three steps involve a file, and the Bridge runs those itself. A file is an absol
 
 Upload, screenshot, drag and download depend on how the installed agent-browser and Chrome behave, so `npm run check:browser` runs them against a real browser (`src/server/__tests__/browser-steps.browser-check.ts`). Run it after updating either.
 
-Not covered: a page that only accepts dropped files, and a person using the live view still cannot pick a file from their own device.
+Not covered: a page that only accepts dropped files. A person using the live view picks files from their own device; see the live view above.
 
 #### Signing in to sites
 
