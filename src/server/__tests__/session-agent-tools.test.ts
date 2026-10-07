@@ -184,4 +184,10 @@ describe("agent lifecycle guidance", () => {
     }
     expect(AGENT_LIFECYCLE_GUIDANCE).toContain("is not seen until its current turn ends");
   });
+
+  it("says that queued messages hold back the notification, and how to drop them", () => {
+    expect(AGENT_LIFECYCLE_GUIDANCE).toContain("do not expect a notification until the last one is done");
+    expect(AGENT_LIFECYCLE_GUIDANCE).toContain("stop it with agent_stop, which discards them");
+    expect(AGENT_LIFECYCLE_GUIDANCE).not.toContain("wait until it is idle");
+  });
 });
