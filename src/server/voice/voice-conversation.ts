@@ -41,6 +41,12 @@ export const VOICE_TIMING = {
    */
   fillerDelayMs: 3_000,
   /**
+   * How much longer the canned lead-in waits when one is being written for this turn. A written
+   * lead-in is asked for only once the turn is settled, one to two seconds after the user stopped
+   * talking, so at 3 s it often had under 1.5 s (6 Oct 2026: asked at 1.3 s, "One sec." at 3.4 s).
+   */
+  leadInGraceMs: 1_000,
+  /**
    * While a reply is still being worked out, say so again when this long has passed in silence since
    * the last thing said: first gap, second gap, and so on, the last one repeating. On 6 Oct 2026 a
    * 19-second lookup followed "One sec." with 15 s of silence in a car, and the user hung up one
@@ -785,9 +791,18 @@ export class VoiceConversation {
     };
     if (input.kind === "user" || input.kind === "continuation" || input.kind === "interrupted") {
       const delay = Math.max(0, VOICE_TIMING.fillerDelayMs - (this.timers.now() - speechEndAt));
-      gen.fillerTimer = this.timers.setTimeout(() => {
+      // Set once the canned lead-in is due but is waiting a little for a written one.
+      let cannedDue = false;
+      const speakCanned = () => {
+        if (gen.fillerTimer) this.timers.clearTimeout(gen.fillerTimer);
         gen.fillerTimer = undefined;
+        cannedDue = false;
         if (this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen, "slow reply");
+      };
+      gen.fillerTimer = this.timers.setTimeout(() => {
+        if (!gen.leadInPending) return speakCanned();
+        cannedDue = true;
+        gen.fillerTimer = this.timers.setTimeout(speakCanned, VOICE_TIMING.leadInGraceMs);
       }, delay);
       if (this.agent.leadIn) {
         gen.leadInPending = true;
@@ -796,8 +811,10 @@ export class VoiceConversation {
           gen.leadInPending = false;
           this.log("lead_in", { genId: gen.id, text: text ?? null, ms: Math.round(this.timers.now() - startedAt) });
           if (text && this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen, "lead-in", text);
+          else if (cannedDue) speakCanned();
         }, () => {
           gen.leadInPending = false;
+          if (cannedDue) speakCanned();
         });
       }
     }

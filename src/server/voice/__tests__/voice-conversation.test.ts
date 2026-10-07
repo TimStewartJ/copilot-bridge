@@ -278,6 +278,42 @@ describe("VoiceConversation", () => {
     expect(ctx.engine.synthCalls[0]!.text).toBe("Let me check the car task.");
   });
 
+  it("waits one more second for a lead-in that is being written before the canned one", async () => {
+    const ctx = setup();
+    let resolveLeadIn!: (text: string | undefined) => void;
+    Object.assign(ctx.agent, { leadIn: () => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }) });
+    await speakTurn(ctx, "Where is tonight's study?");
+    await advance(3_500);
+    expect(ctx.engine.synthCalls).toHaveLength(0);
+    resolveLeadIn("Let me find tonight's study.");
+    await advance(10);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["Let me find tonight's study."]);
+    await advance(2_000);
+    expect(ctx.engine.synthCalls).toHaveLength(1);
+
+    // Still not written a second later: the canned one plays, and the late one is dropped.
+    const slow = setup();
+    Object.assign(slow.agent, { leadIn: () => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }) });
+    await speakTurn(slow, "Where is tonight's study?");
+    await advance(3_700);
+    expect(slow.engine.synthCalls).toHaveLength(0);
+    await advance(400);
+    expect(slow.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
+    resolveLeadIn("Let me find tonight's study.");
+    await advance(10);
+    expect(slow.engine.synthCalls).toHaveLength(1);
+
+    // The writer gives up during the extra second: the canned one plays at once.
+    const silent = setup();
+    Object.assign(silent.agent, { leadIn: () => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }) });
+    await speakTurn(silent, "Where is tonight's study?");
+    await advance(3_300);
+    expect(silent.engine.synthCalls).toHaveLength(0);
+    resolveLeadIn(undefined);
+    await advance(10);
+    expect(silent.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
+  });
+
   it("says it is still working when a lookup stays silent, at growing gaps, until the reply comes", async () => {
     const ctx = setup();
     await speakTurn(ctx, "Where is tonight's study?");

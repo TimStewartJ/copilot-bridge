@@ -7,8 +7,20 @@ import { selectHelmModel } from "./helm-session-profile.js";
 
 /** Measured on 28 Sep 2026 replays: gpt-6-luna at low picked right 8 of 8 turns, at about 1.5 s. */
 const TALKER_EFFORT = "low";
-/** A lead-in later than this is no better than the canned filler that plays at 3 s. */
+/**
+ * A lead-in later than this is of no use. The real limit is earlier and set by the conversation: the
+ * canned lead-in plays 3 s after the user stops talking (4 s while a lead-in is being written), and
+ * one to two of those seconds are spent deciding that the user has finished.
+ */
 const TALKER_TIMEOUT_MS = 3_000;
+/**
+ * A new helper session takes 2 to 3.5 s over its first request, because the runtime connects its
+ * built-in GitHub tools and the model on first use, and 0.8 to 1.5 s over later ones. On the first
+ * real call (6 Oct 2026) the first turn's lead-in took over 3 s and "One sec." played instead. So the
+ * first request is a throwaway one, sent when hands-free connects.
+ */
+const WARM_UP_PROMPT = "User: hello";
+const WARM_UP_TIMEOUT_MS = 10_000;
 const MAX_LEAD_IN_CHARS = 90;
 
 export const HELM_TALKER_SYSTEM_PROMPT = [
@@ -29,7 +41,7 @@ export function parseLeadIn(content: unknown): string | undefined {
 export interface HelmTalkerDeps {
   listModels(): Promise<AgentModelInfo[]>;
   createHelperSession(config: AgentSessionConfig): Promise<{ session: AgentSession; dispose(): Promise<void> }>;
-  logger?: Pick<Console, "warn">;
+  logger?: Pick<Console, "log" | "warn">;
 }
 
 type Helper = { session: AgentSession; dispose(): Promise<void> };
@@ -40,17 +52,35 @@ type Helper = { session: AgentSession; dispose(): Promise<void> };
  */
 export class HelmTalker {
   private helper?: Promise<Helper | undefined>;
+  private warming?: Promise<void>;
   private busy = false;
 
   constructor(private readonly deps: HelmTalkerDeps) {}
 
+  /** Opens the helper session and sends it one throwaway request, so the first real turn finds it warm. */
   warm(): void {
-    this.helper ??= this.open();
+    if (this.helper) return;
+    const helper = this.helper = this.open();
+    const startedAt = performance.now();
+    const warming = this.warming = (async () => {
+      const opened = await helper;
+      if (!opened) return;
+      try {
+        await opened.session.sendAndWait({ prompt: WARM_UP_PROMPT, attachments: [] }, WARM_UP_TIMEOUT_MS);
+        this.deps.logger?.log(`[helm-talker] Warm in ${Math.round(performance.now() - startedAt)}ms`);
+      } catch {
+        await opened.session.abort().catch(() => undefined);
+      }
+    })().finally(() => {
+      if (this.warming === warming) this.warming = undefined;
+    });
   }
 
   async leadIn(text: string, lastReply?: string): Promise<string | undefined> {
     if (this.busy || !text.trim()) return undefined;
     this.busy = true;
+    // A turn that arrives while the warm-up request is still out waits for it: one session, one request at a time.
+    await this.warming;
     const helper = await (this.helper ??= this.open());
     try {
       if (!helper) return undefined;
