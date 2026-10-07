@@ -1,10 +1,11 @@
-import { requestBrowserLiveTicket } from "../api";
-import type {
-  BrowserLiveClientMessage,
-  BrowserLiveClosedMessage,
-  BrowserLiveServerMessage,
-  BrowserLiveTab,
-  BrowserLiveTicket,
+import { requestBrowserLiveTicket, sendBrowserLiveFiles } from "../api";
+import {
+  BROWSER_LIVE_FILE_LIMITS,
+  type BrowserLiveClientMessage,
+  type BrowserLiveClosedMessage,
+  type BrowserLiveServerMessage,
+  type BrowserLiveTab,
+  type BrowserLiveTicket,
 } from "../../shared/browser-live.js";
 import { buildBrowserLiveWebSocketUrl, type LiveViewport } from "./live-input";
 import { systemTimers, type LiveTimers } from "./mouse-input";
@@ -29,6 +30,20 @@ export interface BrowserLiveSnapshot {
   tabs: readonly BrowserLiveTab[];
   /** Whether a picture of the page has arrived yet. */
   hasFrame: boolean;
+  /** The page is asking for files, which the reader picks on their own device. */
+  fileChooser: BrowserLiveFileChooser | null;
+}
+
+export interface BrowserLiveFileChooser {
+  id: string;
+  multiple: boolean;
+  accept?: string;
+  /** The picked files are on their way to the page. */
+  sending?: boolean;
+  /** Why the last files did not reach the page, in words for the reader. */
+  error?: string;
+  /** The page no longer takes files for this request; `error` says so. */
+  over?: boolean;
 }
 
 /** The part of a WebSocket the connection uses. */
@@ -46,6 +61,7 @@ export interface BrowserLiveDeps {
   requestTicket: (browserSessionId: string) => Promise<BrowserLiveTicket>;
   buildUrl: (ticket: BrowserLiveTicket) => string;
   createSocket: (url: string) => LiveSocket;
+  sendFiles: (chooserId: string, files: readonly File[]) => Promise<void>;
   timers: LiveTimers;
 }
 
@@ -64,6 +80,7 @@ function defaultDeps(): BrowserLiveDeps {
     requestTicket: requestBrowserLiveTicket,
     buildUrl: (ticket) => buildBrowserLiveWebSocketUrl(ticket),
     createSocket: (url) => new WebSocket(url) as unknown as LiveSocket,
+    sendFiles: sendBrowserLiveFiles,
     timers: systemTimers,
   };
 }
@@ -115,6 +132,15 @@ function parseServerMessage(data: unknown): BrowserLiveServerMessage | null {
             }),
           }
         : null;
+    case "file_chooser":
+      return typeof message.id === "string" && message.id
+        ? {
+            type: "file_chooser",
+            id: message.id,
+            multiple: message.multiple === true,
+            ...(typeof message.accept === "string" && message.accept ? { accept: message.accept } : {}),
+          }
+        : null;
     case "closed":
       return {
         type: "closed",
@@ -135,7 +161,7 @@ interface QueuedFrame {
 export class BrowserLiveConnection {
   private readonly deps: BrowserLiveDeps;
   private readonly listeners = new Set<() => void>();
-  private snapshot: BrowserLiveSnapshot = { phase: "connecting", canRetry: true, viewport: null, url: null, tabs: [], hasFrame: false };
+  private snapshot: BrowserLiveSnapshot = { phase: "connecting", canRetry: true, viewport: null, url: null, tabs: [], hasFrame: false, fileChooser: null };
   /** Bumped on every start and stop, so work begun for an earlier run notices it is stale. */
   private run = 0;
   private running = false;
@@ -213,6 +239,37 @@ export class BrowserLiveConnection {
     }
   }
 
+  /**
+   * Sends the files the reader picked to the page that asked for them. The request goes away
+   * once the page has them; what went wrong stays with it, so they can try again.
+   */
+  async chooseFiles(files: readonly File[]): Promise<void> {
+    const chooser = this.snapshot.fileChooser;
+    if (!chooser || chooser.sending || chooser.over || files.length === 0) return;
+    const current = (): boolean => this.snapshot.fileChooser?.id === chooser.id;
+    const tooLarge = files.find((file) => file.size > BROWSER_LIVE_FILE_LIMITS.bytes);
+    if (tooLarge) {
+      const megabytes = Math.round(BROWSER_LIVE_FILE_LIMITS.bytes / (1024 * 1024));
+      this.update({ fileChooser: { ...chooser, error: `${tooLarge.name} is larger than ${megabytes} MB.` } });
+      return;
+    }
+    this.update({ fileChooser: { ...chooser, sending: true, error: undefined } });
+    try {
+      await this.deps.sendFiles(chooser.id, files);
+      if (current()) this.update({ fileChooser: null });
+    } catch (error) {
+      const reason = error instanceof Error && error.message ? error.message : "The files could not be sent.";
+      // The server answers 409 for a request the page has given up on.
+      const over = (error as { status?: unknown } | null)?.status === 409;
+      if (current()) this.update({ fileChooser: { ...chooser, sending: false, error: reason, ...(over ? { over } : {}) } });
+    }
+  }
+
+  /** The reader does not want to give the page a file. */
+  dismissFileChooser(): void {
+    if (this.snapshot.fileChooser) this.update({ fileChooser: null });
+  }
+
   private update(patch: Partial<BrowserLiveSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of [...this.listeners]) listener();
@@ -229,6 +286,8 @@ export class BrowserLiveConnection {
     const socket = this.socket;
     this.socket = null;
     this.socketHasViewport = false;
+    // A file chooser is known to the connection it was announced on, and ends with it.
+    if (this.snapshot.fileChooser) this.snapshot = { ...this.snapshot, fileChooser: null };
     if (!socket) return;
     socket.onopen = null;
     socket.onmessage = null;
@@ -335,6 +394,11 @@ export class BrowserLiveConnection {
     }
     if (message.type === "tabs") {
       this.update({ tabs: message.tabs });
+      return;
+    }
+    if (message.type === "file_chooser") {
+      const { id, multiple, accept } = message;
+      this.update({ fileChooser: { id, multiple, ...(accept ? { accept } : {}) } });
       return;
     }
     if (this.snapshot.phase !== "live" || !this.snapshot.hasFrame) this.update({ phase: "live", hasFrame: true });

@@ -2,7 +2,9 @@
 // agent-browser serves for the session, so the user can watch the page and act in it.
 
 import { randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
+import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 
@@ -20,8 +22,11 @@ import {
 } from "../shared/browser-live.js";
 import { ab, type BrowserCommand, type BrowserCommandOptions, type BrowserCommandResult, type BrowserTarget } from "./agent-browser.js";
 import type { BrowserBroker } from "./browser-broker.js";
+import { localDevToolsUrl } from "./browser-devtools.js";
 import { sessionLease, type BrowserSessionStore } from "./browser-session-store.js";
+import { FileChooserWatch, type FileChooser } from "./browser-upload.js";
 import type { TelemetryStore } from "./telemetry-store.js";
+import { err, ok, type Result } from "./tool-results.js";
 
 /** Long enough to open the socket after asking for it, short enough to be useless if it leaks. */
 const TICKET_TTL_MS = 60_000;
@@ -91,10 +96,46 @@ export class BrowserLiveSessionNotFoundError extends Error {
   }
 }
 
+/** A file chooser a page opened under a view, waiting for the files the viewer picks. */
+interface PendingFileChooser {
+  browserSessionId: string;
+  multiple: boolean;
+  /** Files for it are being received. A second upload is refused, and its view counts as in use. */
+  claimed: boolean;
+  setFiles: (paths: readonly string[]) => Promise<void>;
+  /** Tells the view that it is being used. */
+  used: () => void;
+}
+
+const FILE_CHOOSER_GONE = "The page is no longer asking for a file. Use its button again.";
+
+/**
+ * A picked file's name as the page will see it: the one it had on the person's device, without
+ * a folder, and different from the names in `taken`, which it joins.
+ */
+export function liveFileName(original: string, taken: Set<string>): string {
+  const base = (original.split(/[\\/]/).pop() ?? "").replace(/[\u0000-\u001f<>:"|?*]/g, "_").trim();
+  const name = base && base !== "." && base !== ".." ? base : "file";
+  const dot = name.lastIndexOf(".");
+  const [stem, extension] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let count = 0; ; count++) {
+    const candidate = count === 0 ? name : `${stem} (${count})${extension}`;
+    // Two names that differ only in case are one file on Windows and macOS.
+    if (taken.has(candidate.toLowerCase())) continue;
+    taken.add(candidate.toLowerCase());
+    return candidate;
+  }
+}
+
 export interface BrowserLiveGatewayOptions {
   sessions: BrowserSessionStore;
   broker: BrowserBroker;
   telemetryStore?: TelemetryStore;
+  /**
+   * The folder for the files viewers pick for a page's file chooser; it is the gateway's alone
+   * and emptied when the gateway starts. Without it a view offers no file choosing.
+   */
+  filesDir?: string;
   runCommand?: (
     command: BrowserCommand,
     timeout: number | undefined,
@@ -210,12 +251,18 @@ export class BrowserLiveGateway {
   private readonly connectStream: NonNullable<BrowserLiveGatewayOptions["connectStream"]>;
   private readonly stopListening: () => void;
   private readonly viewerListeners = new Set<BrowserLiveViewerListener>();
+  private readonly fileChoosers = new Map<string, PendingFileChooser>();
+  private readonly filesDir: string | undefined;
+  /** Settles once what an earlier run left in `filesDir` is gone. */
+  private readonly filesCleared: Promise<void>;
   private lastCheck: BrowserLiveCheck | undefined;
 
   constructor(options: BrowserLiveGatewayOptions) {
     this.sessions = options.sessions;
     this.broker = options.broker;
     this.telemetryStore = options.telemetryStore;
+    this.filesDir = options.filesDir;
+    this.filesCleared = this.removeFiles();
     this.runCommand = options.runCommand ?? ((command, timeout, commandOptions) => ab(command, timeout, commandOptions));
     this.connectStream = options.connectStream ?? ((url) => new WebSocket(url, { perMessageDeflate: false }));
     this.stopListening = this.sessions.onSessionClosing((browserSessionId) => {
@@ -224,7 +271,59 @@ export class BrowserLiveGateway {
         reason: "session_ended",
         message: "The browser session has ended.",
       });
+      // A browser reads a chosen file when the page does, so the files stay for as long as the
+      // session that got them.
+      void this.removeFiles(browserSessionId);
     });
+  }
+
+  /** Removes the picked files of one browser session, or all of them. */
+  private async removeFiles(browserSessionId = ""): Promise<void> {
+    if (!this.filesDir) return;
+    await rm(join(this.filesDir, browserSessionId), { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+  }
+
+  /**
+   * Takes a file chooser a view was told of for one upload, and says where the upload's files
+   * go. Undefined when the page is not waiting for them (any more), or an upload for the same
+   * chooser is under way. The claim ends with chooseFiles or releaseFileChooser.
+   */
+  async claimFileChooser(id: string): Promise<{ folder: string; multiple: boolean } | undefined> {
+    const chooser = this.fileChoosers.get(id);
+    if (!chooser || chooser.claimed || !this.filesDir) return undefined;
+    chooser.claimed = true;
+    chooser.used();
+    try {
+      await this.filesCleared;
+      const sessionFolder = join(this.filesDir, chooser.browserSessionId);
+      await mkdir(sessionFolder, { recursive: true });
+      // A folder for each upload, so that a file keeps the name it had on the person's device.
+      return { folder: await mkdtemp(join(sessionFolder, "files-")), multiple: chooser.multiple };
+    } catch (error) {
+      chooser.claimed = false;
+      throw error;
+    }
+  }
+
+  /** Ends a claim whose files did not arrive. The chooser stays open for another try. */
+  releaseFileChooser(id: string): void {
+    const chooser = this.fileChoosers.get(id);
+    if (!chooser) return;
+    chooser.claimed = false;
+    chooser.used();
+  }
+
+  /**
+   * Gives the page the files received for a claimed chooser, which is thereby answered: also
+   * when the page did not take them, because the element that asked is gone then (the page
+   * moved on, or its tab was closed). The files stay where they are.
+   */
+  async chooseFiles(id: string, paths: readonly string[]): Promise<Result<void>> {
+    const chooser = this.fileChoosers.get(id);
+    if (!chooser) return err(FILE_CHOOSER_GONE);
+    this.fileChoosers.delete(id);
+    chooser.used();
+    return chooser.setFiles(paths).then(() => ok(undefined), () => err(FILE_CHOOSER_GONE));
   }
 
   /**
@@ -402,6 +501,7 @@ export class BrowserLiveGateway {
       });
     }
     this.wss.close();
+    void this.removeFiles();
   }
 
   /** Calls the listener whenever a live view of a session opens or ends. */
@@ -450,6 +550,8 @@ export class BrowserLiveGateway {
     let lastReadAt = 0;
     let answersPings = true;
     let ended = false;
+    let fileChoosers: Promise<FileChooserWatch | undefined> = Promise.resolve(undefined);
+    let fileChooserId: string | undefined;
 
     const end = (message: BrowserLiveClosedMessage, dropped = false): void => {
       if (ended) return;
@@ -463,6 +565,8 @@ export class BrowserLiveGateway {
       send(message);
       client.close(1000, message.reason);
       stream?.close();
+      if (fileChooserId) this.fileChoosers.delete(fileChooserId);
+      void fileChoosers.then((watch) => watch?.close());
       this.viewersChanged(browserSessionId, dropped);
     };
     const heartbeat = setInterval(() => {
@@ -660,6 +764,48 @@ export class BrowserLiveGateway {
       })();
     };
 
+    // A page's file chooser is drawn outside the page, where the view cannot show it. The
+    // browser hands it over instead, and the viewer is asked for the files on their own device.
+    const receivingFiles = (): boolean => fileChooserId !== undefined && this.fileChoosers.get(fileChooserId)?.claimed === true;
+    const offerFileChooser = async (chooser: FileChooser): Promise<void> => {
+      // Files on their way are for the chooser they were picked for; a tap meanwhile opens nothing.
+      if (receivingFiles()) return;
+      const watch = await fileChoosers;
+      const accept = await watch?.accept(chooser);
+      if (!watch || ended || receivingFiles()) return;
+      if (fileChooserId) this.fileChoosers.delete(fileChooserId);
+      const id = randomBytes(16).toString("hex");
+      fileChooserId = id;
+      this.fileChoosers.set(id, {
+        browserSessionId,
+        multiple: chooser.multiple,
+        claimed: false,
+        setFiles: (paths) => watch.setFiles(chooser, paths),
+        used: () => {
+          lastInputAt = Date.now();
+          this.sessions.touch(browserSessionId);
+        },
+      });
+      send({ type: "file_chooser", id, multiple: chooser.multiple, ...(accept ? { accept } : {}) });
+    };
+    const watchFileChoosers = async (): Promise<FileChooserWatch | undefined> => {
+      try {
+        const endpoint = await this.sessions.holdSession(browserSessionId, (current) => this.broker.withTarget(
+          sessionLease(current),
+          { toolName: "browser_live", browserOpId: randomBytes(8).toString("hex"), duringHold: true, skipReadiness: true },
+          () => this.runCommand(["get", "cdp-url"], STREAM_COMMAND_TIMEOUT_MS, commandOptions),
+        ));
+        const url = endpoint.ok && endpoint.value.ok ? localDevToolsUrl(endpoint.value.data?.cdpUrl) : undefined;
+        if (!url || ended) return undefined;
+        const watch = await FileChooserWatch.open(url, { onChooser: (chooser) => void offerFileChooser(chooser) });
+        if (!ended) return watch;
+        await watch.close();
+      } catch {
+        // The view works without it; a file chooser then opens on the browser's own screen.
+      }
+      return undefined;
+    };
+
     let port: number;
     try {
       port = await this.resolveSessionStreamPort(browserSessionId);
@@ -680,9 +826,10 @@ export class BrowserLiveGateway {
     stream = this.connectStream(`ws://127.0.0.1:${port}/?pacing=ack&maxFps=${STREAM_MAX_FPS}`);
     stream.on("open", () => {
       void readPage();
+      if (this.filesDir) fileChoosers = watchFileChoosers();
       pageTimer = setInterval(() => {
         const now = Date.now();
-        if (now - Math.max(openedAt, lastInputAt) >= VIEW_IDLE_MS) {
+        if (!receivingFiles() && now - Math.max(openedAt, lastInputAt) >= VIEW_IDLE_MS) {
           end({ type: "closed", reason: "stream_ended", message: "The view was closed because nobody used it for a while." });
           return;
         }

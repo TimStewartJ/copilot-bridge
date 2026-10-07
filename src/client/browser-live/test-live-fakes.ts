@@ -92,6 +92,10 @@ export interface FakeLiveNetwork {
   sockets: FakeLiveSocket[];
   /** Browser session ids a ticket was asked for, in order. */
   ticketRequests: string[];
+  /** The files sent for a file chooser, in order. */
+  sentFiles: Array<{ chooserId: string; names: string[] }>;
+  /** Replaces what sending files does after it was recorded. */
+  setFileSender(sender: () => Promise<void>): void;
   /** Replaces how the next ticket requests answer. */
   setTicketResponder(responder: (browserSessionId: string, attempt: number) => Promise<BrowserLiveTicket>): void;
   latestSocket(): FakeLiveSocket;
@@ -101,6 +105,8 @@ export function createFakeLiveNetwork(): FakeLiveNetwork {
   const clock = createManualTimers();
   const sockets: FakeLiveSocket[] = [];
   const ticketRequests: string[] = [];
+  const sentFiles: FakeLiveNetwork["sentFiles"] = [];
+  let fileSender = async (): Promise<void> => {};
   let responder = async (browserSessionId: string, attempt: number): Promise<BrowserLiveTicket> => ({
     browserSessionId,
     token: `token-${attempt}`,
@@ -110,6 +116,10 @@ export function createFakeLiveNetwork(): FakeLiveNetwork {
     clock,
     sockets,
     ticketRequests,
+    sentFiles,
+    setFileSender(sender) {
+      fileSender = sender;
+    },
     setTicketResponder(next) {
       responder = next;
     },
@@ -128,6 +138,10 @@ export function createFakeLiveNetwork(): FakeLiveNetwork {
         const socket = new FakeLiveSocket(url);
         sockets.push(socket);
         return socket;
+      },
+      sendFiles: (chooserId, files) => {
+        sentFiles.push({ chooserId, names: files.map((file) => file.name) });
+        return fileSender();
       },
       timers: clock.timers,
     },

@@ -180,6 +180,64 @@ describe("BrowserLiveConnection", () => {
     connection.stop();
   });
 
+  it("keeps the page's latest request for a file until its files arrived, the reader declined, or the connection dropped", async () => {
+    const { network, connection } = await connect();
+    const socket = network.latestSocket();
+    socket.open();
+    expect(connection.getSnapshot().fileChooser).toBeNull();
+
+    socket.receive({ type: "file_chooser", id: "c1", multiple: false });
+    socket.receive({ type: "file_chooser", id: "c2", multiple: true, accept: "image/*" });
+    expect(connection.getSnapshot().fileChooser).toEqual({ id: "c2", multiple: true, accept: "image/*" });
+    socket.onmessage?.({ data: JSON.stringify({ type: "file_chooser", multiple: true }) });
+    expect(connection.getSnapshot().fileChooser).toMatchObject({ id: "c2" });
+
+    const sent = connection.chooseFiles([new File(["a"], "a.jpg"), new File(["b"], "b.jpg")]);
+    expect(connection.getSnapshot().fileChooser).toMatchObject({ id: "c2", sending: true });
+    // A second pick while the first is on its way is not sent.
+    await connection.chooseFiles([new File(["c"], "c.jpg")]);
+    await sent;
+    expect(network.sentFiles).toEqual([{ chooserId: "c2", names: ["a.jpg", "b.jpg"] }]);
+    expect(connection.getSnapshot().fileChooser).toBeNull();
+
+    socket.receive({ type: "file_chooser", id: "c3", multiple: false });
+    connection.dismissFileChooser();
+    expect(connection.getSnapshot().fileChooser).toBeNull();
+
+    socket.receive({ type: "file_chooser", id: "c4", multiple: false });
+    socket.drop();
+    expect(connection.getSnapshot()).toMatchObject({ phase: "reconnecting", fileChooser: null });
+    connection.stop();
+  });
+
+  it("keeps the request with what went wrong when the files did not reach the page, so they can be picked again", async () => {
+    const { network, connection } = await connect();
+    const socket = network.latestSocket();
+    socket.open();
+    socket.receive({ type: "file_chooser", id: "c1", multiple: false });
+
+    await connection.chooseFiles([{ name: "holiday.mov", size: 100 * 1024 * 1024 + 1 } as File]);
+    expect(network.sentFiles).toEqual([]);
+    expect(connection.getSnapshot().fileChooser).toEqual({ id: "c1", multiple: false, error: "holiday.mov is larger than 100 MB." });
+
+    network.setFileSender(() => Promise.reject(new ApiError("A file is too large.", 400)));
+    await connection.chooseFiles([new File(["a"], "a.jpg")]);
+    expect(connection.getSnapshot().fileChooser).toEqual({ id: "c1", multiple: false, sending: false, error: "A file is too large." });
+
+    network.setFileSender(async () => {});
+    await connection.chooseFiles([new File(["a"], "a.jpg")]);
+    expect(connection.getSnapshot().fileChooser).toBeNull();
+
+    // The page gave up on the request: it is kept for what it says, and takes no more files.
+    socket.receive({ type: "file_chooser", id: "c2", multiple: false });
+    network.setFileSender(() => Promise.reject(new ApiError("The page is no longer asking for a file. Use its button again.", 409)));
+    await connection.chooseFiles([new File(["a"], "a.jpg")]);
+    expect(connection.getSnapshot().fileChooser).toMatchObject({ id: "c2", over: true, error: expect.stringContaining("no longer asking") });
+    await connection.chooseFiles([new File(["a"], "a.jpg")]);
+    expect(network.sentFiles).toHaveLength(3);
+    connection.stop();
+  });
+
   it("reconnects with a new ticket after the connection drops, and waits for the new page size", async () => {
     const { network, connection } = await connect();
     network.latestSocket().open();

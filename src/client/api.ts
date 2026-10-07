@@ -29,7 +29,7 @@ import type {
   BrowserProbeResponse,
   PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
-import type { BrowserLiveTicket } from "../shared/browser-live.js";
+import { BROWSER_LIVE_FILES_PATH, type BrowserLiveTicket } from "../shared/browser-live.js";
 export type {
   AuthenticatedServiceCheck,
   BrowserBuildDiagnostics,
@@ -2489,6 +2489,16 @@ export async function resetPublicBrowserData(): Promise<PublicBrowserResetRespon
 /** Asks for permission to open one browser session's live view. The ticket is short-lived. */
 export async function requestBrowserLiveTicket(browserSessionId: string): Promise<BrowserLiveTicket> {
   return apiFetch<BrowserLiveTicket>(`/api/browser/sessions/${encodeURIComponent(browserSessionId)}/live`, {});
+}
+
+/** Sends the files a person picked for a file chooser that a page in a live browser view opened. */
+export async function sendBrowserLiveFiles(chooserId: string, files: readonly File[]): Promise<void> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+  const res = await fetch(`${API_BASE}${BROWSER_LIVE_FILES_PATH}?chooser=${encodeURIComponent(chooserId)}`, { method: "POST", body: form });
+  if (res.ok) return;
+  const body = await res.json().catch(() => null) as { error?: unknown } | null;
+  throw new ApiError(typeof body?.error === "string" && body.error ? body.error : "The files could not be sent.", res.status);
 }
 
 /** Permission to open a live view of the signed-in browser, which belongs to no chat. */

@@ -6,6 +6,10 @@
 
 /** The WebSocket path of the live view, under the API base. */
 export const BROWSER_LIVE_WS_PATH = "/api/browser/live/ws";
+/** Where a view posts the files for a file chooser, as multipart `files`, with `?chooser=<id>`. */
+export const BROWSER_LIVE_FILES_PATH = "/api/browser/live/files";
+/** What one file chooser takes at most. */
+export const BROWSER_LIVE_FILE_LIMITS = { files: 20, bytes: 100 * 1024 * 1024 } as const;
 
 /**
  * Whether the installed agent-browser can show a browser and pass input to it, as last seen: by
@@ -91,11 +95,27 @@ export interface BrowserLiveTabsMessage {
   tabs: BrowserLiveTab[];
 }
 
+/**
+ * The page opened its file chooser. A browser draws that outside the page, so the view asks the
+ * person for the files on their own device and posts them to BROWSER_LIVE_FILES_PATH. A chooser
+ * is answered once; a later one replaces it, and it ends with the view's connection.
+ */
+export interface BrowserLiveFileChooserMessage {
+  type: "file_chooser";
+  /** Names the chooser when the files are posted. */
+  id: string;
+  /** Whether the page takes more than one file. */
+  multiple: boolean;
+  /** The kinds of file the page asks for, as the `accept` of a file input. */
+  accept?: string;
+}
+
 export type BrowserLiveServerMessage =
   | BrowserLiveFrameMessage
   | BrowserLiveViewportMessage
   | BrowserLiveUrlMessage
   | BrowserLiveTabsMessage
+  | BrowserLiveFileChooserMessage
   | BrowserLiveClosedMessage;
 
 export interface BrowserLiveAckMessage {
