@@ -470,6 +470,44 @@ describe("LiveBrowserView", () => {
     expect(view.text()).not.toContain("The page asks for");
   });
 
+  it("offers to save a sign-in the reader typed, and to sign in with a saved one, as a password manager does", async () => {
+    const view = await mount();
+    await view.goLive();
+    const receive = (message: Record<string, unknown>) => view.harness.act(async () => {
+      view.network.latestSocket().receive({ type: "login", ...message } as never);
+    });
+    const press = (label: string) => view.harness.act(async () => {
+      getReactProps(findButton(view.container, label))!.onClick();
+    });
+    const answers = () => view.network.latestSocket().sentOfType("login").map((message) => message.action);
+    expect(view.text()).not.toContain("login");
+
+    await receive({ state: "save", host: "example.com", username: "tim@example.com" });
+    expect(view.text()).toContain("Save this login for agents?");
+    expect(view.text()).toContain("tim@example.com on example.com");
+    await press("Save");
+    expect(view.text()).toContain("Saving…");
+
+    await receive({ state: "saved", host: "example.com", username: "tim@example.com" });
+    expect(view.text()).toContain("Login saved");
+    await press("OK");
+    expect(view.text()).not.toContain("Login saved");
+
+    await receive({ state: "save", host: "example.com", username: "tim@example.com", replaces: true, failed: true });
+    expect(view.text()).toContain("Update the saved login?");
+    expect(view.text()).toContain("It could not be saved");
+    await press("Not now");
+    expect(view.text()).not.toContain("Update the saved login?");
+
+    await receive({ state: "fill", host: "example.com", username: "tim@example.com" });
+    expect(view.text()).toContain("A login is saved for this site");
+    await press("Sign in");
+    expect(answers()).toEqual(["save", "dismiss", "dismiss", "fill"]);
+
+    await receive({ state: "none" });
+    expect(view.text()).not.toContain("A login is saved");
+  });
+
   it("offers no more picking for a request the page gave up on", async () => {
     const view = await mount();
     await view.goLive();

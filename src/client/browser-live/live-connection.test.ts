@@ -180,6 +180,41 @@ describe("BrowserLiveConnection", () => {
     connection.stop();
   });
 
+  it("keeps what the server offers about a sign-in, sends the reader's answer once, and forgets it with the connection", async () => {
+    const { network, connection } = await connect();
+    const socket = network.latestSocket();
+    socket.open();
+    expect(connection.getSnapshot().login).toBeNull();
+    // No offer, no answer.
+    connection.answerLogin("save");
+    expect(socket.sentOfType("login")).toEqual([]);
+
+    socket.onmessage?.({ data: JSON.stringify({ type: "login", state: "save", host: "example.com", username: "tim", replaces: true, password: "x" }) });
+    expect(connection.getSnapshot().login).toEqual({ state: "save", host: "example.com", username: "tim", replaces: true });
+    socket.onmessage?.({ data: JSON.stringify({ type: "login", state: "steal" }) });
+    expect(connection.getSnapshot().login).toMatchObject({ state: "save" });
+
+    connection.answerLogin("save");
+    connection.answerLogin("save");
+    expect(socket.sentOfType("login")).toEqual([{ type: "login", action: "save" }]);
+    expect(connection.getSnapshot().login).toMatchObject({ state: "save", working: true });
+
+    socket.receive({ type: "login", state: "saved", host: "example.com", username: "tim" });
+    expect(connection.getSnapshot().login).toEqual({ state: "saved", host: "example.com", username: "tim" });
+    connection.answerLogin("dismiss");
+    expect(connection.getSnapshot().login).toBeNull();
+
+    socket.receive({ type: "login", state: "fill", host: "example.com", username: "tim", failed: true });
+    expect(connection.getSnapshot().login).toEqual({ state: "fill", host: "example.com", username: "tim", failed: true });
+    socket.receive({ type: "login", state: "none" });
+    expect(connection.getSnapshot().login).toBeNull();
+
+    socket.receive({ type: "login", state: "fill", host: "example.com", username: "tim" });
+    socket.drop();
+    expect(connection.getSnapshot()).toMatchObject({ phase: "reconnecting", login: null });
+    connection.stop();
+  });
+
   it("keeps the page's latest request for a file until its files arrived, the reader declined, or the connection dropped", async () => {
     const { network, connection } = await connect();
     const socket = network.latestSocket();

@@ -673,6 +673,57 @@ async function runAgentBrowserJsonCommand(
   };
 }
 
+/**
+ * Saves a login in agent-browser's vault under a name. The password is written to the command's
+ * input, so it is in no argument list, process listing or error message; agent-browser never
+ * prints it either.
+ */
+export async function saveAgentBrowserLogin(
+  name: string,
+  login: { url: string; username: string; password: string },
+  browserTarget: BrowserTarget,
+  timeout = 20_000,
+): Promise<{ ok: boolean; output: string }> {
+  const invocation = agentBrowserInvocation(
+    ["auth", "save", name, "--url", login.url, "--username", login.username, "--password-stdin", "--json"],
+  );
+  if (!invocation) return { ok: false, output: "agent-browser cannot be given this login through the Windows command shell." };
+  const child = await getProcessHost().spawn(invocation.file, invocation.args, {
+    env: await buildBrowserEnv(browserTarget),
+    stdio: ["pipe", "pipe", "ignore"],
+    windowsHide: true,
+    windowsVerbatimArguments: invocation.verbatim,
+  });
+  return new Promise((resolve) => {
+    let stdout = "";
+    let done = false;
+    const finish = (result: { ok: boolean; output: string }): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      // The client prints its result and may then linger, as for every other command.
+      if (child.exitCode === null) child.kill();
+      resolve(result);
+    };
+    const answered = (): boolean => {
+      const envelope = parseAgentBrowserEnvelope(stdout);
+      if (envelope) finish({ ok: envelope.success, output: agentBrowserJsonOutput(["auth", "save"], envelope) });
+      return !!envelope;
+    };
+    const timer = setTimeout(() => finish({ ok: false, output: `agent-browser did not save the login within ${timeout}ms` }), timeout);
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+      answered();
+    });
+    child.on("error", () => finish({ ok: false, output: "agent-browser could not be started" }));
+    child.on("close", () => {
+      if (!answered()) finish({ ok: false, output: "agent-browser did not say whether the login was saved" });
+    });
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(login.password);
+  });
+}
+
 export async function run(
   cmd: string,
   timeout = DEFAULT_TIMEOUT,

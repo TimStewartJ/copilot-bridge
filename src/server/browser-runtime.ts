@@ -8,6 +8,7 @@ import type { AppContext } from "./app-context.js";
 import { getBrowserLaunchConfig } from "./browser-launch.js";
 import { BrowserBroker } from "./browser-broker.js";
 import { BrowserLiveGateway } from "./browser-live.js";
+import { BrowserLogins } from "./browser-logins.js";
 import { BrowserSessionStore } from "./browser-session-store.js";
 import { UserBrowserSession } from "./browser-user-session.js";
 
@@ -17,6 +18,8 @@ export interface BrowserRuntime {
   live: BrowserLiveGateway;
   /** The signed-in browser as the user opens it from Settings. */
   userSession: UserBrowserSession;
+  /** The sign-ins the user saved for agents. */
+  logins: BrowserLogins;
 }
 
 const runtimes = new WeakMap<object, BrowserRuntime>();
@@ -32,8 +35,9 @@ export function getBrowserRuntime(ctx: AppContext): BrowserRuntime {
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     });
     const sessions = new BrowserSessionStore({ browserBroker: broker, telemetryStore });
-    const live = new BrowserLiveGateway({ sessions, broker, telemetryStore, filesDir: join(copilotHome, "browser-live-files") });
-    runtime = { broker, sessions, live, userSession: new UserBrowserSession({ sessions, broker, live }) };
+    const logins = new BrowserLogins({ file: join(copilotHome, "browser-logins.json"), scope: copilotHome });
+    const live = new BrowserLiveGateway({ sessions, broker, telemetryStore, filesDir: join(copilotHome, "browser-live-files"), logins });
+    runtime = { broker, sessions, live, logins, userSession: new UserBrowserSession({ sessions, broker, live }) };
     runtimes.set(ctx, runtime);
   }
   return runtime;

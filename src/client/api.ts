@@ -29,7 +29,7 @@ import type {
   BrowserProbeResponse,
   PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
-import { BROWSER_LIVE_FILES_PATH, type BrowserLiveTicket } from "../shared/browser-live.js";
+import { BROWSER_LIVE_FILES_PATH, type BrowserLiveTicket, type BrowserSavedLogin } from "../shared/browser-live.js";
 export type {
   AuthenticatedServiceCheck,
   BrowserBuildDiagnostics,
@@ -43,7 +43,7 @@ export type {
   BrowserProbeResponse,
   PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
-export type { BrowserHandoffView, BrowserLiveTicket } from "../shared/browser-live.js";
+export type { BrowserHandoffView, BrowserLiveTicket, BrowserSavedLogin } from "../shared/browser-live.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { BridgeSearchRequest, BridgeSearchResponse } from "../shared/search.js";
 import type { AgentInstruction } from "../shared/subagent.js";
@@ -2504,6 +2504,15 @@ export async function sendBrowserLiveFiles(chooserId: string, files: readonly Fi
 /** Permission to open a live view of the signed-in browser, which belongs to no chat. */
 export async function requestSignedInBrowserLiveTicket(): Promise<BrowserLiveTicket> {
   return apiFetch<BrowserLiveTicket>("/api/browser/authenticated/live", {});
+}
+
+/** The sign-ins the user saved for agents. Never a password. */
+export async function fetchBrowserLogins(): Promise<BrowserSavedLogin[]> {
+  return (await apiFetch<{ logins: BrowserSavedLogin[] }>("/api/browser/logins")).logins;
+}
+
+export async function removeBrowserLogin(id: string): Promise<void> {
+  await requestDelete(`/api/browser/logins/${encodeURIComponent(id)}`);
 }
 
 export interface DeviceHibernateOnIdleStatus {

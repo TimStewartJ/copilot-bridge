@@ -745,6 +745,18 @@ Agents reach sites that need an account through the signed-in browser, one profi
 
 For someone sitting at the machine the Bridge runs on, "Signed-in browser on the server" opens the same profile in a real window there instead.
 
+#### Saved logins
+
+Sites sign people out. So that an agent does not have to ask each time, a live view works like a password manager: when you type a username and a password into a page and submit them, the view offers **Save this login for agents?**, and on a page that shows the sign-in form of a saved login it offers **Sign in**. Nothing is configured per site. A sign-in form is one visible password field with a text field before it, as it is for any password manager.
+
+An agent that meets a sign-in form in a browser session calls `browser_sign_in`. It fills in the login saved for that site (matched by the page's origin) and submits it, and answers with what the page shows afterwards. It answers `no_saved_login`, `no_form`, `failed`, `blocked` (the site put a check in front of the sign-in) or `rejected` when it could not, and the agent then hands the browser to the user as before; what they type there can be saved in turn. A login the site refused is not tried again or offered in a view until it is saved anew, so a changed password costs one failed attempt and never a lockout.
+
+The passwords are in agent-browser's vault (`agent-browser auth`, AES-256-GCM files under `~/.agent-browser/auth` with the key beside them), under names that start with this Bridge's own prefix. The Bridge hands a password to the vault on the command's input and the vault types it into the page; it is in no argument list, log, telemetry span, tool result or message to the web client. `<COPILOT_HOME>/browser-logins.json` lists which sites have one, with the username. **Settings → Browser → Saved logins** shows that list and removes entries.
+
+What this does and does not protect: a saved password stays out of chats and model context. It is not protected from a program running as the same operating-system user, which can read the vault and its key. Save only logins you would accept an agent using on its own.
+
+Limits: a sign-in that asks for the username and the password on separate pages is not offered for saving, because the vault needs both fields on one page; forms inside another site's frame, or whose fields are inside web components (Reddit's, in October 2026), are not seen, because the vault cannot fill them; one login is kept per site; codes and other second steps still go to the user.
+
 Agents can also run `agent-browser` from their shell. Those browsers are not managed by the Bridge and outlive the shell, the session and the server. The Bridge puts `AGENT_BROWSER_IDLE_TIMEOUT_MS=3600000` into the agent runtime's environment, so they close after an hour without a command.
 
 Setting `AGENT_BROWSER_IDLE_TIMEOUT_MS` in `.env` replaces that hour for agent shells and also applies to the signed-in browser, which otherwise has no limit: it stays open on its last page while the server runs, because closing it drops session cookies. The 45 minutes of the Bridge's public browsers are fixed.
