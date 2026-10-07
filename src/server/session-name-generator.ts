@@ -10,7 +10,7 @@ Rules:
 - Focus on the task, not conversational wording.
 - Do not include quotes.
 - Do not include leading or trailing punctuation.
-- Return only the title inside <session-title></session-title>.`;
+- Reply with only a JSON object of the form {"title": "..."}.`;
 
 export function createDisposableTitleSessionId(): string {
   const uuid = randomUUID();
@@ -38,32 +38,51 @@ ${content}
 </user_message>`;
 }
 
-const LEADING_OPENING_TAGS = /^(?:\s*<[a-z][\w-]*>)+\s*/i;
-const TRAILING_CLOSING_TAGS = /(?:\s*<\/[a-z][\w-]*>)+\s*$/i;
+const TRAILING_CLOSING_TAGS = /(?:\s*<[/|][a-z][\w-]*\|?>)+\s*$/i;
 
-/** Removes closing tags left at the end of a title, as in "Fix Login Redirect</session-title>". */
+/**
+ * Removes closing tags and `<|…|>` markers left at the end of a title, as in
+ * "Fix Login Redirect</session-title>". Titles stored while the helper was asked for tags have them.
+ */
 export function stripTrailingClosingTags(title: string): string {
   return title.replace(TRAILING_CLOSING_TAGS, "");
 }
 
-const TAGGED_TITLE = /<session-title>\s*([\s\S]*?)\s*<\/session-title>/i;
+const JSON_TITLE = /\{\s*"title"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}/g;
+/** A reply that set out to be the JSON, whether or not a title can be read from it. */
+const JSON_ATTEMPT = /^\s*(?:```|\{)|"title"/;
 
 /**
- * How the helper model framed its reply: as asked, with a tag the parser had to drop, or with
- * none. The model is picked by price and so changes without a release; this is where that shows.
+ * The title in the last `{"title": "..."}` of the reply. Models put code fences or stray text
+ * around the object, and one that drafts aloud gives its answer last.
  */
-export function describeTitleReply(rawOutput: unknown): "tagged" | "partial" | "bare" | "none" {
+function titleFromJson(rawOutput: string): string | undefined {
+  const literal = [...rawOutput.matchAll(JSON_TITLE)].at(-1)?.[1];
+  if (literal === undefined) return undefined;
+  try {
+    return JSON.parse(literal) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * How the helper model framed its reply: as the JSON it was asked for, as JSON that cannot be
+ * read, or as plain text. The model is picked by price and so changes without a release; this is
+ * where that shows.
+ */
+export function describeTitleReply(rawOutput: unknown): "json" | "unreadable" | "bare" | "none" {
   if (typeof rawOutput !== "string") return "none";
-  if (TAGGED_TITLE.test(rawOutput)) return "tagged";
-  return LEADING_OPENING_TAGS.test(rawOutput) || TRAILING_CLOSING_TAGS.test(rawOutput) ? "partial" : "bare";
+  if (titleFromJson(rawOutput) !== undefined) return "json";
+  return JSON_ATTEMPT.test(rawOutput) ? "unreadable" : "bare";
 }
 
 export function extractGeneratedSessionTitle(rawOutput: unknown): string | undefined {
   if (typeof rawOutput !== "string") return undefined;
-  const tagged = rawOutput.match(TAGGED_TITLE);
-  // Some models answer with only one of the two tags, or close with a different tag.
-  const rawTitle = stripTrailingClosingTags((tagged?.[1] ?? rawOutput).replace(LEADING_OPENING_TAGS, "")).trim();
-  const title = rawTitle.replace(/^["']+|["']+$/g, "").trim();
+  const jsonTitle = titleFromJson(rawOutput);
+  // JSON that cannot be read is not shown as a title. A reply with no JSON at all is the title.
+  if (jsonTitle === undefined && JSON_ATTEMPT.test(rawOutput)) return undefined;
+  const title = stripTrailingClosingTags(jsonTitle ?? rawOutput).trim().replace(/^["']+|["']+$/g, "").trim();
   if (title.length < 3 || title.length > 100) return undefined;
   return title;
 }

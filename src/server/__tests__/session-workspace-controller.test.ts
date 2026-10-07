@@ -337,6 +337,7 @@ describe("session workspace yaml parsing", () => {
       effectiveName: "Walmart Meat Delivery Storage Safety",
     });
     expect(parseWorkspaceYamlSessionName("name: Personal Finance Action Digest</final>\n")).toBe("Personal Finance Action Digest");
+    expect(parseWorkspaceYamlSessionName("name: Scheduled Marketplace Watch<|session-title|>\n")).toBe("Scheduled Marketplace Watch");
     expect(parseWorkspaceYamlSessionName("name: </session-title>\nsummary: First message\n")).toBe("First message");
     expect(parseWorkspaceYamlSessionName("name: Why <div> Needs </div> Here\n")).toBe("Why <div> Needs </div> Here");
     expect(parseWorkspaceYamlSessionName("summary: explain </div>\n")).toBe("explain </div>");
