@@ -278,6 +278,69 @@ describe("VoiceConversation", () => {
     expect(ctx.engine.synthCalls[0]!.text).toBe("Let me check the car task.");
   });
 
+  it("says it is still working when a lookup stays silent, at growing gaps, until the reply comes", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "Where is tonight's study?");
+    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "find" });
+    await advance(10);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
+
+    // The lead-in is 0.1 s of audio; the first line comes 8 s after it ends.
+    await advance(8_000);
+    expect(ctx.engine.synthCalls).toHaveLength(1);
+    await advance(200);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["One sec.", "Still working on it."]);
+    await advance(11_900);
+    expect(ctx.engine.synthCalls).toHaveLength(2);
+    await advance(400);
+    expect(ctx.engine.synthCalls.at(-1)!.text).toBe("Still on it, one moment.");
+
+    ctx.agent.last.listener.onDelta("It is in the Duane room. ");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(10);
+    expect(ctx.engine.synthCalls.at(-1)!.text).toBe("It is in the Duane room.");
+    const metrics = ctx.sink.events.find((event) => event.type === "metrics") as { metrics: Record<string, number> } | undefined;
+    expect(metrics?.metrics.speechEndToFirstAudioMs).toBeGreaterThan(20_000);
+    await advance(60_000);
+    expect(ctx.engine.synthCalls).toHaveLength(4);
+  });
+
+  it("does not say it is still working over the user's own speech or after the reply is spoken", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "Where is tonight's study?");
+    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "find" });
+    await advance(10);
+    // The user starts talking over the wait: a possible interruption is being checked.
+    ctx.engine.transcripts.push("");
+    ctx.conversation.onVad(true, ctx.audio(100));
+    await advance(8_300);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
+    ctx.conversation.onVad(false, ctx.audio(100));
+    await advance(8_300);
+    expect(ctx.engine.synthCalls.at(-1)!.text).toBe("Still working on it.");
+
+    const quick = setup();
+    await speakTurn(quick, "What's unread?");
+    quick.agent.last.listener.onDelta("Two sessions finished. ");
+    quick.agent.last.listener.onDone({ aborted: false });
+    await advance(30_000);
+    expect(quick.engine.synthCalls.map((call) => call.text)).toEqual(["Two sessions finished."]);
+  });
+
+  it("stays in speaking until a reply that came long after its lead-in has played", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "What's going on?");
+    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "bridge_overview" });
+    await advance(5_000);
+    ctx.agent.last.listener.onDelta("Nothing is waiting on you. ");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(10);
+    expect(ctx.sink.audio).toHaveLength(2);
+    expect(ctx.conversation.state).toBe("speaking");
+    await advance(1_400);
+    expect(ctx.conversation.state).toBe("listening");
+  });
+
   it("removes a held answer from the transcript when the user's continuation replaces it", async () => {
     const ctx = setup();
     await speakTurn(ctx, "So I was thinking um", 0.9);
