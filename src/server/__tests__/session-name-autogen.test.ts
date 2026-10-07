@@ -20,9 +20,9 @@ describe("session name autogenerator", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
     const setSessionName = vi.fn(async () => {});
-    const generateSessionName = vi.fn(async () => ({ title: "Concise Session Title", model: "helper", reply: "tagged" }));
+    const generateSessionName = vi.fn(async () => ({ title: "Concise Session Title", model: "helper", reply: "json" }));
     const createSession = vi.fn(async () => ({
-      sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+      sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
       disconnect: vi.fn(),
     }));
     const generator = createSessionNameAutogenerator({
@@ -341,7 +341,7 @@ describe("session name autogenerator", () => {
     const generator = createSessionNameAutogenerator({
       listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
       createSession: vi.fn(async () => ({
-        sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+        sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
         disconnect: vi.fn(),
       })),
       deleteSession: vi.fn(async () => {}),
@@ -365,7 +365,7 @@ describe("session name autogenerator", () => {
     const generator = createSessionNameAutogenerator({
       listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
       createSession: vi.fn(async () => ({
-        sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+        sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
         disconnect: vi.fn(),
       })),
       deleteSession: vi.fn(async () => {}),
@@ -396,7 +396,7 @@ describe("session name autogenerator", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
     const createSession = vi.fn(async () => ({
-      sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+      sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
       disconnect: vi.fn(),
     }));
     const recordSpan = vi.fn();
@@ -434,7 +434,7 @@ describe("session name autogenerator", () => {
   it("records which helper model answered and how it framed the reply", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
-    const replies = ["Concise Session Title</session-title>", "<session-title>ok</session-title>"];
+    const replies = ["Concise Session Title", '{"title":"ok"}'];
     const recordSpan = vi.fn();
     const generator = createSessionNameAutogenerator({
       listModels: async () => [{ id: "gpt-6-luna", billing: { multiplier: 0 }, supportedReasoningEfforts: ["none"] }] as any,
@@ -454,17 +454,17 @@ describe("session name autogenerator", () => {
     await (generator as any).generateAndSetMissingSessionName("session-2", { userMessages: ["Please fix that"] });
 
     expect(recordSpan).toHaveBeenCalledWith("session.name.autogen", expect.any(Number), "session-1",
-      expect.objectContaining({ result: "generated", model: "gpt-6-luna", reply: "partial" }));
+      expect.objectContaining({ result: "generated", model: "gpt-6-luna", reply: "bare" }));
     // A reply the parser rejects still says which model gave it.
     expect(recordSpan).toHaveBeenCalledWith("session.name.autogen", expect.any(Number), "session-2",
-      { result: "skipped_no_title", model: "gpt-6-luna", reply: "tagged" });
+      { result: "skipped_no_title", model: "gpt-6-luna", reply: "json" });
   });
 
   it("creates the title helper session with the shared session-name helper base config", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
     const createSession = vi.fn(async () => ({
-      sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+      sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
       disconnect: vi.fn(),
     }));
     const generator = createSessionNameAutogenerator({
@@ -539,7 +539,7 @@ describe("session name autogenerator", () => {
     const createSession = vi.fn(async (config: Record<string, unknown>) => {
       helperSessionId = String(config.sessionId);
       return {
-        sendAndWait: vi.fn(async () => ({ data: { content: "<session-title>Concise Session Title</session-title>" } })),
+        sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
         disconnect,
       };
     });
