@@ -14,8 +14,29 @@
 // and the sessions themselves were left with no task to give them context.
 
 import type { AppContext } from "./app-context.js";
+import type { Task } from "./task-store.js";
 
 export type SessionDisposition = "archive" | "delete";
+
+/**
+ * True for a task nobody has used: unchanged since it was created, with nothing
+ * attached. Deleting one loses nothing, so the UI deletes it without asking.
+ *
+ * Every edit, link and unlink bumps `updatedAt`, so equal timestamps cover the
+ * task's own fields. What hangs off the task in other stores is checked here.
+ */
+export function isTaskUntouched(ctx: AppContext, task: Task): boolean {
+  return task.status === "active"
+    && task.updatedAt === task.createdAt
+    && task.sessionIds.length === 0
+    && task.workItems.length === 0
+    && task.pullRequests.length === 0
+    && ctx.scheduleStore.listSchedules(task.id).length === 0
+    && ctx.checklistStore.listChecklistItems(task.id).length === 0
+    && (ctx.taskHistoryStore?.countEntries(task.id) ?? 0) === 0
+    && (ctx.tagStore?.getEntityTags("task", task.id).length ?? 0) === 0
+    && (ctx.taskAgentDefinitionStore?.listTaskAgentDefinitions(task.id).length ?? 0) === 0;
+}
 
 export interface TaskDeletionOptions {
   sessionDisposition: SessionDisposition;

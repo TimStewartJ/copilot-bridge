@@ -123,7 +123,7 @@ import {
   resolveWorkItemLink,
   resolveWorkItemUnlink,
 } from "./task-link-identity.js";
-import { deleteTaskWithOwnedState } from "./task-deletion.js";
+import { deleteTaskWithOwnedState, isTaskUntouched } from "./task-deletion.js";
 import { InvalidTagColorError } from "./tag-store.js";
 import { TaskGroupValidationError } from "./task-group-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
@@ -4232,7 +4232,12 @@ export function createApiRouter(
       // default that could archive or destroy thousands of sessions on behalf of
       // a caller that never asked, make the choice explicit — but keep the
       // parameterless call working when there is nothing to decide.
-      if (preview.sessionCount === 0) {
+      // `ifUntouched` narrows that to a task nobody has used: the UI sends it to
+      // delete a task made by mistake without showing its confirmation dialog.
+      const nothingToDecide = req.query.ifUntouched === "true"
+        ? isTaskUntouched(ctx, task)
+        : preview.sessionCount === 0;
+      if (nothingToDecide) {
         const { deletedScheduleIds } = ctx.taskStore.deleteTaskCascade(taskId);
         for (const scheduleId of deletedScheduleIds) {
           ctx.scheduler?.unregisterSchedule(scheduleId);
@@ -4242,8 +4247,10 @@ export function createApiRouter(
       }
       return res.status(409).json({
         error: "confirmation_required",
-        message: `Task has ${preview.sessionCount} linked session(s). `
-          + "Pass sessionDisposition=archive or sessionDisposition=delete.",
+        message: preview.sessionCount === 0
+          ? "Task has been used, so deleting it needs confirmation."
+          : `Task has ${preview.sessionCount} linked session(s). `
+            + "Pass sessionDisposition=archive or sessionDisposition=delete.",
         preview,
       });
     }
