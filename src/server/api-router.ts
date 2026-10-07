@@ -181,7 +181,8 @@ import {
   resetPublicBrowserProfiles,
 } from "./browser-diagnostics.js";
 import { BrowserUnavailableError } from "./browser-broker.js";
-import { BrowserLiveSessionNotFoundError, BrowserLiveUnavailableError } from "./browser-live.js";
+import { BROWSER_LIVE_FILE_LIMITS } from "../shared/browser-live.js";
+import { BrowserLiveSessionNotFoundError, BrowserLiveUnavailableError, liveFileName } from "./browser-live.js";
 import { BrowserHandedOffError } from "./browser-user-session.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
@@ -1238,6 +1239,62 @@ export function createApiRouter(
       return res.status(404).json({ error: "Voice job not found" });
     }
     res.json(job);
+  });
+
+  // The files a person picked on their own device for a file chooser of a live browser view.
+  // They are written where the view's gateway says and handed to the page; see browser-live.ts.
+  router.post("/browser/live/files", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Live browser file")) return;
+    const live = getBrowserRuntime(ctx).live;
+    const id = typeof req.query.chooser === "string" ? req.query.chooser : "";
+    // Decided once: by the upload's end, or by a connection that went away before it.
+    let settled = false;
+    let claim: Awaited<ReturnType<typeof live.claimFileChooser>>;
+    const discard = async (): Promise<void> => {
+      live.releaseFileChooser(id);
+      if (claim) await rm(claim.folder, { recursive: true, force: true }).catch(() => undefined);
+    };
+    res.on("close", () => {
+      if (settled) return;
+      settled = true;
+      void discard();
+    });
+    claim = await live.claimFileChooser(id).catch(() => undefined);
+    if (settled) {
+      // The connection went away while the folder was being made.
+      await discard();
+      return;
+    }
+    if (!claim) {
+      settled = true;
+      res.status(409).json({ error: "The page is no longer asking for a file. Use its button again." });
+      return;
+    }
+    const folder = claim.folder;
+    const names = new Set<string>();
+    multer({
+      storage: multer.diskStorage({
+        destination: (_req, _file, cb) => cb(null, folder),
+        filename: (_req, file, cb) => cb(null, liveFileName(file.originalname, names)),
+      }),
+      // A phone's file names are often not ASCII.
+      defParamCharset: "utf8",
+      limits: { files: claim.multiple ? BROWSER_LIVE_FILE_LIMITS.files : 1, fileSize: BROWSER_LIVE_FILE_LIMITS.bytes },
+    }).array("files")(req, res, async (error) => {
+      if (settled) return;
+      settled = true;
+      const files = Array.isArray(req.files) ? req.files : [];
+      // What was sent is at fault, and the chooser stays open for another try.
+      const refused = error ? (error instanceof Error ? error.message : String(error)) : files.length === 0 ? "No file was sent." : undefined;
+      const gone = refused === undefined ? await live.chooseFiles(id, files.map((file) => file.path)) : undefined;
+      if (gone?.ok) {
+        res.json({ files: files.length });
+        return;
+      }
+      await discard();
+      // 409: the page no longer takes files for this chooser, whatever is sent.
+      res.status(gone ? 409 : 400).json({ error: gone?.error ?? refused });
+    });
   });
 
   // JSON body parser — after upload route so multipart isn't rejected

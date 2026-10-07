@@ -105,6 +105,7 @@ export function LiveBrowserView({
   const [keyboardOnPage, setKeyboardOnPage] = useState(false);
   const [text, setText] = useState("");
   const hintId = useId();
+  const filePickerRef = useRef<HTMLInputElement>(null);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -359,6 +360,43 @@ export function LiveBrowserView({
             Close tab
           </Button>
         </div>
+      )}
+
+      {state.fileChooser && (
+        // The page's own file chooser is a window of the browser, which the view cannot show.
+        <Notice
+          tone={state.fileChooser.error ? "warning" : "info"}
+          title={state.fileChooser.over
+            ? "The file did not reach the page"
+            : state.fileChooser.multiple ? "The page asks for files" : "The page asks for a file"}
+          className="mx-3 mb-2 shrink-0 sm:mx-4"
+          action={(
+            <div className="flex items-center gap-1.5">
+              {!state.fileChooser.over && (
+                <Button size="sm" variant="primary" disabled={state.fileChooser.sending} onClick={() => filePickerRef.current?.click()}>
+                  {state.fileChooser.sending ? "Sending…" : state.fileChooser.multiple ? "Choose files" : "Choose file"}
+                </Button>
+              )}
+              <Button size="sm" disabled={state.fileChooser.sending} onClick={() => connection.dismissFileChooser()}>
+                {state.fileChooser.over ? "Close" : "Cancel"}
+              </Button>
+            </div>
+          )}
+        >
+          {state.fileChooser.error ?? "Pick from this device."}
+          <input
+            ref={filePickerRef}
+            type="file"
+            className="hidden"
+            aria-label={state.fileChooser.multiple ? "Files for the page" : "File for the page"}
+            multiple={state.fileChooser.multiple}
+            accept={state.fileChooser.accept}
+            onChange={(event) => {
+              void connection.chooseFiles(Array.from(event.target.files ?? []));
+              event.target.value = "";
+            }}
+          />
+        </Notice>
       )}
 
       {state.phase === "ended" && (

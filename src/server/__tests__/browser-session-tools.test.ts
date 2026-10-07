@@ -313,7 +313,8 @@ describe("browser session tools", () => {
 
     // The browser is gone; what it stored stays for the next browser on this profile.
     expect(rmSyncMock).not.toHaveBeenCalled();
-    expect(rmMock).not.toHaveBeenCalled();
+    // What is removed with a session are the files a viewer picked for its pages.
+    expect(rmMock).not.toHaveBeenCalledWith(expect.stringContaining("browser-public"), expect.anything());
     const next = await tools.browser_session_start.handler({ context: "public" }, invocation) as any;
     expect(runtime.sessions.getSession(next.browserSessionId)).toMatchObject({
       publicSlot: 1,

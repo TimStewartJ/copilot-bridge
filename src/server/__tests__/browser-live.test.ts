@@ -1,7 +1,9 @@
 import { EventEmitter, once } from "node:events";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 
 import {
@@ -24,10 +26,12 @@ import {
   BrowserLiveGateway,
   BrowserLiveSessionNotFoundError,
   BrowserLiveUnavailableError,
+  liveFileName,
   type BrowserLiveGatewayOptions,
 } from "../browser-live.js";
 import { BrowserSessionStore, type BrowserSessionRecord } from "../browser-session-store.js";
 import type { TelemetryStore } from "../telemetry-store.js";
+import { FakeChrome } from "./fake-chrome.js";
 import { makeTestDir } from "./helpers.js";
 
 const T0 = Date.parse("2026-01-15T12:00:00.000Z");
@@ -207,6 +211,8 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
     status: (): CliAnswer => streaming,
     enable: (): CliAnswer => streaming,
     page: (): CliAnswer => ({ ok: false, output: "The page is not ready." }),
+    /** `get cdp-url`: where the browser's DevTools endpoint is. */
+    devTools: (): CliAnswer => ({ ok: false, output: "The browser has no DevTools address." }),
     /** For what a viewer's toolbar asks of the browser: an address, a step in history, a tab. */
     toolbar: (_command: string[]): CliAnswer => ({ ok: true, output: "" }),
     /** How many tabs `tab list` finds. */
@@ -224,6 +230,7 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
     if (name === "eval") return answers.page();
     if (name === "stream status") return answers.status();
     if (name === "stream enable") return answers.enable();
+    if (name === "get cdp-url") return answers.devTools();
     if (name === "tab list") {
       const tabs = Array.from({ length: await answers.tabCount() }, (_unused, index) => ({ tabId: `t${index + 1}` }));
       return { ok: true, output: "", data: { tabs } };
@@ -328,7 +335,7 @@ afterEach(async () => {
  * A gateway over a real session store and broker, an HTTP server that hands it upgrades the way
  * the Bridge server does, and a WebSocket server standing in for agent-browser's stream.
  */
-async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream" | "telemetryStore"> = {}) {
+async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream" | "telemetryStore" | "filesDir"> = {}) {
   let upstreamAccepts = true;
   const upstreamServer = new WebSocketServer({
     host: "127.0.0.1",
@@ -753,6 +760,156 @@ describe("BrowserLiveGateway.checkStream", () => {
     send(view.upstream, { ...FRAME, seq: 2 });
     await view.client.inbox.next();
     expect(h.gateway.getLastCheck()).toBe(passed);
+  });
+});
+
+describe("BrowserLiveGateway file choosers", () => {
+  const chrome = new FakeChrome();
+  const GONE = "The page is no longer asking for a file. Use its button again.";
+
+  afterEach(() => chrome.reset());
+  afterAll(() => {
+    chrome.server.close();
+  });
+
+  /** A view of a browser whose pages hand their file choosers to the gateway. */
+  async function openFileView() {
+    const filesDir = makeTestDir("browser-live-files");
+    // What an earlier run of the Bridge left behind.
+    await mkdir(join(filesDir, "bs_before"), { recursive: true });
+    const h = await createHarness({ filesDir });
+    h.cli.answers.devTools = () => ({ ok: true, output: "", data: { cdpUrl: chrome.url } });
+    const session = await h.createSession();
+    const view = await h.openView(session.id);
+    await vi.waitFor(() => expect(chrome.sent("Page.setInterceptFileChooserDialog")).toHaveLength(2));
+    /** The page opens a chooser, and the viewer is told. */
+    const choose = async (mode = "selectSingle"): Promise<{ type: string; id: string; multiple: boolean; accept?: string }> => {
+      chrome.event("Page.fileChooserOpened", { mode, backendNodeId: 14 }, "frame");
+      return await view.client.inbox.next() as { type: string; id: string; multiple: boolean; accept?: string };
+    };
+    return { h, session, view, filesDir, choose };
+  }
+
+  it("asks the viewer for the files of a chooser a page opened, and gives the page what was received", async () => {
+    chrome.attributes = ["type", "file", "accept", "image/*"];
+    const { h, session, filesDir, choose } = await openFileView();
+
+    const asked = await choose("selectMultiple");
+    expect(asked).toStrictEqual({ type: "file_chooser", id: expect.stringMatching(/^[0-9a-f]{32}$/), multiple: true, accept: "image/*" });
+
+    const claim = await h.gateway.claimFileChooser(asked.id);
+    expect(claim).toStrictEqual({ folder: expect.stringContaining(join(filesDir, session.id, "files-")), multiple: true });
+    // The folder is the gateway's alone: what was there before it started is gone.
+    await expect(readdir(filesDir)).resolves.toEqual([session.id]);
+    // One upload at a time for a chooser.
+    await expect(h.gateway.claimFileChooser(asked.id)).resolves.toBeUndefined();
+    const photo = join(claim!.folder, "photo.jpg");
+    await writeFile(photo, "photo");
+
+    await expect(h.gateway.chooseFiles(asked.id, [photo])).resolves.toEqual({ ok: true, value: undefined });
+
+    expect(chrome.sent("DOM.setFileInputFiles", (params) => `${params.backendNodeId} ${params.files}`)).toEqual([`frame:14 ${photo}`]);
+    // The browser reads the file when the page does, so it stays; the chooser is answered.
+    await expect(stat(photo)).resolves.toBeTruthy();
+    await expect(h.gateway.claimFileChooser(asked.id)).resolves.toBeUndefined();
+    await expect(h.gateway.chooseFiles(asked.id, [photo])).resolves.toEqual({ ok: false, error: GONE });
+  });
+
+  it("leaves a chooser open when its files did not arrive, and ends it when the page would not take them", async () => {
+    const { h, choose } = await openFileView();
+    const asked = await choose();
+    expect(asked).toStrictEqual({ type: "file_chooser", id: expect.any(String), multiple: false });
+
+    await h.gateway.claimFileChooser(asked.id);
+    h.gateway.releaseFileChooser(asked.id);
+    await expect(h.gateway.claimFileChooser(asked.id)).resolves.toMatchObject({ multiple: false });
+
+    // The page moved on meanwhile: Chrome no longer finds the element that asked, and the
+    // request is over. Chrome would report success for setting its files all the same.
+    chrome.failing = ["DOM.resolveNode"];
+    await expect(h.gateway.chooseFiles(asked.id, ["a.jpg"])).resolves.toEqual({ ok: false, error: GONE });
+    expect(chrome.sent("DOM.setFileInputFiles")).toEqual([]);
+    await expect(h.gateway.claimFileChooser(asked.id)).resolves.toBeUndefined();
+  });
+
+  it("keeps only the latest chooser of a view, and none once the view is over", async () => {
+    const { h, view, choose } = await openFileView();
+    const first = await choose();
+    const second = await choose();
+
+    await expect(h.gateway.claimFileChooser(first.id)).resolves.toBeUndefined();
+    await expect(h.gateway.claimFileChooser(second.id)).resolves.toBeDefined();
+    // While files are on their way, a tap that opens another chooser changes nothing. The
+    // gateway has dealt with it by the time it asks about the tab Chrome announces after it.
+    chrome.event("Page.fileChooserOpened", { mode: "selectSingle", backendNodeId: 15 }, "page");
+    chrome.event("Target.attachedToTarget", { sessionId: "popup", targetInfo: { type: "page" } });
+    await vi.waitFor(() => expect(chrome.sent("Page.enable")).toContain("popup:"));
+    expect(chrome.sent("DOM.describeNode")).toHaveLength(2);
+    expect(view.client.inbox.unread).toBe(0);
+
+    view.client.socket.close(1000);
+    await view.client.inbox.closed;
+    // The files on their way have no page to go to, and the browser's pages show their own choosers again.
+    await expect(h.gateway.chooseFiles(second.id, ["a.jpg"])).resolves.toEqual({ ok: false, error: GONE });
+    await chrome.disconnected();
+    expect(chrome.sent("Page.setInterceptFileChooserDialog", (params) => params.enabled).filter((sent) => sent.endsWith("false")))
+      .toEqual(["page:false", "frame:false", "popup:false"]);
+  });
+
+  it("removes a session's files when the session closes", async () => {
+    const { h, session, filesDir, choose } = await openFileView();
+    const claim = await h.gateway.claimFileChooser((await choose()).id);
+    await writeFile(join(claim!.folder, "photo.jpg"), "photo");
+
+    await h.store.closeSession(session.id, OWNER);
+
+    await vi.waitFor(async () => expect(await readdir(filesDir)).toEqual([]));
+  });
+
+  it("counts a view as in use while files for its chooser are being received", async () => {
+    freezeViewTimers();
+    const { h, view, choose } = await openFileView();
+    const asked = await choose();
+    await elapse(view, 9 * 60_000);
+
+    // A large file over a slow connection takes longer than a view may sit unused.
+    await h.gateway.claimFileChooser(asked.id);
+    await elapse(view, 12 * 60_000);
+    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
+
+    // The end of the upload is a use of the view like any other.
+    h.gateway.releaseFileChooser(asked.id);
+    await elapse(view, 9 * 60_000);
+    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
+    await elapse(view, 64_000);
+    expect(await view.client.inbox.next()).toMatchObject({ type: "closed", message: expect.stringContaining("nobody used it") });
+  });
+
+  it("offers no file choosing without a folder for the files, or when the browser's DevTools cannot be reached", async () => {
+    const withoutFolder = await createHarness();
+    await withoutFolder.openView((await withoutFolder.createSession()).id);
+    expect(withoutFolder.cli.commands()).not.toContain("get cdp-url");
+
+    const unreachable = await createHarness({ filesDir: makeTestDir("browser-live-files") });
+    unreachable.cli.answers.devTools = () => ({ ok: true, output: "", data: { cdpUrl: "ws://203.0.113.7:9222/devtools/browser/x" } });
+    const view = await unreachable.openView((await unreachable.createSession()).id);
+    await unreachable.cli.called("get cdp-url", 1);
+    // The view itself works as before.
+    send(view.upstream, { type: "frame", seq: 1, data: "QQ==" });
+    expect(await view.client.inbox.next()).toMatchObject({ type: "frame" });
+    expect(chrome.requests).toEqual([]);
+  });
+});
+
+describe("liveFileName", () => {
+  it("keeps a file's own name, without a folder, and tells files of one name apart", () => {
+    const taken = new Set<string>();
+
+    expect([
+      "Photo.JPG", "photo.jpg", "../../etc/passwd", "C:\\Users\\tim\\été 2026.png", "..", "", "notes", "notes", "a<b>:c?.txt",
+    ].map((name) => liveFileName(name, taken))).toEqual([
+      "Photo.JPG", "photo (1).jpg", "passwd", "été 2026.png", "file", "file (1)", "notes", "notes (1)", "a_b__c_.txt",
+    ]);
   });
 });
 

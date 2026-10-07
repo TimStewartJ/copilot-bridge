@@ -25,13 +25,14 @@ export function getBrowserRuntime(ctx: AppContext): BrowserRuntime {
   let runtime = runtimes.get(ctx);
   if (!runtime) {
     const telemetryStore = ctx.telemetryStore;
+    const copilotHome = ctx.copilotHome ?? ctx.runtimePaths?.copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
     const broker = new BrowserBroker({
-      copilotHome: ctx.copilotHome ?? ctx.runtimePaths?.copilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot"),
+      copilotHome,
       telemetryStore,
       getBrowserLaunchConfig: () => getBrowserLaunchConfig(ctx.settingsStore.getSettings()),
     });
     const sessions = new BrowserSessionStore({ browserBroker: broker, telemetryStore });
-    const live = new BrowserLiveGateway({ sessions, broker, telemetryStore });
+    const live = new BrowserLiveGateway({ sessions, broker, telemetryStore, filesDir: join(copilotHome, "browser-live-files") });
     runtime = { broker, sessions, live, userSession: new UserBrowserSession({ sessions, broker, live }) };
     runtimes.set(ctx, runtime);
   }
