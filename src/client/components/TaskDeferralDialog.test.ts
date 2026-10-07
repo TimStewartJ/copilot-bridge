@@ -60,6 +60,23 @@ describe("native task deferral dialog", () => {
     await submit();
     expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: false, nextTouchAt: null });
   });
+  it("clears a reached date when resuming, says so, and keeps a new date the user enters", async () => {
+    const parked = { ...task, deferred: true, nextTouchAt: "2000-01-01T00:00:00Z" };
+    await render(parked);
+    expect(getReactProps(input())!.value).toBe("");
+    expect(harness.dom.container.textContent).toContain("has passed and will be cleared");
+    await submit();
+    expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: false, nextTouchAt: null });
+    patch.mockClear();
+    await harness.cleanup();
+    harness = await createDialogTestHarness();
+    await render(parked);
+    const instant = new Date(2030, 4, 2, 10, 30);
+    await change(toDateTimeInputValue(instant.toISOString()));
+    expect(harness.dom.container.textContent).not.toContain("will be cleared");
+    await submit();
+    expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: false, nextTouchAt: instant.toISOString() });
+  });
   it("explains an already-arrived revisit rather than silently changing it", async () => {
     await render({ ...task, nextTouchAt: "2000-01-01T00:00:00Z" });
     expect(harness.dom.container.textContent).toContain("show under Needs you on Home right away");

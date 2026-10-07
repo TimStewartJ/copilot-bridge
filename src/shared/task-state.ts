@@ -53,11 +53,13 @@ export function deriveTaskState(input: TaskStateInput, now: number = Date.now())
     && waitStarted !== undefined && now - waitStarted >= STALE_WAIT_DAYS * DAY_MS;
   const result = (state: TaskState, reasons: TaskNeedsYouReason[] = []): DerivedTaskState => ({ state, reasons, idleDays, staleWait });
 
-  if (input.muted) return result("set_aside");
+  const revisitReached = revisit !== undefined && revisit <= now;
+  // Mute silences what a task's conversations raise. A revisit date is a request to see the task again, so it still surfaces.
+  if (input.muted) return revisitReached ? result("needs_you", ["revisit"]) : result("set_aside");
   const reasons: TaskNeedsYouReason[] = [];
   if (input.inputCount > 0) reasons.push("question");
   if (input.stalledCount > 0) reasons.push("stalled");
-  if (revisit !== undefined && revisit <= now) reasons.push("revisit");
+  if (revisitReached) reasons.push("revisit");
   if (reasons.length) return result("needs_you", reasons);
   if (input.deferred) return result("set_aside");
   if (input.busyCount > 0 || (idleDays !== null && idleDays < IN_MOTION_DAYS)) return result("in_motion");

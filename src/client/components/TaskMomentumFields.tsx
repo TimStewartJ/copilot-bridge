@@ -278,7 +278,7 @@ function TaskMomentumEditor({
                   </div>
                 )}
                 {isEditing && field.key === "waitingOn" && <p id={`wait-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>A wait need not block other work.</p>}
-                {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows on Home unless muted. No automatic resume, start or notification.</p>}
+                {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows under Needs you on Home when it arrives, muted or not. Nothing resumes or starts by itself.</p>}
               </Field>
             );
           })}

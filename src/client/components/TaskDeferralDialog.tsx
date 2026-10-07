@@ -5,7 +5,7 @@ import Dialog from "../design/Dialog";
 import { Button, FormRow, Notice, TextInput } from "../design/primitives";
 import { DS } from "../design/tokens";
 import { invalidateTaskChangeQueries } from "../lib/task-change-invalidation";
-import { toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
+import { formatRevisitMoment, isRevisitDue, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
 import { haptic } from "../lib/haptics";
 
 export type DeferralTask = Pick<Task, "id" | "title" | "deferred" | "nextTouchAt">;
@@ -17,8 +17,10 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
 }) {
   const client = useQueryClient();
   const dateId = useId();
-  const [initial] = useState(() => ({ id: task.id, deferred: task.deferred, date: toDateTimeInputValue(task.nextTouchAt) }));
-  const [date, setDate] = useState(initial.date);
+  // A reached date has done its job once the task is resumed, so resuming starts from no date.
+  const [initial] = useState(() => ({ id: task.id, deferred: task.deferred, date: toDateTimeInputValue(task.nextTouchAt),
+    reached: task.deferred && isRevisitDue(task.nextTouchAt) ? task.nextTouchAt : undefined }));
+  const [date, setDate] = useState(initial.reached ? "" : initial.date);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const revisitsNow = !!date && new Date(date).getTime() <= Date.now();
@@ -61,6 +63,7 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
           onChange={event => setDate(event.target.value)} />
       </FormRow>
       <p id={`${dateId}-help`} className={DS.text.prose}>On this date it shows under Needs you on Home so you can decide. It does not resume or start anything.</p>
+      {initial.reached && !date && <p className={DS.text.prose}>Its revisit date ({formatRevisitMoment(initial.reached)}) has passed and will be cleared.</p>}
       {date && <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => setDate("")}>Clear revisit date</Button>}
       {revisitsNow && <Notice title="Date already reached">It will show under Needs you on Home right away. Change or clear the date to review it later.</Notice>}
       <p className={DS.text.prose}>Sessions, schedules and deferred jobs keep running. If it asks you something or a conversation stalls, it still shows under Needs you.</p>

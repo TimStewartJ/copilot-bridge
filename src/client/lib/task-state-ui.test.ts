@@ -28,6 +28,9 @@ describe("task state wording", () => {
     expect(stateBadge(row({ inputCount: 1, busyCount: 1 }), NOW)).toEqual({ label: "Answer needed", tone: "warning" });
     expect(stateBadge(row({ busyCount: 1 }), NOW)).toEqual({ label: "Agent working", tone: "info" });
     expect(stateBadge(row({ state: "set_aside", muted: true }), NOW)).toEqual({ label: "Muted", tone: "neutral" });
+    // Surfaced for its date alone, a muted task does not speak for the conversations it silences.
+    expect(stateBadge(row({ state: "needs_you", reasons: ["revisit"], muted: true, inputCount: 1, stalledCount: 1, nextTouchAt: "2026-09-21T12:00:00Z" }), NOW))
+      .toMatchObject({ label: expect.stringMatching(/^Revisit · /), tone: "warning" });
     expect(stateBadge(row({ state: "gone_quiet" }), NOW)).toEqual({ label: "Quiet", tone: "neutral" });
     expect(stateBadge(row(), NOW)).toBeNull();
   });

@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
+import RevisitPrompt from "./RevisitPrompt";
 import TaskMomentumHistory from "./TaskMomentumHistory";
 import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "./TaskPanelSummaryRow";
 import { describeTaskGitStatusSummary } from "../lib/task-git-status-summary";
@@ -532,6 +533,15 @@ export default function TaskPanel({
       </div>
 
         <div className="space-y-3 px-3 pb-6 pt-3">
+          {showMomentumFields && currentTask && (
+            <RevisitPrompt
+              task={currentTask}
+              onSaved={(updated) => {
+                setMomentumTask(updated);
+                void onTasksChanged?.();
+              }}
+            />
+          )}
           {showMomentumFields ? (
             <TaskMomentumFields
               task={currentTask}

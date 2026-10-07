@@ -84,6 +84,55 @@ describe("native Home composition", () => {
     expect((await app.snapshot()).deferredTaskTotal).toBe(0);
   });
 
+  it("lists what arrives in an archived task's conversation, says it is archived, and keeps muted tasks silent", async () => {
+    const at = "2026-09-21T12:00:00Z";
+    const app = setup(["late-reply", "late-question", "moved-on", "muted-archive", "muted-active-too"].map(sessionId => ({ sessionId, lastActivityAt: at })));
+    const closed = app.taskStore.createTask("Closed work");
+    const current = app.taskStore.createTask("Current work");
+    const mutedClosed = app.taskStore.createTask("Muted then closed");
+    const mutedActive = app.taskStore.createTask("Muted feed");
+    for (const session of ["late-reply", "late-question", "moved-on", "muted-active-too"]) app.taskStore.linkSession(closed.id, session);
+    app.taskStore.linkSession(current.id, "moved-on");
+    app.taskStore.linkSession(mutedClosed.id, "muted-archive");
+    app.taskStore.linkSession(mutedActive.id, "muted-active-too");
+    app.taskStore.updateTask(mutedClosed.id, { muted: true });
+    app.taskStore.updateTask(mutedActive.id, { muted: true });
+    app.taskStore.updateTask(closed.id, { status: "archived" });
+    app.taskStore.updateTask(mutedClosed.id, { status: "archived" });
+    app.manager.getPendingUserInputCount.mockImplementation(id => id === "late-question" ? 1 : 0);
+    app.manager.getSessionRunState.mockImplementation(id => id === "late-question" ? "busy" : "idle");
+    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingElicitations: [], pendingUserInputs: [{ requestId: "ask", question: "Proceed?", allowFreeform: true }] });
+
+    const home = await app.snapshot("replies");
+    expect(home.replies.items.map(reply => [reply.sessionId, reply.taskTitle, reply.taskArchived])).toEqual(expect.arrayContaining([
+      ["late-reply", "Closed work", true],
+      // A conversation another active task still holds stays that task's, not the archived one's.
+      ["moved-on", "Current work", false],
+    ]));
+    // A muted task stays silent whether archived or not, and an active muted task outranks an archived one.
+    expect(home.replies.items.map(reply => reply.sessionId).sort()).toEqual(["late-reply", "moved-on"]);
+    expect(home.inputs.items).toEqual([expect.objectContaining({ sessionId: "late-question", taskId: closed.id, taskArchived: true, question: "Proceed?" })]);
+    // Reopening the task drops the label at once, though the reply text itself is cached.
+    app.taskStore.updateTask(closed.id, { status: "active" });
+    expect((await app.snapshot("replies")).replies.items.find(reply => reply.sessionId === "late-reply")).toMatchObject({ taskTitle: "Closed work", taskArchived: false });
+  });
+
+  it("brings a muted task back for its revisit date alone", async () => {
+    const app = setup([{ sessionId: "asking", lastActivityAt: "2026-09-21T12:00:00Z" }]);
+    const due = app.taskStore.createTask("Muted, date reached", undefined, "ongoing");
+    const later = app.taskStore.createTask("Muted, date ahead", undefined, "ongoing");
+    app.taskStore.updateTask(due.id, { muted: true, nextTouchAt: "2000-01-01T00:00:00Z" });
+    app.taskStore.updateTask(later.id, { muted: true, nextTouchAt: "9999-01-01T00:00:00Z" });
+    app.taskStore.linkSession(due.id, "asking");
+    app.manager.getPendingUserInputCount.mockReturnValue(1);
+    const home = await app.snapshot();
+    expect(home.attention.map(row => [row.id, row.muted, row.reasons])).toEqual([[due.id, true, ["revisit"]]]);
+    expect(home.taskCounts).toMatchObject({ needs_you: 1, set_aside: 1 });
+    // Its question stays silenced: mute still covers what the conversations raise.
+    expect(home.inputs.items).toEqual([]);
+    expect(home.replies.items).toEqual([]);
+  });
+
   it("deduplicates a shared session question and preserves exact elicitation schema", async () => {
     const app = setup([{ sessionId: "shared", summary: "Shared question" }]);
     for (const name of ["One", "Two"]) app.taskStore.linkSession(app.taskStore.createTask(name).id, "shared");

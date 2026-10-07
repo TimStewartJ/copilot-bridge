@@ -45,6 +45,20 @@ export function createReadStateStore(db: DatabaseSync) {
     return row?.lastReadAt ?? readThrough;
   }
 
+  /** Marks many conversations read through one moment in a single statement; a later read time is kept. */
+  function markReadMany(sessionIds: readonly string[], readThroughActivityAt = new Date().toISOString()): void {
+    if (sessionIds.length === 0) return;
+    db.prepare(
+      `INSERT INTO read_state (sessionId, lastReadAt)
+       SELECT value, ? FROM json_each(?) WHERE true
+       ON CONFLICT(sessionId) DO UPDATE SET
+         lastReadAt = CASE
+           WHEN read_state.lastReadAt < excluded.lastReadAt THEN excluded.lastReadAt
+           ELSE read_state.lastReadAt
+         END`,
+    ).run(normalizeTimestamp(readThroughActivityAt), JSON.stringify(sessionIds));
+  }
+
   function isUnread(sessionId: string, activityTime?: string): boolean {
     if (!activityTime) return false;
     const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
@@ -56,7 +70,7 @@ export function createReadStateStore(db: DatabaseSync) {
     db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
   }
 
-  return { getReadState, getReadStateFor, markRead, isUnread, markUnread };
+  return { getReadState, getReadStateFor, markRead, markReadMany, isUnread, markUnread };
 }
 
 export type ReadStateStore = ReturnType<typeof createReadStateStore>;

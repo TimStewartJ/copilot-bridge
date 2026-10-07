@@ -2,7 +2,7 @@ import { createElement, type ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, Task } from "../api";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
-import { findAllByTag, getReactProps, waitTick, waitUntilAct } from "../test-react-harness";
+import { advanceTimersByTimeAct, findAllByTag, getReactProps, waitTick, waitUntilAct } from "../test-react-harness";
 
 const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
@@ -186,6 +186,84 @@ describe("TaskRail navigation attention", () => {
     expect(text()).toContain("Parked idea");
     expect(text()).toContain("Deferred");
     expect(text()).toContain("Muted");
+  });
+  it("shows a set-aside task with current work once its revisit date arrives, still marked as set aside", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-08-07T16:00:00.000Z"));
+      await renderRail({
+        expanded: true,
+        tasks: [
+          createTask(),
+          createTask({ id: "due", title: "Parked idea", deferred: true, order: 1, nextTouchAt: "2026-08-07T15:00:00.000Z" }),
+          createTask({ id: "soon", title: "Quiet feed", muted: true, order: 2, nextTouchAt: "2026-08-07T16:00:30.000Z" }),
+          createTask({ id: "undated", title: "Someday", deferred: true, order: 3 }),
+        ],
+      });
+      const text = () => harness!.dom.container.textContent ?? "";
+      expect(text()).toContain("Parked idea");
+      // Whether an hour ago was "today" depends on the host's time zone; the set-aside word does not.
+      const badgeTitles = () => findAllByTag(harness!.dom.container, "SPAN").map((node) => String(getReactProps(node)?.title ?? ""));
+      expect(badgeTitles().some((title) => title.startsWith("Deferred · "))).toBe(true);
+      expect(text()).toContain("Set aside (2)");
+      expect(text()).not.toContain("Quiet feed");
+      // The date arriving is enough: nothing was saved, and the task without a date stays put.
+      await advanceTimersByTimeAct(harness!.act, 60_000);
+      expect(text()).toContain("Quiet feed");
+      expect(badgeTitles().some((title) => title.startsWith("Muted · "))).toBe(true);
+      expect(text()).toContain("Set aside (1)");
+      expect(text()).not.toContain("Someday");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps a muted task's conversations silent on the icon rail while it is shown for its date", async () => {
+    const later = "2026-08-07T17:00:00.000Z";
+    await renderRail({
+      expanded: false,
+      tasks: [
+        createTask({ activeSessionIds: ["current-chat"] }),
+        createTask({ id: "muted-due", title: "Quiet feed", muted: true, order: 1, nextTouchAt: "2000-01-01T00:00:00.000Z", activeSessionIds: ["feed-chat"] }),
+      ],
+      sessions: ["current-chat", "feed-chat"].map((sessionId) => createSession({ sessionId, lastVisibleActivityAt: later, modifiedTime: later, needsUserInput: sessionId === "feed-chat" })),
+      isUnread: () => true,
+    });
+    const tile = (title: string) => findAllByTag(harness!.dom.container, "BUTTON").find((node) => String(getReactProps(node)?.title ?? "").startsWith(title));
+    const marks = (node: unknown) => findAllByTag(node, "SPAN").map((span) => getReactProps(span)?.["data-status"]).filter(Boolean);
+    // Due, so it sits with current work and not behind the Set aside toggle.
+    expect(tile("Quiet feed")).toBeDefined();
+    expect(marks(tile("Quiet feed"))).toEqual([]);
+    expect(marks(tile("Current work"))).toEqual(["unread"]);
+    expect(findAllByTag(harness!.dom.container, "BUTTON").some((node) => String(getReactProps(node)?.["aria-label"] ?? "").startsWith("Set aside"))).toBe(false);
+  });
+  it("says how many set-aside and archived tasks hold unread conversations, and marks their rows", async () => {
+    const later = "2026-08-07T17:00:00.000Z";
+    await renderRail({
+      expanded: true,
+      tasks: [
+        createTask(),
+        createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1, activeSessionIds: ["parked-chat"] }),
+        createTask({ id: "muted", title: "Quiet feed", muted: true, order: 2, activeSessionIds: ["feed-chat"] }),
+        createTask({ id: "closed", title: "Closed work", status: "archived", order: 3, activeSessionIds: ["late-chat"] }),
+        createTask({ id: "closed-read", title: "Old work", status: "archived", order: 4, activeSessionIds: ["old-chat"] }),
+      ],
+      sessions: ["parked-chat", "feed-chat", "late-chat"].map((sessionId) => createSession({ sessionId, lastVisibleActivityAt: later, modifiedTime: later }))
+        .concat(createSession({ sessionId: "old-chat" })),
+      isUnread: (_sessionId, time) => time === later,
+    });
+    const text = () => harness!.dom.container.textContent ?? "";
+    // Mute still silences its task; the deferred and the archived one each count once.
+    expect(text()).toContain("Set aside (2)1 unread");
+    expect(text()).toContain("Archived (2)1 unread");
+    expect(getReactProps(findButtonByLabel(harness!.dom.container, "Tasks, 2 tasks need attention"))).toBeDefined();
+
+    for (const label of ["Set aside (2)", "Archived (2)"]) {
+      const toggle = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.includes(label));
+      await harness!.act(async () => { getReactProps(toggle)!.onClick(); await waitTick(); });
+    }
+    const unreadRows = findAllByTag(harness!.dom.container, "BUTTON")
+      .map((node) => getReactProps(node)?.["data-unread-task-id"]).filter(Boolean);
+    expect(unreadRows).toEqual(["deferred", "closed"]);
   });
   it("flags a set-aside task that needs you without opening the section", async () => {
     await renderRail({ expanded: true, tasks: [createTask(), createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1 })] }, [

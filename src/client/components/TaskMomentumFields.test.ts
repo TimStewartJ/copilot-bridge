@@ -81,7 +81,7 @@ describe("TaskMomentumFields design migration", () => {
     await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: toDateTimeInputValue(nextTouchAt) } }));
     await harness!.act(async () => getReactProps(input)!.onBlur());
     expect(disclosure(container)?.textContent).toBe(getTaskContextSummary({ ...task, nextTouchAt }));
-    expect(container.textContent).toContain("No automatic resume, start or notification");
+    expect(container.textContent).toContain("Nothing resumes or starts by itself");
   });
 
   it("stays open after saves and same-task updates, but closes when switching tasks", async () => {

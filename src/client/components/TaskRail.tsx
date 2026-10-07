@@ -13,10 +13,13 @@ import EmptyState from "./shared/EmptyState";
 import SessionList from "./SessionList";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import useTaskIndicators, {
+  countUnreadTasks,
   describeTabAttention,
   summarizeChatTabAttention,
   summarizeTaskTabAttention,
+  unreadTasksLabel,
 } from "../hooks/useTaskIndicators";
+import useDueSetAsideIds from "../hooks/useDueSetAsideIds";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { splitArchivedTasks, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
@@ -26,7 +29,7 @@ import { DndContext } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
-import { getTaskStatus } from "../task-row-signals";
+import { getTaskStatus, shouldShowTaskRowUnreadDot } from "../task-row-signals";
 import { DS, cx } from "../design/tokens";
 import { Button, CountBadge, IdentitySwatch, StatusIcon } from "../design/primitives";
 import CopilotQuotaMenu from "./CopilotQuotaMenu";
@@ -178,9 +181,11 @@ export default function TaskRail({
     () => splitArchivedTasks(tasks),
     [tasks],
   );
-  // Deferred and muted tasks live in a collapsed Set aside section; the main list is for current work.
-  const sortedTasks = useMemo(() => nonArchived.filter((task) => !isSetAsideTask(task)), [nonArchived]);
-  const setAsideTasks = useMemo(() => nonArchived.filter(isSetAsideTask), [nonArchived]);
+  // Deferred and muted tasks live in a collapsed Set aside section; the main list is for current work,
+  // and for a set-aside task whose revisit date has arrived, until that date is answered.
+  const dueSetAsideIds = useDueSetAsideIds(tasks);
+  const sortedTasks = useMemo(() => nonArchived.filter((task) => !isSetAsideTask(task) || dueSetAsideIds.has(task.id)), [dueSetAsideIds, nonArchived]);
+  const setAsideTasks = useMemo(() => nonArchived.filter((task) => isSetAsideTask(task) && !dueSetAsideIds.has(task.id)), [dueSetAsideIds, nonArchived]);
   const setAsideIds = useMemo(() => new Set(setAsideTasks.map((task) => task.id)), [setAsideTasks]);
   const activeTasksForOrder = useMemo(() => tasks.filter((task) => task.status === "active"), [tasks]);
   const reorderVisible = useMemo(() => onReorderTasks
@@ -193,6 +198,9 @@ export default function TaskRail({
   const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
   // A deferred task that asks something or reaches its revisit date must not vanish inside a collapsed section.
   const setAsideNeeds = useMemo(() => setAsideAttention(overview.data?.tasks, setAsideIds), [overview.data, setAsideIds]);
+  // Unread conversations must not hide inside a collapsed section either.
+  const setAsideUnread = useMemo(() => countUnreadTasks(setAsideTasks, taskIndicators), [setAsideTasks, taskIndicators]);
+  const archivedUnread = useMemo(() => countUnreadTasks(archivedTasks, taskIndicators), [archivedTasks, taskIndicators]);
   const [showSetAside, setShowSetAside] = useState(false);
   useEffect(() => {
     if (activeTaskId && setAsideIds.has(activeTaskId)) setShowSetAside(true);
@@ -275,7 +283,7 @@ export default function TaskRail({
     returnFocusRef: newTaskButtonRef,
   });
   const unreadTaskEdgeRefreshKey = useMemo(() => {
-    const parts: string[] = [expanded ? "expanded" : "collapsed", railTab, showArchived ? "archived" : "open"];
+    const parts: string[] = [expanded ? "expanded" : "collapsed", railTab, showArchived ? "archived" : "open", showSetAside ? "set-aside" : ""];
     const addTask = (task: Task) => {
       parts.push(`${task.id}:${taskIndicators.get(task.id)?.unread ? "1" : "0"}`);
     };
@@ -287,8 +295,10 @@ export default function TaskRail({
     } else {
       for (const task of sortedTasks) addTask(task);
     }
+    if (showSetAside) for (const task of setAsideTasks) addTask(task);
+    if (showArchived) for (const task of archivedTasks) addTask(task);
     return parts.join("|");
-  }, [displaySections, expanded, hasGroups, railTab, showArchived, sortedTasks, taskIndicators]);
+  }, [archivedTasks, displaySections, expanded, hasGroups, railTab, setAsideTasks, showArchived, showSetAside, sortedTasks, taskIndicators]);
   const expandedTaskListRef = useRef<HTMLDivElement>(null);
   const unreadTaskEdges = useUnreadTaskEdges({
     scopeRef: expandedTaskListRef,
@@ -332,7 +342,8 @@ export default function TaskRail({
                   {!isCollapsed && section.tasks.map((task) => {
                     const isActive = task.id === activeTaskId;
                     const indicator = taskIndicators.get(task.id);
-                    const status = getTaskStatus(indicator);
+                    // A muted task shown for its revisit date still keeps its conversations' marks to itself.
+                    const status = task.muted ? null : getTaskStatus(indicator);
                     const initials = task.title.slice(0, 2).toUpperCase();
 
                     return (
@@ -362,7 +373,7 @@ export default function TaskRail({
             sortedTasks.map((task) => {
               const isActive = task.id === activeTaskId;
               const indicator = taskIndicators.get(task.id);
-              const status = getTaskStatus(indicator);
+              const status = task.muted ? null : getTaskStatus(indicator);
               const initials = task.title.slice(0, 2).toUpperCase();
 
               return (
@@ -389,50 +400,71 @@ export default function TaskRail({
             <>
               <button
                 onClick={() => setShowSetAside((v) => !v)}
-                title={`Set aside (${setAsideTasks.length})${setAsideNeeds.size ? ` • ${needsYouCount(setAsideNeeds.size)}` : ""}`}
-                aria-label={`Set aside (${setAsideTasks.length})${setAsideNeeds.size ? `, ${needsYouCount(setAsideNeeds.size)}` : ""}`}
+                title={`Set aside (${setAsideTasks.length})${setAsideNeeds.size ? ` • ${needsYouCount(setAsideNeeds.size)}` : ""}${setAsideUnread ? ` • ${unreadTasksLabel(setAsideUnread)}` : ""}`}
+                aria-label={`Set aside (${setAsideTasks.length})${setAsideNeeds.size ? `, ${needsYouCount(setAsideNeeds.size)}` : ""}${setAsideUnread ? `, ${unreadTasksLabel(setAsideUnread)}` : ""}`}
                 aria-expanded={showSetAside}
                 className="relative w-9 h-9 rounded-lg flex items-center justify-center text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
               >
                 <EyeOff size={16} />
-                {setAsideNeeds.size > 0 && (
+                {(setAsideNeeds.size > 0 || setAsideUnread > 0) && (
                   <span className={DS.status.corner}>
-                    <StatusIcon kind="warning" decorative />
+                    <StatusIcon kind={setAsideNeeds.size > 0 ? "warning" : "unread"} decorative />
                   </span>
                 )}
               </button>
-              {showSetAside && setAsideTasks.map((task) => (
-                <button
-                  key={task.id}
-                  onClick={() => onSelectTask(task.id)}
-                  title={getTaskTitle(task)}
-                  className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${task.id === activeTaskId ? "ring-2 ring-text-secondary" : ""} text-text-secondary hover:brightness-110`}
-                >
-                  {task.title.slice(0, 2).toUpperCase()}
-                </button>
-              ))}
+              {showSetAside && setAsideTasks.map((task) => {
+                const unread = shouldShowTaskRowUnreadDot(task, taskIndicators.get(task.id));
+                return (
+                  <button
+                    key={task.id}
+                    onClick={() => onSelectTask(task.id)}
+                    title={unread ? `${getTaskTitle(task)} • Unread conversations` : getTaskTitle(task)}
+                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${task.id === activeTaskId ? "ring-2 ring-text-secondary" : ""} text-text-secondary hover:brightness-110`}
+                  >
+                    {task.title.slice(0, 2).toUpperCase()}
+                    {unread && (
+                      <span className={DS.status.corner}>
+                        <StatusIcon kind="unread" label="Unread conversations" />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </>
           )}
           {archivedTasks.length > 0 && (
             <>
               <button
                 onClick={() => setShowArchived((v) => !v)}
-                title={`Archived (${archivedTasks.length})`}
-                className="w-9 h-9 rounded-lg flex items-center justify-center text-text-faint hover:bg-bg-hover hover:text-text-muted transition-colors cursor-pointer"
+                title={`Archived (${archivedTasks.length})${archivedUnread ? ` • ${unreadTasksLabel(archivedUnread)}` : ""}`}
+                aria-label={`Archived (${archivedTasks.length})${archivedUnread ? `, ${unreadTasksLabel(archivedUnread)}` : ""}`}
+                aria-expanded={showArchived}
+                className="relative w-9 h-9 rounded-lg flex items-center justify-center text-text-faint hover:bg-bg-hover hover:text-text-muted transition-colors cursor-pointer"
               >
                 <Archive size={16} />
+                {archivedUnread > 0 && (
+                  <span className={DS.status.corner}>
+                    <StatusIcon kind="unread" decorative />
+                  </span>
+                )}
               </button>
               {showArchived && archivedTasks.map((task) => {
                 const isActive = task.id === activeTaskId;
                 const initials = task.title.slice(0, 2).toUpperCase();
+                const unread = shouldShowTaskRowUnreadDot(task, taskIndicators.get(task.id));
                 return (
                   <button
                     key={task.id}
                     onClick={() => onSelectTask(task.id)}
-                    title={getTaskTitle(task)}
-                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} text-text-primary hover:brightness-110 opacity-60`}
+                    title={unread ? `${getTaskTitle(task)} • Unread conversations` : getTaskTitle(task)}
+                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0 transition-colors cursor-pointer ${STATUS_BG[task.status]} ${isActive ? "ring-2 ring-text-secondary" : ""} text-text-primary hover:brightness-110 ${unread ? "" : "opacity-60"}`}
                   >
                     {initials}
+                    {unread && (
+                      <span className={DS.status.corner}>
+                        <StatusIcon kind="unread" label="Unread conversations" />
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -761,24 +793,36 @@ export default function TaskRail({
                         {needsYouCount(setAsideNeeds.size)}
                       </span>
                     )}
+                    {setAsideUnread > 0 && (
+                      <span className="ml-1 inline-flex items-center gap-1 font-medium text-text-primary">
+                        <StatusIcon kind="unread" decorative />
+                        {unreadTasksLabel(setAsideUnread)}
+                      </span>
+                    )}
                   </button>
                   {showSetAside && (
                     <div className={cx(DS.surface.group, "mb-1 overflow-hidden")} data-ds-surface="group">
-                      {setAsideTasks.map((task) => (
-                        <button
-                          key={task.id}
-                          type="button"
-                          {...bindLongPress(task.id, () => onSelectTask(task.id))}
-                          className={cx("flex w-full items-center gap-2 border-b border-border-subtle px-3 py-2 text-left text-sm last:border-b-0 select-none no-callout transition-colors",
-                            ctxMenu?.id === task.id ? "bg-bg-hover ring-1 ring-border" : task.id === activeTaskId ? DS.row.selected : "hover:bg-bg-hover/60")}
-                        >
-                          <span className="w-3 shrink-0" />
-                          <span className="min-w-0 flex-1 truncate font-medium text-text-primary">{task.title}</span>
-                          <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
-                          {setAsideNeeds.has(task.id) && <span className={cx(DS.badge.base, DS.badge.tone.warning)}>{setAsideNeeds.get(task.id)}</span>}
-                          <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>{task.muted ? "Muted" : "Deferred"}</span>
-                        </button>
-                      ))}
+                      {setAsideTasks.map((task) => {
+                        const unread = shouldShowTaskRowUnreadDot(task, taskIndicators.get(task.id));
+                        return (
+                          <button
+                            key={task.id}
+                            type="button"
+                            {...bindLongPress(task.id, () => onSelectTask(task.id))}
+                            data-unread-task-id={unread ? task.id : undefined}
+                            className={cx("flex w-full items-center gap-2 border-b border-border-subtle px-3 py-2 text-left text-sm last:border-b-0 select-none no-callout transition-colors",
+                              ctxMenu?.id === task.id ? "bg-bg-hover ring-1 ring-border" : task.id === activeTaskId ? DS.row.selected : "hover:bg-bg-hover/60")}
+                          >
+                            <span className="flex w-3 shrink-0 items-center justify-center">
+                              {unread && <><StatusIcon kind="unread" decorative /><span className="sr-only">Unread conversations</span></>}
+                            </span>
+                            <span className={cx("min-w-0 flex-1 truncate text-text-primary", unread ? "font-semibold" : "font-medium")}>{task.title}</span>
+                            <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
+                            {setAsideNeeds.has(task.id) && <span className={cx(DS.badge.base, DS.badge.tone.warning)}>{setAsideNeeds.get(task.id)}</span>}
+                            <span className={cx(DS.badge.base, DS.badge.tone.neutral)}>{task.muted ? "Muted" : "Deferred"}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </>
@@ -787,20 +831,29 @@ export default function TaskRail({
                 <>
                   <button
                     onClick={() => setShowArchived((v) => !v)}
-                    className="w-full flex items-center gap-1.5 px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
+                    aria-expanded={showArchived}
+                    className="w-full flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 mt-2 text-xs text-text-faint hover:text-text-muted transition-colors cursor-pointer"
                   >
                     {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     <Archive size={12} />
                     Archived ({archivedTasks.length})
+                    {archivedUnread > 0 && (
+                      <span className="ml-1 inline-flex items-center gap-1 font-medium text-text-primary">
+                        <StatusIcon kind="unread" decorative />
+                        {unreadTasksLabel(archivedUnread)}
+                      </span>
+                    )}
                   </button>
                   {showArchived && archivedTasks.map((task) => {
                     const isActive = task.id === activeTaskId;
+                    const unread = shouldShowTaskRowUnreadDot(task, taskIndicators.get(task.id));
 
                     return (
                       <button
                         key={task.id}
                         {...bindLongPress(task.id, () => onSelectTask(task.id))}
-                        className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 opacity-60 ${
+                        data-unread-task-id={unread ? task.id : undefined}
+                        className={`w-full text-left px-3 py-2 rounded-md text-sm select-none no-callout transition-all duration-150 ${unread ? "" : "opacity-60"} ${
                           ctxMenu?.id === task.id
                             ? "bg-bg-hover ring-1 ring-border"
                             : isActive
@@ -809,7 +862,8 @@ export default function TaskRail({
                         } ${isTarget(task.id) ? "scale-[0.97] bg-bg-hover" : ""}`}
                       >
                         <div className="flex items-center gap-2">
-                          <span className="font-medium truncate flex-1">
+                          {unread && <><StatusIcon kind="unread" decorative /><span className="sr-only">Unread conversations</span></>}
+                          <span className={cx("truncate flex-1", unread ? "font-semibold" : "font-medium")}>
                             {task.title}
                           </span>
                           <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />

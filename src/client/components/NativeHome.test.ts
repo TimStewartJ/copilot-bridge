@@ -43,17 +43,62 @@ describe("Home within native Bridge", () => {
     await click("Continue conversation"); expect(selectSession).toHaveBeenCalledExactlyOnceWith("existing-chat", "existing");
     expect(text).not.toContain("Accept commitment");
   });
-  it("moves a due revisit a week out through the normal task update", async () => {
+  it("answers a due revisit in place: later, clear, or resume a set-aside task and drop the date", async () => {
     const snapshot = empty();
-    snapshot.attention = [row({ id: "due", title: "Due task", state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-09-20T00:00:00Z" })];
+    snapshot.attention = [
+      row({ id: "due", title: "Due task", state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-09-20T00:00:00Z" }),
+      row({ id: "parked", title: "Parked task", deferred: true, order: 1, state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-09-20T00:00:00Z" }),
+      row({ id: "muted", title: "Muted feed", muted: true, order: 2, state: "needs_you", reasons: ["revisit"], inputCount: 2, nextTouchAt: "2026-09-20T00:00:00Z" }),
+    ];
     api.fetchHome.mockResolvedValue(snapshot); api.patchTask.mockResolvedValue({});
+    await render();
+    const text = () => harness.dom.container.textContent ?? "";
+    expect(text()).toContain("Muted");
+    expect(text()).not.toContain("Answer needed");
+    expect(text()).not.toContain("Revisit next week");
+    const buttons = (label: string) => findAllByTag(harness.dom.container, "BUTTON").filter(node => node.textContent?.trim() === label);
+    // Only the set-aside task offers to resume; every due task offers Later and Clear date.
+    expect(buttons("Resume task")).toHaveLength(1);
+    expect(buttons("Later…")).toHaveLength(3);
+    await click("Resume task");
+    expect(api.patchTask).toHaveBeenLastCalledWith("parked", { deferred: false, nextTouchAt: null });
+    await click("Clear date");
+    expect(api.patchTask).toHaveBeenLastCalledWith("due", { nextTouchAt: null });
+    await click("Later…");
+    expect(text()).toContain("Revisit later");
     const before = Date.now();
-    await render(); await click("Revisit next week");
-    expect(api.patchTask).toHaveBeenCalledOnce();
-    const [id, patch] = api.patchTask.mock.calls[0];
+    const nextWeek = findAllByTag(harness.dom.container, "BUTTON").find(node => node.textContent?.startsWith("Next week"));
+    await harness.act(async () => { await getReactProps(nextWeek)!.onClick(); await waitTick(); });
+    await advanceTimersByTimeAct(harness.act, 1);
+    const [id, patch] = api.patchTask.mock.calls.at(-1)!;
     expect(id).toBe("due");
-    expect(Date.parse(patch.nextTouchAt) - before).toBeGreaterThanOrEqual(7 * 86_400_000);
     expect(Object.keys(patch)).toEqual(["nextTouchAt"]);
+    const at = new Date(patch.nextTouchAt);
+    expect(at.getTime()).toBeGreaterThan(before + 6 * 86_400_000);
+    expect([at.getHours(), at.getMinutes()]).toEqual([9, 0]);
+    expect(text()).not.toContain("Revisit later");
+  });
+  it("keeps the dialog Resume for a set-aside task that surfaced for another reason", async () => {
+    const snapshot = empty();
+    snapshot.attention = [row({ id: "stuck", title: "Stuck task", deferred: true, state: "needs_you", reasons: ["stalled"], stalledCount: 1 })];
+    api.fetchHome.mockResolvedValue(snapshot);
+    await render();
+    const labels = findAllByTag(harness.dom.container, "BUTTON").map(node => node.textContent?.trim());
+    expect(labels).toContain("Resume");
+    expect(labels).not.toContain("Later…");
+    await click("Resume");
+    expect(harness.dom.container.textContent).toContain("Bring it back into your task list and Home.");
+    expect(api.patchTask).not.toHaveBeenCalled();
+  });
+  it("says when a new reply or question belongs to an archived task", async () => {
+    const snapshot = empty();
+    snapshot.replies = { items: [{ sessionId: "late", title: "Late run", taskId: "closed", taskTitle: "Closed work", taskArchived: true, excerpt: "Finished after all" }], total: 1, offset: 0, hasMore: false };
+    snapshot.inputs = { items: [{ sessionId: "ask", title: "Late question", taskId: "closed", taskTitle: "Closed work", taskArchived: true, kind: "user_input", requestId: "r", question: "Proceed?", pendingCount: 1 }], total: 1, offset: 0, hasMore: false };
+    api.fetchHome.mockResolvedValue(snapshot);
+    await render();
+    const text = harness.dom.container.textContent ?? "";
+    expect(text).toContain("Closed workArchived task");
+    expect(text).toContain("Closed work (archived task) · Late question");
   });
   it("lists recently touched tasks to resume in their latest conversation", async () => {
     const snapshot = empty();

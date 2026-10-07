@@ -19,6 +19,19 @@ describe("read-state-store", () => {
     expect(store.getReadState()["session-1"]).toBe("2026-05-07T21:00:00.000Z");
   });
 
+  it("markReadMany settles a batch at one moment and keeps any later cursor", () => {
+    store.markRead("ahead", "2999-01-01T00:00:00.000Z");
+    store.markRead("behind", "2020-01-01T00:00:00.000Z");
+    store.markReadMany(["ahead", "behind", "new"], "2026-05-07T21:00:00Z");
+    store.markReadMany([]);
+    expect(store.getReadState()).toEqual({
+      ahead: "2999-01-01T00:00:00.000Z",
+      behind: "2026-05-07T21:00:00.000Z",
+      new: "2026-05-07T21:00:00.000Z",
+    });
+    expect(() => store.markReadMany(["new"], "not a date")).toThrow("Invalid read timestamp");
+  });
+
   it("markRead never moves an existing cursor backward", () => {
     store.markRead("session-1", "2026-05-07T21:00:00.000Z");
     const ts = store.markRead("session-1", "2026-05-07T20:00:00.000Z");
