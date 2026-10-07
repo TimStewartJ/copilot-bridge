@@ -42,10 +42,12 @@ export function shutdownAppContextServices(
     if (handsFreeOutcome.status !== "fulfilled") {
       console.error(`[web] Hands-free shutdown ${handsFreeOutcome.status}`);
     }
-    try {
-      await ctx.searchIndex?.shutdown();
-    } catch (error) {
+    // Indexing stops at this call whatever is left of the budget; only the wait is bounded.
+    const searchShutdown = Promise.resolve(ctx.searchIndex?.shutdown()).catch((error) => {
       console.error("[web] Search index shutdown failed:", error);
+    });
+    if ((await settleByDeadline(() => searchShutdown, deadline)).status === "timed-out") {
+      console.error("[web] Search index shutdown timed-out");
     }
     const notificationsOutcome = await settleByDeadline(async () => {
       await ctx.stopPushEventNotifications?.();

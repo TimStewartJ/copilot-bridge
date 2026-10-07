@@ -231,6 +231,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     sessionMetaStore,
     sessionTitles,
     docsIndex,
+    recordSpan: (name, duration, metadata) => telemetryStore.recordSpan({ name, duration, metadata, source: "server" }),
     listSessions: async () => {
       const sessionStateDir = join(copilotHome ?? join(homedir(), ".copilot"), "session-state");
       try {

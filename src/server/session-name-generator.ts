@@ -46,9 +46,21 @@ export function stripTrailingClosingTags(title: string): string {
   return title.replace(TRAILING_CLOSING_TAGS, "");
 }
 
+const TAGGED_TITLE = /<session-title>\s*([\s\S]*?)\s*<\/session-title>/i;
+
+/**
+ * How the helper model framed its reply: as asked, with a tag the parser had to drop, or with
+ * none. The model is picked by price and so changes without a release; this is where that shows.
+ */
+export function describeTitleReply(rawOutput: unknown): "tagged" | "partial" | "bare" | "none" {
+  if (typeof rawOutput !== "string") return "none";
+  if (TAGGED_TITLE.test(rawOutput)) return "tagged";
+  return LEADING_OPENING_TAGS.test(rawOutput) || TRAILING_CLOSING_TAGS.test(rawOutput) ? "partial" : "bare";
+}
+
 export function extractGeneratedSessionTitle(rawOutput: unknown): string | undefined {
   if (typeof rawOutput !== "string") return undefined;
-  const tagged = rawOutput.match(/<session-title>\s*([\s\S]*?)\s*<\/session-title>/i);
+  const tagged = rawOutput.match(TAGGED_TITLE);
   // Some models answer with only one of the two tags, or close with a different tag.
   const rawTitle = stripTrailingClosingTags((tagged?.[1] ?? rawOutput).replace(LEADING_OPENING_TAGS, "")).trim();
   const title = rawTitle.replace(/^["']+|["']+$/g, "").trim();

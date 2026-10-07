@@ -402,6 +402,14 @@ describe("browser diagnostics", () => {
     });
   });
 
+  it("gives only a preview's signed-in browser a limit after which it closes by itself", async () => {
+    const { getBrowserRuntime } = await import("../browser-runtime.js");
+    const preview = { ...createContext().ctx, isStaging: true } as AppContext;
+
+    expect(getBrowserRuntime(createContext().ctx).broker.getAuthenticatedTarget().idleTimeoutMs).toBeUndefined();
+    expect(getBrowserRuntime(preview).broker.getAuthenticatedTarget().idleTimeoutMs).toBeGreaterThan(0);
+  });
+
   describe("public profiles", () => {
     function seedPublicProfiles(copilotHome: string): string {
       const profileRoot = path.join(copilotHome, "browser-public");
