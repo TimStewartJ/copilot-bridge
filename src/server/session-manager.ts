@@ -252,6 +252,7 @@ import { createRetainedCopilotUsageEntry } from "./copilot-usage-store.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { createDisposableTitleSessionId, DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
 import { buildCopilotClientOptions } from "./copilot-client-options.js";
+import { BUILT_IN_GITHUB_MCP_SERVER } from "./built-in-mcp-servers.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -3551,6 +3552,8 @@ export class SessionManager {
     const sessionId = createDisposableTitleSessionId();
     const session = await this.createOwnedSession(backend, {
       ...buildSessionNameHelperBaseConfig(),
+      // A helper has no tools; without this its first request waits a second for GitHub's.
+      disabledMcpServers: [BUILT_IN_GITHUB_MCP_SERVER],
       infiniteSessions: { enabled: false },
       enableSessionTelemetry: false,
       enableSessionStore: false,

@@ -4,6 +4,7 @@
 import type { AgentModelInfo } from "../agent-backend/types.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import { createNativeBridgeTools } from "../bridge-native-tools.js";
+import { BUILT_IN_GITHUB_MCP_SERVER } from "../built-in-mcp-servers.js";
 import { selectHelperModel } from "../helper-model.js";
 import { resolveSupportedReasoningEffort } from "../../shared/reasoning-effort.js";
 import { buildHelmSystemPrompt } from "./helm-prompt.js";
@@ -85,6 +86,9 @@ export function applyHelmSessionProfile<T extends Record<string, unknown>>(base:
     availableTools: tools.map((tool) => tool.name),
     excludedTools: [],
     mcpServers: {},
+    // Helm's tools are its own; the runtime would still connect GitHub's on the first prompt of a
+    // call and hold Helm's first reply back by more than a second.
+    disabledMcpServers: [BUILT_IN_GITHUB_MCP_SERVER],
     skillDirectories: [],
     instructionDirectories: [],
     enableConfigDiscovery: false,
