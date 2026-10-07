@@ -339,6 +339,81 @@ describe("global search index", () => {
     expect((await index.search({ ...request, q: "replacement" })).chats.total).toBe(0);
   });
 
+  /** More chats than one batch takes, so a pass is still under way after the first batch. */
+  function thirtyChats(name: string) {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir(name);
+    const sessions: Array<{ sessionId: string; summary?: string }> = Array.from({ length: 30 }, (_, n) => ({
+      sessionId: `aaaaaaaa-1111-4111-8111-${String(n).padStart(12, "0")}`,
+      summary: `Chat ${n}`,
+    }));
+    for (const { sessionId } of sessions) writeEvents(copilotHome, sessionId, []);
+    const sessionTitles = createSessionTitlesStore(db);
+    const index = createSearchIndex(db, {
+      copilotHome,
+      taskStore: createTaskStore(db, createTestBus()),
+      sessionMetaStore: createSessionMetaStore(db),
+      sessionTitles,
+      listSessions: async () => sessions,
+    });
+    return { db, index, sessions, sessionTitles };
+  }
+
+  it("reads the indexed titles once for a pass, however many batches it takes", async () => {
+    const { db, index } = thirtyChats("search-titles-once");
+    await index.reconcile(request);
+    await index.waitForIdle();
+
+    const prepare = vi.spyOn(db, "prepare");
+    await index.reconcile(request);
+    await index.waitForIdle();
+
+    const titleReads = prepare.mock.calls.map(([sql]) => sql).filter((sql) => /^\s*SELECT[^;]*FROM search_chat_titles/.test(sql));
+    expect(titleReads).toEqual(["SELECT sessionId, title FROM search_chat_titles"]);
+    expect((db.prepare("SELECT count(*) AS total FROM search_chat_titles").get() as { total: number }).total).toBe(30);
+  });
+
+  it("keeps the titles it read current when a chat comes up again before the pass ends", async () => {
+    const { db, index, sessions, sessionTitles } = thirtyChats("search-titles-revisit");
+    const first = sessions[0]!.sessionId;
+    // A search inside one chat takes that chat first and leaves the rest of the pass queued.
+    const scoped = { ...request, scope: "session" as const, sessionId: first };
+    const title = () => (db.prepare("SELECT title FROM search_chat_titles WHERE sessionId = ?").all(first) as Array<{ title: string }>)
+      .map((row) => row.title);
+
+    // Indexed during this pass, then seen again without a name: its indexed title is the fallback.
+    await index.reconcile(scoped);
+    sessions[0] = { sessionId: first };
+    await index.reconcile(scoped);
+    expect(title()).toEqual(["Chat 0"]);
+    await index.waitForIdle();
+
+    // Renamed and renamed back during one pass: the second rename is not mistaken for no change.
+    sessionTitles.setTitle(first, "Renamed");
+    await index.reconcile(scoped);
+    sessionTitles.setTitle(first, "Chat 0");
+    await index.reconcile(scoped);
+    expect(title()).toEqual(["Chat 0"]);
+    await index.waitForIdle();
+  });
+
+  it("follows a rename in a later pass, and keeps the last title of a chat that lost its name", async () => {
+    const { copilotHome, db, index, sessions } = fixture();
+    for (const { sessionId } of sessions) writeEvents(copilotHome, sessionId, []);
+    const titles = () => (db.prepare("SELECT title FROM search_chat_titles ORDER BY sessionId").all() as Array<{ title: string }>)
+      .map((row) => row.title);
+    await index.reconcile(request);
+    await index.waitForIdle();
+    expect(titles()).toEqual(["Archived launch chat", "Active chat"]);
+
+    createSessionTitlesStore(db).setTitle(sessions[0]!.sessionId, "Renamed chat");
+    sessions[1] = { sessionId: sessions[1]!.sessionId } as typeof sessions[number];
+    await index.reconcile(request);
+    await index.waitForIdle();
+
+    expect(titles()).toEqual(["Renamed chat", "Active chat"]);
+  });
+
   it("re-indexes one chat per step and records what a whole pass cost", async () => {
     const db = setupTestDb();
     const copilotHome = makeTestDir("search-sweep");
