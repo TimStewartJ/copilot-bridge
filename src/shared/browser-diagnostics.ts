@@ -1,5 +1,23 @@
 import type { BrowserLiveCheck } from "./browser-live.js";
 
+/**
+ * The oldest agent-browser the Bridge works with. An older one starts and mostly works, which
+ * hides what it lacks: the stream of 0.33 stays on a page when the page opens a popup, so a
+ * sign-in window cannot be used in a live view, and its upload step does not find the open tab.
+ */
+export const MIN_AGENT_BROWSER_VERSION = "0.38.0";
+
+/** Whether an agent-browser version, such as "0.33.2", is older than the Bridge works with. */
+export function isAgentBrowserOutdated(version: string): boolean {
+  const parts = (text: string): number[] => (/^(\d+)\.(\d+)\.(\d+)/.exec(text) ?? []).slice(1).map(Number);
+  const installed = parts(version);
+  const minimum = parts(MIN_AGENT_BROWSER_VERSION);
+  for (let index = 0; index < installed.length; index++) {
+    if (installed[index] !== minimum[index]) return installed[index] < minimum[index];
+  }
+  return false;
+}
+
 export type BrowserDiagnosticsTone = "success" | "warning" | "error";
 export type BrowserRuntimeState = "ready" | "starting" | "degraded" | "unavailable" | "stopped";
 export type BrowserFunctionalProbeState = "passed" | "failed" | "not_run";
