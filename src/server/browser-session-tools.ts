@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BROWSER_HANDOFF_ANSWERS } from "../shared/browser-live.js";
 import type { AppContext } from "./app-context.js";
-import { safeRecordBrowserSpan, type BrowserCommandOptions } from "./agent-browser.js";
+import { ab, safeRecordBrowserSpan, type BrowserCommandOptions } from "./agent-browser.js";
 import type { BrowserBrokerLease, BrowserBrokerOperationOptions } from "./browser-broker.js";
 import {
   agentBrowserMissingFailure,
@@ -11,6 +11,8 @@ import {
   withScreenshots,
 } from "./browser-automation.js";
 import { BrowserLiveUnavailableError } from "./browser-live.js";
+import { CLEAR_PASSWORD_SCRIPT, SIGN_IN_PAGE_SCRIPT } from "./browser-login-watch.js";
+import { loginHost } from "./browser-logins.js";
 import { checkPage, pageBlockFields } from "./browser-page-check.js";
 import {
   BROWSER_CAPTURE_PARAMETER,
@@ -26,6 +28,17 @@ import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-m
 import { toolFailure } from "./tool-results.js";
 
 const MAX_HANDOFF_REASON_LENGTH = 500;
+/**
+ * A site that takes a moment to let someone in still shows its form meanwhile, so a form that is
+ * still there is looked at again this often, this many times, before the login counts as refused.
+ */
+const SIGN_IN_LOOK_AGAIN_MS = 2_000;
+const SIGN_IN_LOOKS = 5;
+const base64 = (script: string): string => Buffer.from(script, "utf-8").toString("base64");
+const SIGN_IN_PAGE_SCRIPT_BASE64 = base64(SIGN_IN_PAGE_SCRIPT);
+const CLEAR_PASSWORD_SCRIPT_BASE64 = base64(CLEAR_PASSWORD_SCRIPT);
+const HAND_OFF_SIGN_IN = "Ask the user to sign in with browser_session_handoff; they can save the login there for next time. "
+  + "Do not call browser_sign_in again for this page.";
 
 export interface RegisterBrowserSessionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
@@ -40,7 +53,19 @@ interface SessionOperation {
 }
 
 export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
-  const { broker: browserBroker, sessions: browserSessionStore, live: browserLive } = getBrowserRuntime(ctx);
+  const { broker: browserBroker, sessions: browserSessionStore, live: browserLive, logins } = getBrowserRuntime(ctx);
+
+  /** The address of the page a session shows, and whether it shows a sign-in form. */
+  const readSignInPage = async (commandOptions: BrowserCommandOptions): Promise<{ url: string; form: boolean } | undefined> => {
+    const result = await ab(["eval", "-b", SIGN_IN_PAGE_SCRIPT_BASE64], undefined, commandOptions);
+    if (!result.ok) return undefined;
+    try {
+      const [url, form] = JSON.parse(result.output) as [unknown, unknown];
+      return typeof url === "string" ? { url, form: form === 1 } : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   const sessionOperation = (
     toolName: string,
@@ -241,6 +266,86 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
             };
           },
         );
+      },
+    }),
+    defineSessionBridgeTool("browser_sign_in", {
+      description:
+        "Sign in on the page a browser session shows, with the login the user saved for that site. Call it " +
+        "when the page shows a sign-in form, before asking the user: it fills the form in and submits it, " +
+        "and you never see the password. The result says what happened and what to do next.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          browserSessionId: {
+            type: "string",
+            description: "The browser session handle returned by browser_session_start",
+          },
+        },
+        required: ["browserSessionId"],
+      },
+      handler: async (args: any, invocation) => {
+        const startedAt = Date.now();
+        let outcome = "failed";
+        try {
+          return await onSessionBrowser("browser_sign_in", "Failed to sign in", args, invocation.sessionId, {}, async (record, commandOptions) => {
+            const answer = (signIn: string, guidance: string, more: Record<string, unknown> = {}) => {
+              outcome = signIn;
+              return { browserSessionId: record.id, signIn, ...more, guidance };
+            };
+            const page = await readSignInPage(commandOptions);
+            const login = page ? await logins.forPage(page.url) : undefined;
+            if (!page || !login) return answer("no_saved_login", `The user has saved no login for this site. ${HAND_OFF_SIGN_IN}`);
+            const host = loginHost(login);
+            if (!page.form) {
+              return answer("no_form", "This page shows no sign-in form with a username field and a password field. "
+                + `A login is saved for ${host}: open the page that shows its form and call again, or hand off.`);
+            }
+            if (login.failedAt) {
+              return answer("rejected", `${host} did not accept the saved login when it was last used. ${HAND_OFF_SIGN_IN}`);
+            }
+            // A password that is still in the page afterwards is not left there for anyone to read.
+            const clearPassword = () => ab(["eval", "-b", CLEAR_PASSWORD_SCRIPT_BASE64], undefined, commandOptions);
+            const filled = await logins.signIn(login, commandOptions);
+            if (!filled.ok) {
+              await clearPassword();
+              return answer("failed", `The saved login could not be filled in. ${HAND_OFF_SIGN_IN}`, { detail: filled.output.slice(0, 300) });
+            }
+
+            let check = await checkPage(commandOptions, { settle: true });
+            let after = await readSignInPage(commandOptions);
+            for (let looks = 1; after?.form && !check.block && looks < SIGN_IN_LOOKS; looks++) {
+              await new Promise((resolve) => setTimeout(resolve, SIGN_IN_LOOK_AGAIN_MS));
+              check = await checkPage(commandOptions);
+              after = await readSignInPage(commandOptions);
+            }
+            const state = { url: after?.url ?? check.signals?.url, title: check.signals?.title };
+            if (after?.form && check.block) {
+              // The site put a check in front of the sign-in. That says nothing about the login.
+              await clearPassword();
+              return answer("blocked", "The site asks for a check only a person can pass before it signs anyone in. "
+                + "Hand off with browser_session_handoff.", { ...pageBlockFields(check, record.id), state });
+            }
+            if (after?.form) {
+              // The form is still there, so the site turned the login down. The login is not
+              // tried again until the user saves it anew.
+              await clearPassword();
+              await logins.markFailed(login.id);
+              return answer("rejected", `${host} still shows its sign-in form, so it did not accept the saved login. ${HAND_OFF_SIGN_IN}`, { state });
+            }
+            return answer(
+              "submitted",
+              "The saved login was submitted and the sign-in form is gone. Carry on with the task. If the page "
+                + "now asks for a code or another step only the user can do, hand off with browser_session_handoff.",
+              { ...pageBlockFields(check, record.id), username: login.username, state },
+            );
+          });
+        } finally {
+          safeRecordBrowserSpan(ctx.telemetryStore, "browser.tool.browser_sign_in", Date.now() - startedAt, {
+            browserSessionId: args.browserSessionId,
+            ownerSessionId: invocation.sessionId,
+            outcome,
+          });
+        }
       },
     }),
     defineSessionBridgeTool("browser_session_handoff", {

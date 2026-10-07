@@ -110,12 +110,31 @@ export interface BrowserLiveFileChooserMessage {
   accept?: string;
 }
 
+/**
+ * What the view offers to do with a sign-in, as a password manager would:
+ * - save: the person typed one into the page and can keep it for agents. `replaces` when one is
+ *   kept for the site already.
+ * - saved: it was kept.
+ * - fill: the page shows a sign-in form whose login is kept, and the view can sign in with it.
+ * - none: nothing to offer.
+ * `failed` says that what the person last asked for did not work. A password is never part of it.
+ */
+export interface BrowserLiveLoginMessage {
+  type: "login";
+  state: "none" | "save" | "saved" | "fill";
+  host?: string;
+  username?: string;
+  replaces?: boolean;
+  failed?: boolean;
+}
+
 export type BrowserLiveServerMessage =
   | BrowserLiveFrameMessage
   | BrowserLiveViewportMessage
   | BrowserLiveUrlMessage
   | BrowserLiveTabsMessage
   | BrowserLiveFileChooserMessage
+  | BrowserLiveLoginMessage
   | BrowserLiveClosedMessage;
 
 export interface BrowserLiveAckMessage {
@@ -180,11 +199,28 @@ export type BrowserLivePageCommand =
   | BrowserLiveReloadMessage
   | BrowserLiveTabMessage;
 
+/** A sign-in the user saved for agents, as Settings lists it. */
+export interface BrowserSavedLogin {
+  id: string;
+  host: string;
+  username: string;
+  savedAt: string;
+  /** The site did not accept it when an agent last used it. */
+  failed?: boolean;
+}
+
+/** The person's answer to what a BrowserLiveLoginMessage offers. */
+export interface BrowserLiveLoginActionMessage {
+  type: "login";
+  action: "save" | "fill" | "dismiss";
+}
+
 export type BrowserLiveClientMessage =
   | BrowserLiveAckMessage
   | BrowserLiveMouseMessage
   | BrowserLiveKeyboardMessage
-  | BrowserLivePageCommand;
+  | BrowserLivePageCommand
+  | BrowserLiveLoginActionMessage;
 
 export function isBrowserLivePageCommand(message: BrowserLiveClientMessage): message is BrowserLivePageCommand {
   return message.type === "navigate" || message.type === "history" || message.type === "reload" || message.type === "tab";
@@ -294,6 +330,10 @@ export function parseBrowserLiveClientMessage(value: unknown): BrowserLiveClient
     case "tab":
       return (input.action === "select" || input.action === "close") && typeof input.tabId === "string" && TAB_ID.test(input.tabId)
         ? { type: "tab", action: input.action, tabId: input.tabId }
+        : undefined;
+    case "login":
+      return input.action === "save" || input.action === "fill" || input.action === "dismiss"
+        ? { type: "login", action: input.action }
         : undefined;
     default:
       return undefined;

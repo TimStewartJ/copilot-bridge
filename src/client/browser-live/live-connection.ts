@@ -3,6 +3,8 @@ import {
   BROWSER_LIVE_FILE_LIMITS,
   type BrowserLiveClientMessage,
   type BrowserLiveClosedMessage,
+  type BrowserLiveLoginActionMessage,
+  type BrowserLiveLoginMessage,
   type BrowserLiveServerMessage,
   type BrowserLiveTab,
   type BrowserLiveTicket,
@@ -32,7 +34,12 @@ export interface BrowserLiveSnapshot {
   hasFrame: boolean;
   /** The page is asking for files, which the reader picks on their own device. */
   fileChooser: BrowserLiveFileChooser | null;
+  /** A sign-in the view offers to keep for agents, or to fill in from one that is kept. */
+  login: BrowserLiveLogin | null;
 }
+
+/** What the server offers, and whether the reader's answer to it is on its way. */
+export type BrowserLiveLogin = Omit<BrowserLiveLoginMessage, "type"> & { working?: boolean };
 
 export interface BrowserLiveFileChooser {
   id: string;
@@ -141,6 +148,18 @@ function parseServerMessage(data: unknown): BrowserLiveServerMessage | null {
             ...(typeof message.accept === "string" && message.accept ? { accept: message.accept } : {}),
           }
         : null;
+    case "login": {
+      const { state, host, username } = message;
+      if (state !== "none" && state !== "save" && state !== "saved" && state !== "fill") return null;
+      return {
+        type: "login",
+        state,
+        ...(typeof host === "string" ? { host } : {}),
+        ...(typeof username === "string" ? { username } : {}),
+        ...(message.replaces === true ? { replaces: true } : {}),
+        ...(message.failed === true ? { failed: true } : {}),
+      };
+    }
     case "closed":
       return {
         type: "closed",
@@ -161,7 +180,7 @@ interface QueuedFrame {
 export class BrowserLiveConnection {
   private readonly deps: BrowserLiveDeps;
   private readonly listeners = new Set<() => void>();
-  private snapshot: BrowserLiveSnapshot = { phase: "connecting", canRetry: true, viewport: null, url: null, tabs: [], hasFrame: false, fileChooser: null };
+  private snapshot: BrowserLiveSnapshot = { phase: "connecting", canRetry: true, viewport: null, url: null, tabs: [], hasFrame: false, fileChooser: null, login: null };
   /** Bumped on every start and stop, so work begun for an earlier run notices it is stale. */
   private run = 0;
   private running = false;
@@ -265,6 +284,14 @@ export class BrowserLiveConnection {
     }
   }
 
+  /** The reader's answer to the sign-in the view offers. */
+  answerLogin(action: BrowserLiveLoginActionMessage["action"]): void {
+    const login = this.snapshot.login;
+    if (!login || login.working || !this.send({ type: "login", action })) return;
+    // Dismissing shows at once; the others take the browser a moment, and the server says how they went.
+    this.update({ login: action === "dismiss" ? null : { ...login, working: true } });
+  }
+
   /** The reader does not want to give the page a file. */
   dismissFileChooser(): void {
     if (this.snapshot.fileChooser) this.update({ fileChooser: null });
@@ -286,8 +313,9 @@ export class BrowserLiveConnection {
     const socket = this.socket;
     this.socket = null;
     this.socketHasViewport = false;
-    // A file chooser is known to the connection it was announced on, and ends with it.
-    if (this.snapshot.fileChooser) this.snapshot = { ...this.snapshot, fileChooser: null };
+    // A file chooser is known to the connection it was announced on, and ends with it. The next
+    // connection says anew what sign-in there is to offer.
+    if (this.snapshot.fileChooser || this.snapshot.login) this.snapshot = { ...this.snapshot, fileChooser: null, login: null };
     if (!socket) return;
     socket.onopen = null;
     socket.onmessage = null;
@@ -394,6 +422,11 @@ export class BrowserLiveConnection {
     }
     if (message.type === "tabs") {
       this.update({ tabs: message.tabs });
+      return;
+    }
+    if (message.type === "login") {
+      const { type: _type, ...login } = message;
+      this.update({ login: login.state === "none" ? null : login });
       return;
     }
     if (message.type === "file_chooser") {

@@ -29,6 +29,7 @@ import {
   liveFileName,
   type BrowserLiveGatewayOptions,
 } from "../browser-live.js";
+import { BrowserLogins, type BrowserLoginVault, type SignInForm } from "../browser-logins.js";
 import { BrowserSessionStore, type BrowserSessionRecord } from "../browser-session-store.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 import { FakeChrome } from "./fake-chrome.js";
@@ -192,6 +193,11 @@ function leaseOf(session: BrowserSessionRecord): BrowserBrokerLease {
 
 const TOOLBAR_COMMANDS: ReadonlySet<string> = new Set(["open", "back", "forward", "reload", "tab"]);
 
+/** Whether an `eval` runs the script that reads a sign-in form's fields, not the page script. */
+function readsSignInForm(command: readonly string[]): boolean {
+  return Buffer.from(command[2] ?? "", "base64").toString("utf-8").includes("password.bridgePassword = true");
+}
+
 /**
  * A stand-in for the agent-browser CLI. By default the stream is on, at `streamPort`, and the
  * page cannot be read, so a view receives nothing but what a test sends through the stream.
@@ -211,6 +217,8 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
     status: (): CliAnswer => streaming,
     enable: (): CliAnswer => streaming,
     page: (): CliAnswer => ({ ok: false, output: "The page is not ready." }),
+    /** `eval` for the script that reads what a sign-in form holds. */
+    signInForm: (): CliAnswer => ({ ok: true, output: "null" }),
     /** `get cdp-url`: where the browser's DevTools endpoint is. */
     devTools: (): CliAnswer => ({ ok: false, output: "The browser has no DevTools address." }),
     /** For what a viewer's toolbar asks of the browser: an address, a step in history, a tab. */
@@ -227,6 +235,7 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
       waiter.resolve();
     }
     const name = nameOf(command);
+    if (name === "eval" && readsSignInForm(command)) return answers.signInForm();
     if (name === "eval") return answers.page();
     if (name === "stream status") return answers.status();
     if (name === "stream enable") return answers.enable();
@@ -335,7 +344,7 @@ afterEach(async () => {
  * A gateway over a real session store and broker, an HTTP server that hands it upgrades the way
  * the Bridge server does, and a WebSocket server standing in for agent-browser's stream.
  */
-async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream" | "telemetryStore" | "filesDir"> = {}) {
+async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream" | "telemetryStore" | "filesDir" | "logins"> = {}) {
   let upstreamAccepts = true;
   const upstreamServer = new WebSocketServer({
     host: "127.0.0.1",
@@ -1435,9 +1444,139 @@ describe("BrowserLiveGateway relay to the browser", () => {
   });
 });
 
+describe("BrowserLiveGateway saved logins", () => {
+  const FORM: SignInForm = { url: "https://accounts.example.com/login", username: "tim@example.com", password: "correct horse" };
+  const typed = (text: string) => ({ type: "input_keyboard", eventType: "char", text });
+  const ENTER = { type: "input_keyboard", eventType: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
+  const formRead = (form: SignInForm): BrowserCommandResult => ({ ok: true, output: JSON.stringify([form.url, form.username, form.password]) });
+  const formReads = (h: Harness): number => h.cli.calls.filter((call) => call.command[0] === "eval" && readsSignInForm(call.command)).length;
+
+  function createLogins() {
+    const vault = {
+      save: vi.fn<BrowserLoginVault["save"]>(async () => ({ ok: true, output: "" })),
+      signIn: vi.fn<BrowserLoginVault["signIn"]>(async () => ({ ok: true, output: "" })),
+      remove: vi.fn<BrowserLoginVault["remove"]>(async () => ({ ok: true, output: "" })),
+    };
+    const dir = makeTestDir("browser-live-logins");
+    return { vault, logins: new BrowserLogins({ file: join(dir, "browser-logins.json"), scope: dir, vault }) };
+  }
+
+  /** Reads what the view is told until it is told about a sign-in. */
+  async function nextLogin(view: View): Promise<unknown> {
+    for (;;) {
+      const message = await view.client.inbox.next();
+      if ((message as { type?: unknown }).type === "login") return message;
+    }
+  }
+
+  it("reads a typed sign-in before the key that submits it reaches the browser, and offers it without the password", async () => {
+    const { logins } = createLogins();
+    const h = await createHarness({ logins });
+    const view = await h.openView((await h.createSession()).id);
+    let waitingAtRead: number | undefined;
+    h.cli.answers.signInForm = () => {
+      waitingAtRead ??= view.upstream.inbox.unread;
+      return formRead(FORM);
+    };
+
+    send(view.client, typed("pw"));
+    expect(await view.upstream.inbox.next()).toStrictEqual(typed("p"));
+    expect(await view.upstream.inbox.next()).toStrictEqual(typed("w"));
+    send(view.client, ENTER);
+
+    const offer = await nextLogin(view);
+    expect(offer).toStrictEqual({ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" });
+    expect(await view.upstream.inbox.next()).toStrictEqual(ENTER);
+    // The page is gone once the key arrives, so the key had not been sent when the form was read.
+    expect(waitingAtRead).toBe(0);
+    // Reads of a password are recorded nowhere.
+    expect(h.cli.calls.filter((call) => readsSignInForm(call.command)).every((call) => call.options.telemetryStore === undefined)).toBe(true);
+  });
+
+  it("keeps the offered sign-in when the viewer asks for it, through the session's own browser", async () => {
+    const { logins, vault } = createLogins();
+    const h = await createHarness({ logins });
+    const session = await h.createSession();
+    const view = await h.openView(session.id);
+    h.cli.answers.signInForm = () => formRead(FORM);
+    send(view.client, typed("pw"));
+    send(view.client, { type: "input_mouse", eventType: "mousePressed", x: 10, y: 20, button: "left" });
+    await nextLogin(view);
+
+    send(view.client, { type: "login", action: "save" });
+
+    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "saved", host: "accounts.example.com", username: "tim@example.com" });
+    expect(vault.save).toHaveBeenCalledWith(expect.any(String), { ...FORM, url: "https://accounts.example.com/" }, session.browserTarget);
+    expect(await logins.forPage(FORM.url)).toMatchObject({ username: "tim@example.com" });
+  });
+
+  it("reads no form for a click or a key when nothing was typed", async () => {
+    const { logins } = createLogins();
+    const h = await createHarness({ logins });
+    const view = await h.openView((await h.createSession()).id);
+    const click = { type: "input_mouse", eventType: "mousePressed", x: 10, y: 20, button: "left" };
+
+    send(view.client, click);
+
+    expect(await view.upstream.inbox.next()).toStrictEqual(click);
+    expect(formReads(h)).toBe(0);
+  });
+
+  it("forgets the offer when the viewer opens another address", async () => {
+    const { logins } = createLogins();
+    const h = await createHarness({ logins });
+    const view = await h.openView((await h.createSession()).id);
+    h.cli.answers.signInForm = () => formRead(FORM);
+    send(view.client, typed("pw"));
+    send(view.client, ENTER);
+    await nextLogin(view);
+
+    send(view.client, { type: "navigate", url: "https://example.com/" });
+
+    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "none" });
+  });
+
+  it("offers the saved login of a page that shows its form, and signs in with it when asked", async () => {
+    const { logins, vault } = createLogins();
+    const saved = await logins.save(FORM, { sessionName: "any", profileDir: "any" });
+    const h = await createHarness({ logins });
+    h.cli.answers.page = () => ({ ok: true, output: JSON.stringify([1280, 720, FORM.url, "Sign in", 1]) });
+    const session = await h.createSession();
+    const view = await h.openView(session.id);
+
+    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "fill", host: "accounts.example.com", username: "tim@example.com" });
+    send(view.client, { type: "login", action: "fill" });
+
+    await vi.waitFor(() => expect(vault.signIn).toHaveBeenCalledTimes(1));
+    expect(vault.signIn).toHaveBeenCalledWith(saved!.id, expect.objectContaining({ browserTarget: session.browserTarget }));
+  });
+
+  it("ignores an answer about a sign-in when logins are not kept here", async () => {
+    const h = await createHarness();
+    const view = await h.openView((await h.createSession()).id);
+
+    send(view.client, { type: "login", action: "save" });
+    send(view.client, typed("a"));
+    send(view.client, ENTER);
+
+    expect(await view.upstream.inbox.next()).toStrictEqual(typed("a"));
+    expect(await view.upstream.inbox.next()).toStrictEqual(ENTER);
+    expect(formReads(h)).toBe(0);
+  });
+});
+
 // What a client sends goes on to the browser's input, so the gateway forwards only what this
 // makes of it: the fields the protocol defines, each of the kind it defines.
 describe("parseBrowserLiveClientMessage", () => {
+  it("accepts the three answers to a sign-in offer and nothing else of that kind", () => {
+    for (const action of ["save", "fill", "dismiss"]) {
+      expect(parseBrowserLiveClientMessage({ type: "login", action, password: "x" })).toStrictEqual({ type: "login", action });
+    }
+    for (const action of [undefined, "", "remove", "SAVE", 1, null]) {
+      expect(parseBrowserLiveClientMessage({ type: "login", action }), String(action)).toBeUndefined();
+    }
+  });
+
   const parse = parseBrowserLiveClientMessage;
   const mouse = (fields: Record<string, unknown> = {}) => ({ type: "input_mouse", eventType: "mouseMoved", x: 10, y: 20, ...fields });
   const key = (fields: Record<string, unknown> = {}) => ({ type: "input_keyboard", eventType: "keyDown", ...fields });
