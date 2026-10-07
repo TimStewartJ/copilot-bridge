@@ -51,6 +51,7 @@ import {
 } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
+import { looksUntouched } from "./lib/untouched-task";
 import { ALL_TASKS_PATH, getRememberedDashboardPath, isAllTasksPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
@@ -1298,9 +1299,42 @@ function AppShell() {
     void finishTaskDeletion(taskId);
   }, [deletionProgress.taskGone, pendingTaskDeletion?.task.id, finishTaskDeletion]);
 
+  const quietTaskDeletionsRef = useRef(new Set<string>());
+
   const handleDeleteTask = async (taskId: string) => {
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
+    if (quietTaskDeletionsRef.current.has(taskId)) return;
+
+    // A task made by mistake and never used is deleted without the dialog. An
+    // unsent message counts as use; the server checks everything else.
+    const draftKey = getDraftComposerKey(taskId);
+    const unsent = getDraft(draftKey);
+    const hasUnsentMessage = Boolean(unsent?.text.trim() || unsent?.attachments?.length);
+    if (looksUntouched(task) && !hasUnsentMessage) {
+      quietTaskDeletionsRef.current.add(taskId);
+      try {
+        await deleteTask(taskId, { ifUntouched: true });
+        clearDraft(draftKey);
+        await finishTaskDeletion(taskId);
+        return;
+      } catch (err) {
+        const apiError = err instanceof ApiError ? err : undefined;
+        if (apiError?.status === 404) {
+          await finishTaskDeletion(taskId);
+          return;
+        }
+        const details = apiError?.details as TaskDeletionErrorBody | undefined;
+        if (details?.preview) {
+          setPendingTaskDeletion({ task, preview: details.preview });
+          return;
+        }
+        // Anything else falls through to the dialog, which reports what is wrong.
+      } finally {
+        quietTaskDeletionsRef.current.delete(taskId);
+      }
+    }
+
     setPendingTaskDeletion({ task });
     try {
       const preview = await getTaskDeletionPreview(taskId);
