@@ -5,8 +5,10 @@ import {
   checkAdoBrowserAuthentication,
   closeHeadedDiagnosticsBrowser,
   fetchBrowserDiagnostics,
+  fetchBrowserLogins,
   launchHeadedDiagnosticsBrowser,
   probeBrowserContext,
+  removeBrowserLogin,
   requestSignedInBrowserLiveTicket,
   resetPublicBrowserData,
   type AppSettings,
@@ -15,6 +17,7 @@ import {
   type BrowserExecutableSource,
   type BrowserHeadedCloseFailureDetails,
   type BrowserLaunchDiagnostics,
+  type BrowserSavedLogin,
   type BrowserSettings,
   type BrowserDiagnosticsResponse,
   type BrowserDiagnosticsTone,
@@ -125,6 +128,8 @@ export function BrowserDiagnosticsSection({
   const browserPending = pendingKeys.has("browser");
   const browserError = failedKeys.has("browser") ? writeError?.message : null;
   const [diagnostics, setDiagnostics] = useState<BrowserDiagnosticsResponse | null>(null);
+  const [logins, setLogins] = useState<BrowserSavedLogin[]>([]);
+  const [removingLogin, setRemovingLogin] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
   const [signedInBrowserOpen, setSignedInBrowserOpen] = useState(false);
@@ -141,6 +146,10 @@ export function BrowserDiagnosticsSection({
     requestIdRef.current = requestId;
     setLoading(true);
     setError(null);
+    // The list is a convenience beside the diagnostics; when it cannot be read, it stays as it was.
+    void fetchBrowserLogins().then((value) => {
+      if (requestIdRef.current === requestId) setLogins(value);
+    }, () => undefined);
     void fetchBrowserDiagnostics()
       .then((value) => {
         if (requestIdRef.current !== requestId) return;
@@ -231,6 +240,21 @@ export function BrowserDiagnosticsSection({
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setProbing(null);
+    }
+  };
+
+  const removeLogin = async (login: BrowserSavedLogin) => {
+    setRemovingLogin(login.id);
+    setMessage(null);
+    setError(null);
+    try {
+      await removeBrowserLogin(login.id);
+      setLogins((current) => current.filter((other) => other.id !== login.id));
+      setMessage(`The login for ${login.host} was removed.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setRemovingLogin(null);
     }
   };
 
@@ -413,6 +437,31 @@ export function BrowserDiagnosticsSection({
           )}
         />
         <SettingRow
+          label="Saved logins"
+          hint={logins.length > 0
+            ? "Agents use these to sign in again when a site has signed them out. They never see the password."
+            : "None yet. When you sign in to a site in a browser view, it offers to keep the login for agents."}
+        >
+          {logins.length > 0 && (
+            <ul className={DS.surface.divided}>
+              {logins.map((login) => (
+                <li key={login.id} className="flex min-w-0 items-center gap-3 py-1.5">
+                  <div className="min-w-0 flex-1">
+                    <div className={cx(DS.setting.label, "truncate")}>{login.host}</div>
+                    <div className={cx(DS.setting.hint, "truncate")}>
+                      {login.failed ? `${login.username} · not accepted last time; sign in by hand to save it again` : login.username}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="ghost" disabled={removingLogin !== null} onClick={() => void removeLogin(login)}
+                    icon={busyButton(removingLogin === login.id) ?? <Trash2 size={12} />}>
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </SettingRow>
+        <SettingRow
           label="Signed-in browser on the server"
           hint="For someone at the machine the Bridge runs on: open its window there, or close the browser."
           control={(
@@ -434,7 +483,7 @@ export function BrowserDiagnosticsSection({
         <BrowserLiveDialog
           browserSessionId="signed-in-browser"
           title="Signed-in browser"
-          reason="Sign in to the sites agents should reach. What you type goes to the browser and to nobody else."
+          reason="Sign in to the sites agents should reach. A login is kept for agents only if you save it."
           requestTicket={requestSignedInBrowserLiveTicket}
           onClose={() => {
             setSignedInBrowserOpen(false);

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import type { BrowserLivePageCommand, BrowserLiveTicket } from "../../shared/browser-live.js";
 import { Button, EmptyHint, IconButton, Notice, SegmentedControl, Select, StatusIcon, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
-import type { BrowserLiveDeps, BrowserLivePhase } from "./live-connection";
+import type { BrowserLiveDeps, BrowserLiveLogin, BrowserLivePhase } from "./live-connection";
 import {
   addressToUrl,
   chainScroll,
@@ -74,6 +74,21 @@ function liveKey(event: KeyboardEventLike): LiveKeyEvent {
     isComposing: event.nativeEvent?.isComposing === true,
     altGraph: event.getModifierState?.("AltGraph") === true,
   };
+}
+
+function loginTitle(login: BrowserLiveLogin): string {
+  if (login.state === "saved") return "Login saved";
+  if (login.state === "fill") return "A login is saved for this site";
+  return login.replaces ? "Update the saved login?" : "Save this login for agents?";
+}
+
+function loginText(login: BrowserLiveLogin): string {
+  const account = `${login.username ?? "This login"} on ${login.host ?? "this site"}`;
+  if (login.state === "saved") return `Agents can now sign in as ${account} when it signs them out.`;
+  if (login.state === "fill") {
+    return login.failed ? "It could not be filled in. Sign in by hand; you can save what you type." : `${account}.`;
+  }
+  return login.failed ? "It could not be saved. Try again." : `${account}. Agents can then sign in again without asking you.`;
 }
 
 /**
@@ -396,6 +411,36 @@ export function LiveBrowserView({
               event.target.value = "";
             }}
           />
+        </Notice>
+      )}
+
+      {state.login && (
+        // What a password manager shows beside a sign-in form: keep what was typed, or use what is kept.
+        <Notice
+          tone={state.login.failed ? "warning" : state.login.state === "saved" ? "success" : "info"}
+          title={loginTitle(state.login)}
+          className="mx-3 mb-2 shrink-0 sm:mx-4"
+          action={(
+            <div className="flex items-center gap-1.5">
+              {state.login.state === "save" && (
+                <Button size="sm" variant="primary" disabled={state.login.working} onClick={() => connection.answerLogin("save")}>
+                  {state.login.working ? "Saving…" : "Save"}
+                </Button>
+              )}
+              {state.login.state === "fill" && (
+                <Button size="sm" variant="primary" disabled={state.login.working} onClick={() => connection.answerLogin("fill")}>
+                  {state.login.working ? "Signing in…" : "Sign in"}
+                </Button>
+              )}
+              {state.login.state !== "fill" && (
+                <Button size="sm" disabled={state.login.working} onClick={() => connection.answerLogin("dismiss")}>
+                  {state.login.state === "saved" ? "OK" : "Not now"}
+                </Button>
+              )}
+            </div>
+          )}
+        >
+          {loginText(state.login)}
         </Notice>
       )}
 

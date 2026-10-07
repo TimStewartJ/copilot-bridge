@@ -183,7 +183,7 @@ Escalation path: web_fetch (fast, simple) → browser fetch tool (real browser, 
 A browser tool result with a \`blocked\` field means the site answered with a human check or a refusal instead of the page. Do not repeat the call; the field says what applies:
 - A human check can be passed by the user. Open the page in a browser session and call browser_session_handoff: the user gets a live view of that browser, does the check, and hands it back.
 - A refusal offers nothing to pass. Use another source and say that the site blocked automated access.
-A \`captcha\` field means the page works but one step on it needs a person; hand off before that step. Use a handoff for sign-ins as well, so a password is typed into the browser and never into the chat.
+A \`captcha\` field means the page works but one step on it needs a person; hand off before that step. When a page in a browser session asks for a sign-in, call browser_sign_in first: it uses a login the user saved. Hand off when it has none or the site did not accept it, so a password is typed into the browser and never into the chat.
 </browser_blocks>
 `.trim();
 

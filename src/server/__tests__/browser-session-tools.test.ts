@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PageSignals } from "../browser-page-check.js";
 import { testCopilotHome, testPath } from "./test-paths.js";
@@ -9,6 +10,9 @@ const execFileMock = vi.fn();
 const cpMock = vi.fn();
 const mkdirMock = vi.fn();
 const readdirMock = vi.fn();
+const readFileMock = vi.fn();
+const renameMock = vi.fn();
+const writeFileMock = vi.fn();
 const rmMock = vi.fn();
 const statMock = vi.fn();
 const lstatSyncMock = vi.fn();
@@ -27,8 +31,11 @@ vi.mock("node:fs/promises", () => ({
   cp: cpMock,
   mkdir: mkdirMock,
   readdir: readdirMock,
+  readFile: readFileMock,
+  rename: renameMock,
   rm: rmMock,
   stat: statMock,
+  writeFile: writeFileMock,
 }));
 
 vi.mock("node:fs", () => ({
@@ -180,6 +187,9 @@ describe("browser session tools", () => {
     cpMock.mockReset();
     mkdirMock.mockReset();
     readdirMock.mockReset();
+    readFileMock.mockReset();
+    renameMock.mockReset();
+    writeFileMock.mockReset();
     rmMock.mockReset();
     statMock.mockReset();
     lstatSyncMock.mockReset();
@@ -195,6 +205,10 @@ describe("browser session tools", () => {
     cpMock.mockResolvedValue(undefined);
     mkdirMock.mockResolvedValue(undefined);
     readdirMock.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    // No login is saved unless a test saves one.
+    readFileMock.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    renameMock.mockResolvedValue(undefined);
+    writeFileMock.mockResolvedValue(undefined);
     rmMock.mockResolvedValue(undefined);
     statMock.mockResolvedValue({ mtimeMs: Date.now() });
     // Only a public profile exists on disk, so that removing one would be noticed.
@@ -223,6 +237,7 @@ describe("browser session tools", () => {
       "browser_session_start",
       "browser_session_exec",
       "browser_session_get_state",
+      "browser_sign_in",
       "browser_session_handoff",
       "browser_session_close",
     ]);
@@ -498,6 +513,119 @@ describe("browser session tools", () => {
         expect(result).not.toHaveProperty("blocked");
         expect(result).not.toHaveProperty("captcha");
       }
+    });
+  });
+  describe("browser_sign_in", () => {
+    const SIGN_IN_URL = "https://accounts.example.com/login";
+    const LOGIN_ID = `bridge-${createHash("sha1").update(COPILOT_HOME).digest("hex").slice(0, 8)}-0123456789abcdef`;
+    const script = (command: string[]): string => (command[0] === "eval" && command[1] === "-b"
+      ? Buffer.from(command[2], "base64").toString("utf-8")
+      : "");
+    const readsSignInPage = (command: string[]): boolean => script(command).startsWith("[location.href");
+    const authLogins = (browser: FakeAgentBrowser): string[][] => browser.calls.map((call) => call.command).filter((command) => command[0] === "auth");
+
+    function saveLogin(): void {
+      readFileMock.mockResolvedValue(JSON.stringify([
+        { id: LOGIN_ID, origin: "https://accounts.example.com", username: "tim@example.com", savedAt: "2026-10-07T00:00:00.000Z" },
+      ]));
+    }
+
+    /** A browser on the sign-in page, whose form is shown for the first `formReads` looks at it. */
+    function browserOnSignInPage(formReads: number, respond: (command: string[]) => AgentBrowserReply | undefined = () => undefined) {
+      let looks = 0;
+      const browser = fakeAgentBrowser((command) => respond(command) ?? (readsSignInPage(command)
+        ? { data: { result: JSON.stringify([SIGN_IN_URL, looks++ < formReads ? 1 : 0]) } }
+        : undefined));
+      return browser;
+    }
+
+    async function startSession(tools: Record<string, any>): Promise<string> {
+      const started = await tools.browser_session_start.handler({ context: "public" }, invocation) as any;
+      return started.browserSessionId;
+    }
+
+    it("says there is no saved login, without touching the vault", async () => {
+      const browser = browserOnSignInPage(1);
+      const { tools } = await loadBrowserSessionTools();
+
+      const result = await tools.browser_sign_in.handler({ browserSessionId: await startSession(tools) }, invocation) as any;
+
+      expect(result).toMatchObject({ signIn: "no_saved_login", guidance: expect.stringContaining("browser_session_handoff") });
+      expect(authLogins(browser)).toEqual([]);
+    });
+
+    it("says when the page shows no sign-in form", async () => {
+      saveLogin();
+      const browser = browserOnSignInPage(0);
+      const { tools } = await loadBrowserSessionTools();
+
+      const result = await tools.browser_sign_in.handler({ browserSessionId: await startSession(tools) }, invocation) as any;
+
+      expect(result).toMatchObject({ signIn: "no_form", guidance: expect.stringContaining("accounts.example.com") });
+      expect(authLogins(browser)).toEqual([]);
+    });
+
+    it("fills in the saved login on the page on show and reports the page that follows", async () => {
+      saveLogin();
+      const browser = browserOnSignInPage(1);
+      const { tools } = await loadBrowserSessionTools();
+
+      const result = await tools.browser_sign_in.handler({ browserSessionId: await startSession(tools) }, invocation) as any;
+
+      expect(result).toMatchObject({ signIn: "submitted", username: "tim@example.com", state: { url: SIGN_IN_URL } });
+      expect(authLogins(browser)).toEqual([["auth", "login", LOGIN_ID, "--no-navigate"]]);
+      expect(JSON.stringify(result)).not.toContain(LOGIN_ID);
+    });
+
+    it("reports a login the site refused, empties the field, and does not try it a second time", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      try {
+        saveLogin();
+        const browser = browserOnSignInPage(Infinity);
+        const { tools, runtime } = await loadBrowserSessionTools();
+        const browserSessionId = await startSession(tools);
+
+        const first = tools.browser_sign_in.handler({ browserSessionId }, invocation) as Promise<any>;
+        // The tool looks at the page several times, moments apart, before it calls it refused.
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(authLogins(browser)).toHaveLength(1);
+          expect((await runtime.logins.list())[0].failedAt).toBeTruthy();
+        });
+        expect(await first).toMatchObject({ signIn: "rejected", guidance: expect.stringContaining("did not accept") });
+        expect(browser.calls.some((call) => script(call.command).includes("password.value = ''"))).toBe(true);
+
+        const second = await tools.browser_sign_in.handler({ browserSessionId }, invocation) as any;
+
+        expect(second).toMatchObject({ signIn: "rejected", guidance: expect.stringContaining("when it was last used") });
+        expect(authLogins(browser)).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("says to hand off when the login could not be filled in, and leaves no password in the page", async () => {
+      saveLogin();
+      const browser = browserOnSignInPage(1, (command) => (command[0] === "auth" ? { fail: "Timed out waiting for username field" } : undefined));
+      const { tools } = await loadBrowserSessionTools();
+
+      const result = await tools.browser_sign_in.handler({ browserSessionId: await startSession(tools) }, invocation) as any;
+
+      expect(result).toMatchObject({ signIn: "failed", detail: "Timed out waiting for username field", guidance: expect.stringContaining("browser_session_handoff") });
+      expect(browser.calls.some((call) => script(call.command).includes("password.value = ''"))).toBe(true);
+    });
+
+    it("reports a check the site put in front of the sign-in, and does not count it against the login", async () => {
+      saveLogin();
+      const browser = browserOnSignInPage(Infinity);
+      const { tools, runtime } = await loadBrowserSessionTools();
+      const browserSessionId = await startSession(tools);
+      browser.page = { ...CAPTCHA_PAGE, url: SIGN_IN_URL };
+
+      const result = await tools.browser_sign_in.handler({ browserSessionId }, invocation) as any;
+
+      expect(result).toMatchObject({ signIn: "blocked", captcha: expect.anything(), guidance: expect.stringContaining("browser_session_handoff") });
+      expect((await runtime.logins.list())[0].failedAt).toBeUndefined();
     });
   });
 });

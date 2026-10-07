@@ -181,10 +181,11 @@ import {
   resetPublicBrowserProfiles,
 } from "./browser-diagnostics.js";
 import { BrowserUnavailableError } from "./browser-broker.js";
-import { BROWSER_LIVE_FILE_LIMITS } from "../shared/browser-live.js";
+import { BROWSER_LIVE_FILE_LIMITS, type BrowserSavedLogin } from "../shared/browser-live.js";
 import { BrowserLiveSessionNotFoundError, BrowserLiveUnavailableError, liveFileName } from "./browser-live.js";
 import { BrowserHandedOffError } from "./browser-user-session.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
+import { loginHost } from "./browser-logins.js";
 import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError, serializeDocContent } from "./docs-store.js";
@@ -5409,6 +5410,38 @@ export function createApiRouter(
         || err instanceof BrowserLiveUnavailableError
         || err instanceof BrowserUnavailableError;
       res.status(refused ? 409 : 500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/browser/logins", async (_req, res) => {
+    try {
+      const logins: BrowserSavedLogin[] = (await getBrowserRuntime(ctx).logins.list()).map((login) => ({
+        id: login.id,
+        host: loginHost(login),
+        username: login.username,
+        savedAt: login.savedAt,
+        ...(login.failedAt ? { failed: true } : {}),
+      }));
+      res.json({ logins });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/browser/logins/:id", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Saved login")) return;
+    try {
+      const { broker, logins } = getBrowserRuntime(ctx);
+      // The vault is reached through agent-browser, under the signed-in browser's name. It
+      // touches no page, so it does not wait for the browser or count as a use of it.
+      const removed = await logins.remove(req.params.id, {
+        browserTarget: broker.getAuthenticatedTarget(),
+        telemetryStore: ctx.telemetryStore,
+        toolName: "browser_logins",
+      });
+      res.status(removed ? 200 : 404).json(removed ? { ok: true } : { error: "That login is not saved." });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

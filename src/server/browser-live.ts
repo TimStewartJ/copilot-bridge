@@ -15,6 +15,7 @@ import {
   type BrowserLiveCheck,
   type BrowserLiveClientMessage,
   type BrowserLiveClosedMessage,
+  type BrowserLiveLoginActionMessage,
   type BrowserLivePageCommand,
   type BrowserLiveTab,
   type BrowserLiveServerMessage,
@@ -23,6 +24,8 @@ import {
 import { ab, type BrowserCommand, type BrowserCommandOptions, type BrowserCommandResult, type BrowserTarget } from "./agent-browser.js";
 import type { BrowserBroker } from "./browser-broker.js";
 import { localDevToolsUrl } from "./browser-devtools.js";
+import { LoginWatch, parseSignInForm, SIGN_IN_FORM_PRESENT, SIGN_IN_FORM_VALUES_SCRIPT } from "./browser-login-watch.js";
+import type { BrowserLogins, SignInForm } from "./browser-logins.js";
 import { sessionLease, type BrowserSessionStore } from "./browser-session-store.js";
 import { FileChooserWatch, type FileChooser } from "./browser-upload.js";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -69,7 +72,10 @@ const MAX_TAB_URL_LENGTH = 2_048;
 const base64 = (script: string): string => Buffer.from(script, "utf-8").toString("base64");
 // The array is turned into text outside the page. A page can replace its own JSON.stringify, and
 // with it what the address field of a view shows; it cannot replace its location.
-const PAGE_SCRIPT_BASE64 = base64("[innerWidth, innerHeight, location.href, document.title]");
+const PAGE_SCRIPT_BASE64 = base64(`[innerWidth, innerHeight, location.href, document.title, ${SIGN_IN_FORM_PRESENT}]`);
+const SIGN_IN_FORM_VALUES_SCRIPT_BASE64 = base64(SIGN_IN_FORM_VALUES_SCRIPT);
+/** A key or click waits for the form to be read first, so the read gives up soon. */
+const SIGN_IN_FORM_READ_TIMEOUT_MS = 1_500;
 const CHECK_INPUT_ID = "bridge-live-check";
 /** A page that is one text box, so that a click anywhere near its corner lands in it. */
 const CHECK_PAGE_SCRIPT_BASE64 = base64(
@@ -143,6 +149,8 @@ export interface BrowserLiveGatewayOptions {
   ) => Promise<BrowserCommandResult>;
   /** Opens the socket to agent-browser's stream. Tests supply their own. */
   connectStream?: (url: string) => WebSocket;
+  /** With it, a view offers to keep a sign-in the person types, and to sign in with a kept one. */
+  logins?: BrowserLogins;
 }
 
 function rejectUpgrade(socket: Duplex, status: string): void {
@@ -224,6 +232,13 @@ function pageCommand(message: BrowserLivePageCommand): BrowserCommand {
   }
 }
 
+/** Input that can submit a form: a click, the Enter key, and typed text that holds a line break. */
+function maySubmit(message: BrowserLiveClientMessage): boolean {
+  if (message.type === "input_mouse") return message.eventType === "mousePressed";
+  return message.type === "input_keyboard" && message.eventType !== "keyUp"
+    && (message.key === "Enter" || /[\r\n]/.test(message.text ?? ""));
+}
+
 /** Input that can open or close a tab: the end of a click, and keys. */
 function mayChangeTabs(message: BrowserLiveClientMessage): boolean {
   return (message.type === "input_mouse" && message.eventType === "mouseReleased")
@@ -253,6 +268,8 @@ export class BrowserLiveGateway {
   private readonly viewerListeners = new Set<BrowserLiveViewerListener>();
   private readonly fileChoosers = new Map<string, PendingFileChooser>();
   private readonly filesDir: string | undefined;
+  private readonly logins: BrowserLogins | undefined;
+  private readonly loginWatches = new Map<string, LoginWatch>();
   /** Settles once what an earlier run left in `filesDir` is gone. */
   private readonly filesCleared: Promise<void>;
   private lastCheck: BrowserLiveCheck | undefined;
@@ -265,7 +282,9 @@ export class BrowserLiveGateway {
     this.filesCleared = this.removeFiles();
     this.runCommand = options.runCommand ?? ((command, timeout, commandOptions) => ab(command, timeout, commandOptions));
     this.connectStream = options.connectStream ?? ((url) => new WebSocket(url, { perMessageDeflate: false }));
+    this.logins = options.logins;
     this.stopListening = this.sessions.onSessionClosing((browserSessionId) => {
+      this.loginWatches.delete(browserSessionId);
       this.closeConnections(browserSessionId, {
         type: "closed",
         reason: "session_ended",
@@ -535,6 +554,7 @@ export class BrowserLiveGateway {
     let lastViewport = "";
     let lastUrl = "";
     let lastVisibleTab: string | undefined;
+    let lastShownTab: string | undefined;
     let lastTabs = "[]";
     let streamTabs: BrowserLiveTab[] = [];
     // agent-browser reports a tab's title and address as they were when it first saw the tab.
@@ -552,6 +572,13 @@ export class BrowserLiveGateway {
     let ended = false;
     let fileChoosers: Promise<FileChooserWatch | undefined> = Promise.resolve(undefined);
     let fileChooserId: string | undefined;
+    // One per browser session, so that what it offers is still there for a view that reconnects.
+    let login = this.loginWatches.get(browserSessionId);
+    if (this.logins && !login && this.sessions.getSession(browserSessionId)) {
+      login = new LoginWatch(this.logins);
+      this.loginWatches.set(browserSessionId, login);
+    }
+    const stopLoginWatch = login?.watch(send);
 
     const end = (message: BrowserLiveClosedMessage, dropped = false): void => {
       if (ended) return;
@@ -567,6 +594,7 @@ export class BrowserLiveGateway {
       stream?.close();
       if (fileChooserId) this.fileChoosers.delete(fileChooserId);
       void fileChoosers.then((watch) => watch?.close());
+      stopLoginWatch?.();
       this.viewersChanged(browserSessionId, dropped);
     };
     const heartbeat = setInterval(() => {
@@ -622,11 +650,22 @@ export class BrowserLiveGateway {
         this.sessions.touch(browserSessionId);
       }
       const accepted = message;
+      if (accepted.type === "login") {
+        void answerLogin(accepted.action).catch(() => undefined);
+        return;
+      }
       if (isBrowserLivePageCommand(accepted)) {
+        login?.left();
         queuePageCommand(accepted);
         return;
       }
-      inputTail = inputTail.then(() => forward(accepted)).catch(() => undefined);
+      inputTail = inputTail.then(async () => {
+        // A form is read before the key or click that submits it: the page is gone right after.
+        // Whatever becomes of the read, the input goes on to the page.
+        if (login && maySubmit(accepted)) await login.submitting(readSignInForm).catch(() => undefined);
+        else if (accepted.type === "input_keyboard") login?.keyPressed();
+        await forward(accepted);
+      }).catch(() => undefined);
       if (mayChangeTabs(accepted)) readSoon();
     });
     // A view that is closed, or whose page is left, says so (1000, 1001). Anything else is a
@@ -653,6 +692,35 @@ export class BrowserLiveGateway {
       lastUrl = url;
       send({ type: "url", url });
     };
+    const readSignInForm = async (): Promise<SignInForm | undefined> => {
+      if (ended || stream?.readyState !== WebSocket.OPEN) return undefined;
+      // What this returns holds a password. It goes to the watch and nowhere else: no span, no
+      // log, and no error that quotes it.
+      const result = await this.runCommand(
+        ["eval", "-b", SIGN_IN_FORM_VALUES_SCRIPT_BASE64],
+        SIGN_IN_FORM_READ_TIMEOUT_MS,
+        { ...commandOptions, telemetryStore: undefined },
+      ).catch(() => undefined);
+      return result?.ok ? parseSignInForm(result.output) : undefined;
+    };
+    const answerLogin = async (action: BrowserLiveLoginActionMessage["action"]): Promise<void> => {
+      if (!login || ended) return;
+      if (action === "dismiss") {
+        login.dismiss();
+        return;
+      }
+      // One operation on the browser at a time, as for a page command.
+      await this.sessions.holdSession(browserSessionId, (current) => this.broker.withTarget(
+        sessionLease(current),
+        { toolName: "browser_live", browserOpId: randomBytes(8).toString("hex"), duringHold: true, skipReadiness: true },
+        async () => {
+          // The wait for the browser may have outlasted the view.
+          if (ended) return;
+          await (action === "save" ? login.save(current.browserTarget) : login.fill(commandOptions));
+        },
+      ));
+      await readPage();
+    };
     let readAgain = false;
     const readPage = (): Promise<void> => {
       if (ended) return Promise.resolve();
@@ -668,10 +736,11 @@ export class BrowserLiveGateway {
             { ...commandOptions, telemetryStore: undefined },
           );
           if (!result.ok || ended) return;
-          const [width, height, url, title] = JSON.parse(result.output) as [number, number, string, string];
+          const [width, height, url, title, signInForm] = JSON.parse(result.output) as [number, number, string, string, number?];
           this.sessions.touch(browserSessionId);
           if (typeof url === "string") {
             sendUrl(url);
+            void login?.pageRead(url, signInForm === 1).catch(() => undefined);
             const read = {
               tabId: streamTabs.find((tab) => tab.active)?.id,
               title: typeof title === "string" ? title.slice(0, MAX_TAB_TITLE_LENGTH) : "",
@@ -860,6 +929,10 @@ export class BrowserLiveGateway {
         // What the last read found was in the tab that was on show until now.
         if (page && page.tabId !== streamTabs.find((tab) => tab.active)?.id) page = undefined;
         sendTabs();
+        // What was typed into one tab is not a sign-in to the page of another.
+        const shownTab = streamTabs.find((tab) => tab.active)?.id;
+        if (lastShownTab !== undefined && shownTab !== lastShownTab) login?.left();
+        lastShownTab = shownTab;
         const visible = visibleTab(message.tabs);
         if (visible === lastVisibleTab) return;
         lastVisibleTab = visible;
