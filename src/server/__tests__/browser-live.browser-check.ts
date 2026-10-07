@@ -16,8 +16,11 @@ import { WebSocket } from "ws";
 
 import { BROWSER_LIVE_WS_PATH, type BrowserLiveCheck, type BrowserLiveServerMessage } from "../../shared/browser-live.js";
 
-// The shared setup replaces the host lookups, and with them the browser and its launch arguments.
+// The shared setup replaces the host lookups, and with them the browser and its launch arguments,
+// and where agent-browser is installed. Without the second, Windows is asked to start
+// `agent-browser` itself, which there is only npm's launcher script.
 vi.unmock("../browser-launch-host.js");
+vi.unmock("../agent-browser-command.js");
 
 const { ab } = await import("../agent-browser.js");
 const { BrowserBroker } = await import("../browser-broker.js");
