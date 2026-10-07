@@ -72,10 +72,11 @@ describe("listUnreadSessions", () => {
     expect(ids(entries)).toEqual(["unread"]);
   });
 
-  it("opens a chat under its first active, unmuted task and keeps muted or archived tasks quiet", () => {
+  it("opens a chat under its first active, unmuted task, else its archived one, and keeps muted tasks quiet", () => {
     const tasks = [
       createTask("muted", { muted: true, activeSessionIds: ["shared", "only-muted"] }),
       createTask("archived", { status: "archived" }),
+      createTask("archived-muted", { status: "archived", muted: true }),
       createTask("first", { activeSessionIds: ["shared"] }),
       createTask("second", { activeSessionIds: ["shared"] }),
     ];
@@ -85,6 +86,8 @@ describe("listUnreadSessions", () => {
         createSession("only-muted", { linkedTaskIds: ["muted"] }),
         // An archived chat's task lists it only through the link on the chat itself.
         createSession("only-archived-task", { linkedTaskIds: ["archived"] }),
+        createSession("archived-and-muted-active", { linkedTaskIds: ["archived", "muted"] }),
+        createSession("only-archived-muted", { linkedTaskIds: ["archived-muted"] }),
         createSession("unknown-task", { linkedTaskIds: ["not-loaded"] }),
         createSession("quick"),
       ],
@@ -93,6 +96,7 @@ describe("listUnreadSessions", () => {
     });
 
     expect(entries.map((entry) => [entry.session.sessionId, entry.task?.id])).toEqual([
+      ["only-archived-task", "archived"],
       ["quick", undefined],
       ["shared", "first"],
     ]);

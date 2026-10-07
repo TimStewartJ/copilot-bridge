@@ -4,7 +4,8 @@ import { ChevronDown, ChevronRight, ArrowUp, ArrowDown, Plus, FileText } from "l
 import NotesSheet from "./NotesSheet";
 import EmptyState from "./shared/EmptyState";
 import useLongPressMenu from "../hooks/useLongPressMenu";
-import useTaskIndicators from "../hooks/useTaskIndicators";
+import useTaskIndicators, { countUnreadTasks, unreadTasksLabel } from "../hooks/useTaskIndicators";
+import useDueSetAsideIds from "../hooks/useDueSetAsideIds";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
@@ -81,12 +82,17 @@ export default function TaskList({
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
   const statusGroups = useMemo(() => groupTasksByStatus(tasks), [tasks]);
-  // Deferred and muted tasks sit in a collapsed Set aside section, out of the reorderable list.
-  const grouped = useMemo(() => ({
-    active: statusGroups.active.filter((task) => !isSetAsideTask(task)),
-    setAside: statusGroups.active.filter(isSetAsideTask),
-    archived: statusGroups.archived,
-  }), [statusGroups]);
+  // Deferred and muted tasks sit in a collapsed Set aside section, out of the reorderable list,
+  // except one whose revisit date has arrived: it shows with current work until the date is answered.
+  const dueSetAsideIds = useDueSetAsideIds(tasks);
+  const grouped = useMemo(() => {
+    const shelved = (task: Task) => isSetAsideTask(task) && !dueSetAsideIds.has(task.id);
+    return {
+      active: statusGroups.active.filter((task) => !shelved(task)),
+      setAside: statusGroups.active.filter(shelved),
+      archived: statusGroups.archived,
+    };
+  }, [dueSetAsideIds, statusGroups]);
   const setAsideIds = useMemo(() => new Set(grouped.setAside.map((task) => task.id)), [grouped]);
   const reorderVisible = useMemo(() => onReorderTasks
     ? (ids: string[]) => onReorderTasks(mergeVisibleOrder(statusGroups.active, setAsideIds, ids))
@@ -97,6 +103,8 @@ export default function TaskList({
   const overview = useTaskOverviewQuery();
   const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
   const setAsideNeeds = useMemo(() => setAsideAttention(overview.data?.tasks, setAsideIds), [overview.data, setAsideIds]);
+  const setAsideUnread = useMemo(() => countUnreadTasks(grouped.setAside, taskIndicators), [grouped, taskIndicators]);
+  const archivedUnread = useMemo(() => countUnreadTasks(grouped.archived, taskIndicators), [grouped, taskIndicators]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSetAside, setShowSetAside] = useState(false);
   useEffect(() => {
@@ -146,7 +154,7 @@ export default function TaskList({
     returnFocusRef: newTaskButtonRef,
   });
   const unreadTaskEdgeRefreshKey = useMemo(() => {
-    const parts: string[] = [showArchived ? "archived" : "open"];
+    const parts: string[] = [showArchived ? "archived" : "open", showSetAside ? "set-aside" : ""];
     const addTask = (task: Task) => {
       parts.push(`${task.id}:${taskIndicators.get(task.id)?.unread ? "1" : "0"}`);
     };
@@ -158,11 +166,14 @@ export default function TaskList({
     } else {
       for (const task of grouped.active) addTask(task);
     }
+    if (showSetAside) {
+      for (const task of grouped.setAside) addTask(task);
+    }
     if (showArchived) {
       for (const task of grouped.archived) addTask(task);
     }
     return parts.join("|");
-  }, [displaySections, grouped, hasGroups, showArchived, taskIndicators]);
+  }, [displaySections, grouped, hasGroups, showArchived, showSetAside, taskIndicators]);
   const taskListScopeRef = useRef<HTMLDivElement>(null);
   const unreadTaskEdges = useUnreadTaskEdges({
     scopeRef: taskListScopeRef,
@@ -321,6 +332,12 @@ export default function TaskList({
                 {needsYouCount(setAsideNeeds.size)}
               </span>
             )}
+            {setAsideUnread > 0 && (
+              <span className="ml-1 inline-flex items-center gap-1 font-medium text-text-primary">
+                <StatusIcon kind="unread" decorative />
+                {unreadTasksLabel(setAsideUnread)}
+              </span>
+            )}
           </button>
           {showSetAside && renderGroup("Set aside", grouped.setAside)}
         </>
@@ -332,6 +349,12 @@ export default function TaskList({
             className="w-full px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors flex items-center gap-1"
           >
             {showArchived ? <ChevronDown size={10} /> : <ChevronRight size={10} />} Closed ({grouped.archived.length})
+            {archivedUnread > 0 && (
+              <span className="ml-1 inline-flex items-center gap-1 font-medium text-text-primary">
+                <StatusIcon kind="unread" decorative />
+                {unreadTasksLabel(archivedUnread)}
+              </span>
+            )}
           </button>
           {showArchived && renderGroup("Closed", grouped.archived)}
         </>

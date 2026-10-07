@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, MessageCircle, Pin, RefreshCw } from "lucide-react";
-import { fetchHome, fetchHomeInput, patchTask, submitElicitationResponse, submitUserInputResponse } from "../api";
+import { fetchHome, fetchHomeInput, submitElicitationResponse, submitUserInputResponse } from "../api";
 import type { HomeInputSummary, HomePage, HomeSection } from "../../shared/home";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { Badge, Button, EmptyHint, IdentitySwatch, Notice, Section } from "../design/primitives";
@@ -18,12 +18,12 @@ import HomeChecklist from "./HomeChecklist";
 import UserInputQuestionCard from "./UserInputQuestionCard";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import TaskDeferralDialog, { type DeferralTask } from "./TaskDeferralDialog";
+import { RevisitChoices, RevisitLaterDialog } from "./RevisitPrompt";
 import { OutcomeNotice, QuietReviewDialog, QuietTaskActions, quietLabel } from "./QuietTasks";
 
 const SECTIONS: HomeSection[] = ["overview", "inputs", "actions", "replies"];
 const LABELS: Record<HomeSection, string> = { overview: "Home", tasks: "All tasks", inputs: "Needs your answer", "follow-ups": "Home", actions: "Checklist", replies: "New replies", quiet: "Worth a look" };
 const ROW = "min-w-0 border-t border-border py-4";
-const WEEK_MS = 7 * 86_400_000;
 // A server from before checklist counts omits `today`; the browser's date is the closest stand-in.
 function localDate(now = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
@@ -52,6 +52,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   const overview = useTaskOverviewQuery(reviewing);
   const [openInput, setOpenInput] = useState<HomeInputSummary>();
   const [deferralTask, setDeferralTask] = useState<DeferralTask>();
+  const [laterTask, setLaterTask] = useState<TaskOverviewRow>();
   const inputQuery = useQuery({ queryKey: ["dashboard", "home-input", openInput?.sessionId, openInput?.kind, openInput?.requestId],
     queryFn: ({ signal }) => fetchHomeInput(openInput!, signal), enabled: !!openInput, refetchInterval: openInput ? 10000 : false });
   const [pending, setPending] = useState(false), [mutationError, setMutationError] = useState("");
@@ -71,11 +72,6 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     await Promise.all([client.invalidateQueries({ queryKey: ["dashboard"] }), client.invalidateQueries({ queryKey: ["tasks"] }),
       client.invalidateQueries({ queryKey: ["task"] }), client.invalidateQueries({ queryKey: ["checklist-items", "open"] })]);
   }
-  async function revisitNextWeek(row: TaskOverviewRow) {
-    setMutationError("");
-    try { await patchTask(row.id, { nextTouchAt: new Date(Date.now() + WEEK_MS).toISOString() }); await changed(); }
-    catch (error) { setMutationError(error instanceof Error ? error.message : String(error)); }
-  }
   const resumeRow = (row: TaskOverviewRow) => row.sessionId ? onSelectSession(row.sessionId, row.id) : onSelectTask(row.id);
   function more<T>(page: HomePage<T>, target: HomeSection) {
     return section === "overview" ? <Button variant="ghost" size="sm" onClick={() => visit(target)}>View all <ArrowRight size={14} /></Button>
@@ -89,7 +85,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     {data.inputs.items.map(item => <div key={`${item.sessionId}/${item.kind}/${item.requestId}`} className={ROW}>
       <div className="flex items-start gap-3"><MessageCircle size={17} className={cx(DS.text.attention, "mt-1 shrink-0")} />
         <div className="min-w-0 flex-1"><p className={cx(DS.text.content, "line-clamp-3")}>{item.question}</p>
-          <p className={cx(DS.text.meta, "mt-2")}>{item.taskTitle ?? "Standalone conversation"} · {item.title}{item.pendingCount > 1 ? ` · ${item.pendingCount} questions waiting` : ""}</p>
+          <p className={cx(DS.text.meta, "mt-2")}>{item.taskTitle ?? "Standalone conversation"}{item.taskArchived ? " (archived task)" : ""} · {item.title}{item.pendingCount > 1 ? ` · ${item.pendingCount} questions waiting` : ""}</p>
           <div className="mt-3 flex gap-2"><Button size="sm" onClick={() => setOpenInput(item)}>Answer</Button><Button size="sm" variant="ghost" onClick={() => onSelectSession(item.sessionId, item.taskId)}>Open conversation</Button></div></div></div>
     </div>)}
     {data.inputErrors.map(item => <Notice key={item.sessionId} tone="warning" title="Question status unavailable">{item.title}: {item.error}<Button variant="ghost" onClick={() => onSelectSession(item.sessionId, item.taskId)}>Open conversation</Button></Notice>)}
@@ -108,12 +104,13 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
             <div className="flex flex-wrap items-center gap-2">{row.groupColor && <IdentitySwatch color={row.groupColor} />}
               <button className={cx(DS.text.content, DS.focus, "text-left font-semibold")} onClick={() => onSelectTask(row.id)}>{row.title}</button>
               {badge && <Badge tone={badge.tone === "warning" ? "warning" : badge.tone === "info" ? "info" : "neutral"}>{stalled ? "Conversation stalled" : badge.label}</Badge>}
-              {row.deferred && <Badge>Deferred</Badge>}</div>
+              {row.deferred && <Badge>Deferred</Badge>}{row.muted && <Badge>Muted</Badge>}</div>
             <p className={cx(context.empty ? DS.text.prose : DS.text.content, "mt-1 line-clamp-2")}>{context.text}</p>
             <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" onClick={() => onSelectTask(row.id)}>Open task</Button>
               {row.sessionId && <Button size="sm" variant="ghost" onClick={() => onSelectSession(row.sessionId!, row.id)}>Continue conversation</Button>}
-              {row.reasons.includes("revisit") && <Button size="sm" variant="ghost" onClick={() => void revisitNextWeek(row)}>Revisit next week</Button>}
-              {row.deferred && <Button size="sm" variant="ghost" onClick={() => setDeferralTask({ id: row.id, title: row.title, deferred: row.deferred, nextTouchAt: row.nextTouchAt })}>Resume</Button>}</div>
+              {row.reasons.includes("revisit")
+                ? <RevisitChoices task={row} variant="ghost" onLater={() => setLaterTask(row)} onSaved={() => void changed()} onError={setMutationError} />
+                : row.deferred && <Button size="sm" variant="ghost" onClick={() => setDeferralTask({ id: row.id, title: row.title, deferred: row.deferred, nextTouchAt: row.nextTouchAt })}>Resume</Button>}</div>
           </div>
         </div>
       </div>;
@@ -172,7 +169,8 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   const replies = data && <Section label="New replies" level="page" surface action={more(data.replies, "replies")}>
     {data.replies.items.length > 0 && <p className={DS.text.prose}>{section === "replies" ? "All unread conversations." : "Latest unread conversation per task."}</p>}
     {data.replies.items.map(reply => <div key={reply.sessionId} className={ROW}>
-      <p className={cx(DS.text.content, "font-medium")}>{reply.taskTitle ?? reply.title}</p>
+      <p className={cx(DS.text.content, "flex flex-wrap items-center gap-2 font-medium")}>{reply.taskTitle ?? reply.title}
+        {reply.taskArchived && <Badge title="This task is archived. The reply arrived after it was closed.">Archived task</Badge>}</p>
       <p className={cx(reply.excerpt ? DS.text.content : DS.text.prose, "mt-2 line-clamp-3")}>{reply.excerpt ? formatSearchExcerpt(reply.excerpt) : reply.error}</p>
       <p className={cx(DS.text.meta, "mt-2")}>{reply.title}{reply.timestamp ? ` · ${new Date(reply.timestamp).toLocaleString()}` : ""}</p>
       <Button className="mt-2" variant="ghost" size="sm" onClick={() => reply.sourceEventId
@@ -216,6 +214,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     </div>
   </PullToRefresh>{deferralTask && <TaskDeferralDialog task={deferralTask}
     onClose={() => setDeferralTask(undefined)} onSaved={() => void changed()} />}
+  {laterTask && <RevisitLaterDialog task={laterTask} onClose={() => setLaterTask(undefined)} onSaved={() => void changed()} />}
   {reviewing && (overview.data
     ? <QuietReviewDialog rows={quietForReview} pending={outcomes.pending}
       onOutcome={(row, outcome) => outcomes.apply([row], outcome)} onSetAside={(row, revisitAt) => outcomes.apply([row], "set_aside", revisitAt)}

@@ -53,8 +53,9 @@ function signal(
   shortLabel: string,
   tone: TaskRowSignalTone,
   animated = false,
+  status: DsStatusKind = SIGNAL_STATUS[kind],
 ): TaskRowSignal {
-  return { kind, label, shortLabel, tone, status: SIGNAL_STATUS[kind], animated };
+  return { kind, label, shortLabel, tone, status, animated };
 }
 
 /**
@@ -75,8 +76,16 @@ export function getTaskRowSignals(
   if (lifecycleState === "completed") {
     return [signal("completed", "Completed", "Done", "faint")];
   }
-  const deferred = task.deferred ? [signal("deferred", "Deferred", "Deferred", "faint")] : [];
-  if (task.muted) return deferred;
+  const followUpState = getRevisitState(task.nextTouchAt, now);
+  const revisitDue = followUpState === "ready" || followUpState === "today";
+  const setAside = task.muted ? "Muted" : task.deferred ? "Deferred" : null;
+  // A set-aside task back for its revisit date says why it is here in the word and that it has not resumed in the
+  // glyph, the paused mark a deferred row carries. A narrow list has no room for both words; the tooltip has them.
+  const standing = setAside && revisitDue
+    ? [signal(followUpState === "ready" ? "follow-up-overdue" : "follow-up-due",
+      `${setAside} · ${followUpState === "ready" ? "ready to revisit" : "revisit today"}`, "Revisit", "faint", false, "paused")]
+    : task.deferred ? [signal("deferred", "Deferred", "Deferred", "faint")] : [];
+  if (task.muted) return standing;
 
   const signals: TaskRowSignal[] = [];
   const needsUserInputCount = indicator?.needsUserInputCount ?? 0;
@@ -103,11 +112,10 @@ export function getTaskRowSignals(
     ));
   }
 
-  signals.push(...deferred);
-  const followUpState = getRevisitState(task.nextTouchAt, now);
-  if (followUpState === "ready") {
+  signals.push(...standing);
+  if (!setAside && followUpState === "ready") {
     signals.push(signal("follow-up-overdue", "Ready to revisit", "Revisit", "faint"));
-  } else if (followUpState === "today") {
+  } else if (!setAside && followUpState === "today") {
     signals.push(signal("follow-up-due", "Revisit today", "Revisit", "faint"));
   }
 

@@ -14,6 +14,7 @@ import ContextMenu, { CtxItem, CtxDivider } from "../ContextMenu";
 import { countTaskUnread } from "../../hooks/useTaskIndicators";
 import { getTaskKindLabel, getTaskKindUpdate, isOngoingTask } from "../../task-kind";
 import TaskDeferralDialog from "../TaskDeferralDialog";
+import { revisitInDays } from "../../lib/task-revisit";
 import { IdentitySwatch } from "../../design/primitives";
 import { DS } from "../../design/tokens";
 
@@ -230,12 +231,12 @@ export default function TaskContextMenu({
           <CtxItem
             icon={<CalendarDays size={14} />}
             label="Revisit tomorrow"
-            onClick={() => { onUpdateTask(task.id, { nextTouchAt: toRelativeFollowUpAt(1) }); closeMenu(); }}
+            onClick={() => { onUpdateTask(task.id, { nextTouchAt: revisitInDays(1) }); closeMenu(); }}
           />
           <CtxItem
             icon={<CalendarDays size={14} />}
             label="Revisit next week"
-            onClick={() => { onUpdateTask(task.id, { nextTouchAt: toRelativeFollowUpAt(7) }); closeMenu(); }}
+            onClick={() => { onUpdateTask(task.id, { nextTouchAt: revisitInDays(7) }); closeMenu(); }}
           />
           <CtxItem
             icon={<X size={14} />}
@@ -315,10 +316,4 @@ export default function TaskContextMenu({
       )}
     </ContextMenu>
   );
-}
-
-function toRelativeFollowUpAt(daysFromToday: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + daysFromToday);
-  return date.toISOString();
 }

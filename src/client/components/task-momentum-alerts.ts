@@ -1,12 +1,9 @@
 import type { EnrichedPR, Task } from "../api";
-import { getRevisitState } from "../lib/task-revisit";
 
 export type TaskAlertTone = "accent" | "info" | "success" | "warning" | "danger" | "neutral";
 
 export interface TaskAlertChip {
   kind:
-    | "follow-up-overdue"
-    | "follow-up-due"
     | "waiting"
     | "active-pr";
   label: string;
@@ -18,7 +15,7 @@ export interface TaskAlertChip {
 
 /**
  * What the task header says needs noticing. Session state (working, stalled, unread) is left to the
- * session rows just below, which already show it.
+ * session rows just below, and a reached revisit date to the prompt beneath the header.
  */
 interface GetTaskAlertChipsOptions {
   task: Task;
@@ -32,28 +29,6 @@ export function getTaskAlertChips({
   limit = 3,
 }: GetTaskAlertChipsOptions): TaskAlertChip[] {
   const chips: TaskAlertChip[] = [];
-  const followUpState = getRevisitState(task.nextTouchAt);
-
-  if (followUpState === "ready") {
-    chips.push({
-      kind: "follow-up-overdue",
-      label: "Ready to revisit",
-      title: task.nextTouchAt ? formatFollowUpTitle(task.nextTouchAt) : "Ready to revisit this task",
-      tone: "neutral",
-      priority: 10,
-      recency: toTimestamp(task.nextTouchAt),
-    });
-  } else if (followUpState === "today") {
-    chips.push({
-      kind: "follow-up-due",
-      label: "Revisit today",
-      title: task.nextTouchAt ? formatFollowUpTitle(task.nextTouchAt) : "This task should be revisited now",
-      tone: "neutral",
-      priority: 11,
-      recency: toTimestamp(task.nextTouchAt),
-    });
-  }
-
   if (task.waitingOn?.trim()) {
     chips.push({
       kind: "waiting",
@@ -80,18 +55,6 @@ export function getTaskAlertChips({
   return chips
     .sort((left, right) => left.priority - right.priority || right.recency - left.recency)
     .slice(0, limit);
-}
-
-function formatFollowUpTitle(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "Revisit date unavailable";
-  return `Revisit ${parsed.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })}`;
 }
 
 function toTimestamp(value?: string): number {

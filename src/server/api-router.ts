@@ -4112,7 +4112,8 @@ export function createApiRouter(
       if (unknownFields.length > 0) {
         return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
       }
-      const previousInstructions = ctx.taskStore.getTask(req.params.id)?.instructions ?? "";
+      const previous = ctx.taskStore.getTask(req.params.id);
+      const previousInstructions = previous?.instructions ?? "";
       const task = ctx.taskStore.updateTask(req.params.id, {
         title: req.body?.title,
         kind: req.body?.kind,
@@ -4133,6 +4134,18 @@ export function createApiRouter(
       // Instructions are part of the system prompt, which cached chats only rebuild on resume.
       if ((task.instructions ?? "") !== previousInstructions) {
         ctx.sessionManager.invalidateTaskSessionConfig(task.id, "task instructions changed");
+      }
+      // Closing a task settles what its conversations had already said, so only what arrives afterwards counts as new.
+      if (previous?.status === "active" && task.status === "archived") {
+        try {
+          const settled = ctx.taskStore.listOpenSessionIdsWithoutActiveTask(task.id);
+          if (settled.length > 0) {
+            ctx.readStateStore.markReadMany(settled);
+            emitReadStateChanged();
+          }
+        } catch (error) {
+          console.error(`[tasks] Could not mark the conversations of archived task ${task.id} read:`, error);
+        }
       }
       res.json({ task: toClientTaskResponse(task) });
     } catch (err) {

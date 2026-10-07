@@ -16,7 +16,10 @@ export interface TabAttentionSummary {
   needsUserInputCount: number;
 }
 
-/** Summarize non-archived, unmuted tasks that have unread activity or need an answer. */
+/**
+ * Summarize unmuted tasks that have unread activity or need an answer. Archived tasks count too:
+ * archiving marks a task's conversations read, so anything unread there arrived afterwards.
+ */
 export function summarizeTaskTabAttention(
   tasks: Task[],
   taskIndicators: Map<string, TaskIndicator>,
@@ -24,7 +27,7 @@ export function summarizeTaskTabAttention(
   let count = 0;
   let needsUserInputCount = 0;
   for (const task of tasks) {
-    if (task.status === "archived" || task.muted) continue;
+    if (task.muted) continue;
     const indicator = taskIndicators.get(task.id);
     if (!indicator) continue;
     const needsUserInput = (indicator.needsUserInputCount ?? 0) > 0;
@@ -33,6 +36,16 @@ export function summarizeTaskTabAttention(
     if (needsUserInput) needsUserInputCount++;
   }
   return { count, needsUserInputCount };
+}
+
+/** How many of these tasks hold unread conversations, for the header of a collapsed section. Muted tasks stay silent. */
+export function countUnreadTasks(tasks: readonly Task[], taskIndicators: Map<string, TaskIndicator>): number {
+  return tasks.filter((task) => !task.muted && (taskIndicators.get(task.id)?.unreadCount ?? 0) > 0).length;
+}
+
+/** "2 unread", for a collapsed section header. */
+export function unreadTasksLabel(count: number): string {
+  return `${count} unread`;
 }
 
 /** Summarize orphan chats that have unread activity or need an answer. */

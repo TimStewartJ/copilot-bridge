@@ -13,15 +13,17 @@ describe("native task-row meaning", () => {
     const task: Task = { id: "task", title: "Set aside", kind: "task", muted: false, deferred: true, status: "active",
       notes: "", priority: 0, order: 0, createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [],
       waitingOn: "A normal delivery", nextTouchAt: "2000-01-01T00:00:00Z" };
+    // Back for its date, a set-aside task says in one badge why it surfaced and that it has not resumed.
     expect(getTaskRowSignals(task)).toEqual([
-      expect.objectContaining({ kind: "deferred", label: "Deferred", tone: "faint" }),
-      expect.objectContaining({ label: "Ready to revisit", tone: "faint" }),
+      expect.objectContaining({ kind: "follow-up-overdue", label: "Deferred · ready to revisit", shortLabel: "Revisit", status: "paused", tone: "faint" }),
     ]);
-    expect(getTaskRowSignals({ ...task, muted: true })).toEqual([expect.objectContaining({ kind: "deferred" })]);
-    expect(getTaskAlertChips({ task })).toEqual([
-      expect.objectContaining({ label: "Ready to revisit", tone: "neutral" }),
-      expect.objectContaining({ label: "Waiting for", tone: "neutral" }),
-    ]);
+    expect(getTaskRowSignals({ ...task, muted: true })).toEqual([expect.objectContaining({ label: "Muted · ready to revisit", shortLabel: "Revisit", status: "paused" })]);
+    expect(getTaskRowSignals({ ...task, nextTouchAt: "9999-01-01T00:00:00Z" })).toEqual([expect.objectContaining({ kind: "deferred", label: "Deferred" })]);
+    expect(getTaskRowSignals({ ...task, muted: true, nextTouchAt: "9999-01-01T00:00:00Z" })).toEqual([expect.objectContaining({ kind: "deferred" })]);
+    expect(getTaskRowSignals({ ...task, muted: true, deferred: false, nextTouchAt: undefined })).toEqual([]);
+    expect(getTaskRowSignals({ ...task, deferred: false })).toEqual([expect.objectContaining({ label: "Ready to revisit", shortLabel: "Revisit", status: "open" })]);
+    // The header leaves a reached date to the prompt beneath it.
+    expect(getTaskAlertChips({ task })).toEqual([expect.objectContaining({ label: "Waiting for", tone: "neutral" })]);
   });
   it("marks a quiet task only when task states say so, as a faint status", () => {
     const task: Task = { id: "task", title: "Old", kind: "task", muted: false, deferred: false, status: "active",
