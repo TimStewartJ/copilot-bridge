@@ -190,6 +190,7 @@ const TOOL_VERBS: Record<string, ToolVerb> = {
   list_powershell: { active: "Listing shells", done: "Listed shells", icon: "terminal" },
   list_bash: { active: "Listing shells", done: "Listed shells", icon: "terminal" },
   management_job_status: { active: "Checking job", done: "Checked job", icon: "rocket", target: (args) => ({ text: stringArg(args, "jobId"), mono: true }) },
+  management_job_wait: { active: "Waiting for preview", done: "Waited for preview", icon: "rocket", target: (args) => ({ text: stringArg(args, "jobId"), mono: true }) },
   view: READ_FILE,
   read_file: READ_FILE,
   create: { active: "Creating", done: "Created", icon: "file-plus", target: pathTarget },

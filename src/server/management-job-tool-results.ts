@@ -12,6 +12,11 @@ export const MANAGEMENT_JOB_RESULT_DELIVERY_GUIDANCE =
 
 /** Guidance for a caller waiting on a job: the session that queued it is told the result. */
 export function managementJobWaitGuidance(job: ManagementJob, sessionId?: string): string {
+  if (job.type === "staging_preview" && job.originSessionId && (sessionId === undefined || sessionId === job.originSessionId)) {
+    return "Do independent work first, then call management_job_wait with this jobId when you need the result. "
+      + "It stays pending without polling or Autopilot continuations, and replaces the automatic completion message. "
+      + "Do not end an Autopilot turn just to wait. If you do not use the wait tool, Bridge sends the final result as a new message.";
+  }
   return job.originSessionId && (sessionId === undefined || sessionId === job.originSessionId)
     ? MANAGEMENT_JOB_RESULT_DELIVERY_GUIDANCE
     : MANAGEMENT_JOB_DEFER_GUIDANCE;

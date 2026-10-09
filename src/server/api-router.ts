@@ -3006,6 +3006,7 @@ export function createApiRouter(
   router.post("/sessions/:id/abort", async (req, res) => {
     const sessionId = req.params.id;
     try {
+      ctx.managementJobStore?.suppressPreviewResultDeliveries(sessionId);
       const aborted = await ctx.sessionManager.abortSession(sessionId);
       if (aborted) {
         res.json({ status: "aborted" });
