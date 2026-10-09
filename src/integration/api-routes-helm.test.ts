@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import { createMockSessionManager, createTestApp, installApiRouteTestHooks, request } from "../test-support/api-routes.js";
+import type { BridgeNativeTool } from "../server/bridge-native-tools.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -10,6 +11,31 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Helm routes", () => {
+  it.each(["idle", "busy"])("keeps Helm's existing %s send behavior through the shared delivery helper", async (state) => {
+    const targetId = "11111111-2222-4333-8444-555555555555";
+    const sessionManager = createMockSessionManager();
+    sessionManager.listSessionsFromDisk = async () => [{
+      sessionId: targetId, summary: "Target chat", startTime: "2026-10-09T12:00:00.000Z",
+    }];
+    sessionManager.isSessionBusy = () => state === "busy";
+    sessionManager.startWork = vi.fn();
+    sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    ctx.sessionMetaStore.setArchived(targetId, true);
+    const config = ctx.helm!.getSessionProfile().apply({ tools: [] as BridgeNativeTool[] });
+    const tool = config.tools.find((candidate) => candidate.name === "send_to_session");
+    if (!tool?.handler) throw new Error("Helm send_to_session missing");
+    const result = await tool.handler({ session: targetId, message: "Continue the proposal." }, {
+      sessionId: "22222222-2222-4333-8444-555555555555",
+      toolName: "send_to_session", toolCallId: "helm-send-1", arguments: {},
+    });
+    expect(JSON.stringify(result)).toContain(state === "busy" ? "steered" : "started");
+    expect(ctx.sessionMetaStore.isArchived(targetId)).toBe(false);
+    if (state === "busy") expect(sessionManager.steerSession).toHaveBeenCalledWith(targetId, "Continue the proposal.", undefined);
+    else expect(sessionManager.startWork).toHaveBeenCalledWith(targetId, "Continue the proposal.", undefined);
+    expect(ctx.deferredPromptStore?.listDeliveriesForSession(targetId)).toEqual([]);
+  });
+
   it("starts empty and explains its retention policy", async () => {
     const res = await request(app).get("/api/helm");
     expect(res.status).toBe(200);

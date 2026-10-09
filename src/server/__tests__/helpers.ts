@@ -210,6 +210,7 @@ export function createMockSessionManager() {
     listModels: async () => [],
     validateModelSelection: async () => ({ ok: true as const }),
     getBackendCreatedAt: () => "2026-01-01T00:00:00.000Z",
+    getBackendUnavailableReason: (): string | undefined => undefined,
     getBackendStatus: () => ({
       state: "ready" as const,
       connection: "connected" as const,
@@ -238,6 +239,8 @@ export function createMockSessionManager() {
     }),
     getSessionActivity: () => [],
     isSessionBusy: () => false,
+    hasRunInFlight: () => false,
+    getSessionCapacityWait: (): string | undefined => undefined,
     getSessionHold: () => undefined,
     subscribeSessionHold: () => () => {},
     getSessionRunState: () => "idle",

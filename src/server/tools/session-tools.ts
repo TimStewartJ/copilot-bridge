@@ -11,6 +11,8 @@ import { isCanonicalSessionId } from "../outbound-attachments.js";
 import { hasActiveDeferredWork } from "../schedule-session-retention.js";
 import { setSessionsArchived } from "../session-archive.js";
 import { resolveSessionCreationOptions } from "../session-creation-options.js";
+import { sendChatMessage } from "../chat-message-delivery.js";
+import { parseSlashCommandPrompt } from "../slash-command.js";
 import {
   defineSessionBridgeTool,
   registerBridgeToolDefinitions,
@@ -122,6 +124,70 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
           ...(taskId ? { taskId, taskLinked } : {}),
           status,
         };
+      }
+    },
+  }),
+  defineSessionBridgeTool("session_send", {
+    description: "Send a message to an existing persistent Bridge chat, not a sub-agent. "
+      + "Use write_agent for follow-ups to helper agents. Pass the exact target chat ID and a self-contained message; this chat's history is not copied. "
+      + "The target keeps its own task, workspace and model. Sending restores an archived chat. "
+      + "An idle chat starts a new turn; an active turn is steered. If Bridge cannot dispatch yet, the message may be saved for later and reported as queued, not delivered. "
+      + "This does not answer a pending question or form. Results and questions stay in the target chat; no reply is forwarded here. "
+      + "Returns delivery status, not the answer. Include the returned Markdown link in your reply.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", description: "Exact ID of an existing Bridge chat, from session_start or a known chat link. Not a sub-agent ID or the current chat." },
+        message: { type: "string", description: "Message to send, with all context the target chat needs. Normal text only, not a slash command or a response to a pending form." },
+      },
+      required: ["sessionId", "message"],
+    },
+    handler: async (args: { sessionId: string; message: string }, invocation) => {
+      const sessionId = args.sessionId.trim();
+      const message = args.message.trim();
+      if (!isCanonicalSessionId(sessionId)) return toolFailure("sessionId must be an exact, canonical Bridge chat ID");
+      if (sessionId === invocation.sessionId) return toolFailure("Use this conversation directly; session_send targets a different chat");
+      if (!message) return toolFailure("message is required");
+      if (parseSlashCommandPrompt(message)) return toolFailure("session_send sends normal messages, not slash commands");
+      const link = formatBridgeLink({ kind: "session", sessionId });
+      let attempting = false;
+      try {
+        invocation.signal?.throwIfAborted();
+        if (await ctx.sessionManager.getSessionCreationState(sessionId) === "absent") {
+          return toolFailure(`Chat ${sessionId} was not found`);
+        }
+        invocation.signal?.throwIfAborted();
+        if (ctx.sessionManager.getPendingUserInputCount(sessionId) > 0) {
+          return toolFailure("The target chat is waiting for an answer to a question or form. This message was not sent.", {
+            detail: `Answer it in the target chat first: [Open the target chat](${link}).`,
+          });
+        }
+        attempting = true;
+        const result = await sendChatMessage(ctx, sessionId, message, {
+          waitForDelivery: true,
+          queue: "before_send",
+          clientMessageId: invocation.toolCallId
+            ? `session-send:${invocation.sessionId}:${invocation.toolCallId}`
+            : undefined,
+          signal: invocation.signal,
+        });
+        return {
+          success: true,
+          sessionId,
+          link,
+          markdown: `[Open the target chat](${link})`,
+          ...result,
+          message: result.delivery === "queued"
+            ? "The message is saved for later, not yet delivered. Do not resend it. Results and questions will stay in the target chat."
+            : "Message acceptance confirmed. Results and questions stay in the target chat; no answer is forwarded here.",
+        };
+      } catch (error) {
+        return toolFailure(error instanceof Error ? error.message : String(error), {
+          detail: `Target: [Open the target chat](${link}). `
+            + (attempting ? "Message acceptance was not confirmed. Inspect the target before retrying to avoid duplicate work."
+              : "The message was not sent."),
+        });
       }
     },
   }),
