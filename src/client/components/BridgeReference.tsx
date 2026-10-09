@@ -22,6 +22,7 @@ import { StatusIcon } from "../design/primitives";
 
 export interface BridgeReferenceContextValue {
   isUnread?: (sessionId: string, activityTime?: string) => boolean;
+  onOpenDoc?: (path: string) => void;
 }
 
 /** Lets references show unread state, which lives in the app shell rather than a query. */
@@ -29,7 +30,7 @@ export const BridgeReferenceContext = createContext<BridgeReferenceContextValue>
 
 /** react-markdown drops unknown URL schemes; keep `bridge:` so links reach the renderer. */
 export function bridgeUrlTransform(url: string): string {
-  return isBridgeSchemeLink(url) ? url : defaultUrlTransform(url);
+  return isBridgeSchemeLink(url) || url.startsWith("wiki:") ? url : defaultUrlTransform(url);
 }
 
 export function parseChatBridgeLink(href: string | null | undefined): BridgeLinkTarget | null {
@@ -184,8 +185,10 @@ function useResolvedReference(target: BridgeLinkTarget, label: string | undefine
   }), [active.data, archived.data, isUnread, label, missingFromActive, target, tasks.data]);
 }
 
-function useReferenceNavigation(path: string) {
+function useReferenceNavigation(reference: ResolvedBridgeReference) {
   const navigate = useNavigate();
+  const { onOpenDoc } = useContext(BridgeReferenceContext);
+  const path = reference.path;
   return {
     // A real href (under the deployment base path) keeps open-in-new-tab and copy-link working.
     href: `${API_BASE}${path}`,
@@ -193,6 +196,10 @@ function useReferenceNavigation(path: string) {
       // Modified clicks keep their browser meaning (new tab, new window, download).
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
+      if (reference.kind === "doc" && onOpenDoc && reference.meta) {
+        onOpenDoc(reference.meta);
+        return;
+      }
       navigate(path);
     },
   };
@@ -205,7 +212,7 @@ function describeReference(reference: ResolvedBridgeReference): string {
 /** Inline form: sits in a sentence like a link, but carries the item's live state. */
 export function BridgeReferenceChip({ target, label }: { target: BridgeLinkTarget; label?: string; children?: ReactNode }) {
   const reference = useResolvedReference(target, label);
-  const navigation = useReferenceNavigation(reference.path);
+  const navigation = useReferenceNavigation(reference);
   const Icon = KIND_ICON[reference.kind];
   return (
     <a
@@ -228,7 +235,7 @@ export function BridgeReferenceChip({ target, label }: { target: BridgeLinkTarge
 /** Block form: a link alone on its line becomes a card with status, detail and context. */
 export function BridgeReferenceCard({ target, label }: { target: BridgeLinkTarget; label?: string }) {
   const reference = useResolvedReference(target, label);
-  const navigation = useReferenceNavigation(reference.path);
+  const navigation = useReferenceNavigation(reference);
   const Icon = KIND_ICON[reference.kind];
   return (
     <div className="not-prose my-2 max-w-xl">

@@ -28,6 +28,8 @@ export interface DocsMarkdownProps {
   index: DocsTreeIndex;
   /** Called for in-page anchors: heading permalinks and `#fragment` links. */
   onAnchorSelect?: (id: string, source: "heading" | "link") => void;
+  /** Preview sheets keep linked pages in the same sheet; full Docs uses normal navigation. */
+  onDocSelect?: (path: string, hash: string) => void;
 }
 
 interface MarkdownNode {
@@ -57,12 +59,17 @@ function nodeText(node: ReactNode): string {
   return "";
 }
 
-function DocsMarkdown({ markdown, headings, currentPath, currentIsDirectory, index, onAnchorSelect }: DocsMarkdownProps) {
+function DocsMarkdown({ markdown, headings, currentPath, currentIsDirectory, index, onAnchorSelect, onDocSelect }: DocsMarkdownProps) {
   const wikilinkTargets = useMemo(() => extractWikilinkTargets(markdown), [markdown]);
   const { data: resolvedLinks } = useWikilinksQuery(wikilinkTargets);
 
   const components = useMemo(() => {
     const idByLine = new Map(headings.map((heading) => [heading.line, heading.id]));
+    const selectDoc = (path: string, hash = "") => (event: MouseEvent<HTMLAnchorElement>) => {
+      if (!onDocSelect || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      onDocSelect(path, hash);
+    };
 
     const heading = (level: 1 | 2 | 3 | 4 | 5 | 6) => function DocsHeading({ node, children, ...props }: HeadingProps) {
       const Tag = `h${level}` as const;
@@ -95,7 +102,7 @@ function DocsMarkdown({ markdown, headings, currentPath, currentIsDirectory, ind
         const target = href.slice("wiki:".length);
         const resolved = resolvedLinks?.[target];
         if (resolved) {
-          return <Link {...props} to={docsRoute(resolved.path)} title={resolved.title}>{children}</Link>;
+          return <Link {...props} to={docsRoute(resolved.path)} onClick={selectDoc(resolved.path)} title={resolved.title}>{children}</Link>;
         }
         const missing = resolvedLinks !== undefined && target in resolvedLinks;
         return (
@@ -140,7 +147,7 @@ function DocsMarkdown({ markdown, headings, currentPath, currentIsDirectory, ind
       const fragment = fragmentIndex >= 0 ? resolved.slice(fragmentIndex) : "";
       const folder = index.folders.get(path);
       const kind = folder?.isDb && !folder.hasIndex ? "collection" : "page";
-      return <Link {...props} to={docsRoute({ path, kind }, fragment)}>{children}</Link>;
+      return <Link {...props} to={docsRoute({ path, kind }, fragment)} onClick={kind === "page" ? selectDoc(path, fragment) : undefined}>{children}</Link>;
     };
 
     return {
@@ -160,7 +167,7 @@ function DocsMarkdown({ markdown, headings, currentPath, currentIsDirectory, ind
       ),
       img: ({ node: _node, alt, ...props }: ImageProps) => <img {...props} alt={alt ?? ""} loading="lazy" />,
     };
-  }, [headings, resolvedLinks, currentPath, currentIsDirectory, index, onAnchorSelect]);
+  }, [headings, resolvedLinks, currentPath, currentIsDirectory, index, onAnchorSelect, onDocSelect]);
 
   return (
     <div className="docs-prose prose prose-invert max-w-none">

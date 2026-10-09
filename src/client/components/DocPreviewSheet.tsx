@@ -1,105 +1,106 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { BookOpen, ExternalLink, X } from "lucide-react";
-import { fetchDocPage } from "../api";
-import type { DocPage } from "../api";
-import remarkLabelBreaks from "../lib/remark-label-breaks";
-import CodeBlock from "./CodeBlock";
-import { stripLeadingTitle } from "./docs/docs-model";
-import { APP_PROSE } from "./shared/prose-classes";
-import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
-import { useModalDialog } from "./shared/useModalDialog";
+import { ArrowLeft, BookOpen, ExternalLink, X } from "lucide-react";
+import { Button, IconButton, Notice } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
+import DocsMarkdown from "./docs/DocsMarkdown";
+import { buildTreeIndex, docsRoute, extractHeadings, stripLeadingTitle } from "./docs/docs-model";
+import { isNotFoundError, useDocPageQuery, useDocsTreeQuery } from "./docs/docs-queries";
+import { LoadingSkeletonRegion, SkeletonText } from "./shared/Skeleton";
+import { useModalDialog } from "./shared/useModalDialog";
 
 interface DocPreviewSheetProps {
   docPath: string;
   onClose: () => void;
+  onOpenFull?: (path: string, hash: string) => void;
 }
 
-export default function DocPreviewSheet({ docPath, onClose }: DocPreviewSheetProps) {
+export default function DocPreviewSheet({ docPath, onClose, onOpenFull }: DocPreviewSheetProps) {
   const navigate = useNavigate();
-  const [doc, setDoc] = useState<DocPage | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [trail, setTrail] = useState<string[]>([docPath]);
+  const address = trail.at(-1) ?? docPath;
+  const separator = address.indexOf("#");
+  const path = separator < 0 ? address : address.slice(0, separator);
+  const hash = separator < 0 ? "" : address.slice(separator);
+  const pageQuery = useDocPageQuery(path);
+  const treeQuery = useDocsTreeQuery();
+  const index = useMemo(() => buildTreeIndex(treeQuery.data?.tree ?? []), [treeQuery.data]);
+  const doc = pageQuery.data;
+  const body = useMemo(() => stripLeadingTitle(doc?.body ?? ""), [doc?.body]);
+  const headings = useMemo(() => extractHeadings(body), [body]);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
 
+  useEffect(() => setTrail([docPath]), [docPath]);
+
+  const scrollToHeading = (id: string) => {
+    const container = scrollRef.current;
+    const heading = Array.from(container?.querySelectorAll<HTMLElement>("[data-docs-heading]") ?? [])
+      .find((element) => element.id === id);
+    if (!container || !heading) return;
+    container.scrollTo({ top: heading.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop - 16 });
+  };
+
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetchDocPage(docPath)
-      .then(setDoc)
-      .catch(() => setError("Failed to load page"))
-      .finally(() => setLoading(false));
-  }, [docPath]);
+    if (!doc || !scrollRef.current) return;
+    scrollRef.current.scrollTop = 0;
+    if (!hash) return;
+    let id = hash.slice(1);
+    try { id = decodeURIComponent(id); } catch { /* Keep the literal fragment. */ }
+    scrollToHeading(id);
+  }, [doc, hash]);
+
+  const openFull = () => {
+    if (onOpenFull) onOpenFull(doc?.path ?? path, hash);
+    else {
+      onClose();
+      navigate(docsRoute(doc?.path ?? path, hash));
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-
-      {/* Sheet */}
-      <div
+    <div
+      className={cx(DS.surface.scrim, "items-end p-0 md:items-center md:p-4")}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <section
         {...dialogProps}
-        className={cx(DS.surface.dialog, "relative w-full md:max-w-2xl md:mt-16 md:mb-16 max-h-[85vh] md:max-h-[80vh] rounded-t-2xl md:rounded-xl flex flex-col")}
+        className={cx(DS.surface.dialog, "relative flex max-h-[90dvh] w-full flex-col rounded-t-2xl md:max-w-3xl md:rounded-xl")}
+        data-doc-preview={path}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-          <h2 id={titleId} className="text-sm font-medium text-text-primary flex items-center gap-1.5 min-w-0">
-            <BookOpen size={14} className="text-text-muted shrink-0" />
-            <span className="truncate">{doc?.title ?? docPath}</span>
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+          {trail.length > 1 && <IconButton label="Previous preview" size="md" onClick={() => setTrail((current) => current.slice(0, -1))}><ArrowLeft size={16} /></IconButton>}
+          <h2 id={titleId} className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium text-text-primary">
+            <BookOpen size={16} className="shrink-0 text-text-secondary" />
+            <span className="truncate">{doc?.title ?? path}</span>
           </h2>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => { onClose(); navigate(`/docs/${docPath}`); }}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "hover:text-accent gap-1")}
-              title="Open in Docs"
-            >
-              <ExternalLink size={13} />
-              <span className="hidden sm:inline">Open</span>
-            </button>
-            <button
-              onClick={onClose}
-              className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
-              aria-label="Close"
-            >
-              <X size={16} />
-            </button>
-          </div>
+          <Button variant="ghost" onClick={openFull} icon={<ExternalLink size={14} />}>Open full</Button>
+          <IconButton label="Close doc preview" size="md" onClick={onClose}><X size={16} /></IconButton>
+        </header>
+        <div className="shrink-0 border-b border-border-subtle px-5 py-2 text-xs text-text-secondary">
+          <span className="font-mono break-all">{doc?.path ?? path}</span>
         </div>
-
-        {/* Path */}
-        <div className="px-5 py-1.5 border-b border-border-subtle shrink-0">
-          <span className="text-[10px] font-mono text-text-faint">{docPath}</span>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          {loading && (
-            <LoadingSkeletonRegion isLoading label="Loading document preview" className="space-y-5 py-2">
-              <div className="space-y-3">
-                <Skeleton height={22} width="56%" shape="pill" />
-                <SkeletonText lines={2} widths={["78%", "44%"]} />
-              </div>
-              <SkeletonText lines={6} widths="paragraph" />
-            </LoadingSkeletonRegion>
+        <div ref={scrollRef} className="docs-ui min-h-0 overflow-y-auto overscroll-contain px-5 py-5 md:px-8" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}>
+          {pageQuery.isPending && <LoadingSkeletonRegion isLoading label="Loading document preview"><SkeletonText lines={6} widths="paragraph" /></LoadingSkeletonRegion>}
+          {pageQuery.isError && (
+            <Notice tone="danger" title={isNotFoundError(pageQuery.error) ? "Page not found" : "Could not load this doc"}>
+              <p>{pageQuery.error instanceof Error ? pageQuery.error.message : "The document request failed."}</p>
+              {!isNotFoundError(pageQuery.error) && <Button variant="ghost" onClick={() => void pageQuery.refetch()}>Retry</Button>}
+            </Notice>
           )}
-          {error && (
-            <div className="text-center py-8 text-error text-sm">{error}</div>
-          )}
-          {doc && !loading && (
-            <div className={cx("max-w-none", APP_PROSE, "prose-pre:bg-bg-secondary prose-th:bg-bg-secondary")}
-            >
-              {/* Same line handling as the Docs reader: pages are hard-wrapped, and the sheet's
-                  header already shows the title the body opens with. */}
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkLabelBreaks]} components={{ pre: CodeBlock }}>
-                {stripLeadingTitle(doc.body)}
-              </ReactMarkdown>
-            </div>
+          {doc && !pageQuery.isError && (
+            <DocsMarkdown
+              markdown={body}
+              headings={headings}
+              currentPath={doc.isFolderIndex && doc.path === "index" ? "" : doc.path}
+              currentIsDirectory={doc.isFolderIndex}
+              index={index}
+              onAnchorSelect={scrollToHeading}
+              onDocSelect={(nextPath, nextHash) => setTrail((current) => [...current, nextPath + nextHash])}
+            />
           )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }

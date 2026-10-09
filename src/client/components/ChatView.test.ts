@@ -1281,6 +1281,7 @@ describe("ChatView navigation landing position", () => {
   async function renderSettledSession(options: {
     messages: ChatEntry[];
     messageTops: Record<string, number>;
+    docReturnScrollTop?: number;
   }) {
     const history = createDeferred<{
       messages: ChatEntry[];
@@ -1294,6 +1295,11 @@ describe("ChatView navigation landing position", () => {
     const view = await renderChatView({
       fetchMessagesFastResult: history.promise,
       streamOverrides: { isStreaming: false, streamStatus: null, pendingOrigin: null },
+      seedQueryClient: (client) => {
+        if (options.docReturnScrollTop !== undefined) {
+          client.setQueryData(["chat-doc-return", "composer-1"], { scrollTop: options.docReturnScrollTop, offset: 0 });
+        }
+      },
     });
     const restoreGeometry = stubChatGeometry(options.messageTops);    await view.act(async () => {
       history.resolve({
@@ -1310,6 +1316,21 @@ describe("ChatView navigation landing position", () => {
     ));
     return { ...view, restoreGeometry, scrollContainer: findScrollContainer(view.dom.container) };
   }
+
+  it("restores a non-default reading position from full Docs instead of landing on the newest reply", async () => {
+    const view = await renderSettledSession({
+      messages: [createMessage("older-entry"), createMessage("newest-entry")],
+      messageTops: { "newest-entry": -700 },
+      docReturnScrollTop: 540,
+    });
+    try {
+      expect(view.scrollContainer.scrollTop).toBe(540);
+      expect(view.queryClient.getQueryData(["chat-doc-return", "composer-1"])).toBeUndefined();
+    } finally {
+      view.restoreGeometry();
+      await view.cleanup();
+    }
+  });
 
   it("lands on the top of the newest assistant reply when it overflows the viewport", async () => {
     // Measured while the transcript is jammed to the bottom, so a top of -700 means the reply

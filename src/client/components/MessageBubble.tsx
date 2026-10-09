@@ -1,19 +1,15 @@
 import { memo, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { CircleAlert, Clock, RotateCcw, TextSelect } from "lucide-react";
-import { parseAdoWorkReferenceUrl, type AdoWorkReference } from "../../shared/ado-work-reference";
-import { isRecord } from "../../shared/is-record";
 import type { ChatMessage } from "../api";
 import { buildToolCallForest } from "../lib/tool-call-tree";
+import remarkWikilink from "../lib/remark-wikilink";
 import ToolCallTree from "./ToolCallTree";
-import CodeBlock from "./CodeBlock";
-import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
-import { BridgeReferenceCard, BridgeReferenceChip, bridgeUrlTransform, parseChatBridgeLink } from "./BridgeReference";
-import { MessageAttachments, openFile, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
-import { OutboundAttachment } from "./FilePreview";
-import { filePreviewKind, type PreviewFile } from "./file-preview";
+import { bridgeUrlTransform } from "./BridgeReference";
+import { MessageAttachments } from "./ChatAttachments";
+import { MESSAGE_MARKDOWN_COMPONENTS } from "./chat-markdown";
 import { APP_PROSE } from "./shared/prose-classes";
 import { MessageActionToolbar } from "./MessageActions";
 import { DS, cx } from "../design/tokens";
@@ -102,129 +98,6 @@ function renderToolCalls(toolCalls: NonNullable<ChatMessage["toolCalls"]>) {
     <ToolCallTree key={node.toolCall.toolCallId} node={node} />
   ));
 }
-
-function extractNodeText(node: unknown): string {
-  if (!isRecord(node)) return "";
-  if (node.type === "text" && typeof node.value === "string") return node.value;
-  if (!Array.isArray(node.children)) return "";
-  return node.children.map(extractNodeText).join("");
-}
-
-/** The link of a paragraph that holds nothing else, which is what earns a preview card. */
-function standaloneLink(node: unknown): { url: string; label: string } | null {
-  if (!isRecord(node) || !Array.isArray(node.children) || node.children.length !== 1) return null;
-  const link = node.children[0];
-  if (!isRecord(link) || link.type !== "element" || link.tagName !== "a") return null;
-  const properties = link.properties;
-  if (!isRecord(properties) || typeof properties.href !== "string") return null;
-  return { url: properties.href, label: extractNodeText(link) };
-}
-
-/**
- * The files of a paragraph that holds nothing but links to files the agent sent, one or several,
- * on a line each or with a mark between them. Such a paragraph becomes their cards.
- */
-function attachmentParagraph(node: unknown): PreviewFile[] | null {
-  if (!isRecord(node) || !Array.isArray(node.children)) return null;
-  const files: PreviewFile[] = [];
-  for (const child of node.children) {
-    if (!isRecord(child)) return null;
-    if (child.type === "text" && typeof child.value === "string" && !/[\p{L}\p{N}]/u.test(child.value)) continue;
-    if (child.type !== "element") return null;
-    if (child.tagName === "br") continue;
-    const href = child.tagName === "a" && isRecord(child.properties) ? child.properties.href : null;
-    const file = typeof href === "string" ? parseOutboundAttachmentLink(href) : null;
-    if (!file) return null;
-    files.push(file);
-  }
-  return files.length > 0 ? files : null;
-}
-
-function standaloneWorkReference(node: unknown): {
-  url: string;
-  label: string;
-  reference: AdoWorkReference;
-} | null {
-  const link = standaloneLink(node);
-  const reference = link ? parseAdoWorkReferenceUrl(link.url) : null;
-  return link && reference ? { ...link, reference } : null;
-}
-
-/** A label that merely repeats the URL says nothing; the item's own title is better. */
-function meaningfulLabel(label: string, url: string): string | undefined {
-  const trimmed = label.trim();
-  return trimmed && trimmed !== url.trim() ? trimmed : undefined;
-}
-
-const ChatMarkdownParagraph: NonNullable<Components["p"]> = ({ node, children, ...props }) => {
-  const workReference = standaloneWorkReference(node);
-  if (workReference) {
-    return <ChatWorkReferencePreview {...workReference} />;
-  }
-  const files = attachmentParagraph(node);
-  if (files) {
-    return <>{files.map((file, index) => <OutboundAttachment key={`${file.url}-${index}`} {...file} />)}</>;
-  }
-  const link = standaloneLink(node);
-  const bridgeTarget = link ? parseChatBridgeLink(link.url) : null;
-  if (link && bridgeTarget) {
-    return <BridgeReferenceCard target={bridgeTarget} label={meaningfulLabel(link.label, link.url)} />;
-  }
-  return <p {...props}>{children}</p>;
-};
-
-const ChatMarkdownLink: NonNullable<Components["a"]> = ({ node, children, href, ...props }) => {
-  const bridgeTarget = parseChatBridgeLink(href);
-  if (bridgeTarget) {
-    return <BridgeReferenceChip target={bridgeTarget} label={meaningfulLabel(extractNodeText(node), href ?? "")} />;
-  }
-  // A sent file named inside a sentence opens like its card would, instead of leaving the chat.
-  const file = parseOutboundAttachmentLink(href);
-  if (file && filePreviewKind(file.name)) {
-    return (
-      <button type="button" onClick={() => openFile(file)} className={cx("text-left text-accent hover:underline", DS.focus)} title={`Open ${file.name}`}>
-        {extractNodeText(node) === `Download ${file.name}` ? file.name : children}
-      </button>
-    );
-  }
-  return <a href={href} {...(file ? { download: file.name } : {})} {...props}>{children}</a>;
-};
-
-/** A markdown image in a reply opens in the full-screen viewer, like any other image in the chat. */
-const ChatMarkdownImage: NonNullable<Components["img"]> = ({ node: _node, src, alt, title }) => {
-  if (typeof src !== "string" || !src) return null;
-  const name = alt?.trim() || src.split(/[?#]/)[0].split("/").pop() || "image";
-  const outbound = parseOutboundAttachmentLink(src);
-  return (
-    <button
-      type="button"
-      onClick={(event) => {
-        showImages([{
-          src,
-          name,
-          alt: alt ?? name,
-          ...(outbound ? { fileName: outbound.name } : {}),
-          element: event.currentTarget.querySelector("img"),
-        }], 0);
-      }}
-      className={cx(
-        "not-prose my-1 block max-w-full cursor-zoom-in overflow-hidden rounded-2xl border border-surface-edge bg-surface-inset align-top transition-opacity hover:opacity-90",
-        DS.focus,
-      )}
-      aria-label={`Open image ${name}`}
-      title={title ?? name}
-    >
-      <img src={src} alt={alt ?? name} loading="lazy" className="m-0 block max-h-96 w-auto max-w-full object-contain" />
-    </button>
-  );
-};
-
-const MESSAGE_MARKDOWN_COMPONENTS: Components = {
-  pre: CodeBlock,
-  p: ChatMarkdownParagraph,
-  a: ChatMarkdownLink,
-  img: ChatMarkdownImage,
-};
 
 export default memo(function MessageBubble({
   message,
@@ -355,7 +228,7 @@ export default memo(function MessageBubble({
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MESSAGE_MARKDOWN_COMPONENTS} urlTransform={bridgeUrlTransform}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkWikilink]} components={MESSAGE_MARKDOWN_COMPONENTS} urlTransform={bridgeUrlTransform}>
                 {message.content}
               </ReactMarkdown>
             </div>
