@@ -16,6 +16,20 @@ function failureText(result: unknown): string {
 }
 
 describe("defineBridgeTool invocation identity", () => {
+  it("passes the cancellation signal through the native SDK path", async () => {
+    const controller = new AbortController();
+    let seen: BridgeToolInvocation | undefined;
+    const tool = defineBridgeTool("cancel_probe", {
+      handler: (_args, invocation) => { seen = invocation; return "ok"; },
+    });
+    const [native] = createNativeBridgeTools([tool]);
+    await native!.handler!({}, {
+      sessionId: "session-1", toolCallId: "cancel-1", toolName: "cancel_probe",
+      arguments: {}, signal: controller.signal,
+    });
+    expect(seen?.signal).toBe(controller.signal);
+  });
+
   it("passes the invoking session id through", async () => {
     let seen: BridgeToolInvocation | undefined;
     const tool = defineBridgeTool("probe", { handler: async (_args, invocation) => { seen = invocation; return "ok"; } });

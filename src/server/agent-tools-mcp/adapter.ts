@@ -12,6 +12,7 @@ export interface BridgeToolInvocation {
   toolCallId: string;
   toolName: string;
   arguments: Record<string, unknown>;
+  signal?: AbortSignal;
 }
 
 /** Invocation handed to session-scoped tools, where the session id is guaranteed. */
@@ -53,6 +54,7 @@ function bridgeInvocationFromMcp(
     toolCallId: extra?.requestId === undefined || extra?.requestId === null ? "" : String(extra.requestId),
     toolName: name,
     arguments: args,
+    signal: extra?.signal,
   };
 }
 
