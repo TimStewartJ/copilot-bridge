@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState, DeferredPromptRunner } from "../test-support/api-routes.js";
+import { createManagementJobStore } from "../server/management-job-store.js";
+import { createDeferredPromptStore } from "../server/deferred-prompt-store.js";
 import {
   createCopilotUsageTestHome,
   createMockSessionManager,
@@ -83,6 +85,21 @@ describe("Shutdown route", () => {
 });
 
 describe("Session stream route", () => {
+  it("suppresses preview wake-ups before Stop releases the active run", async () => {
+    const store = createManagementJobStore(db, { dataDir: makeTestDir("abort-preview-delivery") });
+    ctx.managementJobStore = store;
+    ctx.deferredPromptStore = createDeferredPromptStore(db);
+    const job = store.enqueue("staging_preview", {}, { originSessionId: "session-123" });
+    ctx.sessionManager.abortSession = vi.fn(async () => {
+      store.succeed(job.id, { previewUrl: "https://bridge.example/staging/stop/" });
+      return true;
+    });
+    const result = await request(app).post("/api/sessions/session-123/abort").send({});
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ status: "aborted" });
+    expect(ctx.deferredPromptStore!.get(`management-job:${job.id}`)?.status).toBe("cancelled");
+  });
+
   it("GET /api/sessions/:id/stream replays completed runs as ephemeral snapshots", async () => {
     const bus = ctx.eventBusRegistry.getOrCreateBus("session-123");
     bus.emit({ type: "done", content: "Run finished" });
