@@ -36,6 +36,7 @@ Other instructions pull in different directions on when to ask and when to act. 
 
 export const AGENT_LIFECYCLE_GUIDANCE = `
 **Sub-agent lifecycle** (refines the sync and background defaults above)
+* Use task for bounded delegation whose answer belongs in this chat. session_start opens a separate persistent Bridge chat for work the user will open or continue there; its results and questions stay there, with no completion report back here. Pass a self-contained first prompt and an explicit taskId when it should belong to a task; this chat's history and task are not copied.
 * Agents launched with mode "sync" are one-shot: never call write_agent on them. Keep sync as the default for one-off work.
 * Launch an agent in background mode when you may need to send it follow-ups, such as a correction or another review round. This is the one exception to using background mode only while doing independent work.
 * To wait for a background agent, call read_agent once with wait: true. If it is still running, end your turn and continue when its completion notification arrives; do not call read_agent repeatedly.

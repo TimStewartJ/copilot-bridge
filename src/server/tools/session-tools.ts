@@ -1,6 +1,8 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { formatBridgeLink } from "../../shared/bridge-links.js";
+import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import { normalizeSessionTitle } from "../../shared/session-title-utils.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
@@ -8,6 +10,7 @@ import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { isCanonicalSessionId } from "../outbound-attachments.js";
 import { hasActiveDeferredWork } from "../schedule-session-retention.js";
 import { setSessionsArchived } from "../session-archive.js";
+import { resolveSessionCreationOptions } from "../session-creation-options.js";
 import {
   defineSessionBridgeTool,
   registerBridgeToolDefinitions,
@@ -21,6 +24,14 @@ export interface RegisterSessionToolsOptions {
 
 export const SESSION_ARCHIVE_MAX_SESSIONS = 500;
 
+interface SessionStartArgs {
+  prompt: string;
+  taskId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}
+
 /**
  * Session ids are opaque — only trim them. The title normalizer strips quotes
  * and collapses whitespace, which would corrupt an id.
@@ -32,6 +43,88 @@ function targetSessionId(args: any, invocation: SessionBridgeToolInvocation): st
 
 export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
+  defineSessionBridgeTool("session_start", {
+    description: "Start a separate, persistent Bridge chat and send its first prompt. "
+      + "Use when the user wants work in its own conversation that they can open and continue later. "
+      + "For bounded delegation whose answer belongs in this conversation, use the task sub-agent tool instead. "
+      + "The new chat does not copy this conversation's history; write a self-contained prompt. "
+      + "Returns after the first prompt is accepted, not after the work finishes. "
+      + "Results and questions stay in the new chat; no completion report is sent back here. "
+      + "Include the returned Markdown link in your reply so the user can open the new chat.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        prompt: { type: "string", description: "First message for the new chat, including all context and instructions it needs." },
+        taskId: { type: "string", description: "Exact task ID from task_list or task context. Links the new chat before its first prompt, with that task's instructions and workspace. Omit for an unlinked chat using the default workspace; the current task is not inherited." },
+        model: { type: "string", description: "Model ID for the new chat. Omit to use the user's default model, not this chat's model." },
+        reasoningEffort: { type: "string", description: "Optional reasoning effort supported by the selected model. Omit to use the configured default." },
+        contextTier: { type: "string", enum: ["default", "long_context"], description: "Optional context tier supported by the selected model. Omit to use the configured default." },
+      },
+      required: ["prompt"],
+    },
+    handler: async (args: SessionStartArgs, invocation) => {
+      const prompt = args.prompt.trim();
+      if (!prompt) return toolFailure("prompt is required");
+      const taskId = args.taskId?.trim();
+      if (args.taskId !== undefined && !taskId) return toolFailure("taskId must not be empty");
+      if (taskId && !ctx.taskStore.getTask(taskId)) {
+        return toolFailure(`Task ${taskId} was not found. Use task_list to find the right task ID.`);
+      }
+
+      let sessionId: string | undefined;
+      let taskLinked = false;
+      let sending = false;
+      try {
+        invocation.signal?.throwIfAborted();
+        const creation = await resolveSessionCreationOptions(ctx, args, { taskId });
+        if (creation.error) return toolFailure(creation.error);
+        const task = taskId ? ctx.taskStore.getTask(taskId) : undefined;
+        if (taskId && !task) return toolFailure(`Task ${taskId} was not found.`);
+        invocation.signal?.throwIfAborted();
+        const result = task
+          ? await ctx.sessionManager.createTaskSession(
+            task.id, task.title, task.workItems, task.notes, task.cwd, undefined, creation.options,
+          )
+          : await ctx.sessionManager.createSession(creation.options);
+        sessionId = result.sessionId;
+        if (taskId) {
+          ctx.taskStore.linkSession(taskId, sessionId);
+          taskLinked = true;
+        }
+        invocation.signal?.throwIfAborted();
+        sending = true;
+        await ctx.sessionManager.startWorkAndWaitForDelivery(sessionId, prompt);
+        const link = formatBridgeLink({ kind: "session", sessionId });
+        return {
+          success: true,
+          sessionId,
+          link,
+          markdown: `[Open the new chat](${link})`,
+          ...(taskId ? { taskId, taskLinked } : {}),
+          status: "prompt_accepted",
+          message: "The first prompt was accepted. Work continues in the new chat; results and questions stay there, with no completion report back to this chat.",
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!sessionId) return toolFailure(message);
+        const link = formatBridgeLink({ kind: "session", sessionId });
+        const status = sending ? "prompt_acceptance_unconfirmed" : "not_sent";
+        return {
+          ...toolFailure(message, {
+            detail: `Chat created: ${sessionId}\nLink: [Open the created chat](${link})\n`
+              + (taskId ? `Task linked: ${taskLinked}.\n` : "")
+              + (sending ? "First prompt acceptance was not confirmed." : "The first prompt was not sent.")
+              + " Inspect this chat before retrying; do not create another chat for the same work.",
+          }),
+          sessionId,
+          link,
+          ...(taskId ? { taskId, taskLinked } : {}),
+          status,
+        };
+      }
+    },
+  }),
   defineSessionBridgeTool("session_rename", {
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
     parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename. Defaults to the current session." }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["title"] },
