@@ -898,6 +898,10 @@ data/                              # Runtime data (git-ignored)
 
 ## Self-Iteration and Local Deployment
 
+`staging_preview` queues validation and a build in the background. Do independent work first, then call `management_job_wait` with the returned `jobId` when you need the result. The wait stays pending without changing Autopilot mode or requesting more model turns. It returns the preview URL or failure and replaces the originating chat's automatic completion message. Without a wait, that completion message still arrives normally.
+
+Stop cancels the wait and prevents outstanding previews from restarting the stopped chat; it does not cancel the preview jobs. Their results remain available through `management_job_status`. After reconnecting, the agent can wait again using the same job ID. A stalled runner or a 25-minute wait limit produces an explicit result rather than an unbounded wait. The wait tool supports previews only: waiting for deploy or self-update activation from a busy chat could prevent the required restart.
+
 The bridge includes a few different maintenance paths:
 
 1. **`self_restart`** - restart the bridge for non-code restarts such as config reloads, env changes, and emergency restarts, with launcher-managed build and rollback. For Bridge code changes, use `staging_init` -> `staging_preview` -> `staging_deploy` instead.

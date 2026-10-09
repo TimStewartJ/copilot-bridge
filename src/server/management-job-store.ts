@@ -12,11 +12,13 @@ import {
   type LogRetentionPolicy,
 } from "./log-retention.js";
 import { isPathAtOrUnder, pathsEqual } from "./path-utils.js";
+import { MANAGEMENT_JOB_DELIVERY_ID_PREFIX } from "./deferred-prompt-store.js";
 import {
   isDeployAwaitingActivation,
   markManagementJobResultSeen,
   queueManagementJobDelivery,
   reconcileManagementJobDeliveries,
+  suppressManagementJobDelivery,
   withdrawPendingManagementJobDeliveries,
 } from "./management-job-delivery.js";
 
@@ -64,6 +66,9 @@ export interface ManagementJobStore {
   readLogTail(jobOrId: ManagementJob | string, maxBytes?: number): string;
   /** The origin session read the final status itself; do not also send it the result. */
   markResultSeen(job: ManagementJob): boolean;
+  suppressResultDelivery(job: ManagementJob, sessionId: string, reason: string): boolean;
+  /** Stop must suppress both queued results and results of previews that are still running. */
+  suppressPreviewResultDeliveries(sessionId: string): number;
   /** Queue results of recently finished jobs whose final transition did not queue one. */
   reconcileResultDeliveries(nowMs?: number): number;
   pruneRetention(options?: ManagementJobRetentionOptions): Promise<ManagementJobRetentionResult>;
@@ -686,6 +691,33 @@ export function createManagementJobStore(
 
     markResultSeen(job) {
       return runImmediateTransaction(db, () => markManagementJobResultSeen(db, job, now().getTime()));
+    },
+
+    suppressResultDelivery(job, sessionId, reason) {
+      if (job.originSessionId !== sessionId) return false;
+      return runImmediateTransaction(db, () => suppressManagementJobDelivery(db, job, reason, nowIso(now)));
+    },
+
+    suppressPreviewResultDeliveries(sessionId) {
+      return runImmediateTransaction(db, () => {
+        const rows = db.prepare(`
+          SELECT job.id FROM management_jobs AS job
+          LEFT JOIN deferred_prompts AS delivery ON delivery.id = ? || job.id
+          WHERE job.originSessionId = ? AND job.type = 'staging_preview'
+            AND (job.status IN ('queued', 'running') OR delivery.status IN ('pending', 'failed'))
+        `).all(MANAGEMENT_JOB_DELIVERY_ID_PREFIX, sessionId);
+        const timestamp = nowIso(now);
+        let suppressed = 0;
+        for (const row of rows) {
+          if (typeof row.id !== "string") throw new Error("Invalid management job id in preview result suppression.");
+          const job = store.get(row.id);
+          if (!job) throw new Error(`Management job ${row.id} disappeared during result suppression.`);
+          if (suppressManagementJobDelivery(db, job, "The user stopped the chat; this preview result will not start another turn.", timestamp)) {
+            suppressed++;
+          }
+        }
+        return suppressed;
+      });
     },
 
     reconcileResultDeliveries(nowMs = now().getTime()) {

@@ -153,6 +153,7 @@ When modifying code in this repository (the Copilot Bridge):
    - Use the focused npm run check:client, npm run check:server, npm run check:launcher, or npm run check:staging lane that matches the files you changed.
    - Final validation is enforced by staging_preview by default, or by staging_deploy when preview validation was skipped or invalidated. Do not rerun npm run check:pr immediately before a validating preview.
 4. Use the staging preview tool (canonical label: staging_preview) to build the staged frontend and, when available, start an isolated staged backend
+   - Do independent work while it builds, then call management_job_wait with its jobId when you need the result. In Autopilot, do not end your turn just to wait for preview validation.
 5. Share the preview URL with the user and WAIT for their confirmation before proceeding
 6. Only after the user approves, use the staging deploy tool (canonical label: staging_deploy) with a descriptive commit message
 7. Deploys request a background restart. Keep working normally: new work and management jobs remain available, and the restart waits until everything is idle. Do not wait for a restart or avoid tool calls just because one is pending.

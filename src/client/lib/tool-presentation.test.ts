@@ -139,6 +139,10 @@ describe("describeToolCall", () => {
       .toMatchObject({ verb: "Task update", icon: "tasks" });
     expect(describeToolCall({ name: "management_job_status", args: { jobId: "afd0eed2" } }, "running"))
       .toMatchObject({ verb: "Checking job", target: "afd0eed2", icon: "rocket" });
+    expect(describeToolCall({ name: "management_job_wait", args: { jobId: "afd0eed2" } }, "running"))
+      .toMatchObject({ verb: "Waiting for preview", target: "afd0eed2", icon: "rocket" });
+    expect(describeToolCall({ name: "management_job_wait", args: { jobId: "afd0eed2" } }, "done"))
+      .toMatchObject({ verb: "Waited for preview", target: "afd0eed2", icon: "rocket" });
     expect(describeToolCall({ name: "task_update_momentum", args: { taskId: "t-1" } }, "done"))
       .toMatchObject({ verb: "Task update momentum", icon: "tasks" });
     expect(describeToolCall({ name: "computer-use-click", args: { app: "notepad" } }, "done"))

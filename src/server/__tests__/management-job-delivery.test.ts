@@ -247,7 +247,7 @@ describe("management job tools and result delivery", () => {
 
     const result = await preview.handler!({ stagingDir, validate: false }, { sessionId: SESSION } as any) as any;
     expect(store.get(result.jobId)?.originSessionId).toBe(SESSION);
-    expect(result.message).toContain("Bridge sends this job's final result to this session");
+    expect(result.message).toContain("management_job_wait");
     expect(result.message).not.toContain("same-session defer");
     expect(result.message).not.toContain("management_job_status");
   });
@@ -271,7 +271,7 @@ describe("management job tools and result delivery", () => {
     const job = store.enqueue("staging_preview", { stagingDir: "x" }, { originSessionId: SESSION });
 
     const running = await status(job.id, SESSION);
-    expect(running.content[0].text).toContain("Bridge sends this job's final result to this session");
+    expect(running.content[0].text).toContain("management_job_wait");
     expect(running.resultDelivery).toEqual({ status: "waiting-for-job" });
     const otherWhileRunning = await status(job.id, "someone-else");
     expect(otherWhileRunning.content[0].text).toContain("same-session defer");

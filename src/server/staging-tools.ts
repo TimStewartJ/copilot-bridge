@@ -2042,6 +2042,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       "Queues a management job that runs vite build with a staging base path and makes it available at /staging/<prefix>/ on the main server. " +
       "The live server discovers the built preview from disk and restores the staged backend lazily. " +
       "Bridge sends the job's final result to the calling session as a new message when it finishes. " +
+      "For an Autopilot wait, do independent work first, then call management_job_wait with the jobId; it returns the result instead of a new message. " +
       "Share the preview URL with the user and wait for confirmation before calling staging_deploy.",
     parameters: {
       type: "object",

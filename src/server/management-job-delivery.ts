@@ -143,6 +143,29 @@ export function withdrawPendingManagementJobDeliveries(
   return changed;
 }
 
+export function suppressManagementJobDelivery(
+  db: DatabaseSync,
+  job: ManagementJob,
+  reason: string,
+  now: string,
+): boolean {
+  if (!job.originSessionId) return false;
+  const id = managementJobDeliveryId(job.id);
+  // Keep a tombstone even before the job finishes, so the other process and reconciliation
+  // cannot recreate a message after a waiter takes ownership or the user stops the chat.
+  const result = db.prepare(`
+    INSERT INTO deferred_prompts
+      (id, sessionId, prompt, purpose, sourceId, runAt, status, attempts, lastError, createdAt, updatedAt)
+    VALUES (?, ?, ?, 'delivery', ?, ?, 'cancelled', 0, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE
+    SET status = 'cancelled', lastError = excluded.lastError, updatedAt = excluded.updatedAt
+    WHERE deferred_prompts.sessionId = excluded.sessionId
+      AND deferred_prompts.purpose = 'delivery'
+      AND deferred_prompts.status IN ('pending', 'failed')
+  `).run(id, job.originSessionId, reason, id, now, reason, now, now) as { changes?: number | bigint };
+  return Number(result.changes ?? 0) > 0;
+}
+
 /**
  * Queues results a final transition did not queue, such as a job finished by a runner still on
  * code that predates result delivery. Rows the session withdrew still exist, so they stay withdrawn.
@@ -183,5 +206,11 @@ export function markManagementJobResultSeen(db: DatabaseSync, job: ManagementJob
   if (!job.originSessionId || !isFinalManagementJob(job)) return false;
   const now = new Date(nowMs).toISOString();
   queueManagementJobDelivery(db, job, now);
-  return withdrawPendingManagementJobDeliveries(db, job.originSessionId, [job.id], now) > 0;
+  const result = db.prepare(`
+    UPDATE deferred_prompts
+    SET status = 'completed', lastError = NULL, updatedAt = ?
+    WHERE id = ? AND sessionId = ? AND purpose = 'delivery'
+      AND status IN ('pending', 'cancelled')
+  `).run(now, managementJobDeliveryId(job.id), job.originSessionId) as { changes?: number | bigint };
+  return Number(result.changes ?? 0) > 0;
 }
