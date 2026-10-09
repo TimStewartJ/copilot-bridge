@@ -111,8 +111,8 @@ GitHub work item and pull request enrichment reuses the same ambient auth: `BRID
 
 ### Copilot Runtime
 
-Bridge uses `@github/copilot-sdk` 1.0.17 and launches the pinned `@github/copilot` CLI (1.0.93 stable) through its npm
-loader, so a CLI release can be validated independently of the SDK's bundled runtime. Install optional dependencies
+Bridge uses `@github/copilot-sdk` 1.0.18 and launches the pinned `@github/copilot` CLI (1.0.94 stable) through its npm
+loader, so a CLI release can be validated independently of the SDK's bundled runtime (also 1.0.94). Install optional dependencies
 (the npm default) so the platform-specific CLI and SDK packages are present; no separate CLI runtime override or
 wrapper is needed. The SDK natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge
 tool-loading metadata.

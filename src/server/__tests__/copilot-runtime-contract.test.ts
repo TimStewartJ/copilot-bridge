@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { COMPUTER_USE_PLUGIN_NAME, resolveComputerUsePlugin } from "../computer-use-plugin.js";
 
-const EXPECTED_CLI_VERSION = "1.0.93";
-const EXPECTED_SDK_VERSION = "1.0.17";
+const EXPECTED_CLI_VERSION = "1.0.94";
+const EXPECTED_SDK_VERSION = "1.0.18";
 
 // Launching the pinned CLI lives in copilot-cli-launch.native.test.ts.
 describe("installed Copilot package contract", () => {
@@ -26,6 +26,7 @@ describe("installed Copilot package contract", () => {
       version?: string;
     };
     expect(packageJson.version).toBe(EXPECTED_SDK_VERSION);
+    expect(packageJson.copilotCliVersion).toBe(EXPECTED_CLI_VERSION);
     expect(cliPackageJson.version).toBe(EXPECTED_CLI_VERSION);
     expect(packageJson.dependencies).not.toHaveProperty("@github/copilot");
     expect(packageJson.optionalDependencies).toMatchObject({
