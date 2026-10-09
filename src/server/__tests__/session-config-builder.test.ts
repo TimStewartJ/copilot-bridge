@@ -125,6 +125,10 @@ describe("session-config-builder prompt profiles", () => {
     for (const promptProfile of ["engineer", "assistant", "monitor"] as const) {
       const definition = PROMPT_PROFILE_DEFINITIONS[promptProfile];
       const { sections } = sectionsFor({ promptProfile });
+      const content = sectionsFor({ promptProfile, forResume: true }).content;
+      expect(content).toContain("<docs_links>");
+      expect(content).toContain("[[canonical-page-path|descriptive title]]");
+      expect(content).toContain("link only pages you have verified exist");
       expect(sections.preamble.content).toBe(`${DEFAULT_IDENTITY}\n\n${definition.role}`);
       expect(sections.tone.content.indexOf("</response_style>"))
         .toBeLessThan(sections.tone.content.indexOf(definition.communication));

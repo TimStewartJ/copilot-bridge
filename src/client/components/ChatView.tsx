@@ -8,6 +8,7 @@ import {
   useRef,
   useMemo,
   useCallback,
+  useContext,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
@@ -78,6 +79,9 @@ import type { RunNotice } from "../../shared/session-stream.js";
 import type { BridgeSearchResponse } from "../../shared/search.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
+import DocPreviewSheet from "./DocPreviewSheet";
+import { BridgeReferenceContext } from "./BridgeReference";
+import { docsRoute } from "./docs/docs-model";
 import ElicitationCard from "./ElicitationCard";
 import ElicitationCancellationNotice from "./ElicitationCancellationNotice";
 import { MessageActionsMenu, type MessageActionMenuTarget } from "./MessageActions";
@@ -832,6 +836,12 @@ export default function ChatView({
   const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [warming, setWarming] = useState(false);
   const planOverlay = useOverlayParam("sheet");
+  const docOverlay = useOverlayParam("doc");
+  const referenceContext = useContext(BridgeReferenceContext);
+  const docReferenceContext = useMemo(() => ({
+    ...referenceContext,
+    onOpenDoc: (path: string) => docOverlay.open(path, { replace: docOverlay.isOpen }),
+  }), [referenceContext, docOverlay.open, docOverlay.isOpen]);
   const showPlan = planOverlay.isOpen && planOverlay.value === "plan";
   // The agents list is a sheet on a phone, opened the same way so the back button closes it.
   const showAgents = planOverlay.isOpen && planOverlay.value === "agents";
@@ -939,6 +949,24 @@ export default function ChatView({
   const pendingHistoricalAnchorRef = useRef<string | null>(null);
   /** Anchor applied by the navigation landing, released when a new run needs the live tail. */
   const loadAnchoredMessageKeyRef = useRef<string | null>(null);
+  const docReturnKey = useMemo(() => ["chat-doc-return", composerKey], [composerKey]);
+  const openFullDoc = (path: string, hash: string) => {
+    const scroller = scrollContainerRef.current;
+    if (scroller) {
+      const top = scroller.getBoundingClientRect().top;
+      const anchor = [...messageElementRefs.current].find(([, element]) => element.getBoundingClientRect().bottom > top);
+      queryClient.setQueryData(docReturnKey, {
+        scrollTop: getSafeScrollTop(scroller),
+        anchorKey: anchor?.[0],
+        offset: anchor ? anchor[1].getBoundingClientRect().top - top : 0,
+      });
+    }
+    const params = new URLSearchParams(location.search);
+    params.delete("doc");
+    const search = params.toString();
+    const returnTo = `${location.pathname}${search ? `?${search}` : ""}${location.hash}`;
+    navigate(docsRoute(path, hash), { replace: true, state: { docsReturnTo: returnTo } });
+  };
   const contextRefreshStreamingRef = useRef(false);
   const pendingRenderedReadThroughRef = useRef<{
     sessionId: string;
@@ -2587,12 +2615,29 @@ export default function ChatView({
     // Consume the arming even when there is nothing to anchor, so a later reply in a session that
     // opened empty is treated as ordinary live output.
     pendingInitialAnchorRef.current = false;
+    const docReturn = queryClient.getQueryData<{ scrollTop: number; anchorKey?: string; offset: number }>(docReturnKey);
+    const scroller = scrollContainerRef.current;
+    if (docReturn && scroller) {
+      queryClient.removeQueries({ queryKey: docReturnKey, exact: true });
+      cancelFollowScroll();
+      stickToBottomRef.current = false;
+      anchoredMessageKeyRef.current = null;
+      const anchor = docReturn.anchorKey ? messageElementRefs.current.get(docReturn.anchorKey) : null;
+      programmaticScrollRef.current = true;
+      scroller.scrollTop = anchor
+        ? getSafeScrollTop(scroller) + anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top - docReturn.offset
+        : docReturn.scrollTop;
+      lastScrollTopRef.current = getSafeScrollTop(scroller);
+      setShowJumpToLatest(getDistanceFromBottom(scroller) > FOLLOW_BOTTOM_THRESHOLD_PX);
+      settleProgrammaticScroll();
+      return;
+    }
     if (!latestMessageAnchorKey || latestMessageRole !== "assistant") return;
     // Active runs keep the existing live-follow behaviour; the tail is what matters there.
     if (isStreaming || creating) return;
     scrollToLatest({ immediate: true, force: true, anchorKey: latestMessageAnchorKey });
     loadAnchoredMessageKeyRef.current = anchoredMessageKeyRef.current;
-  }, [creating, entries, isStreaming, latestMessageAnchorKey, latestMessageRole, loading, scrollToLatest]);
+  }, [cancelFollowScroll, creating, docReturnKey, entries, isStreaming, latestMessageAnchorKey, latestMessageRole, loading, queryClient, scrollToLatest, settleProgrammaticScroll]);
 
   // Auto-scroll during streaming until the newest message itself reaches the viewport top.
   useEffect(() => {
@@ -3141,6 +3186,7 @@ export default function ChatView({
   );
 
   return (
+    <BridgeReferenceContext.Provider value={docReferenceContext}>
     <div
       ref={setChatRoot}
       className="chat-ui flex-1 flex flex-col min-h-0"
@@ -3395,6 +3441,10 @@ export default function ChatView({
           onClose={planOverlay.close}
         />
       )}
+      {docOverlay.value && (
+        <DocPreviewSheet docPath={docOverlay.value} onClose={docOverlay.close} onOpenFull={openFullDoc} />
+      )}
     </div>
+    </BridgeReferenceContext.Provider>
   );
 }

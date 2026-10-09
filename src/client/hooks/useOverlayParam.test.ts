@@ -6,7 +6,7 @@ import { getSearchWithParam, getSearchWithoutParam, useOverlayParam } from "./us
 
 type OverlayHarnessApi = {
   location: string;
-  open: (paramValue?: string) => void;
+  open: (paramValue?: string, options?: { replace?: boolean }) => void;
   close: () => void;
   back: () => void;
 };
@@ -106,6 +106,26 @@ describe("useOverlayParam navigation behavior", () => {
 
       await act(async () => { getApi().back(); });
       expect(getApi().location).toBe("/home");
+    });
+  });
+
+  it("keeps close at the original route when overlay content is replaced", async () => {
+    await withOverlayHarness(["/home", "/sessions/abc"], 1, async (getApi, act) => {
+      await act(async () => { getApi().open("one"); });
+      await act(async () => { getApi().open("two", { replace: true }); });
+      expect(getApi().location).toBe("/sessions/abc?sheet=two");
+      await act(async () => { getApi().close(); });
+      expect(getApi().location).toBe("/sessions/abc");
+      await act(async () => { getApi().back(); });
+      expect(getApi().location).toBe("/home");
+    });
+  });
+
+  it("does not claim a direct-linked overlay when replacing its content", async () => {
+    await withOverlayHarness(["/home", "/sessions/abc?sheet=one"], 1, async (getApi, act) => {
+      await act(async () => { getApi().open("two", { replace: true }); });
+      await act(async () => { getApi().close(); });
+      expect(getApi().location).toBe("/sessions/abc");
     });
   });
 });

@@ -50,20 +50,25 @@ export function useOverlayParam(paramName: string) {
   }, [isOpen, location.key, locationSignature]);
 
   const open = useCallback(
-    (paramValue: string = "1") => {
+    (paramValue: string = "1", options: { replace?: boolean } = {}) => {
       if (searchParams.get(paramName) === paramValue) return;
       const search = getSearchWithParam(location.search, paramName, paramValue);
-      pendingOwnedLocationSignatureRef.current = getLocationSignature(location.pathname, search, location.hash);
+      const replace = options.replace === true;
+      const owned = ownedLocationKeysRef.current.has(location.key);
+      if (replace) ownedLocationKeysRef.current.delete(location.key);
+      pendingOwnedLocationSignatureRef.current = replace && !owned
+        ? null
+        : getLocationSignature(location.pathname, search, location.hash);
       navigate(
         {
           pathname: location.pathname,
           search,
           hash: location.hash,
         },
-        { replace: false }, // push — creates a back-button stop
+        { replace },
       );
     },
-    [location.hash, location.pathname, location.search, navigate, paramName, searchParams],
+    [location.hash, location.key, location.pathname, location.search, navigate, paramName, searchParams],
   );
 
   const close = useCallback(() => {
