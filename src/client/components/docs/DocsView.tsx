@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
+import { Button } from "../../design/primitives";
+import { isRecord } from "../../../shared/is-record";
 import { setLastViewedDoc } from "../../last-viewed";
 import { useIsMobile } from "../../useIsMobile";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
@@ -91,6 +94,12 @@ export default function DocsView({ onDocTitleChange }: DocsViewProps = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const returnToRef = useRef(
+    isRecord(location.state) && typeof location.state.docsReturnTo === "string"
+      && /^\/(?:sessions\/[^/?#]+|tasks\/[^/?#]+\/sessions\/[^/?#]+|helm)(?:[?#]|$)/.test(location.state.docsReturnTo)
+      ? location.state.docsReturnTo
+      : null,
+  );
 
   const docPath = useMemo(() => readDocPath(location.pathname), [location.pathname]);
   const isCollectionRoute = docPath !== null && new URLSearchParams(location.search).has("db");
@@ -337,7 +346,14 @@ export default function DocsView({ onDocTitleChange }: DocsViewProps = {}) {
     <DocsShellProvider value={shell}>
       <div className="docs-ui flex h-full min-h-0 overflow-hidden bg-bg-primary">
         {showRail && <aside className="w-[17.5rem] shrink-0 border-r border-border">{sidebar("rail")}</aside>}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">{screen}</main>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {returnToRef.current && (
+            <div className="shrink-0 border-b border-border px-2 py-1">
+              <Button variant="ghost" icon={<ArrowLeft size={14} />} onClick={() => navigate(returnToRef.current!, { replace: true })}>Back to chat</Button>
+            </div>
+          )}
+          {screen}
+        </main>
       </div>
 
       {dialog?.kind === "new-page" && <NewPageDialog initialFolder={dialog.folder} initialSlug={dialog.slug} onClose={() => setDialog(null)} />}

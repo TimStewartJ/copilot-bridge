@@ -129,6 +129,13 @@ When referring to an Azure DevOps work item or pull request in a user-facing res
 </work_reference_links>
 `.trim();
 
+export const DOC_LINK_GUIDANCE = `
+<docs_links>
+When citing a Bridge knowledge base page in chat, use [[canonical-page-path|descriptive title]] or [descriptive title](bridge://doc/canonical-page-path). Both open a document preview without leaving the chat; Open full opens the Docs reader with a return to chat.
+Use the exact path returned by docs_read/docs_search or shown in the knowledge base context. Read a page before summarizing it, and link only pages you have verified exist. Do not use wikilinks for repository files or external websites. Put a link on its own line when the document is the main result.
+</docs_links>
+`.trim();
+
 export const COMPUTER_USE_OFF_GUIDANCE = `
 <computer_use>
 Desktop computer use is turned off for this Bridge, so this session has no computer-use tools. If a task needs it, say so and point the user to Settings > Integrations > Computer use.

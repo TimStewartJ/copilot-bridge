@@ -1,5 +1,5 @@
 import { memo } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
@@ -7,7 +7,9 @@ import type { ChatCompletionEntry } from "../api";
 import { AutopilotBadge } from "../design/primitives";
 import type { AutopilotRunSummary } from "../lib/autopilot-runs";
 import { formatDuration } from "../lib/tool-presentation";
-import CodeBlock from "./CodeBlock";
+import remarkWikilink from "../lib/remark-wikilink";
+import { MESSAGE_MARKDOWN_COMPONENTS } from "./chat-markdown";
+import { bridgeUrlTransform } from "./BridgeReference";
 import { APP_PROSE } from "./shared/prose-classes";
 
 interface CompletionCardProps {
@@ -23,13 +25,12 @@ function describeAutopilotRun(run: AutopilotRunSummary): string {
   return parts.join(" · ");
 }
 
-const SUMMARY_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
-const SUMMARY_MARKDOWN_COMPONENTS: Components = { pre: CodeBlock };
+const SUMMARY_REMARK_PLUGINS = [remarkGfm, remarkBreaks, remarkWikilink];
 
 /** Parsed once per summary. The transcript renders again on every streamed chunk, and a summary can be long. */
 const CompletionSummary = memo(function CompletionSummary({ content }: { content: string }) {
   return (
-    <ReactMarkdown remarkPlugins={SUMMARY_REMARK_PLUGINS} components={SUMMARY_MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={SUMMARY_REMARK_PLUGINS} components={MESSAGE_MARKDOWN_COMPONENTS} urlTransform={bridgeUrlTransform}>
       {content}
     </ReactMarkdown>
   );

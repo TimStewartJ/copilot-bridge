@@ -39,6 +39,7 @@ import {
   STAGING_INSTRUCTIONS,
   TOOL_NAMING_GUIDANCE,
   WORK_REFERENCE_GUIDANCE,
+  DOC_LINK_GUIDANCE,
   WRITING_GUIDANCE,
 } from "./session-instructions.js";
 import { renderResponseStyle } from "../shared/response-style.js";
@@ -363,6 +364,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     HOME_GUIDANCE,
     TOOL_NAMING_GUIDANCE,
     WORK_REFERENCE_GUIDANCE,
+    DOC_LINK_GUIDANCE,
     ...(computerUseEnabled ? [] : [COMPUTER_USE_OFF_GUIDANCE]),
   ];
 
