@@ -8,7 +8,7 @@ import type {
   PendingUserInputRequestView,
   ToolArgs,
 } from "./api";
-import { API_BASE, reportTiming, sendChatMessage } from "./api";
+import { API_BASE, reportTiming, retrySessionRun, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import { isSendMode, type SendMode } from "../shared/send-mode.js";
 import type { RunNotice } from "../shared/session-stream.js";
@@ -263,6 +263,7 @@ export function normalizeRunNotice(value: unknown): RunNotice | null {
     ...(optionalString(value.content) ? { content: optionalString(value.content) } : {}),
     ...(optionalString(value.message) ? { message: optionalString(value.message) } : {}),
     ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
+    ...(kind === "error" && optionalString(value.retryRunId) ? { retryRunId: optionalString(value.retryRunId) } : {}),
   };
 }
 
@@ -1215,6 +1216,40 @@ export function useSessionStream(
     }
   }, [sessionId]);
 
+  const retryFailedRun = useCallback(async (runId: string) => {
+    if (!sessionId) throw new Error("Open a saved chat before retrying.");
+    const previous = streamStateRef.current;
+    if (previous.isStreaming) throw new Error("This chat is already working.");
+    setStreamState(createState("sending", {
+      contextSummary: previous.contextSummary,
+      historyEpoch: previous.historyEpoch,
+      runNotice: previous.runNotice,
+      pendingOrigin: "message",
+      runMode: "interactive",
+    }));
+    try {
+      await retrySessionRun(sessionId, runId);
+      if (sessionRef.current === sessionId) connectStream(sessionId, "message", "interactive");
+    } catch (error) {
+      if (sessionRef.current === sessionId) {
+        setStreamState((current) => createState("idle", {
+          contextSummary: current.contextSummary,
+          historyEpoch: current.historyEpoch,
+          runNotice: previous.runNotice,
+        }));
+      }
+      throw error;
+    }
+  }, [connectStream, sessionId]);
+
+  const restoreRunNotice = useCallback((sid: string, notice: RunNotice | undefined, observedEpoch: number) => {
+    setStreamState((current) => {
+      // A history response started before a new run ended must not replace its newer notice.
+      if (sessionRef.current !== sid || current.isStreaming || current.historyEpoch !== observedEpoch) return current;
+      return { ...current, runNotice: normalizeRunNotice(notice) };
+    });
+  }, []);
+
   const reconnect = useCallback((sid: string) => {
     connectStream(sid, "reconnect");
   }, [connectStream]);
@@ -1240,5 +1275,5 @@ export function useSessionStream(
       : createState("idle", { contextSummary: current.contextSummary, historyEpoch: current.historyEpoch }));
   }, []);
 
-  return { ...streamState, sendMessage, abortSession, reconnect, ensureConnected, dropFinishedRunOutput };
+  return { ...streamState, sendMessage, retryFailedRun, restoreRunNotice, abortSession, reconnect, ensureConnected, dropFinishedRunOutput };
 }

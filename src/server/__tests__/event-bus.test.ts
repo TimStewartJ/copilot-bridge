@@ -597,7 +597,7 @@ describe("event-bus", () => {
       const cases = [
         {
           id: "notice-error",
-          event: { type: "error", message: "boom", timestamp: "2026-07-23T16:00:00.000Z" },
+          event: { type: "error", message: "boom", sourceEventId: "saved-error", timestamp: "2026-07-23T16:00:00.000Z" },
           expected: { kind: "error", message: "boom" },
         },
         {
@@ -626,6 +626,9 @@ describe("event-bus", () => {
         bus.emit(event as StreamEvent);
 
         expect(bus.getSnapshot().runNotice).toMatchObject(expected);
+        if (event.type === "error") {
+          expect(bus.getSnapshot().runNotice?.retryRunId).toBe(bus.getSnapshot().runId);
+        }
         expect(received.find((entry) => entry.type === event.type)?.runNotice)
           .toMatchObject(expected);
       }

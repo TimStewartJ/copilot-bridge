@@ -16,6 +16,7 @@ export interface RunNotice {
   content?: string;
   message?: string;
   timestamp?: string;
+  retryRunId?: string;
 }
 
 export interface SyntheticTerminalOverlay {

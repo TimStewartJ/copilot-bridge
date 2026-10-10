@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView, SessionRunState, TranscriptAgent } from "../api";
 import { ApiError } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
-import type { SessionHistoryCoverage } from "../../shared/session-stream.js";
+import type { RunNotice, SessionHistoryCoverage } from "../../shared/session-stream.js";
 import type { BridgeSearchResponse } from "../../shared/search.js";
 import {
   COMPONENT_IMPORT_WARMUP_TIMEOUT_MS,
@@ -161,6 +161,7 @@ vi.mock("./ContextMenu", () => ({
 type FetchMessagesFastResult = {
   messages: ChatEntry[];
   runState: SessionRunState;
+  runNotice?: RunNotice;
   total: number;
   warm: boolean;
   hasMore?: boolean;
@@ -423,6 +424,8 @@ async function renderChatView(
   const reconnectMock = vi.fn();
   const ensureConnectedMock = vi.fn();
   const dropFinishedRunOutputMock = vi.fn();
+  const restoreRunNoticeMock = vi.fn();
+  const retryFailedRunMock = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -513,6 +516,8 @@ async function renderChatView(
     mcpServers: [],
     contextSummary: null,
     sendMessage: sendMessageMock,
+    restoreRunNotice: restoreRunNoticeMock,
+    retryFailedRun: retryFailedRunMock,
     abortSession: abortSessionMock,
     reconnect: reconnectMock,
     ensureConnected: ensureConnectedMock,
@@ -585,6 +590,8 @@ async function renderChatView(
     ensureConnectedMock,
     dropFinishedRunOutputMock,
     sendMessageMock,
+    restoreRunNoticeMock,
+    retryFailedRunMock,
   };
 }
 
@@ -5031,6 +5038,73 @@ describe("ChatView disk-authoritative synchronization", () => {
         && candidate.textContent?.includes("run blew up")
       ))).toHaveLength(0);
       expect(renderedText.indexOf("run blew up")).toBeGreaterThan(renderedText.indexOf("assistant reply"));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("hydrates the saved failed-run notice when opening an idle chat", async () => {
+    const notice: RunNotice = { kind: "error", message: "upstream failed", retryRunId: "failed-run" };
+    const { act, cleanup, restoreRunNoticeMock, ensureConnectedMock } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [], runState: "idle", total: 0, warm: true, runNotice: notice,
+      },
+      streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null },
+    });
+    try {
+      await waitUntilAct(act, () => restoreRunNoticeMock.mock.calls.length > 0);
+      expect(restoreRunNoticeMock).toHaveBeenCalledWith("session-1", notice, 0);
+      expect(ensureConnectedMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("retries a failed response once without adding a duplicate user message", async () => {
+    const accepted = createDeferred<void>();
+    const { dom, act, cleanup, retryFailedRunMock, sendMessageMock } = await renderChatView({
+      fetchMessagesFastResult: {
+        messages: [{ role: "user", content: "original question" }], runState: "idle", total: 1, warm: true,
+      },
+      streamOverrides: {
+        isStreaming: false, streamStatus: "idle", pendingOrigin: null,
+        runNotice: { kind: "error", message: "upstream failed", retryRunId: "failed-run" },
+      },
+    });
+    retryFailedRunMock.mockReturnValue(accepted.promise);
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("original question") ?? false);
+      await act(async () => {
+        const button = findButtonByAriaLabel(dom.container, "Retry failed response");
+        clickButton(button);
+        clickButton(button);
+      });
+      expect(retryFailedRunMock).toHaveBeenCalledExactlyOnceWith("failed-run");
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(getReactProps(findButtonByAriaLabel(dom.container, "Retry failed response"))?.disabled).toBe(true);
+      expect(findAllByTag(dom.container, "DIV").filter((element) => element.getAttribute?.("data-role") === "user"))
+        .toHaveLength(1);
+      await act(async () => accepted.resolve());
+    } finally {
+      accepted.resolve();
+      await cleanup();
+    }
+  });
+
+  it("reports a failed retry and leaves its button available", async () => {
+    const { dom, act, cleanup, retryFailedRunMock } = await renderChatView({
+      streamOverrides: {
+        isStreaming: false, streamStatus: "idle", pendingOrigin: null,
+        runNotice: { kind: "error", message: "upstream failed", retryRunId: "failed-run" },
+      },
+    });
+    retryFailedRunMock.mockRejectedValue(new Error("network unavailable"));
+    try {
+      await waitUntilAct(act, () => chatInputMock.mock.calls.length > 0);
+      await act(async () => clickButton(findButtonByAriaLabel(dom.container, "Retry failed response")));
+      await waitUntilAct(act, () => dom.container.textContent?.includes("network unavailable") ?? false);
+      expect(getReactProps(findButtonByAriaLabel(dom.container, "Retry failed response"))?.disabled).toBe(false);
+      expect(dom.container.textContent).toContain("upstream failed");
     } finally {
       await cleanup();
     }

@@ -753,7 +753,13 @@ const RUN_NOTICE_LABELS: Record<RunNotice["kind"], string> = {
  * Renders a run outcome that `events.jsonl` does not contain. Keeping it outside the transcript is
  * what lets disk history stay the sole authority for committed content.
  */
-function RunNoticeCard({ notice }: { notice: RunNotice }) {
+function RunNoticeCard({ notice, onRetry, retryDisabled, retrying, retryError }: {
+  notice: RunNotice;
+  onRetry?: () => void;
+  retryDisabled?: boolean;
+  retrying?: boolean;
+  retryError?: string | null;
+}) {
   const detail = notice.kind === "error" ? notice.message : notice.content;
   const isError = notice.kind === "error";
   return (
@@ -765,6 +771,18 @@ function RunNoticeCard({ notice }: { notice: RunNotice }) {
         className="max-w-xl"
       >
         {detail && <div className="mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-text-secondary">{detail}</div>}
+        {onRetry && (
+          <Button
+            variant="secondary"
+            className="mt-3"
+            disabled={retryDisabled}
+            aria-label="Retry failed response"
+            onClick={onRetry}
+          >
+            {retrying ? "Retrying..." : "Retry response"}
+          </Button>
+        )}
+        {retryError && <div role="alert" className="mt-2 text-sm text-text-secondary">{retryError}</div>}
       </Notice>
     </div>
   );
@@ -832,6 +850,9 @@ export default function ChatView({
    * committed window stays purely disk-derived.
    */
   const [pendingSends, setPendingSends] = useState<PendingSend[]>([]);
+  const [retryingRun, setRetryingRun] = useState(false);
+  const [retryRunError, setRetryRunError] = useState<string | null>(null);
+  const retryingRunRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [warming, setWarming] = useState(false);
@@ -1116,6 +1137,8 @@ export default function ChatView({
     historyEpoch,
     contextSummary: streamContextSummary,
     sendMessage,
+    retryFailedRun,
+    restoreRunNotice,
     abortSession,
     reconnect,
     ensureConnected,
@@ -1124,6 +1147,16 @@ export default function ChatView({
     activeTurnInstanceId,
     mainAgentIdle = false,
   } = useSessionStream(historicalMode ? null : sessionId, onMessageSent, onMessageSent, refreshMcpObservation);
+  const historyEpochRef = useRef(historyEpoch);
+  historyEpochRef.current = historyEpoch;
+  useEffect(() => {
+    retryingRunRef.current = false;
+    setRetryingRun(false);
+    setRetryRunError(null);
+  }, [sessionId]);
+  useEffect(() => {
+    if (isStreaming) setRetryRunError(null);
+  }, [isStreaming]);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
   // disappears from the overlay the moment its persisted entry is present in the loaded window.
@@ -1557,8 +1590,9 @@ export default function ChatView({
       const limit = mode === "window"
         ? loaded
         : mode === "tail" ? Math.min(HISTORY_REFRESH_MAX_LIMIT, loaded) : INITIAL_PAGE_SIZE;
+      const noticeEpoch = historyEpochRef.current;
       try {
-        const { messages: fetched, runState, total, warm, lastVisibleActivityAt, startOffset, hasNewer, agents } = await fetchMessagesFast(
+        const { messages: fetched, runState, runNotice: savedRunNotice, total, warm, lastVisibleActivityAt, startOffset, hasNewer, agents } = await fetchMessagesFast(
           sessionId,
           targetSourceEventId ? { before: 50, after: 50, aroundEventId: targetSourceEventId } : { limit },
         );
@@ -1600,6 +1634,7 @@ export default function ChatView({
         }
         endRead();
         if (historicalMode) return;
+        restoreRunNotice(sessionId, savedRunNotice, noticeEpoch);
 
         if (!loadReported) {
           // Time from navigation to fresh messages on screen.
@@ -1740,6 +1775,7 @@ export default function ChatView({
     // Switching between two drafts changes nothing else here, and must still clear the first.
     composerKey,
     ensureConnected,
+    restoreRunNotice,
     historicalMode,
     queryClient,
     reconnect,
@@ -2668,6 +2704,28 @@ export default function ChatView({
     scrollToLatest,
   ]);
 
+  const handleRetryRun = useCallback(async () => {
+    if (!sessionId || !runNotice?.retryRunId || retryingRunRef.current) return;
+    const ownerSessionId = sessionId;
+    retryingRunRef.current = true;
+    setRetryingRun(true);
+    setRetryRunError(null);
+    try {
+      await retryFailedRun(runNotice.retryRunId);
+      if (sessionIdRef.current === ownerSessionId) haptic("light");
+    } catch (error) {
+      if (sessionIdRef.current !== ownerSessionId) return;
+      setRetryRunError(getErrorMessage(error));
+      haptic("error");
+      if (error instanceof ApiError && error.status === 409) historyRef.current.refresh({ reach: "window" });
+    } finally {
+      if (sessionIdRef.current === ownerSessionId) {
+        retryingRunRef.current = false;
+        setRetryingRun(false);
+      }
+    }
+  }, [retryFailedRun, runNotice, sessionId]);
+
   // Build lightweight pending-only UI. Live tools and assistant text render in the normal chat flow.
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
@@ -2725,7 +2783,18 @@ export default function ChatView({
     }
 
     if (runNotice) {
-      parts.push(<RunNoticeCard key={`run-notice-${runNotice.kind}`} notice={runNotice} />);
+      parts.push(<RunNoticeCard
+        key={`run-notice-${runNotice.kind}`}
+        notice={runNotice}
+        onRetry={runNotice.kind === "error" && runNotice.retryRunId && !historicalMode && sessionId
+          ? () => { void handleRetryRun(); }
+          : undefined}
+        retryDisabled={newWorkDisabled || externallyInUse || loading || warming || isStreaming || historyRunBusy || retryingRun}
+        retrying={retryingRun}
+        retryError={retryRunError}
+      />);
+    } else if (retryRunError) {
+      parts.push(<Notice key="retry-error" tone="danger" title="Could not retry" role="alert">{retryRunError}</Notice>);
     }
 
     if (parts.length === 0) return null;
@@ -2733,6 +2802,17 @@ export default function ChatView({
   }, [
     handleSubmitElicitation,
     handleSubmitUserInput,
+    handleRetryRun,
+    historicalMode,
+    sessionId,
+    newWorkDisabled,
+    externallyInUse,
+    loading,
+    warming,
+    isStreaming,
+    historyRunBusy,
+    retryingRun,
+    retryRunError,
     elicitationCancellation,
     intentText,
     pendingElicitationRequests,
