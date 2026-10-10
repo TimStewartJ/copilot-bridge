@@ -424,6 +424,17 @@ function normalizeEndpointBody(body: unknown): string | undefined {
   return typeof endpoint === "string" && endpoint.startsWith("https://") ? endpoint : undefined;
 }
 
+function getPersistedRunNotice(ctx: AppContext, sessionId: string) {
+  const terminal = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
+  if (!terminal?.notice) return undefined;
+  return {
+    ...terminal.notice,
+    ...(terminal.type === "error" && terminal.notice.kind === "error"
+      ? { retryRunId: terminal.terminalSourceEventId ? terminal.runId : undefined }
+      : {}),
+  };
+}
+
 function getSessionStatus(
   ctx: AppContext,
   sessionId: string,
@@ -433,14 +444,19 @@ function getSessionStatus(
   needsUserInput: boolean;
   backgroundAgents: BackgroundAgentsSummary;
   agentMode?: "autopilot";
+  runNotice?: ReturnType<typeof getPersistedRunNotice>;
 } {
   const runState = ctx.sessionManager.getSessionRunState(sessionId);
   const pendingUserInputCount = ctx.sessionManager.getPendingUserInputCount(sessionId);
+  const runNotice = runState === "idle"
+    ? getPersistedRunNotice(ctx, sessionId)
+    : undefined;
   return {
     runState,
     pendingUserInputCount,
     needsUserInput: pendingUserInputCount > 0,
     backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(sessionId),
+    ...(runNotice ? { runNotice } : {}),
     ...(ctx.sessionManager.getSessionAgentMode(sessionId) === "autopilot" ? { agentMode: "autopilot" as const } : {}),
   };
 }
@@ -2916,6 +2932,41 @@ export function createApiRouter(
     }
   });
 
+  router.post("/sessions/:id/retry", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Chat retry")) return;
+    const sessionId = req.params.id;
+    const runId = req.body?.runId;
+    if (typeof runId !== "string" || !runId.trim() || runId.length > 200) {
+      return res.status(400).json({ error: "runId must be a non-empty string of at most 200 characters" });
+    }
+    const terminal = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
+    if (terminal?.type !== "error" || !terminal.terminalSourceEventId || terminal.runId !== runId) {
+      return res.status(409).json({ error: "This failed run is no longer the latest run. Refresh the chat before retrying." });
+    }
+    if (ctx.sessionManager.isSessionBusy(sessionId) || ctx.sessionManager.getSessionRunState(sessionId) !== "idle") {
+      return res.status(409).json({ error: "This chat is already working. Wait for it to finish before retrying." });
+    }
+    try {
+      // No await between checking the failure and claiming the new run.
+      ctx.sessionManager.startWork(
+        sessionId,
+        "The user requested a retry of the last failed response. Continue from the saved conversation "
+          + "and finish answering the latest user request. Check existing results before repeating any "
+          + "tool calls or actions that may already have completed.",
+        undefined,
+        { mode: "interactive", promptSource: "system" },
+      );
+      if (ctx.sessionMetaStore.getMeta(sessionId)?.archived) setSessionArchived(sessionId, false);
+      noteUserMessage(sessionId);
+      console.log(`[web] [${sessionId.slice(0, 8)}] Retrying failed run ${runId}`);
+      return res.status(202).json({ status: "accepted" });
+    } catch (error) {
+      return res.status(getChatDeliveryErrorStatus(error)).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
 
   router.post("/sessions/:sessionId/user-input/:requestId/respond", async (req, res) => {
     try {
@@ -3052,7 +3103,7 @@ export function createApiRouter(
 
       if (!bus) {
         const terminalOverlay = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
-        const runNotice = terminalOverlay?.notice;
+        const runNotice = getPersistedRunNotice(ctx, sessionId);
         sendEvent({
           type: "snapshot",
           runId: terminalOverlay?.runId ?? sessionId,

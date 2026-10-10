@@ -32,6 +32,8 @@ import {
 } from "../shared/terminal-completion.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { RunNotice } from "../shared/session-stream.js";
+export type { RunNotice, RunNoticeKind } from "../shared/session-stream.js";
 
 export type {
   NativeUserInputRequest,
@@ -146,19 +148,6 @@ export interface LiveAssistantSegment {
   timestamp?: string;
 }
 
-export type RunNoticeKind = "stopped" | "interrupted" | "error" | "command";
-
-/**
- * Bridge-native run outcome with no `events.jsonl` representation. Rendered as a notice below the
- * transcript instead of being injected into it, so disk stays the only transcript authority.
- */
-export interface RunNotice {
-  kind: RunNoticeKind;
-  content?: string;
-  message?: string;
-  timestamp?: string;
-}
-
 /**
  * Ephemeral run state only. Committed transcript content and ordering come from `events.jsonl`
  * via `/messages-fast`; nothing here re-projects it.
@@ -263,6 +252,7 @@ interface ElicitationCanceledOptions {
 
 export interface TerminalNoticeOptions {
   terminalType: "done" | "error" | "aborted" | "shutdown";
+  runId?: string;
   terminalSourceEventId?: string;
   assistantSourceEventId?: string;
   content?: string;
@@ -280,7 +270,12 @@ export interface TerminalNoticeOptions {
 export function createRunNotice(options: TerminalNoticeOptions): RunNotice | undefined {
   const timestamp = options.timestamp ? { timestamp: options.timestamp } : {};
   if (options.terminalType === "error") {
-    return { kind: "error", message: options.message || "Unknown session error", ...timestamp };
+    return {
+      kind: "error",
+      message: options.message || "Unknown session error",
+      ...timestamp,
+      ...(options.runId && options.terminalSourceEventId ? { retryRunId: options.runId } : {}),
+    };
   }
   if (options.terminalType === "aborted" || options.terminalType === "shutdown") {
     const kind = options.terminalType === "aborted" ? "stopped" : "interrupted";
@@ -1030,6 +1025,7 @@ export class SessionEventBus {
       this.currentTurnInstanceId = undefined;
       this.runNotice = createRunNotice({
         terminalType,
+        runId: this.runId,
         ...(this.terminalEventId ? { terminalSourceEventId: this.terminalEventId } : {}),
         ...(this.terminalAssistantEventId
           ? { assistantSourceEventId: this.terminalAssistantEventId }
