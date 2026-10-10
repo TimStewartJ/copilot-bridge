@@ -84,13 +84,126 @@ describe("Session manager routes", () => {
     });
 
     const res = await request(app).get("/api/sessions/test-id/messages-fast");
-
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
       coverage: { latestEventId: "event-1" },
       warm: false,
     });
+  });
+
+  it("restores a failed run notice from storage without an event bus or runtime resume", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("failed-chat", {
+      type: "error",
+      runId: "failed-run",
+      terminalSourceEventId: "saved-error",
+      timestamp: "2026-10-09T23:07:43.408Z",
+      notice: { kind: "error", message: "400 internal server error" },
+    });
+
+    const response = await request(app).get("/api/sessions/failed-chat/messages-fast");
+    expect(response.status).toBe(200);
+    expect(response.body.runNotice).toEqual({
+      kind: "error",
+      message: "400 internal server error",
+      retryRunId: "failed-run",
+    });
+    expect(ctx.sessionManager.warmSession).not.toHaveBeenCalled();
+    expect(ctx.eventBusRegistry.getBus("failed-chat")).toBeUndefined();
+
+    const stream = await request(app).get("/api/sessions/failed-chat/stream");
+    expect(stream.text).toContain('"retryRunId":"failed-run"');
+  });
+
+  it("does not restore an obsolete failure while the session is busy", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+      type: "error", runId: "old-run", notice: { kind: "error", message: "old error" },
+    });
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
+    const response = await request(app).get("/api/sessions/test-id/messages-fast");
+    expect(response.body.runNotice).toBeUndefined();
+  });
+
+  it("keeps the saved failure visible while passive warming holds the session", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+      type: "error", runId: "failed-run", terminalSourceEventId: "saved-error",
+      notice: { kind: "error", message: "upstream failed" },
+    });
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    const response = await request(app).get("/api/sessions/test-id/messages-fast");
+    expect(response.body.runState).toBe("idle");
+    expect(response.body.runNotice.retryRunId).toBe("failed-run");
+  });
+
+  it("retries the latest failure as an interactive system continuation and refuses duplicate retries", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+      type: "error", runId: "failed-run", terminalSourceEventId: "saved-error",
+      notice: { kind: "error", message: "upstream failed" },
+    });
+    ctx.sessionManager.startWork = vi.fn(() => {
+      ctx.sessionMetaStore.clearTerminalOverlay("test-id");
+    });
+    const response = await request(app).post("/api/sessions/test-id/retry").send({ runId: "failed-run" });
+    expect(response.status).toBe(202);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledExactlyOnceWith(
+      "test-id",
+      expect.stringContaining("Check existing results before repeating"),
+      undefined,
+      { mode: "interactive", promptSource: "system" },
+    );
+    const duplicate = await request(app).post("/api/sessions/test-id/retry").send({ runId: "failed-run" });
+    expect(duplicate.status).toBe(409);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "", 42, "x".repeat(201)])("rejects an invalid failed run ID: %s", async (runId) => {
+    vi.spyOn(ctx.sessionManager, "startWork");
+    const response = await request(app).post("/api/sessions/test-id/retry").send({ runId });
+    expect(response.status).toBe(400);
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "newer", "done", "busy", "stalled"])("rejects a %s retry without sending work", async (kind) => {
+    vi.spyOn(ctx.sessionManager, "startWork");
+    if (kind !== "missing") {
+      ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+        type: kind === "done" ? "done" : "error",
+        runId: kind === "newer" ? "new-run" : "failed-run",
+        terminalSourceEventId: "saved-error",
+        notice: { kind: "error", message: "upstream failed" },
+      });
+    }
+    if (kind === "busy") ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+    if (kind === "stalled") ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    const response = await request(app).post("/api/sessions/test-id/retry").send({ runId: "failed-run" });
+    expect(response.status).toBe(409);
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
+  });
+
+  it("keeps the failure available if a retry cannot start", async () => {
+    ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+      type: "error", runId: "failed-run", terminalSourceEventId: "saved-error",
+      notice: { kind: "error", message: "upstream failed" },
+    });
+    ctx.sessionManager.startWork = vi.fn(() => { throw new Error("Agent backend is unavailable"); });
+    const response = await request(app).post("/api/sessions/test-id/retry").send({ runId: "failed-run" });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.body.error).toBe("Agent backend is unavailable");
+    expect(ctx.sessionMetaStore.getTerminalOverlay("test-id")?.runId).toBe("failed-run");
+  });
+
+  it("does not offer a response retry when the prompt never reached the runtime", async () => {
+    vi.spyOn(ctx.sessionManager, "startWork");
+    ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+      type: "error", runId: "failed-run", notice: { kind: "error", message: "initialization failed" },
+    });
+    const history = await request(app).get("/api/sessions/test-id/messages-fast");
+    expect(history.body.runNotice.message).toBe("initialization failed");
+    expect(history.body.runNotice.retryRunId).toBeUndefined();
+    const response = await request(app).post("/api/sessions/test-id/retry").send({ runId: "failed-run" });
+    expect(response.status).toBe(409);
+    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
   it("GET /api/sessions/:id/messages-fast carries the session's agents with whichever messages it returns", async () => {

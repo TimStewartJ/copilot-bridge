@@ -244,6 +244,67 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
+  it("restores a failure on navigation back without opening a stream", async () => {
+    await withHarness(async ({ getState, setSessionId, act }) => {
+      const notice = { kind: "error" as const, message: "upstream failed", retryRunId: "failed-run" };
+      await act(async () => getState().restoreRunNotice("session-1", notice, 0));
+      expect(getState().runNotice).toEqual(notice);
+      await act(async () => setSessionId("session-2"));
+      expect(getState().runNotice).toBeNull();
+      await act(async () => getState().restoreRunNotice("session-1", notice, 0));
+      expect(getState().runNotice).toBeNull();
+      await act(async () => setSessionId("session-1"));
+      await act(async () => getState().restoreRunNotice("session-1", notice, 0));
+      expect(getState().runNotice).toEqual(notice);
+      expect(MockEventSource.instances).toHaveLength(0);
+    });
+  });
+
+  it("does not overwrite an active run or a newer terminal notice with a stale history response", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      const readEpoch = getState().historyEpoch;
+      await act(async () => getState().restoreRunNotice("session-1", { kind: "error", message: "old error" }, readEpoch));
+      expect(getState().runNotice).toBeNull();
+      await act(async () => source.emit({
+        type: "error", runNotice: { kind: "error", message: "new error", retryRunId: "new-run" },
+      }));
+      await act(async () => getState().restoreRunNotice("session-1", undefined, readEpoch));
+      expect(getState().runNotice?.message).toBe("new error");
+      await act(async () => getState().restoreRunNotice("session-1", undefined, getState().historyEpoch));
+      expect(getState().runNotice).toBeNull();
+    });
+  });
+
+  it("retries with the failure ID only and attaches an interactive stream", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true, json: async () => ({ status: "accepted" }),
+      } as Response);
+      await act(async () => getState().retryFailedRun("failed-run"));
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions/session-1/retry");
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ runId: "failed-run" });
+      expect(getSource().url).toBe("/api/sessions/session-1/stream");
+      expect(getState().runMode).toBe("interactive");
+      expect(getState().pendingUserMessages).toEqual([]);
+    });
+  });
+
+  it("keeps the failed notice when the retry request fails", async () => {
+    await withHarness(async ({ getState, act }) => {
+      const notice = { kind: "error" as const, message: "upstream failed", retryRunId: "failed-run" };
+      await act(async () => getState().restoreRunNotice("session-1", notice, 0));
+      vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network unavailable"));
+      await act(async () => {
+        await expect(getState().retryFailedRun("failed-run")).rejects.toThrow("network unavailable");
+      });
+      expect(getState().runNotice).toEqual(notice);
+      expect(getState().isStreaming).toBe(false);
+    });
+  });
+
   it("keeps live state while EventSource reconnects after a transport error", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));

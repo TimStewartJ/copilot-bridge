@@ -19,6 +19,7 @@ import type {
   CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
+import type { RunNotice } from "../shared/session-stream.js";
 import type { ModelFamily } from "../shared/model-families.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { ResponseStyleSettings } from "../shared/response-style.js";
@@ -1228,6 +1229,13 @@ export interface ChatMessageAcceptedResponse {
   mode?: "steered" | "queued" | "command" | "hands-free";
 }
 
+export function retrySessionRun(sessionId: string, runId: string): Promise<ChatMessageAcceptedResponse> {
+  return apiFetch<ChatMessageAcceptedResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/retry`,
+    { runId },
+  );
+}
+
 export interface ChatMessageSendOptions {
   waitForDelivery?: boolean;
   clientMessageId?: string;
@@ -1280,6 +1288,7 @@ export async function fetchSlashCommands(sessionId: string): Promise<SlashComman
 export interface MessagesFastResponse {
   messages: ChatEntry[];
   runState: SessionRunState;
+  runNotice?: RunNotice;
   total: number;
   hasMore: boolean;
   startOffset?: number;
