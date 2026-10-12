@@ -22,6 +22,13 @@ import {
   type LauncherChildStopOutcome,
 } from "./launcher-exit.js";
 import { waitForChildExit } from "./launcher-process.js";
+import {
+  getCliTunnelConnectCredential,
+  probeTunnelHealth,
+  type TunnelConnectCredential,
+  type TunnelProbeResult,
+} from "./launcher-tunnel-probe.js";
+export { isTunnelAuthRedirect } from "./launcher-tunnel-probe.js";
 
 const RETRY_BASE_MS = 5_000;
 const RETRY_CAP_MS = 60_000;
@@ -35,32 +42,16 @@ const HEALTH_FAILURE_THRESHOLD = 3;
  * strictly consecutive count can sit at 1/3 or 2/3 for hours without recycling.
  */
 const HEALTH_FAILURE_WINDOW = 5;
-/**
- * A public probe that succeeds but takes this long while the local server answers
- * promptly is the leading indicator of a bad relay session and counts as a failure.
- */
+/** Slow but valid forwarding is logged, not counted as a host failure. */
 const HEALTH_SLOW_MS = 3_000;
 const HOST_RECOVERY_GRACE_MS = 15_000;
 const HOST_TOKEN_RENEW_MARGIN_MS = 60 * 60_000;
 const IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
+const CONNECT_TOKEN_RENEW_MARGIN_MS = 60_000;
+const HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 
 const HOST_STATUS_WAKE_RE =
   /ClientSSH: Session closed unexpectedly|Error running client SSH session|Error connecting host tunnel session/i;
-/**
- * An access-controlled tunnel answers unauthenticated requests with a redirect to the
- * Dev Tunnels sign-in page even when the host connection is unavailable. The redirect
- * only proves the authentication front door is reachable; host connectivity is checked
- * separately through `devtunnel show`.
- */
-const TUNNEL_AUTH_REDIRECT_HOST_RE = /(?:^|\.)rel\.tunnels\.api\.visualstudio\.com$/i;
-const TUNNEL_AUTH_REDIRECT_PATH_RE = /^\/auth(?:\/|$)/i;
-
-type ProbeResult = {
-  healthy: boolean;
-  durationMs: number;
-  detail?: string;
-};
-
 type HealthObservation = {
   failed: boolean;
   durationMs: number;
@@ -84,20 +75,8 @@ export type TunnelHostCredential = {
 export type TunnelHostAuth = {
   getCredential: (tunnelName: string) => Promise<TunnelHostCredential>;
   inspectHost: (credential: TunnelHostCredential, timeoutMs: number) => Promise<TunnelHostStatus>;
+  getConnectCredential: (credential: TunnelHostCredential) => Promise<TunnelConnectCredential>;
 };
-
-export function isTunnelAuthRedirect(status: number, location: string | null | undefined): boolean {
-  if (status !== 301 && status !== 302 && status !== 303 && status !== 307 && status !== 308) return false;
-  if (!location) return false;
-  try {
-    const target = new URL(location);
-    return target.protocol === "https:"
-      && TUNNEL_AUTH_REDIRECT_HOST_RE.test(target.hostname)
-      && TUNNEL_AUTH_REDIRECT_PATH_RE.test(target.pathname);
-  } catch {
-    return false;
-  }
-}
 
 export type TunnelSupervisorOptions = {
   dataDir: string;
@@ -142,6 +121,7 @@ export type TunnelSupervisorDependencies = {
   waitForChildExit: typeof waitForChildExit;
   fetch: typeof fetch;
   inspectTunnelHost: (name: string, timeoutMs: number) => Promise<TunnelHostStatus>;
+  getConnectCredential: (name: string) => Promise<TunnelConnectCredential>;
   readState: (dataDir: string, fileName: string) => TunnelRuntimeState | null;
   writeState: (dataDir: string, state: TunnelRuntimeState, fileName: string) => void;
   clearState: (dataDir: string, fileName: string) => void;
@@ -163,6 +143,7 @@ const defaultDependencies: TunnelSupervisorDependencies = {
   waitForChildExit,
   fetch,
   inspectTunnelHost,
+  getConnectCredential: getCliTunnelConnectCredential,
   readState: readTunnelRuntimeState,
   writeState: writeTunnelRuntimeState,
   clearState: clearTunnelRuntimeState,
@@ -234,38 +215,6 @@ export function planTunnelSupervisors(
   ];
 }
 
-async function probe(
-  fetchFn: typeof fetch,
-  url: string,
-  timeoutMs: number,
-  options: { acceptAuthRedirect?: boolean } = {},
-): Promise<ProbeResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const startedAt = Date.now();
-  try {
-    // Never follow redirects: a relay sign-in bounce must be judged here, not turned
-    // into a slow round trip through the identity provider.
-    const response = await fetchFn(url, { signal: controller.signal, redirect: "manual" });
-    const durationMs = Date.now() - startedAt;
-    if (response.ok) return { healthy: true, durationMs };
-    if (options.acceptAuthRedirect && isTunnelAuthRedirect(response.status, response.headers.get("location"))) {
-      return { healthy: true, durationMs, detail: "auth-gated" };
-    }
-    return { healthy: false, durationMs, detail: `HTTP ${response.status}` };
-  } catch (error) {
-    return {
-      healthy: false,
-      durationMs: Date.now() - startedAt,
-      detail: error instanceof Error && error.name === "AbortError"
-        ? `timed out after ${timeoutMs}ms`
-        : error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export class TunnelSupervisor {
   private readonly dataDir: string;
   private readonly log: (message: string) => void;
@@ -303,7 +252,11 @@ export class TunnelSupervisor {
   private retryDelayMs: number;
   /** Most recent health observations for the current child, oldest first. */
   private healthWindow: HealthObservation[] = [];
-  private authGateLogged = false;
+  private connectCredential: TunnelConnectCredential | null = null;
+  private connectRenewAt = 0;
+  private probeBlocker: string | null = null;
+  private nextHealthRestartAt = 0;
+  private lastHealthCheckAt = 0;
   private hostDisconnectedAt: number | null = null;
   private hostStatusFailureLogged = false;
   private timer: NodeJS.Timeout | null = null;
@@ -457,12 +410,13 @@ export class TunnelSupervisor {
     }
 
     const child = this.child;
+    this.lastHealthCheckAt = Date.now();
     if (this.credential && Date.now() >= this.renewAt(this.credential) && await this.renewHostToken(child)) {
       return;
     }
     const localUrl = `http://127.0.0.1:${this.port}/api/health`;
-    const local = await probe(this.deps.fetch, localUrl, this.healthTimeoutMs);
-    if (!local.healthy) {
+    const local = await probeTunnelHealth(this.deps.fetch, localUrl, this.healthTimeoutMs);
+    if (local.kind !== "healthy") {
       // Do not recycle the tunnel while the server itself is unavailable.
       this.healthWindow = [];
       return;
@@ -496,35 +450,88 @@ export class TunnelSupervisor {
         this.requestReconcile(remainingGraceMs);
         return;
       }
-      const stopReason = hostStatus.hostConnections === null
-        ? "host connection recovery could not be confirmed"
-        : "persistent zero host connections";
-      const stopped = await this.stopChild(child, stopReason);
-      if (!stopped) throw new Error("Unable to recycle disconnected tunnel");
-      this.requestReconcile(0);
-      return;
+      if (hostStatus.hostConnections === 0) {
+        await this.recycleUnhealthyChild(child, "persistent zero host connections");
+        return;
+      }
     }
 
     const publicUrl = new URL("/api/health", this.url).toString();
-    const publicResult = await probe(this.deps.fetch, publicUrl, this.healthTimeoutMs, { acceptAuthRedirect: true });
-    if (this.child !== child || !this.published) return;
-    if (publicResult.detail === "auth-gated" && !this.authGateLogged) {
-      this.authGateLogged = true;
-      this.log("[tunnel] Public endpoint is access-controlled; verifying host connectivity separately");
-    }
-    const slow = publicResult.healthy && publicResult.durationMs >= this.healthSlowMs;
-    if (publicResult.healthy && !slow) {
+    const publicResult = await this.probeForwarding(child, publicUrl);
+    if (!publicResult || !this.isActiveChild(child)) return;
+    if (publicResult.kind === "healthy") {
+      if (this.probeBlocker) this.log("[tunnel] Authenticated forwarding health recovered");
+      this.probeBlocker = null;
+      this.retryDelayMs = this.retryBaseMs;
+      this.hostDisconnectedAt = null;
+      if (publicResult.durationMs >= this.healthSlowMs) {
+        this.log(`[tunnel] Forwarding health slow: ${publicResult.durationMs}ms (local ${local.durationMs}ms); not recycling`);
+      }
       this.recordHealthObservation({ failed: false, durationMs: publicResult.durationMs });
       return;
+    }
+    if (publicResult.kind === "auth" || publicResult.kind === "network") {
+      this.reportProbeBlocker(`${publicResult.kind}: ${publicResult.detail}`);
+      return;
+    }
+    if (publicResult.kind === "timeout" || publicResult.kind === "transport") {
+      // Transport failures can happen before forwarding reaches the host.
+      const frontDoor = await probeTunnelHealth(this.deps.fetch, publicUrl, this.healthTimeoutMs, { frontDoor: true });
+      if (!this.isActiveChild(child)) return;
+      if (frontDoor.kind !== "healthy") {
+        this.reportProbeBlocker(`network: forwarding failed and the public front door is not reachable (${frontDoor.detail})`);
+        return;
+      }
     }
 
     await this.recordHealthFailure(child, {
       failed: true,
       durationMs: publicResult.durationMs,
-      detail: slow
-        ? `slow: ${publicResult.durationMs}ms (local ${local.durationMs}ms)`
-        : publicResult.detail,
+      detail: publicResult.detail,
     });
+  }
+
+  private reportProbeBlocker(detail: string): void {
+    this.healthWindow = [];
+    if (this.probeBlocker !== detail) {
+      this.log(`[tunnel] Forwarding health unverified; keeping host running: ${detail}`);
+    }
+    this.probeBlocker = detail;
+  }
+
+  private async getConnectCredential(force = false): Promise<TunnelConnectCredential | null> {
+    if (this.name === null) return null;
+    const cached = this.connectCredential;
+    if (!force && cached && Date.now() < this.connectRenewAt) return cached;
+    try {
+      const next = this.credential && this.hostAuth
+        ? await this.hostAuth.getConnectCredential(this.credential)
+        : await this.deps.getConnectCredential(this.name);
+      if (!next.accessToken || !Number.isFinite(next.expiresAt) || next.expiresAt <= Date.now()) {
+        throw new Error("Invalid connect credential");
+      }
+      const lifetime = next.expiresAt - Date.now();
+      this.connectCredential = next;
+      this.connectRenewAt = Date.now() + Math.max(lifetime - CONNECT_TOKEN_RENEW_MARGIN_MS, lifetime / 2);
+      return next;
+    } catch (error) {
+      this.reportProbeBlocker(`connect-token acquisition failed (${error instanceof Error ? error.name : "unknown"}); retrying automatically`);
+      if (!force && cached && cached.expiresAt > Date.now()) return cached;
+      return null;
+    }
+  }
+
+  private async probeForwarding(child: ChildProcess, url: string): Promise<TunnelProbeResult | null> {
+    let credential = await this.getConnectCredential();
+    if (!credential || !this.isActiveChild(child)) return null;
+    let result = await probeTunnelHealth(this.deps.fetch, url, this.healthTimeoutMs, credential);
+    if (result.kind === "auth" && this.isActiveChild(child)) {
+      this.connectCredential = null;
+      credential = await this.getConnectCredential(true);
+      if (!credential || !this.isActiveChild(child)) return null;
+      result = await probeTunnelHealth(this.deps.fetch, url, this.healthTimeoutMs, credential);
+    }
+    return result;
   }
 
   private recordHealthObservation(observation: HealthObservation): void {
@@ -556,10 +563,25 @@ export class TunnelSupervisor {
     this.recordHealthObservation(observation);
     if (this.logHealthFailure(observation) < this.healthFailureThreshold) return;
 
-    this.healthWindow = [];
-    const stopped = await this.stopChild(child, "failed public health checks");
+    await this.recycleUnhealthyChild(child, "failed authenticated forwarding checks");
+  }
+
+  private async recycleUnhealthyChild(child: ChildProcess, reason: string): Promise<void> {
+    if (Date.now() < this.nextHealthRestartAt) {
+      this.log(`[tunnel] Recovery deferred until ${new Date(this.nextHealthRestartAt).toISOString()}: ${reason}`);
+      return;
+    }
+    const local = await probeTunnelHealth(this.deps.fetch, `http://127.0.0.1:${this.port}/api/health`, this.healthTimeoutMs);
+    if (!this.isActiveChild(child) || local.kind !== "healthy") {
+      this.healthWindow = [];
+      return;
+    }
+    this.log(`[tunnel] Recycling host PID ${child.pid ?? "unknown"}: ${reason}`);
+    const stopped = await this.stopChild(child, reason);
     if (!stopped) throw new Error("Unable to recycle unhealthy tunnel");
-    this.requestReconcile(0);
+    this.nextHealthRestartAt = Date.now() + HEALTH_RESTART_COOLDOWN_MS;
+    this.healthWindow = [];
+    this.scheduleRetry();
   }
 
   private async cleanupOrphan(): Promise<void> {
@@ -707,7 +729,6 @@ export class TunnelSupervisor {
       updatedAt: new Date().toISOString(),
     }, this.stateFileName);
     this.published = true;
-    this.retryDelayMs = this.retryBaseMs;
     this.healthWindow = [];
     this.log(`[tunnel] Ready at ${url}`);
     try {
@@ -780,7 +801,7 @@ export class TunnelSupervisor {
         stderrTail = `${stderrTail}${chunk}`.slice(-1024);
         if (!HOST_STATUS_WAKE_RE.test(stderrTail)) return;
         stderrTail = "";
-        this.requestReconcile(0);
+        this.requestReconcile(Math.max(0, this.lastHealthCheckAt + this.healthIntervalMs - Date.now()));
       });
       child.once("error", onError);
       child.once("exit", onStartupExit);

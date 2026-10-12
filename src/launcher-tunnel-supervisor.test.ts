@@ -12,6 +12,7 @@ import {
   type TunnelHostCredential,
   type TunnelSupervisorDependencies,
 } from "./launcher-tunnel-supervisor.js";
+import type { TunnelConnectCredential } from "./launcher-tunnel-probe.js";
 import type { ProcessIdentity, ProcessTreeTerminationResult } from "./server/platform.js";
 import type { TunnelRuntimeState } from "./server/tunnel-runtime-state.js";
 
@@ -51,6 +52,10 @@ async function flushAsync(): Promise<void> {
   }
 }
 
+function healthResponse(): Response {
+  return Response.json({ ok: true, agentBackend: { state: "ready" } });
+}
+
 function createHarness(options: {
   children?: FakeChild[];
   fetchResponses?: Response[];
@@ -79,7 +84,9 @@ function createHarness(options: {
     }
     return stopped(process);
   });
-  const fetchMock = vi.fn(async () => fetchResponses.shift() ?? new Response(null, { status: 200 }));
+  const fetchMock = vi.fn(async () => fetchResponses.shift() ?? healthResponse());
+  const getConnectCredential = vi.fn(async (): Promise<TunnelConnectCredential> =>
+    ({ accessToken: "connect-token", expiresAt: Date.now() + 24 * 60 * 60_000 }));
   const inspectTunnelHost = vi.fn(async () => {
     const next = hostConnections.length > 0 ? hostConnections.shift() : 1;
     return next === null
@@ -96,6 +103,7 @@ function createHarness(options: {
     waitForChildExit: vi.fn(async () => true),
     fetch: fetchMock as typeof fetch,
     inspectTunnelHost,
+    getConnectCredential,
     readState: vi.fn(() => options.state ?? null),
     writeState,
     clearState,
@@ -128,6 +136,7 @@ function createHarness(options: {
     terminateProcessTree,
     fetchMock,
     inspectTunnelHost,
+    getConnectCredential,
     captureProcessIdentity,
     writeState,
     clearState,
@@ -194,6 +203,7 @@ describe("TunnelSupervisor", () => {
           return next();
         }),
         inspectHost: vi.fn(async () => ({ hostConnections: 1 })),
+        getConnectCredential: vi.fn(async () => ({ accessToken: "github-connect", expiresAt: Date.now() + 24 * 60 * 60_000 })),
       } satisfies TunnelHostAuth;
     }
 
@@ -215,6 +225,8 @@ describe("TunnelSupervisor", () => {
       expect(harness.spawnTunnel).toHaveBeenCalledWith("bridge-github.usw3", 3333, "token-1");
       expect(hostAuth.inspectHost).toHaveBeenCalledWith(expect.objectContaining({ accessToken: "token-1" }), 25);
       expect(harness.inspectTunnelHost).not.toHaveBeenCalled();
+      expect(hostAuth.getConnectCredential).toHaveBeenCalled();
+      expect(harness.getConnectCredential).not.toHaveBeenCalled();
       expect(harness.logs).toContain("[tunnel bridge-github] Ready at https://gh-owned.example.devtunnels.ms");
     });
 
@@ -410,9 +422,9 @@ describe("TunnelSupervisor", () => {
     const harness = createHarness({
       children: [first, second],
       fetchResponses: [
-        new Response(null, { status: 200 }),
+        healthResponse(),
         new Response(null, { status: 503 }),
-        new Response(null, { status: 200 }),
+        healthResponse(),
         new Response(null, { status: 503 }),
       ],
     });
@@ -443,11 +455,11 @@ describe("TunnelSupervisor", () => {
     const harness = createHarness({
       children: [first, second],
       fetchResponses: [
-        new Response(null, { status: 200 }),
+        healthResponse(),
         new Response(null, { status: 503 }),
-        new Response(null, { status: 200 }),
-        new Response(null, { status: 200 }),
-        new Response(null, { status: 200 }),
+        healthResponse(),
+        healthResponse(),
+        healthResponse(),
         new Response(null, { status: 503 }),
       ],
     });
@@ -473,13 +485,13 @@ describe("TunnelSupervisor", () => {
     // Window is max(threshold=2, 5) = 5 observations. fail, pass x5, fail => the
     // first failure has aged out, so only 1/2 failures are in the window.
     const responses: Response[] = [
-      new Response(null, { status: 200 }),
+      healthResponse(),
       new Response(null, { status: 503 }),
     ];
     for (let index = 0; index < 5; index++) {
-      responses.push(new Response(null, { status: 200 }), new Response(null, { status: 200 }));
+      responses.push(healthResponse(), healthResponse());
     }
-    responses.push(new Response(null, { status: 200 }), new Response(null, { status: 503 }));
+    responses.push(healthResponse(), new Response(null, { status: 503 }));
     const harness = createHarness({ children: [first], fetchResponses: responses });
     await startAndPublish(harness, first);
 
@@ -493,7 +505,7 @@ describe("TunnelSupervisor", () => {
     );
   });
 
-  it("treats a slow public probe as a failure while the local server answers promptly", async () => {
+  it("does not recycle a working forwarding path just because it is slow", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const second = new FakeChild(102);
@@ -501,21 +513,21 @@ describe("TunnelSupervisor", () => {
     // Public probes succeed but take longer than healthSlowMs; local is instant.
     harness.deps.fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url.startsWith("http://127.0.0.1:")) return new Response(null, { status: 200 });
+      if (url.startsWith("http://127.0.0.1:")) return healthResponse();
       await new Promise((resolve) => setTimeout(resolve, 4_000));
-      return new Response(null, { status: 200 });
+      return healthResponse();
     }) as typeof fetch;
     await startAndPublish(harness, first);
 
     await vi.advanceTimersByTimeAsync(50 + 4_000);
     expect(harness.terminateProcessTree).not.toHaveBeenCalled();
-    expect(harness.logs.some((line) => /failed \(1\/2 in last 1\): slow: 4000ms \(local 0ms\)/.test(line))).toBe(true);
+    expect(harness.logs).toContain("[tunnel] Forwarding health slow: 4000ms (local 0ms); not recycling");
 
     await vi.advanceTimersByTimeAsync(50 + 4_000);
-    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
   });
 
-  it("treats the relay sign-in redirect of an access-controlled tunnel as healthy", async () => {
+  it("refreshes rejected connect tokens without treating a sign-in redirect as forwarding health", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const harness = createHarness({ children: [first] });
@@ -527,8 +539,9 @@ describe("TunnelSupervisor", () => {
     });
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url.startsWith("http://127.0.0.1:")) return new Response(null, { status: 200 });
+      if (url.startsWith("http://127.0.0.1:")) return healthResponse();
       expect(init?.redirect).toBe("manual");
+      expect(new Headers(init?.headers).get("X-Tunnel-Authorization")).toBe("tunnel connect-token");
       return authRedirect();
     });
     harness.deps.fetch = fetchMock as typeof fetch;
@@ -542,10 +555,11 @@ describe("TunnelSupervisor", () => {
     expect(harness.inspectTunnelHost).toHaveBeenCalledWith("copilot-bridge", 25);
     expect(harness.terminateProcessTree).not.toHaveBeenCalled();
     expect(harness.logs.some((line) => line.includes("Public health check failed"))).toBe(false);
-    expect(harness.logs.filter((line) => line.includes("access-controlled"))).toHaveLength(1);
+    expect(harness.logs.filter((line) => line.includes("auth: HTTP 302"))).toHaveLength(1);
+    expect(harness.getConnectCredential).toHaveBeenCalledTimes(5);
   });
 
-  it("still counts a slow sign-in redirect and other redirects as failures", async () => {
+  it("counts an unexpected redirect as a failure but keeps the host on an auth redirect", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const second = new FakeChild(102);
@@ -553,7 +567,7 @@ describe("TunnelSupervisor", () => {
     let publicCalls = 0;
     harness.deps.fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url.startsWith("http://127.0.0.1:")) return new Response(null, { status: 200 });
+      if (url.startsWith("http://127.0.0.1:")) return healthResponse();
       publicCalls += 1;
       if (publicCalls === 1) {
         // Redirect somewhere that is not the relay sign-in page: not a health signal.
@@ -567,9 +581,9 @@ describe("TunnelSupervisor", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(harness.logs).toContain("[tunnel] Public health check failed (1/2 in last 1): HTTP 302");
 
-    await vi.advanceTimersByTimeAsync(50 + 4_000);
-    expect(harness.logs.some((line) => /failed \(2\/2 in last 2\): slow: 4000ms \(local 0ms\)/.test(line))).toBe(true);
-    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    await vi.advanceTimersByTimeAsync(50 + 8_000);
+    expect(harness.logs.some((line) => line.includes("auth: HTTP 302"))).toBe(true);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
   });
 
   it("recycles when zero host connections persist through the recovery grace period", async () => {
@@ -631,9 +645,9 @@ describe("TunnelSupervisor", () => {
       hostConnections: [0, 0],
       hostRecoveryGraceMs: 20,
       fetchResponses: [
-        new Response(null, { status: 200 }),
+        healthResponse(),
         new Response(null, { status: 503 }),
-        new Response(null, { status: 200 }),
+        healthResponse(),
       ],
     });
     await startAndPublish(harness, first);
@@ -648,7 +662,7 @@ describe("TunnelSupervisor", () => {
     expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
   });
 
-  it("recycles after the grace period when host recovery cannot be confirmed", async () => {
+  it("uses forwarding health when host recovery status is unknown after the grace period", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const second = new FakeChild(102);
@@ -664,8 +678,8 @@ describe("TunnelSupervisor", () => {
     await flushAsync();
 
     expect(harness.inspectTunnelHost).toHaveBeenCalledTimes(2);
-    expect(harness.fetchMock).toHaveBeenCalledTimes(2);
-    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    expect(harness.fetchMock).toHaveBeenCalledTimes(3);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
   });
 
   it("uses split CLI error output only to wake an authoritative host status check", async () => {
@@ -743,6 +757,199 @@ describe("TunnelSupervisor", () => {
     expect(harness.fetchMock).toHaveBeenCalledTimes(4);
     expect(harness.terminateProcessTree).not.toHaveBeenCalled();
     expect(harness.logs.filter((line) => line.includes("Unable to verify relay host connections"))).toHaveLength(1);
+  });
+
+  it("recycles stalled authenticated forwarding despite a registered host and working sign-in page", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({ children: [first, second] });
+    harness.deps.fetch = vi.fn(async (input, init) => {
+      if (String(input).startsWith("http:")) return healthResponse();
+      if (!new Headers(init?.headers).has("X-Tunnel-Authorization")) {
+        return new Response(null, { status: 302, headers: {
+          location: "https://global.rel.tunnels.api.visualstudio.com/auth/aad",
+        } });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    });
+    await startAndPublish(harness, first);
+    await vi.advanceTimersByTimeAsync(75);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(75);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    expect(harness.getConnectCredential).toHaveBeenCalledTimes(1);
+    expect(harness.logs).toContain("[tunnel] Recycling host PID 101: failed authenticated forwarding checks");
+    await vi.advanceTimersByTimeAsync(10);
+    second.stdout.write("Connect via browser: https://bridge.example.devtunnels.ms\n");
+    await flushAsync();
+    expect(harness.spawnTunnel).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not recycle on connection establishment failures or an unreachable front door", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+    let connectTimeout = true;
+    harness.deps.fetch = vi.fn(async (input, init) => {
+      if (String(input).startsWith("http:")) return healthResponse();
+      if (connectTimeout) throw new TypeError("fetch failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    });
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.logs.filter((line) => line.includes("UND_ERR_CONNECT_TIMEOUT"))).toHaveLength(1);
+    connectTimeout = false;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+    expect(harness.logs.some((line) => line.includes("front door is not reachable"))).toBe(true);
+  });
+
+  it("caches connect tokens and renews them automatically without stopping a healthy host", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+    harness.getConnectCredential.mockImplementation(async () => ({ accessToken: "token", expiresAt: Date.now() + 200 }));
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.getConnectCredential).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.getConnectCredential).toHaveBeenCalledTimes(2);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("confirms front-door reachability before counting repeated socket resets", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child, new FakeChild(102)] });
+    harness.deps.fetch = vi.fn(async (input, init) => {
+      if (String(input).startsWith("http:")) return healthResponse();
+      if (new Headers(init?.headers).has("X-Tunnel-Authorization")) {
+        throw new TypeError("fetch failed", { cause: { code: "UND_ERR_SOCKET" } });
+      }
+      return new Response(null, { status: 302, headers: {
+        location: "https://global.rel.tunnels.api.visualstudio.com/auth/aad",
+      } });
+    });
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    expect(harness.logs.some((line) => line.includes("UND_ERR_SOCKET"))).toBe(true);
+  });
+
+  it("uses a still-valid cached token when renewal fails, but never an expired one", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+    harness.getConnectCredential.mockImplementationOnce(async () => ({ accessToken: "token", expiresAt: Date.now() + 120 }));
+    harness.getConnectCredential.mockRejectedValue(new Error("credential service unavailable"));
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(harness.fetchMock).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.fetchMock).toHaveBeenCalledTimes(7);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a rejected token once and validates forwarding using the replacement", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+    harness.getConnectCredential
+      .mockResolvedValueOnce({ accessToken: "rejected", expiresAt: Date.now() + 3600_000 })
+      .mockResolvedValue({ accessToken: "renewed", expiresAt: Date.now() + 3600_000 });
+    harness.deps.fetch = vi.fn(async (input, init) => {
+      if (String(input).startsWith("http:")) return healthResponse();
+      return new Headers(init?.headers).get("X-Tunnel-Authorization") === "tunnel rejected"
+        ? new Response(null, { status: 401 }) : healthResponse();
+    });
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.getConnectCredential).toHaveBeenCalledTimes(2);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("logs credential acquisition failures without exposing secrets or recycling the host", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+    harness.getConnectCredential.mockRejectedValue(new Error("secret-token in provider output"));
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(harness.logs.filter((line) => line.includes("connect-token acquisition failed"))).toHaveLength(1);
+    expect(harness.logs.join("\n")).not.toContain("secret-token");
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("rechecks local health immediately before recycling", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child], fetchResponses: [
+      healthResponse(), new Response(null, { status: 503 }),
+      healthResponse(), new Response(null, { status: 503 }),
+      new Response(null, { status: 503 }),
+    ] });
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits recycling even when replacement forwarding is still broken", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const second = new FakeChild(102);
+    const harness = createHarness({ children: [first, second] });
+    harness.deps.fetch = vi.fn(async (input) =>
+      String(input).startsWith("http:") ? healthResponse() : new Response(null, { status: 503 }));
+    await startAndPublish(harness, first);
+    await vi.advanceTimersByTimeAsync(110);
+    second.stdout.write("Connect via browser: https://bridge.example.devtunnels.ms\n");
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(harness.terminateProcessTree).toHaveBeenCalledTimes(1);
+    expect(harness.logs.some((line) => line.includes("Recovery deferred until"))).toBe(true);
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.terminateProcessTree).toHaveBeenCalledTimes(2);
+  });
+
+  it("recycles only the failed tunnel and leaves the other supervisor running", async () => {
+    vi.useFakeTimers();
+    const first = new FakeChild(101);
+    const peer = new FakeChild(201);
+    const failed = createHarness({ children: [first, new FakeChild(102)] });
+    const healthy = createHarness({ children: [peer], additionalName: "backup" });
+    failed.deps.fetch = vi.fn(async (input) =>
+      String(input).startsWith("http:") ? healthResponse() : new Response(null, { status: 503 }));
+    await Promise.all([failed.supervisor.start(), healthy.supervisor.start()]);
+    await vi.advanceTimersByTimeAsync(0);
+    first.stdout.write("Connect via browser: https://primary.example.devtunnels.ms\n");
+    peer.stdout.write("Connect via browser: https://backup.example.devtunnels.ms\n");
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(110);
+    expect(failed.terminateProcessTree).toHaveBeenCalledWith(identity(101), expect.any(Object));
+    expect(healthy.terminateProcessTree).not.toHaveBeenCalled();
+    expect(healthy.supervisor.getUrl()).toBe("https://backup.example.devtunnels.ms");
+  });
+
+  it("does not let an SSH error burst run checks faster than the health interval", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild(101);
+    const harness = createHarness({ children: [child] });
+    await startAndPublish(harness, child);
+    await vi.advanceTimersByTimeAsync(50);
+    for (let index = 0; index < 20; index++) {
+      child.stderr.write("ClientSSH: Session closed unexpectedly due to ConnectionLost\n");
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.inspectTunnelHost).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(harness.inspectTunnelHost).toHaveBeenCalledTimes(2);
+    expect(harness.terminateProcessTree).not.toHaveBeenCalled();
   });
 
   it("ignores status hints from a child that is no longer current", async () => {
