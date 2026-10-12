@@ -29,6 +29,8 @@ describe("useVoiceInput recording limit", () => {
   let voice: ReturnType<typeof useVoiceInput> | null = null;
   let processor: { onaudioprocess: ((event: unknown) => void) | null; connect(): void; disconnect(): void };
   let getUserMedia: () => Promise<unknown>;
+  let closeAudioContext: () => Promise<void>;
+  let resumeAudioContext: () => Promise<void>;
   let inputSampleRate = SAMPLE_RATE;
 
   async function mount(options: Partial<Parameters<typeof useVoiceInput>[0]>) {
@@ -43,8 +45,8 @@ describe("useVoiceInput recording limit", () => {
           inputSampleRate = this.sampleRate;
         }
         destination = {};
-        resume = async () => {};
-        close = async () => {};
+        resume = () => resumeAudioContext();
+        close = () => closeAudioContext();
         createMediaStreamSource = () => ({ connect() {}, disconnect() {} });
         createScriptProcessor = () => processor;
       },
@@ -77,6 +79,8 @@ describe("useVoiceInput recording limit", () => {
     vi.clearAllMocks();
     holdVoiceCaptureMock.mockReturnValue(releaseCaptureMock);
     getUserMedia = async () => ({ getTracks: () => [{ stop() {} }] });
+    closeAudioContext = async () => {};
+    resumeAudioContext = async () => {};
     fetchTranscriptionStatusMock.mockResolvedValue({
       available: true,
       provider: "speech-engine",
@@ -143,6 +147,154 @@ describe("useVoiceInput recording limit", () => {
     expect(onAudioCaptured.mock.calls[0]![0].audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
   });
 
+  it("discards recorded audio, stops capture, resets the clock, and never submits", async () => {
+    const stopTrack = vi.fn();
+    getUserMedia = async () => ({ getTracks: () => [{ stop: stopTrack }] });
+    const onAudioCaptured = vi.fn();
+    const onMaxDurationReached = vi.fn();
+    await startRecording({ onAudioCaptured, onMaxDurationReached });
+    await hear(1);
+    const queuedAudioProcess = processor.onaudioprocess;
+
+    await harness!.act(async () => { await voice!.cancelRecording(); });
+    expect(voice!.phase).toBe("idle");
+    expect(voice!.elapsedSeconds).toBe(0);
+    expect(voice!.error).toBeNull();
+    expect(processor.onaudioprocess).toBeNull();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(releaseCaptureMock).toHaveBeenCalledOnce();
+
+    await harness!.act(async () => {
+      queuedAudioProcess?.({ inputBuffer: { getChannelData: () => new Float32Array(2 * SAMPLE_RATE) } });
+      await voice!.stopRecording();
+      await voice!.cancelRecording();
+    });
+    await harness!.cleanup();
+    expect(onAudioCaptured).not.toHaveBeenCalled();
+    expect(onMaxDurationReached).not.toHaveBeenCalled();
+    expect(releaseCaptureMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["resolve", "reject"])("ignores a cancelled microphone opening that later %ss after a restart", async (outcome) => {
+    let openMicrophone = (_stream: unknown) => {};
+    let rejectMicrophone = (_error: Error) => {};
+    getUserMedia = () => new Promise((resolve, reject) => {
+      openMicrophone = resolve;
+      rejectMicrophone = reject;
+    });
+    const onAudioCaptured = vi.fn();
+    await mount({ onAudioCaptured });
+    let starting: Promise<void> | undefined;
+    await harness!.act(async () => { starting = voice!.startRecording(); });
+    expect(voice!.phase).toBe("starting");
+    await harness!.act(async () => { await voice!.cancelRecording(); });
+
+    const stopOldTrack = vi.fn();
+    const stopNewTrack = vi.fn();
+    getUserMedia = async () => ({ getTracks: () => [{ stop: stopNewTrack }] });
+    await harness!.act(async () => { await voice!.startRecording(); });
+    await hear(1);
+    await harness!.act(async () => {
+      if (outcome === "resolve") openMicrophone({ getTracks: () => [{ stop: stopOldTrack }] });
+      else rejectMicrophone(new Error("old permission denied"));
+      await starting;
+    });
+    expect(stopOldTrack).toHaveBeenCalledTimes(outcome === "resolve" ? 1 : 0);
+    expect(stopNewTrack).not.toHaveBeenCalled();
+    expect(voice!.phase).toBe("recording");
+    expect(voice!.elapsedSeconds).toBe(1);
+    expect(voice!.error).toBeNull();
+    await harness!.act(async () => { await voice!.cancelRecording(); });
+    expect(onAudioCaptured).not.toHaveBeenCalled();
+  });
+
+  it.each(["resolve", "reject"])("allows retry while a cancelled status request is pending and ignores its late %s", async (outcome) => {
+    fetchTranscriptionStatusMock.mockResolvedValueOnce({ available: false, reason: "Check again" });
+    await mount({});
+    let resolveStatus = (_status: unknown) => {};
+    let rejectStatus = (_error: Error) => {};
+    fetchTranscriptionStatusMock.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolveStatus = resolve;
+      rejectStatus = reject;
+    }));
+    let starting: Promise<void> | undefined;
+    await harness!.act(async () => { starting = voice!.startRecording(); });
+    expect(voice!.isCheckingStatus).toBe(true);
+    await harness!.act(async () => { await voice!.cancelRecording(); });
+    expect(voice!.isCheckingStatus).toBe(false);
+    await harness!.act(async () => { await voice!.startRecording(); });
+    expect(voice!.phase).toBe("recording");
+    await harness!.act(async () => {
+      if (outcome === "resolve") resolveStatus({ available: false, reason: "Stale result" });
+      else rejectStatus(new Error("Stale failure"));
+      await starting;
+    });
+    expect(voice!.phase).toBe("recording");
+    expect(voice!.status?.available).toBe(true);
+    expect(voice!.statusError).toBeNull();
+    expect(voice!.error).toBeNull();
+    await harness!.act(async () => { await voice!.cancelRecording(); });
+  });
+
+  it("does not clear a fresh recording when a cancelled audio context finishes closing", async () => {
+    let finishClosing = () => {};
+    closeAudioContext = () => new Promise((resolve) => { finishClosing = resolve; });
+    const onAudioCaptured = vi.fn();
+    await startRecording({ onAudioCaptured });
+    await harness!.act(async () => { expect(voice!.cancelRecording()).toBe(true); });
+    expect(voice!.phase).toBe("idle");
+    closeAudioContext = async () => {};
+    await harness!.act(async () => { await voice!.startRecording(); });
+    await hear(1);
+    await harness!.act(async () => {
+      finishClosing();
+      await voice!.stopRecording();
+    });
+    expect(onAudioCaptured).toHaveBeenCalledOnce();
+    expect(onAudioCaptured.mock.calls[0]![0].audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
+  });
+
+  it("does not affect a fresh recording when a cancelled audio context resumes late", async () => {
+    let finishResuming = () => {};
+    resumeAudioContext = () => new Promise((resolve) => { finishResuming = resolve; });
+    await mount({});
+    let starting: Promise<void> | undefined;
+    await harness!.act(async () => { starting = voice!.startRecording(); });
+    expect(voice!.phase).toBe("starting");
+    await harness!.act(async () => { expect(voice!.cancelRecording()).toBe(true); });
+    resumeAudioContext = async () => {};
+    await harness!.act(async () => { await voice!.startRecording(); });
+    await harness!.act(async () => {
+      finishResuming();
+      await starting;
+    });
+    expect(voice!.phase).toBe("recording");
+    expect(voice!.error).toBeNull();
+    expect(holdVoiceCaptureMock).toHaveBeenCalledOnce();
+    await harness!.act(async () => { voice!.cancelRecording(); });
+    expect(releaseCaptureMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not cancel an audio capture already being handed off", async () => {
+    let finishStoring = () => {};
+    const onAudioCaptured = vi.fn(() => new Promise<void>((resolve) => { finishStoring = resolve; }));
+    await startRecording({ onAudioCaptured });
+    await hear(1);
+    let stopping: Promise<void> | undefined;
+    await harness!.act(async () => {
+      stopping = voice!.stopRecording();
+      expect(voice!.cancelRecording()).toBe(false);
+    });
+    expect(voice!.phase).toBe("finishing");
+    expect(releaseCaptureMock).not.toHaveBeenCalled();
+    await harness!.act(async () => {
+      finishStoring();
+      await stopping;
+    });
+    expect(onAudioCaptured).toHaveBeenCalledOnce();
+    expect(releaseCaptureMock).toHaveBeenCalledOnce();
+  });
+
   describe("compressed uploads", () => {
     const opusBlob = new Blob([new Uint8Array(900)], { type: "audio/ogg" });
     let pushed: number[];
@@ -173,6 +325,37 @@ describe("useVoiceInput recording limit", () => {
       expect(pushed).toEqual([1.25 * 48_000, 0.75 * 48_000]);
       expect(onAudioCaptured.mock.calls[0]![0].audio).toBe(opusBlob);
       expect(encoder.cancel).not.toHaveBeenCalled();
+    });
+
+    it("cancels the encoder without finishing or submitting audio", async () => {
+      const onAudioCaptured = vi.fn();
+      await startRecording({ onAudioCaptured });
+      await hear(1);
+      await harness!.act(async () => { await voice!.cancelRecording(); });
+      expect(encoder.cancel).toHaveBeenCalledOnce();
+      expect(encoder.finish).not.toHaveBeenCalled();
+      expect(onAudioCaptured).not.toHaveBeenCalled();
+    });
+
+    it("cancels a late encoder without affecting a fresh recording", async () => {
+      let openEncoder = (_encoder: typeof encoder) => {};
+      createOpusRecordingEncoderMock.mockImplementationOnce(() => new Promise((resolve) => { openEncoder = resolve; }));
+      await mount({});
+      let starting: Promise<void> | undefined;
+      await harness!.act(async () => { starting = voice!.startRecording(); });
+      await harness!.act(async () => { await voice!.cancelRecording(); });
+      const freshEncoder = { push: vi.fn(), finish: vi.fn(async () => opusBlob), cancel: vi.fn() };
+      createOpusRecordingEncoderMock.mockResolvedValueOnce(freshEncoder);
+      await harness!.act(async () => { await voice!.startRecording(); });
+      await harness!.act(async () => {
+        openEncoder(encoder);
+        await starting;
+      });
+      expect(encoder.cancel).toHaveBeenCalledOnce();
+      expect(freshEncoder.cancel).not.toHaveBeenCalled();
+      expect(voice!.phase).toBe("recording");
+      await harness!.act(async () => { await voice!.cancelRecording(); });
+      expect(freshEncoder.cancel).toHaveBeenCalledOnce();
     });
 
     it("sends the WAV when the encoding cannot be trusted", async () => {

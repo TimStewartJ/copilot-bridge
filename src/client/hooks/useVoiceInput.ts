@@ -28,6 +28,8 @@ interface VoiceInputState {
   error: string | null;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
+  /** True only when audio was discarded before the finish-and-submit handoff. */
+  cancelRecording: () => boolean;
   refreshStatus: () => Promise<TranscriptionStatus | null>;
 }
 
@@ -54,6 +56,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const phaseRef = useRef<VoiceRecorderPhase>("idle");
+  const captureAttemptRef = useRef(0);
+  const statusRequestRef = useRef(0);
   const sampleRateRef = useRef(0);
   const chunksRef = useRef<Float32Array[]>([]);
   const opusEncoderRef = useRef<OpusRecordingEncoder | null>(null);
@@ -101,15 +105,15 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
 
     const audioContext = audioContextRef.current;
     audioContextRef.current = null;
-    if (audioContext) {
-      await audioContext.close().catch(() => {});
-    }
-
     chunksRef.current = [];
     sampleRateRef.current = 0;
     activeContextKeyRef.current = null;
     opusEncoderRef.current?.cancel();
     opusEncoderRef.current = null;
+    // Detach everything before yielding, so a late close cannot erase a new capture.
+    if (audioContext) {
+      await audioContext.close().catch(() => {});
+    }
   }, []);
 
   /** Lets go of the capture hold; only once the audio is stored or deliberately dropped. */
@@ -121,19 +125,24 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   const refreshStatus = useCallback(async (): Promise<TranscriptionStatus | null> => {
     if (!browserSupported) return null;
 
+    const request = ++statusRequestRef.current;
     setIsCheckingStatus(true);
     try {
       const nextStatus = await fetchTranscriptionStatus();
-      if (!mountedRef.current) return nextStatus;
+      if (!mountedRef.current || request !== statusRequestRef.current) return null;
+      statusRef.current = nextStatus;
+      statusErrorRef.current = null;
       setStatus(nextStatus);
       setStatusError(null);
       return nextStatus;
     } catch (err) {
-      if (!mountedRef.current) return null;
-      setStatusError(err instanceof Error ? err.message : String(err));
+      if (!mountedRef.current || request !== statusRequestRef.current) return null;
+      const message = err instanceof Error ? err.message : String(err);
+      statusErrorRef.current = message;
+      setStatusError(message);
       return null;
     } finally {
-      if (mountedRef.current) setIsCheckingStatus(false);
+      if (mountedRef.current && request === statusRequestRef.current) setIsCheckingStatus(false);
     }
   }, [browserSupported]);
 
@@ -167,13 +176,20 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   const startRecording = useCallback(async () => {
     if (!browserSupported || phaseRef.current !== "idle") return;
 
+    const attempt = ++captureAttemptRef.current;
+    const isCurrentAttempt = () => mountedRef.current && attempt === captureAttemptRef.current;
     setRecorderPhase("starting");
     setError(null);
     setElapsedSeconds(0);
     try {
       const { maxDurationSeconds, opusUploads } = await ensureAvailable();
+      if (!isCurrentAttempt()) return;
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isCurrentAttempt()) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       const AudioContextCtor = getAudioContextCtor();
       if (!AudioContextCtor) {
@@ -182,12 +198,15 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       const audioContext = createCaptureAudioContext(AudioContextCtor, opusUploads === true);
       audioContextRef.current = audioContext;
       await audioContext.resume();
+      if (!isCurrentAttempt()) return;
       const resampler = new SpeechResampler(audioContext.sampleRate);
       // Encode the native 48 kHz capture while retaining downsampled PCM for the WAV fallback.
       const opusEncoder = opusUploads ? await createOpusRecordingEncoder(audioContext.sampleRate) : null;
+      if (!isCurrentAttempt()) {
+        opusEncoder?.cancel();
+        return;
+      }
       opusEncoderRef.current = opusEncoder;
-      // The view can go away while the microphone is still being opened; nothing may be left running.
-      if (!mountedRef.current) throw new Error("Voice input closed before recording started.");
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
 
@@ -204,6 +223,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       let capturedSamples = 0;
       let capturedInputSamples = 0;
       processor.onaudioprocess = (event) => {
+        if (!isCurrentAttempt() || phaseRef.current !== "recording") return;
         const room = maxSamples - capturedSamples;
         if (room <= 0) return;
         const input = event.inputBuffer.getChannelData(0);
@@ -225,7 +245,9 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       releaseCaptureRef.current = holdVoiceCapture();
       setRecorderPhase("recording");
     } catch (err) {
+      if (!isCurrentAttempt()) return;
       await cleanupRecorder();
+      if (!isCurrentAttempt()) return;
       releaseCapture();
       setRecorderPhase("idle");
       if (mountedRef.current) {
@@ -233,6 +255,20 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       }
     }
   }, [browserSupported, cleanupRecorder, ensureAvailable, releaseCapture, setRecorderPhase]);
+
+  const cancelRecording = useCallback(() => {
+    if (phaseRef.current !== "starting" && phaseRef.current !== "recording") return false;
+
+    captureAttemptRef.current += 1;
+    statusRequestRef.current += 1;
+    void cleanupRecorder();
+    releaseCapture();
+    setIsCheckingStatus(false);
+    setElapsedSeconds(0);
+    setError(null);
+    setRecorderPhase("idle");
+    return true;
+  }, [cleanupRecorder, releaseCapture, setRecorderPhase]);
 
   const stopRecording = useCallback(async () => {
     if (phaseRef.current !== "recording") return;
@@ -279,6 +315,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     error,
     startRecording,
     stopRecording,
+    cancelRecording,
     refreshStatus,
   };
 }

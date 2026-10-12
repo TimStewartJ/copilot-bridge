@@ -31,7 +31,7 @@ import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
 import { DS, cx } from "../design/tokens";
-import { AutopilotIcon } from "../design/primitives";
+import { AutopilotIcon, Button } from "../design/primitives";
 import { haptic } from "../lib/haptics";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -167,6 +167,7 @@ export default function ChatInput({
   const previousVoiceJobRef = useRef<ActiveVoiceBackgroundJob | null>(null);
   const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
+  const [recordingCancelled, setRecordingCancelled] = useState(false);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
   const {
     bind: bindSendModeMenu,
@@ -288,6 +289,30 @@ export default function ChatInput({
     },
     onMaxDurationReached: () => stopVoiceRecordingRef.current(),
   });
+  const canCancelRecording = voice.phase === "starting" || voice.phase === "recording";
+  const cancelVoiceRecording = useCallback(() => {
+    if (!canCancelRecording || !voice.cancelRecording()) return;
+    pendingCaptureSubmitModeRef.current = null;
+    pendingCaptureSendModeRef.current = null;
+    updateRecordingStartMode(null);
+    setRecordingCancelled(true);
+  }, [canCancelRecording, updateRecordingStartMode, voice.cancelRecording]);
+  const handleRecordingEscape = useCallback((event: React.KeyboardEvent) => {
+    if (
+      event.key !== "Escape"
+      || !canCancelRecording
+      || composingRef.current
+      || event.nativeEvent?.isComposing
+      || event.keyCode === 229
+    ) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelVoiceRecording();
+  }, [canCancelRecording, cancelVoiceRecording]);
+
+  useEffect(() => {
+    setRecordingCancelled(false);
+  }, [composerKey]);
   // Pressing stop and running into the length limit end a recording the same way.
   stopVoiceRecordingRef.current = () => {
     pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
@@ -591,6 +616,7 @@ export default function ChatInput({
     const selectedMode = onAbort ? undefined : mode;
 
     onClearVoiceJobError?.(composerKey);
+    setRecordingCancelled(false);
     haptic("light");
     if (selectedMode) {
       onSend(text || "(attachment)", cleanAttachmentsOrUndefined, selectedMode);
@@ -681,6 +707,11 @@ export default function ChatInput({
       : voiceUi.tone === "accent"
         ? "text-accent"
         : "text-text-faint";
+  const voiceMessage = voiceUi.message ?? (
+    recordingCancelled && voice.phase === "idle" && !activeVoiceJob
+      ? "Recording cancelled. Nothing sent."
+      : null
+  );
   const showAbortControl = Boolean(onAbort && !hasContent);
   const sendTitle = disabled
     ? (disabledHint ?? "Warming up…")
@@ -703,10 +734,10 @@ export default function ChatInput({
   const showAutopilotToggle = !isDraft && !onAbort;
 
   return (
-    <div className="shrink-0">
+    <div className="shrink-0" onKeyDown={handleRecordingEscape}>
       <div className={COMPOSER_RAIL_CLASS}>
 
-        {voiceUi.message && (
+        {voiceMessage && (
           <div
             className={`mb-2 flex flex-wrap items-center gap-x-1 text-xs ${voiceMessageClassName}`}
           >
@@ -715,9 +746,20 @@ export default function ChatInput({
               aria-live="polite"
               aria-atomic="true"
             >
-              {voiceUi.message}
+              {voiceMessage}
             </span>
             {voiceUi.detail && <span className="tabular-nums">{voiceUi.detail}</span>}
+            {canCancelRecording && (
+              <Button
+                variant="ghost"
+                onClick={cancelVoiceRecording}
+                aria-label="Cancel voice recording"
+                title="Discard this recording without sending (Esc)"
+                className="ml-auto"
+              >
+                Cancel
+              </Button>
+            )}
             {canRetryVoiceJobUpload && (
               <button
                 type="button"
@@ -836,6 +878,7 @@ export default function ChatInput({
                 if (voice.phase === "recording") {
                   stopVoiceRecordingRef.current();
                 } else {
+                  setRecordingCancelled(false);
                   onClearVoiceJobError?.(composerKey);
                   updateRecordingStartMode(resolveVoiceSubmitMode({
                     text: inputRef.current,
