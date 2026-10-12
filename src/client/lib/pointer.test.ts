@@ -6,15 +6,20 @@ function stubPointerAndViewport({
   layoutHeight,
   visualHeight,
   scale = 1,
+  keyboardHeight,
 }: {
   pointerFine: boolean;
   layoutHeight?: number;
   visualHeight?: number;
   scale?: number;
+  keyboardHeight?: number;
 }): void {
   vi.stubGlobal("window", {
     matchMedia: (query: string) => ({ matches: query === "(pointer: fine)" && pointerFine }),
     visualViewport: visualHeight === undefined ? undefined : { height: visualHeight, scale },
+    navigator: {
+      virtualKeyboard: keyboardHeight === undefined ? undefined : { boundingRect: { height: keyboardHeight } },
+    },
   });
   vi.stubGlobal("document", {
     documentElement: { clientHeight: layoutHeight ?? 0 },
@@ -27,7 +32,7 @@ describe("pointer", () => {
   });
 
   it("reports a fine pointer when the media query matches", () => {
-    stubPointerAndViewport({ pointerFine: true, layoutHeight: 800, visualHeight: 480 });
+    stubPointerAndViewport({ pointerFine: true, layoutHeight: 800, visualHeight: 800 });
     expect(hasFinePointer()).toBe(true);
     expect(usesSoftKeyboard()).toBe(false);
   });
@@ -38,7 +43,13 @@ describe("pointer", () => {
     expect(usesSoftKeyboard()).toBe(true);
   });
 
-  it("reports a hardware keyboard when a coarse-pointer viewport remains unobscured", () => {
+  it("recognizes viewport occlusion on a touch device with a mouse or trackpad", () => {
+    stubPointerAndViewport({ pointerFine: true, layoutHeight: 800, visualHeight: 480 });
+    expect(hasFinePointer()).toBe(true);
+    expect(usesSoftKeyboard()).toBe(true);
+  });
+
+  it("reports no viewport evidence of a soft keyboard when a coarse-pointer viewport remains unobscured", () => {
     stubPointerAndViewport({ pointerFine: false, layoutHeight: 800, visualHeight: 800 });
     expect(hasFinePointer()).toBe(false);
     expect(usesSoftKeyboard()).toBe(false);
@@ -56,6 +67,30 @@ describe("pointer", () => {
 
   it("preserves soft-keyboard behavior when visual viewport data is unavailable", () => {
     stubPointerAndViewport({ pointerFine: false });
+    expect(usesSoftKeyboard()).toBe(true);
+  });
+
+  it.each([false, true])("recognizes a reported overlay keyboard with fine pointer %s", (pointerFine) => {
+    stubPointerAndViewport({ pointerFine, layoutHeight: 800, visualHeight: 800, keyboardHeight: 300 });
+    expect(usesSoftKeyboard()).toBe(true);
+  });
+
+  it("does not treat zero virtual keyboard geometry as proof of a hardware keyboard", () => {
+    stubPointerAndViewport({ pointerFine: false, keyboardHeight: 0 });
+    expect(usesSoftKeyboard()).toBe(true);
+  });
+
+  it.each([
+    { layoutHeight: NaN, visualHeight: 800, scale: 1 },
+    { layoutHeight: Infinity, visualHeight: 800, scale: 1 },
+    { layoutHeight: 800, visualHeight: NaN, scale: 1 },
+    { layoutHeight: 800, visualHeight: Infinity, scale: 1 },
+    { layoutHeight: 800, visualHeight: 800, scale: NaN },
+    { layoutHeight: 800, visualHeight: 800, scale: Infinity },
+    { layoutHeight: 800, visualHeight: 800, scale: 0 },
+    { layoutHeight: 800, visualHeight: 800, scale: -1 },
+  ])("stays conservative with invalid viewport data %j", (geometry) => {
+    stubPointerAndViewport({ pointerFine: false, ...geometry });
     expect(usesSoftKeyboard()).toBe(true);
   });
 

@@ -145,6 +145,7 @@ export default function ChatInput({
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
   const inputRef = useRef(input);
@@ -372,6 +373,7 @@ export default function ChatInput({
   useEffect(() => {
     if (restoredForRef.current === composerKey) return;
     restoredForRef.current = composerKey;
+    composingRef.current = false;
 
     if (draft) {
       revokePreviewUrls(attachmentsRef.current);
@@ -604,9 +606,18 @@ export default function ChatInput({
   }, [chooseSendMode, clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, nextSendMode, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e as any).isComposing || (e as any).keyCode === 229) return;
-    // Mobile Enter stays a newline even when the keyboard does not shrink the viewport.
-    if (e.key === "Enter" && !hasFinePointer() && !e.ctrlKey && !e.metaKey) return;
+    if (composingRef.current || e.nativeEvent?.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter") {
+      if (e.shiftKey) return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        handleSend();
+        return;
+      }
+      // A physical-style code alone is not proof: some software keyboards supply it too.
+      const hardwareStyleEnter = e.code === "Enter" || e.code === "NumpadEnter";
+      if (usesSoftKeyboard() || (!hasFinePointer() && !hardwareStyleEnter)) return;
+    }
     if (slashSuggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -870,6 +881,9 @@ export default function ChatInput({
             value={input}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
+            onBlur={() => { composingRef.current = false; }}
             onPaste={handlePaste}
             enterKeyHint="enter"
             placeholder={placeholder}
