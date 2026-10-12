@@ -4,6 +4,8 @@ import type {
   TunnelHostCredential,
   TunnelHostStatus,
 } from "./launcher-tunnel-supervisor.js";
+import { parseTunnelConnectCredential, readTokenExpiry } from "./launcher-tunnel-probe.js";
+export { readTokenExpiry } from "./launcher-tunnel-probe.js";
 
 const API_VERSION = "2023-09-27-preview";
 const GLOBAL_API = "https://global.rel.tunnels.api.visualstudio.com";
@@ -81,15 +83,6 @@ async function getJson(
   return response.json();
 }
 
-export function readTokenExpiry(token: string): number | null {
-  try {
-    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
-    return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
-  } catch {
-    return null;
-  }
-}
-
 type TunnelListResponse = {
   value?: Array<{ clusterId?: unknown; value?: Array<{ tunnelId?: unknown; clusterId?: unknown }> }>;
 };
@@ -162,10 +155,24 @@ export function createGitHubTunnelHostAuth(
           timeoutMs,
         ) as { status?: { hostConnectionCount?: unknown } };
         const count = tunnel.status?.hostConnectionCount;
-        return { hostConnections: typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0 };
+        return typeof count === "number" && Number.isInteger(count) && count >= 0
+          ? { hostConnections: count }
+          : { hostConnections: null, detail: "missing or invalid status.hostConnectionCount" };
       } catch (error) {
         return { hostConnections: null, detail: error instanceof Error ? error.message : String(error) };
       }
+    },
+
+    async getConnectCredential(credential: TunnelHostCredential) {
+      const [name, cluster] = credential.hostName.split(".");
+      const githubToken = await deps.readGitHubToken();
+      const tunnel = await getJson(
+        deps.fetch,
+        `${clusterApi(cluster)}/tunnels/${name}?tokenScopes=connect&api-version=${API_VERSION}`,
+        `github ${githubToken}`,
+        `Requesting a connect token for ${name}`,
+      ) as { accessTokens?: { connect?: unknown } };
+      return parseTunnelConnectCredential(tunnel.accessTokens?.connect);
     },
   };
 }

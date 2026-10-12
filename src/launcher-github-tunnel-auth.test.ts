@@ -69,13 +69,31 @@ describe("GitHub tunnel host auth", () => {
       .toBe("Tunnel host-token");
 
     const idle = createAuth({ [STATUS_URL]: () => Response.json({ status: {} }) });
-    await expect(idle.auth.inspectHost(credential, 25)).resolves.toEqual({ hostConnections: 0 });
+    await expect(idle.auth.inspectHost(credential, 25)).resolves.toEqual({
+      hostConnections: null, detail: "missing or invalid status.hostConnectionCount",
+    });
+    const disconnected = createAuth({ [STATUS_URL]: () => Response.json({ status: { hostConnectionCount: 0 } }) });
+    await expect(disconnected.auth.inspectHost(credential, 25)).resolves.toEqual({ hostConnections: 0 });
 
     const failing = createAuth({ [STATUS_URL]: () => new Response(null, { status: 503 }) });
     await expect(failing.auth.inspectHost(credential, 25)).resolves.toEqual({
       hostConnections: null,
       detail: "Reading bridge-github status failed: HTTP 503",
     });
+
+  });
+
+  it("requests a separate connect-only token using the existing GitHub identity", async () => {
+    const token = jwt({ exp: Math.floor(Date.now() / 1000) + 3600, scp: "connect" });
+    const url = "https://usw3.rel.tunnels.api.visualstudio.com/tunnels/bridge-github?tokenScopes=connect&api-version=2023-09-27-preview";
+    const { auth, fetchMock } = createAuth({ [url]: () => Response.json({ accessTokens: { connect: token } }) });
+    await expect(auth.getConnectCredential({
+      hostName: "bridge-github.usw3", accessToken: "host-token", issuedAt: 0, expiresAt: 1,
+    })).resolves.toEqual({ accessToken: token, expiresAt: readTokenExpiry(token) });
+    expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({
+      headers: { Authorization: "github gho_example", "User-Agent": "copilot-bridge" },
+    }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("reads a token's expiry and tolerates tokens without one", () => {
