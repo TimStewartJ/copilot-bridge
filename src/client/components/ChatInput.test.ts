@@ -652,14 +652,21 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("run autonomously", undefined, "autopilot");
   });
 
-  it("keeps Enter as a newline while the on-screen keyboard is visible", async () => {
+  it.each([
+    { label: "new chat with the keyboard visible", visualHeight: 480, isDraft: true, steering: false },
+    { label: "new chat without viewport shrink", visualHeight: 800, isDraft: true, steering: false },
+    { label: "existing chat without viewport shrink", visualHeight: 800, isDraft: false, steering: false },
+    { label: "steering note without viewport shrink", visualHeight: 800, isDraft: false, steering: true },
+  ])("keeps mobile Enter as a newline in a $label", async ({ visualHeight, isDraft, steering }) => {
     pointerFineMatches = false;
-    setVisualViewport(800, 480);
+    setVisualViewport(800, visualHeight);
     const onSend = vi.fn();
-    await renderChatInput({ onSend, isDraft: true });
+    const onDraftChange = vi.fn();
+    await renderChatInput({ onSend, onDraftChange, isDraft, onAbort: steering ? vi.fn() : undefined });
 
     const textarea = findTextarea(getHarness().dom.container);
     const preventDefault = vi.fn();
+    expect(getReactProps(textarea)?.enterKeyHint).toBe("enter");
     await getHarness().act(async () => {
       getReactProps(textarea)?.onChange?.({
         target: {
@@ -677,33 +684,30 @@ describe("ChatInput voice retry", () => {
 
     expect(preventDefault).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
-  });
 
-  it("sends on Enter from a hardware keyboard connected to a touch device", async () => {
-    pointerFineMatches = false;
-    setVisualViewport(800, 800);
-    const onSend = vi.fn();
-    await renderChatInput({ onSend, isDraft: true });
-
-    const textarea = findTextarea(getHarness().dom.container);
-    const preventDefault = vi.fn();
     await getHarness().act(async () => {
       getReactProps(textarea)?.onChange?.({
         target: {
-          value: "send from bluetooth",
+          value: "first line\nsecond line",
           style: { height: "" },
-          scrollHeight: 48,
+          scrollHeight: 72,
         },
       });
-      getReactProps(textarea)?.onKeyDown?.({
-        key: "Enter",
-        shiftKey: false,
-        preventDefault,
+    });
+    expect(textarea.value).toBe("first line\nsecond line");
+    expect(onDraftChange).toHaveBeenLastCalledWith("first line\nsecond line", []);
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(
+        getHarness().dom.container,
+        steering ? "Send steering note" : "Send message",
+      ).parentNode)?.onClick?.({
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
       });
     });
-
-    expect(preventDefault).toHaveBeenCalled();
-    expect(onSend).toHaveBeenCalledWith("send from bluetooth", undefined, "interactive");
+    const sentArgs = ["first line\nsecond line", undefined];
+    expect(onSend).toHaveBeenCalledWith(...(steering ? sentArgs : [...sentArgs, "interactive"]));
+    expect(textarea.value).toBe("");
   });
 
   it("keeps Shift+Enter as a newline with a hardware keyboard on a touch device", async () => {
@@ -733,8 +737,9 @@ describe("ChatInput voice retry", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("still sends on Ctrl+Enter when a touch device has a hardware keyboard", async () => {
+  it.each(["ctrlKey", "metaKey"] as const)("still sends on %s+Enter on a touch device", async (modifier) => {
     pointerFineMatches = false;
+    setVisualViewport(800, 800);
     const onSend = vi.fn();
     await renderChatInput({ onSend, isDraft: true });
 
@@ -751,13 +756,45 @@ describe("ChatInput voice retry", () => {
       getReactProps(textarea)?.onKeyDown?.({
         key: "Enter",
         shiftKey: false,
-        ctrlKey: true,
+        [modifier]: true,
         preventDefault,
       });
     });
 
     expect(preventDefault).toHaveBeenCalled();
     expect(onSend).toHaveBeenCalledWith("send me", undefined, "interactive");
+  });
+
+  it.each([
+    { label: "mobile", finePointer: false },
+    { label: "desktop", finePointer: true },
+  ])("handles Enter in slash suggestions on $label", async ({ finePointer }) => {
+    pointerFineMatches = finePointer;
+    setVisualViewport(800, 800);
+    const onSend = vi.fn();
+    await renderChatInput({
+      onSend,
+      draft: { text: "/go", attachments: [] },
+      slashCommandsSupported: true,
+      slashCommands: [{
+        name: "goal",
+        description: "Set an autopilot objective",
+        kind: "builtin",
+        allowDuringAgentExecution: true,
+      }],
+    });
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onKeyDown?.({
+        key: "Enter",
+        shiftKey: false,
+        preventDefault,
+      });
+    });
+    expect(preventDefault).toHaveBeenCalledTimes(finePointer ? 1 : 0);
+    expect(textarea.value).toBe(finePointer ? "/goal " : "/go");
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it("shows slash command suggestions and inserts a selected command", async () => {    await renderChatInput({
