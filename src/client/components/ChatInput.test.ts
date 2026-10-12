@@ -85,6 +85,7 @@ describe("ChatInput voice retry", () => {
       error: null,
       startRecording: vi.fn(),
       stopRecording: vi.fn(),
+      cancelRecording: vi.fn(() => true),
       refreshStatus: vi.fn(),
     });
   });
@@ -336,6 +337,108 @@ describe("ChatInput voice retry", () => {
       onMaxDurationReached();
     });
     expect(stopRecording).toHaveBeenCalledOnce();
+  });
+
+  it.each(["starting", "recording"])("offers cancellation during %s without sending or changing the draft", async (phase) => {
+    const state = useVoiceInputMock();
+    const cancelRecording = vi.fn(() => true);
+    useVoiceInputMock.mockReturnValue({ ...state, phase, cancelRecording, elapsedSeconds: 4 });
+    const onSend = vi.fn();
+    const onSubmitVoiceCapture = vi.fn();
+    const onDraftChange = vi.fn();
+    const props = {
+      onSend, onSubmitVoiceCapture, onDraftChange,
+      draft: {
+        text: "Keep this draft",
+        attachments: [{ type: "blob" as const, data: "", mimeType: "text/plain", displayName: "notes.txt" }],
+      },
+    };
+    await renderChatInput(props);
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.onClick?.();
+      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording"))?.onClick?.();
+    });
+    expect(cancelRecording).toHaveBeenCalledOnce();
+    expect(state.stopRecording).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSubmitVoiceCapture).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(findTextarea(getHarness().dom.container).value).toBe("Keep this draft");
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Remove attachment notes.txt")).toBeDefined();
+    expect(getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.["aria-pressed"]).toBe(true);
+
+    useVoiceInputMock.mockReturnValue({ ...state, phase: "idle", cancelRecording });
+    await renderChatInput(props);
+    expect(getHarness().dom.container.textContent).toContain("Recording cancelled. Nothing sent.");
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording")).toBeUndefined();
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
+    });
+    expect(getHarness().dom.container.textContent).not.toContain("Recording cancelled.");
+  });
+
+  it("handles Escape from both the status actions and composer, but not during IME composition", async () => {
+    const cancelRecording = vi.fn(() => true);
+    useVoiceInputMock.mockReturnValue({ ...useVoiceInputMock(), phase: "recording", cancelRecording });
+    await renderChatInput();
+    const container = getHarness().dom.container;
+    const wrapper = findAllByTag(container, "DIV").find((element) => getReactProps(element)?.onKeyDown);
+    const cancelButton = findButtonByAriaLabel(container, "Cancel voice recording");
+    let parent = cancelButton.parentNode;
+    while (parent && parent !== wrapper) parent = parent.parentNode;
+    expect(parent).toBe(wrapper);
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    const onKeyDown = getReactProps(wrapper)?.onKeyDown;
+    await getHarness().act(async () => {
+      onKeyDown({ key: "Escape", nativeEvent: { isComposing: true }, preventDefault, stopPropagation });
+    });
+    expect(cancelRecording).not.toHaveBeenCalled();
+    await getHarness().act(async () => {
+      onKeyDown({ key: "Escape", nativeEvent: {}, preventDefault, stopPropagation });
+    });
+    expect(cancelRecording).toHaveBeenCalledOnce();
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+  });
+
+  it.each(["idle", "finishing"])("does not offer cancellation while %s", async (phase) => {
+    useVoiceInputMock.mockReturnValue({ ...useVoiceInputMock(), phase });
+    await renderChatInput();
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording")).toBeUndefined();
+  });
+
+  it("keeps the submission mode and shows no cancellation confirmation when Stop won the race", async () => {
+    const state = useVoiceInputMock();
+    let phase = "idle";
+    const cancelRecording = vi.fn(() => false);
+    useVoiceInputMock.mockImplementation(() => ({
+      ...state,
+      phase,
+      startRecording: () => { phase = "recording"; },
+      stopRecording: () => { phase = "finishing"; },
+      cancelRecording,
+    }));
+    const onSubmitVoiceCapture = vi.fn();
+    await renderChatInput({ onSubmitVoiceCapture });
+    const container = getHarness().dom.container;
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(container, "Record voice input"))?.onClick?.();
+    });
+    await renderChatInput({ onSubmitVoiceCapture });
+    const [{ onAudioCaptured }] = useVoiceInputMock.mock.calls.at(-1) as [{
+      onAudioCaptured: (capture: { audio: Blob; contextKey: string }) => Promise<void>;
+    }];
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(container, "Stop recording, transcribe, and send automatically"))?.onClick?.();
+      getReactProps(findButtonByAriaLabel(container, "Cancel voice recording"))?.onClick?.();
+      await onAudioCaptured({ audio: new Blob(["audio"]), contextKey: "session-1" });
+    });
+    expect(cancelRecording).toHaveBeenCalledOnce();
+    expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend" }));
+    phase = "idle";
+    await renderChatInput({ onSubmitVoiceCapture });
+    expect(container.textContent).not.toContain("Recording cancelled.");
   });
 
   it("switches the streaming action between stop and steering send", async () => {
