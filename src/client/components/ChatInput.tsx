@@ -605,6 +605,8 @@ export default function ChatInput({
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e as any).isComposing || (e as any).keyCode === 229) return;
+    // Mobile Enter stays a newline even when the keyboard does not shrink the viewport.
+    if (e.key === "Enter" && !hasFinePointer() && !e.ctrlKey && !e.metaKey) return;
     if (slashSuggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -623,9 +625,6 @@ export default function ChatInput({
       }
     }
     if (e.key === "Enter" && !e.shiftKey) {
-      // On-screen keyboards have no Shift+Enter, so Enter inserts a newline there and
-      // the send button is the only way to submit. Ctrl/Cmd+Enter still sends.
-      if (usesSoftKeyboard() && !e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       handleSend();
     }
