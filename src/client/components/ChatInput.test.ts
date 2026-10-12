@@ -728,6 +728,7 @@ describe("ChatInput voice retry", () => {
       });
       getReactProps(textarea)?.onKeyDown?.({
         key: "Enter",
+        code: "Enter",
         shiftKey: true,
         preventDefault,
       });
@@ -735,6 +736,112 @@ describe("ChatInput voice retry", () => {
 
     expect(preventDefault).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { code: "Enter", isDraft: true, steering: false, mode: "interactive" as const },
+    { code: "NumpadEnter", isDraft: true, steering: false, mode: "interactive" as const },
+    { code: "Enter", isDraft: false, steering: false, mode: "interactive" as const },
+    { code: "Enter", isDraft: false, steering: true, mode: "interactive" as const },
+    { code: "Enter", isDraft: true, steering: false, mode: "autopilot" as const },
+  ])("sends hardware-style Enter with an unobscured touch viewport %j", async ({ code, isDraft, steering, mode }) => {
+    pointerFineMatches = false;
+    setVisualViewport(800, 800);
+    const onSend = vi.fn();
+    await renderChatInput({
+      onSend,
+      isDraft,
+      defaultSendMode: mode,
+      onAbort: steering ? vi.fn() : undefined,
+      draft: { text: "hardware message", attachments: [] },
+    });
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code, shiftKey: false, preventDefault });
+    });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    if (steering) expect(onSend).toHaveBeenCalledWith("hardware message", undefined);
+    else expect(onSend).toHaveBeenCalledWith("hardware message", undefined, mode);
+    expect(textarea.value).toBe("");
+  });
+
+  it.each([
+    { label: "software-style Enter", code: "", visualHeight: 800 },
+    { label: "unidentified Enter", code: "Unidentified", visualHeight: 800 },
+    { label: "unrelated physical code", code: "KeyA", visualHeight: 800 },
+    { label: "software Enter with a physical-style code", code: "Enter", visualHeight: 480 },
+    { label: "keypad Enter while the soft keyboard is visible", code: "NumpadEnter", visualHeight: 480 },
+    { label: "Enter without viewport data", code: "Enter" },
+    { label: "Enter with invalid viewport data", code: "Enter", visualHeight: NaN },
+  ])("leaves $label as native newline", async ({ code, visualHeight }) => {
+    pointerFineMatches = false;
+    if (visualHeight !== undefined) setVisualViewport(800, visualHeight);
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, draft: { text: "keep draft", attachments: [] } });
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code, shiftKey: false, preventDefault });
+    });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("keep draft");
+  });
+
+  it("keeps Enter native when a soft keyboard occludes a fine-pointer device", async () => {
+    setVisualViewport(800, 480);
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, draft: { text: "keep draft", attachments: [] } });
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(findTextarea(getHarness().dom.container))?.onKeyDown?.({
+        key: "Enter", code: "Enter", preventDefault,
+      });
+    });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { keyCode: 13, nativeEvent: { isComposing: true } },
+    { keyCode: 229, nativeEvent: { isComposing: false } },
+  ])("never sends an IME confirmation even with a physical code and Ctrl %j", async (composition) => {
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, draft: { text: "composing", attachments: [] } });
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(findTextarea(getHarness().dom.container))?.onKeyDown?.({
+        key: "Enter", code: "Enter", ctrlKey: true, preventDefault, ...composition,
+      });
+    });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps composition Enter native until composition ends and resets on composer changes", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({ onSend, draft: { text: "composing", attachments: [] } });
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onCompositionStart?.();
+      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code: "Enter", preventDefault });
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(preventDefault).not.toHaveBeenCalled();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onCompositionEnd?.();
+      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code: "Enter", preventDefault });
+    });
+    expect(onSend).toHaveBeenCalledOnce();
+
+    await getHarness().act(async () => { getReactProps(textarea)?.onCompositionStart?.(); });
+    await renderChatInput({ onSend, composerKey: "session-2", draft: { text: "new target", attachments: [] } });
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code: "Enter", preventDefault });
+    });
+    expect(onSend).toHaveBeenCalledTimes(2);
   });
 
   it.each(["ctrlKey", "metaKey"] as const)("still sends on %s+Enter on a touch device", async (modifier) => {
@@ -766,9 +873,10 @@ describe("ChatInput voice retry", () => {
   });
 
   it.each([
-    { label: "mobile", finePointer: false },
-    { label: "desktop", finePointer: true },
-  ])("handles Enter in slash suggestions on $label", async ({ finePointer }) => {
+    { label: "mobile software keyboard", finePointer: false, code: "", completes: false },
+    { label: "mobile hardware keyboard", finePointer: false, code: "Enter", completes: true },
+    { label: "desktop", finePointer: true, code: "Enter", completes: true },
+  ])("handles Enter in slash suggestions on $label", async ({ finePointer, code, completes }) => {
     pointerFineMatches = finePointer;
     setVisualViewport(800, 800);
     const onSend = vi.fn();
@@ -788,13 +896,43 @@ describe("ChatInput voice retry", () => {
     await getHarness().act(async () => {
       getReactProps(textarea)?.onKeyDown?.({
         key: "Enter",
+        code,
         shiftKey: false,
         preventDefault,
       });
     });
-    expect(preventDefault).toHaveBeenCalledTimes(finePointer ? 1 : 0);
-    expect(textarea.value).toBe(finePointer ? "/goal " : "/go");
+    expect(preventDefault).toHaveBeenCalledTimes(completes ? 1 : 0);
+    expect(textarea.value).toBe(completes ? "/goal " : "/go");
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each(["shiftKey", "ctrlKey", "metaKey"] as const)("preserves %s+Enter while slash suggestions are open", async (modifier) => {
+    pointerFineMatches = false;
+    setVisualViewport(800, 800);
+    const onSend = vi.fn();
+    await renderChatInput({
+      onSend,
+      draft: { text: "/go", attachments: [] },
+      slashCommandsSupported: true,
+      slashCommands: [{
+        name: "goal", description: "Set an autopilot objective",
+        kind: "builtin", allowDuringAgentExecution: true,
+      }],
+    });
+    const textarea = findTextarea(getHarness().dom.container);
+    const preventDefault = vi.fn();
+    await getHarness().act(async () => {
+      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code: "Enter", [modifier]: true, preventDefault });
+    });
+    if (modifier === "shiftKey") {
+      expect(preventDefault).not.toHaveBeenCalled();
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea.value).toBe("/go");
+    } else {
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(onSend).toHaveBeenCalledWith("/go", undefined, "interactive");
+      expect(textarea.value).toBe("");
+    }
   });
 
   it("shows slash command suggestions and inserts a selected command", async () => {    await renderChatInput({
