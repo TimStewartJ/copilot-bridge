@@ -1,3 +1,5 @@
+import { isRecord } from "./is-record.js";
+
 export interface SessionHistoryCoverage {
   latestEventId?: string;
   latestTurnId?: string;
@@ -5,6 +7,17 @@ export interface SessionHistoryCoverage {
 }
 
 export type RunNoticeKind = "stopped" | "interrupted" | "error" | "command";
+
+export interface ProviderRetryState {
+  phase: "waiting" | "retrying";
+  retryAt: string;
+}
+
+export function normalizeProviderRetryState(value: unknown): ProviderRetryState | undefined {
+  if (!isRecord(value) || (value.phase !== "waiting" && value.phase !== "retrying")
+    || typeof value.retryAt !== "string" || !Number.isFinite(Date.parse(value.retryAt))) return undefined;
+  return { phase: value.phase, retryAt: value.retryAt };
+}
 
 /**
  * A run outcome the bridge produced that `events.jsonl` does not represent — an error message, a
