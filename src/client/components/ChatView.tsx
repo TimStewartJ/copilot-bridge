@@ -92,6 +92,7 @@ import ActivityBlock from "./chat/ActivityBlock";
 import { ChatRunActiveProvider } from "./chat/chat-run-context";
 import { TranscriptAgentsProvider, type TranscriptAgentsContextValue } from "./chat/transcript-agents-context";
 import LiveStatusLine from "./chat/LiveStatusLine";
+import { useNow } from "../hooks/useNow";
 import AutopilotRunLine from "./chat/AutopilotRunLine";
 import { DS, cx } from "../design/tokens";
 import { AutopilotIcon, Button, Notice } from "../design/primitives";
@@ -1134,6 +1135,7 @@ export default function ChatView({
     pendingElicitations = [],
     elicitationCancellation,
     runNotice,
+    providerRetry,
     historyEpoch,
     contextSummary: streamContextSummary,
     sendMessage,
@@ -2727,10 +2729,27 @@ export default function ChatView({
   }, [retryFailedRun, runNotice, sessionId]);
 
   // Build lightweight pending-only UI. Live tools and assistant text render in the normal chat flow.
+  const retryNow = useNow(providerRetry?.phase === "waiting");
+  const retrySeconds = providerRetry ? Math.max(0, Math.min(5, Math.ceil((Date.parse(providerRetry.retryAt) - retryNow) / 1000))) : 0;
+  const providerRetryLabel = providerRetry?.phase === "retrying"
+    ? "Retrying response"
+    : retrySeconds > 0 ? `Retrying in ${retrySeconds} second${retrySeconds === 1 ? "" : "s"}` : "Preparing retry";
+
   const pendingContent = useMemo(() => {
     const parts: React.ReactNode[] = [];
 
-    if (showStatusLine && runHeaderState) {
+    if (isStreaming && providerRetry) {
+      parts.push(
+        <div key="provider-retry" className={CHAT_RAIL_CLASS}>
+          <LiveStatusLine
+            label={providerRetryLabel}
+            detail="The model provider had an internal server error. One automatic retry."
+            description="Stop cancels the retry. Completed actions are not automatically replayed."
+            autopilot={runMode === "autopilot"}
+          />
+        </div>,
+      );
+    } else if (showStatusLine && runHeaderState) {
       const attaching = runHeaderState.phase === "reconnecting" && !reconnectIsSlow;
       parts.push(
         <div key="run-header" className={CHAT_RAIL_CLASS}>
@@ -2821,6 +2840,8 @@ export default function ChatView({
     runHeaderState,
     runMode,
     runNotice,
+    providerRetry,
+    providerRetryLabel,
     showStatusLine,
     waitingOnAgents,
   ]);

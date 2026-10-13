@@ -5412,6 +5412,7 @@ export class SessionManager {
   ): Promise<boolean> {
     // Anyone else's stop means an image-budget pause must not continue the turn.
     const cancelledPause = !options.forImageBudget && this.imageBudget.cancelPause(sessionId);
+    if (this.sessionRunner.cancelProviderRetry(sessionId)) return true;
     if (!this.runStateController.hasSessionRun(sessionId)) return cancelledPause;
 
     const runController = this.activeRunControllers.get(sessionId);

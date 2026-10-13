@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeRestartState } from "../restart-state.js";
 import { SessionManager } from "../session-manager.js";
 import { AUTOMATIC_ANSWERS } from "../../shared/automatic-answer.js";
+import { PROVIDER_RETRY_DELAY_MS, PROVIDER_RETRY_PROMPT } from "../session-provider-retry.js";
 
 import { BrowserBroker } from "../browser-broker.js";
 import { BrowserSessionStore } from "../browser-session-store.js";
@@ -192,6 +193,251 @@ describe("SessionManager run state", () => {
   afterEach(() => {
 
     vi.useRealTimers();
+  });
+
+  function recordRetryPrompt(run: Awaited<ReturnType<typeof startDeliveredRun>>) {
+    run.getHandler()?.({
+      id: "recorded-user-prompt", type: "user.message", timestamp: at(run, 0),
+      data: { content: "hello" },
+    });
+  }
+
+  function internalError(run: Awaited<ReturnType<typeof startDeliveredRun>>, id = "provider-error") {
+    return {
+      id, type: "session.error", timestamp: new Date().toISOString(),
+      data: { statusCode: 400, message: "Execution failed: 400 internal server error", providerCallId: "request-1" },
+    };
+  }
+
+  it("waits exactly five seconds, continues once without attachments, and preserves mode", async () => {
+    const run = await startDeliveredRun("provider-retry");
+    recordRetryPrompt(run);
+    run.manager.sessionRunner.agentModes.set(run.sessionId, "autopilot");
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    const runId = run.bus.getSnapshot().runId;
+    run.getHandler()?.(internalError(run));
+    run.getHandler()?.({ type: "session.idle", data: {} });
+    expect(run.bus.getSnapshot()).toMatchObject({
+      complete: false, runId, providerRetry: { phase: "waiting" },
+    });
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS - 1);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    expect(run.session.send).toHaveBeenLastCalledWith({ prompt: PROVIDER_RETRY_PROMPT, source: "system" });
+    expect(run.session.setSendMode).toHaveBeenLastCalledWith({ mode: "autopilot" });
+    run.getReleaseSend()?.();
+    run.getHandler()?.(internalError(run, "second-error"));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS * 2);
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "error", runId });
+    expect(run.bus.getSnapshot().providerRetry).toBeUndefined();
+    expect(run.sessionMetaStore.getTerminalOverlay(run.sessionId)?.notice?.retryRunId).toBe(runId);
+    expect(latestSpanMetadata(run.telemetryStore, "session.run.complete", run.sessionId)).toMatchObject({
+      completionStatus: "error", providerRetryCount: 1, statusCode: 400,
+    });
+  });
+
+  it("Stop cancels the cooldown immediately without waiting for an SDK abort", async () => {
+    const run = await startDeliveredRun("provider-retry-stop");
+    recordRetryPrompt(run);
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS - 1);
+    await run.manager.abortSession(run.sessionId);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS * 2);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.session.abort).not.toHaveBeenCalled();
+    expect(run.bus.getTerminalState().terminalType).toBe("aborted");
+    expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+  });
+
+  it("finishes a successful retry only after confirming runtime idle against the new attempt", async () => {
+    const run = await startDeliveredRun("provider-success");
+    recordRetryPrompt(run);
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    run.session.getActivity.mockResolvedValue({ processing: true });
+    run.getReleaseSend()?.();
+    await flushMicrotasks();
+    await run.manager.waitForSessionWatchdogIdle(run.sessionId);
+    const timestamp = new Date().toISOString();
+    const events = [
+      { id: "retry-user", type: "user.message", timestamp, data: { source: "system", content: PROVIDER_RETRY_PROMPT } },
+      { id: "retry-answer", type: "assistant.message", timestamp, data: { content: "Recovered" } },
+      { id: "retry-end", type: "assistant.turn_end", timestamp, data: {} },
+    ];
+    writeSessionEvents(run.copilotHome, run.sessionId, events);
+    events.forEach((event) => run.getHandler()?.(event));
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    run.getHandler()?.({ type: "session.idle", timestamp, data: {} });
+    await settleWatchdog(run.manager, run.sessionId);
+    expect(run.bus.getTerminalState()).toMatchObject({ terminalType: "done", finalContent: "Recovered" });
+    expect(run.sessionMetaStore.getTerminalOverlay(run.sessionId)).toBeUndefined();
+    expect(latestSpanMetadata(run.telemetryStore, "session.run.complete", run.sessionId)).toMatchObject({
+      completionStatus: "done", providerRetryCount: 1,
+    });
+  });
+
+  it("does not launch the retry while the failed send is still unsettled", async () => {
+    const created = createManager({ telemetry: true });
+    const made = makeSession();
+    const sessionId = "provider-unsettled-send";
+    created.manager.backend = { resumeSession: vi.fn().mockResolvedValue(made.session) };
+    created.manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    const run = { ...created, ...made, sessionId, bus: created.eventBusRegistry.getOrCreateBus(sessionId), startedAt: Date.now() };
+    recordRetryPrompt(run);
+    made.session.getActivity.mockResolvedValue({ processing: false });
+    made.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    expect(made.session.send).toHaveBeenCalledTimes(1);
+    made.getReleaseSend()?.();
+    await flushMicrotasks();
+    expect(made.session.send).toHaveBeenCalledTimes(2);
+    made.getReleaseSend()?.();
+    made.getHandler()?.(internalError(run, "second-failure"));
+    await flushMicrotasks();
+  });
+
+  it("drops the pending retry when the active run is ended by backend loss", async () => {
+    const run = await startDeliveredRun("provider-backend-loss");
+    recordRetryPrompt(run);
+    run.getHandler()?.(internalError(run));
+    run.manager.activeRunControllers.get(run.sessionId).completeError("Backend disconnected");
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe("error");
+  });
+
+  it("Stop wins while the runtime readiness read is pending", async () => {
+    const run = await startDeliveredRun("provider-retry-readiness-stop");
+    recordRetryPrompt(run);
+    let ready!: (value: { processing: boolean }) => void;
+    run.session.getActivity.mockImplementation(() => new Promise((resolve) => { ready = resolve; }));
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    await run.manager.abortSession(run.sessionId);
+    ready({ processing: false });
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe("aborted");
+  });
+
+  it.each(["stop", "runtime_turn"])("does not resend if %s arrives during retry mode setup", async (action) => {
+    const run = await startDeliveredRun("provider-retry-mode");
+    recordRetryPrompt(run);
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    let prepared!: () => void;
+    run.session.setSendMode.mockImplementation(() => new Promise<void>((resolve) => { prepared = resolve; }));
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    if (action === "stop") await run.manager.abortSession(run.sessionId);
+    else run.getHandler()?.({ type: "assistant.turn_start", data: { turnId: "own-turn" } });
+    prepared();
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    if (action === "runtime_turn") run.getHandler()?.(internalError(run, "own-final-error"));
+    await flushMicrotasks();
+  });
+
+  it("does not retry without a recorded original user message", async () => {
+    const run = await startDeliveredRun("provider-unrecorded");
+    run.getHandler()?.(internalError(run));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS * 2);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe("error");
+  });
+
+  it.each([undefined, { processing: true }])("fails closed if the runtime is not ready: %j", async (activity) => {
+    const run = await startDeliveredRun("provider-not-ready");
+    recordRetryPrompt(run);
+    run.session.getActivity.mockResolvedValue(activity);
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe("error");
+  });
+
+  it("keeps subagent tool events during cooldown and rejects steering", async () => {
+    const run = await startDeliveredRun("provider-background");
+    recordRetryPrompt(run);
+    run.getHandler()?.({
+      type: "tool.execution_start", data: { toolCallId: "agent-tool", toolName: "view", parentToolCallId: "task-agent" },
+    });
+    run.getHandler()?.(internalError(run));
+    run.getHandler()?.({
+      type: "tool.execution_complete", agentId: "agent-1",
+      data: { toolCallId: "agent-tool", parentToolCallId: "task-agent", success: true, result: { content: "done" } },
+    });
+    expect(run.bus.getSnapshot().liveTools.find((tool) => tool.toolCallId === "agent-tool")?.completedAt).toBeDefined();
+    await expect(run.manager.sessionRunner.steerSession(run.sessionId, "new work")).rejects.toThrow("waiting to retry");
+    await run.manager.abortSession(run.sessionId);
+    await flushMicrotasks();
+  });
+
+  it("does not resend when the runtime continues by itself during cooldown", async () => {
+    const run = await startDeliveredRun("provider-runtime-continued");
+    recordRetryPrompt(run);
+    run.getHandler()?.(internalError(run));
+    run.getHandler()?.({ type: "assistant.turn_start", data: { turnId: "runtime-next" } });
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getSnapshot().providerRetry).toBeUndefined();
+    run.getHandler()?.(internalError(run, "runtime-final-error"));
+    await flushMicrotasks();
+  });
+
+  it("does not trust an old idle arriving after the retry's new turn has started", async () => {
+    const run = await startDeliveredRun("provider-late-idle");
+    recordRetryPrompt(run);
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    run.session.getActivity.mockResolvedValue({ processing: true });
+    run.getReleaseSend()?.();
+    run.getHandler()?.({ type: "assistant.turn_start", data: { turnId: "retry-turn" } });
+    run.getHandler()?.({ type: "session.idle", data: {} });
+    await flushMicrotasks();
+    await run.manager.waitForSessionWatchdogIdle(run.sessionId);
+    expect(run.bus.complete).toBe(false);
+    run.getHandler()?.(internalError(run, "retry-final-error"));
+    await flushMicrotasks();
+  });
+
+  it("does not retry a subagent internal error or an unrelated main 400", async () => {
+    const run = await startDeliveredRun("provider-exclusions");
+    recordRetryPrompt(run);
+    run.getHandler()?.({ ...internalError(run), agentId: "agent-1" });
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.complete).toBe(false);
+    run.getHandler()?.({
+      ...internalError(run),
+      data: { statusCode: 400, message: "Execution failed: 400 Duplicate item found" },
+    });
+    await flushMicrotasks();
+    expect(run.bus.getTerminalState().terminalType).toBe("error");
+  });
+
+  it("does not mistake two unnumbered provider errors for the same event", async () => {
+    const run = await startDeliveredRun("provider-unnumbered-errors");
+    recordRetryPrompt(run);
+    const { id: _id, ...first } = internalError(run);
+    run.getHandler()?.(first);
+    run.getHandler()?.({
+      type: "session.error", data: { statusCode: 400, message: "Execution failed: 400 Duplicate item found" },
+    });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe("error");
   });
 
   it("reuses cached Claude sessions without pre-send model or history inspection", async () => {
