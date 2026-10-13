@@ -71,6 +71,12 @@ import type { ImageBudgetController } from "./image-budget.js";
 import { normalizePromptCacheBreak, promptProcessMetadata } from "./session-prompt-fingerprint.js";
 import { getParentToolCallId, isStampedAgentTurnEvent, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
 import { TranscriptAgentFold } from "./transcript-agent-fold.js";
+import {
+  isRetryableProviderError,
+  providerErrorMetadata,
+  PROVIDER_RETRY_DELAY_MS,
+  PROVIDER_RETRY_PROMPT,
+} from "./session-provider-retry.js";
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
@@ -474,6 +480,7 @@ export interface SessionRunnerDeps {
 export class SessionRunner {
   private readonly watchdogPromises = new Map<string, Promise<void>>();
   private readonly sessionFeeds = new Map<string, SessionFeed>();
+  private readonly providerRetryWaits = new Map<string, () => void>();
   private lastRuntimeEvent: { receivedAtMs: number; sessionId: string; type: string } | undefined;
   /**
    * The CLI mode each loaded session's runs use. The CLI keeps a session's mode after a run, so a
@@ -504,6 +511,13 @@ export class SessionRunner {
       if (!pending) return;
       await pending;
     }
+  }
+
+  cancelProviderRetry(sessionId: string): boolean {
+    const cancel = this.providerRetryWaits.get(sessionId);
+    if (!cancel) return false;
+    cancel();
+    return true;
   }
 
   /** Subscribes once to a cached session's events; SessionManager calls this as it caches the session. */
@@ -837,6 +851,9 @@ export class SessionRunner {
     if (!runController || runController.isCompleted()) {
       throw new Error("Session is not accepting steering right now");
     }
+    if (this.providerRetryWaits.has(sessionId)) {
+      throw new Error("The model provider failed; this chat is waiting to retry. Stop it before sending another message.");
+    }
 
     const session = this.deps.sessionObjects.get(sessionId);
     if (!session) {
@@ -992,6 +1009,21 @@ export class SessionRunner {
         });
         turnContext?.commit();
       },
+      retryExecute: async (session, claimSend) => {
+        if (options.reasoningEffort) {
+          await this.deps.applyTurnReasoningEffort?.(sessionId, session, options.reasoningEffort);
+        }
+        if (activeRunController.isCompleted()) return;
+        await setSessionModeForSend(session, this.agentModes.get(sessionId) ?? mode);
+        if (!claimSend()) return;
+        const turnContext = this.deps.prepareTurnContext?.(sessionId);
+        await session.send({
+          prompt: turnContext?.block ? `${turnContext.block}\n\n${PROVIDER_RETRY_PROMPT}` : PROVIDER_RETRY_PROMPT,
+          ...(turnContext?.block ? { displayPrompt: PROVIDER_RETRY_PROMPT } : {}),
+          source: "system",
+        });
+        turnContext?.commit();
+      },
     });
   }
 
@@ -1004,6 +1036,7 @@ export class SessionRunner {
       idleSpanName: string;
       startLog: string;
       execute?: (session: any) => Promise<void>;
+      retryExecute?: (session: any, claimSend: () => boolean) => Promise<void>;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       /** The run follows a turn the runtime already started: there is no prompt to prepare or send. */
@@ -1224,6 +1257,12 @@ export class SessionRunner {
     let staleCacheRecoveryPromise: Promise<void> | undefined;
     let retryStaleCachedSession: ((reason: unknown, source: "event" | "send") => Promise<void>) | undefined;
     let turnHadSideEffects = false;
+    let originalPromptRecorded = false;
+    let providerRetryCount = 0;
+    let sendSettled = Promise.resolve();
+    let pendingProviderRetry: { event: any; context: SessionEventHandlingContext } | undefined;
+    let providerRetryPromise: Promise<void> | undefined;
+    let cancelProviderRetryWait: (() => void) | undefined;
     const resetRunTelemetryState = () => {
       promptDelivered = false;
       lastLogStat = undefined;
@@ -1243,12 +1282,15 @@ export class SessionRunner {
       step: () => Promise<T>,
     ): Promise<{ completed: true } | { completed: false; value: T }> => {
       sendOperationInFlight = true;
+      let settleSend!: () => void;
+      sendSettled = new Promise<void>((resolve) => { settleSend = resolve; });
       try {
         const result = await runStepOrCompletion(stepName, step);
         if (!result.completed) promptDelivered = true;
         return result;
       } finally {
         sendOperationInFlight = false;
+        settleSend();
       }
     };
     const beginSend = () => {
@@ -1386,6 +1428,7 @@ export class SessionRunner {
       pendingUserInputCount: this.deps.getPendingUserInputCount(sessionId),
       pendingInteractionCount: this.deps.getPendingInteractionCount(sessionId),
       staleCacheRetryCount: staleCacheRetryCount || undefined,
+      providerRetryCount: providerRetryCount || undefined,
       ...getActiveToolTelemetry(),
       ...getActiveExternalToolTelemetry(now),
     });
@@ -1428,6 +1471,7 @@ export class SessionRunner {
       console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
       endCurrentContextTurn(event);
       recordRunCompletion(event, context, "error", {
+        ...providerErrorMetadata(data),
         errorMessagePresent: typeof data?.message === "string",
         errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
       });
@@ -1461,7 +1505,7 @@ export class SessionRunner {
      * caller has already established that it ended: the runtime said so, or the ending is conclusive.
      */
     const finishRunFromLog = (ending: PersistedRunEnding, runtimeAnswer: RuntimeAnswer) => {
-      if (runController.isCompleted()) return;
+      if (runController.isCompleted() || pendingProviderRetry) return;
       const context: SessionEventHandlingContext = {
         origin: "persisted_recovery",
         recoveryReason: `runtime ${runtimeAnswer}`,
@@ -1680,6 +1724,7 @@ export class SessionRunner {
             getSdkEventId(event),
             getEventTimestampIso(event),
           );
+          if (getSdkEventId(event)) originalPromptRecorded = true;
           runController.markPromptAccepted();
           if (typeof data?.content === "string" && !("source" in (data ?? {}))) {
             this.deps.maybeAutoNameSession(sessionId, { session, userMessages: [data.content] });
@@ -1707,6 +1752,14 @@ export class SessionRunner {
           if (!this.runtimeStampsAgentTurns && activeSubAgentToolCallIds.size > 0) {
             console.log(`[sdk] [${sid}] ⏳ Sub-agent turn started`);
             break;
+          }
+          if (pendingProviderRetry) {
+            pendingProviderRetry = undefined;
+            this.providerRetryWaits.delete(sessionId);
+            bus.emit({ type: "provider_retry" });
+            recordRunSpan("session.provider.retry", 0, { outcome: "runtime_continued" });
+            beginSend();
+            promptDelivered = true;
           }
           console.log(`[sdk] [${sid}] ⏳ Turn started`);
           currentBridgeTurnId = getSdkTurnId(event) ?? `turn-${randomUUID()}`;
@@ -2129,6 +2182,23 @@ export class SessionRunner {
             }, eventAt);
             break;
           }
+          recordRunSpan("session.provider.error", 0, {
+            ...providerErrorMetadata(data),
+            model: this.deps.sessionContextStore?.getSummary(sessionId)?.currentModel ?? resumeConfig.model,
+          });
+          if (pendingProviderRetry && getSdkEventId(event)
+            && getSdkEventId(event) === getSdkEventId(pendingProviderRetry.event)) break;
+          if (
+            context.origin === "live"
+            && opts.retryExecute
+            && originalPromptRecorded
+            && providerRetryCount === 0
+            && isRetryableProviderError(data)
+          ) {
+            endCurrentContextTurn(event);
+            scheduleProviderRetry(event, context);
+            break;
+          }
           if (
             usedCache
             && !opts.followsRuntimeTurn
@@ -2206,6 +2276,13 @@ export class SessionRunner {
           break;
         case "session.idle":
         case "session.task_complete": {
+          if (pendingProviderRetry) break;
+          if (providerRetryCount > 0 && context.origin === "live") {
+            // A late idle from the failed attempt cannot end the retry. Ask the runtime and read
+            // only the new attempt's log before completing, as the watchdog already does.
+            startWatchdogTick();
+            break;
+          }
           if (staleMcpServersScheduledThisRun.size > 0) {
             this.deps.mcpStatus.delete(sessionId);
           }
@@ -2444,6 +2521,62 @@ export class SessionRunner {
       });
     });
 
+    const scheduleProviderRetry = (event: any, context: SessionEventHandlingContext) => {
+      const pending = { event, context };
+      pendingProviderRetry = pending;
+      providerRetryCount += 1;
+      const retryAt = new Date(Date.now() + PROVIDER_RETRY_DELAY_MS).toISOString();
+      const failedSendSettled = sendSettled;
+      bus.emit({ type: "provider_retry", providerRetry: { phase: "waiting", retryAt } });
+      recordRunSpan("session.provider.retry", 0, {
+        ...providerErrorMetadata(event.data),
+        outcome: "scheduled",
+        retryAt,
+      });
+      console.warn(`[sdk] [${sid}] Provider internal server error — retrying once in 5 seconds`);
+      cancelProviderRetryWait = () => {
+        pendingProviderRetry = undefined;
+        this.providerRetryWaits.delete(sessionId);
+        recordRunSpan("session.provider.retry", 0, { outcome: "cancelled" });
+        runController.completeAborted(bus.getStreamingContent() || bus.getLastAssistantSegment()?.content || "");
+      };
+      this.providerRetryWaits.set(sessionId, cancelProviderRetryWait);
+      providerRetryPromise = (async () => {
+        await waitUnlessCompleted(PROVIDER_RETRY_DELAY_MS);
+        if (runController.isCompleted() || pendingProviderRetry !== pending) return;
+        if ((await runStepOrCompletion("settle failed provider send", () => failedSendSettled)).completed) return;
+        if (runController.isCompleted() || pendingProviderRetry !== pending) return;
+        const readiness = await runStepOrCompletion<Awaited<ReturnType<AgentSession["getActivity"]>>>(
+          "check runtime before provider retry", () => session.getActivity(),
+        );
+        if (runController.isCompleted() || pendingProviderRetry !== pending || readiness.completed) return;
+        if (readiness.value?.processing !== false || this.deps.sessionObjects.get(sessionId) !== session) {
+          pendingProviderRetry = undefined;
+          this.providerRetryWaits.delete(sessionId);
+          recordRunSpan("session.provider.retry", 0, { outcome: "not_ready" });
+          completeSessionError(event, context);
+          return;
+        }
+        const claimSend = () => {
+          if (runController.isCompleted() || pendingProviderRetry !== pending) return false;
+          pendingProviderRetry = undefined;
+          this.providerRetryWaits.delete(sessionId);
+          beginSend();
+          bus.emit({ type: "provider_retry", providerRetry: { phase: "retrying", retryAt } });
+          recordRunSpan("session.provider.retry", 0, { outcome: "started" });
+          return true;
+        };
+        if ((await runSendStep("send provider retry", () => opts.retryExecute!(session, claimSend))).completed) return;
+        runController.markPromptAccepted();
+        startWatchdogTick();
+      })().catch((error) => {
+        if (runController.isCompleted()) return;
+        console.error(`[sdk] [${sid}] Automatic provider retry failed:`, error);
+        recordRunSpan("session.provider.retry", 0, { outcome: "failed" });
+        runController.completeError(`Automatic retry failed: ${getErrorMessage(error)}`);
+      });
+    };
+
     /** "idle" only when the runtime says so twice with no main-agent turn starting in between. */
     const askRuntimeTwice = async (): Promise<RuntimeAnswer> => {
       const turnsBefore = liveTurnStartCount;
@@ -2456,13 +2589,13 @@ export class SessionRunner {
     };
 
     const runWatchdogTick = async () => {
-      if (runController.isCompleted()) return;
+      if (runController.isCompleted() || pendingProviderRetry) return;
       try {
         const logChanged = await noteLogProgress();
         // A prompt that is still being delivered has not started the main agent yet.
         if (promptDelivered && !runController.isCompleted()) {
           lastRuntimeAnswer = await askRuntimeTwice();
-          if (runController.isCompleted()) return;
+          if (runController.isCompleted() || pendingProviderRetry) return;
           if (lastRuntimeAnswer === "idle" || (lastRuntimeAnswer === "unknown" && logChanged)) {
             const ending = await readPersistedRunEnding(eventsJsonlPath, sendStart);
             // Without the runtime's word, only an ending that leaves no doubt may end the run.
@@ -2610,10 +2743,13 @@ export class SessionRunner {
 
       await runController.completion;
     } finally {
+      pendingProviderRetry = undefined;
+      if (this.providerRetryWaits.get(sessionId) === cancelProviderRetryWait) this.providerRetryWaits.delete(sessionId);
       clearInterval(heartbeatLog);
       clearInterval(watchdog);
       activeExternalTools.clear();
       unsub?.();
+      await providerRetryPromise;
     }
   }
 }

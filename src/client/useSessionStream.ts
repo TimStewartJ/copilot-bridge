@@ -11,7 +11,7 @@ import type {
 import { API_BASE, reportTiming, retrySessionRun, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import { isSendMode, type SendMode } from "../shared/send-mode.js";
-import type { RunNotice } from "../shared/session-stream.js";
+import { normalizeProviderRetryState, type ProviderRetryState, type RunNotice } from "../shared/session-stream.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
 import { isRecord } from "../shared/is-record.js";
@@ -148,6 +148,7 @@ export interface StreamState {
   pendingElicitations: PendingElicitationRequestView[];
   elicitationCancellation: ElicitationCancellationNotice | null;
   runNotice: RunNotice | null;
+  providerRetry?: ProviderRetryState;
   intentText: string;
   streamStatus: StreamStatus;
   isStreaming: boolean;
@@ -713,6 +714,7 @@ export function useSessionStream(
             contextSummary: contextSummary ?? current.contextSummary,
             elicitationCancellation: current.elicitationCancellation,
             runNotice: normalizeRunNotice(event.runNotice) ?? (complete ? null : current.runNotice),
+            providerRetry: complete ? undefined : normalizeProviderRetryState(event.providerRetry),
             hadVisibleOutput: hasLiveOutput,
             pendingOrigin: complete ? null : current.pendingOrigin,
             // The server knows the mode of the run it is streaming; a new run it cannot name is unknown.
@@ -747,6 +749,11 @@ export function useSessionStream(
         return;
       }
 
+      if (eventType === "provider_retry") {
+        setStreamState((current) => ({ ...current, providerRetry: normalizeProviderRetryState(event.providerRetry) }));
+        return;
+      }
+
       if (eventType === "resync_required") {
         closeCurrent();
         setStreamState((current) => createState("idle", {
@@ -771,6 +778,7 @@ export function useSessionStream(
             streamStatus: "thinking",
             isStreaming: true,
             runNotice: null,
+            providerRetry: undefined,
             // The boundary is the main agent's; a sub-agent's calls are kept by its own turns.
             liveTools: keepToolsAtMainTurnBoundary(current.liveTools, endingTurnInstanceId),
             mainAgentIdle: false,

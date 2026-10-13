@@ -3913,6 +3913,34 @@ describe("ChatView sub-agents", () => {
     }
   });
 
+  it("shows the provider cooldown even alongside partial output and live tools", async () => {
+    vi.useFakeTimers();
+    const retryAt = new Date(Date.now() + 5_000).toISOString();
+    const { dom, act, cleanup, render } = await renderChatView({
+      streamOverrides: {
+        isStreaming: true,
+        streamStatus: "streaming",
+        hadVisibleOutput: true,
+        streamingContent: "Partial answer",
+        liveTools: [{ toolCallId: "tool-1", name: "view", args: { path: "file.ts" } }],
+        providerRetry: { phase: "waiting", retryAt },
+      },
+    });
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Retrying in 5 seconds") ?? false);
+      expect(dom.container.textContent).toContain("Partial answer");
+      expect(dom.container.textContent).toContain("One automatic retry.");
+      await advanceTimersByTimeAct(act, 4_000);
+      expect(dom.container.textContent).toContain("Retrying in 1 second");
+      await advanceTimersByTimeAct(act, 1_000);
+      expect(dom.container.textContent).toContain("Preparing retry");
+      await render({ streamOverrides: { providerRetry: { phase: "retrying", retryAt } } });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Retrying response") ?? false);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("does not add a row for an agent's report on a call that launched it above the loaded history", async () => {
     const { dom, act, cleanup } = await renderChatView({
       fetchMessagesFastResult: {

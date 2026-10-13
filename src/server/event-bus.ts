@@ -32,7 +32,7 @@ import {
 } from "../shared/terminal-completion.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
 import type { SendMode } from "../shared/send-mode.js";
-import type { RunNotice } from "../shared/session-stream.js";
+import { normalizeProviderRetryState, type ProviderRetryState, type RunNotice } from "../shared/session-stream.js";
 export type { RunNotice, RunNoticeKind } from "../shared/session-stream.js";
 
 export type {
@@ -188,6 +188,7 @@ export interface BusSnapshot {
   /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
   pendingElicitations: PendingElicitationRequestView[];
   runNotice?: RunNotice;
+  providerRetry?: ProviderRetryState;
   /** The CLI mode this run is in, when Bridge knows it. */
   runMode?: SendMode;
   terminalType?: "done" | "error" | "aborted" | "shutdown";
@@ -432,6 +433,7 @@ export class SessionEventBus {
   private liveVisuals: LiveVisual[] = [];
   private liveCompletion?: LiveCompletion;
   private intentText = "";
+  private providerRetry?: ProviderRetryState;
   private runNotice?: RunNotice;
   private runMode?: SendMode;
   /**
@@ -794,6 +796,9 @@ export class SessionEventBus {
     // Update ephemeral run state. Anything that will land in events.jsonl is announced via
     // `history_advanced` instead of being projected into a parallel transcript.
     switch (event.type) {
+      case "provider_retry":
+        this.providerRetry = normalizeProviderRetryState(event.providerRetry);
+        break;
       case "delta":
         this.streamingContent += event.content ?? "";
         // Visible text means the model has finished thinking for now.
@@ -1001,6 +1006,7 @@ export class SessionEventBus {
       this.cancelAgentChangeRecheck();
       this.streamingContent = "";
       this.intentText = "";
+      this.providerRetry = undefined;
       // Thinking that never reached an assistant message has no disk copy and ends with the run.
       this.liveReasoning = keepCommittedReasoning(this.liveReasoning);
       // Tools still open at the terminal never got a result; mark them finished rather than
@@ -1080,6 +1086,7 @@ export class SessionEventBus {
       pendingUserInputs: pending.pendingUserInputs.map((request) => structuredClone(request)),
       pendingElicitations: pending.pendingElicitations.map((request) => structuredClone(request)),
       ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
+      ...(this.providerRetry ? { providerRetry: { ...this.providerRetry } } : {}),
       ...(this.runMode ? { runMode: this.runMode } : {}),
       ...(this.terminalType ? { terminalType: this.terminalType } : {}),
       ...(this.terminalTimestamp ? { terminalTimestamp: this.terminalTimestamp } : {}),
@@ -1150,6 +1157,7 @@ export class SessionEventBus {
     this.liveVisuals = [];
     this.liveCompletion = undefined;
     this.intentText = "";
+    this.providerRetry = undefined;
     this.terminalType = undefined;
     this.terminalTimestamp = undefined;
     this.terminalEventId = undefined;

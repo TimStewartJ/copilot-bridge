@@ -25,6 +25,20 @@ describe("event-bus", () => {
   });
 
   describe("emit + snapshot", () => {
+    it("replays provider retry state on reconnect and clears it at turn and terminal boundaries", () => {
+      const bus = getOrCreateBus("provider-retry-snapshot");
+      const providerRetry = { phase: "waiting", retryAt: "2026-10-13T00:00:05Z" };
+      bus.emit({ type: "provider_retry", providerRetry });
+      expect(bus.getSnapshot().providerRetry).toEqual(providerRetry);
+      bus.emit({ type: "thinking" });
+      expect(bus.getSnapshot().providerRetry).toBeUndefined();
+      bus.emit({ type: "provider_retry", providerRetry });
+      bus.emit({ type: "error", message: "retry failed" });
+      expect(bus.getSnapshot().providerRetry).toBeUndefined();
+      bus.reset();
+      expect(bus.getSnapshot().providerRetry).toBeUndefined();
+    });
+
     it("accumulates delta content", () => {
       const bus = getOrCreateBus("test-delta-1");
       bus.emit({ type: "delta", content: "Hello " });

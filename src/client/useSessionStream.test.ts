@@ -392,6 +392,22 @@ describe("useSessionStream EventSource lifecycle", () => {
 });
 
 describe("useSessionStream ephemeral state", () => {
+  it("restores provider retry state on snapshot, updates it live, and clears it when the next turn starts", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+      const waiting = { phase: "waiting", retryAt: "2026-10-13T00:00:05Z" };
+      await emitAndWait(act, source, snapshot({ providerRetry: waiting }), () => getState().providerRetry?.phase === "waiting");
+      expect(getState().providerRetry).toEqual(waiting);
+      await emitAndWait(act, source, { type: "provider_retry", providerRetry: { ...waiting, phase: "retrying" } },
+        () => getState().providerRetry?.phase === "retrying");
+      await emitAndWait(act, source, { type: "thinking", turnId: "retry-turn" }, () => getState().providerRetry === undefined);
+      await emitAndWait(act, source, { type: "provider_retry", providerRetry: waiting }, () => Boolean(getState().providerRetry));
+      await emitAndWait(act, source, { type: "aborted", content: "" }, () => !getState().isStreaming);
+      expect(getState().providerRetry).toBeUndefined();
+    });
+  });
+
   it("carries only ephemeral run state and never a committed transcript projection", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
