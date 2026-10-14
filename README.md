@@ -523,6 +523,15 @@ draining for about five seconds after release, even with the former reaper or an
 additional native close call. Do not infer process exit from an empty task list,
 successful resume, or healthy ping.
 
+### Autopilot completion
+
+Before sending a turn, the Copilot adapter refreshes tool exclusions for its mode:
+`task_complete` is hidden outside Autopilot, and Autopilot restores the configured
+exclusions. Other tool filters are preserved. This also refreshes the tool's system
+instructions, avoiding a rejected completion attempt and a second answer after leaving
+Autopilot. The workaround is needed for CLI 1.0.95 through the tested 1.0.98-0 preview;
+remove it once a native mode-switch test passes without the explicit filter refresh.
+
 ### Agent questions
 
 A question an agent asks with `ask_user` is shown as a form in the chat and on Home, and the
