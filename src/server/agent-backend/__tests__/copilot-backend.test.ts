@@ -664,15 +664,137 @@ describe("CopilotAgentSession wrap fidelity", () => {
   });
 
   it("setSendMode delegates to rpc.mode.set and throws when unavailable", async () => {
-    const setMode = vi.fn(async () => undefined);
-    const session = createFakeSession({ mode: { set: setMode } });
+    const result = { status: "changed", modeApplied: true };
+    const setMode = vi.fn(async () => result);
+    const update = vi.fn(async () => ({ success: true }));
+    const session = createFakeSession({ mode: { set: setMode }, options: { update } });
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
 
-    await wrapped.setSendMode!({ mode: "immediate" });
-    expect(setMode).toHaveBeenCalledWith({ mode: "immediate" });
+    await expect(wrapped.setSendMode({ mode: "interactive" })).resolves.toBe(result);
+    expect(setMode).toHaveBeenCalledWith({ mode: "interactive" });
+    expect(update).toHaveBeenCalledWith({ excludedTools: ["task_complete"] });
 
     const wrapped2 = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
-    await expect(wrapped2.setSendMode!({ mode: "immediate" })).rejects.toThrow(/mode switching is not available/);
+    await expect(wrapped2.setSendMode({ mode: "interactive" })).rejects.toThrow(/mode switching is not available/);
+  });
+
+  it.each(["create", "resume"] as const)("preserves configured exclusions across %s mode switches", async (operation) => {
+    const setMode = vi.fn(async () => ({ modeApplied: true }));
+    const update = vi.fn(async () => ({ success: true }));
+    const session = createFakeSession({ mode: { set: setMode }, options: { update } });
+    const backend = new CopilotBackend(createFakeClient(session) as any);
+    const excludedTools = ["report_intent", "ask_user"];
+    const config = { excludedTools, availableTools: ["view", "task_complete"] };
+    const wrapped = operation === "create"
+      ? await backend.createSession(config)
+      : await backend.resumeSession(session.sessionId, config);
+
+    for (const mode of ["interactive", "autopilot", "interactive", "interactive", "autopilot"]) {
+      await wrapped.setSendMode({ mode });
+    }
+    expect(update.mock.calls).toEqual([
+      [{ excludedTools: ["report_intent", "ask_user", "task_complete"] }],
+      [{ excludedTools: ["report_intent", "ask_user"] }],
+      [{ excludedTools: ["report_intent", "ask_user", "task_complete"] }],
+      [{ excludedTools: ["report_intent", "ask_user", "task_complete"] }],
+      [{ excludedTools: ["report_intent", "ask_user"] }],
+    ]);
+    expect(excludedTools).toEqual(["report_intent", "ask_user"]);
+    expect(config.availableTools).toEqual(["view", "task_complete"]);
+  });
+
+  it("does not remove an explicit task_complete exclusion in Autopilot", async () => {
+    const update = vi.fn(async () => ({ success: true }));
+    const session = createFakeSession({ mode: { set: async () => undefined }, options: { update } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({
+      excludedTools: ["task_complete", "ask_user"],
+    });
+    await wrapped.setSendMode({ mode: "interactive" });
+    await wrapped.setSendMode({ mode: "autopilot" });
+    expect(update.mock.calls).toEqual([
+      [{ excludedTools: ["task_complete", "ask_user"] }],
+      [{ excludedTools: ["task_complete", "ask_user"] }],
+    ]);
+  });
+
+  it("waits for tool filtering before sending", async () => {
+    let finishUpdate!: (result: { success: boolean }) => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const update = vi.fn(() => {
+      started();
+      return new Promise<{ success: boolean }>((resolve) => { finishUpdate = resolve; });
+    });
+    const session = createFakeSession({ mode: { set: async () => undefined }, options: { update } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    const sending = wrapped.setSendMode({ mode: "interactive" }).then(() => wrapped.send({ prompt: "go" }));
+    await entered;
+    expect(session.send).not.toHaveBeenCalled();
+    finishUpdate({ success: true });
+    await sending;
+    expect(session.send).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, {}, { success: false }])("rejects an unconfirmed tool update: %j", async (result) => {
+    const update = vi.fn(async () => result);
+    const session = createFakeSession({ mode: { set: async () => undefined }, options: { update } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    await expect(wrapped.setSendMode({ mode: "interactive" })).rejects.toThrow("did not apply session mode tool filtering");
+    expect(session.send).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing tool-filter API without changing the mode", async () => {
+    const setMode = vi.fn(async () => undefined);
+    const session = createFakeSession({ mode: { set: setMode } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    await expect(wrapped.setSendMode({ mode: "interactive" })).rejects.toThrow("tool filtering is not available");
+    expect(setMode).not.toHaveBeenCalled();
+  });
+
+  it("propagates mode and tool-filter errors and permits a subsequent retry", async () => {
+    const setMode = vi.fn().mockRejectedValueOnce(new Error("mode failed")).mockResolvedValue(undefined);
+    const update = vi.fn().mockRejectedValueOnce(new Error("filter failed")).mockResolvedValue({ success: true });
+    const session = createFakeSession({ mode: { set: setMode }, options: { update } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
+    await expect(wrapped.setSendMode({ mode: "interactive" })).rejects.toThrow("mode failed");
+    expect(update).not.toHaveBeenCalled();
+    await expect(wrapped.setSendMode({ mode: "interactive" })).rejects.toThrow("filter failed");
+    await wrapped.setSendMode({ mode: "interactive" });
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps mode updates ordered after a caller times out and drains them before release", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishUpdate!: (result: { success: boolean }) => void;
+      const setMode = vi.fn(async () => undefined);
+      const update = vi.fn()
+        .mockImplementationOnce(() => new Promise<{ success: boolean }>((resolve) => { finishUpdate = resolve; }))
+        .mockResolvedValue({ success: true });
+      const session = createFakeSession({ mode: { set: setMode }, options: { update } });
+      const backend = new CopilotBackend(createFakeClient(session) as any, { logger: { warn: vi.fn(), error: vi.fn() } });
+      vi.spyOn(backend, "probeHealth").mockResolvedValue(true);
+      const wrapped = await backend.createSession({});
+      const first = wrapped.setSendMode({ mode: "autopilot" });
+      const rejection = expect(first).rejects.toMatchObject({ rpc: "session.setSendMode" });
+      await vi.advanceTimersByTimeAsync(AGENT_RPC_TIMEOUTS_MS["session.setSendMode"]);
+      await rejection;
+      const second = wrapped.setSendMode({ mode: "interactive" });
+      const released = wrapped.release();
+      expect(setMode).toHaveBeenCalledOnce();
+      expect(session.disconnect).not.toHaveBeenCalled();
+      finishUpdate({ success: true });
+      await second;
+      await released;
+      expect(update.mock.calls).toEqual([
+        [{ excludedTools: [] }],
+        [{ excludedTools: ["task_complete"] }],
+      ]);
+      expect(session.disconnect).toHaveBeenCalledOnce();
+      await expect(wrapped.setSendMode({ mode: "autopilot" })).rejects.toThrow("intake is closed for release");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("invokeSlashCommand delegates to rpc.commands.invoke and normalizes agent prompts", async () => {

@@ -28,7 +28,7 @@ function systemPromptOf(request: Record<string, unknown> | undefined): string {
     : "";
 }
 
-async function fixture(signal: AbortSignal) {
+async function fixture(signal: AbortSignal, completeAutopilot = false) {
   const home = makeTestDir("copilot-system-prompt");
   const cwd = join(home, "workspace");
   const requests: Record<string, unknown>[] = [];
@@ -44,18 +44,29 @@ async function fixture(signal: AbortSignal) {
       const input: unknown = JSON.parse(body);
       if (!isRecord(input)) { response.writeHead(400).end(); return; }
       requests.push(input);
-      const message = { role: "assistant", content: "System prompt fixture finished." };
+      const toolCalls = completeAutopilot && lastUserMessageOf(input).includes("Finish the Autopilot fixture.")
+        ? [{
+          index: 0, id: `fixture-${requests.length}`, type: "function",
+          function: { name: "task_complete", arguments: JSON.stringify({ summary: "Autopilot fixture finished." }) },
+        }]
+        : undefined;
+      const message = {
+        role: "assistant",
+        content: toolCalls ? null : "System prompt fixture finished.",
+        ...(toolCalls ? { tool_calls: toolCalls } : {}),
+      };
+      const finishReason = toolCalls ? "tool_calls" : "stop";
       if (input.stream === true) {
         response.setHeader("Content-Type", "text/event-stream");
         response.end(`data: ${JSON.stringify({
           id: "fixture", object: "chat.completion.chunk", created: 0, model: input.model,
-          choices: [{ index: 0, delta: message, finish_reason: "stop" }],
+          choices: [{ index: 0, delta: message, finish_reason: finishReason }],
         })}\n\ndata: [DONE]\n\n`);
       } else {
         response.setHeader("Content-Type", "application/json");
         response.end(JSON.stringify({
           id: "fixture", object: "chat.completion", created: 0, model: input.model,
-          choices: [{ index: 0, message, finish_reason: "stop" }],
+          choices: [{ index: 0, message, finish_reason: finishReason }],
         }));
       }
     });
@@ -227,6 +238,63 @@ function assertBridgePrompt(prompt: string, model: string, promptProfile: Prompt
 }
 
 describe("native Bridge system prompt", () => {
+  it("refreshes completion tools and instructions across Autopilot switches and cold resume", async ({ signal }) => {
+    const { backend, configFor, requests, cleanup, home } = await fixture(signal, true);
+    const config = {
+      ...configFor("gpt-6-astra"),
+      availableTools: ["view", "task_complete"],
+      excludedTools: ["report_intent", "view"],
+    };
+    let completions = 0;
+    try {
+      let session = await backend.createSession(config);
+      const observe = () => session.on((event) => {
+        if (event.type === "session.task_complete") completions++;
+      });
+      let unsubscribe = observe();
+      for (const [index, mode] of (["interactive", "autopilot", "interactive", "autopilot", "interactive"] as const).entries()) {
+        await session.setSendMode({ mode });
+        const before = requests.length;
+        await session.sendAndWait({
+          prompt: mode === "autopilot" ? "Finish the Autopilot fixture." : "Return the interactive fixture response.",
+        }, null);
+        expect(requests).toHaveLength(before + 1);
+        const request = requests.at(-1);
+        const toolNames = Array.isArray(request?.tools) ? request.tools.flatMap((tool) =>
+          isRecord(tool) && isRecord(tool.function) && typeof tool.function.name === "string" ? [tool.function.name] : [],
+        ) : [];
+        expect(toolNames.includes("task_complete")).toBe(mode === "autopilot");
+        expect(toolNames).not.toContain("view");
+        expect(systemPromptOf(request).includes("<task_complete>")).toBe(mode === "autopilot");
+        expect(lastUserMessageOf(request)).toContain("fixture");
+        if (index === 3) {
+          unsubscribe();
+          await session.release();
+          session = await backend.resumeSession(session.sessionId, { ...config, model: undefined });
+          unsubscribe = observe();
+        }
+      }
+      unsubscribe();
+      await session.release();
+      expect(completions).toBe(2);
+
+      const eventsFile = await findFile(home, "events.jsonl");
+      expect(eventsFile).toBeDefined();
+      const events = (await readFile(eventsFile!, "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+      const prompts = events.filter((event) => event.type === "system.message");
+      expect(prompts.some((event) => event.data.content.includes("<task_complete>"))).toBe(true);
+      expect(prompts.at(-1)?.data.content).not.toContain("<task_complete>");
+      expect(events.filter((event) => event.type === "user.message" && !event.agentId)
+        .map((event) => event.data.content)).toEqual([
+        "Return the interactive fixture response.",
+        "Finish the Autopilot fixture.",
+        "Return the interactive fixture response.",
+        "Finish the Autopilot fixture.",
+        "Return the interactive fixture response.",
+      ]);
+    } finally { await cleanup(); }
+  });
+
   it("assembles the intended sections on create and cold resume for each model family", async ({ signal }) => {
     const { backend, configFor, requests, cleanup } = await fixture(signal);
     try {

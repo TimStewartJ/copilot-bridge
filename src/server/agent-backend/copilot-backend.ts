@@ -274,6 +274,7 @@ interface CopilotRpcGuard {
  */
 class CopilotAgentSession implements AgentSession {
   private taskTail: Promise<void> = Promise.resolve();
+  private modeTail: Promise<void> = Promise.resolve();
   private releasePromise: Promise<AgentSessionRelease> | undefined;
   private toolPermissionsReady: Promise<void> | undefined;
   constructor(
@@ -283,6 +284,7 @@ class CopilotAgentSession implements AgentSession {
       handler: (info: AgentBackendDisconnect) => void,
     ) => () => void,
     private readonly useNativeToolPermissions: boolean,
+    private readonly excludedTools: readonly string[],
   ) {}
 
   get sessionId(): string {
@@ -388,7 +390,7 @@ class CopilotAgentSession implements AgentSession {
   }
 
   release(): Promise<AgentSessionRelease> {
-    this.releasePromise ??= this.taskTail.then(async () => {
+    this.releasePromise ??= Promise.all([this.taskTail, this.modeTail]).then(async () => {
       if (typeof this.session.disconnect !== "function") {
         return { status: "unsupported", detail: "SDK session disconnect is unavailable" };
       }
@@ -445,11 +447,31 @@ class CopilotAgentSession implements AgentSession {
   }
 
   async setSendMode(opts: { mode: string }): Promise<unknown> {
+    if (this.releasePromise) throw new Error("Session mode intake is closed for release");
     const setMode = this.session?.rpc?.mode?.set;
     if (typeof setMode !== "function") {
       throw new Error("Session mode switching is not available in this Copilot SDK build");
     }
-    return this.rpc("session.setSendMode", () => setMode.call(this.session.rpc.mode, opts));
+    const update = this.session?.rpc?.options?.update;
+    if (typeof update !== "function") {
+      throw new Error("Session tool filtering is not available in this Copilot SDK build");
+    }
+    const mode = opts.mode;
+    const raw = this.modeTail.then(async () => {
+      const result: unknown = await setMode.call(this.session.rpc.mode, { mode });
+      // CLI 1.0.95 retains Autopilot tools and their instructions after leaving that mode.
+      const excludedTools = mode === "autopilot"
+        ? [...this.excludedTools]
+        : [...new Set([...this.excludedTools, "task_complete"])];
+      const updated: unknown = await update.call(this.session.rpc.options, { excludedTools });
+      if (!isRecord(updated) || updated.success !== true) {
+        throw new Error("Copilot runtime did not apply session mode tool filtering");
+      }
+      return result;
+    });
+    // A caller timing out must not let its late update overwrite a newer mode's tools.
+    this.modeTail = raw.then(() => undefined, () => undefined);
+    return this.rpc("session.setSendMode", () => raw);
   }
 
   async getSendMode(): Promise<string | undefined> {
@@ -690,6 +712,7 @@ function wrapCopilotSession(
   rpc: CopilotRpcGuard,
   onBackendDisconnect: (handler: (info: AgentBackendDisconnect) => void) => () => void,
   useNativeToolPermissions: boolean,
+  excludedTools: readonly string[],
 ): AgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
@@ -697,7 +720,7 @@ function wrapCopilotSession(
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions);
+  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools);
 }
 
 /** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
@@ -1308,6 +1331,7 @@ export class CopilotBackend implements AgentBackend {
       this.rpc,
       (handler) => this.subscribeSessionDisconnect(handler),
       prepared.useNativeToolPermissions,
+      normalizeStringArray(prepared.sdkConfig.excludedTools) ?? [],
     );
   }
 
@@ -1322,6 +1346,7 @@ export class CopilotBackend implements AgentBackend {
       this.rpc,
       (handler) => this.subscribeSessionDisconnect(handler),
       prepared.useNativeToolPermissions,
+      normalizeStringArray(prepared.sdkConfig.excludedTools) ?? [],
     );
   }
 
