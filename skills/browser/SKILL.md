@@ -1,29 +1,43 @@
 ---
 name: browser
 description: >
-  Browser automation via agent-browser CLI. Use for multi-step website interaction —
-  navigating pages, filling forms, clicking buttons, taking screenshots, extracting
-  data, or automating flows that need a real browser. Escalate here when web_fetch
-  or browser_fetch is not enough, especially for SPAs, auth-gated pages, dynamic
-  dashboards, or multi-step workflows.
+  Low-level public browser automation via agent-browser CLI. Use only when Bridge
+  browser_exec or browser_session_* cannot express the workflow, such as batch,
+  stdin, or an isolated disposable browser with custom launch options. Ordinary
+  multi-step browsing, screenshots, uploads, downloads and signed-in work use the
+  Bridge browser tools instead.
 allowed-tools: Bash(agent-browser:*)
 ---
 
 # Browser Automation
 
-You have access to `agent-browser` through bash for **interactive, multi-step workflows**.
+Use the shell available on this host for low-level public workflows. The examples
+below marked `bash` require bash; do not paste POSIX environment assignments or
+heredocs into PowerShell. This skill is not a replacement for the Bridge browser
+broker, sign-in flow, or desktop Computer Use tools.
 
 ## When to Use Browser
 
 Most browser work needs no raw commands: a step of `browser_exec` or `browser_session_exec` can be nearly any `agent-browser` command, including `screenshot` (the picture comes back to you), `drag`, `hover`, `mouse`, `tab`, `get attr`, `eval`, `upload` and `download`, and those tools can use the signed-in browser. Use this skill for what a step cannot be: `batch`, `--stdin` input, a browser of your own with its own options.
 
-Use this skill when you need browser control beyond a single page read:
-- **Multi-step flows**: login -> navigate -> extract across multiple pages
-- **Form interactions**: filling forms, clicking buttons, selecting dropdowns
-- **Screenshots and PDFs**: visual capture of pages
-- **Complex browsing**: paginated results, infinite scroll, tab workflows, dynamic content
-- **Stateful browsing**: low-level flows that cannot be expressed through the Bridge browser tools
-- **JavaScript evaluation**: running custom JS on the page
+Multi-step flows, forms, screenshots, PDFs, pagination and JavaScript evaluation
+are not by themselves reasons to bypass those tools.
+
+## Choose a context before opening a browser
+
+- Public page: `web_fetch`, then `browser_fetch` when rendering is needed.
+- Several steps in one call: `browser_exec`; refs are valid only inside that call.
+- Continuity across calls or a user handoff: `browser_session_start` and
+  `browser_session_exec`; close your explicit handle when finished, not while the
+  user still has a pending sign-in, review or draft.
+- Dedicated Bridge sign-in: authenticated context with a task-specific reason.
+  On a sign-in page call `browser_sign_in` first, then
+  `browser_session_handoff` if a person is needed. Never ask for a password in chat.
+- A human check: stop automated retries and hand off. A refusal: use another source.
+
+Do not switch to raw commands, copy cookies or profiles, or relaunch browsers to
+get around an authentication boundary or a site refusal. A screenshot or download
+step in the managed tools already returns its result; do not re-run it through the CLI.
 
 For **simple public reads of one URL**, prefer `browser_fetch` first. For hardened multi-step automation, prefer `browser_exec` with the public context by default and the authenticated context only when the task explicitly needs the dedicated signed-in Bridge profile. For workflows that must continue across turns, prefer `browser_session_*`. For raw HTML/API calls or simple static pages, prefer `web_fetch`.
 
@@ -34,7 +48,7 @@ For **online research or truth-checking**, prefer the built-in tools before esca
 The Bridge browser tools separate public browsing, which is signed out and keeps its cookies between uses, from an explicit authenticated context backed by the dedicated Bridge profile.
 This skill runs raw `agent-browser` commands through bash outside that broker, so raw commands are **unmanaged and unauthenticated by default**: a raw browser is signed out and cannot see a page the signed-in browser has open.
 
-Follow these rules unless the user explicitly asks otherwise:
+Follow these rules subject to the session's safety and approval requirements:
 
 1. **Never use raw commands for authenticated Bridge work.**
    - Use `browser_exec` with `context: "authenticated"` or start an authenticated `browser_session_*` handle.
@@ -49,7 +63,9 @@ Follow these rules unless the user explicitly asks otherwise:
    - A raw session's browser closes itself after an hour without a command (Bridge sets `AGENT_BROWSER_IDLE_TIMEOUT_MS` for agent shells). After a longer pause, expect a fresh browser on a blank page with no cookies: open the URL again and take a new snapshot.
 
 4. **Use explicit waits and re-snapshots.**
-   - Prefer `wait --load networkidle`, element waits, and fresh snapshots after page changes.
+   - Prefer an expected element, URL or text with a deadline and fresh snapshots
+     after page changes. Use `networkidle` only when appropriate: pages with
+     analytics or long-lived connections may never become idle.
 
 5. **Prefer batch execution only for deterministic sequences.**
    - Use `batch --json` when you already know the full command sequence.
@@ -64,23 +80,19 @@ Follow these rules unless the user explicitly asks otherwise:
 Most browser tasks follow this loop:
 
 1. **Navigate**: `agent-browser open <url>`
-2. **Wait**: `agent-browser wait --load networkidle`
+2. **Wait** for a meaningful element, URL or text
 3. **Snapshot**: `agent-browser snapshot -i`
 4. **Interact**: click/fill/select using refs
 5. **Re-snapshot** after navigation or major DOM changes
 
 ```bash
-agent-browser open https://example.com/form
-agent-browser wait --load networkidle
+agent-browser open https://example.com
 agent-browser snapshot -i
-# Output: @e1 [input] "Email", @e2 [input] "Password", @e3 [button] "Submit"
-
-agent-browser fill @e1 "user@example.com"
-agent-browser fill @e2 "password123"
-agent-browser click @e3
-agent-browser wait --load networkidle
-agent-browser snapshot -i
+agent-browser get title
 ```
+
+This example only reads a public page. Form submission, uploads and external
+changes still require the authorization applicable to the actual task.
 
 ## Essential Commands
 
