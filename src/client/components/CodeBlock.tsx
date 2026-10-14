@@ -117,7 +117,7 @@ interface CodeBlockProps extends ComponentPropsWithoutRef<"pre"> {
   node?: unknown;
 }
 
-export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockProps) {
+export default function CodeBlock({ children, node, ...rest }: CodeBlockProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyRequestRef = useRef(0);
@@ -130,6 +130,8 @@ export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockP
 
   const handleCopy = useCallback(() => {
     const text = extractText(children);
+    // Markdown supplies a node and adds one final newline; raw file previews do neither.
+    const copyText = node ? trimSingleTrailingNewline(text) : text;
     const requestId = copyRequestRef.current + 1;
     copyRequestRef.current = requestId;
     if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
@@ -146,8 +148,8 @@ export default function CodeBlock({ children, node: _node, ...rest }: CodeBlockP
       }, 2000);
     };
 
-    void writeClipboardText(text).then(() => settle("copied"), () => settle("failed"));
-  }, [children]);
+    void writeClipboardText(copyText).then(() => settle("copied"), () => settle("failed"));
+  }, [children, node]);
 
   const language = detectLanguage(children);
   const text = extractText(children);
