@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolInvocation, ToolResultObject } from "@github/copilot-sdk";
+import type { AgentSessionEvent, AgentSessionEventHandler } from "../agent-backend/index.js";
 import {
   buildDeferWorkerSystemPrompt,
   buildDeferWorkerPrompt,
@@ -13,6 +14,7 @@ import {
   type DeferWorkerInput,
   type DeferWorkerResult,
   type DisposableDeferWorker,
+  type DisposableDeferWorkerDeps,
 } from "../defer-worker.js";
 import { DEFER_CHECKPOINT_MAX_BYTES } from "../defer-checkpoint.js";
 
@@ -63,6 +65,7 @@ function createNaturalSession(
 ) {
   return {
     sessionId,
+    on: vi.fn(() => () => undefined),
     sendAndWait: vi.fn(async () => {
       await submitDeferResult(config, resultArgs);
       await options.naturalCompletion;
@@ -83,9 +86,11 @@ function createNaturalSession(
 function createWorkerWithScript(
   script: (
     config: Record<string, unknown>,
+    emit: (event: AgentSessionEvent) => void,
   ) => Promise<void> | void,
   label: string,
   beginLifecycle: () => () => void,
+  recordSpan?: DisposableDeferWorkerDeps["recordSpan"],
 ) {
   const copilotHome = makeTestDir(label);
   return createDisposableDeferWorker({
@@ -99,13 +104,19 @@ function createWorkerWithScript(
     beginLifecycle,
     reserveCapacity: async () => () => undefined,
     createSession: async (config) => {
+      let onEvent: AgentSessionEventHandler | undefined;
       return {
         sessionId: config.sessionId as string,
-        sendAndWait: async () => script(config),
+        on: (handler: AgentSessionEventHandler) => {
+          onEvent = handler;
+          return () => { onEvent = undefined; };
+        },
+        sendAndWait: async () => script(config, (event) => onEvent?.(event)),
       } as any;
     },
     deleteSession: async () => undefined,
     getCopilotHome: () => copilotHome,
+    recordSpan,
   });
 }
 
@@ -269,6 +280,236 @@ describe("defer worker", () => {
     });
   });
 
+  it("retains tool-call diagnostics without arguments, results, or assistant text", async () => {
+    const lifecycle = createLifecycleProbe();
+    const recordSpan = vi.fn<NonNullable<DisposableDeferWorkerDeps["recordSpan"]>>();
+    const secret = "private-tool-payload";
+    let emitAfterCleanup!: (event: AgentSessionEvent) => void;
+    const worker = createWorkerWithScript(async (config, emit) => {
+      emitAfterCleanup = emit;
+      emit({ type: "assistant.message", data: { content: secret } });
+      emit({ type: "tool.execution_start", data: null });
+      emit({ type: "tool.execution_start", data: { toolName: "missing-id" } });
+      emit({
+        type: "tool.execution_start",
+        data: { toolCallId: "read-1", toolName: "teams-ListChatMessages", arguments: { secret } },
+      });
+      emit({
+        type: "tool.execution_start",
+        data: { toolCallId: "create-1", toolName: "task_create", arguments: { title: secret } },
+      });
+      emit({
+        type: "tool.execution_complete",
+        data: { toolCallId: "create-1", success: true, result: { content: secret } },
+      });
+      emit({
+        type: "tool.execution_complete",
+        data: {
+          toolCallId: "read-1",
+          success: false,
+          error: { message: `MCP tool catalog changed before tool could be invoked: ${secret}` },
+        },
+      });
+      emit({
+        type: "tool.execution_start",
+        data: { toolCallId: "update-1", name: "task_update", arguments: { notes: secret } },
+      });
+      emit({
+        type: "tool.execution_complete",
+        data: { toolCallId: "update-1", success: false, result: { content: `403 Forbidden ${secret}` } },
+      });
+      await submitDeferResult(config, { action: "continue" });
+    }, "defer-worker-tool-trace", lifecycle.beginLifecycle, recordSpan);
+
+    try {
+      await expect(runCheck(worker, workerInput)).resolves.toEqual({ action: "continue" });
+    } finally {
+      await lifecycle.completed;
+    }
+
+    expect(recordSpan).toHaveBeenCalledWith(
+      "defer.worker",
+      expect.any(Number),
+      "parent-session",
+      expect.objectContaining({
+        deferId: "interval_1",
+        workerSessionId: expect.stringMatching(/^d3f3e000-/),
+        startedAt: expect.any(String),
+        completedAt: expect.any(String),
+        toolCallCount: 3,
+        toolCallsDropped: 0,
+        toolCalls: [
+          {
+            toolCallId: "read-1",
+            toolName: "teams-ListChatMessages",
+            startedMs: expect.any(Number),
+            durationMs: expect.any(Number),
+            success: false,
+            failureCategory: "catalog-changed",
+          },
+          {
+            toolCallId: "create-1",
+            toolName: "task_create",
+            startedMs: expect.any(Number),
+            durationMs: expect.any(Number),
+            success: true,
+          },
+          {
+            toolCallId: "update-1",
+            toolName: "task_update",
+            startedMs: expect.any(Number),
+            durationMs: expect.any(Number),
+            success: false,
+            failureCategory: "permission",
+          },
+        ],
+      }),
+    );
+    const metadata = recordSpan.mock.calls[0]?.[3];
+    const snapshot = JSON.stringify(metadata);
+    expect(snapshot).not.toContain(secret);
+    emitAfterCleanup({
+      type: "tool.execution_start",
+      data: { toolCallId: "too-late", toolName: "task_create" },
+    });
+    expect(JSON.stringify(metadata)).toBe(snapshot);
+  });
+
+  it("bounds the trace to the last 32 calls and caps retained labels", async () => {
+    const lifecycle = createLifecycleProbe();
+    const recordSpan = vi.fn<NonNullable<DisposableDeferWorkerDeps["recordSpan"]>>();
+    const worker = createWorkerWithScript(async (config, emit) => {
+      for (let index = 0; index < 40; index++) {
+        const toolCallId = `call-${index}`;
+        emit({
+          type: "tool.execution_start",
+          data: { toolCallId, toolName: `tool-${index}` },
+        });
+        emit({
+          type: "tool.execution_complete",
+          data: { toolCallId, success: true },
+        });
+      }
+      emit({
+        type: "tool.execution_complete",
+        data: { toolCallId: "call-0", success: false },
+      });
+      emit({
+        type: "tool.execution_start",
+        data: { toolCallId: "i".repeat(1_000), toolName: "n".repeat(1_000) },
+      });
+      emit({
+        type: "tool.execution_complete",
+        data: { toolCallId: "i".repeat(1_000) },
+      });
+      await submitDeferResult(config, { action: "finish" });
+    }, "defer-worker-bounded-trace", lifecycle.beginLifecycle, recordSpan);
+
+    try {
+      await runCheck(worker, workerInput);
+    } finally {
+      await lifecycle.completed;
+    }
+
+    const metadata = recordSpan.mock.calls[0]?.[3];
+    expect(metadata).toMatchObject({ toolCallCount: 41, toolCallsDropped: 9 });
+    expect(metadata?.toolCalls).toEqual([
+      ...Array.from({ length: 31 }, (_, index) => ({
+        toolCallId: `call-${index + 9}`,
+        toolName: `tool-${index + 9}`,
+        startedMs: expect.any(Number),
+        durationMs: expect.any(Number),
+        success: true,
+      })),
+      {
+        toolCallId: "i".repeat(256),
+        toolName: "n".repeat(256),
+        startedMs: expect.any(Number),
+        durationMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("retains an unfinished tool call when the worker fails before submitting a result", async () => {
+    const lifecycle = createLifecycleProbe();
+    const recordSpan = vi.fn<NonNullable<DisposableDeferWorkerDeps["recordSpan"]>>();
+    const worker = createWorkerWithScript((_config, emit) => {
+      emit({
+        type: "tool.execution_start",
+        data: { toolCallId: "pending-1", toolName: "powershell" },
+      });
+      throw new Error("Worker transport closed");
+    }, "defer-worker-failed-trace", lifecycle.beginLifecycle, recordSpan);
+
+    try {
+      await expect(runCheck(worker, workerInput)).rejects.toThrow("Worker transport closed");
+    } finally {
+      await lifecycle.completed;
+    }
+
+    expect(recordSpan).toHaveBeenCalledWith(
+      "defer.worker",
+      expect.any(Number),
+      "parent-session",
+      expect.objectContaining({
+        action: "error",
+        toolCallCount: 1,
+        toolCalls: [{
+          toolCallId: "pending-1",
+          toolName: "powershell",
+          startedMs: expect.any(Number),
+        }],
+      }),
+    );
+  });
+
+  it("correlates completions by the full call ID before truncating diagnostic labels", async () => {
+    const lifecycle = createLifecycleProbe();
+    const recordSpan = vi.fn<NonNullable<DisposableDeferWorkerDeps["recordSpan"]>>();
+    const prefix = "i".repeat(256);
+    const worker = createWorkerWithScript(async (config, emit) => {
+      for (const suffix of ["first", "second"]) {
+        emit({
+          type: "tool.execution_start",
+          data: { toolCallId: `${prefix}-${suffix}`, toolName: suffix },
+        });
+      }
+      emit({
+        type: "tool.execution_complete",
+        data: { toolCallId: `${prefix}-second`, success: false },
+      });
+      emit({
+        type: "tool.execution_complete",
+        data: { toolCallId: `${prefix}-first`, success: true },
+      });
+      await submitDeferResult(config, { action: "finish" });
+    }, "defer-worker-truncated-labels", lifecycle.beginLifecycle, recordSpan);
+
+    try {
+      await runCheck(worker, workerInput);
+    } finally {
+      await lifecycle.completed;
+    }
+
+    expect(recordSpan.mock.calls[0]?.[3]?.toolCalls).toEqual([
+      {
+        toolCallId: prefix,
+        toolName: "first",
+        startedMs: expect.any(Number),
+        durationMs: expect.any(Number),
+        success: true,
+      },
+      {
+        toolCallId: prefix,
+        toolName: "second",
+        startedMs: expect.any(Number),
+        durationMs: expect.any(Number),
+        success: false,
+        failureCategory: "unknown",
+      },
+    ]);
+  });
+
   it("keeps the first valid result immutable", async () => {
     await expect(runWorkerScript(async (config) => {
       const first = await submitDeferResult(config, {
@@ -313,6 +554,7 @@ describe("defer worker", () => {
       reserveCapacity: async () => () => undefined,
       createSession: async (config) => ({
         sessionId: config.sessionId as string,
+        on: vi.fn(() => () => undefined),
         sendAndWait: () => new Promise<void>((resolve) => {
           endTurn = resolve;
           turnStarted();
@@ -360,6 +602,7 @@ describe("defer worker", () => {
       reserveCapacity: async () => () => undefined,
       createSession: async (config) => ({
         sessionId: config.sessionId as string,
+        on: vi.fn(() => () => undefined),
         sendAndWait: () => new Promise<void>((resolve) => {
           endTurn = resolve;
           turnStarted();
@@ -408,6 +651,7 @@ describe("defer worker", () => {
       reserveCapacity: async () => releaseCapacity,
       createSession: async (config) => ({
         sessionId: config.sessionId as string,
+        on: vi.fn(() => () => undefined),
         sendAndWait: () => new Promise<void>(() => {
           turnStarted();
         }),
@@ -457,6 +701,7 @@ describe("defer worker", () => {
       },
       createSession: async (config) => ({
         sessionId: config.sessionId as string,
+        on: vi.fn(() => () => undefined),
         sendAndWait: () => new Promise<void>((resolve) => {
           endTurn = resolve;
           turnStarted();
