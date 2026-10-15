@@ -20,6 +20,7 @@ import {
   type CopilotUsageSessionScanResult,
 } from "./copilot-usage.js";
 import { isRecord } from "../shared/is-record.js";
+import { classifyToolFailure, type ToolFailureCategory } from "../shared/tool-failure.js";
 import { toolFailure } from "./tool-results.js";
 
 import { DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX } from "./defer-ids.js";
@@ -32,6 +33,8 @@ const DEFAULT_DEFER_WORKER_CONTEXT_TIER = "default";
 /** A check is one bounded look at something. One still running after this long is stuck and is stopped. */
 export const DEFER_WORKER_TIMEOUT_MS = 30 * 60_000;
 const DEFER_WORKER_STOP_GRACE_MS = 10_000;
+const DEFER_WORKER_TOOL_TRACE_LIMIT = 32;
+const DEFER_WORKER_TOOL_TRACE_LABEL_MAX_CHARS = 256;
 
 export type DeferWorkerKind = "once" | "interval";
 export type DeferWorkerAction = "continue" | "notify" | "finish" | "return" | "expired";
@@ -382,6 +385,16 @@ export class DisposableDeferWorker {
     let completionError: string | undefined;
     let stopped: Error | undefined;
     let turn: Promise<unknown> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let toolCallCount = 0;
+    const toolCalls = new Map<string, {
+      toolCallId: string;
+      toolName: string;
+      startedMs: number;
+      durationMs?: number;
+      success?: boolean;
+      failureCategory?: ToolFailureCategory;
+    }>();
     let rejectStopped!: (error: Error) => void;
     // Ends the wait on the session even if the session never answers the abort, so cleanup always runs.
     const stopSignal = new Promise<never>((_resolve, reject) => {
@@ -474,6 +487,36 @@ export class DisposableDeferWorker {
       session = await this.deps.createSession(sessionConfig);
       // Stopped while the session was being created: it was never told, so do not start the check.
       if (stopped) throw stopped;
+      unsubscribe = session.on((event) => {
+        if (event.type !== "tool.execution_start" && event.type !== "tool.execution_complete") return;
+        const data = event.data;
+        if (!isRecord(data) || typeof data.toolCallId !== "string") return;
+        const toolCallId = data.toolCallId;
+        const elapsedMs = Date.now() - startedAt;
+        if (event.type === "tool.execution_start") {
+          toolCallCount += 1;
+          if (toolCalls.size === DEFER_WORKER_TOOL_TRACE_LIMIT) {
+            const oldestId = toolCalls.keys().next().value;
+            if (oldestId !== undefined) toolCalls.delete(oldestId);
+          }
+          const toolName = typeof data.toolName === "string"
+            ? data.toolName
+            : typeof data.name === "string" ? data.name : "unknown";
+          toolCalls.set(toolCallId, {
+            toolCallId: toolCallId.slice(0, DEFER_WORKER_TOOL_TRACE_LABEL_MAX_CHARS),
+            toolName: toolName.slice(0, DEFER_WORKER_TOOL_TRACE_LABEL_MAX_CHARS),
+            startedMs: elapsedMs,
+          });
+        } else {
+          const call = toolCalls.get(toolCallId);
+          if (!call) return;
+          call.durationMs = elapsedMs - call.startedMs;
+          if (typeof data.success === "boolean") call.success = data.success;
+          if (data.success === false) {
+            call.failureCategory = classifyToolFailure(data.error ?? data.result).category;
+          }
+        }
+      });
       turn = session.sendAndWait({
         prompt: buildDeferWorkerPrompt(input),
         attachments: [],
@@ -500,6 +543,13 @@ export class DisposableDeferWorker {
         ]);
         clearTimeout(grace);
       }
+      try {
+        unsubscribe?.();
+      } catch (error) {
+        this.deps.logger?.warn(
+          `[defer-worker] Disposable event unsubscribe failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       const completedAt = Date.now();
       const result = submission.result;
       const spanMetadata: Record<string, unknown> = {
@@ -511,6 +561,11 @@ export class DisposableDeferWorker {
         reasoningEffort,
         contextTier: configuredContextTier,
         workerSessionId: sessionId,
+        startedAt: new Date(startedAt).toISOString(),
+        completedAt: new Date(completedAt).toISOString(),
+        toolCallCount,
+        toolCallsDropped: toolCallCount - toolCalls.size,
+        toolCalls: [...toolCalls.values()],
         naturalCompletion: completionError ? "error" : "resolved",
         ...(submission.acceptedAt !== undefined
           ? {
