@@ -821,6 +821,8 @@ describe("defer worker", () => {
     const buildSessionConfig = vi.fn(() => ({
       mcpServers: { ado: { type: "http" } },
       pendingInteractionEvents: true,
+      enableConfigDiscovery: true,
+      enableFileHooks: false,
       excludedTools: ["report_intent"],
     }));
     const createSession = vi.fn(async (config: Record<string, unknown>) =>
@@ -905,6 +907,7 @@ describe("defer worker", () => {
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       clientName: "Copilot Bridge Defer Worker",
       enableConfigDiscovery: false,
+      enableFileHooks: false,
       enableSessionStore: false,
       mcpServers: { ado: { type: "http" } },
       // Nobody can answer a worker, so it must not be able to ask.

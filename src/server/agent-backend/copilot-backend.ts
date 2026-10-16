@@ -1339,6 +1339,19 @@ export class CopilotBackend implements AgentBackend {
     if (this.fenceRequested) throw new Error("Cannot resume a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
+    if (prepared.sdkConfig.enableConfigDiscovery === true) {
+      // CLI 1.0.97 drops discovered agents on resume when explicit agents are supplied.
+      try {
+        await session.rpc.agent.reload();
+      } catch (error) {
+        try {
+          await session.disconnect();
+        } catch (disconnectError) {
+          throw new AggregateError([error, disconnectError], "Failed to reload discovered agents and disconnect the resumed session");
+        }
+        throw error;
+      }
+    }
     await this.applySubagentSettings(session, prepared.subagents);
     return wrapCopilotSession(
       session,

@@ -246,6 +246,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   const cfg: any = {
     pendingInteractionEvents: true,
     enableExperimentalMode: true,
+    enableConfigDiscovery: Boolean(workingDirectory),
+    enableFileHooks: false,
     streaming: true,
     includeSubAgentStreamingEvents: false,
     excludedTools: [...BRIDGE_EXCLUDED_TOOLS],

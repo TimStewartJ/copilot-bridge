@@ -368,6 +368,7 @@ describe("Helm session profile", () => {
       tools: [{ name: "powershell" }],
       excludedTools: ["report_intent"],
       mcpServers: { github: {} },
+      enableConfigDiscovery: true,
       skillDirectories: ["/skills"],
       customAgents: [{ name: "reviewer" }],
       agent: "reviewer",
@@ -382,6 +383,7 @@ describe("Helm session profile", () => {
     expect(applied.availableTools).toEqual(profile.toolNames);
     expect(applied.tools.map((tool: { name: string }) => tool.name)).toEqual(profile.toolNames);
     expect(applied.mcpServers).toEqual({});
+    expect(applied.enableConfigDiscovery).toBe(false);
     expect(applied.skillDirectories).toEqual([]);
     expect(applied.customAgents).toBeUndefined();
     expect(applied.agent).toBeUndefined();
