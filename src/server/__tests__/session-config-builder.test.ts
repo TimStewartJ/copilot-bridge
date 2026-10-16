@@ -185,6 +185,34 @@ describe("session-config-builder prompt profiles", () => {
 });
 
 describe("session-config-builder", () => {
+  it.each([false, true])("discovers workspace configuration without repository hooks (resume: %s)", (forResume) => {
+    const cwd = join("/workspace", "project");
+    const copilotHome = join("/home", "bridge-user", ".copilot");
+    const cfg = buildSessionConfig({
+      deps: createDeps(),
+      callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => cwd, getCopilotHome: () => copilotHome }),
+      options: { forResume },
+    });
+
+    expect(cfg.workingDirectory).toBe(cwd);
+    expect(cfg.enableConfigDiscovery).toBe(true);
+    expect(cfg.enableFileHooks).toBe(false);
+    expect(cfg.skillDirectories).toEqual([join(TEST_REPO_ROOT, "skills"), join(copilotHome, "skills")]);
+    expect(cfg.memory).toEqual({ enabled: false });
+  });
+
+  it.each([false, true])("keeps configuration discovery off without a resolved workspace (resume: %s)", (forResume) => {
+    const cfg = buildSessionConfig({
+      deps: createDeps(),
+      callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => undefined }),
+      options: { forResume },
+    });
+
+    expect(cfg.workingDirectory).toBeUndefined();
+    expect(cfg.enableConfigDiscovery).toBe(false);
+    expect(cfg.enableFileHooks).toBe(false);
+  });
+
   it("renders default style as the tone section and quality guidance ahead of task instructions", () => {
     const cfg = buildSessionConfig({
       deps: createDeps(), callbacks: createCallbacks(), options: { task: createTask({ notes: "Mutable task notes", instructions: "Standing rule" }) },
@@ -953,7 +981,7 @@ describe("session-config-builder", () => {
     });
 
     expect(cfg.mcpServers).toEqual({});
-    expect(cfg.enableConfigDiscovery).toBeUndefined();
+    expect(cfg.enableConfigDiscovery).toBe(true);
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
   });
 
