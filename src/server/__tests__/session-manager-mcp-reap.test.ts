@@ -306,13 +306,11 @@ describe("SessionManager retirement fencing", () => {
     });
     const creationRejected = expect(creation).rejects.toThrow("backend disconnected");
     await vi.advanceTimersByTimeAsync(0);
-    expect(manager.creatingSessions).toBe(1);
-    expect(manager.resumingCapacityReservations.size).toBe(1);
+    expect(manager.getSessionCacheState().reservedContexts).toBe(2);
     manager.handleBackendDisconnect(backend, { at: new Date().toISOString(), reason: "connection-closed" });
     await vi.advanceTimersByTimeAsync(0);
     await Promise.all([resumeRejected, creationRejected]);
-    expect(manager.creatingSessions).toBe(0);
-    expect(manager.resumingCapacityReservations.size).toBe(0);
+    expect(manager.getSessionCacheState().reservedContexts).toBe(0);
     expect(manager.isSessionBusy("never-resumed")).toBe(false);
     expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
     expect(backend.deleteSession).not.toHaveBeenCalled();
@@ -1470,7 +1468,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
     const firstLease = await manager.beginSessionResume("first", { mcpServers: {} });
     const second = manager.beginSessionResume("second", { mcpServers: {} });
-    await vi.waitFor(() => expect(manager.sessionCapacityWaiters.size).toBe(1));
+    await vi.waitFor(() => expect(manager.getSessionCacheState().waitingForCapacity).toBe(1));
 
     manager.endSessionResume(firstLease);
     const secondLease = await second;

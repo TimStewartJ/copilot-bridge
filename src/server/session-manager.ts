@@ -91,7 +91,23 @@ import type { SessionContextStore } from "./session-context-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore } from "./docs-store.js";
 import type { BrowserSessionStore } from "./browser-session-store.js";
-import { isLocalMcpServerConfig, type McpServerConfig } from "./mcp-config.js";
+import type { McpServerConfig } from "./mcp-config.js";
+import {
+  SessionCapacityController,
+  SessionCapacityError,
+  formatCapacityUnits,
+  type CapacityAdmissionOptions,
+  type SessionCacheState,
+  type SessionCapacityReservation,
+  type SessionCapacityRuntimeStatus,
+  type SessionCleanupCapacity,
+} from "./session-capacity.js";
+export {
+  SessionCapacityError,
+  type SessionCapacityReason,
+  type SessionCapacitySnapshot,
+  type SessionCapacityRuntimeStatus,
+} from "./session-capacity.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import { sampleProcessTree } from "./platform.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
@@ -361,16 +377,6 @@ const DEFAULT_MAX_CACHED_CONTEXTS = 32;
 const DEFAULT_SESSION_CAPACITY_UNITS = 64;
 const DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT = 0.25;
 const DEFAULT_SESSION_CAPACITY_WAIT_SECONDS = 30;
-const SESSION_CAPACITY_WAIT_POLL_MS = 500;
-
-type SessionCapacityProfile = {
-  localMcpCount: number;
-};
-
-type SessionCapacityReservation = {
-  capacityUnits: number;
-  localMcpInstances: number;
-};
 
 type TimedOutSessionResume = {
   token: symbol;
@@ -378,84 +384,11 @@ type TimedOutSessionResume = {
   watchdog: ReturnType<typeof setTimeout>;
 };
 
-export type SessionCapacityReason =
-  | "cleanup-failed"
-  | "cleanup-demand"
-  | "context-limit"
-  | "weighted-capacity"
-  | "retained-capacity";
-
-export interface SessionCapacitySnapshot {
-  contexts: number;
-  contextLimit: number;
-  localMcpInstances: number;
-  capacityUnits: number;
-  capacityLimit: number;
-}
-
-export interface SessionCapacityRuntimeStatus {
-  contexts: {
-    used: number;
-    retained: number;
-    limit: number;
-  };
-  weightedUnits: {
-    used: number;
-    retained: number;
-    limit: number;
-  };
-  localMcpSlots: {
-    used: number;
-    retained: number;
-  };
-  cache: {
-    readyParents: number;
-    protectedParents: number;
-    limit: number;
-  };
-  cleanup: {
-    pending: number;
-    failed: number;
-    limit: number;
-  };
-  waitingRequests: number;
-  localMcpWeight: number;
-  waitTimeoutSeconds: number;
-}
-
-function formatCapacityUnits(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-export class SessionCapacityError extends Error {
-  readonly code = "session_capacity";
-  readonly retryAfterSeconds = 2;
-
-  constructor(
-    readonly reason: SessionCapacityReason,
-    readonly snapshot: SessionCapacitySnapshot,
-  ) {
-    const message = reason === "cleanup-failed"
-      ? "Bridge could not release one or more previous Copilot sessions. Wait for automatic cleanup, or restart Bridge if this persists."
-      : reason === "cleanup-demand" || reason === "retained-capacity"
-        ? "Copilot session cleanup is still catching up. Wait a few seconds for another chat to finish closing, then try again."
-        : reason === "context-limit"
-          ? `All ${snapshot.contextLimit} live Copilot contexts are currently in use. Wait for one to finish, or stop a running chat or agent, then try again.`
-          : `Live Copilot capacity is full at ${formatCapacityUnits(snapshot.capacityUnits)}/${formatCapacityUnits(snapshot.capacityLimit)} units across ${snapshot.contexts} context${snapshot.contexts === 1 ? "" : "s"} and ${snapshot.localMcpInstances} estimated local MCP slot${snapshot.localMcpInstances === 1 ? "" : "s"}. Wait for work to finish, or stop a running chat or agent, then try again.`;
-    super(message);
-    this.name = "SessionCapacityError";
-  }
-}
-
-type SessionCleanupRecord = {
+type SessionCleanupRecord = SessionCleanupCapacity & {
   sessionId: string;
-  phase: "release-pending" | "quarantined" | "backend-recycling" | "operator-blocked";
   owner: SessionRuntimeOwner;
   startedAt: number;
   timer?: ReturnType<typeof setTimeout>;
-  contextWeight: number;
-  localMcpInstances: number;
-  capacityUnits: number;
   promise?: Promise<boolean>;
   /** The release was refused or threw, so no later answer can complete it. */
   failed?: boolean;
@@ -894,10 +827,6 @@ export class SessionManager {
   private resumingSessions = new Map<string, number>();
   private readonly pendingSessionResumeAdmissions = new Set<string>();
   private readonly settlingTimedOutSessionResumes = new Map<string, TimedOutSessionResume>();
-  private readonly resumingCapacityReservations = new Map<symbol, SessionCapacityReservation>();
-  private creatingSessions = 0;
-  private creatingCapacityUnits = 0;
-  private creatingLocalMcpInstances = 0;
   private readonly pendingSessionCreations = new Map<string, Promise<AgentSession>>();
   private readonly requestedSessionCreations = new Set<string>();
   private readonly inFlightSessionCreations = new Set<Promise<void>>();
@@ -908,7 +837,6 @@ export class SessionManager {
   private readonly appliedPromptFingerprints = new AppliedPromptFingerprints({
     querySpans: (options) => this.deps.telemetryStore?.querySpans(options) ?? [],
   });
-  private readonly sessionCapacityProfiles = new WeakMap<AgentSession, SessionCapacityProfile>();
   private readonly sessionToolReadiness = new SessionToolReadiness();
   private readonly sessionToolInitializationTimeoutWarned = new WeakSet<AgentSession>();
   private sessionToolInitializationWaitTimeoutMs = SESSION_TOOL_INITIALIZATION_TIMEOUT_MS;
@@ -944,8 +872,6 @@ export class SessionManager {
     "BRIDGE_LOCAL_MCP_CAPACITY_WEIGHT",
     DEFAULT_LOCAL_MCP_CAPACITY_WEIGHT,
   );
-  private readonly sessionCapacityWaiters = new Set<() => void>();
-  private syncTaskCapacityReap?: Promise<number>;
   private readonly workspaceController: SessionWorkspaceController;
   private readonly runStateController: SessionRunStateController;
   private readonly agentRegistry: SessionAgentRegistry;
@@ -976,6 +902,22 @@ export class SessionManager {
     "BRIDGE_MAX_PENDING_SESSION_CLEANUPS",
     this.maxCachedContexts,
   );
+  private readonly capacity = new SessionCapacityController({
+    getLimits: () => ({
+      parents: this.maxCachedSessions,
+      contexts: this.maxCachedContexts,
+      cleanup: this.maxPendingSessionCleanups,
+      units: this.maxSessionCapacityUnits,
+      localMcpWeight: this.localMcpCapacityWeight,
+      waitTimeoutMs: this.sessionCapacityWaitTimeoutMs,
+    }),
+    getSessions: () => this.sessionObjects,
+    getCleanupRecords: () => this.cleanupOwnership.values(),
+    getProtectedSessionIds: () => this.getProtectedSessionTreeIds(),
+    getTrackedAgentCount: (sessionId) => this.agentRegistry.getTrackedAgentCount(sessionId),
+    reapFinishedSyncTasks: (sessionId) => this.agentRegistry.reapFinishedSyncTasks(sessionId),
+    recordSpan: (name, duration, metadata) => this.recordSpan(name, duration, undefined, metadata),
+  });
 
   private static resolveMaxCachedSessions(): number {
     const raw = Number(process.env.BRIDGE_MAX_CACHED_SESSIONS);
@@ -1218,415 +1160,51 @@ export class SessionManager {
     } catch { /* telemetry should never break core flow */ }
   }
 
-  private getSessionCacheState(): {
-    ready: number;
-    retained: number;
-    readyParents: number;
-    retainedParents: number;
-    trackedAgents: number;
-    readyContextWeight: number;
-    retainedContextWeight: number;
-    readyLocalMcpInstances: number;
-    retainedLocalMcpInstances: number;
-    readyCapacityUnits: number;
-    retainedCapacityUnits: number;
-    reservedContexts: number;
-    reservedLocalMcpInstances: number;
-    reservedCapacityUnits: number;
-    pendingCleanup: number;
-    failedCleanup: number;
-    waitingForCapacity: number;
-  } {
-    let pendingCleanup = 0;
-    let failedCleanup = 0;
-    let cleanupContextWeight = 0;
-    let cleanupLocalMcpInstances = 0;
-    let cleanupCapacityUnits = 0;
-    for (const record of this.cleanupOwnership.values()) {
-      if (record.phase === "release-pending") pendingCleanup++;
-      else failedCleanup++;
-      cleanupContextWeight += record.contextWeight;
-      cleanupLocalMcpInstances += record.localMcpInstances;
-      cleanupCapacityUnits += record.capacityUnits;
-    }
-    const readyParents = this.sessionObjects.size;
-    let trackedAgents = 0;
-    let readyLocalMcpInstances = 0;
-    let readyCapacityUnits = 0;
-    for (const sessionId of this.sessionObjects.keys()) {
-      trackedAgents += this.agentRegistry.getTrackedAgentCount(sessionId);
-      const capacity = this.getSessionTreeCapacity(sessionId);
-      readyLocalMcpInstances += capacity.localMcpInstances;
-      readyCapacityUnits += capacity.capacityUnits;
-    }
-    const readyContextWeight = readyParents + trackedAgents;
-    const retainedParents = readyParents + this.cleanupOwnership.size;
-    const resumeReservations = [...this.resumingCapacityReservations.values()];
-    const reservedContexts = this.creatingSessions + resumeReservations.length;
-    const reservedLocalMcpInstances = this.creatingLocalMcpInstances
-      + resumeReservations.reduce((total, reservation) => total + reservation.localMcpInstances, 0);
-    const reservedCapacityUnits = this.creatingCapacityUnits
-      + resumeReservations.reduce((total, reservation) => total + reservation.capacityUnits, 0);
-    return {
-      ready: readyParents,
-      retained: retainedParents,
-      readyParents,
-      retainedParents,
-      trackedAgents,
-      readyContextWeight,
-      retainedContextWeight: readyContextWeight + cleanupContextWeight,
-      readyLocalMcpInstances,
-      retainedLocalMcpInstances: readyLocalMcpInstances + cleanupLocalMcpInstances,
-      readyCapacityUnits,
-      retainedCapacityUnits: readyCapacityUnits + cleanupCapacityUnits,
-      reservedContexts,
-      reservedLocalMcpInstances,
-      reservedCapacityUnits,
-      pendingCleanup,
-      failedCleanup,
-      waitingForCapacity: this.sessionCapacityWaiters.size,
-    };
-  }
-
-  private getSessionCapacityPressure(): {
-    state: ReturnType<SessionManager["getSessionCacheState"]>;
-    protectedReadySessionCount: number;
-    contexts: number;
-    localMcpInstances: number;
-    capacityUnits: number;
-  } {
-    const state = this.getSessionCacheState();
-    const protectedSessionIds = this.getProtectedSessionTreeIds();
-    let protectedReadySessionCount = 0;
-    let protectedReadyContextWeight = 0;
-    let protectedReadyLocalMcpInstances = 0;
-    let protectedReadyCapacityUnits = 0;
-    for (const sessionId of protectedSessionIds) {
-      if (!this.sessionObjects.has(sessionId)) continue;
-      protectedReadySessionCount++;
-      protectedReadyContextWeight += this.getSessionTreeContextWeight(sessionId);
-      const capacity = this.getSessionTreeCapacity(sessionId);
-      protectedReadyLocalMcpInstances += capacity.localMcpInstances;
-      protectedReadyCapacityUnits += capacity.capacityUnits;
-    }
-    return {
-      state,
-      protectedReadySessionCount,
-      contexts: state.retainedContextWeight - state.readyContextWeight
-        + protectedReadyContextWeight
-        + state.reservedContexts,
-      localMcpInstances: state.retainedLocalMcpInstances - state.readyLocalMcpInstances
-        + protectedReadyLocalMcpInstances
-        + state.reservedLocalMcpInstances,
-      capacityUnits: state.retainedCapacityUnits - state.readyCapacityUnits
-        + protectedReadyCapacityUnits
-        + state.reservedCapacityUnits,
-    };
+  private getSessionCacheState(): SessionCacheState {
+    return this.capacity.getCacheState();
   }
 
   private getSessionCapacityRuntimeStatus(): SessionCapacityRuntimeStatus {
-    const pressure = this.getSessionCapacityPressure();
-    const { state } = pressure;
-    return {
-      contexts: {
-        used: pressure.contexts,
-        retained: state.retainedContextWeight + state.reservedContexts,
-        limit: this.maxCachedContexts,
-      },
-      weightedUnits: {
-        used: pressure.capacityUnits,
-        retained: state.retainedCapacityUnits + state.reservedCapacityUnits,
-        limit: this.maxSessionCapacityUnits,
-      },
-      localMcpSlots: {
-        used: pressure.localMcpInstances,
-        retained: state.retainedLocalMcpInstances + state.reservedLocalMcpInstances,
-      },
-      cache: {
-        readyParents: state.readyParents,
-        protectedParents: pressure.protectedReadySessionCount,
-        limit: this.maxCachedSessions,
-      },
-      cleanup: {
-        pending: state.pendingCleanup,
-        failed: state.failedCleanup,
-        limit: this.maxPendingSessionCleanups,
-      },
-      waitingRequests: state.waitingForCapacity,
-      localMcpWeight: this.localMcpCapacityWeight,
-      waitTimeoutSeconds: this.sessionCapacityWaitTimeoutMs / 1_000,
-    };
-  }
-
-  private getCapacityProfile(sessionConfig: { mcpServers?: Record<string, McpServerConfig> }): SessionCapacityProfile {
-    return {
-      localMcpCount: Object.values(sessionConfig.mcpServers ?? {})
-        .filter(isLocalMcpServerConfig)
-        .length,
-    };
-  }
-
-  private getCapacityReservation(
-    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
-  ): SessionCapacityReservation {
-    const profile = this.getCapacityProfile(sessionConfig);
-    return {
-      localMcpInstances: profile.localMcpCount,
-      capacityUnits: 1 + profile.localMcpCount * this.localMcpCapacityWeight,
-    };
+    return this.capacity.getRuntimeStatus();
   }
 
   private trackSessionCapacityProfile(
     session: AgentSession,
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
   ): void {
-    this.sessionCapacityProfiles.set(session, this.getCapacityProfile(sessionConfig));
+    this.capacity.trackSession(session, sessionConfig);
   }
 
   private getSessionTreeCapacity(sessionId: string): SessionCapacityReservation {
-    const session = this.sessionObjects.get(sessionId);
-    const profile = session ? this.sessionCapacityProfiles.get(session) : undefined;
-    const contexts = this.getSessionTreeContextWeight(sessionId);
-    const localMcpInstances = contexts * (profile?.localMcpCount ?? 0);
-    return {
-      localMcpInstances,
-      capacityUnits: contexts + localMcpInstances * this.localMcpCapacityWeight,
-    };
-  }
-
-  private getCapacitySnapshot(
-    contexts: number,
-    localMcpInstances: number,
-    capacityUnits: number,
-  ): SessionCapacitySnapshot {
-    return {
-      contexts,
-      contextLimit: this.maxCachedContexts,
-      localMcpInstances,
-      capacityUnits,
-      capacityLimit: this.maxSessionCapacityUnits,
-    };
+    return this.capacity.getTreeCapacity(sessionId);
   }
 
   private assertSessionCapacityAvailable(
     request: SessionCapacityReservation,
   ): void {
-    const pressure = this.getSessionCapacityPressure();
-    const { state } = pressure;
-    if (state.failedCleanup > 0) {
-      throw new SessionCapacityError(
-        "cleanup-failed",
-        this.getCapacitySnapshot(
-          state.retainedContextWeight + state.reservedContexts,
-          state.retainedLocalMcpInstances + state.reservedLocalMcpInstances,
-          state.retainedCapacityUnits + state.reservedCapacityUnits,
-        ),
-      );
-    }
-    const projectedCleanupDemand = state.pendingCleanup
-      + pressure.protectedReadySessionCount
-      + state.reservedContexts
-      + 1;
-    const projectedNonEvictableContexts = pressure.contexts + 1;
-    const projectedNonEvictableLocalMcpInstances = pressure.localMcpInstances
-      + request.localMcpInstances;
-    const projectedNonEvictableCapacityUnits = pressure.capacityUnits
-      + request.capacityUnits;
-    if (projectedNonEvictableContexts > this.maxCachedContexts) {
-      throw new SessionCapacityError(
-        "context-limit",
-        this.getCapacitySnapshot(
-          projectedNonEvictableContexts,
-          projectedNonEvictableLocalMcpInstances,
-          projectedNonEvictableCapacityUnits,
-        ),
-      );
-    }
-    if (projectedNonEvictableCapacityUnits > this.maxSessionCapacityUnits) {
-      throw new SessionCapacityError(
-        "weighted-capacity",
-        this.getCapacitySnapshot(
-          projectedNonEvictableContexts,
-          projectedNonEvictableLocalMcpInstances,
-          projectedNonEvictableCapacityUnits,
-        ),
-      );
-    }
-    if (projectedCleanupDemand > this.maxPendingSessionCleanups) {
-      throw new SessionCapacityError(
-        "cleanup-demand",
-        this.getCapacitySnapshot(
-          state.retainedContextWeight + state.reservedContexts + 1,
-          state.retainedLocalMcpInstances + state.reservedLocalMcpInstances + request.localMcpInstances,
-          state.retainedCapacityUnits + state.reservedCapacityUnits + request.capacityUnits,
-        ),
-      );
-    }
-    const projectedRetainedContexts = state.retainedContextWeight
-      + state.reservedContexts
-      + 1;
-    const projectedRetainedLocalMcpInstances = state.retainedLocalMcpInstances
-      + state.reservedLocalMcpInstances
-      + request.localMcpInstances;
-    const projectedRetainedCapacityUnits = state.retainedCapacityUnits
-      + state.reservedCapacityUnits
-      + request.capacityUnits;
-    if (
-      state.pendingCleanup > 0
-      && (
-        projectedRetainedContexts > this.maxCachedContexts
-        || projectedRetainedCapacityUnits > this.maxSessionCapacityUnits
-      )
-    ) {
-      throw new SessionCapacityError(
-        "retained-capacity",
-        this.getCapacitySnapshot(
-          projectedRetainedContexts,
-          projectedRetainedLocalMcpInstances,
-          projectedRetainedCapacityUnits,
-        ),
-      );
-    }
+    this.capacity.assertAvailable(request);
   }
 
   private notifySessionCapacityChanged(): void {
-    const waiters = [...this.sessionCapacityWaiters];
-    this.sessionCapacityWaiters.clear();
-    for (const resolve of waiters) resolve();
-  }
-
-  private waitForSessionCapacityChange(timeoutMs: number): Promise<void> {
-    return new Promise((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        this.sessionCapacityWaiters.delete(finish);
-        resolve();
-      };
-      this.sessionCapacityWaiters.add(finish);
-      timer = setTimeout(finish, timeoutMs);
-      timer.unref?.();
-    });
-  }
-
-  private reapFinishedSyncTasksForCapacity(): Promise<number> {
-    if (this.syncTaskCapacityReap) return this.syncTaskCapacityReap;
-    const sessionIds = [...this.sessionObjects.keys()];
-    const reap = Promise.all(
-      sessionIds.map((sessionId) => this.agentRegistry.reapFinishedSyncTasks(sessionId)),
-    )
-      .then((counts) => counts.reduce((total, count) => total + count, 0))
-      .finally(() => {
-        if (this.syncTaskCapacityReap === reap) this.syncTaskCapacityReap = undefined;
-      });
-    this.syncTaskCapacityReap = reap;
-    return reap;
+    this.capacity.notifyChanged();
   }
 
   private async waitForSessionCapacity(
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
-    options: {
-      isCancelled?: () => boolean;
-      reserve: (reservation: SessionCapacityReservation) => void;
-      /** How long to wait for room; 0 fails at once. Defaults to the configured capacity wait. */
-      waitTimeoutMs?: number;
-    },
+    options: CapacityAdmissionOptions,
   ): Promise<boolean> {
-    const startedAt = Date.now();
-    const waitTimeoutMs = options.waitTimeoutMs ?? this.sessionCapacityWaitTimeoutMs;
-    const deadline = startedAt + waitTimeoutMs;
-    const request = this.getCapacityReservation(sessionConfig);
-    let lastCapacityError: SessionCapacityError | undefined;
-    let waitingLogged = false;
-    let syncTaskReapAttempted = false;
-
-    while (!options.isCancelled?.()) {
-      try {
-        this.assertSessionCapacityAvailable(request);
-        options.reserve(request);
-        if (waitingLogged) {
-          this.recordSpan("session.capacity.wait", Date.now() - startedAt, undefined, {
-            outcome: "admitted",
-            reason: lastCapacityError?.reason,
-            ...lastCapacityError?.snapshot,
-          });
-        }
-        return true;
-      } catch (error) {
-        if (!(error instanceof SessionCapacityError)) throw error;
-        lastCapacityError = error;
-      }
-
-      if (
-        !syncTaskReapAttempted
-        && (
-          lastCapacityError.reason === "context-limit"
-          || lastCapacityError.reason === "weighted-capacity"
-          || lastCapacityError.reason === "retained-capacity"
-        )
-      ) {
-        syncTaskReapAttempted = true;
-        const reaped = await this.reapFinishedSyncTasksForCapacity();
-        if (reaped > 0) {
-          console.warn(
-            `[sdk] Reaped ${reaped} finished sync agent task${reaped === 1 ? "" : "s"} while relieving session capacity`,
-          );
-        }
-        continue;
-      }
-
-      const remaining = deadline - Date.now();
-      if (waitTimeoutMs <= 0 || remaining <= 0) {
-        // A caller that does not wait retries on its own schedule; a span per try would only be noise.
-        if (waitTimeoutMs > 0) {
-          this.recordSpan("session.capacity.wait", Date.now() - startedAt, undefined, {
-            outcome: "timed-out",
-            reason: lastCapacityError.reason,
-            ...lastCapacityError.snapshot,
-          });
-        }
-        throw lastCapacityError;
-      }
-      if (!waitingLogged) {
-        waitingLogged = true;
-        console.warn(
-          `[sdk] Session capacity is full (${formatCapacityUnits(lastCapacityError.snapshot.capacityUnits)}/${formatCapacityUnits(lastCapacityError.snapshot.capacityLimit)} units, ${lastCapacityError.snapshot.contexts}/${lastCapacityError.snapshot.contextLimit} contexts); waiting up to ${Math.ceil(waitTimeoutMs / 1_000)}s`,
-        );
-      }
-      await this.waitForSessionCapacityChange(Math.min(SESSION_CAPACITY_WAIT_POLL_MS, remaining));
-    }
-
-    return false;
+    return (await this.capacity.admit(sessionConfig, options)) !== null;
   }
 
   private async beginSessionCreation(
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
     options: { waitTimeoutMs?: number } = {},
   ): Promise<SessionCapacityReservation> {
-    let capacityReservation: SessionCapacityReservation | undefined;
-    await this.waitForSessionCapacity(sessionConfig, {
-      ...options,
-      reserve: (reservation) => {
-        capacityReservation = reservation;
-        this.creatingSessions++;
-        this.creatingCapacityUnits += reservation.capacityUnits;
-        this.creatingLocalMcpInstances += reservation.localMcpInstances;
-      },
-    });
-    return capacityReservation!;
+    return this.capacity.beginCreation(sessionConfig, options);
   }
 
   private endSessionCreation(reservation: SessionCapacityReservation): void {
-    this.creatingSessions = Math.max(0, this.creatingSessions - 1);
-    this.creatingCapacityUnits = Math.max(0, this.creatingCapacityUnits - reservation.capacityUnits);
-    this.creatingLocalMcpInstances = Math.max(
-      0,
-      this.creatingLocalMcpInstances - reservation.localMcpInstances,
-    );
-    this.notifySessionCapacityChanged();
+    this.capacity.endCreation(reservation);
   }
 
   private awaitPendingSessionCreation(sessionId: string): Promise<AgentSession | undefined> {
@@ -1926,7 +1504,7 @@ export class SessionManager {
     if (owner.backend && this.backendFences.get(owner.backend)?.confirmed) return Promise.resolve(true);
 
     const contextWeight = 1 + this.agentRegistry.getTrackedAgentCount(sessionId);
-    const localMcpCount = this.sessionCapacityProfiles.get(session)?.localMcpCount ?? 0;
+    const localMcpCount = this.capacity.getLocalMcpCount(session);
     const localMcpInstances = contextWeight * localMcpCount;
     const capacityUnits = contextWeight + localMcpInstances * this.localMcpCapacityWeight;
     const record: SessionCleanupRecord = {
@@ -2130,7 +1708,7 @@ export class SessionManager {
     session: AgentSession,
     reason: string,
   ): void {
-    this.sessionCapacityProfiles.delete(session);
+    this.capacity.forgetSession(session);
     console.warn(
       `[sdk] [${sessionId.slice(0, 8)}] Ignoring duplicate session handle without disconnecting the shared session (${reason})`,
     );
@@ -2151,12 +1729,7 @@ export class SessionManager {
         throw new Error(`Session ${sessionId} still has an unreleased runtime lease`);
       }
       const current = this.sessionObjects.get(sessionId);
-      const capacityProfile = sessionConfig
-        ? this.getCapacityProfile(sessionConfig)
-        : current
-          ? this.sessionCapacityProfiles.get(current)
-          : undefined;
-      this.sessionCapacityProfiles.set(session, capacityProfile ?? { localMcpCount: 0 });
+      this.capacity.trackSession(session, sessionConfig, current);
       if (this.deletingSessions.has(sessionId)) {
         this.queueSessionCleanupUnsafe(sessionId, session, "discarding session while deletion is in progress");
         throw new Error("Session is being deleted");
@@ -2556,7 +2129,7 @@ export class SessionManager {
       const admitted = await this.waitForSessionCapacity(sessionConfig, {
         isCancelled: options.isCancelled,
         reserve: (reservation) => {
-          this.resumingCapacityReservations.set(lease.token, reservation);
+          this.capacity.reserveResume(lease.token, reservation);
           this.touchSessionTree(sessionId);
           this.resumingSessions.set(sessionId, 1);
         },
@@ -2564,7 +2137,7 @@ export class SessionManager {
       await this.awaitSessionCleanup(sessionId);
       return admitted ? lease : null;
     } catch (error) {
-      if (this.resumingCapacityReservations.has(lease.token)) this.endSessionResume(lease);
+      if (this.capacity.hasResume(lease.token)) this.endSessionResume(lease);
       throw error;
     } finally {
       this.pendingSessionResumeAdmissions.delete(sessionId);
@@ -2573,7 +2146,7 @@ export class SessionManager {
 
   private endSessionResume(lease: SessionResumeLease): void {
     const { sessionId } = lease;
-    this.resumingCapacityReservations.delete(lease.token);
+    this.capacity.releaseResume(lease.token);
     const count = this.resumingSessions.get(sessionId) ?? 0;
     if (count <= 1) {
       this.resumingSessions.delete(sessionId);

@@ -388,7 +388,7 @@ export interface SessionRunnerDeps {
   /** Ask the backend whether its RPC channel still answers; false means disconnect recovery has been triggered. */
   probeBackendHealth?(reason: string): Promise<boolean>;
   /** Shared cache of CopilotSession objects (owned by SessionManager). */
-  sessionObjects: Map<string, any>;
+  sessionObjects: ReadonlyMap<string, AgentSession>;
   /** Shared per-session MCP status cache (owned by SessionManager). */
   mcpStatus: Map<string, McpStatusSnapshot>;
   /** Shared map of in-flight run controllers (owned by SessionManager). */

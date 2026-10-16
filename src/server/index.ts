@@ -23,6 +23,7 @@ import {
   startStagingPreviewDiscovery,
 } from "./staging-tools.js";
 import { createApiRouter } from "./api-router.js";
+import { createApiServices } from "./api-services.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
 import { prepareNeutralWorkspaceDir } from "./neutral-workspace.js";
 import { RESTART_STATE_FILE_NAME, sweepStaleRestartStateTempFiles } from "./restart-state.js";
@@ -91,7 +92,8 @@ const shutdownCoordinator = createServerShutdownCoordinator(defaultContext, {
 });
 
 // ── API routes (mounted from api-router.ts) ──────────────────────
-app.use("/api", createApiCacheControlMiddleware(), createApiRouter(defaultContext, { shutdownCoordinator }));
+const apiServices = createApiServices(defaultContext, { shutdownCoordinator });
+app.use("/api", createApiCacheControlMiddleware(), createApiRouter(defaultContext, apiServices));
 
 // ── Static files (Vite build output) ──────────────────────────────
 

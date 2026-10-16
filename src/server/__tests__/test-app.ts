@@ -1,8 +1,8 @@
 import { createDashboardArchiveStore } from "../dashboard-archive.js";
 // Heavy integration fixture — fully wired Express app + AppContext.
 //
-// Split out of ./helpers.ts on purpose: `createApiRouter` drags ~180 modules
-// (~2 MB of source) into whatever imports it, and Vitest re-evaluates that graph
+// Split out of ./helpers.ts on purpose: API services and routing pull a large
+// runtime graph into whatever imports them, and Vitest re-evaluates that graph
 // for every isolated test file. Only files that actually mount HTTP routes
 // should import from here; everything else uses ./helpers.ts.
 
@@ -39,6 +39,7 @@ import { createDocsIndex } from "../docs-index.js";
 import { createSearchIndex } from "../search-index.js";
 import { createDocsSnapshotStore } from "../docs-snapshot-store.js";
 import { createApiRouter, type ApiRouterOptions } from "../api-router.js";
+import { createApiServices } from "../api-services.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
 import { createInterruptedRunStore } from "../interrupted-run-store.js";
@@ -164,7 +165,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   });
 
   const app = express();
-  app.use("/api", createApiRouter(ctx, routerOptions));
+  app.use("/api", createApiRouter(ctx, createApiServices(ctx, routerOptions)));
 
   const cleanup = registerTestAppCleanup(async () => {
     const cleanupErrors: unknown[] = [];

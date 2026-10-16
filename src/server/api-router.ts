@@ -10,7 +10,20 @@ import { join, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { registerHomeRoutes } from "./home.js";
-import { createSessionList, resolveSessionSummary } from "./session-list.js";
+import { resolveSessionSummary } from "./session-list.js";
+import type { ApiServices } from "./api-services.js";
+export type { ApiServiceOptions as ApiRouterOptions } from "./api-services.js";
+import { registerCatalogRoutes } from "./catalog-routes.js";
+import {
+  composeSessionWorkspaceSummary,
+  getPersistedRunNotice,
+  getSessionStatus,
+  normalizeWorkspacePathForComparison,
+  type SessionWorkspaceSource,
+  type SessionWorkspaceSummaryPayload,
+  type SessionWorkspaceSummaryWithSource,
+  type SessionWorkspaceWarningPayload,
+} from "./session-view.js";
 import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext } from "./session-creation-options.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
 import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
@@ -19,15 +32,9 @@ import {
   SettingsValidationError,
   type AppSettings,
 } from "./settings-store.js";
-import {
-  createServerShutdownCoordinator,
-  type ServerShutdownCoordinator,
-} from "./shutdown-coordinator.js";
 import { validateSupportedCronExpression } from "./cron-next-run.js";
-import type { McpServerConfig } from "./mcp-config.js";
 import {
   ModelRefreshBlockedError,
-  SessionBackendDeleteError,
   SessionCapacityError,
   SessionHistoryUndoError,
   type ModelSelection,
@@ -49,34 +56,21 @@ import {
   expireAdoProviderData,
   getAdoProvider,
   clearProviderCache,
-  setSettingsGetter,
 } from "./providers/index.js";
 import {
   createApiJsonErrorHandler,
   createRequestTelemetryMiddleware,
   timeRequestOperation,
 } from "./api-request-telemetry.js";
-import { createTranscriptionService, type TranscriptionService } from "./transcription-service.js";
-import type { VoiceJobManager } from "./voice-job-manager.js";
-import { createBridgeGitRevisionReader } from "./git-revisions.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
 import { isCanonicalSessionId, resolveOutboundAttachment, resolveSessionUploadedFile, type ResolvedOutboundAttachment } from "./outbound-attachments.js";
 import type { Result } from "./tool-results.js";
-import {
-  resolveAvailableWorkspaceCwd,
-  resolveAvailableWorkspaceCwdAsync,
-  type WorkspaceAvailability,
-  type WorkspaceAvailabilityLookup,
-} from "./session-workspace-availability.js";
+import { resolveAvailableWorkspaceCwd } from "./session-workspace-availability.js";
 import {
   getNeutralAwareAvailability,
-  getNeutralWorkspaceDir,
-  isImplicitHostCwd,
-  isNeutralWorkspaceCwd,
   resolveNeutralAwareCwd,
 } from "./neutral-workspace.js";
-import type { SessionWorkspace } from "./session-workspace-store.js";
 import {
   feedCardVisualOwner,
   HTML_MIME_TYPE,
@@ -87,8 +81,6 @@ import {
   sessionVisualOwner,
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
-import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
-import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
 import { changedSubagentSelections } from "../shared/subagent-settings.js";
 import {
@@ -96,8 +88,6 @@ import {
   parseAdoWorkReferenceUrl,
 } from "../shared/ado-work-reference.js";
 import { isRecord } from "../shared/is-record.js";
-import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
-import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
 import { TaskAgentDefinitionValidationError } from "./task-agent-definition-store.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
@@ -112,7 +102,6 @@ import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from ".
 import { isSendMode } from "../shared/send-mode.js";
 import {
   type AgentDismissRefusal,
-  type BackgroundAgentsSummary,
   type SessionAgentTask,
   emptyBackgroundAgentsSummary,
 } from "../shared/session-agents.js";
@@ -125,8 +114,6 @@ import {
   resolveWorkItemUnlink,
 } from "./task-link-identity.js";
 import { deleteTaskWithOwnedState, isTaskUntouched } from "./task-deletion.js";
-import { InvalidTagColorError } from "./tag-store.js";
-import { TaskGroupValidationError } from "./task-group-store.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { PendingInteractionError } from "./pending-interaction-validation.js";
 import { emitSessionDeferSummary } from "./defer-summary.js";
@@ -145,12 +132,7 @@ import {
 } from "./device-hibernate.js";
 import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { createHelmRouter } from "./helm/helm-router.js";
-import { HELM_DEFAULT_REASONING_EFFORTS, HelmService } from "./helm/helm-service.js";
-import type { HelmBridgeFacade } from "./helm/helm-tools.js";
-import { VoiceGateway, type VoiceGatewayHelm } from "./voice/voice-gateway.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
-import { createVoiceRuntime } from "./voice/voice-runtime.js";
-import { resolveRuntimePaths } from "./runtime-paths.js";
 import {
   formatLoopDeferActivity,
   formatOneShotDeferActivity,
@@ -218,7 +200,7 @@ import { requestRestart } from "./restart-signal.js";
 import { getRestartBlockers, readRestartStatus } from "./restart-status.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
 import { openSseConnection } from "./sse-response.js";
-import { createSessionStorageReader, type SessionStorageReader } from "./session-storage-reader.js";
+import type { SessionStorageReader } from "./session-storage-reader.js";
 import { isLocalStagingModule } from "./path-utils.js";
 import { createSessionForkJobManager } from "./session-fork-job-manager.js";
 import {
@@ -372,25 +354,7 @@ const SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR = "Linked task workspace is n
 const SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR = "No sibling worktrees are available for this session.";
 const SESSION_WORKTREE_SELECTION_INVALID_ERROR = "Selected workspace is not a discovered sibling worktree.";
 
-type SessionWorkspaceSource = "session_workspace" | "workspace_yaml" | "task" | "bridge_workspace" | "none";
 type SessionWorkspacePathState = "available" | "missing" | "unconfigured";
-type SessionWorkspaceWarningCode = "missing_workspace" | "missing_pinned_workspace" | "cleared_pinned_workspace";
-
-interface SessionWorkspaceSummaryPayload {
-  effectiveCwd?: string;
-  taskCwd?: string;
-  sessionOverride?: {
-    cwd: string;
-    updatedAt: string;
-  };
-  overridesTaskWorkspace: boolean;
-  warnings?: SessionWorkspaceWarningPayload[];
-}
-
-interface SessionWorkspaceWarningPayload {
-  code: SessionWorkspaceWarningCode;
-  message: string;
-}
 
 interface SessionWorkspaceWorktreePayload {
   cwd: string;
@@ -422,43 +386,6 @@ function normalizeEndpointBody(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const endpoint = (body as Record<string, unknown>).endpoint;
   return typeof endpoint === "string" && endpoint.startsWith("https://") ? endpoint : undefined;
-}
-
-function getPersistedRunNotice(ctx: AppContext, sessionId: string) {
-  const terminal = ctx.sessionMetaStore.getTerminalOverlay(sessionId);
-  if (!terminal?.notice) return undefined;
-  return {
-    ...terminal.notice,
-    ...(terminal.type === "error" && terminal.notice.kind === "error"
-      ? { retryRunId: terminal.terminalSourceEventId ? terminal.runId : undefined }
-      : {}),
-  };
-}
-
-function getSessionStatus(
-  ctx: AppContext,
-  sessionId: string,
-): {
-  runState: SessionRunState;
-  pendingUserInputCount: number;
-  needsUserInput: boolean;
-  backgroundAgents: BackgroundAgentsSummary;
-  agentMode?: "autopilot";
-  runNotice?: ReturnType<typeof getPersistedRunNotice>;
-} {
-  const runState = ctx.sessionManager.getSessionRunState(sessionId);
-  const pendingUserInputCount = ctx.sessionManager.getPendingUserInputCount(sessionId);
-  const runNotice = runState === "idle"
-    ? getPersistedRunNotice(ctx, sessionId)
-    : undefined;
-  return {
-    runState,
-    pendingUserInputCount,
-    needsUserInput: pendingUserInputCount > 0,
-    backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(sessionId),
-    ...(runNotice ? { runNotice } : {}),
-    ...(ctx.sessionManager.getSessionAgentMode(sessionId) === "autopilot" ? { agentMode: "autopilot" as const } : {}),
-  };
 }
 
 const AGENT_TEXT_MAX_LENGTH = 2_000;
@@ -516,12 +443,6 @@ function normalizeWorkspacePath(cwd?: string | null): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function normalizeWorkspacePathForComparison(cwd: string): string {
-  const normalized = cwd.trim().replace(/\\/g, "/");
-  if (normalized === "/" || /^[A-Za-z]:\/$/.test(normalized)) return normalized.toLowerCase();
-  return normalized.replace(/\/+$/, "").toLowerCase();
-}
-
 function getSessionRecordedCwd(ctx: AppContext, sessionId: string): string | undefined {
   const yamlPath = join(getCopilotHome(ctx), "session-state", sessionId, "workspace.yaml");
   try {
@@ -530,58 +451,6 @@ function getSessionRecordedCwd(ctx: AppContext, sessionId: string): string | und
   } catch {
     return undefined;
   }
-}
-
-type SessionWorkspaceSummaryWithSource = SessionWorkspaceSummaryPayload & {
-  source: SessionWorkspaceSource;
-};
-
-function composeSessionWorkspaceSummary(
-  ctx: AppContext,
-  sessionId: string,
-  resolved: {
-    sessionOverride: SessionWorkspace | undefined;
-    overrideAvailability: WorkspaceAvailability | undefined;
-    recordedCwd: string | undefined;
-    taskCwd: string | undefined;
-  },
-): SessionWorkspaceSummaryWithSource {
-  const { sessionOverride, overrideAvailability, recordedCwd, taskCwd } = resolved;
-  const warnings: SessionWorkspaceWarningPayload[] = [];
-  if (sessionOverride && overrideAvailability && !overrideAvailability.available && overrideAvailability.clearStalePin) {
-    // A missing pinned cwd is stale user state; clear it before the SDK can resume with an invalid directory.
-    ctx.sessionWorkspaceStore?.deleteWorkspace(sessionId);
-    warnings.push({
-      code: "cleared_pinned_workspace",
-      message: `Pinned session workspace was cleared because it is no longer available: ${overrideAvailability.cwd}`,
-    });
-  }
-  const overrideCwd = overrideAvailability?.available ? overrideAvailability.cwd : undefined;
-  const explicitRecordedCwd = isImplicitHostCwd(recordedCwd, ctx.runtimePaths) ? undefined : recordedCwd;
-  const effectiveCwd = overrideCwd ?? explicitRecordedCwd ?? taskCwd ?? getNeutralWorkspaceDir(ctx.runtimePaths);
-  const source: SessionWorkspaceSource = isNeutralWorkspaceCwd(effectiveCwd, ctx.runtimePaths)
-    ? "bridge_workspace"
-    : overrideCwd
-      ? "session_workspace"
-      : explicitRecordedCwd
-        ? "workspace_yaml"
-        : taskCwd
-          ? "task"
-          : "none";
-
-  return {
-    effectiveCwd,
-    taskCwd,
-    sessionOverride: sessionOverride && overrideCwd
-      ? {
-          cwd: sessionOverride.cwd,
-          updatedAt: sessionOverride.updatedAt,
-        }
-      : undefined,
-    overridesTaskWorkspace: !!overrideCwd && !!taskCwd && normalizeWorkspacePathForComparison(overrideCwd) !== normalizeWorkspacePathForComparison(taskCwd),
-    ...(warnings.length > 0 ? { warnings } : {}),
-    source,
-  };
 }
 
 function buildSessionWorkspaceSummary(
@@ -595,38 +464,6 @@ function buildSessionWorkspaceSummary(
     overrideAvailability: getNeutralAwareAvailability(sessionOverride?.cwd, ctx.runtimePaths),
     recordedCwd: resolveNeutralAwareCwd(getSessionRecordedCwd(ctx, sessionId), ctx.runtimePaths),
     taskCwd: resolveAvailableWorkspaceCwd(task?.cwd),
-  });
-}
-
-/**
- * Async variant for the session list: the caller has already read workspace.yaml and
- * preloaded pinned workspaces, and a shared availability lookup stats each distinct cwd
- * once per build instead of once per session on the main thread.
- */
-async function buildSessionWorkspaceSummaryForList(
-  ctx: AppContext,
-  sessionId: string,
-  inputs: {
-    sessionOverride: SessionWorkspace | undefined;
-    recordedCwd: string | undefined;
-    task: Pick<Task, "cwd"> | null | undefined;
-    getAvailability: WorkspaceAvailabilityLookup;
-  },
-): Promise<SessionWorkspaceSummaryWithSource> {
-  // Display-only: the neutral workspace counts as available without recreating it here.
-  const getAvailability: WorkspaceAvailabilityLookup = async (cwd) => isNeutralWorkspaceCwd(cwd ?? undefined, ctx.runtimePaths)
-    ? { cwd: cwd!.trim(), available: true, clearStalePin: false }
-    : await inputs.getAvailability(cwd);
-  const [overrideAvailability, recordedCwd, taskCwd] = await Promise.all([
-    getAvailability(inputs.sessionOverride?.cwd),
-    resolveAvailableWorkspaceCwdAsync(inputs.recordedCwd, getAvailability),
-    resolveAvailableWorkspaceCwdAsync(inputs.task?.cwd ?? undefined, inputs.getAvailability),
-  ]);
-  return composeSessionWorkspaceSummary(ctx, sessionId, {
-    sessionOverride: inputs.sessionOverride,
-    overrideAvailability,
-    recordedCwd,
-    taskCwd,
   });
 }
 
@@ -991,58 +828,21 @@ function managementJobCancellationConflictBody(
   );
 }
 
-/** Stands in for Helm in contexts built without its store: hands-free simply has nothing to attach to. */
-const HELM_UNAVAILABLE: VoiceGatewayHelm = {
-  isHelmSession: () => false,
-  bindHandsFree: () => () => undefined,
-  isWatched: () => false,
-  getTurnCount: () => 0,
-  getTurnReasoningEffort: (mode) => HELM_DEFAULT_REASONING_EFFORTS[mode],
-};
-
-export interface ApiRouterOptions {
-  shutdownCoordinator?: ServerShutdownCoordinator;
-  sessionStorageReader?: SessionStorageReader;
-  copilotQuotaReader?: CopilotQuotaReader;
-}
-
 export function createApiRouter(
   ctx: AppContext,
-  options: ApiRouterOptions = {},
+  services: ApiServices,
 ): express.Router {
   const router = express.Router();
   const schedulerModule = () => getSchedulerModule(ctx);
   // Keep shutdown orchestration on the AppContext even for legacy/test
   // contexts that rely on the production scheduler fallback.
   if (!ctx.isStaging) ctx.scheduler ??= schedulerModule();
-  const shutdownCoordinator = options.shutdownCoordinator ?? createServerShutdownCoordinator(ctx);
-  const voiceRuntime = ctx.voiceRuntime ??= createVoiceRuntime(ctx.runtimePaths ?? resolveRuntimePaths(process.env));
-  const transcriptionService =
-    (ctx as AppContext & { transcriptionService?: TranscriptionService }).transcriptionService
-    ?? createTranscriptionService({ installer: voiceRuntime.installer, engine: voiceRuntime.engine, env: ctx.runtimePaths?.env });
-  const voiceJobManager = ensureVoiceJobManager(ctx, transcriptionService);
-  const getBridgeGitRevisions = createBridgeGitRevisionReader();
-  const sessionStorageReader = options.sessionStorageReader
-    ?? createSessionStorageReader(join(getCopilotHome(ctx), "session-state"));
-  let copilotUsageReader = ctx.copilotUsageReader;
-  if (!copilotUsageReader) {
-    const copilotModelPriceLoader = createCopilotModelPriceLoader({
-      loadModels: () => ctx.sessionManager.listModels(),
-      store: ctx.copilotModelPriceStore,
-    });
-    copilotUsageReader = createIncrementalCopilotUsageReader({
-      copilotHome: getCopilotHome(ctx),
-      store: ctx.copilotUsageStore,
-      modelPriceLoader: copilotModelPriceLoader,
-    });
-    ctx.copilotUsageReader = copilotUsageReader;
-  }
-  copilotUsageReader.startBackgroundRefresh?.();
-  const copilotQuotaReader = options.copilotQuotaReader ?? createCopilotQuotaReader({
-    getQuota: () => ctx.sessionManager.getAccountQuota(),
-    getAuth: () => ctx.sessionManager.getAccountAuth(),
-    getLiveUser: () => ctx.sessionManager.fetchAccountCopilotUser(),
-  });
+  const {
+    shutdownCoordinator,
+    voiceRuntime, voiceGateway, transcriptionService, voiceJobManager, getBridgeGitRevisions,
+    sessionStorageReader, copilotUsageReader, copilotQuotaReader, sessionList,
+    deleteSessionWithOwnedState, resolveReadThroughActivityAt, emitReadStateChanged,
+  } = services;
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
@@ -1319,107 +1119,10 @@ export function createApiRouter(
   router.use(express.json({ limit: "20mb" }));
   router.use(createApiJsonErrorHandler());
 
-  const sessionList = createSessionList(ctx, {
-    getStatus: (sessionId) => getSessionStatus(ctx, sessionId),
-    summarizeWorkspace: (sessionId, inputs) => buildSessionWorkspaceSummaryForList(ctx, sessionId, inputs),
-  });
-
-  // ── Helm (orchestration chat and hands-free voice) ──────────────
-  // The facade reuses the same session list, read-state, send and create logic as the
-  // REST routes so Helm's actions behave exactly like the UI.
-  const helmFacade: HelmBridgeFacade = {
-    listSessions: async (options) => {
-      const includeArchived = options?.includeArchived === true;
-      const sessions = await sessionList.read(includeArchived);
-      const readState = ctx.readStateStore.getReadStateFor(sessions.map((session) => session.sessionId));
-      return sessions.map((session: any) => {
-        const activity: string | undefined = session.lastActivityAt ?? session.modifiedTime ?? session.startTime;
-        const lastRead = readState[session.sessionId];
-        return {
-          sessionId: session.sessionId,
-          title: typeof session.summary === "string" && session.summary.trim() ? session.summary.trim() : "Untitled session",
-          runState: session.runState ?? "idle",
-          needsUserInput: !!session.needsUserInput,
-          unread: !!activity && (!lastRead || Date.parse(activity) > Date.parse(lastRead)),
-          archived: !!session.archived,
-          lastActivityAt: activity,
-          linkedTaskIds: Array.isArray(session.linkedTaskIds) ? session.linkedTaskIds : [],
-          intentText: session.intentText ?? null,
-          ...(typeof session.triggeredBy === "string" ? { triggeredBy: session.triggeredBy } : {}),
-          ...(typeof session.scheduleName === "string" && session.scheduleName ? { scheduleName: session.scheduleName } : {}),
-        };
-      });
-    },
-    markRead: (sessionIds) => {
-      for (const sessionId of sessionIds) {
-        ctx.readStateStore.markRead(sessionId, resolveReadThroughActivityAt(sessionId));
-      }
-      emitReadStateChanged();
-    },
-    setArchived: (sessionIds, archived) => {
-      const { errors } = setSessionsArchived(ctx, sessionIds, archived);
-      const failure = Object.values(errors)[0];
-      if (failure !== undefined) throw new Error(failure);
-    },
-    sendMessage: async (sessionId, prompt) => {
-      console.log(`[helm] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"`);
-      const { delivery } = await sendChatMessage(ctx, sessionId, prompt, { queue: "none" });
-      return delivery === "started" ? "started" : "steered";
-    },
-    createSession: async ({ taskId, model, reasoningEffort }) => {
-      const creation = await resolveSessionCreationOptions({ model, reasoningEffort }, taskId ? { taskId } : {});
-      if (creation.error) throw new Error(creation.error);
-      if (!taskId) {
-        const result = await ctx.sessionManager.createSession({ background: true, ...creation.options });
-        sessionList.invalidate("helm:session:create");
-        return result;
-      }
-      const task = ctx.taskStore.getTask(taskId);
-      if (!task) throw new Error("Task not found");
-      const result = await ctx.sessionManager.createTaskSession(
-        task.id,
-        task.title,
-        task.workItems,
-        task.notes,
-        task.cwd,
-        undefined,
-        { background: true, ...creation.options },
-      );
-      sessionList.invalidate("helm:task-session:create");
-      ctx.taskStore.linkSession(task.id, result.sessionId);
-      return result;
-    },
-  };
-  const helmStore = ctx.helmStore;
-  if (helmStore && !ctx.helm) {
-    ctx.helm = new HelmService({
-      ctx,
-      store: helmStore,
-      facade: helmFacade,
-      deleteSession: async (sessionId) => {
-        await deleteSessionWithOwnedState(sessionId, "helm:conversation:delete");
-        emitReadStateChanged();
-      },
-    });
-    ctx.helm.startRetention();
-  }
   if (ctx.helm) router.use("/helm", createHelmRouter(ctx.helm));
-  ctx.voiceGateway ??= new VoiceGateway({
-    ctx,
-    facade: helmFacade,
-    helm: ctx.helm ?? HELM_UNAVAILABLE,
-    runtime: voiceRuntime,
-  });
-  router.use("/voice", createVoiceRouter(ctx.voiceGateway));
-
-  // Wire settings getter for providers (so they can resolve without module-level imports)
-  setSettingsGetter(() => ctx.settingsStore.getSettings());
+  router.use("/voice", createVoiceRouter(voiceGateway));
 
   const MAX_EXTERNAL_USE_SESSION_IDS = 500;
-
-  function emitReadStateChanged(): void {
-    ctx.globalBus.emit({ type: "readstate:changed", readState: ctx.readStateStore.getReadState() });
-  }
 
   /**
    * Tasks with a disposition run in flight. A large delete can outlive its HTTP
@@ -1427,41 +1130,6 @@ export function createApiRouter(
    * deletes take), so a retry can arrive while the first run is still going.
    */
   const taskDeletionsInFlight = new Set<string>();
-
-  async function deleteSessionWithOwnedState(
-    sessionId: string,
-    cacheInvalidationReason: string,
-    opts: { deferInvalidation?: boolean } = {},
-  ): Promise<void> {
-    let backendDeleteError: SessionBackendDeleteError | undefined;
-    try {
-      await ctx.sessionManager.deleteSession(sessionId);
-    } catch (err) {
-      // A backend-only failure still leaves the session locally deleted, so the
-      // Bridge-owned rows below must be cleaned up or they orphan permanently.
-      // Any other error means local deletion did not complete — leave state alone.
-      if (!(err instanceof SessionBackendDeleteError)) throw err;
-      backendDeleteError = err;
-    }
-
-    // Bulk callers invalidate once at the end; a task can link thousands of
-    // sessions.
-    if (!opts.deferInvalidation) sessionList.invalidate(cacheInvalidationReason);
-    ctx.sessionMetaStore.deleteMeta(sessionId);
-    ctx.readStateStore.markUnread(sessionId);
-    ctx.sessionContextStore?.deleteSessionContext(sessionId);
-
-    // Cancel first so any in-flight due-delivery observes a terminal row, then
-    // hard-delete: a deleted session can never receive a deferred prompt again.
-    ctx.deferredPromptStore?.cancelForSession(sessionId);
-    ctx.deferLoopStore?.cancelForSession(sessionId);
-    ctx.deferredPromptStore?.deleteForSession(sessionId);
-    ctx.deferLoopStore?.deleteForSession(sessionId);
-
-    ctx.taskStore.unlinkSessionFromAllTasks(sessionId);
-
-    if (backendDeleteError) throw backendDeleteError;
-  }
 
   function setSessionArchived(sessionId: string, archived: boolean) {
     ctx.sessionMetaStore.setArchived(sessionId, archived);
@@ -1500,25 +1168,6 @@ export function createApiRouter(
       fingerprint: createHash("sha1").update([...sessionIds].sort().join("\n")).digest("hex"),
     };
   }
-
-  // What a build of the session list reads, and so what has to be announced to it. Everything
-  // else a row shows (archived, activity and read times, task links, schedule names and switches,
-  // run state, deferred work) is read per response and needs no announcement.
-  ctx.globalBus.subscribe((event: any) => {
-    switch (event.type) {
-      case "session:title": // the name
-      case "task:changed": // a linked task's folder, and which sessions a task links
-        sessionList.invalidate(`bus:${event.type}`);
-        break;
-      case "sessions:changed": // sessions created, forked, deleted, rewound
-        if (event.reason !== "attention") sessionList.invalidate("bus:sessions:changed");
-        break;
-      case "session:archived":
-        // A restored chat has to be found again; an archived one only gains details in the list that shows archived chats.
-        sessionList.invalidate("bus:session:archived", [event.archived === true ? "all" : "active"]);
-        break;
-    }
-  });
 
   // ── Session routes ──────────────────────────────────────────────
 
@@ -3452,328 +3101,7 @@ export function createApiRouter(
     res.json({ ok: Object.keys(errors).length === 0, errors });
   });
 
-  // ── Task Group routes ─────────────────────────────────────────────
-
-  router.get("/task-groups", (_req, res) => {
-    const groups = ctx.taskGroupStore.listGroups();
-    const groupsWithTags = groups.map((g) => ({
-      ...g,
-      tags: ctx.tagStore?.getEntityTags("task_group", g.id) ?? [],
-    }));
-    res.json({ groups: groupsWithTags });
-  });
-
-  router.post("/task-groups", (req, res) => {
-    const { name, color } = req.body;
-    if (!name) return res.status(400).json({ error: "name is required" });
-    try {
-      const group = ctx.taskGroupStore.createGroup(name, color);
-      res.json({ group });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.patch("/task-groups/:id", (req, res) => {
-    try {
-      const group = ctx.taskGroupStore.updateGroup(req.params.id, req.body);
-      const tags = ctx.tagStore?.getEntityTags("task_group", group.id) ?? [];
-      res.json({ group: { ...group, tags } });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const status = err instanceof TaskGroupValidationError
-        ? 400
-        : /Group .* not found/.test(message)
-          ? 404
-          : 400;
-      res.status(status).json({ error: message });
-    }
-  });
-
-  router.delete("/task-groups/:id", (req, res) => {
-    try {
-      const result = ctx.taskGroupStore.deleteGroup(req.params.id);
-      res.json({
-        success: true,
-        deleted: result.deleted,
-        ungroupedTaskCount: result.affectedTaskIds.length,
-      });
-    } catch (err) {
-      console.error("[task-groups] Delete failed:", err);
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  router.put("/task-groups/reorder", (req, res) => {
-    const { groupIds } = req.body;
-    if (!Array.isArray(groupIds)) return res.status(400).json({ error: "groupIds array is required" });
-    try {
-      const groups = ctx.taskGroupStore.reorderGroups(groupIds);
-      res.json({ groups });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  // ── MCP server registry routes ───────────────────────────────────
-
-  const getMcpServerStore = () => ctx.mcpServerStore ?? ctx.settingsStore.getMcpServerStore();
-
-  router.get("/mcp-servers", (_req, res) => {
-    const mcpServerStore = getMcpServerStore();
-    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
-    res.json({ servers: mcpServerStore.listMcpServers() });
-  });
-
-  router.post("/mcp-servers", (req, res) => {
-    const mcpServerStore = getMcpServerStore();
-    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
-    if (!isRecord(req.body)) return res.status(400).json({ error: "request body is required" });
-    const { name, config, enabledByDefault } = req.body;
-    if (typeof name !== "string") return res.status(400).json({ error: "name is required" });
-    if (enabledByDefault !== undefined && typeof enabledByDefault !== "boolean") {
-      return res.status(400).json({ error: "enabledByDefault must be a boolean" });
-    }
-
-    try {
-      const server = mcpServerStore.createMcpServer({ name, config: config as McpServerConfig, enabledByDefault });
-      console.log("[mcp] MCP server registry changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.status(201).json({ server });
-    } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  router.patch("/mcp-servers/:id", (req, res) => {
-    const mcpServerStore = getMcpServerStore();
-    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
-    if (!isRecord(req.body)) return res.status(400).json({ error: "request body is required" });
-
-    const updates: { name?: string; config?: McpServerConfig; enabledByDefault?: boolean } = {};
-    if ("name" in req.body) {
-      if (typeof req.body.name !== "string") return res.status(400).json({ error: "name must be a string" });
-      updates.name = req.body.name;
-    }
-    if ("config" in req.body) updates.config = req.body.config as McpServerConfig;
-    if ("enabledByDefault" in req.body) {
-      if (typeof req.body.enabledByDefault !== "boolean") {
-        return res.status(400).json({ error: "enabledByDefault must be a boolean" });
-      }
-      updates.enabledByDefault = req.body.enabledByDefault;
-    }
-
-    try {
-      const server = mcpServerStore.updateMcpServer(req.params.id, updates);
-      console.log("[mcp] MCP server registry changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ server });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(/not found/i.test(message) ? 404 : 400).json({ error: message });
-    }
-  });
-
-  router.delete("/mcp-servers/:id", (req, res) => {
-    const mcpServerStore = getMcpServerStore();
-    if (!mcpServerStore) return res.status(501).json({ error: "MCP server registry not available" });
-    if (!mcpServerStore.getMcpServer(req.params.id)) {
-      return res.status(404).json({ error: "MCP server not found" });
-    }
-
-    mcpServerStore.deleteMcpServer(req.params.id);
-    console.log("[mcp] MCP server registry changed — evicting cached sessions");
-    void ctx.sessionManager.evictAllCachedSessions();
-    res.json({ success: true });
-  });
-
-  // ── Skill registry routes (read + delete) ───────────────────────
-
-  router.get("/skills", (_req, res) => {
-    try {
-      res.json({ skills: listSkills({ copilotHome: getCopilotHome(ctx) }) });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  router.get("/skills/:id", (req, res) => {
-    if (!isValidSkillId(req.params.id)) return res.status(400).json({ error: "invalid skill id" });
-    try {
-      const skill = readSkill({ copilotHome: getCopilotHome(ctx) }, req.params.id);
-      if (!skill) return res.status(404).json({ error: "skill not found" });
-      res.json({ skill });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  router.delete("/skills/:id", async (req, res) => {
-    try {
-      const result = await deleteHomeSkill({ copilotHome: getCopilotHome(ctx), id: req.params.id });
-      if (result === "invalid") return res.status(400).json({ error: "invalid skill id" });
-      if (result === "not-found") return res.status(404).json({ error: "skill not found" });
-      console.log("[skills] Home skill deleted — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  // ── Tag routes ──────────────────────────────────────────────────
-
-  router.get("/tags", (_req, res) => {
-    res.json({ tags: ctx.tagStore?.listTags() ?? [] });
-  });
-
-  router.post("/tags", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    const { name, color } = req.body;
-    if (!name) return res.status(400).json({ error: "name is required" });
-    try {
-      const tag = ctx.tagStore.createTag(name, color);
-      res.json({ tag });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.patch("/tags/:id", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    try {
-      // Capture old name before update for doc tag rename propagation
-      const oldTag = ctx.tagStore.getTag(req.params.id);
-      const tag = ctx.tagStore.updateTag(req.params.id, req.body);
-
-      // Propagate tag rename to doc frontmatter
-      if (req.body.name !== undefined && oldTag && oldTag.name !== tag.name && ctx.docsStore) {
-        const updated = ctx.docsStore.renameTagInDocs(oldTag.name, tag.name);
-        if (updated > 0) {
-          console.log(`[tags] Renamed tag in ${updated} doc(s): "${oldTag.name}" → "${tag.name}"`);
-          ctx.docsIndex?.reindex();
-        }
-      }
-
-      // Evict cached sessions if name or instructions changed
-      if (req.body.instructions !== undefined || req.body.name !== undefined) {
-        console.log("[tags] Tag changed — evicting cached sessions");
-        void ctx.sessionManager.evictAllCachedSessions();
-      }
-      res.json({ tag });
-    } catch (err) {
-      if (err instanceof InvalidTagColorError) return res.status(400).json({ error: err.message });
-      res.status(404).json({ error: String(err) });
-    }
-  });
-
-  router.delete("/tags/:id", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    const deleted = ctx.tagStore.deleteTag(req.params.id);
-    if (!deleted) return res.status(404).json({ error: `Tag ${req.params.id} not found` });
-    console.log("[tags] Tag deleted — evicting cached sessions");
-    void ctx.sessionManager.evictAllCachedSessions();
-    res.json({ success: true });
-  });
-
-  router.put("/tags/reorder", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    const { tagIds } = req.body;
-    if (!Array.isArray(tagIds)) return res.status(400).json({ error: "tagIds array is required" });
-    try {
-      const tags = ctx.tagStore.reorderTags(tagIds);
-      res.json({ tags });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  // Tag MCP servers
-  router.get("/tags/:id/mcp", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    res.json({ servers: ctx.tagStore.getTagMcpServers(req.params.id) });
-  });
-
-  router.put("/tags/:id/mcp-servers", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    const serverIds = isRecord(req.body) ? req.body.serverIds : undefined;
-    if (!Array.isArray(serverIds) || !serverIds.every((serverId) => typeof serverId === "string")) {
-      return res.status(400).json({ error: "serverIds array is required" });
-    }
-    try {
-      const servers = ctx.tagStore.replaceTagMcpServerRefs(req.params.id, serverIds);
-      console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ servers });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.post("/tags/:id/mcp-refs/:serverId", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    try {
-      const server = ctx.tagStore.addTagMcpServerRef(req.params.id, req.params.serverId);
-      console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ server });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.delete("/tags/:id/mcp-refs/:serverId", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    ctx.tagStore.removeTagMcpServerRef(req.params.id, req.params.serverId);
-    console.log("[tags] Tag MCP server selection changed — evicting cached sessions");
-    void ctx.sessionManager.evictAllCachedSessions();
-    res.json({ success: true });
-  });
-
-  // Related docs by tag
-  router.get("/tags/related-docs", (req, res) => {
-    if (!ctx.tagStore || !ctx.docsIndex) return res.json({ docs: [] });
-    const tagIds = (req.query.tags as string || "").split(",").filter(Boolean);
-    if (tagIds.length === 0) return res.json({ docs: [] });
-    const tagNames = tagIds
-      .map((id) => ctx.tagStore!.getTag(id))
-      .filter(Boolean)
-      .map((t) => t!.name);
-    const docs = ctx.docsIndex.findDocsByTagNames(tagNames);
-    res.json({ docs });
-  });
-
-  // Set tags on a task
-  router.put("/tasks/:id/tags", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    const { tagIds } = req.body;
-    if (!Array.isArray(tagIds)) return res.status(400).json({ error: "tagIds array is required" });
-    try {
-      ctx.tagStore.setEntityTags("task", req.params.id, tagIds);
-      const tags = ctx.tagStore.getEntityTags("task", req.params.id);
-      console.log("[tags] Task tags changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ tags });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  // Set tags on a task group
-  router.put("/task-groups/:id/tags", (req, res) => {
-    if (!ctx.tagStore) return res.status(501).json({ error: "Tags not available" });
-    const { tagIds } = req.body;
-    if (!Array.isArray(tagIds)) return res.status(400).json({ error: "tagIds array is required" });
-    try {
-      ctx.tagStore.setEntityTags("task_group", req.params.id, tagIds);
-      const tags = ctx.tagStore.getEntityTags("task_group", req.params.id);
-      console.log("[tags] Group tags changed — evicting cached sessions");
-      void ctx.sessionManager.evictAllCachedSessions();
-      res.json({ tags });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
+  registerCatalogRoutes(router, ctx, () => getCopilotHome(ctx));
 
   // ── Task routes ───────────────────────────────────────────────────
 
@@ -4506,26 +3834,6 @@ export function createApiRouter(
     const time = Date.parse(raw);
     if (!Number.isFinite(time)) throw new Error("readThroughActivityAt must be an ISO timestamp");
     return new Date(time).toISOString();
-  }
-
-  function resolveReadThroughActivityAt(sessionId: string, requested?: string): string {
-    const meta = ctx.sessionMetaStore.getMeta(sessionId);
-    const latestActivityAt = maxIsoTime(meta?.lastVisibleActivityAt, meta?.lastAttentionAt);
-    const latestActivityTime = latestActivityAt ? Date.parse(latestActivityAt) : Number.NaN;
-    const latestActivity = Number.isFinite(latestActivityTime)
-      ? new Date(latestActivityTime).toISOString()
-      : undefined;
-
-    if (!requested) return latestActivity ?? new Date().toISOString();
-
-    const requestedTime = Date.parse(requested);
-    if (latestActivity && Number.isFinite(latestActivityTime) && requestedTime > latestActivityTime) {
-      return latestActivity;
-    }
-
-    const maxFutureSkewMs = 5_000;
-    const maxAllowedTime = Date.now() + maxFutureSkewMs;
-    return new Date(Math.min(requestedTime, maxAllowedTime)).toISOString();
   }
 
   router.post("/read-state/:sessionId", (req, res) => {
@@ -5824,11 +5132,6 @@ export function createApiRouter(
   });
 
   return router;
-}
-
-function ensureVoiceJobManager(ctx: AppContext, transcriptionService: TranscriptionService): VoiceJobManager {
-  void transcriptionService;
-  return ctx.voiceJobManager;
 }
 
 function ensurePushSubscriptionStore(ctx: AppContext): PushSubscriptionStore {

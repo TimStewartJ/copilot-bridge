@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import type { AppContext } from "../server/app-context.js";
 import { createApiRouter } from "../server/api-router.js";
+import { createApiServices } from "../server/api-services.js";
 import { createEventBusRegistry } from "../server/event-bus.js";
 import { createGlobalBus } from "../server/global-bus.js";
 import { createSessionContextStore } from "../server/session-context-store.js";
@@ -39,7 +40,7 @@ function createContextApp() {
     },
   } as unknown as AppContext;
   const app = express();
-  app.use("/api", createApiRouter(ctx));
+  app.use("/api", createApiRouter(ctx, createApiServices(ctx)));
   return { app, sessionContextStore };
 }
 

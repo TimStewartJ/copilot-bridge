@@ -1,7 +1,5 @@
 import UserInputQuestionCard from "./UserInputQuestionCard";
 import {
-  Component,
-  createRef,
   useState,
   useEffect,
   useLayoutEffect,
@@ -11,10 +9,9 @@ import {
   useContext,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
-  type RefObject,
   type TouchEvent as ReactTouchEvent,
 } from "react";
-import { useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   fetchSlashCommands,
@@ -39,10 +36,19 @@ import {
   type ElicitationResponseEndpointPayload,
   type SlashCommandInfo,
   type ToolCall,
-  type TranscriptAgent,
   type UserInputAnswerEndpointPayload,
 } from "../api";
-import { getCachedChatSnapshot, keepLoadedEntries, replaceHistoryWindow, setCachedChatSnapshot } from "../chat-cache";
+import { getCachedChatSnapshot, getLatestEntryActivityTimestamp, keepLoadedEntries, maxActivityTimestamp, replaceHistoryWindow } from "../chat-cache";
+import { NO_AGENT_RECORDS, NO_HISTORY, useChatHistoryWindow } from "./chat/useChatHistoryWindow";
+import {
+  FOLLOW_BOTTOM_THRESHOLD_PX,
+  LATEST_MESSAGE_TOP_THRESHOLD_PX,
+  getDistanceFromBottom,
+  getMaxScrollTop,
+  getSafeScrollTop,
+  useChatScroll,
+} from "./chat/useChatScroll";
+import { SCROLL_REST_MS, scrollerAtRest, ViewportKeeper, type ScrollActivity } from "./chat/TranscriptViewport";
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
@@ -116,17 +122,6 @@ const STREAM_RENDER_INTERVAL_MS = 60;
 const HISTORY_REFRESH_THROTTLE_MS = 250;
 /** Most entries a refresh of the newest history re-reads; older loaded entries are kept as they are. */
 const HISTORY_REFRESH_MAX_LIMIT = 200;
-/** How long the transcript must sit still, with no finger on it, before older messages go in above. */
-const SCROLL_REST_MS = 120;
-/** After this long they go in regardless, in case the end of a touch never reaches the page. */
-const SCROLL_REST_TIMEOUT_MS = 5_000;
-/** How many rows a change to the transcript is measured against; the change may replace some of them. */
-const VIEWPORT_ANCHOR_ROWS = 4;
-/**
- * A row overlapping the viewport top by no more than this is not in view: landing on a row
- * leaves a fraction of a pixel of the one above.
- */
-const VIEWPORT_EDGE_PX = 1;
 /**
  * Cached history paints instantly, so a sync that lands inside this window never shows an
  * indicator; anything slower gets a clear, full-width strip instead of a flash.
@@ -143,10 +138,6 @@ const MID_RUN_STATUS_DELAY_MS = 350;
  * the task rail and side panels change it independently of the viewport.
  */
 const ACTION_GUTTER_MIN_COLUMN_PX = 1024;
-const FOLLOW_BOTTOM_THRESHOLD_PX = 96;
-const FOLLOW_SCROLL_EASE = 0.35;
-const FOLLOW_SCROLL_SETTLE_PX = 1.5;
-const LATEST_MESSAGE_TOP_THRESHOLD_PX = 8;
 const CHAT_RAIL_CLASS = DS.layout.readingColumn;
 const SEARCH_MATCH_PAGE_SIZE = 20;
 
@@ -280,213 +271,6 @@ function useCounterAdvance(scope: unknown, counter: number, onAdvance: () => voi
   }, [counter, scope]);
 }
 
-function getDistanceFromBottom(el: HTMLElement): number {
-  return Math.max(0, getMaxScrollTop(el) - getSafeScrollTop(el));
-}
-
-function getSafeScrollTop(el: HTMLElement): number {
-  return Number.isFinite(el.scrollTop) ? el.scrollTop : 0;
-}
-
-function getMaxScrollTop(el: HTMLElement): number {
-  const scrollHeight = Number.isFinite(el.scrollHeight) ? el.scrollHeight : 0;
-  const clientHeight = Number.isFinite(el.clientHeight) ? el.clientHeight : 0;
-  return Math.max(0, scrollHeight - clientHeight);
-}
-
-/** A transcript row in or below the viewport, and how far below the viewport top it starts. */
-interface ViewportAnchor {
-  row: Element;
-  offset: number;
-}
-
-/** Whether the browser itself keeps the reader's place when content above the viewport changes height. */
-function browserAnchorsScrolling(): boolean {
-  return typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("overflow-anchor", "auto");
-}
-
-/**
- * The first `limit` rows in view, top one first, and where each starts. Any row will do, not only
- * a message: the newest reply is often a completion card, or the steps of a run. Rows stack
- * downwards in document order, so the first one in view is found by bisection.
- */
-function captureViewportAnchors(scroller: HTMLElement, rows: Element, limit = VIEWPORT_ANCHOR_ROWS): ViewportAnchor[] {
-  const viewportTop = scroller.getBoundingClientRect().top;
-  const candidates = rows.children;
-  let first = 0;
-  let end = candidates.length;
-  while (first < end) {
-    const middle = Math.floor((first + end) / 2);
-    if (candidates[middle].getBoundingClientRect().bottom > viewportTop + VIEWPORT_EDGE_PX) end = middle;
-    else first = middle + 1;
-  }
-  const anchors: ViewportAnchor[] = [];
-  for (let index = first; index < candidates.length && anchors.length < limit; index += 1) {
-    anchors.push({ row: candidates[index], offset: candidates[index].getBoundingClientRect().top - viewportTop });
-  }
-  return anchors;
-}
-
-/** How far `anchor` now is from where it was. */
-function shiftOf(scroller: HTMLElement, { row, offset }: ViewportAnchor): number {
-  return row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset;
-}
-
-/** The viewport top cuts through this row: content can grow inside it, above the view, without its top moving. */
-function startsAboveView(anchor: ViewportAnchor): boolean {
-  return anchor.offset < -VIEWPORT_EDGE_PX;
-}
-
-/**
- * The transcript's rows, with the reader's place held when content above it changes height.
- *
- * Across a change to the rows themselves (older messages going in, a refresh), a row in view is
- * measured as React is about to change the DOM and again once it has, so the difference is only
- * what the change itself moved: growth below (live output), the browser's own scroll anchoring,
- * and scrolling the reader did while the change rendered are all left alone.
- *
- * Content also changes height long after it rendered: an image above the view finishes loading,
- * a preview card fills in. Most browsers anchor scrolling through that themselves. Safari before
- * 27 does not, so there the top row in view is put back where it was. Only growth above that row
- * moves it, never something the reader opens in view.
- *
- * Nothing is written when nothing shifted or while the reader is scrolling, because moving a
- * scroller cuts a touch scroll short.
- */
-class ViewportKeeper extends Component<{
-  scrollerRef: RefObject<HTMLElement | null>;
-  className?: string;
-  /** Asked as the DOM is about to change: must this change leave the reader's view where it is? */
-  shouldKeep: () => boolean;
-  /** Whether the reader has stopped scrolling and has no finger on the transcript. */
-  atRest: () => boolean;
-  /** Moves the transcript by `delta` without it counting as the reader scrolling. */
-  shift: (scroller: HTMLElement, delta: number) => void;
-  children: ReactNode;
-}> {
-  private readonly rows = createRef<HTMLDivElement>();
-  /** Reports late changes in the rows' height; unused where the browser anchors scrolling itself. */
-  private observer: ResizeObserver | null = null;
-  /** The top row in view and the scroll position, as of the last render or movement of the view. */
-  private settled: { anchor: ViewportAnchor | undefined; scrollTop: number } | null = null;
-  private settling = false;
-
-  componentDidMount() {
-    if (browserAnchorsScrolling() || typeof ResizeObserver === "undefined" || !this.rows.current) return;
-    this.observer = new ResizeObserver(() => {
-      this.holdSettled();
-      this.settle();
-    });
-    this.observer.observe(this.rows.current);
-    this.settleSoon();
-  }
-
-  getSnapshotBeforeUpdate(): { anchors: ViewportAnchor[]; scrollTop: number } | null {
-    // A late change the observer has yet to report must not pass for part of this render.
-    this.holdSettled();
-    const scroller = this.props.scrollerRef.current;
-    const rows = this.rows.current;
-    if (!scroller || !rows || !this.props.shouldKeep()) return null;
-    const anchors = captureViewportAnchors(scroller, rows);
-    // Earlier steps joining a run grow its row above the view, so rows that start in view come first.
-    if (anchors.length > 1 && startsAboveView(anchors[0])) anchors.push(anchors.shift()!);
-    return { anchors, scrollTop: getSafeScrollTop(scroller) };
-  }
-
-  componentDidUpdate(_props: unknown, _state: unknown, before: { anchors: ViewportAnchor[]; scrollTop: number } | null) {
-    const scroller = this.props.scrollerRef.current;
-    const anchor = before?.anchors.find(({ row }) => this.rows.current?.contains(row));
-    if (scroller && before && anchor) {
-      const delta = shiftOf(scroller, anchor);
-      // The view moving by itself during the render is the browser's scroll anchoring, which
-      // holds a line inside a row. That row's own top then says nothing about what moved.
-      const heldByBrowser = startsAboveView(anchor) && getSafeScrollTop(scroller) !== before.scrollTop;
-      if (Math.abs(delta) >= 1 && !heldByBrowser) this.props.shift(scroller, delta);
-    }
-    this.settleSoon();
-  }
-
-  componentWillUnmount() {
-    this.observer?.disconnect();
-    this.observer = null;
-  }
-
-  /** The view moved, so late changes are measured from where it is now. */
-  moved() {
-    const scroller = this.props.scrollerRef.current;
-    // The scroll event for a move made from code arrives a frame later. By then an image may
-    // have loaded, and measuring again would take its shift for granted.
-    if (this.observer && scroller && this.settled?.scrollTop !== getSafeScrollTop(scroller)) this.settle();
-  }
-
-  /** Puts the top row back where it was if content above it has changed height since. */
-  private holdSettled() {
-    const scroller = this.props.scrollerRef.current;
-    const settled = this.settled;
-    if (!scroller || !settled?.anchor || !this.rows.current?.contains(settled.anchor.row)) return;
-    if (settled.scrollTop !== getSafeScrollTop(scroller) || !this.props.atRest()) return;
-    const delta = shiftOf(scroller, settled.anchor);
-    if (Math.abs(delta) >= 1) this.props.shift(scroller, delta);
-  }
-
-  private settle() {
-    const scroller = this.props.scrollerRef.current;
-    const rows = this.rows.current;
-    this.settled = scroller && rows
-      ? { anchor: captureViewportAnchors(scroller, rows, 1)[0], scrollTop: getSafeScrollTop(scroller) }
-      : null;
-  }
-
-  /** Settles once the render is over, after the layout effects that put the view where it belongs. */
-  private settleSoon() {
-    if (!this.observer || this.settling) return;
-    this.settling = true;
-    queueMicrotask(() => {
-      this.settling = false;
-      if (this.observer) this.settle();
-    });
-  }
-
-  render() {
-    return <div ref={this.rows} className={this.props.className}>{this.props.children}</div>;
-  }
-}
-
-/** When the reader last moved the transcript, and whether a finger is on it. */
-interface ScrollActivity {
-  movedAt: number;
-  touching: boolean;
-}
-
-/**
- * Resolves once the reader has stopped scrolling. Content going in above them means moving the
- * scroller to hold their place, and doing that mid-gesture stops a touch scroll dead; where the
- * browser cannot anchor scrolling itself (Safari before 27) it also lands on a stale position.
- */
-function scrollerAtRest(activity: ScrollActivity): Promise<void> {
-  const giveUpAt = Date.now() + SCROLL_REST_TIMEOUT_MS;
-  return new Promise((resolve) => {
-    const check = () => {
-      if (Date.now() >= giveUpAt) {
-        resolve();
-        return;
-      }
-      const wait = activity.touching ? SCROLL_REST_MS : activity.movedAt + SCROLL_REST_MS - Date.now();
-      if (wait > 0) {
-        setTimeout(check, wait);
-        return;
-      }
-      // Scroll events held up behind a long task are delivered before the next frame's callbacks.
-      const { movedAt } = activity;
-      window.requestAnimationFrame(() => {
-        if (activity.movedAt === movedAt && !activity.touching) resolve();
-        else check();
-      });
-    };
-    check();
-  });
-}
-
 function isChatMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "message" } {
   return !entry.type || entry.type === "message";
 }
@@ -540,10 +324,6 @@ interface HistoryReader {
 }
 
 const NO_HISTORY_READER: HistoryReader = { load() {}, refresh() {}, abandonVisibleRefresh() {} };
-/** `applyHistory` options for a transcript that is not a session's disk history: empty, or a load error. */
-const NO_HISTORY = { ownerSessionId: null, firstItemIndex: 0 } as const;
-/** A session that has run no sub-agents, or one whose history has not been read yet. */
-const NO_AGENT_RECORDS: readonly TranscriptAgent[] = Object.freeze([]);
 const NO_AGENT_BLOCKS: ReadonlyMap<string, string> = new Map();
 
 let clientMessageIdCounter = 0;
@@ -689,36 +469,6 @@ function getCommittedSourceEventIds(entries: ChatEntry[]): Set<string> {
   return ids;
 }
 
-function maxActivityTimestamp(left?: string | null, right?: string | null): string | undefined {
-  const leftTime = left ? Date.parse(left) : Number.NaN;
-  const rightTime = right ? Date.parse(right) : Number.NaN;
-  if (!Number.isFinite(leftTime) && !Number.isFinite(rightTime)) return undefined;
-  return new Date(Math.max(
-    Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY,
-    Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY,
-  )).toISOString();
-}
-
-function getEntryActivityTimestamp(entry: ChatEntry): string | undefined {
-  if (entry.type === "tool") return entry.toolCall.completedAt ?? entry.toolCall.startedAt;
-  if (entry.type === "visual") return entry.timestamp;
-  if (entry.type === "completion") return entry.timestamp;
-  if (entry.type === "skill") return entry.timestamp;
-  if ("role" in entry && ((entry.content ?? "").trim() || entry.attachments?.length)) {
-    return entry.timestamp;
-  }
-  return undefined;
-}
-
-function getLatestEntryActivityTimestamp(entries: ChatEntry[]): string | undefined {
-  let latest: string | undefined;
-  for (const entry of entries) {
-    latest = maxActivityTimestamp(latest, getEntryActivityTimestamp(entry));
-  }
-  return latest;
-}
-
-
 function sortPendingRequests<T extends { requestedAt?: string }>(
   requests: T[],
 ): T[] {
@@ -831,21 +581,11 @@ export default function ChatView({
   const requestedMatchOffset = parseNonNegativeInteger(routeSearchParams.get("matchOffset"));
   const returnToSearch = safeInternalPath(routeSearchParams.get("from"));
   const historicalMode = Boolean(sessionId && (targetSourceEventId || historyOnlyMode));
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
-  /**
-   * Every sub-agent the session has run, as its last history read reported them. A step names its
-   * agent, and the call that launched the agent is usually far above the loaded window.
-   */
-  const [agentRecords, setAgentRecords] = useState<readonly TranscriptAgent[]>(NO_AGENT_RECORDS);
-  const agentRecordsRef = useRef<readonly TranscriptAgent[]>(NO_AGENT_RECORDS);
-  const applyAgentRecords = useCallback((next: readonly TranscriptAgent[] | undefined) => {
-    if (!next) return;
-    // A read mostly repeats what is known; keeping those objects spares the agents' rows a render.
-    const kept = next.length === 0 ? NO_AGENT_RECORDS : replaceEqualDeep(agentRecordsRef.current, next);
-    if (kept === agentRecordsRef.current) return;
-    agentRecordsRef.current = kept;
-    setAgentRecords(kept);
-  }, []);
+  const keepViewportRef = useRef(false);
+  const {
+    entries, entriesRef, agentRecords, applyAgentRecords, hasMore, firstItemIndex,
+    historyFetchedAtRef, sessionIdRef, applyHistory,
+  } = useChatHistoryWindow({ sessionId, keepViewportRef, onRenderedReadThrough });
   /**
    * Client-owned optimistic sends (in flight or failed). They live outside `entries` so the
    * committed window stays purely disk-derived.
@@ -880,7 +620,6 @@ export default function ChatView({
   const [sessionContext, setSessionContext] = useState<SessionContextResponse | null>(null);
   const [sessionContextError, setSessionContextError] = useState<string | null>(null);
   const [sessionContextLoading, setSessionContextLoading] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [forkingBoundaryEventId, setForkingBoundaryEventId] = useState<string | null>(null);
   const [forkError, setForkError] = useState<string | null>(null);
@@ -889,7 +628,6 @@ export default function ChatView({
   const [messageMenuTarget, setMessageMenuTarget] = useState<MessageActionMenuTarget | null>(null);
   const [selectingMessageTarget, setSelectingMessageTarget] = useState<MessageActionMenuTarget | null>(null);
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [historicalUnavailable, setHistoricalUnavailable] = useState(false);
   const [historicalLoadError, setHistoricalLoadError] = useState<string | null>(null);
@@ -940,31 +678,16 @@ export default function ChatView({
     setHistoryRunBusy(null);
   }, [sessionId]);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const stickToBottomRef = useRef(true);
-  const firstItemIndex = useRef(0);
-  const historyLastVisibleActivityAtRef = useRef<string | undefined>(undefined);
-  /** When the displayed window was last read from disk; drives the "showing messages from…" hint. */
-  const historyFetchedAtRef = useRef<number | null>(null);
-  const entriesRef = useRef<ChatEntry[]>([]);
   const pendingSendsRef = useRef<PendingSend[]>([]);
-  const sessionIdRef = useRef<string | null>(sessionId);
   const loadingMoreRef = useRef(false);
-  /** Set by a history apply that must not move what the reader is looking at; cleared once it is on screen. */
-  const keepViewportRef = useRef(false);
   const scrollActivityRef = useRef<ScrollActivity>({ movedAt: 0, touching: false });
   const viewportKeeperRef = useRef<ViewportKeeper>(null);
   /** Where the last scroll event left the transcript, to tell which way the next one moved. */
   const lastScrollTopRef = useRef(0);
   const historyRef = useRef(NO_HISTORY_READER);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const followScrollFrameRef = useRef<number | null>(null);
-  const resetProgrammaticScrollFrameRef = useRef<number | null>(null);
-  const programmaticScrollRef = useRef(false);
-  const messageElementRefs = useRef(new Map<string, HTMLDivElement>());
   const sourceMessageElementRefs = useRef(new Map<string, HTMLDivElement>());
   const latestMessageAnchorKeyRef = useRef<string | null>(null);
-  const anchoredMessageKeyRef = useRef<string | null>(null);
   const pendingLiveAnchorCarryRef = useRef(false);
   /** Armed on session navigation so the first painted history lands on the newest reply's top. */
   const pendingInitialAnchorRef = useRef(false);
@@ -990,10 +713,6 @@ export default function ChatView({
     navigate(docsRoute(path, hash), { replace: true, state: { docsReturnTo: returnTo } });
   };
   const contextRefreshStreamingRef = useRef(false);
-  const pendingRenderedReadThroughRef = useRef<{
-    sessionId: string;
-    readThroughActivityAt: string;
-  } | null>(null);
   const queuedSendRef = useRef<{
     sessionId: string | null;
     composerKey: string;
@@ -1057,57 +776,6 @@ export default function ChatView({
     setSearchMatchPageError(null);
   }, [historicalMode, requestedMatchOffset, searchQuery, sessionId]);
 
-  const applyHistory = useCallback((
-    nextEntries: ChatEntry[],
-    opts: {
-      ownerSessionId?: string | null;
-      firstItemIndex?: number;
-      lastVisibleActivityAt?: string | null;
-      /** Disk read time of `nextEntries`; defaults to now. Cached resumes pass the snapshot's. */
-      fetchedAt?: number;
-      persistSnapshot?: boolean;
-      reportReadThrough?: boolean;
-      /** Keep the first visible message still unless the view is following the bottom. */
-      keepViewport?: boolean;
-    } = {},
-  ) => {
-    const ownerSessionId = opts.ownerSessionId === undefined ? sessionIdRef.current : opts.ownerSessionId;
-    const nextFirstItemIndex = opts.firstItemIndex ?? firstItemIndex.current;
-
-    keepViewportRef.current = Boolean(opts.keepViewport);
-    firstItemIndex.current = nextFirstItemIndex;
-    const nextLastVisibleActivityAt = opts.lastVisibleActivityAt === null
-      ? undefined
-      : opts.lastVisibleActivityAt ?? historyLastVisibleActivityAtRef.current;
-    historyLastVisibleActivityAtRef.current = ownerSessionId ? nextLastVisibleActivityAt : undefined;
-    entriesRef.current = nextEntries;
-    setEntries(nextEntries);
-    setHasMore(nextFirstItemIndex > 0);
-
-    const nextReadThrough = maxActivityTimestamp(
-      nextLastVisibleActivityAt,
-      getLatestEntryActivityTimestamp(nextEntries),
-    );
-    pendingRenderedReadThroughRef.current = ownerSessionId && opts.reportReadThrough !== false && nextReadThrough
-      ? { sessionId: ownerSessionId, readThroughActivityAt: nextReadThrough }
-      : null;
-
-    if (!ownerSessionId) {
-      historyFetchedAtRef.current = null;
-      return;
-    }
-    const fetchedAt = opts.fetchedAt ?? Date.now();
-    historyFetchedAtRef.current = fetchedAt;
-    if (opts.persistSnapshot === false) return;
-    setCachedChatSnapshot(queryClient, {
-      sessionId: ownerSessionId,
-      entries: nextEntries,
-      firstItemIndex: nextFirstItemIndex,
-      fetchedAt,
-      agents: agentRecordsRef.current,
-    });
-  }, [queryClient]);
-
   const refreshMcpObservation = useCallback(() => {
     if (!sessionId) return;
     // Runtime events are refresh hints, not a second writer of connection/readiness state.
@@ -1160,6 +828,11 @@ export default function ChatView({
     if (isStreaming) setRetryRunError(null);
   }, [isStreaming]);
   const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
+  const {
+    scrollContainerRef, stickToBottomRef, anchoredMessageKeyRef, messageElementRefs, programmaticScrollRef,
+    showJumpToLatest, setShowJumpToLatest, cancelFollowScroll, clearProgrammaticScroll,
+    settleProgrammaticScroll, getMessageTopWithinScroller, scrollToLatest, handleUserScrollIntent,
+  } = useChatScroll(isStreaming || creating || pendingInteractionCount > 0);
   // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
   // disappears from the overlay the moment its persisted entry is present in the loaded window.
   const committedSourceEventIds = useMemo(() => getCommittedSourceEventIds(entries), [entries]);
@@ -1369,126 +1042,6 @@ export default function ChatView({
     });
   }, [historicalMode, isStreaming, queryClient, refreshSessionContext, sessionId]);
 
-  const cancelFollowScroll = useCallback(() => {
-    if (followScrollFrameRef.current != null) {
-      window.cancelAnimationFrame(followScrollFrameRef.current);
-      followScrollFrameRef.current = null;
-    }
-  }, []);
-
-  const clearProgrammaticScroll = useCallback(() => {
-    if (resetProgrammaticScrollFrameRef.current != null) {
-      window.cancelAnimationFrame(resetProgrammaticScrollFrameRef.current);
-      resetProgrammaticScrollFrameRef.current = null;
-    }
-    programmaticScrollRef.current = false;
-  }, []);
-
-  const settleProgrammaticScroll = useCallback(() => {
-    if (resetProgrammaticScrollFrameRef.current != null) {
-      window.cancelAnimationFrame(resetProgrammaticScrollFrameRef.current);
-    }
-    resetProgrammaticScrollFrameRef.current = window.requestAnimationFrame(() => {
-      resetProgrammaticScrollFrameRef.current = null;
-      programmaticScrollRef.current = false;
-    });
-  }, []);
-
-  const getMessageTopWithinScroller = useCallback((messageKey: string): number | null => {
-    const scroller = scrollContainerRef.current;
-    const messageEl = messageElementRefs.current.get(messageKey);
-    if (!scroller || !messageEl) return null;
-    const scrollerRect = scroller.getBoundingClientRect();
-    const messageRect = messageEl.getBoundingClientRect();
-    return messageRect.top - scrollerRect.top + getSafeScrollTop(scroller);
-  }, []);
-
-  const scrollToLatest = useCallback((opts: { immediate?: boolean; force?: boolean; anchorKey?: string | null } = {}) => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    if (opts.force) {
-      stickToBottomRef.current = true;
-      anchoredMessageKeyRef.current = null;
-      setShowJumpToLatest(false);
-    } else if (!stickToBottomRef.current) {
-      return;
-    }
-
-    cancelFollowScroll();
-    const reducedMotion = prefersReducedMotion();
-    const immediate = opts.immediate || reducedMotion;
-
-    const step = () => {
-      const anchorKey = opts.anchorKey ?? null;
-      const currentScrollTop = getSafeScrollTop(el);
-      const bottomTarget = getMaxScrollTop(el);
-      const anchorTop = anchorKey ? getMessageTopWithinScroller(anchorKey) : null;
-      const hasAnchorTarget = anchorTop != null && Number.isFinite(anchorTop);
-      const canAnchorToMessage = hasAnchorTarget
-        && bottomTarget > 0
-        && bottomTarget >= anchorTop - LATEST_MESSAGE_TOP_THRESHOLD_PX;
-      if (!opts.force && anchorKey && canAnchorToMessage && anchorTop <= currentScrollTop + LATEST_MESSAGE_TOP_THRESHOLD_PX) {
-        programmaticScrollRef.current = true;
-        if (Math.abs(anchorTop - currentScrollTop) <= LATEST_MESSAGE_TOP_THRESHOLD_PX) {
-          el.scrollTop = Math.max(0, Math.min(bottomTarget, anchorTop));
-        }
-        followScrollFrameRef.current = null;
-        stickToBottomRef.current = true;
-        anchoredMessageKeyRef.current = anchorKey;
-        setShowJumpToLatest(false);
-        settleProgrammaticScroll();
-        return;
-      }
-
-      const target = hasAnchorTarget ? Math.min(bottomTarget, anchorTop) : bottomTarget;
-      const delta = target - currentScrollTop;
-      programmaticScrollRef.current = true;
-
-      if (immediate || Math.abs(delta) <= FOLLOW_SCROLL_SETTLE_PX) {
-        el.scrollTop = target;
-        followScrollFrameRef.current = null;
-        stickToBottomRef.current = true;
-        anchoredMessageKeyRef.current = anchorKey && canAnchorToMessage && Math.abs(target - anchorTop) <= LATEST_MESSAGE_TOP_THRESHOLD_PX
-          ? anchorKey
-          : null;
-        setShowJumpToLatest(false);
-        settleProgrammaticScroll();
-        return;
-      }
-
-      const nextScrollTop = currentScrollTop + delta * FOLLOW_SCROLL_EASE;
-      if (anchorKey && canAnchorToMessage && Math.abs(target - anchorTop) <= LATEST_MESSAGE_TOP_THRESHOLD_PX && nextScrollTop >= anchorTop - LATEST_MESSAGE_TOP_THRESHOLD_PX) {
-        el.scrollTop = Math.max(0, Math.min(bottomTarget, anchorTop));
-        followScrollFrameRef.current = null;
-        stickToBottomRef.current = true;
-        anchoredMessageKeyRef.current = anchorKey;
-        setShowJumpToLatest(false);
-        settleProgrammaticScroll();
-        return;
-      }
-
-      anchoredMessageKeyRef.current = null;
-      el.scrollTop = nextScrollTop;
-      followScrollFrameRef.current = window.requestAnimationFrame(step);
-    };
-
-    if (immediate) {
-      step();
-    } else {
-      followScrollFrameRef.current = window.requestAnimationFrame(step);
-    }
-  }, [cancelFollowScroll, getMessageTopWithinScroller, settleProgrammaticScroll]);
-
-  const handleUserScrollIntent = useCallback(() => {
-    cancelFollowScroll();
-    clearProgrammaticScroll();
-    stickToBottomRef.current = false;
-    anchoredMessageKeyRef.current = null;
-    if (isStreaming || creating || pendingInteractionCount > 0) {
-      setShowJumpToLatest(true);
-    }
-  }, [cancelFollowScroll, clearProgrammaticScroll, creating, isStreaming, pendingInteractionCount]);
-
   const handleToggleActivity = useCallback((key: string, expanded: boolean) => {
     setActivityExpansion((current) => ({ ...current, [key]: expanded }));
     // Opening earlier work is a decision to read it, so new output must not pull the view away.
@@ -1514,12 +1067,6 @@ export default function ChatView({
       (reason: unknown) => setMessageLinkCopyError(reason instanceof Error ? reason.message : String(reason)),
     );
   }, [location.pathname, targetSourceEventId]);
-
-  useEffect(() => () => {
-    cancelFollowScroll();
-    clearProgrammaticScroll();
-  }, [cancelFollowScroll, clearProgrammaticScroll]);
-
 
   // Load history when the session, or the saved message being viewed, changes.
   const prevSessionRef = useRef<string | null | undefined>(undefined);
@@ -1840,10 +1387,6 @@ export default function ChatView({
     if (!isStreaming) historyRef.current.refresh({ silent: true, reach: "tail" });
   }, [backgroundAgentCounts, historicalMode, isStreaming, sessionId]);
 
-  useEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
-
   const [showHistorySync, setShowHistorySync] = useState(false);
   useEffect(() => {
     if (!refreshingHistory) {
@@ -1853,13 +1396,6 @@ export default function ChatView({
     const timer = setTimeout(() => setShowHistorySync(true), HISTORY_SYNC_INDICATOR_DELAY_MS);
     return () => clearTimeout(timer);
   }, [refreshingHistory]);
-
-  useLayoutEffect(() => {
-    const pending = pendingRenderedReadThroughRef.current;
-    if (!pending || pending.sessionId !== sessionId) return;
-    pendingRenderedReadThroughRef.current = null;
-    onRenderedReadThrough?.(pending.sessionId, pending.readThroughActivityAt);
-  }, [entries, onRenderedReadThrough, sessionId]);
 
   // Follow the bottom unless the reader is elsewhere; `ViewportKeeper` holds their place when
   // they are. useLayoutEffect runs before paint, preventing flash.

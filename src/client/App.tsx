@@ -84,7 +84,8 @@ import { useTasksQuery } from "./hooks/queries/useTasks";
 import { resolvePromptProfile, type PromptProfileId, type PromptProfileSetting } from "../shared/prompt-profiles.js";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
-import { mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
+import { addOptimisticSessionToCache, mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
+import { getVoiceSessionIntent, projectSessionEvent, projectVoiceSessionActivity } from "./hooks/queries/session-events";
 import { useCachedTaskArchivedSessions } from "./hooks/queries/useTaskArchivedSessions";
 import PaneResizeHandle, { usePaneWidth, useViewportWidth } from "./components/shared/PaneResizeHandle";
 import { useExternalSessionUseQuery } from "./hooks/queries/useExternalSessionUse";
@@ -134,10 +135,8 @@ import { consumeTaskCompletionClaim, createTaskCompletionFeedback, createTaskCom
 import { DS, cx } from "./design/tokens";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
-import { archivedEventSessionIds } from "../shared/session-archive-event.js";
 
 const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
-const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
 
 interface StartPromptSessionOptions {
   navigateOnError?: boolean;
@@ -534,76 +533,17 @@ function AppShell() {
   }, []);
 
   useStatusStream(useCallback((event) => {
-    const sessionId = "sessionId" in event ? event.sessionId : undefined;
-    const isHelmSession = !!sessionId && helmSessionIdsRef.current.has(sessionId);
+    if (projectSessionEvent(queryClient, event, {
+      queries: eventQueries,
+      isHelmSession: (sessionId) => helmSessionIdsRef.current.has(sessionId),
+      onBusy: bumpSessionBusySignal,
+      onIdle: clearSessionBusyHint,
+      onArchived: trackArchiveTransitions,
+      onHistoryTruncated: bumpSessionHistorySignal,
+    })) return;
     const activeSessionsKey = queryKeys.sessions({ includeArchived: false });
-    const patch = (changes: Partial<Session>) => { if (sessionId) patchSessionInCache(sessionId, changes); };
     const refetch = (...keys: QueryKey[]) => { for (const queryKey of keys) void eventQueries.invalidateQueries({ queryKey }); };
     switch (event.type) {
-      case "session:busy":
-        patch({ runState: "busy" });
-        bumpSessionBusySignal(sessionId);
-        refetch(queryKeys.dashboard);
-        break;
-      case "session:stalled":
-        patch({ runState: "stalled" });
-        refetch(queryKeys.dashboard);
-        break;
-      case "session:mode":
-        patch({ agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
-        break;
-      case "session:idle":
-        clearSessionBusyHint(sessionId);
-        patch({ runState: "idle", intentText: null });
-        if (isHelmSession) refetch(helmStateQueryKey);
-        // Reload to pick up updated visible activity timestamps so unread dots appear immediately
-        refetch(activeSessionsKey, queryKeys.dashboard);
-        break;
-      case "session:intent":
-        patch({ intentText: event.intent ?? null });
-        break;
-      case "session:title":
-        if (event.title) {
-          patch({ summary: event.title });
-          if (isHelmSession) refetch(helmStateQueryKey);
-        }
-        refetch(queryKeys.dashboard);
-        break;
-      case "session:archived": {
-        // A bulk change arrives as one event naming every session, so the lists are fetched once.
-        const archivedIds = archivedEventSessionIds(event);
-        if (archivedIds.length > 0 && typeof event.archived === "boolean") {
-          trackArchiveTransitions(archivedIds, event.archived);
-          patchSessionsInCache(archivedIds, { archived: event.archived });
-        }
-        // Tasks list only their active sessions, so archiving changes their lists and counts.
-        refetch(["sessions"], queryKeys.taskArchivedSessionsRoot, queryKeys.tasks);
-        break;
-      }
-      case "session:agents":
-        if (event.backgroundAgents) patch({ backgroundAgents: event.backgroundAgents });
-        break;
-      case "sessions:changed":
-        // One chat's ordinary activity leaves the archived lists alone. An event that names no chat
-        // is a bulk change (a deleted task's chats, cleanup) that can also add to or remove from them.
-        refetch(sessionId ? activeSessionsKey : ["sessions"], queryKeys.dashboard);
-        break;
-      case "session:user-input": {
-        const pendingUserInputCount = event.pendingUserInputCount ?? 0;
-        patch({ pendingUserInputCount, needsUserInput: event.needsUserInput ?? pendingUserInputCount > 0 });
-        refetch(queryKeys.dashboard);
-        break;
-      }
-      case "session:defer-summary":
-        if (sessionId && event.deferSummary) {
-          patch({ deferSummary: event.deferSummary });
-          // Active defers count as automation in task states.
-          refetch(queryKeys.sessionDefers(sessionId), TASK_OVERVIEW_KEY);
-        }
-        break;
-      case "session:history-truncated":
-        bumpSessionHistorySignal(sessionId);
-        break;
       case "server:restart-changed":
         void refetchRestartStatus();
         break;
@@ -613,13 +553,6 @@ function AppShell() {
           type: "backend:status",
           agentBackend: event.agentBackend,
         }));
-        break;
-      case "schedule:triggered":
-        // Schedule started work — refresh session list, task data, and schedule run history
-        refetch(activeSessionsKey, queryKeys.tasks);
-        if (event.taskId) refetch(queryKeys.task(event.taskId));
-        if (event.scheduleId) refetch(queryKeys.scheduleSessions(event.scheduleId));
-        bumpSessionBusySignal(sessionId);
         break;
       case "schedule:changed":
         // Enabled schedules keep a task out of Gone quiet.
@@ -645,7 +578,7 @@ function AppShell() {
         refetch(activeSessionsKey, queryKeys.dashboard, queryKeys.openChecklistItems);
         break;
     }
-  }, [bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, patchSessionInCache, patchSessionsInCache, trackArchiveTransitions, eventQueries, refetchRestartStatus, taskChangeInvalidator]));
+  }, [queryClient, bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, trackArchiveTransitions, eventQueries, refetchRestartStatus, taskChangeInvalidator]));
   const restarted = restartNotice?.kind === "restarted";
   useEffect(() => {
     if (!restarted) return;
@@ -798,33 +731,7 @@ function AppShell() {
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string, overrides: Partial<Session> = {}) => {
-    const now = new Date();
-    const timestamp = now.toISOString();
-    queryClient.setQueryData<Session[]>(queryKeys.sessions({ includeArchived: false }), (prev) => {
-      if (!prev || prev.some((s) => s.sessionId === sessionId)) return prev;
-      const baseSession: Session = {
-        sessionId,
-        summary: "New session",
-        modifiedTime: timestamp,
-        lastVisibleActivityAt: timestamp,
-        runState: "idle",
-        eventLogSizeBytes: 0,
-        deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
-        isOptimistic: true,
-        optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
-      };
-      const optimisticSession: Session = {
-        ...baseSession,
-        ...overrides,
-        sessionId,
-        deferSummary: overrides.deferSummary ?? baseSession.deferSummary,
-        isOptimistic: true,
-        optimisticUntil: overrides.optimisticUntil ?? baseSession.optimisticUntil,
-      };
-      return [{
-        ...optimisticSession,
-      }, ...prev];
-    });
+    addOptimisticSessionToCache(queryClient, sessionId, overrides);
   }, [queryClient]);
 
   const linkOptimisticTaskSession = useCallback((taskId: string, sessionId: string) => {
@@ -834,42 +741,20 @@ function AppShell() {
     updateTaskInQueryCaches(queryClient, taskId, addSessionToTask);
   }, [queryClient]);
 
-  const patchVoiceSessionActivityInCache = useCallback((activity: VoiceSessionActivity) => {
-    const intent = getVoiceSessionIntent(activity.status);
-    queryClient.setQueriesData<Session[]>({ queryKey: ["sessions"] }, (prev) => {
-      if (!prev) return prev;
-      let changed = false;
-      const next = prev.map((session) => {
-        if (session.sessionId !== activity.sessionId) return session;
-        changed = true;
-        const existingIntent = session.intentText?.trim() ?? "";
-        const preserveExistingIntent = isSessionActive(session)
-          && existingIntent.length > 0
-          && !isVoiceSessionIntent(existingIntent);
-        return {
-          ...session,
-          runState: session.runState === "stalled" ? "stalled" as const : "busy" as const,
-          intentText: preserveExistingIntent ? session.intentText : intent,
-        };
-      });
-      return changed ? next : prev;
-    });
-  }, [queryClient]);
-
   const handleVoiceSessionActivity = useCallback((activity: VoiceSessionActivity) => {
     const intent = getVoiceSessionIntent(activity.status);
     addOptimisticSession(activity.sessionId, {
       runState: "busy",
       intentText: intent,
     });
-    patchVoiceSessionActivityInCache(activity);
+    projectVoiceSessionActivity(queryClient, activity);
     if (activity.statusChanged !== false) {
       bumpSessionBusySignal(activity.sessionId);
     }
     if (activity.taskId) {
       linkOptimisticTaskSession(activity.taskId, activity.sessionId);
     }
-  }, [addOptimisticSession, bumpSessionBusySignal, linkOptimisticTaskSession, patchVoiceSessionActivityInCache]);
+  }, [addOptimisticSession, bumpSessionBusySignal, linkOptimisticTaskSession, queryClient]);
 
   const handleVoiceSessionSettled = useCallback((settled: VoiceSessionSettled) => {
     if (settled.status !== "done") {
@@ -2366,18 +2251,6 @@ function AppShell() {
     </BridgeReferenceContext.Provider>
     </>
   );
-}
-
-function getVoiceSessionIntent(status: VoiceSessionActivity["status"]): string {
-  if (status === "uploading") return "Uploading voice input";
-  if (status === "sending") return "Sending voice message";
-  return "Processing voice input";
-}
-
-function isVoiceSessionIntent(intent: string): boolean {
-  return intent === "Uploading voice input"
-    || intent === "Processing voice input"
-    || intent === "Sending voice message";
 }
 
 // ── Mobile Task List View ────────────────────────────────────────
