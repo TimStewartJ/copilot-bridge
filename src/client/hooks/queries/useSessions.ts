@@ -11,6 +11,7 @@ import {
 import { fetchSessions, getSessionRunState, type Session, type TaskArchivedSessionsResponse } from "../../api";
 import { queryKeys } from "../../queryClient";
 
+const OPTIMISTIC_SESSION_TTL_MS = 2 * 60_000;
 const inFlightSessionPatches = new WeakMap<Query, {
   promise: Promise<unknown> | undefined;
   patches: Map<string, Partial<Session>>;
@@ -100,18 +101,65 @@ function applySessionQueryPatches(
   );
 }
 
+export function addOptimisticSessionToCache(
+  queryClient: QueryClient,
+  sessionId: string,
+  overrides: Partial<Session> = {},
+): void {
+  const now = new Date();
+  const timestamp = now.toISOString();
+  queryClient.setQueryData<Session[]>(queryKeys.sessions({ includeArchived: false }), (previous) => {
+    if (!previous || previous.some((session) => session.sessionId === sessionId)) return previous;
+    const base: Session = {
+      sessionId, summary: "New session", modifiedTime: timestamp, lastVisibleActivityAt: timestamp,
+      runState: "idle", eventLogSizeBytes: 0, deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      isOptimistic: true, optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
+    };
+    return [{
+      ...base, ...overrides, sessionId,
+      deferSummary: overrides.deferSummary ?? base.deferSummary,
+      isOptimistic: true,
+      optimisticUntil: overrides.optimisticUntil ?? base.optimisticUntil,
+    }, ...previous];
+  });
+}
+
+function resolveSessionPatches(
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  sessionIds: ReadonlySet<string>,
+  update: (session: Session) => Partial<Session>,
+): Map<string, Partial<Session>> {
+  const sessions = queryKey[0] === queryKeys.taskArchivedSessionsRoot[0]
+    ? queryClient.getQueryData<InfiniteData<TaskArchivedSessionsResponse>>(queryKey)?.pages.flatMap((page) => page.sessions)
+    : queryClient.getQueryData<Session[]>(queryKey);
+  const patches = new Map<string, Partial<Session>>();
+  for (const session of sessions ?? []) {
+    if (sessionIds.has(session.sessionId)) patches.set(session.sessionId, update(session));
+  }
+  return patches;
+}
+
 export function patchSessionQueryData(
   queryClient: QueryClient,
   sessionIds: readonly string[],
-  patch: Partial<Session>,
+  patch: Partial<Session> | ((session: Session) => Partial<Session>),
 ): void {
   if (sessionIds.length === 0) return;
-  const patches = new Map(sessionIds.map((sessionId) => [sessionId, patch]));
+  const targetIds = new Set(sessionIds);
+  const commonPatches = new Map<string, Partial<Session>>();
+  if (typeof patch !== "function") {
+    for (const id of sessionIds) commonPatches.set(id, patch);
+  }
   const cache = queryClient.getQueryCache();
   for (const query of [
     ...cache.findAll({ queryKey: ["sessions"] }),
     ...cache.findAll({ queryKey: queryKeys.taskArchivedSessionsRoot }),
   ]) {
+    const patches = typeof patch === "function"
+      ? resolveSessionPatches(queryClient, query.queryKey, targetIds, patch)
+      : commonPatches;
+    if (patches.size === 0) continue;
     let pending = inFlightSessionPatches.get(query);
     if (query.state.fetchStatus !== "idle" && !pending) {
       // Keep live updates that arrive during a fetch, including a multi-page archive refetch,
@@ -138,8 +186,8 @@ export function patchSessionQueryData(
       pending.promise = query.promise;
       pending.patches.clear();
     }
-    for (const sessionId of sessionIds) {
-      pending?.patches.set(sessionId, { ...pending.patches.get(sessionId), ...patch });
+    for (const [sessionId, changes] of patches) {
+      pending?.patches.set(sessionId, { ...pending.patches.get(sessionId), ...changes });
     }
     applySessionQueryPatches(queryClient, query.queryKey, patches);
   }

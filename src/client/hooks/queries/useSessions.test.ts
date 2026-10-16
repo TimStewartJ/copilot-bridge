@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { QueryClient, isCancelledError, type InfiniteData } from "@tanstack/react-query";
 import type { Session, TaskArchivedSessionsResponse } from "../../api";
 import { queryKeys } from "../../queryClient";
 import {
   mergeActiveAndArchivedSessions,
   mergeOptimisticSessions,
+  addOptimisticSessionToCache,
   patchSessionQueryData,
   shareSessionsStructurally,
 } from "./useSessions";
@@ -28,6 +29,38 @@ function createDeferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+describe("optimistic session insertion", () => {
+  it("keeps the existing creation defaults, expiry and caller overrides in the query layer", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-16T17:00:00.000Z"));
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    try {
+      queryClient.setQueryData<Session[]>(key, []);
+      addOptimisticSessionToCache(queryClient, "new", { runState: "busy", summary: "Draft" });
+      const cached = queryClient.getQueryData<Session[]>(key);
+      expect(cached?.[0]).toMatchObject({
+        sessionId: "new", runState: "busy", summary: "Draft",
+        isOptimistic: true, optimisticUntil: Date.now() + 2 * 60_000,
+        lastVisibleActivityAt: "2026-10-16T17:00:00.000Z",
+        deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      });
+      addOptimisticSessionToCache(queryClient, "new", { summary: "Do not replace" });
+      expect(queryClient.getQueryData(key)).toBe(cached);
+    } finally {
+      queryClient.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not create a list before its initial server read", () => {
+    const queryClient = new QueryClient();
+    addOptimisticSessionToCache(queryClient, "new");
+    expect(queryClient.getQueryData(queryKeys.sessions({ includeArchived: false }))).toBeUndefined();
+    queryClient.clear();
+  });
+});
 
 describe("shareSessionsStructurally", () => {
   it("returns the cached array when a poll brings back identical data", () => {
@@ -149,6 +182,36 @@ describe("mergeActiveAndArchivedSessions", () => {
 });
 
 describe("patchSessionQueryData", () => {
+  it("resolves functional updates per cache and preserves them across a stale fetch", async () => {
+    const queryClient = new QueryClient();
+    const active = queryKeys.sessions({ includeArchived: false });
+    const all = queryKeys.sessions({ includeArchived: true });
+    const archived = queryKeys.taskArchivedSessions("task");
+    queryClient.setQueryData(active, [createSession({ summary: "Active" })]);
+    queryClient.setQueryData(all, [createSession({ summary: "All" })]);
+    queryClient.setQueryData<InfiniteData<TaskArchivedSessionsResponse>>(archived, {
+      pages: [{ sessions: [createSession({ summary: "Page" })], offset: 0, total: 1 }],
+      pageParams: [0],
+    });
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({ queryKey: active, queryFn: () => response.promise });
+    const update = vi.fn((session: Session): Partial<Session> => ({ intentText: session.summary, runState: "busy" }));
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], update);
+      response.resolve([createSession({ summary: "Fresh", runState: "idle" })]);
+      await pending;
+      expect(queryClient.getQueryData<Session[]>(active)?.[0]).toMatchObject({
+        summary: "Fresh", intentText: "Active", runState: "busy",
+      });
+      expect(queryClient.getQueryData<Session[]>(all)?.[0].intentText).toBe("All");
+      expect(queryClient.getQueryData<InfiniteData<TaskArchivedSessionsResponse>>(archived)?.pages[0].sessions[0].intentText)
+        .toBe("Page");
+      expect(update).toHaveBeenCalledTimes(3);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
   it.each(["busy", "stalled", "idle"] as const)(
     "keeps a newer %s event when an older list response arrives",
     async (runState) => {

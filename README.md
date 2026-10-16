@@ -73,6 +73,8 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 
 ## Architecture
 
+Long-lived conversation, speech, usage and shutdown services are composed in `src/server/api-services.ts` before routes are registered, using the same startup path for production, isolated previews and test apps. The session manager owns runtime handles and cleanup; `session-capacity.ts` owns admission accounting. Client session events are projected into the query cache separately from transcript streaming, while chat history windows, viewport anchoring and live-tail following have focused owners.
+
 ```
 ┌────────────────────────────────────────────────────┐
 │ Launcher (src/launcher.ts)                         │
@@ -874,7 +876,10 @@ src/
 ├── server/
 │   ├── index.ts                   # Express bootstrap
 │   ├── api-router.ts              # REST API surface
+│   ├── api-services.ts            # Shared production/preview service composition
+│   ├── catalog-routes.ts          # Task groups, tags, MCP and skill registries
 │   ├── session-manager.ts         # Copilot SDK wrapper + tool registry
+│   ├── session-capacity.ts        # Context/MCP reservations and cache pressure
 │   ├── session-list.ts            # The session list: build, cache, invalidation, per-response overlay
 │   ├── db.ts                      # SQLite schema/bootstrap
 │   ├── task-store.ts              # Tasks, links, ordering

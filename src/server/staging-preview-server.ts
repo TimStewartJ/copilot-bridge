@@ -58,6 +58,7 @@ async function main(): Promise<void> {
   configureStagingPreviewSourceEnvironment();
   const [
     { createApiRouter },
+    { createApiServices },
     {
       createAppContext,
       initializeSchedulerAndDeferredRunners,
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
     { prepareNeutralWorkspaceDir },
   ] = await Promise.all([
     import("./api-router.js"),
+    import("./api-services.js"),
     import("./app-context-factory.js"),
     import("./app-context-shutdown.js"),
     import("./runtime-paths.js"),
@@ -152,7 +154,7 @@ async function main(): Promise<void> {
   app.get("/__health", (_req, res) => {
     res.json({ ok: true, apiBasePath });
   });
-  app.use("/api", createApiCacheControlMiddleware(), createApiRouter(ctx));
+  app.use("/api", createApiCacheControlMiddleware(), createApiRouter(ctx, createApiServices(ctx)));
 
   server = createServer(app);
   server.on("upgrade", (req, socket, head) => {
