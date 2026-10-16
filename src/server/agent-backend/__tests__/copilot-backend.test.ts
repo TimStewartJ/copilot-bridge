@@ -149,6 +149,47 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(resumed.sessionId).toBe("fake-session-id");
   });
 
+  it("reloads discovered agents only when resuming a discovery-enabled session", async () => {
+    const reload = vi.fn(async () => ({ agents: [] }));
+    const client = createFakeClient(createFakeSession({ agent: { reload } }));
+    const backend = new CopilotBackend(client as any);
+    const config = {
+      enableConfigDiscovery: true,
+      enableFileHooks: false,
+      customAgents: [{ name: "reviewer", prompt: "Bridge reviewer.", tools: ["view"] }],
+    };
+
+    await backend.createSession(config);
+    expect(reload).not.toHaveBeenCalled();
+    await backend.resumeSession("existing", config);
+    expect(reload).toHaveBeenCalledOnce();
+    expect(client.resumeSession).toHaveBeenCalledWith("existing", { ...config, toolSearch: { enabled: false } });
+    await backend.resumeSession("helper", { enableConfigDiscovery: false });
+    await backend.resumeSession("legacy", {});
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("disconnects a resumed session and surfaces a failed discovered-agent reload", async () => {
+    const error = new Error("Agent discovery failed");
+    const reload = vi.fn(async () => { throw error; });
+    const session = createFakeSession({ agent: { reload } });
+    const backend = new CopilotBackend(createFakeClient(session) as any);
+
+    await expect(backend.resumeSession("existing", { enableConfigDiscovery: true })).rejects.toBe(error);
+    expect(session.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("retains both errors when a failed agent reload cannot disconnect its session", async () => {
+    const error = new Error("Agent discovery failed");
+    const disconnectError = new Error("Disconnect failed");
+    const session = createFakeSession({ agent: { reload: async () => { throw error; } } });
+    session.disconnect.mockRejectedValueOnce(disconnectError);
+    const backend = new CopilotBackend(createFakeClient(session) as any);
+
+    await expect(backend.resumeSession("existing", { enableConfigDiscovery: true }))
+      .rejects.toMatchObject({ errors: [error, disconnectError] });
+  });
+
   it.each(["create", "resume"] as const)("applies Bridge sub-agent settings after %s without forwarding them to the SDK", async (operation) => {
     const calls: string[] = [];
     const updateSubagentSettings = vi.fn(async () => { calls.push("update"); return {}; });
