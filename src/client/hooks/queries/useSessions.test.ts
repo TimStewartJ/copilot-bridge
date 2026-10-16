@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { QueryClient } from "@tanstack/react-query";
-import type { Session } from "../../api";
+import { QueryClient, isCancelledError, type InfiniteData } from "@tanstack/react-query";
+import type { Session, TaskArchivedSessionsResponse } from "../../api";
 import { queryKeys } from "../../queryClient";
 import {
   mergeActiveAndArchivedSessions,
@@ -17,6 +17,16 @@ function createSession(overrides: Partial<Session> = {}): Session {
     deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("shareSessionsStructurally", () => {
@@ -139,6 +149,205 @@ describe("mergeActiveAndArchivedSessions", () => {
 });
 
 describe("patchSessionQueryData", () => {
+  it.each(["busy", "stalled", "idle"] as const)(
+    "keeps a newer %s event when an older list response arrives",
+    async (runState) => {
+      const queryClient = new QueryClient();
+      const key = queryKeys.sessions({ includeArchived: false });
+      const oldState = runState === "idle" ? "busy" : "idle";
+      queryClient.setQueryData(key, [createSession({ runState: oldState })]);
+      const response = createDeferred<Session[]>();
+      const pending = queryClient.fetchQuery({ queryKey: key, queryFn: () => response.promise });
+      try {
+        patchSessionQueryData(queryClient, ["session-1"], { runState });
+        patchSessionQueryData(queryClient, ["session-1"], { intentText: "Latest intent" });
+        response.resolve([
+          createSession({ runState: oldState, summary: "Fresh title" }),
+          createSession({ sessionId: "other", runState: "busy" }),
+        ]);
+        await pending;
+
+        expect(queryClient.getQueryData(key)).toMatchObject([
+          { runState, intentText: "Latest intent", summary: "Fresh title" },
+          { sessionId: "other", runState: "busy" },
+        ]);
+        expect(queryClient.getQueryCache().hasListeners()).toBe(false);
+
+        await queryClient.fetchQuery({
+          queryKey: key,
+          queryFn: async () => [createSession({ runState: oldState })],
+        });
+        expect(queryClient.getQueryData<Session[]>(key)?.[0].runState).toBe(oldState);
+      } finally {
+        queryClient.clear();
+      }
+    },
+  );
+
+  it("keeps the latest event even when the status changes back during a fetch", async () => {
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    queryClient.setQueryData(key, [createSession({ runState: "idle" })]);
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({ queryKey: key, queryFn: () => response.promise });
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "busy", intentText: "Working" });
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "idle", intentText: null });
+      response.resolve([createSession({ runState: "busy", intentText: "Old intent" })]);
+      await pending;
+      expect(queryClient.getQueryData(key)).toMatchObject([{ runState: "idle", intentText: null }]);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
+  it.each([false, true])("keeps patches scoped to the fetch they overlapped (new event: %s)", async (newEvent) => {
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    queryClient.setQueryData(key, [createSession({ runState: "idle" })]);
+    const oldResponse = createDeferred<Session[]>();
+    const newResponse = createDeferred<Session[]>();
+    let reads = 0;
+    const first = queryClient.fetchQuery({
+      queryKey: key,
+      queryFn: () => reads++ === 0 ? oldResponse.promise : newResponse.promise,
+    });
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "busy", intentText: "Old intent" });
+      const replacement = queryClient.refetchQueries({ queryKey: key, exact: true });
+      if (newEvent) patchSessionQueryData(queryClient, ["session-1"], { runState: "stalled" });
+      newResponse.resolve([createSession({ runState: "idle", intentText: "Fresh intent" })]);
+      oldResponse.resolve([createSession({ runState: "idle", intentText: "Old response" })]);
+      await Promise.all([first, replacement]);
+      expect(queryClient.getQueryData(key)).toMatchObject([{
+        runState: newEvent ? "stalled" : "idle",
+        intentText: "Fresh intent",
+      }]);
+      expect(queryClient.getQueryCache().hasListeners()).toBe(false);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
+  it("keeps live status on an initial load before the session is cached", async () => {
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({ queryKey: key, queryFn: () => response.promise });
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+      response.resolve([createSession({ runState: "idle" })]);
+      await pending;
+      expect(queryClient.getQueryData(key)).toMatchObject([{ runState: "busy" }]);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
+  it("protects both lists without changing a newer archived-list response", async () => {
+    const queryClient = new QueryClient();
+    const activeKey = queryKeys.sessions({ includeArchived: false });
+    const archivedKey = queryKeys.sessions({ includeArchived: true });
+    queryClient.setQueryData(activeKey, [createSession({ runState: "idle" })]);
+    queryClient.setQueryData(archivedKey, [createSession({ runState: "idle" })]);
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({ queryKey: activeKey, queryFn: () => response.promise });
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+      await queryClient.fetchQuery({
+        queryKey: archivedKey,
+        queryFn: async () => [createSession({ runState: "idle" })],
+      });
+      response.resolve([createSession({ runState: "idle" })]);
+      await pending;
+      expect(queryClient.getQueryData(activeKey)).toMatchObject([{ runState: "busy" }]);
+      expect(queryClient.getQueryData(archivedKey)).toMatchObject([{ runState: "idle" }]);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
+  it("protects earlier archive pages while later pages are being refetched", async () => {
+    const queryClient = new QueryClient();
+    const key = queryKeys.taskArchivedSessions("task-1");
+    const page = (offset: number, session: Session): TaskArchivedSessionsResponse => ({
+      sessions: [session], offset, total: 2,
+    });
+    queryClient.setQueryData<InfiniteData<TaskArchivedSessionsResponse>>(key, {
+      pages: [
+        page(0, createSession({ runState: "idle" })),
+        page(1, createSession({ sessionId: "other", runState: "idle" })),
+      ],
+      pageParams: [0, 1],
+    });
+    const lastPage = createDeferred<TaskArchivedSessionsResponse>();
+    const readingLastPage = createDeferred<void>();
+    const pending = queryClient.fetchInfiniteQuery({
+      queryKey: key,
+      initialPageParam: 0,
+      queryFn: async ({ pageParam }) => {
+        if (pageParam === 0) return page(0, createSession({ runState: "idle", summary: "Fresh title" }));
+        readingLastPage.resolve();
+        return lastPage.promise;
+      },
+      getNextPageParam: (last: TaskArchivedSessionsResponse) => last.offset === 0 ? 1 : undefined,
+    });
+    try {
+      await readingLastPage.promise;
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+      lastPage.resolve(page(1, createSession({ sessionId: "other", summary: "Other fresh title" })));
+      await pending;
+      expect(queryClient.getQueryData<InfiniteData<TaskArchivedSessionsResponse>>(key)).toMatchObject({
+        pages: [
+          { sessions: [{ runState: "busy", summary: "Fresh title" }], total: 2, offset: 0 },
+          { sessions: [{ sessionId: "other", summary: "Other fresh title" }], total: 2, offset: 1 },
+        ],
+        pageParams: [0, 1],
+      });
+      expect(queryClient.getQueryCache().hasListeners()).toBe(false);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
+  it("cleans up a failed fetch without hiding its error or pinning later responses", async () => {
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    queryClient.setQueryData(key, [createSession({ runState: "idle" })]);
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({
+      queryKey: key, queryFn: () => response.promise, retry: false,
+    });
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+      response.reject(new Error("List unavailable"));
+      await expect(pending).rejects.toThrow("List unavailable");
+      expect(queryClient.getQueryState(key)?.status).toBe("error");
+      expect(queryClient.getQueryData(key)).toMatchObject([{ runState: "busy" }]);
+      expect(queryClient.getQueryCache().hasListeners()).toBe(false);
+      await queryClient.fetchQuery({
+        queryKey: key, queryFn: async () => [createSession({ runState: "idle" })],
+      });
+      expect(queryClient.getQueryData(key)).toMatchObject([{ runState: "idle" }]);
+    } finally {
+      queryClient.clear();
+    }
+  });
+
+  it("cleans up when an in-flight query is removed without recreating it", async () => {
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({ queryKey: key, queryFn: () => response.promise });
+    patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+    queryClient.removeQueries({ queryKey: key, exact: true });
+    response.resolve([createSession({ runState: "idle" })]);
+    expect(await pending.then(() => false, isCancelledError)).toBe(true);
+    expect(queryClient.getQueryData(key)).toBeUndefined();
+    expect(queryClient.getQueryCache().hasListeners()).toBe(false);
+    queryClient.clear();
+  });
+
   it("updates defer summaries across session caches including cleared summaries", () => {
     const queryClient = new QueryClient();
     const activeQueryKey = queryKeys.sessions({ includeArchived: false });

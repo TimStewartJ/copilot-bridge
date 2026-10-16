@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   AgentInstruction,
   Attachment,
@@ -30,6 +31,7 @@ import {
   keepToolsAtMainTurnBoundary,
 } from "../shared/live-turn-retention.js";
 import { haptic } from "./lib/haptics";
+import { queryKeys } from "./queryClient";
 
 export type { LiveReasoningBlock };
 
@@ -119,6 +121,13 @@ export interface LivePendingUserMessage {
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
 export type PendingOrigin = "message" | "reconnect" | null;
+
+type SendMessageArgs = [
+  prompt: string,
+  attachments?: Attachment[],
+  mode?: SendMode,
+  clientMessageId?: string,
+];
 
 export interface ElicitationCancellationNotice {
   requestId: string;
@@ -577,6 +586,7 @@ export function useSessionStream(
   onTitleChanged: () => void,
   onMcpStatus?: (servers: McpServerStatus[]) => void,
 ) {
+  const queryClient = useQueryClient();
   const [streamState, setStreamState] = useState<StreamState>(() => createState("idle"));
   const streamStateRef = useRef(streamState);
   streamStateRef.current = streamState;
@@ -1177,42 +1187,44 @@ export function useSessionStream(
     return closeStream;
   }, [closeStream, sessionId]);
 
-  const sendMessage = useCallback(async (
-    prompt: string,
-    attachments?: Attachment[],
-    mode?: SendMode,
-    clientMessageId?: string,
-  ) => {
-    if (!sessionId) return;
-    const startedFromIdle = streamStateRef.current.streamStatus === "idle";
-    if (startedFromIdle) {
-      setStreamState((current) => createState("sending", {
-        contextSummary: current.contextSummary,
-        historyEpoch: current.historyEpoch,
-        pendingOrigin: "message",
-        runMode: mode ?? current.runMode,
-      }));
-    }
-    try {
-      const response = await sendChatMessage(sessionId, prompt, attachments, mode, { clientMessageId });
-      if (response.mode === "steered" || response.mode === "queued" || response.mode === "command") {
-        if (startedFromIdle && sessionRef.current === sessionId) connectStream(sessionId, "reconnect");
-        return response;
-      }
-      if (sessionRef.current === sessionId) {
-        connectStream(sessionId, "message", mode);
-      }
-      return response;
-    } catch (error) {
-      if (startedFromIdle && sessionRef.current === sessionId) {
-        setStreamState((current) => createState("idle", {
+  const { mutateAsync: sendMessageRequest } = useMutation({
+    mutationKey: queryKeys.sessionSend(sessionId),
+    mutationFn: async ([prompt, attachments, mode, clientMessageId]: SendMessageArgs) => {
+      if (!sessionId) return;
+      const startedFromIdle = streamStateRef.current.streamStatus === "idle";
+      if (startedFromIdle) {
+        setStreamState((current) => createState("sending", {
           contextSummary: current.contextSummary,
           historyEpoch: current.historyEpoch,
+          pendingOrigin: "message",
+          runMode: mode ?? current.runMode,
         }));
       }
-      throw error;
-    }
-  }, [connectStream, sessionId]);
+      try {
+        const response = await sendChatMessage(sessionId, prompt, attachments, mode, { clientMessageId });
+        if (response.mode === "steered" || response.mode === "queued" || response.mode === "command") {
+          if (startedFromIdle && sessionRef.current === sessionId) connectStream(sessionId, "reconnect");
+          return response;
+        }
+        if (sessionRef.current === sessionId) {
+          connectStream(sessionId, "message", mode);
+        }
+        return response;
+      } catch (error) {
+        if (startedFromIdle && sessionRef.current === sessionId) {
+          setStreamState((current) => createState("idle", {
+            contextSummary: current.contextSummary,
+            historyEpoch: current.historyEpoch,
+          }));
+        }
+        throw error;
+      }
+    },
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+    }),
+  });
+  const sendMessage = useCallback((...args: SendMessageArgs) => sendMessageRequest(args), [sendMessageRequest]);
 
   const abortSession = useCallback(async () => {
     if (!sessionId) return;
@@ -1224,31 +1236,37 @@ export function useSessionStream(
     }
   }, [sessionId]);
 
-  const retryFailedRun = useCallback(async (runId: string) => {
-    if (!sessionId) throw new Error("Open a saved chat before retrying.");
-    const previous = streamStateRef.current;
-    if (previous.isStreaming) throw new Error("This chat is already working.");
-    setStreamState(createState("sending", {
-      contextSummary: previous.contextSummary,
-      historyEpoch: previous.historyEpoch,
-      runNotice: previous.runNotice,
-      pendingOrigin: "message",
-      runMode: "interactive",
-    }));
-    try {
-      await retrySessionRun(sessionId, runId);
-      if (sessionRef.current === sessionId) connectStream(sessionId, "message", "interactive");
-    } catch (error) {
-      if (sessionRef.current === sessionId) {
-        setStreamState((current) => createState("idle", {
-          contextSummary: current.contextSummary,
-          historyEpoch: current.historyEpoch,
-          runNotice: previous.runNotice,
-        }));
+  const { mutateAsync: retryFailedRun } = useMutation({
+    mutationKey: queryKeys.sessionSend(sessionId),
+    mutationFn: async (runId: string) => {
+      if (!sessionId) throw new Error("Open a saved chat before retrying.");
+      const previous = streamStateRef.current;
+      if (previous.isStreaming) throw new Error("This chat is already working.");
+      setStreamState(createState("sending", {
+        contextSummary: previous.contextSummary,
+        historyEpoch: previous.historyEpoch,
+        runNotice: previous.runNotice,
+        pendingOrigin: "message",
+        runMode: "interactive",
+      }));
+      try {
+        await retrySessionRun(sessionId, runId);
+        if (sessionRef.current === sessionId) connectStream(sessionId, "message", "interactive");
+      } catch (error) {
+        if (sessionRef.current === sessionId) {
+          setStreamState((current) => createState("idle", {
+            contextSummary: current.contextSummary,
+            historyEpoch: current.historyEpoch,
+            runNotice: previous.runNotice,
+          }));
+        }
+        throw error;
       }
-      throw error;
-    }
-  }, [connectStream, sessionId]);
+    },
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+    }),
+  });
 
   const restoreRunNotice = useCallback((sid: string, notice: RunNotice | undefined, observedEpoch: number) => {
     setStreamState((current) => {
