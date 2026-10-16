@@ -1,5 +1,9 @@
 import { createElement, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Session } from "./api";
+import { queryKeys } from "./queryClient";
+import { patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
 
 const telemetryBatcherMock = vi.hoisted(() => ({
   enqueue: vi.fn(),
@@ -73,6 +77,8 @@ type HookState = ReturnType<typeof useSessionStream>;
 async function withHarness(
   run: (helpers: {
     getState: () => HookState;
+    getSessions: () => Session[];
+    queryClient: QueryClient;
     getSource: () => MockEventSource;
     settled: ReturnType<typeof vi.fn<() => void>>;
     titleChanged: ReturnType<typeof vi.fn<() => void>>;
@@ -82,7 +88,17 @@ async function withHarness(
   }) => Promise<void>,
 ) {
   const harness = await createReactDomHarness();
+  const queryClient = new QueryClient();
+  queryClient.setQueryData<Session[]>(queryKeys.sessions({ includeArchived: false }),
+    ["session-1", "session-2"].map((sessionId) => ({
+      sessionId,
+      summary: sessionId,
+      modifiedTime: "2026-04-27T18:00:00.000Z",
+      runState: "idle",
+      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    })));
   let state: HookState | null = null;
+  let sessions: Session[] = [];
   let updateSessionId: ((sessionId: string | null) => void) | null = null;
   const settled = vi.fn<() => void>();
   const titleChanged = vi.fn<() => void>();
@@ -92,17 +108,20 @@ async function withHarness(
     const [sessionId, setSessionId] = useState<string | null>("session-1");
     updateSessionId = setSessionId;
     state = useSessionStream(sessionId, settled, titleChanged, mcpStatusChanged);
+    sessions = useSessionsQuery(false, { enabled: false, refetchInterval: false }).data ?? [];
     return null;
   }
 
   try {
-    await harness.render(createElement(TestComponent));
+    await harness.render(createElement(QueryClientProvider, { client: queryClient }, createElement(TestComponent)));
     await waitUntilAct(harness.act, () => state !== null);
     await run({
       getState: () => {
         if (!state) throw new Error("Hook is not rendered");
         return state;
       },
+      getSessions: () => sessions,
+      queryClient,
       getSource: () => {
         const source = MockEventSource.instances.at(-1);
         if (!source) throw new Error("No EventSource was created");
@@ -119,6 +138,7 @@ async function withHarness(
     });
   } finally {
     await harness.cleanup();
+    queryClient.clear();
   }
 }
 
@@ -166,6 +186,78 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 describe("useSessionStream EventSource lifecycle", () => {
+  it.each(["message", "retry"])("shows an idle session as working during a pending %s request", async (kind) => {
+    await withHarness(async ({ getState, getSessions, queryClient, act }) => {
+      let resolve!: (response: Response) => void;
+      vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>((innerResolve) => {
+        resolve = innerResolve;
+      }));
+      const refresh = vi.spyOn(queryClient, "invalidateQueries");
+      let delivery!: Promise<unknown>;
+      await act(async () => {
+        delivery = kind === "message" ? getState().sendMessage("hello") : getState().retryFailedRun("failed-run");
+      });
+      await waitUntilAct(act, () => getSessions()[0]?.runState === "busy");
+      expect(queryClient.getQueryData<Session[]>(queryKeys.sessions({ includeArchived: false }))?.[0].runState)
+        .toBe("idle");
+      expect(getSessions()[1].runState).toBe("idle");
+
+      await act(async () => {
+        patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+        resolve(new Response(JSON.stringify({ status: "accepted" }), { status: 202 }));
+        await delivery;
+      });
+      expect(getSessions()[0].runState).toBe("busy");
+      expect(refresh).toHaveBeenCalledWith({
+        queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+      });
+      await act(async () => patchSessionQueryData(queryClient, ["session-1"], { runState: "idle" }));
+      await waitUntilAct(act, () => getSessions()[0].runState === "idle");
+    });
+  });
+
+  it.each(["rejected", "queued", "command"])("clears the pending status for a %s send", async (outcome) => {
+    await withHarness(async ({ getState, getSessions, act }) => {
+      let resolve!: (response: Response) => void;
+      let reject!: (error: Error) => void;
+      vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>((innerResolve, innerReject) => {
+        resolve = innerResolve;
+        reject = innerReject;
+      }));
+      let delivery!: Promise<unknown>;
+      await act(async () => { delivery = getState().sendMessage("hello"); });
+      await waitUntilAct(act, () => getSessions()[0]?.runState === "busy");
+      await act(async () => {
+        if (outcome === "rejected") {
+          reject(new Error("Send unavailable"));
+          await expect(delivery).rejects.toThrow("Send unavailable");
+        } else {
+          resolve(new Response(JSON.stringify({ status: "accepted", mode: outcome }), { status: 202 }));
+          await delivery;
+        }
+      });
+      await waitUntilAct(act, () => getSessions()[0].runState === "idle");
+    });
+  });
+
+  it("does not roll back a newer busy event when message delivery fails", async () => {
+    await withHarness(async ({ getState, getSessions, queryClient, act }) => {
+      let reject!: (error: Error) => void;
+      vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>((_resolve, innerReject) => {
+        reject = innerReject;
+      }));
+      let delivery!: Promise<unknown>;
+      await act(async () => { delivery = getState().sendMessage("hello"); });
+      await waitUntilAct(act, () => getSessions()[0]?.runState === "busy");
+      await act(async () => {
+        patchSessionQueryData(queryClient, ["session-1"], { runState: "busy" });
+        reject(new Error("Connection lost"));
+        await expect(delivery).rejects.toThrow("Connection lost");
+      });
+      expect(getSessions()[0].runState).toBe("busy");
+    });
+  });
+
   it("keeps a healthy stream when asked to ensure a connection, and replaces a closed one", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().ensureConnected("session-1"));
@@ -362,7 +454,7 @@ describe("useSessionStream EventSource lifecycle", () => {
   });
 
   it("does not open an old session stream when navigation wins the send race", async () => {
-    await withHarness(async ({ getState, setSessionId, act }) => {
+    await withHarness(async ({ getState, getSessions, setSessionId, act }) => {
       let resolveSend!: (response: Response) => void;
       vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise<Response>((resolve) => {
         resolveSend = resolve;
@@ -377,6 +469,8 @@ describe("useSessionStream EventSource lifecycle", () => {
         setSessionId("session-2");
         await waitTick();
       });
+      await waitUntilAct(act, () => getSessions()[0].runState === "busy");
+      expect(getSessions()[1].runState).toBe("idle");
       resolveSend({
         ok: true,
         json: async () => ({ status: "accepted" }),
@@ -387,6 +481,7 @@ describe("useSessionStream EventSource lifecycle", () => {
 
       expect(MockEventSource.instances).toHaveLength(0);
       expect(getState().streamStatus).toBe("idle");
+      await waitUntilAct(act, () => getSessions()[0].runState === "idle");
     });
   });
 });

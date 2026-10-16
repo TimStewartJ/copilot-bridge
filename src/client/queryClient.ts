@@ -35,6 +35,8 @@ export const queryKeys = {
   managementJob: (id: string) => ["management-jobs", "detail", id] as const,
   sessions: (opts?: { includeArchived?: boolean }) =>
     ["sessions", opts ?? {}] as const,
+  sessionSends: ["session-send"] as const,
+  sessionSend: (sessionId: string | null) => ["session-send", sessionId] as const,
   externalSessionUse: (sessionIds: readonly string[]) =>
     ["external-session-use", ...sessionIds] as const,
   task: (id: string) => ["task", id] as const,
