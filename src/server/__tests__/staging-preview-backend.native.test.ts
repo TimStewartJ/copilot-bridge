@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApiRouter } from "../api-router.js";
+import { createApiServices } from "../api-services.js";
 import { createAppContext } from "../app-context-factory.js";
 import { __testing } from "../staging-tools.js";
 import {
@@ -237,7 +238,7 @@ describe("staging preview backend child process", () => {
     });
     ctx.sessionManager.listModels = vi.fn(async () => []);
     const app = express();
-    app.use("/api", createApiRouter(ctx));
+    app.use("/api", createApiRouter(ctx, createApiServices(ctx)));
 
     try {
       expect(ctx.copilotUsageStore).toBeDefined();

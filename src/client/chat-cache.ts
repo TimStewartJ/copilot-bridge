@@ -26,6 +26,31 @@ export interface ChatHistorySnapshot {
   agents?: readonly TranscriptAgent[];
 }
 
+export function maxActivityTimestamp(left?: string | null, right?: string | null): string | undefined {
+  const leftTime = left ? Date.parse(left) : Number.NaN;
+  const rightTime = right ? Date.parse(right) : Number.NaN;
+  if (!Number.isFinite(leftTime) && !Number.isFinite(rightTime)) return undefined;
+  return new Date(Math.max(
+    Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY,
+    Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY,
+  )).toISOString();
+}
+
+function getEntryActivityTimestamp(entry: ChatEntry): string | undefined {
+  if (entry.type === "tool") return entry.toolCall.completedAt ?? entry.toolCall.startedAt;
+  if (entry.type === "visual") return entry.timestamp;
+  if (entry.type === "completion") return entry.timestamp;
+  if (entry.type === "skill") return entry.timestamp;
+  if ("role" in entry && ((entry.content ?? "").trim() || entry.attachments?.length)) return entry.timestamp;
+  return undefined;
+}
+
+export function getLatestEntryActivityTimestamp(entries: ChatEntry[]): string | undefined {
+  let latest: string | undefined;
+  for (const entry of entries) latest = maxActivityTimestamp(latest, getEntryActivityTimestamp(entry));
+  return latest;
+}
+
 function forgetSession(sessionId: string): void {
   const index = recentSessionIds.indexOf(sessionId);
   if (index >= 0) recentSessionIds.splice(index, 1);

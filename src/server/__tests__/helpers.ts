@@ -2,8 +2,8 @@
 // in-memory SQLite, mock services).
 //
 // Deliberately kept free of the Express/API-router graph. `createTestApp` lives
-// in ./test-app.ts because importing `createApiRouter` pulls ~180 modules
-// (~2 MB) into every file that touches this module, and most test files only
+// in ./test-app.ts because API services and routing pull a large runtime graph
+// into every file that touches this module, and most test files only
 // need `makeTestDir` or `setupTestDb`.
 
 import { afterEach, vi } from "vitest";
