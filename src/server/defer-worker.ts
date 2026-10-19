@@ -20,7 +20,8 @@ import {
   type CopilotUsageSessionScanResult,
 } from "./copilot-usage.js";
 import { isRecord } from "../shared/is-record.js";
-import { classifyToolFailure, type ToolFailureCategory } from "../shared/tool-failure.js";
+import type { ToolFailureCategory } from "../shared/tool-failure.js";
+import { recordToolFailure } from "./tool-failure-telemetry.js";
 import { toolFailure } from "./tool-results.js";
 
 import { DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX } from "./defer-ids.js";
@@ -387,14 +388,16 @@ export class DisposableDeferWorker {
     let turn: Promise<unknown> | undefined;
     let unsubscribe: (() => void) | undefined;
     let toolCallCount = 0;
-    const toolCalls = new Map<string, {
+    type ToolCall = {
       toolCallId: string;
       toolName: string;
       startedMs: number;
       durationMs?: number;
       success?: boolean;
       failureCategory?: ToolFailureCategory;
-    }>();
+    };
+    const toolCalls = new Map<string, ToolCall>();
+    const pendingToolCalls = new Map<string, ToolCall>();
     let rejectStopped!: (error: Error) => void;
     // Ends the wait on the session even if the session never answers the abort, so cleanup always runs.
     const stopSignal = new Promise<never>((_resolve, reject) => {
@@ -502,18 +505,34 @@ export class DisposableDeferWorker {
           const toolName = typeof data.toolName === "string"
             ? data.toolName
             : typeof data.name === "string" ? data.name : "unknown";
-          toolCalls.set(toolCallId, {
+          const call: ToolCall = {
             toolCallId: toolCallId.slice(0, DEFER_WORKER_TOOL_TRACE_LABEL_MAX_CHARS),
             toolName: toolName.slice(0, DEFER_WORKER_TOOL_TRACE_LABEL_MAX_CHARS),
             startedMs: elapsedMs,
-          });
+          };
+          toolCalls.set(toolCallId, call);
+          pendingToolCalls.set(toolCallId, call);
         } else {
-          const call = toolCalls.get(toolCallId);
+          const call = pendingToolCalls.get(toolCallId);
           if (!call) return;
+          pendingToolCalls.delete(toolCallId);
           call.durationMs = elapsedMs - call.startedMs;
           if (typeof data.success === "boolean") call.success = data.success;
           if (data.success === false) {
-            call.failureCategory = classifyToolFailure(data.error ?? data.result).category;
+            call.failureCategory = recordToolFailure(
+              { error: data.error, result: data.result },
+              {
+                sessionId: input.parentSessionId,
+                workerSessionId: sessionId,
+                deferId: input.deferId,
+                runCount: input.runCount,
+                toolCallId,
+                toolName: call.toolName,
+                durationMs: call.durationMs,
+              },
+              this.deps.recordSpan,
+              this.deps.logger,
+            ).category;
           }
         }
       });

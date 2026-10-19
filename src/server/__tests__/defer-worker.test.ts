@@ -365,9 +365,10 @@ describe("defer worker", () => {
         ],
       }),
     );
-    const metadata = recordSpan.mock.calls[0]?.[3];
+    const metadata = recordSpan.mock.calls.find(([name]) => name === "defer.worker")?.[3];
     const snapshot = JSON.stringify(metadata);
-    expect(snapshot).not.toContain(secret);
+    expect(JSON.stringify(recordSpan.mock.calls)).not.toContain(secret);
+    expect(recordSpan.mock.calls.filter(([name]) => name === "tool.failure")).toHaveLength(2);
     emitAfterCleanup({
       type: "tool.execution_start",
       data: { toolCallId: "too-late", toolName: "task_create" },
@@ -491,7 +492,7 @@ describe("defer worker", () => {
       await lifecycle.completed;
     }
 
-    expect(recordSpan.mock.calls[0]?.[3]?.toolCalls).toEqual([
+    expect(recordSpan.mock.calls.find(([name]) => name === "defer.worker")?.[3]?.toolCalls).toEqual([
       {
         toolCallId: prefix,
         toolName: "first",
@@ -508,6 +509,50 @@ describe("defer worker", () => {
         failureCategory: "unknown",
       },
     ]);
+  });
+
+  it("persists failures immediately even when an in-flight call leaves the bounded trace", async () => {
+    const lifecycle = createLifecycleProbe();
+    const recordSpan = vi.fn<NonNullable<DisposableDeferWorkerDeps["recordSpan"]>>();
+    const worker = createWorkerWithScript(async (config, emit) => {
+      emit({
+        type: "tool.execution_start",
+        data: { toolCallId: "slow-call", toolName: "service-read", arguments: { secret: "private-tool-payload" } },
+      });
+      for (let index = 0; index < 40; index++) {
+        emit({ type: "tool.execution_start", data: { toolCallId: `call-${index}`, toolName: "read" } });
+        emit({ type: "tool.execution_complete", data: { toolCallId: `call-${index}`, success: true } });
+      }
+      emit({
+        type: "tool.execution_complete",
+        data: {
+          toolCallId: "slow-call", success: false,
+          error: { statusCode: 429, code: "VendorQuotaExceeded", retryAfterSeconds: 60, message: "private-tool-payload" },
+        },
+      });
+      expect(recordSpan).toHaveBeenCalledExactlyOnceWith(
+        "tool.failure", expect.any(Number), "parent-session",
+        expect.objectContaining({
+          toolName: "service-read", toolCallId: "slow-call",
+          deferId: "interval_1", runCount: 3,
+          workerSessionId: expect.stringMatching(/^d3f3e000-/),
+          category: "throttled", statusCode: 429, errorCode: "VendorQuotaExceeded", retryAfterMs: 60_000,
+        }),
+      );
+      await submitDeferResult(config, { action: "continue", checkpoint: { coverage: "unavailable" } });
+    }, "defer-worker-immediate-failure", lifecycle.beginLifecycle, recordSpan);
+
+    try {
+      await expect(runCheck(worker, { ...workerInput, runCount: 3 }))
+        .resolves.toMatchObject({ action: "continue", checkpoint: { coverage: "unavailable" } });
+    } finally {
+      await lifecycle.completed;
+    }
+    const metadata = recordSpan.mock.calls.find(([name]) => name === "defer.worker")?.[3];
+    expect(metadata).toMatchObject({ action: "continue", naturalCompletion: "resolved", toolCallsDropped: 9 });
+    expect(metadata?.toolCalls).not.toContainEqual(expect.objectContaining({ toolCallId: "slow-call" }));
+    expect(recordSpan.mock.calls.filter(([name]) => name === "tool.failure")).toHaveLength(1);
+    expect(JSON.stringify(recordSpan.mock.calls)).not.toContain("private-tool-payload");
   });
 
   it("keeps the first valid result immutable", async () => {
