@@ -2872,6 +2872,7 @@ export default function ChatView({
         sessionCostLoading={sessionCostLoading}
         sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd}
         sessionUsage={sessionUsageMetricsQuery.data}
+        sessionUsageUpdatedAt={sessionUsageMetricsQuery.dataUpdatedAt}
         sessionCostError={sessionUsageMetricsQuery.error instanceof Error
           ? sessionUsageMetricsQuery.error.message
           : sessionUsageMetricsQuery.error ? String(sessionUsageMetricsQuery.error) : undefined}

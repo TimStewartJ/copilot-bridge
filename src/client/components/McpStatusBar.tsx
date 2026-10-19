@@ -20,6 +20,7 @@ interface McpStatusBarProps {
   sessionCostError?: string;
   /** Live SDK counters for the loaded session: messages, model calls, tokens, code changes. */
   sessionUsage?: SessionUsageMetrics | null;
+  sessionUsageUpdatedAt?: number;
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
   servers: McpServerStatus[];
@@ -52,6 +53,7 @@ export default function McpStatusBar({
   sessionCostUsd,
   sessionCostError,
   sessionUsage,
+  sessionUsageUpdatedAt,
   onAuthenticate,
   onRefresh,
   servers,
@@ -71,7 +73,7 @@ export default function McpStatusBar({
     ? ({ ...(context?.summary ?? {}), ...(liveContextSummary ?? {}) } as SessionContextSummary)
     : null;
   const capabilities = context?.capabilities;
-  const hasContextSignal = Boolean(contextLoading || contextError || summary);
+  const hasContextSignal = Boolean(contextLoading || contextError || summary || sessionUsage?.contextInfo);
   const hasMcpSignal = statusState !== "ready" || servers.length > 0 || Boolean(toolReadiness);
   const hasSessionCostSignal = Boolean(sessionCostLoading || sessionCostError || sessionCostUsd !== undefined);
   const hasSignals = hasMcpSignal || hasContextSignal || hasSessionCostSignal || toolFailures.length > 0;
@@ -83,9 +85,11 @@ export default function McpStatusBar({
   const pending = servers.filter((s) => s.status === "pending").length;
   const unknown = servers.filter((s) => s.status === "unknown").length;
   const hasProblem = failed > 0 || needsAuth > 0;
-  const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError);
-  const contextMetrics = getSummaryMetrics(summary);
-  const contextPressure = contextError ? "room" : getContextPressure(contextMetrics.percent);
+  const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError, sessionUsage?.contextInfo, sessionUsageUpdatedAt);
+  const contextMetrics = getSummaryMetrics(summary, sessionUsage?.contextInfo, sessionUsageUpdatedAt);
+  const contextPressure = contextError ? "room" : getContextPressure(
+    contextMetrics.percent, contextMetrics.compactionPercent, contextMetrics.blockingPercent,
+  );
   const sessionCostLabel = sessionCostUsd != null ? formatUsageUsd(sessionCostUsd)
     : sessionCostError ? "unavailable" : sessionCostLoading ? "..." : "Not recorded";
   const statusSummary = statusState === "loading"
@@ -217,6 +221,7 @@ export default function McpStatusBar({
               summary={summary}
               insights={context?.insights}
               usage={sessionUsage}
+              usageUpdatedAt={sessionUsageUpdatedAt}
               cost={hasSessionCostSignal
                 ? { label: sessionCostLabel, error: sessionCostError, hasPrevious: sessionCostUsd != null }
                 : undefined}

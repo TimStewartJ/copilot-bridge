@@ -193,7 +193,6 @@ import { resumeSessionWithTimeout, SESSION_RESUME_TIMEOUT_MS } from "./session-r
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
   deriveModelStateFromEventsFileAsync,
-  type DerivedModelState,
 } from "./session-events-model.js";
 import {
   createVisibleActivityTracker,
@@ -226,13 +225,11 @@ import {
 import { getLastHostResume } from "./host-suspend.js";
 import type { AgentBackendDisconnect, AgentContextInfo, AgentUsageCodeChanges, AgentUsageTokenTotals } from "./agent-backend/types.js";
 import {
-  getModelCapabilitiesOverride,
   modelSupportsLongContext,
   modelUsesDynamicSelection,
   normalizeCopilotContextTier,
   resolveContextTierForModel,
   type CopilotContextTier,
-  type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import { resolveSupportedReasoningEffort } from "../shared/reasoning-effort.js";
 import {
@@ -1288,8 +1285,6 @@ export class SessionManager {
     sessionConfig: any;
     creationReservation: SessionCapacityReservation;
     startedAt: number;
-    modelMetadata?: readonly CopilotModelContextMetadata[];
-    requestedContextTier?: CopilotContextTier;
     spanName: string;
     spanMetadata?: Record<string, unknown>;
     logMessage: (sessionId: string, duration: number) => string;
@@ -1304,8 +1299,6 @@ export class SessionManager {
       sessionConfig,
       creationReservation,
       startedAt,
-      modelMetadata,
-      requestedContextTier,
       spanName,
       spanMetadata,
       logMessage,
@@ -1320,7 +1313,6 @@ export class SessionManager {
       this.endSessionCreation(creationReservation);
     };
     try {
-      const settings = this.deps.settingsStore?.getSettings();
       options.onCreateStarting?.();
       this.assertRuntimeOwner(owner);
       session = await this.awaitOwnedSession(owner, client.createSession(sessionConfig));
@@ -1356,16 +1348,11 @@ export class SessionManager {
       }
       const model = sessionConfig.model;
       if (typeof model === "string" && model.trim()) {
-        const { contextTier } = this.resolveModelRuntimeOptions(
-          model,
-          requestedContextTier ?? settings?.contextTier,
-          modelMetadata,
-        );
+        const contextTier = normalizeCopilotContextTier(sessionConfig.contextTier);
         const state = {
           model,
           ...(sessionConfig.reasoningEffort ? { reasoningEffort: sessionConfig.reasoningEffort } : {}),
           ...(contextTier ? { contextTier } : {}),
-          ...(sessionConfig.modelCapabilities ? { modelCapabilities: sessionConfig.modelCapabilities } : {}),
         };
         this.persistSessionModelState(session.sessionId, state);
       }
@@ -2094,7 +2081,11 @@ export class SessionManager {
 
   private async beginSessionResume(
     sessionId: string,
-    sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
+    sessionConfig: {
+      mcpServers?: Record<string, McpServerConfig>;
+      enableExperimentalMode?: boolean;
+      contextTier?: CopilotContextTier;
+    },
     options: {
       isCancelled?: () => boolean;
       reserveCachedSession?: boolean;
@@ -2135,6 +2126,16 @@ export class SessionManager {
         },
       });
       await this.awaitSessionCleanup(sessionId);
+      // Only journals predating native tiers need the Bridge sidecar.
+      if (admitted && sessionConfig.enableExperimentalMode && sessionConfig.contextTier === undefined) {
+        const persisted = this.readPersistedSessionModelState(sessionId);
+        if (persisted.contextTier) {
+          const native = await deriveModelStateFromEventsFileAsync(this.getSessionEventsPath(sessionId));
+          if (native.contextTier === undefined && (!native.model || native.model === persisted.model)) {
+            sessionConfig.contextTier = persisted.contextTier;
+          }
+        }
+      }
       return admitted ? lease : null;
     } catch (error) {
       if (this.capacity.hasResume(lease.token)) this.endSessionResume(lease);
@@ -2796,16 +2797,6 @@ export class SessionManager {
         getCopilotHome: () => this.getCopilotHome(),
       },
     });
-    if (opts.forResume && opts.sessionId) {
-      const persistedState = this.readPersistedSessionModelState(opts.sessionId);
-      if (persistedState.contextTier) {
-        cfg.contextTier = persistedState.contextTier;
-      }
-      const modelCapabilities = this.resolvePersistedModelCapabilities(persistedState, modelMetadata);
-      if (modelCapabilities) {
-        cfg.modelCapabilities = modelCapabilities;
-      }
-    }
     const profile = opts.sessionId ? this.deps.resolveSessionProfile?.(opts.sessionId) : undefined;
     return profile ? profile.apply(cfg) : cfg;
   }
@@ -2956,41 +2947,9 @@ export class SessionManager {
     return refreshedError ? { ok: false, error: refreshedError } : { ok: true };
   }
 
-  private resolveModelRuntimeOptions(
-    modelId: string,
-    requestedContextTier?: string,
-    modelMetadata: readonly CopilotModelContextMetadata[] | undefined = this.modelMetadata,
-  ): { contextTier?: CopilotContextTier; modelCapabilities?: Record<string, unknown> } {
-    const model = modelMetadata?.find((candidate) => candidate.id === modelId);
-    const normalizedContextTier = normalizeCopilotContextTier(requestedContextTier);
-    const contextTier = model
-      ? resolveContextTierForModel(model, normalizedContextTier)
-      : normalizedContextTier;
-    const modelCapabilities = getModelCapabilitiesOverride(model, contextTier);
-    return {
-      ...(contextTier ? { contextTier } : {}),
-      ...(modelCapabilities ? { modelCapabilities } : {}),
-    };
-  }
-
-  /**
-   * Bridge only ever persists the override it derived from (model, contextTier),
-   * so recompute it from current metadata on resume and fall back to the stored
-   * value only when the model is no longer in the catalog.
-   */
-  private resolvePersistedModelCapabilities(
-    state: PersistedSessionModelState,
-    modelMetadata: readonly CopilotModelContextMetadata[] | undefined = this.modelMetadata,
-  ): Record<string, unknown> | undefined {
-    if (!state.model) return state.modelCapabilities;
-    const model = modelMetadata?.find((candidate) => candidate.id === state.model);
-    if (!model) return state.modelCapabilities;
-    return getModelCapabilitiesOverride(model, normalizeCopilotContextTier(state.contextTier));
-  }
-
   private persistSessionModelState(
     sessionId: string,
-    state: DerivedModelState & { modelCapabilities?: Record<string, unknown> },
+    state: PersistedSessionModelState,
   ): void {
     try {
       writePersistedSessionModelState(this.getSessionStateDir(sessionId), state);
@@ -4217,13 +4176,10 @@ export class SessionManager {
     if (!session) return unavailable;
 
     const deadline = createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS);
-    const promptTokenLimit = this.deps.sessionContextStore?.getSummary(sessionId)?.contextWindow ?? 0;
     const [outcome, contextOutcome] = await Promise.all([
       settleByDeadline(() => session.getUsageMetrics(), deadline),
       // The split is a nicety beside the counters: a failure or a slow answer only leaves it out.
-      session.getContextInfo
-        ? settleByDeadline(() => session.getContextInfo!({ promptTokenLimit }), deadline)
-        : Promise.resolve(undefined),
+      settleByDeadline(() => session.getContextInfo(), deadline),
     ]);
     if (outcome.status === "rejected") throw outcome.error;
     if (outcome.status === "timed-out") {
@@ -4232,7 +4188,7 @@ export class SessionManager {
     }
     const metrics = outcome.value;
     if (!metrics) return unavailable;
-    const contextInfo = contextOutcome?.status === "fulfilled" ? contextOutcome.value : undefined;
+    const contextInfo = contextOutcome.status === "fulfilled" ? contextOutcome.value : undefined;
     const aiCredits = metrics.totalNanoAiu === undefined
       ? null
       : metrics.totalNanoAiu / 1_000_000_000;
@@ -4565,8 +4521,6 @@ export class SessionManager {
         sessionConfig,
         creationReservation,
         startedAt: t0,
-        ...(modelMetadata ? { modelMetadata } : {}),
-        ...(options.contextTier ? { requestedContextTier: options.contextTier } : {}),
         promptProfile,
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
@@ -4926,10 +4880,6 @@ export class SessionManager {
         sessionConfig,
         creationReservation,
         startedAt: t0,
-        ...(modelMetadata ? { modelMetadata } : {}),
-        ...(options.contextTier ?? scheduleContext?.contextTier
-          ? { requestedContextTier: options.contextTier ?? scheduleContext?.contextTier }
-          : {}),
         spanName: "session.createTask",
         spanMetadata: { taskId },
         logMessage: (sessionId, duration) =>
@@ -5107,26 +5057,12 @@ export class SessionManager {
       const reasoningEffort = resolveSupportedReasoningEffort(requested, supported);
       if (!reasoningEffort) return;
       if (reasoningEffort !== current.reasoningEffort) {
-        const persisted = this.readPersistedSessionModelState(sessionId);
-        const resolved = this.resolveModelRuntimeOptions(
-          model,
-          normalizeCopilotContextTier(current.contextTier) ?? (persisted.model === model ? persisted.contextTier : undefined),
-          modelMetadata,
-        );
-        const result = await session.setModel(model, {
-          reasoningEffort,
-          ...(resolved.contextTier ? { contextTier: resolved.contextTier } : {}),
-          ...(resolved.modelCapabilities ? { modelCapabilities: resolved.modelCapabilities } : {}),
-        });
-        if (result?.status === "confirmation_required" || result?.status === "cancelled") {
-          console.warn(`[sdk] [${sid}] Turn effort ${reasoningEffort} not applied: ${result.status}`);
-          return;
-        }
+        await session.setReasoningEffort(reasoningEffort);
+        const contextTier = normalizeCopilotContextTier(current.contextTier);
         this.persistSessionModelState(sessionId, {
           model,
           reasoningEffort,
-          ...(resolved.contextTier ? { contextTier: resolved.contextTier } : {}),
-          ...(resolved.modelCapabilities ? { modelCapabilities: resolved.modelCapabilities } : {}),
+          ...(contextTier ? { contextTier } : {}),
         });
         const duration = Date.now() - startedAt;
         console.log(`[sdk] [${sid}] Turn effort ${current.reasoningEffort ?? "default"} -> ${reasoningEffort} (${duration}ms)`);
@@ -6012,17 +5948,19 @@ export class SessionManager {
             : undefined)
           ?? (persistedState.model === model ? persistedState.contextTier : undefined)
           ?? (fallbackState?.model === model ? fallbackState.contextTier : undefined);
-      const resolvedContext = this.resolveModelRuntimeOptions(model, effectiveRequestedContextTier, modelMetadata);
+      const requestedTier = normalizeCopilotContextTier(effectiveRequestedContextTier);
+      const selectedTier = selectedModelMetadata
+        ? resolveContextTierForModel(selectedModelMetadata, requestedTier)
+        : requestedTier;
       const setModelOptions = {
         ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
-        ...(resolvedContext.contextTier ? { contextTier: resolvedContext.contextTier } : {}),
-        ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
+        ...(selectedTier ? { contextTier: selectedTier } : {}),
         ...(options.compactionDecision ? { compactionDecision: options.compactionDecision } : {}),
       };
       const opts = Object.keys(setModelOptions).length > 0 ? setModelOptions : undefined;
       const switchResult = await session.setModel(model, opts);
       const switchLabel = `${model}${effectiveReasoningEffort ? `, ${effectiveReasoningEffort}` : ""}${
-        resolvedContext.contextTier ? `, ${resolvedContext.contextTier}` : ""
+        selectedTier ? `, ${selectedTier}` : ""
       }${options.compactionDecision ? `, ${options.compactionDecision}` : ""}`;
       if (
         switchResult?.status === "confirmation_required"
@@ -6057,12 +5995,11 @@ export class SessionManager {
         ? currentAfterSwitch?.reasoningEffort
         : effectiveReasoningEffort;
       const liveContextTier = normalizeCopilotContextTier(currentAfterSwitch?.contextTier)
-        ?? (liveModel === model ? resolvedContext.contextTier : undefined);
+        ?? (liveModel === model ? selectedTier : undefined);
       this.persistSessionModelState(sessionId, {
         model: liveModel,
         ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),
         ...(liveContextTier ? { contextTier: liveContextTier } : {}),
-        ...(resolvedContext.modelCapabilities ? { modelCapabilities: resolvedContext.modelCapabilities } : {}),
       });
 
       return {
@@ -6110,7 +6047,7 @@ export class SessionManager {
         const liveModelId = current.modelId;
         const persistedState = this.readPersistedSessionModelState(sessionId);
         const contextTier = normalizeCopilotContextTier(current.contextTier)
-          ?? (persistedState.model === liveModelId
+          ?? (current.contextTier === undefined && persistedState.model === liveModelId
             ? normalizeCopilotContextTier(persistedState.contextTier)
             : undefined);
         return {
@@ -6130,7 +6067,7 @@ export class SessionManager {
     const mergedEventsState = {
       ...persistedState,
       ...eventsState,
-      contextTier: eventsState.contextTier ?? (
+      contextTier: eventsState.contextTier !== undefined ? normalizeCopilotContextTier(eventsState.contextTier) : (
         !eventsState.model || eventsState.model === persistedState.model ? persistedState.contextTier : undefined
       ),
     };

@@ -336,6 +336,7 @@ export default function SessionModelDialog({
         source: "live",
       };
       queryClient.setQueryData(queryKeys.sessionModel(sessionId), nextState);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessionUsageMetrics(sessionId), exact: true });
       // A saved switch is a committed choice, so it feeds the same memory the
       // new-chat picker reads.
       if (dialogPresetSlot) {

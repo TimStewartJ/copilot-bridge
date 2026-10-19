@@ -351,13 +351,9 @@ describe("SessionManager session config", () => {
     expect(manager.backend.createSession.mock.calls[0][0]).toMatchObject({
       model: "launch-model",
       reasoningEffort: "high",
-      modelCapabilities: {
-        limits: {
-          max_context_window_tokens: 1_050_000,
-          max_prompt_tokens: 922_000,
-        },
-      },
+      contextTier: "long_context",
     });
+    expect(manager.backend.createSession.mock.calls[0][0]).not.toHaveProperty("modelCapabilities");
     expect(readPersistedSessionModelState(join(copilotHome, "session-state", "new-session")))
       .toMatchObject({
         model: "launch-model",
@@ -366,7 +362,7 @@ describe("SessionManager session config", () => {
       });
   });
 
-  it("recomputes the persisted model capabilities from current metadata when resuming", () => {
+  it("ignores old persisted model capabilities when resuming", () => {
     const db = setupTestDb();
     const globalBus = createTestBus();
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
