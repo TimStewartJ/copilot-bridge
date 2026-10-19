@@ -52,6 +52,7 @@ export default function SessionContextPanel({
   summary,
   insights,
   usage,
+  usageUpdatedAt,
   cost,
 }: {
   capabilities?: SessionContextCapabilities;
@@ -61,13 +62,14 @@ export default function SessionContextPanel({
   summary?: SessionContextSummary | null;
   insights?: SessionContextInsights | null;
   usage?: SessionUsageMetrics | null;
+  usageUpdatedAt?: number;
   cost?: SessionCostReading;
 }) {
   const now = useNow(15_000);
-  const metrics = getSummaryMetrics(summary);
+  const live = usage?.contextInfo;
+  const metrics = getSummaryMetrics(summary, live, usageUpdatedAt);
   const hasWindow = metrics.used !== undefined && metrics.limit !== undefined;
   const lastCompaction = insights?.lastCompaction ?? null;
-  const live = usage?.contextInfo;
   // A split taken before the last compaction describes a window that no longer exists.
   const recorded = insights?.breakdown
     && (!lastCompaction || Date.parse(insights.breakdown.observedAt) >= Date.parse(lastCompaction.occurredAt))
@@ -76,10 +78,9 @@ export default function SessionContextPanel({
   const breakdown = live
     ? { systemTokens: live.systemTokens, toolDefinitionsTokens: live.toolDefinitionsTokens }
     : recorded;
-  const compactionPercent = live?.compactionThreshold && live.promptTokenLimit
-    ? Math.min(100, (live.compactionThreshold / live.promptTokenLimit) * 100)
-    : COMPACTION_PERCENT;
-  const pressure = getContextPressure(metrics.percent, compactionPercent);
+  const compactionPercent = metrics.compactionPercent ?? COMPACTION_PERCENT;
+  const blockingPercent = metrics.blockingPercent ?? BLOCKING_PERCENT;
+  const pressure = getContextPressure(metrics.percent, compactionPercent, blockingPercent);
   const segments = getMeterSegments(metrics, breakdown, pressure);
   const compactionCount = summary?.compactionCount ?? 0;
 
@@ -101,7 +102,11 @@ export default function SessionContextPanel({
         <Section
           label="Context window"
           count={hasWindow ? (
-            <span title={`${formatTokenValue(metrics.used!)} of ${formatTokenValue(metrics.limit!)}`}>
+            <span title={`${formatTokenValue(metrics.used!)} of ${formatTokenValue(metrics.limit!)}${
+              metrics.promptTokenLimit !== undefined && metrics.promptTokenLimit !== metrics.limit
+                ? `; input budget ${formatTokenValue(metrics.promptTokenLimit)}`
+                : ""
+            }`}>
               {formatCompactTokens(metrics.used!)} of {formatCompactTokens(metrics.limit!)}
             </span>
           ) : undefined}
@@ -123,7 +128,7 @@ export default function SessionContextPanel({
             </EmptyHint>
           ) : (
             <div className="space-y-2.5">
-              <ContextMeter metrics={metrics} segments={segments} compactionPercent={compactionPercent} />
+              <ContextMeter metrics={metrics} segments={segments} />
               <MeterLegend segments={segments} mcpToolsTokens={live?.mcpToolsTokens} />
               <p className={DS.usage.prose}>
                 {pressure === "room" && (
@@ -135,7 +140,7 @@ export default function SessionContextPanel({
                 {pressure === "compacting" && (
                   <span className={DS.tone.warning}>
                     Past {formatPercent(compactionPercent)}: older turns are being summarised in the background.
-                    The session pauses at {formatPercent(BLOCKING_PERCENT)} if that has not finished.
+                    The session pauses at {formatPercent(blockingPercent)} if that has not finished.
                   </span>
                 )}
                 {pressure === "blocking" && (

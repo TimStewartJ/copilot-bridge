@@ -1373,8 +1373,10 @@ export interface SessionUsageMetrics {
     toolDefinitionsTokens: number;
     mcpToolsTokens?: number;
     totalTokens: number;
+    limit?: number;
     promptTokenLimit?: number;
     compactionThreshold?: number;
+    bufferTokens?: number;
   };
 }
 

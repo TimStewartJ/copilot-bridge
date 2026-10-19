@@ -417,6 +417,7 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     sendAndWait: async () => undefined,
     abort: async () => undefined,
     setModel: async () => undefined,
+    setReasoningEffort: async () => undefined,
     disconnect: () => undefined,
     release: () => {
       releasePromise ??= Promise.resolve().then(async () => {
@@ -437,6 +438,7 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
     getCurrentModel: async () => undefined,
     getUsageMetrics: async () => undefined,
     getActivity: async () => undefined,
+    getContextInfo: async () => undefined,
     truncateHistory: async () => undefined,
     listMcpServers: async () => undefined,
     initializeTools: async () => undefined,

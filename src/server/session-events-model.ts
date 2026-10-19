@@ -22,7 +22,7 @@ import {
 export interface DerivedModelState {
   model?: string;
   reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
+  contextTier?: CopilotContextTier | null;
 }
 
 interface ExtractedModelEvent extends DerivedModelState {
@@ -49,7 +49,7 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
     const reasoningEffort =
       typeof data.reasoningEffort === "string" ? data.reasoningEffort : undefined;
     const hasContextTier = "contextTier" in data;
-    const contextTier = isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
+    const contextTier = data.contextTier === null ? null : isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
     if (model !== undefined) {
       return {
         model,
@@ -63,7 +63,7 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
     const model = typeof data.selectedModel === "string" ? data.selectedModel : undefined;
     const reasoningEffort =
       typeof data.reasoningEffort === "string" ? data.reasoningEffort : undefined;
-    const contextTier = isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
+    const contextTier = data.contextTier === null ? null : isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
     if (model !== undefined) {
       return {
         model,

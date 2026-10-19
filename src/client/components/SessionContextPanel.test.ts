@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { SessionContextSummary } from "../../shared/session-context";
+import type { SessionUsageMetrics } from "../api";
 import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
 import {
   describeCacheExpiry,
@@ -33,6 +34,45 @@ describe("SessionContextPanel", () => {
     expect([840, 8_400, 84_000, 1_240_000, 12_000_000].map(formatCompactTokens)).toEqual(["840", "8.4k", "84k", "1.24M", "12M"]);
     expect([undefined, 79, 80, 94, 95].map((percent) => getContextPressure(percent))).toEqual(["room", "room", "compacting", "compacting", "blocking"]);
     expect(getContextPressure(70, 65)).toBe("compacting");
+    expect(getContextPressure(93, 77.44, 91.96)).toBe("blocking");
+  });
+
+  it("uses the native display allowance and thresholds instead of a stale recorded budget", async () => {
+    const harness = await createReactDomHarness();
+    const usage: SessionUsageMetrics = {
+      available: true, totalNanoAiu: null, aiCredits: null, costUsd: null,
+      totalPremiumRequestCost: 0, totalUserRequests: 0,
+      contextInfo: {
+        systemTokens: 10_000, toolDefinitionsTokens: 20_000, conversationTokens: 750_000, totalTokens: 780_000,
+        limit: 1_000_000, promptTokenLimit: 968_000, compactionThreshold: 774_400, bufferTokens: 80_400,
+      },
+    };
+    const stale = summary({ tokensUsed: 60_000, contextWindow: 72_000, tokensRemaining: 12_000, usageRatio: 60_000 / 72_000 });
+    try {
+      const metrics = getSummaryMetrics(stale, usage.contextInfo);
+      expect(metrics).toMatchObject({ used: 780_000, limit: 1_000_000, remaining: 220_000, percent: 78 });
+      expect(metrics.compactionPercent).toBeCloseTo(77.44);
+      expect(metrics.blockingPercent).toBeCloseTo(91.96);
+
+      await harness.render(createElement(SessionContextPanel, { summary: stale, usage }));
+
+      expect(harness.dom.container.textContent).toContain("780k of 1M");
+      expect(harness.dom.container.textContent).toContain("78% full");
+      expect(harness.dom.container.textContent).toContain("Past 77%");
+      expect(harness.dom.container.textContent).toContain("pauses at 92%");
+      expect(findAllByTag(harness.dom.container, "SPAN").some((node) =>
+        getReactProps(node)?.title?.includes("input budget 968,000 tokens"))).toBe(true);
+      const bar = findAllByTag(harness.dom.container, "DIV").find((node) => getReactProps(node)?.role === "progressbar");
+      expect(getReactProps(bar!)?.["aria-valuenow"]).toBe(78);
+
+      await harness.render(createElement(SessionContextPanel, {
+        summary: stale,
+        usage: { ...usage, contextInfo: { ...usage.contextInfo!, totalTokens: 930_000, conversationTokens: 900_000 } },
+      }));
+      expect(harness.dom.container.textContent).toContain("Nearly full. The next turn waits for compaction to finish.");
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("describes whether the prompt cache is still warm", () => {
@@ -40,6 +80,23 @@ describe("SessionContextPanel", () => {
     expect(describeCacheExpiry(new Date(now + 3 * 60_000).toISOString(), now)).toEqual({ warm: true, text: "cache warm for 3 more min" });
     expect(describeCacheExpiry(new Date(now - 12 * 60_000).toISOString(), now)).toEqual({ warm: false, text: "cache expired 12 min ago" });
     expect(describeCacheExpiry(null, now)).toBeUndefined();
+  });
+
+  it("keeps newer streamed counters moving and drops stale limits after a native budget change", () => {
+    const live = {
+      systemTokens: 1_000, toolDefinitionsTokens: 0, conversationTokens: 0, totalTokens: 1_000,
+      limit: 1_000_000, promptTokenLimit: 968_000, compactionThreshold: 774_400, bufferTokens: 80_400,
+    };
+    const readingTime = Date.parse("2026-10-19T20:00:00Z");
+    const latest = summary({
+      tokensUsed: 850_000, contextWindow: 968_000, tokensRemaining: 118_000,
+      usageRatio: 850_000 / 968_000, latestSnapshotAt: "2026-10-19T20:00:01Z",
+    });
+
+    expect(getSummaryMetrics(latest, live, readingTime)).toMatchObject({ used: 850_000, limit: 1_000_000, percent: 85 });
+    expect(getSummaryMetrics({
+      ...latest, tokensUsed: 100_000, contextWindow: 200_000, tokensRemaining: 100_000, usageRatio: 0.5,
+    }, live, readingTime)).toMatchObject({ used: 100_000, limit: 200_000, percent: 50, compactionPercent: undefined });
   });
 
   it("splits the window, counts compactions and shows session totals", async () => {

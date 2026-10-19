@@ -4,6 +4,7 @@ import type {
   SessionContextSummary,
 } from "../../shared/session-context.js";
 import { SESSION_CONTEXT_COMPACTION_THRESHOLDS } from "../../shared/session-context.js";
+import type { SessionUsageMetrics } from "../api";
 import { DS, cx } from "../design/tokens";
 
 export type SummaryMetrics = {
@@ -11,6 +12,9 @@ export type SummaryMetrics = {
   percent?: number;
   remaining?: number;
   used?: number;
+  promptTokenLimit?: number;
+  compactionPercent?: number;
+  blockingPercent?: number;
 };
 
 const NUMBER_FORMATTER = new Intl.NumberFormat();
@@ -28,19 +32,40 @@ export function normalizePercent(value: number | null | undefined): number | und
   return Math.max(0, Math.min(100, percent));
 }
 
-export function getSummaryMetrics(summary: Pick<SessionContextSummary, "tokensUsed" | "contextWindow" | "tokensRemaining" | "usageRatio"> | null | undefined): SummaryMetrics {
-  const used = optionalNumber(summary?.tokensUsed);
-  const limit = optionalNumber(summary?.contextWindow);
-  const remaining = optionalNumber(summary?.tokensRemaining);
-  const ratioPercent = normalizePercent(summary?.usageRatio);
+export function getSummaryMetrics(
+  summary: (Pick<SessionContextSummary, "tokensUsed" | "contextWindow" | "tokensRemaining" | "usageRatio">
+    & { latestSnapshotAt?: string | null }) | null | undefined,
+  live?: SessionUsageMetrics["contextInfo"],
+  liveUpdatedAt?: number,
+): SummaryMetrics {
+  const newerSummary = live !== undefined && liveUpdatedAt !== undefined
+    && summary?.latestSnapshotAt != null && Date.parse(summary.latestSnapshotAt) > liveUpdatedAt;
+  const budget = newerSummary && summary?.contextWindow != null && live?.promptTokenLimit != null
+    && summary.contextWindow !== live.promptTokenLimit ? undefined : live;
+  const used = newerSummary
+    ? optionalNumber(summary?.tokensUsed) ?? optionalNumber(live?.totalTokens)
+    : optionalNumber(live?.totalTokens) ?? optionalNumber(summary?.tokensUsed);
+  const promptTokenLimit = optionalNumber(budget?.promptTokenLimit);
+  const limit = optionalNumber(budget?.limit) ?? promptTokenLimit ?? optionalNumber(summary?.contextWindow);
+  const remaining = budget && limit !== undefined && used !== undefined
+    ? Math.max(0, limit - used)
+    : optionalNumber(summary?.tokensRemaining);
+  const ratioPercent = budget ? undefined : normalizePercent(summary?.usageRatio);
   const derivedPercent = used !== undefined && limit !== undefined && limit > 0
     ? Math.max(0, Math.min(100, (used / limit) * 100))
     : undefined;
   return {
     used,
     limit,
+    promptTokenLimit,
     remaining,
     percent: ratioPercent ?? derivedPercent,
+    compactionPercent: limit && budget?.compactionThreshold !== undefined
+      ? Math.max(0, Math.min(100, budget.compactionThreshold / limit * 100))
+      : undefined,
+    blockingPercent: limit && budget?.limit !== undefined && budget.bufferTokens !== undefined
+      ? Math.max(0, Math.min(100, (budget.limit - budget.bufferTokens) / limit * 100))
+      : undefined,
   };
 }
 
@@ -67,9 +92,13 @@ export function formatPercent(value: number): string {
 
 export type ContextPressure = "room" | "compacting" | "blocking";
 
-export function getContextPressure(percent: number | undefined, compactionPercent: number = COMPACTION_PERCENT): ContextPressure {
+export function getContextPressure(
+  percent: number | undefined,
+  compactionPercent: number = COMPACTION_PERCENT,
+  blockingPercent: number = BLOCKING_PERCENT,
+): ContextPressure {
   if (percent === undefined || percent < compactionPercent) return "room";
-  return percent < BLOCKING_PERCENT ? "compacting" : "blocking";
+  return percent < blockingPercent ? "compacting" : "blocking";
 }
 
 export function summarizeContext(
@@ -77,9 +106,11 @@ export function summarizeContext(
   capabilities: SessionContextCapabilities | undefined,
   loading: boolean | undefined,
   error: string | null | undefined,
+  live?: SessionUsageMetrics["contextInfo"],
+  liveUpdatedAt?: number,
 ): string {
   if (error) return "unavailable";
-  const metrics = getSummaryMetrics(summary);
+  const metrics = getSummaryMetrics(summary, live, liveUpdatedAt);
   if (metrics.percent !== undefined) return formatPercent(metrics.percent);
   if (metrics.used !== undefined) return `${formatCompactTokens(metrics.used)} tokens`;
   if (capabilities?.modelUsage === "unavailable") return "unavailable";
@@ -108,7 +139,7 @@ function pressureFill(pressure: ContextPressure): string {
 export function getMeterSegments(
   metrics: SummaryMetrics,
   breakdown: Pick<SessionContextBreakdown, "systemTokens" | "toolDefinitionsTokens"> | null | undefined,
-  pressure: ContextPressure = getContextPressure(metrics.percent),
+  pressure: ContextPressure = getContextPressure(metrics.percent, metrics.compactionPercent, metrics.blockingPercent),
 ): Segment[] {
   if (metrics.used === undefined) return [];
   const fill = pressureFill(pressure);
@@ -132,13 +163,14 @@ export function getMeterSegments(
 }
 
 /** The window as one bar: what fills it, and ticks where compaction starts and where it blocks. */
-export function ContextMeter({ metrics, segments, compactionPercent = COMPACTION_PERCENT }: {
+export function ContextMeter({ metrics, segments }: {
   metrics: SummaryMetrics;
   segments: Segment[];
-  compactionPercent?: number;
 }) {
   if (metrics.used === undefined || metrics.limit === undefined || metrics.limit <= 0) return null;
   const percent = metrics.percent ?? 0;
+  const compactionPercent = metrics.compactionPercent ?? COMPACTION_PERCENT;
+  const blockingPercent = metrics.blockingPercent ?? BLOCKING_PERCENT;
   return (
     <div className="relative py-1">
       <div
@@ -158,7 +190,7 @@ export function ContextMeter({ metrics, segments, compactionPercent = COMPACTION
           />
         ))}
       </div>
-      {[compactionPercent, BLOCKING_PERCENT].map((tick) => (
+      {[compactionPercent, blockingPercent].map((tick) => (
         <span
           key={tick}
           aria-hidden="true"

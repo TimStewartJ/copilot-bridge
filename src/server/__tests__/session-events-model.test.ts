@@ -7,7 +7,7 @@ import {
   deriveModelStateFromEventsFileAsync,
 } from "../session-events-model.js";
 import { SessionManager } from "../session-manager.js";
-import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
+import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir } from "./helpers.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { runAndCountEventLoopYields } from "./event-loop-test-utils.js";
@@ -92,6 +92,7 @@ describe("deriveModelStateFromEventsContent", () => {
     ];
     expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
       model: "gpt-5.5",
+      contextTier: null,
     });
   });
 
@@ -293,6 +294,27 @@ describe("SessionManager.getSessionModelState", () => {
     });
   });
 
+  it.each(["live", "events"] as const)("does not resurrect a cleared native tier from the sidecar (%s)", async (source) => {
+    const dir = makeTestDir("model-state-cleared-context");
+    const sessionDir = join(dir, "session-state", "session");
+    writePersistedSessionModelState(sessionDir, { model: "model", contextTier: "long_context" });
+    writeFileSync(join(sessionDir, "events.jsonl"), JSON.stringify({
+      type: "session.start", data: { selectedModel: "model", contextTier: null },
+    }));
+    const manager = createManager(dir);
+    if (source === "live") {
+      manager.sessionObjects.set("session", {
+        getCurrentModel: vi.fn().mockResolvedValue({ modelId: "model", contextTier: null }),
+      });
+    }
+
+    const result = await manager.getSessionModelState("session");
+
+    expect(result.model).toBe("model");
+    expect(result.source).toBe(source);
+    expect(result.contextTier).toBeUndefined();
+  });
+
   it("falls back to events when live rpc.getCurrent throws", async () => {
     const dir = makeTestDir("model-state-rpc-error");
     const sessionDir = join(dir, "session-state", "session-x");
@@ -405,13 +427,13 @@ describe("SessionManager.getSessionUsageMetrics", () => {
 
   it("converts live nano-AIU metrics to AI credits and USD", async () => {
     const manager = createManager(makeTestDir("usage-metrics-live"));
-    manager.sessionObjects.set("live-session", {
+    manager.sessionObjects.set("live-session", makeAgentSessionStub({
       getUsageMetrics: vi.fn().mockResolvedValue({
         totalNanoAiu: 2_500_000_000,
         totalPremiumRequestCost: 1.5,
         totalUserRequests: 2,
       }),
-    });
+    }));
 
     await expect(manager.getSessionUsageMetrics("live-session")).resolves.toEqual({
       available: true,
@@ -421,6 +443,27 @@ describe("SessionManager.getSessionUsageMetrics", () => {
       totalPremiumRequestCost: 1.5,
       totalUserRequests: 2,
     });
+  });
+
+  it("reads the native context budget without feeding a stale stored window back into the runtime", async () => {
+    const manager = createManager(makeTestDir("usage-metrics-native-context"));
+    const getSummary = vi.fn().mockReturnValue({ contextWindow: 72_000 });
+    manager.deps.sessionContextStore = { getSummary };
+    const contextInfo = {
+      systemTokens: 1_000, conversationTokens: 2_000, toolDefinitionsTokens: 3_000,
+      totalTokens: 6_000, limit: 200_000, promptTokenLimit: 200_000,
+      compactionThreshold: 160_000, bufferTokens: 10_000,
+    };
+    const getContextInfo = vi.fn().mockResolvedValue(contextInfo);
+    manager.sessionObjects.set("live-session", makeAgentSessionStub({
+      getUsageMetrics: vi.fn().mockResolvedValue({ totalPremiumRequestCost: 0, totalUserRequests: 0 }),
+      getContextInfo,
+    }));
+
+    await expect(manager.getSessionUsageMetrics("live-session")).resolves.toMatchObject({ contextInfo });
+
+    expect(getContextInfo).toHaveBeenCalledExactlyOnceWith();
+    expect(getSummary).not.toHaveBeenCalled();
   });
 });
 

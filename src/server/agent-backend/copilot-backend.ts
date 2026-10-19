@@ -385,6 +385,14 @@ class CopilotAgentSession implements AgentSession {
     return this.rpc("session.setModel", () => switchTo.call(this.session.rpc.model, { ...opts, modelId: model }));
   }
 
+  async setReasoningEffort(reasoningEffort: string): Promise<void> {
+    const set = this.session?.rpc?.model?.setReasoningEffort;
+    if (typeof set !== "function") {
+      throw new Error("Reasoning effort updates are not available in this Copilot SDK build");
+    }
+    await this.rpc("session.setReasoningEffort", () => set.call(this.session.rpc.model, { reasoningEffort }));
+  }
+
   disconnect(): Promise<AgentSessionRelease> {
     return this.release();
   }
@@ -554,15 +562,19 @@ class CopilotAgentSession implements AgentSession {
     return { processing: result.processing };
   }
 
-  async getContextInfo(opts: { promptTokenLimit: number }): Promise<AgentContextInfo | undefined> {
+  async getContextInfo(): Promise<AgentContextInfo | undefined> {
     const contextInfo = this.session?.rpc?.metadata?.contextInfo;
     if (typeof contextInfo !== "function") return undefined;
     const result = await this.rpc(
       "session.getContextInfo",
-      () => contextInfo.call(this.session.rpc.metadata, {
-        promptTokenLimit: Math.max(0, Math.floor(opts.promptTokenLimit)),
-        outputTokenLimit: 0,
-      }),
+      async () => {
+        // The metadata RPC does not initialize the session model catalog.
+        await this.session.rpc.model.list();
+        return contextInfo.call(this.session.rpc.metadata, {
+          promptTokenLimit: 0,
+          outputTokenLimit: 0,
+        });
+      },
     ) as { contextInfo?: unknown };
     const info = isRecord(result?.contextInfo) ? result.contextInfo : undefined;
     if (!info) return undefined;
@@ -577,8 +589,10 @@ class CopilotAgentSession implements AgentSession {
       toolDefinitionsTokens,
       mcpToolsTokens: read("mcpToolsTokens"),
       totalTokens: read("totalTokens") ?? systemTokens + conversationTokens + toolDefinitionsTokens,
+      limit: read("limit"),
       promptTokenLimit: read("promptTokenLimit"),
       compactionThreshold: read("compactionThreshold"),
+      bufferTokens: read("bufferTokens"),
     };
   }
 

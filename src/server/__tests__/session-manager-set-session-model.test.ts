@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir } from "./helpers.js";
@@ -81,13 +81,6 @@ const DEFAULT_CONTEXT_CAPABILITIES = {
   },
 };
 
-const LONG_CONTEXT_CAPABILITIES = {
-  limits: {
-    max_context_window_tokens: 1_050_000,
-    max_prompt_tokens: 922_000,
-  },
-};
-
 const ADAPTIVE_MODEL = {
   id: "adaptive-model",
   name: "Adaptive Model",
@@ -162,7 +155,7 @@ describe("SessionManager.setSessionModel", () => {
     expect(result).toEqual({ status: "applied", model: "hydrafusion", modelId: "hydrafusion" });
   });
 
-  it("caps tiered models when selecting the default context tier", async () => {
+  it("selects the native default context tier without capability overrides", async () => {
     const manager = createManager(makeTestDir("model-context-default"));
     const session = createMockSession("gpt-5.5");
     session.getCurrentModel
@@ -177,7 +170,6 @@ describe("SessionManager.setSessionModel", () => {
 
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
       contextTier: "default",
-      modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES,
     });
     expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "default" });
     await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
@@ -201,14 +193,12 @@ describe("SessionManager.setSessionModel", () => {
 
     expect(session.setModel).toHaveBeenCalledWith("gpt-5.5", {
       contextTier: "long_context",
-      modelCapabilities: LONG_CONTEXT_CAPABILITIES,
     });
     expect(result).toMatchObject({ model: "gpt-5.5", contextTier: "long_context" });
     expect(readPersistedSessionModelState(join(copilotHome, "session-state", "session-1")))
       .toMatchObject({
         model: "gpt-5.5",
         contextTier: "long_context",
-        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
       });
     await expect(manager.getSessionModelState("session-1")).resolves.toMatchObject({
       model: "gpt-5.5",
@@ -236,7 +226,7 @@ describe("SessionManager.setSessionModel", () => {
     expect(manager.sessionObjects.get("cold-session")).toBe(session);
   });
 
-  it("reapplies persisted model capability overrides when resuming before a switch", async () => {
+  it("restores a legacy tier on resume without replaying calculated capability overrides", async () => {
     const copilotHome = makeTestDir("model-context-resume");
     const manager = createManager(copilotHome);
     const session = createMockSession("previous-model");
@@ -254,12 +244,15 @@ describe("SessionManager.setSessionModel", () => {
       "cold-session",
       expect.objectContaining({
         contextTier: "default",
-        modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES,
       }),
     );
+    expect(resumeSession.mock.calls[0][1]).not.toHaveProperty("modelCapabilities");
+    expect(JSON.parse(readFileSync(
+      join(copilotHome, "session-state", "cold-session", "bridge-model-state.json"), "utf8",
+    ))).not.toHaveProperty("modelCapabilities");
   });
 
-  it("backfills model capability overrides for persisted long-context sessions", async () => {
+  it("restores a legacy long tier without generating capability overrides", async () => {
     const copilotHome = makeTestDir("model-context-resume-long-backfill");
     const manager = createManager(copilotHome);
     const session = createMockSession("previous-model");
@@ -278,9 +271,59 @@ describe("SessionManager.setSessionModel", () => {
       "cold-session",
       expect.objectContaining({
         contextTier: "long_context",
-        modelCapabilities: LONG_CONTEXT_CAPABILITIES,
       }),
     );
+    expect(resumeSession.mock.calls[0][1]).not.toHaveProperty("modelCapabilities");
+  });
+
+  it.each(["default", "long_context", null] as const)("lets the native journal restore tier %s instead of the sidecar", async (contextTier) => {
+    const copilotHome = makeTestDir("model-context-native-resume");
+    const manager = createManager(copilotHome);
+    const resumeSession = vi.fn().mockResolvedValue(createMockSession("gpt-5.5"));
+    manager.backend = { resumeSession };
+    const dir = join(copilotHome, "session-state", "cold-session");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "bridge-model-state.json"), JSON.stringify({
+      model: "gpt-5.5", contextTier: "long_context", modelCapabilities: DEFAULT_CONTEXT_CAPABILITIES,
+    }));
+    writeFileSync(join(dir, "events.jsonl"), JSON.stringify({
+      type: "session.start", data: { selectedModel: "gpt-5.5", contextTier },
+    }));
+
+    await manager.setSessionModel("cold-session", "claude-opus-4.7");
+
+    expect(resumeSession.mock.calls[0][1]).not.toHaveProperty("contextTier");
+    expect(resumeSession.mock.calls[0][1]).not.toHaveProperty("modelCapabilities");
+  });
+
+  it("uses the native effort setter for turn preferences without changing tiers or switching models", async () => {
+    const manager = createManager(makeTestDir("native-turn-effort"));
+    manager.modelMetadata = [{ ...GPT_55_TIERED_MODEL, supportedReasoningEfforts: ["low", "medium", "high"] }];
+    const session = createMockSession("gpt-5.5");
+    session.getCurrentModel.mockResolvedValue({ modelId: "gpt-5.5", reasoningEffort: "low", contextTier: "long_context" });
+    const setReasoningEffort = vi.fn().mockResolvedValue(undefined);
+    session.setReasoningEffort = setReasoningEffort;
+
+    await manager.applyTurnReasoningEffort("session-1", session, "max");
+    await manager.applyTurnReasoningEffort("session-1", session, "max");
+
+    expect(setReasoningEffort).toHaveBeenCalledExactlyOnceWith("high");
+    expect(session.setModel).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed effort update and retries it on the next turn", async () => {
+    const manager = createManager(makeTestDir("native-turn-effort-retry"));
+    manager.modelMetadata = [{ id: "model", supportedReasoningEfforts: ["low", "high"] }];
+    const session = createMockSession("model");
+    session.setReasoningEffort = vi.fn().mockRejectedValueOnce(new Error("Native effort failed")).mockResolvedValue(undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await manager.applyTurnReasoningEffort("session-1", session, "high");
+    await manager.applyTurnReasoningEffort("session-1", session, "high");
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Native effort failed"));
+    expect(session.setReasoningEffort).toHaveBeenCalledTimes(2);
+    expect(session.setModel).not.toHaveBeenCalled();
   });
 
   it("does not let a superseded cold switch resume overwrite a newer cached session", async () => {

@@ -103,13 +103,6 @@ const GPT_55_TIERED_MODEL = {
   },
 };
 
-const LONG_CONTEXT_CAPABILITIES = {
-  limits: {
-    max_context_window_tokens: 1_050_000,
-    max_prompt_tokens: 922_000,
-  },
-};
-
 function createGitHubCopilotMcpToolConfig() {
   return {
     additionalTools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
@@ -649,7 +642,7 @@ describe("session-config-builder", () => {
     expect(cfg.model).toBe("gpt-5.5");
     expect(cfg.reasoningEffort).toBe("xhigh");
     expect(cfg.contextTier).toBe("long_context");
-    expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
+    expect(cfg.modelCapabilities).toBeUndefined();
   });
 
   it("omits stored schedule launch options that the model no longer supports", () => {
@@ -780,7 +773,7 @@ describe("session-config-builder", () => {
     expect(cfg.model).toBe("gpt-5.5");
     expect(cfg.reasoningEffort).toBe("high");
     expect(cfg.contextTier).toBe("long_context");
-    expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
+    expect(cfg.modelCapabilities).toBeUndefined();
   });
 
   it("uses the backend permission policy when one is provided", () => {
@@ -1331,9 +1324,9 @@ describe("session-config-builder", () => {
     expect(cfg.reasoningEffort).toBe("medium");
   });
 
-  it("includes explicit long-context capabilities for new-session paths", () => {
+  it.each(["default", "long_context"] as const)("passes native %s context without capability overrides", (contextTier) => {
     const settingsStore = {
-      getSettings: () => ({ model: "gpt-5.5", contextTier: "long_context" }),
+      getSettings: () => ({ model: "gpt-5.5", contextTier }),
       getMcpServers: () => ({}),
     } as unknown as SettingsStore;
 
@@ -1344,8 +1337,8 @@ describe("session-config-builder", () => {
     });
 
     expect(cfg.model).toBe("gpt-5.5");
-    expect(cfg.contextTier).toBe("long_context");
-    expect(cfg.modelCapabilities).toEqual(LONG_CONTEXT_CAPABILITIES);
+    expect(cfg.contextTier).toBe(contextTier);
+    expect(cfg.modelCapabilities).toBeUndefined();
   });
 
   it("preserves requested context tiers when model metadata is unavailable", () => {

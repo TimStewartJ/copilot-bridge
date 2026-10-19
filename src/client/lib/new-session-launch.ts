@@ -3,7 +3,7 @@ import { formatReasoningEffortLabel } from "../reasoning-effort";
 import {
   formatContextWindowTokens,
   getContextTierLabel,
-  getContextWindowTokensForTier,
+  getContextPromptTokensForTier,
   modelSupportsLongContext,
   modelUsesDynamicSelection,
   type CopilotContextTier,
@@ -93,7 +93,7 @@ export function buildContextTierOptions(
     ];
   }
 
-  const defaultContextTokens = getContextWindowTokensForTier(model, "default");
+  const defaultContextTokens = getContextPromptTokensForTier(model, "default");
   return [{
     value: null,
     label: defaultContextTokens
@@ -113,7 +113,7 @@ function buildNewSessionContextTierOptions(
   if (modelUsesDynamicSelection(model)) return [];
   if (modelSupportsLongContext(model)) return buildContextTierOptions(model);
 
-  const defaultContextTokens = getContextWindowTokensForTier(model, "default");
+  const defaultContextTokens = getContextPromptTokensForTier(model, "default");
   return [{
     value: "default",
     label: defaultContextTokens

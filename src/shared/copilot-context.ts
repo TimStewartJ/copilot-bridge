@@ -7,6 +7,7 @@ export interface CopilotTokenPrices {
   readonly outputPrice?: number;
   readonly cachePrice?: number;
   readonly batchSize?: number;
+  readonly maxPromptTokens?: number;
   readonly contextMax?: number;
 }
 
@@ -42,18 +43,6 @@ export function modelUsesDynamicSelection(
   return model?.selectionMode === "dynamic";
 }
 
-export interface CopilotModelCapabilitiesOverride {
-  supports?: {
-    [key: string]: unknown;
-  };
-  limits?: {
-    max_context_window_tokens?: number;
-    max_prompt_tokens?: number;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
 export function isCopilotContextTier(value: unknown): value is CopilotContextTier {
   return value === "default" || value === "long_context";
 }
@@ -63,8 +52,8 @@ export function normalizeCopilotContextTier(value: unknown): CopilotContextTier 
 }
 
 export function modelSupportsLongContext(model: CopilotModelContextMetadata | null | undefined): boolean {
-  const longContextMax = finitePositiveNumber(model?.billing?.tokenPrices?.longContext?.contextMax);
-  const defaultContextMax = finitePositiveNumber(model?.billing?.tokenPrices?.contextMax);
+  const longContextMax = getTierPromptTokens(model?.billing?.tokenPrices?.longContext);
+  const defaultContextMax = getTierPromptTokens(model?.billing?.tokenPrices);
   return longContextMax !== undefined && (
     defaultContextMax === undefined || longContextMax > defaultContextMax
   );
@@ -78,20 +67,20 @@ export function resolveContextTierForModel(
   return requested ?? "default";
 }
 
-export function getContextWindowTokensForTier(
+export function getContextPromptTokensForTier(
   model: CopilotModelContextMetadata | null | undefined,
   tier: CopilotContextTier | undefined,
 ): number | undefined {
   if (!model) return undefined;
   if (tier === "long_context") {
-    return finitePositiveNumber(model.billing?.tokenPrices?.longContext?.contextMax)
-      ?? finitePositiveNumber(model.capabilities?.limits?.max_context_window_tokens);
+    return getTierPromptTokens(model.billing?.tokenPrices?.longContext)
+      ?? finitePositiveNumber(model.capabilities?.limits?.max_prompt_tokens);
   }
   if (tier === "default") {
-    return finitePositiveNumber(model.billing?.tokenPrices?.contextMax)
-      ?? finitePositiveNumber(model.capabilities?.limits?.max_context_window_tokens);
+    return getTierPromptTokens(model.billing?.tokenPrices)
+      ?? finitePositiveNumber(model.capabilities?.limits?.max_prompt_tokens);
   }
-  return finitePositiveNumber(model.capabilities?.limits?.max_context_window_tokens);
+  return finitePositiveNumber(model.capabilities?.limits?.max_prompt_tokens);
 }
 
 export function getContextTierLabel(
@@ -99,8 +88,8 @@ export function getContextTierLabel(
   tier: CopilotContextTier | undefined,
 ): string | undefined {
   if (!tier || !modelSupportsLongContext(model)) return undefined;
-  const windowTokens = getContextWindowTokensForTier(model, tier);
-  const suffix = windowTokens ? ` (${formatContextWindowTokens(windowTokens)})` : "";
+  const promptTokens = getContextPromptTokensForTier(model, tier);
+  const suffix = promptTokens ? ` (${formatContextWindowTokens(promptTokens)})` : "";
   return tier === "long_context" ? `Long context${suffix}` : `Standard context${suffix}`;
 }
 
@@ -112,40 +101,10 @@ export function formatContextWindowTokens(tokens: number): string {
   return `${Math.round(tokens / 1_000).toLocaleString()}K`;
 }
 
-export function getModelCapabilitiesOverride(
-  model: CopilotModelContextMetadata | null | undefined,
-  tier: CopilotContextTier | undefined,
-): CopilotModelCapabilitiesOverride | undefined {
-  if (!modelSupportsLongContext(model) || !tier) return undefined;
-
-  const fullContextMax = finitePositiveNumber(model?.capabilities?.limits?.max_context_window_tokens);
-  const fullPromptMax = finitePositiveNumber(model?.capabilities?.limits?.max_prompt_tokens);
-  if (tier === "long_context") {
-    const longPromptMax = finitePositiveNumber(model?.billing?.tokenPrices?.longContext?.contextMax) ?? fullPromptMax;
-    const limits: NonNullable<CopilotModelCapabilitiesOverride["limits"]> = {};
-    if (fullContextMax) limits.max_context_window_tokens = fullContextMax;
-    if (longPromptMax) limits.max_prompt_tokens = longPromptMax;
-    return Object.keys(limits).length > 0 ? { limits } : undefined;
-  }
-
-  const defaultContextMax = finitePositiveNumber(model?.billing?.tokenPrices?.contextMax);
-  if (!defaultContextMax || (fullContextMax && defaultContextMax >= fullContextMax)) return undefined;
-
-  const limits: NonNullable<CopilotModelCapabilitiesOverride["limits"]> = {
-    max_context_window_tokens: defaultContextMax,
-  };
-  const promptLimit = defaultContextMax - (finiteNonNegativeNumber(model?.capabilities?.limits?.max_output_tokens) ?? 0);
-  const fullPromptLimit = finitePositiveNumber(model?.capabilities?.limits?.max_prompt_tokens);
-  if (promptLimit > 0 && (!fullPromptLimit || fullPromptLimit > promptLimit)) {
-    limits.max_prompt_tokens = promptLimit;
-  }
-  return { limits };
+function getTierPromptTokens(prices: CopilotTokenPrices | undefined): number | undefined {
+  return finitePositiveNumber(prices?.maxPromptTokens) ?? finitePositiveNumber(prices?.contextMax);
 }
 
 function finitePositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function finiteNonNegativeNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }

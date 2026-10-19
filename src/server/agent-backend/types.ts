@@ -134,12 +134,11 @@ export type AgentModelCompactionDecision = "compact" | "cancel";
 
 /**
  * Options for `AgentSession.setModel(...)`. Copilot SDK accepts an optional
- * `{ reasoningEffort, contextTier, modelCapabilities, compactionDecision }` second argument.
+ * `{ reasoningEffort, contextTier, compactionDecision }` second argument.
  */
 export interface AgentSetModelOptions {
   reasoningEffort?: string;
   contextTier?: string;
-  modelCapabilities?: unknown;
   compactionDecision?: AgentModelCompactionDecision;
   [extra: string]: unknown;
 }
@@ -314,9 +313,12 @@ export interface AgentContextInfo {
   /** The MCP share of the tool definitions. */
   mcpToolsTokens?: number;
   totalTokens: number;
+  /** Advertised prompt allowance used for context displays. */
+  limit?: number;
   promptTokenLimit?: number;
   /** Token count at which background compaction starts. */
   compactionThreshold?: number;
+  bufferTokens?: number;
 }
 
 export interface AgentSessionRelease {
@@ -368,6 +370,7 @@ export interface AgentSession {
   abort(): Promise<unknown>;
   /** Returns the runtime switch result when the backend exposes it. */
   setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined>;
+  setReasoningEffort(reasoningEffort: string): Promise<void>;
   /** Optional compatibility facade; lifecycle owners use release(). */
   disconnect?(): Promise<unknown> | void;
   /**
@@ -426,7 +429,7 @@ export interface AgentSession {
    * The runtime's current split of the context window. Resolves `undefined` when unsupported or
    * before the session has built its system prompt and tool list.
    */
-  getContextInfo?(opts: { promptTokenLimit: number }): Promise<AgentContextInfo | undefined>;
+  getContextInfo(): Promise<AgentContextInfo | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;

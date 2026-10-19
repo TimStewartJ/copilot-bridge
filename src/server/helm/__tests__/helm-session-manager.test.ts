@@ -29,6 +29,10 @@ function createFakeSession(sessionId: string, tools: Array<{ name: string }>, re
       current.reasoningEffort = options?.reasoningEffort;
       return undefined;
     }),
+    setReasoningEffort: vi.fn(async (effort: string) => {
+      calls.push(`setReasoningEffort:${effort}`);
+      current.reasoningEffort = effort;
+    }),
     send: vi.fn(async () => {
       calls.push("send");
       const timestamp = new Date().toISOString();
@@ -243,8 +247,9 @@ describe("SessionManager with the Helm profile", () => {
       await turn("[hands-free]\nand the tasks?", { reasoningEffort: "xhigh" });
       await turn("typed once more");
       // The switch lands before the prompt it is for, and only when the mode actually changed.
-      expect(session.calls).toEqual(["send", "send", "setModel:xhigh", "send", "send", "setModel:max", "send"]);
-      expect(session.setModel).toHaveBeenLastCalledWith(MODEL, { reasoningEffort: "max" });
+      expect(session.calls).toEqual(["send", "send", "setReasoningEffort:xhigh", "send", "send", "setReasoningEffort:max", "send"]);
+      expect(session.setReasoningEffort).toHaveBeenLastCalledWith("max");
+      expect(session.setModel).not.toHaveBeenCalled();
       expect((await manager.getSessionModelState(helmId)).reasoningEffort).toBe("max");
     } finally {
       await manager.gracefulShutdown();
@@ -262,12 +267,12 @@ describe("SessionManager with the Helm profile", () => {
 
       await manager.startWorkAndWaitForDelivery(helmId, "typed");
       await vi.waitFor(() => expect(manager.isSessionBusy(helmId)).toBe(false));
-      expect(session.calls).toEqual(["setModel:high", "send"]);
+      expect(session.calls).toEqual(["setReasoningEffort:high", "send"]);
 
-      session.setModel.mockRejectedValueOnce(new Error("model switch unavailable"));
+      session.setReasoningEffort.mockRejectedValueOnce(new Error("effort update unavailable"));
       await manager.startWorkAndWaitForDelivery(helmId, "[hands-free]\nhello", undefined, { reasoningEffort: "none" });
       await vi.waitFor(() => expect(manager.isSessionBusy(helmId)).toBe(false));
-      expect(session.calls).toEqual(["setModel:high", "send", "send"]);
+      expect(session.calls).toEqual(["setReasoningEffort:high", "send", "send"]);
     } finally {
       await manager.gracefulShutdown();
       db.close();
