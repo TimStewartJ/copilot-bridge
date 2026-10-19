@@ -638,6 +638,10 @@ describe("SessionList change model dialog", () => {
   }
 
   it("submits the effort and context tier picked from the option rows", async () => {
+    queryClient.setQueryData(queryKeys.sessionUsageMetrics("session-1"), {
+      available: false, totalNanoAiu: null, aiCredits: null, costUsd: null,
+      totalPremiumRequestCost: null, totalUserRequests: null,
+    });
     const harness = await openModelDialog(
       { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
       [TIERED_MODEL],
@@ -663,6 +667,7 @@ describe("SessionList change model dialog", () => {
         contextTier: "long_context",
         source: "live",
       });
+      expect(queryClient.getQueryState(queryKeys.sessionUsageMetrics("session-1"))?.isInvalidated).toBe(true);
     } finally {
       await harness.cleanup();
     }

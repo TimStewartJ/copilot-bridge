@@ -64,6 +64,33 @@ describe("McpStatusBar status ownership", () => {
     }
   });
 
+  it("uses the same native context reading in the collapsed status and expanded panel", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(McpStatusBar, {
+        servers: [], statusState: "ready",
+        sessionUsage: {
+          available: true, totalNanoAiu: null, aiCredits: null, costUsd: null,
+          totalPremiumRequestCost: 0, totalUserRequests: 0,
+          contextInfo: {
+            systemTokens: 10_000, toolDefinitionsTokens: 20_000, conversationTokens: 900_000, totalTokens: 930_000,
+            limit: 1_000_000, promptTokenLimit: 968_000, compactionThreshold: 774_400, bufferTokens: 80_400,
+          },
+        },
+      }));
+
+      expect(harness.dom.container.textContent).toContain("93%");
+      const toggle = findAllByTag(harness.dom.container, "BUTTON")[0];
+      await harness.act(async () => getReactProps(toggle)?.onClick?.());
+
+      expect(harness.dom.container.textContent).toContain("930k of 1M");
+      expect(harness.dom.container.textContent).toContain("93% full");
+      expect(harness.dom.container.textContent).toContain("Nearly full. The next turn waits for compaction to finish.");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("keeps the chat identity and plan action visible even with nothing to report", async () => {
     const harness = await createReactDomHarness();
     const onPlan = vi.fn();

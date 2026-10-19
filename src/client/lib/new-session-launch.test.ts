@@ -110,7 +110,7 @@ describe("new-session launch state", () => {
       models: [{
         id: "gpt-5-mini",
         name: "GPT-5 mini",
-        capabilities: { limits: { max_context_window_tokens: 128_000 } },
+        capabilities: { limits: { max_context_window_tokens: 160_000, max_prompt_tokens: 128_000 } },
       }],
       selectedModelId: "gpt-5-mini",
       defaultContextTier: "long_context",

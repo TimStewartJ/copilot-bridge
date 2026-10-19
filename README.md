@@ -299,6 +299,14 @@ Use `check:fast` during day-to-day editing, then run the area-specific `check:*`
 
 Windows process-tree identity snapshots use `CreateToolhelp32Snapshot` and `GetProcessTimes` on a dedicated worker thread. They do not start PowerShell or query WMI/CIM. Native creation times retain the microsecond precision of persisted CIM markers. Unqueryable entries during process creation or exit are re-observed within the existing snapshot and fencing budgets. No process is signalled through an unknown identity, and unknown survivors never count as exited. Incomplete snapshots, recycled PIDs, and worker failures retain the existing refusal behavior. Snapshot, fencing, and RPC deadlines are unchanged; POSIX snapshots continue to use `ps`.
 
+### Context tiers
+
+Bridge passes Standard or Long context selection to the Copilot runtime without overriding token
+limits. The runtime owns the effective input budget, compaction thresholds and persisted tier.
+The context meter uses its live display allowance and buffer when available; recorded usage and SDK
+defaults remain the fallback for unloaded sessions. Catalog prompt budgets describe the choices
+before a session exists and do not enforce runtime limits.
+
 ### Moving chats to another model
 
 A move switches every chat that is not archived from one model to another. It covers the chats the

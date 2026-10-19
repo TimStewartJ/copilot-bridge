@@ -1003,22 +1003,44 @@ describe("CopilotAgentSession wrap fidelity", () => {
 
     const olderSdk = await new CopilotBackend(createFakeClient(createFakeSession({})) as any).createSession({} as any);
     await expect(olderSdk.getUsageMetrics!()).resolves.toBeUndefined();
-    await expect(olderSdk.getContextInfo!({ promptTokenLimit: 1000 })).resolves.toBeUndefined();
+    await expect(olderSdk.getContextInfo()).resolves.toBeUndefined();
   });
 
-  it("asks the runtime for the current context split with the model's prompt limit", async () => {
+  it("warms the session catalog and reads native context limits without supplying guessed limits", async () => {
+    const list = vi.fn(async () => ({ models: [] }));
     const contextInfo = vi.fn(async (): Promise<unknown> => ({ contextInfo: {
       modelName: "m", systemTokens: 21_000, conversationTokens: 380_000, toolDefinitionsTokens: 30_000, mcpToolsTokens: 12_000,
-      totalTokens: 431_000, promptTokenLimit: 872_000, compactionThreshold: 697_600, limit: 1_000_000, bufferTokens: 1,
+      totalTokens: 431_000, promptTokenLimit: 968_000, compactionThreshold: 774_400, limit: 1_000_000, bufferTokens: 80_400,
     } }));
-    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({ metadata: { contextInfo } })) as any).createSession({} as any);
-    await expect(wrapped.getContextInfo!({ promptTokenLimit: 872_000.4 })).resolves.toEqual({
+    const wrapped = await new CopilotBackend(createFakeClient(createFakeSession({ model: { list }, metadata: { contextInfo } })) as any).createSession({} as any);
+    await expect(wrapped.getContextInfo()).resolves.toEqual({
       systemTokens: 21_000, conversationTokens: 380_000, toolDefinitionsTokens: 30_000, mcpToolsTokens: 12_000,
-      totalTokens: 431_000, promptTokenLimit: 872_000, compactionThreshold: 697_600,
+      totalTokens: 431_000, promptTokenLimit: 968_000, compactionThreshold: 774_400, limit: 1_000_000, bufferTokens: 80_400,
     });
-    expect(contextInfo).toHaveBeenCalledWith({ promptTokenLimit: 872_000, outputTokenLimit: 0 });
+    expect(contextInfo).toHaveBeenCalledWith({ promptTokenLimit: 0, outputTokenLimit: 0 });
+    expect(list).toHaveBeenCalledOnce();
+    expect(list.mock.invocationCallOrder[0]).toBeLessThan(contextInfo.mock.invocationCallOrder[0]!);
     contextInfo.mockResolvedValueOnce({ contextInfo: null });
-    await expect(wrapped.getContextInfo!({ promptTokenLimit: 0 })).resolves.toBeUndefined();
+    await expect(wrapped.getContextInfo()).resolves.toBeUndefined();
+  });
+
+  it("updates native reasoning effort without switching the model", async () => {
+    const setReasoningEffort = vi.fn(async () => ({ reasoningEffort: "high" }));
+    const switchTo = vi.fn();
+    const session = createFakeSession({ model: { setReasoningEffort, switchTo } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await wrapped.setReasoningEffort("high");
+
+    expect(setReasoningEffort).toHaveBeenCalledWith({ reasoningEffort: "high" });
+    expect(switchTo).not.toHaveBeenCalled();
+    expect(session.setModel).not.toHaveBeenCalled();
+    const error = new Error("Effort update failed");
+    setReasoningEffort.mockRejectedValueOnce(error);
+    await expect(wrapped.setReasoningEffort("high")).rejects.toBe(error);
+
+    const olderSdk = await new CopilotBackend(createFakeClient(createFakeSession()) as any).createSession({} as any);
+    await expect(olderSdk.setReasoningEffort("high")).rejects.toThrow("not available");
   });
 
   it("getActivity asks rpc.metadata.isProcessing and rejects an answer it cannot read", async () => {
