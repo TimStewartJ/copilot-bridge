@@ -4,17 +4,20 @@ import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createTestBus, makeAgentSessionStub, setupTestDb } from "./helpers.js";
 import { transformEventsToMessages } from "../event-transform.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 
 describe("SessionManager tool result rendering", () => {
   let eventBusRegistry: ReturnType<typeof createEventBusRegistry>;
   let sessionTitles: ReturnType<typeof createSessionTitlesStore>;
   let globalBus: ReturnType<typeof createTestBus>;
+  let telemetryStore: ReturnType<typeof createTelemetryStore>;
 
   beforeEach(() => {
     const db = setupTestDb();
     eventBusRegistry = createEventBusRegistry();
     sessionTitles = createSessionTitlesStore(db);
     globalBus = createTestBus();
+    telemetryStore = createTelemetryStore(db);
   });
 
   function createManager() {
@@ -22,10 +25,51 @@ describe("SessionManager tool result rendering", () => {
       globalBus,
       eventBusRegistry,
       sessionTitles,
+      telemetryStore,
       taskStore: { findTaskBySessionId: () => undefined } as any,
       config: { sessionMcpServers: {} },
     });
   }
+
+  it("records structured failure diagnostics without replaying tools or retaining payloads", async () => {
+    const manager = createManager() as any;
+    const bus = eventBusRegistry.getOrCreateBus("failure-session");
+    const requestId = "12345678-1234-1234-1234-123456789abc";
+    const session = createSession([
+      {
+        type: "tool.execution_start",
+        data: { toolCallId: "read-1", toolName: "service-read", arguments: { secret: "private-tool-payload" } },
+      },
+      {
+        type: "tool.execution_complete",
+        data: {
+          toolCallId: "read-1", success: false,
+          error: {
+            message: "private-tool-payload", statusCode: 429, code: "VendorQuotaExceeded",
+            headers: { "Retry-After": "60", "request-id": requestId },
+          },
+        },
+      },
+      { type: "assistant.message", data: { content: "The source could not be checked." } },
+      { type: "session.idle", data: {} },
+    ]);
+    manager.backend = {};
+    manager.sessionObjects.set("failure-session", session);
+
+    await manager._doWork("failure-session", "Check source", bus);
+
+    const spans = telemetryStore.querySpans({ name: "tool.failure", sessionId: "failure-session" });
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({
+      source: "server", duration: expect.any(Number),
+      metadata: {
+        toolName: "service-read", toolCallId: "read-1", category: "throttled",
+        statusCode: 429, errorCode: "VendorQuotaExceeded", retryAfterMs: 60_000, requestId,
+      },
+    });
+    expect(JSON.stringify(spans)).not.toContain("private-tool-payload");
+    expect(session.send).toHaveBeenCalledOnce();
+  });
 
   function createSession(events: any[]) {
     const handlers: Array<(event: any) => void> = [];

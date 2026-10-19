@@ -175,7 +175,7 @@ interface ActiveExternalToolCall {
 }
 
 import { stampMcpStatusSnapshot, type McpStatusProvenance } from "./mcp-status.js";
-import { classifyToolFailure } from "../shared/tool-failure.js";
+import { recordToolFailure } from "./tool-failure-telemetry.js";
 
 export interface McpServerStatus {
   name: string;
@@ -1975,14 +1975,21 @@ export class SessionRunner {
             completedToolName,
           );
           const ok = outcome.success !== false;
-          const failure = ok ? undefined : classifyToolFailure(outcome.result);
+          const toolStart = toolStartTimes.get(data?.toolCallId);
+          const failure = ok ? undefined : recordToolFailure(
+            resolution.error ?? { error: data?.error, result: data?.result },
+            {
+              sessionId,
+              toolName: completedToolName,
+              toolCallId: completedToolCallId,
+              durationMs: toolStart === undefined ? 0 : Date.now() - toolStart,
+            },
+            (name, duration, id, metadata) => this.deps.telemetryStore?.recordSpan({
+              name, duration, sessionId: id, metadata, source: "server",
+            }),
+          );
           console.log(`[sdk] [${sid}] 🔧 Tool complete: ${outcome.displayName} (${ok ? "ok" : `failed:${failure!.category}`})`);
           if (failure) {
-            this.recordSpan("tool.failure", 0, sessionId, {
-              toolName: completedToolName,
-              category: failure.category,
-              retryable: failure.retryable,
-            });
             console.warn(`[sdk] [${sid}] Tool failure guidance: ${failure.guidance}`);
           }
           const configuredMcpServer = getConfiguredMcpServerForTool(completedToolName);
@@ -2008,7 +2015,6 @@ export class SessionRunner {
               }
             }
           }
-          const toolStart = toolStartTimes.get(data?.toolCallId);
           if (toolStart) {
             this.recordSpan("tool.execution", Date.now() - toolStart, sessionId, {
               toolName: completedToolName,
