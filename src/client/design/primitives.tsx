@@ -547,6 +547,8 @@ export const STATUS_LABEL: Record<DsStatusKind, string> = {
   open: "Open",
   closed: "Closed",
   paused: "Paused",
+  review: "Needs a look",
+  unknown: "Status unavailable",
   on: "On",
   autopilot: "Autopilot working",
 };
@@ -594,6 +596,21 @@ export function AutopilotBadge({ children = "Autopilot", title, className }: { c
 function StatusGlyph({ kind }: { kind: DsStatusKind }) {
   const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round" } as const;
   switch (kind) {
+    case "review":
+      return (
+        <>
+          <path d="M.9 8s2.5-4.5 7.1-4.5S15.1 8 15.1 8s-2.5 4.5-7.1 4.5S.9 8 .9 8Z" {...stroke} />
+          <circle cx="8" cy="8" r="2.1" {...stroke} />
+        </>
+      );
+    case "unknown":
+      return (
+        <>
+          <circle cx="8" cy="8" r="6.4" {...stroke} />
+          <path d="M6.2 5.8a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3" {...stroke} />
+          <circle cx="8" cy="11.5" r=".8" fill="currentColor" />
+        </>
+      );
     case "needs-input":
       return (
         <>

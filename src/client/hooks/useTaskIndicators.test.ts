@@ -11,7 +11,6 @@ import {
   summarizeTaskTabAttention,
   type TaskIndicator,
 } from "./useTaskIndicators";
-import { getTaskStatus } from "../task-row-signals";
 
 const NOW = "2026-04-17T15:00:00.000Z";
 
@@ -249,31 +248,6 @@ describe("getTaskIndicator", () => {
     expect(indicator).toMatchObject({
       unread: false,
       unreadCount: 1,
-    });
-  });
-
-  describe("getTaskStatus", () => {
-    it("gives an answer needed precedence over stalled, working and unread states", () => {
-      expect(getTaskStatus(createIndicator({
-        busy: true,
-        stalled: true,
-        needsUserInputCount: 1,
-        unreadCount: 2,
-      }))).toEqual({ kind: "needs-input", label: "Answer needed" });
-      expect(getTaskStatus(createIndicator({ busy: true, stalled: true })))
-        .toEqual({ kind: "warning", label: "Stalled" });
-      expect(getTaskStatus(createIndicator({ unreadCount: 1 })))
-        .toEqual({ kind: "unread", label: "Unread conversations" });
-      expect(getTaskStatus(createIndicator({ busy: true })))
-        .toEqual({ kind: "working", label: "Agent working" });
-      expect(getTaskStatus(createIndicator())).toBeNull();
-    });
-
-    it("shows unread results and a working agent as one state, without hiding either", () => {
-      expect(getTaskStatus(createIndicator({ busy: true, unreadCount: 1 })))
-        .toEqual({ kind: "unread-working", label: "Unread conversations, agent working" });
-      expect(getTaskStatus(createIndicator({ busy: true, stalled: true, unreadCount: 1 })))
-        .toEqual({ kind: "warning", label: "Stalled" });
     });
   });
 });

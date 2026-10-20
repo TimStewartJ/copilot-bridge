@@ -7,9 +7,11 @@ const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn(), patchTask: vi.fn() }
 vi.mock("../api", () => api);
 vi.mock("./PullToRefresh", () => ({ default: ({ children }: { children: unknown }) => children }));
 import AllTasks from "./AllTasks";
+import { createTaskActivity } from "../../test-support/task-attention";
+import type { TaskIndicator } from "../hooks/useTaskIndicators";
 
 const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id: "t", title: "Task", kind: "task", muted: false, deferred: false,
-  state: "up_next", reasons: [], staleWait: false, idleDays: 10, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
+  state: "up_next", reasons: [], staleWait: false, idleDays: 10, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, activity: createTaskActivity(), order: 0, ...overrides });
 function overview(tasks: TaskOverviewRow[]): TaskOverview {
   const counts = { needs_you: 0, in_motion: 0, up_next: 0, waiting: 0, no_next_step: 0, gone_quiet: 0, set_aside: 0 };
   for (const task of tasks) counts[task.state] += 1;
@@ -30,9 +32,9 @@ describe("All tasks", () => {
     harness = await createDialogTestHarness();
   });
   afterEach(async () => { await harness.cleanup(); vi.unstubAllGlobals(); });
-  async function render(tasks: TaskOverviewRow[], compact = false) {
+  async function render(tasks: TaskOverviewRow[], compact = false, taskIndicators?: ReadonlyMap<string, TaskIndicator>) {
     api.fetchTaskOverview.mockResolvedValue(overview(tasks));
-    await harness.render(createElement(AllTasks, { onSelectTask: selectTask, compact }));
+    await harness.render(createElement(AllTasks, { onSelectTask: selectTask, compact, taskIndicators }));
     await waitUntilAct(harness.act, () => text().includes("active"), { label: "overview loaded" });
   }
 
@@ -96,9 +98,76 @@ describe("All tasks", () => {
   it("says a surfaced task is still deferred", async () => {
     await render([row({ id: "d", title: "Parked but asking", state: "needs_you", reasons: ["question"], inputCount: 1, deferred: true }), row({ id: "e", title: "Plain" })]);
     const needs = findAllByTag(harness.dom.container, "SECTION").find(node => getReactProps(node)?.["aria-label"] === "Needs you");
-    expect(needs?.textContent).toContain("Answer needed");
+    expect(needs?.textContent).toContain("Needs you");
     expect(needs?.textContent).toContain("Deferred");
     const upNext = findAllByTag(harness.dom.container, "SECTION").find(node => getReactProps(node)?.["aria-label"] === "Up next");
     expect(upNext?.textContent).not.toContain("Deferred");
+  });
+
+  it("keeps manual task/group order while attention changes", async () => {
+    stored.set("bridge.allTasks.grouping", "group");
+    const tasks = [
+      row({ id: "later-group", title: "Later group task", groupId: "b", groupName: "Second", groupOrder: 2, order: 0 }),
+      row({ id: "first", title: "First in order", groupId: "a", groupName: "First", groupOrder: 1, order: 0, state: "waiting", waitingOn: "Reviewers", nextTouchAt: "2099-01-01T00:00:00Z" }),
+      row({ id: "second", title: "Second in order", groupId: "a", groupName: "First", groupOrder: 1, order: 1, state: "needs_you", inputCount: 1 }),
+      row({ id: "third", title: "Third in order", groupId: "a", groupName: "First", groupOrder: 1, order: 2 }),
+    ];
+    await render(tasks);
+    const taskButtons = () => buttons().filter(node => tasks.some(task => node.textContent?.startsWith(task.title)));
+    expect(taskButtons().map(node => getReactProps(node)?.["aria-label"])).toEqual([
+      "First in order", "Second in order, Needs you", "Third in order, Needs a look", "Later group task, Needs a look",
+    ]);
+    await harness.render(createElement(AllTasks, { onSelectTask: selectTask, taskIndicators: new Map([
+      ["first", { busy: false, busyCount: 0, stalled: false, unread: false, unreadCount: 0, needsUserInputCount: 1, readStateKnown: true, sessionStateKnown: true, lastActivity: "" }],
+    ]) }));
+    expect(taskButtons().map(node => getReactProps(node)?.["aria-label"])).toEqual([
+      "First in order, Needs you", "Second in order, Needs you", "Third in order, Needs a look", "Later group task, Needs a look",
+    ]);
+    expect(findAllByTag(harness.dom.container, "SECTION").map(node => getReactProps(node)?.["aria-label"])).toEqual(["First", "Second"]);
+  });
+
+  it("shows new replies and questions distinctly and keeps automatic work unbadged", async () => {
+    const indicators = new Map<string, TaskIndicator>([
+      ["new", { busy: true, busyCount: 1, stalled: false, unread: true, unreadCount: 1, readStateKnown: true, sessionStateKnown: true, lastActivity: "" }],
+    ]);
+    await render([
+      row({ id: "asks", title: "Approval", state: "needs_you", inputCount: 1 }),
+      row({ id: "new", title: "Finished output" }),
+      row({ id: "auto", title: "Monitoring", activity: createTaskActivity({ deferredCount: 1 }) }),
+    ], false, indicators);
+    const iconKinds = findAllByTag(harness.dom.container, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean);
+    expect(iconKinds).toEqual(["needs-input", "unread"]);
+    expect(text()).toContain("New replies");
+    expect(text()).toContain("Automatic check scheduled");
+    expect(iconKinds).not.toContain("working");
+  });
+
+  it("shows a shared source gap once instead of putting Unknown on every affected row", async () => {
+    const tasks = ["First copied task", "Second copied task"].map((title, index) => row({
+      id: `copy-${index}`, title, order: index, activity: createTaskActivity({
+        known: false, sessionIndexKnown: false,
+        unavailable: { scope: "source", reason: "Production conversations are isolated." },
+      }),
+    }));
+    await render(tasks);
+    const notices = findAllByTag(harness.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"]);
+    expect(notices).toHaveLength(1);
+    expect(findAllByTag(harness.dom.container, "SUMMARY")[0].textContent).toContain("Activity data incomplete");
+    expect(findAllByTag(harness.dom.container, "LI").map(node => node.textContent)).toEqual([
+      "First copied task", "Second copied task",
+    ]);
+    expect(buttons().filter(node => tasks.some(task => node.textContent?.startsWith(task.title)))
+      .map(node => getReactProps(node)?.["aria-label"])).toEqual(["First copied task", "Second copied task"]);
+    expect(findAllByTag(harness.dom.container, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual([]);
+  });
+
+  it("does not show a disclosure or inferred attention for expected preview isolation", async () => {
+    await render([row({ title: "Copied task", activity: createTaskActivity({
+      known: false, sessionIndexKnown: false,
+      unavailable: { scope: "source", reason: "Production conversations are isolated.", expectedInPreview: true },
+    }) })]);
+    expect(findAllByTag(harness.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(0);
+    expect(findAllByTag(harness.dom.container, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual([]);
+    expect(buttons().find(node => getReactProps(node)?.["aria-label"] === "Copied task")).toBeDefined();
   });
 });

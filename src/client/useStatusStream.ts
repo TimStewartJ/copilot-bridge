@@ -12,6 +12,7 @@ export type StatusEvent =
   | { type: "session:intent"; sessionId?: string; intent?: string }
   | { type: "session:archived"; sessionId?: string; sessionIds?: string[]; archived?: boolean }
   | { type: "session:agents"; sessionId?: string; backgroundAgents?: BackgroundAgentsSummary }
+  | { type: "session:continuation"; sessionId?: string }
   | { type: "sessions:changed"; sessionId?: string }
   | {
       type: "session:user-input";

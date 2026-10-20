@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, Task } from "../api";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
 import { findAllByTag, getReactProps, waitTick } from "../test-react-harness";
+import { createTaskActivity } from "../../test-support/task-attention";
 
 const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
@@ -21,15 +22,15 @@ function createTask(overrides: Partial<Task> = {}): Task {
 }
 
 function createSession(sessionId: string, at = NOW): Session {
-  return { sessionId, modifiedTime: at, lastVisibleActivityAt: at, archived: false, diskSizeBytes: 0, deferSummary: { count: 0, runningCount: 0, nextRunAt: null } };
+  return { sessionId, modifiedTime: at, lastVisibleActivityAt: at, archived: false, runState: "idle", diskSizeBytes: 0, deferSummary: { count: 0, runningCount: 0, nextRunAt: null } };
 }
 
 describe("phone task list sections", () => {
   let harness: DialogTestHarness | null = null;
   afterEach(async () => { await harness?.cleanup(); harness = null; });
 
-  async function renderList(overrides: Partial<ComponentProps<typeof TaskList>>) {
-    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, sourceErrors: [], tasks: [] });
+  async function renderList(overrides: Partial<ComponentProps<typeof TaskList>>, overviewTasks: unknown[] = []) {
+    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, sourceErrors: [], tasks: overviewTasks });
     harness = await createDialogTestHarness();
     await harness.render(createElement(TaskList, { tasks: [], activeTaskId: null, onSelectTask: vi.fn(), onNewTask: vi.fn(), ...overrides }));
   }
@@ -72,5 +73,19 @@ describe("phone task list sections", () => {
     const unreadRows = findAllByTag(harness!.dom.container, "BUTTON")
       .map((node) => getReactProps(node)?.["data-unread-task-id"]).filter(Boolean);
     expect(unreadRows).toEqual(["deferred", "closed"]);
+  });
+
+  it("uses one source notice on the phone without changing task order", async () => {
+    const tasks = ["one", "two"].map((id, order) => createTask({ id, title: `Copied ${id}`, order }));
+    await renderList({ tasks }, tasks.map(task => ({
+      ...task, activity: createTaskActivity({
+        known: false, sessionIndexKnown: false,
+        unavailable: { scope: "source", reason: "Preview conversations are isolated." },
+      }),
+    })));
+    expect(findAllByTag(harness!.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(1);
+    const rows = findAllByTag(harness!.dom.container, "BUTTON").filter(node => getReactProps(node)?.["data-task-id"]);
+    expect(rows.map(node => getReactProps(node)?.["data-task-id"])).toEqual(["one", "two"]);
+    expect(rows.every(node => !getReactProps(node)?.["data-task-attention"])).toBe(true);
   });
 });

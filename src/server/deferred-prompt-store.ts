@@ -135,6 +135,13 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     GROUP BY sessionId
   `);
 
+  const selectPendingDeliveryCounts = db.prepare(`
+    SELECT sessionId, COUNT(*) AS count
+    FROM deferred_prompts
+    WHERE purpose = 'delivery' AND status IN ('pending', 'running')
+    GROUP BY sessionId
+  `);
+
   // CAS claim: only succeeds when status is still 'pending'
   const claimPending = db.prepare(`
     UPDATE deferred_prompts
@@ -322,6 +329,11 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   function listSummariesBySession(): Map<string, DeferSummary> {
     const rows = selectSummariesBySession.all() as unknown as Array<DeferSummaryRow & { sessionId: string }>;
     return new Map(rows.map((row) => [row.sessionId, normalizeDeferSummary(row)]));
+  }
+
+  function listPendingDeliveryCountsBySession(): Map<string, number> {
+    const rows = selectPendingDeliveryCounts.all() as Array<{ sessionId: string; count: number }>;
+    return new Map(rows.map(row => [row.sessionId, Number(row.count)]));
   }
 
   function hasActiveForSession(sessionId: string): boolean {
@@ -520,6 +532,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     getNextWakeAt,
     getSummaryForSession,
     listSummariesBySession,
+    listPendingDeliveryCountsBySession,
     hasActiveForSession,
     claimDue,
     complete,

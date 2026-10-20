@@ -1881,6 +1881,7 @@ export class SessionManager {
   private handleBackgroundCommandsChanged(sessionId: string, commands: RunningBackgroundCommand[]): void {
     if (isDisposableDeferWorkerSessionId(sessionId)) return;
     this.touchSessionTree(sessionId);
+    this.deps.globalBus.emit({ type: "session:continuation", sessionId });
     try {
       this.deps.backgroundCommandStore?.syncRunning(sessionId, commands);
     } catch (error) {
@@ -5630,6 +5631,27 @@ export class SessionManager {
    */
   getBackgroundAgentsSummary(sessionId: string): BackgroundAgentsSummary {
     return this.agentRegistry.getSummary(sessionId);
+  }
+
+  /** Cached work evidence only: no SDK calls, process inspection or disk reads. */
+  getSessionContinuationState(sessionId: string): {
+    known: boolean;
+    runningAgentCount: number;
+    runningCommandCount: number;
+    held: boolean;
+  } {
+    const agents = this.agentRegistry.getSummary(sessionId);
+    const commands = this.agentRegistry.getRunningCommands(sessionId);
+    const loaded = this.sessionObjects.has(sessionId);
+    const known = !loaded || agents.source === "live"
+      || (agents.source === "lastSeen" && agents.running === 0 && commands.length === 0);
+    return {
+      known,
+      runningAgentCount: agents.source === "live" ? agents.running : 0,
+      runningCommandCount: known ? commands.length : 0,
+      held: this.sessionHolds.has(sessionId) || this.isSessionResuming(sessionId)
+        || this.pendingSessionCreations.has(sessionId) || this.agentRegistry.hasProtectedCommand(sessionId),
+    };
   }
 
   getRuntimeActivity(): {
