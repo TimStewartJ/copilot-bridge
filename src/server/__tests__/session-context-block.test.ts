@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChecklistStore } from "../checklist-store.js";
+import type { ChecklistItem } from "../checklist-store.js";
 import { createDocsStore } from "../docs-store.js";
 import type { Task } from "../task-store.js";
 import type { TaskHistoryEntry } from "../task-history-store.js";
@@ -35,6 +35,18 @@ function createTask(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
+function checklistItem(overrides: Partial<ChecklistItem> = {}): ChecklistItem {
+  return {
+    id: "check",
+    taskId: "task-1",
+    text: "Review",
+    done: false,
+    order: 0,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function historyStore(entries: Array<Pick<TaskHistoryEntry, "at" | "text">>): NonNullable<BridgeContextDeps["taskHistoryStore"]> {
   return {
     countEntries: () => entries.length,
@@ -51,9 +63,9 @@ function sectionContent(deps: BridgeContextDeps, task: Task | null, name: string
 describe("bridge context sections", () => {
   it("renders a task's changing state in one task_state section", () => {
     const checklistStore = { listChecklistItems: () => [
-      { id: "c1", text: "Call the landlord", done: false, deadline: "2026-04-02" },
-      { id: "c2", text: "Pick neighborhoods", done: true },
-    ] } as unknown as ChecklistStore;
+      checklistItem({ id: "c1", text: "Call the landlord", deadline: "2026-04-02" }),
+      checklistItem({ id: "c2", text: "Pick neighborhoods", done: true }),
+    ] };
     const task = createTask({
       notes: "Two strong leads.",
       nextAction: "Tour 2040 Main",
@@ -69,10 +81,66 @@ describe("bridge context sections", () => {
     expect(content).toContain("- Next step: Tour 2040 Main");
     expect(content).toContain("Task notes (the current state of the work; any rules the user wrote here still apply):\nTwo strong leads.");
     expect(content).toContain('Group notes (task group "Home"):\nBudget $3k');
-    expect(content).toContain("- [ ] Call the landlord [id: c1] (due 2026-04-02)\n- [x] Pick neighborhoods [id: c2]");
+    expect(content).toContain("Checklist: 1 open, 1 completed. Use action_list for the full checklist.");
+    expect(content).toContain("- [ ] Call the landlord [id: c1] (due 2026-04-02)");
+    expect(content).not.toContain("Pick neighborhoods");
     expect(content.endsWith("</task_state>")).toBe(true);
     // Instructions live in the system prompt, not in the changing state.
     expect(sectionContent({}, createTask({ instructions: "Never email" }), "task_state")).not.toContain("Never email");
+  });
+
+  it("keeps open item order and full task requirements without replaying completed text", () => {
+    const completedText = "An old investigation is complete. ".repeat(100);
+    const items = [
+      checklistItem({ id: "second", text: "Second in the saved order", deadline: "2026-04-02" }),
+      checklistItem({ id: "done", text: completedText, done: true }),
+      checklistItem({ id: "first", text: "First by name, last in the saved order", order: 2 }),
+    ];
+    const before = structuredClone(items);
+    const task = createTask({
+      doneWhen: "The user reviews the preview and deployment is verified.",
+      notes: "Preserve task order. A completed implementation is not deployment approval.",
+    });
+    const content = sectionContent({ checklistStore: { listChecklistItems: () => items } }, task, "task_state");
+
+    expect(content).toContain("Checklist: 2 open, 1 completed.");
+    expect(content).toContain("- [ ] Second in the saved order [id: second] (due 2026-04-02)\n- [ ] First by name, last in the saved order [id: first]");
+    expect(content).not.toContain(completedText);
+    expect(content).toContain(`- Done when: ${task.doneWhen}`);
+    expect(content).toContain(task.notes);
+    expect(items).toEqual(before);
+  });
+
+  it("reports all-completed and empty checklists without implying task completion", () => {
+    const task = createTask({ doneWhen: "Production validation has passed." });
+    const completed = checklistItem({ text: "Implement the change", done: true });
+    const content = sectionContent({ checklistStore: { listChecklistItems: () => [completed] } }, task, "task_state");
+
+    expect(content).toContain("status: active");
+    expect(content).toContain("- Done when: Production validation has passed.");
+    expect(content).toContain("Checklist: 0 open, 1 completed. Use action_list for the full checklist.");
+    expect(content).not.toContain("Implement the change");
+    expect(content).not.toContain("- [");
+    expect(sectionContent({ checklistStore: { listChecklistItems: () => [] } }, task, "task_state"))
+      .not.toContain("Checklist:");
+  });
+
+  it("changes the context hash on completion and reopening, not edits to hidden completed text", () => {
+    const item = checklistItem({ text: "Review the preview" });
+    const deps = { checklistStore: { listChecklistItems: () => [item] } };
+    const task = createTask();
+    const open = buildBridgeContextSections(deps, task)[0]!;
+    item.done = true;
+    const complete = buildBridgeContextSections(deps, task)[0]!;
+    expect(complete.hash).not.toBe(open.hash);
+    expect(complete.content).not.toContain(item.text);
+
+    item.text = "Review the updated preview";
+    expect(buildBridgeContextSections(deps, task)[0]!.hash).toBe(complete.hash);
+    item.done = false;
+    const reopened = buildBridgeContextSections(deps, task)[0]!;
+    expect(reopened.hash).not.toBe(complete.hash);
+    expect(reopened.content).toContain("- [ ] Review the updated preview [id: check]");
   });
 
   it("lists the latest history entries on one line each and points at the tool for the rest", () => {
@@ -130,8 +198,8 @@ describe("bridge context sections", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const checklistStore = { listChecklistItems: () => [
-        { id: "check", text: "Review", done: false, deadline: "2026-04-02" },
-      ] } as unknown as ChecklistStore;
+        checklistItem({ deadline: "2026-04-02" }),
+      ] };
       const task = createTask({ nextTouchAt: "2026-04-02T12:00:00Z" });
       vi.setSystemTime(new Date("2026-04-01T00:00:00Z"));
       const before = buildBridgeContextSections({ checklistStore }, task);

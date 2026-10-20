@@ -12,6 +12,8 @@ import { createSettingsStore } from "../settings-store.js";
 import { DEFAULT_IDENTITY } from "../session-instructions.js";
 import { PROMPT_PROFILE_DEFINITIONS } from "../prompt-profiles.js";
 import type { PromptProfileId } from "../../shared/prompt-profiles.js";
+import { buildBridgeContextSections, renderBridgeContextBlock } from "../session-context-block.js";
+import type { Task } from "../task-store.js";
 import { makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
 
 // Guards the system prompt the pinned Copilot CLI actually assembles from the Bridge's
@@ -238,6 +240,30 @@ function assertBridgePrompt(prompt: string, model: string, promptProfile: Prompt
 }
 
 describe("native Bridge system prompt", () => {
+  it("preserves the native coding and safety sections while customizing guidance", async ({ signal }) => {
+    const { backend, configFor, requests, cleanup } = await fixture(signal);
+    try {
+      const { systemMessage: _systemMessage, ...nativeConfig } = configFor("gpt-5-mini");
+      const native = await backend.createSession(nativeConfig);
+      await native.sendAndWait({ prompt: "Return the fixture response." }, null);
+      const nativePrompt = systemPromptOf(requests.at(-1));
+      await native.release();
+
+      const engineer = await backend.createSession(configFor("gpt-5-mini"));
+      await engineer.sendAndWait({ prompt: "Return the fixture response." }, null);
+      const bridgePrompt = systemPromptOf(requests.at(-1));
+      for (const tag of ["rules_for_code_changes", "linting_building_testing", "using_ecosystem_tools", "environment_limitations", "task_completion"]) {
+        const block = new RegExp(`<${tag}>[\\s\\S]*?<\\/${tag}>`);
+        const expected = nativePrompt.match(block)?.[0];
+        expect(expected, tag).toBeTruthy();
+        expect(bridgePrompt.match(block)?.[0], tag).toBe(expected);
+      }
+      expect(bridgePrompt).toContain("Do not expand scope or replace a completion condition without agreement.");
+      expect(bridgePrompt).toContain("Idle sessions and completed checklists do not establish task completion.");
+      await engineer.release();
+    } finally { await cleanup(); }
+  });
+
   it("refreshes completion tools and instructions across Autopilot switches and cold resume", async ({ signal }) => {
     const { backend, configFor, requests, cleanup, home } = await fixture(signal, true);
     const config = {
@@ -333,12 +359,29 @@ describe("native Bridge system prompt", () => {
 
   it("gives the model the bridge_context block while the stored user message keeps only the typed text", async ({ signal }) => {
     const { backend, configFor, requests, cleanup, home } = await fixture(signal);
-    const block = "<bridge_context>\n<task_state>\nTask: \"Fixture\" (status: active, kind: task)\n</task_state>\n</bridge_context>";
+    const task: Task = {
+      id: "task-1", title: "Fixture", status: "active", kind: "task", muted: false, deferred: false,
+      notes: "Keep the approved wording.", doneWhen: "The user reviews the preview.",
+      priority: 0, order: 0, sessionIds: [], workItems: [], pullRequests: [],
+      createdAt: "2026-04-01T00:00:00Z", updatedAt: "2026-04-01T00:00:00Z",
+    };
+    const block = renderBridgeContextBlock(buildBridgeContextSections({
+      checklistStore: { listChecklistItems: () => [
+        { id: "open", taskId: task.id, text: "Review preview", done: false, order: 0, createdAt: task.createdAt },
+        { id: "done", taskId: task.id, text: "Obsolete completed procedure", done: true, order: 1, createdAt: task.createdAt },
+      ] },
+    }, task));
+    expect(block).toBeDefined();
     try {
       const session = await backend.createSession(configFor("gpt-5-mini"));
       await session.sendAndWait({ prompt: `${block}\n\nWhat is next?`, displayPrompt: "What is next?" }, null);
       const sent = lastUserMessageOf(requests.at(-1));
       expect(sent).toContain(block);
+      expect(sent).toContain("Checklist: 1 open, 1 completed. Use action_list for the full checklist.");
+      expect(sent).toContain("Review preview [id: open]");
+      expect(sent).not.toContain("Obsolete completed procedure");
+      expect(sent).toContain("- Done when: The user reviews the preview.");
+      expect(sent).toContain("Keep the approved wording.");
       expect(sent).toContain("What is next?");
       expect(systemPromptOf(requests.at(-1))).not.toContain("<task_state>");
       await session.release();
