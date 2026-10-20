@@ -1,4 +1,5 @@
 import type { TaskNeedsYouReason, TaskState } from "./task-state.js";
+import type { TaskActivity } from "./task-attention.js";
 
 /** What Tim last did to a task. Opening it or reading a conversation deliberately does not count. */
 export type TaskTouchKind = "edited" | "message" | "created";
@@ -11,8 +12,10 @@ export interface TaskOverviewRow {
   groupId?: string;
   groupName?: string;
   groupColor?: string;
+  groupOrder?: number;
   muted: boolean;
   deferred: boolean;
+  completedAt?: string;
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
@@ -27,6 +30,8 @@ export interface TaskOverviewRow {
   stalledCount: number;
   inputCount: number;
   automationCount: number;
+  /** Older servers/cached responses omit this. Absence must not be interpreted as known inactivity. */
+  activity?: TaskActivity;
   /** Most recently active linked conversation, to resume. */
   sessionId?: string;
   order: number;

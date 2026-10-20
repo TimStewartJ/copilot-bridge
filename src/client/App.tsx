@@ -180,7 +180,11 @@ function AppShell() {
     data: activeSessions = [],
     isPending: activeSessionsPending,
     isLoadingError: activeSessionsUnavailable,
+    error: activeSessionsError,
   } = useSessionsQuery(false);
+  const taskSessionSource = useMemo(() => ({
+    loading: activeSessionsPending, ...(activeSessionsError ? { error: activeSessionsError.message || "Conversation status is unavailable." } : {}),
+  }), [activeSessionsPending, activeSessionsError]);
   const {
     data: archivedQuerySessions = [],
     isFetched: archivedSessionsFetched,
@@ -340,7 +344,7 @@ function AppShell() {
     return () => window.removeEventListener("keydown", openSearch);
   }, [location.pathname, location.search, location.hash, searchOpen, navigate]);
 
-  const { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated: readStateHydrated } = useReadState();
+  const { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated: readStateHydrated, error: readStateError } = useReadState();
   // Search lists unread chats only once it can tell: before that, every chat or none would look unread.
   const unreadChatsKnown = readStateHydrated && !activeSessionsPending && !activeSessionsUnavailable && tasksQuery.data !== undefined;
   const bridgeReferenceContext = useMemo(() => ({ isUnread }), [isUnread]);
@@ -562,7 +566,7 @@ function AppShell() {
         taskChangeInvalidator.handleTaskChange(event.taskId);
         break;
       case "management-job:changed":
-        refetch(queryKeys.managementJobsRoot);
+        refetch(queryKeys.managementJobsRoot, TASK_OVERVIEW_KEY);
         break;
       case "docs:changed":
         // An agent (or another tab) wrote docs; refresh whatever the Docs view has open. A bulk
@@ -770,7 +774,7 @@ function AppShell() {
   const globalSessions = useMemo(() => {
     return getQuickChatSessions(sessions, tasks);
   }, [sessions, tasks]);
-  const navTaskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
+  const navTaskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId, readStateHydrated, readStateError ?? undefined, taskSessionSource);
   const mobileTaskAttention = useMemo(() => {
     return summarizeTaskTabAttention(tasks, navTaskIndicators);
   }, [tasks, navTaskIndicators]);
@@ -1769,6 +1773,9 @@ function AppShell() {
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
         isUnread={isUnread}
+        readStateReady={readStateHydrated}
+        readStateError={readStateError ?? undefined}
+        sessionSource={taskSessionSource}
         markRead={markRead}
         onUpdateTask={handleUpdateTask}
         onDeleteTask={handleDeleteTask}
@@ -1825,6 +1832,9 @@ function AppShell() {
                   onNewTask={handleNewTask}
                   sessions={sessions}
                   isUnread={isUnread}
+                  readStateReady={readStateHydrated}
+                  readStateError={readStateError ?? undefined}
+                  sessionSource={taskSessionSource}
                   markRead={markRead}
                   onUpdateTask={handleUpdateTask}
                   onDeleteTask={handleDeleteTask}
@@ -1890,6 +1900,9 @@ function AppShell() {
                   onUpdateTask={handleUpdateTask}
                   onTasksChanged={invalidateTasks}
                   isUnread={isUnread}
+                  readStateReady={readStateHydrated}
+                  readStateError={readStateError ?? undefined}
+                  sessionSource={taskSessionSource}
                   onArchiveSession={handleArchiveSession}
                   archivingIds={archivingIds}
                   exitingIds={exitingIds}
@@ -1945,6 +1958,7 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
+                  taskIndicators={navTaskIndicators}
                 />
               }
             />
@@ -1962,6 +1976,7 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
+                  taskIndicators={navTaskIndicators}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -1976,6 +1991,7 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
+                  taskIndicators={navTaskIndicators}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -2000,6 +2016,7 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
+                  taskIndicators={navTaskIndicators}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -2026,6 +2043,9 @@ function AppShell() {
                     onUpdateTask={handleUpdateTask}
                     onTasksChanged={invalidateTasks}
                     isUnread={isUnread}
+                    readStateReady={readStateHydrated}
+                    readStateError={readStateError ?? undefined}
+                    sessionSource={taskSessionSource}
                     onArchiveSession={handleArchiveSession}
                     archivingIds={archivingIds}
                     exitingIds={exitingIds}
@@ -2263,6 +2283,9 @@ function MobileTaskListView({
   onNewTask,
   sessions,
   isUnread,
+  readStateReady,
+  readStateError,
+  sessionSource,
   markRead,
   onUpdateTask,
   onDeleteTask,
@@ -2307,6 +2330,9 @@ function MobileTaskListView({
   onNewTask: (groupId?: string) => void;
   sessions: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  readStateReady?: boolean;
+  readStateError?: string;
+  sessionSource?: import("./hooks/useTaskIndicators").TaskSessionSource;
   markRead?: (sessionId: string) => void;
   onUpdateTask?: (
     taskId: string,
@@ -2410,6 +2436,9 @@ function MobileTaskListView({
             onNewTask={onNewTask}
             sessions={sessions}
             isUnread={isUnread}
+            readStateReady={readStateReady}
+            readStateError={readStateError}
+            sessionSource={sessionSource}
             markRead={markRead}
             onUpdateTask={onUpdateTask}
             onDeleteTask={onDeleteTask}

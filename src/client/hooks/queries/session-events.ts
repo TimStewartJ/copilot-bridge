@@ -92,11 +92,15 @@ export function projectSessionEvent(
         effects.onArchived(ids, event.archived);
         patchSessionQueryData(queryClient, ids, { archived: event.archived });
       }
-      refetch(["sessions"], queryKeys.taskArchivedSessionsRoot, queryKeys.tasks);
+      refetch(["sessions"], queryKeys.taskArchivedSessionsRoot, queryKeys.tasks, TASK_OVERVIEW_KEY);
       break;
     }
     case "session:agents":
       if (event.backgroundAgents) patch({ backgroundAgents: event.backgroundAgents });
+      refetch(TASK_OVERVIEW_KEY);
+      break;
+    case "session:continuation":
+      refetch(TASK_OVERVIEW_KEY);
       break;
     case "sessions:changed":
       refetch(sessionId ? activeSessionsKey : ["sessions"], queryKeys.dashboard);
@@ -117,7 +121,7 @@ export function projectSessionEvent(
       effects.onHistoryTruncated(sessionId);
       break;
     case "schedule:triggered":
-      refetch(activeSessionsKey, queryKeys.tasks);
+      refetch(activeSessionsKey, queryKeys.tasks, TASK_OVERVIEW_KEY);
       if (event.taskId) refetch(queryKeys.task(event.taskId));
       if (event.scheduleId) refetch(queryKeys.scheduleSessions(event.scheduleId));
       effects.onBusy(sessionId);

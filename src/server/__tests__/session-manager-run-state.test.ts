@@ -790,7 +790,9 @@ describe("SessionManager run state", () => {
   });
 
   it("notices a background command starting and finishing while no run is open", async () => {
-    const { manager } = createManager();
+    const { manager, globalBus } = createManager();
+    const continuationEvents: string[] = [];
+    globalBus.subscribe(event => { if (event.type === "session:continuation" && event.sessionId) continuationEvents.push(event.sessionId); });
     const { session, getHandler, getReleaseSend } = makeSession();
     let tasks: any[] = [];
     (session as any).listTasks = vi.fn(async () => ({ tasks }));
@@ -827,18 +829,34 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-command")).toBe("idle");
     expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
     expect(manager.getLifecycleBlockingSessionIds()).toEqual(["session-command"]);
+    expect(manager.getSessionContinuationState("session-command")).toMatchObject({ known: true, runningCommandCount: 1, held: true });
+    expect(continuationEvents).toEqual(["session-command"]);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 46 * 60_000);
+      expect(manager.getSessionContinuationState("session-command").known).toBe(false);
+      getHandler()?.({ type: "session.background_tasks_changed", data: {}, timestamp: new Date().toISOString() });
+      await flushMicrotasks();
+      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ known: true, runningCommandCount: 1, held: false });
+    } finally {
+      vi.useRealTimers();
+    }
 
     tasks = [{ ...command, status: "completed" }];
     getHandler()?.({ type: "session.background_tasks_changed", data: {}, timestamp: new Date().toISOString() });
     await flushMicrotasks();
 
     expect(manager.agentRegistry.getRunningCommands("session-command")).toEqual([]);
+    expect(continuationEvents).toEqual(["session-command", "session-command"]);
+    expect(manager.getSessionContinuationState("session-command")).toMatchObject({ runningCommandCount: 0, held: true });
     // Still held for the turn the runtime starts to report the result, then released.
     expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(Date.now() + 31_000);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ known: true, runningCommandCount: 0, held: false });
     } finally {
       vi.useRealTimers();
     }

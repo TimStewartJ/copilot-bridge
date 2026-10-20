@@ -11,6 +11,7 @@ import DashboardWorkMap from "./DashboardWorkMap";
 import { Button } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import type { PullToRefreshScrollRestoration } from "./PullToRefresh";
+import type { TaskIndicator } from "../hooks/useTaskIndicators";
 
 interface DashboardProps {
   onSelectTask: (id: string, opts?: { checklistItemId?: string }) => void;
@@ -19,6 +20,7 @@ interface DashboardProps {
   onStartPromptSession: (prompt: string, taskId?: string, options?: { navigateOnError?: boolean }) => Promise<string>;
   tasks?: Task[]; taskGroups?: TaskGroup[];
   scrollRestoration?: PullToRefreshScrollRestoration;
+  taskIndicators?: ReadonlyMap<string, TaskIndicator>;
 }
 export default function Dashboard(props: DashboardProps) {
   const navigate = useNavigate(), location = useLocation();
@@ -37,6 +39,6 @@ export default function Dashboard(props: DashboardProps) {
     {mapActive ? <div className="flex-1 min-h-0 overflow-auto"><div className={cx(DS.layout.pageColumn, "max-w-7xl")}>
       <DashboardWorkMap map={map} filters={mapFilters} onFiltersChange={changeMapFilters}
         onSelectTask={props.onSelectTask} onCreateTaskForWorkItems={props.onCreateTaskForWorkItems} />
-    </div></div> : tasksActive ? <AllTasks compact={isMobile} onBack={() => navigate("/dashboard/home")} onSelectTask={id => props.onSelectTask(id)} scrollRestoration={props.scrollRestoration} /> : <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
+    </div></div> : tasksActive ? <AllTasks compact={isMobile} onBack={() => navigate("/dashboard/home")} onSelectTask={id => props.onSelectTask(id)} scrollRestoration={props.scrollRestoration} taskIndicators={props.taskIndicators} /> : <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
   </div>;
 }

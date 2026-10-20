@@ -3,9 +3,7 @@ import type { EnrichedPR, Task } from "../api";
 export type TaskAlertTone = "accent" | "info" | "success" | "warning" | "danger" | "neutral";
 
 export interface TaskAlertChip {
-  kind:
-    | "waiting"
-    | "active-pr";
+  kind: "active-pr";
   label: string;
   title?: string;
   tone: TaskAlertTone;
@@ -15,7 +13,8 @@ export interface TaskAlertChip {
 
 /**
  * What the task header says needs noticing. Session state (working, stalled, unread) is left to the
- * session rows just below, and a reached revisit date to the prompt beneath the header.
+ * session rows just below, a reached revisit date to the prompt beneath the header, and a saved wait
+ * to the header's activity line.
  */
 interface GetTaskAlertChipsOptions {
   task: Task;
@@ -29,17 +28,6 @@ export function getTaskAlertChips({
   limit = 3,
 }: GetTaskAlertChipsOptions): TaskAlertChip[] {
   const chips: TaskAlertChip[] = [];
-  if (task.waitingOn?.trim()) {
-    chips.push({
-      kind: "waiting",
-      label: "Waiting for",
-      title: task.waitingOn.trim(),
-      tone: "neutral",
-      priority: 20,
-      recency: toTimestamp(task.updatedAt),
-    });
-  }
-
   const activePrCount = pullRequests.filter((pr) => pr.status === "active").length;
   if (activePrCount > 0) {
     chips.push({

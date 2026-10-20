@@ -1,6 +1,11 @@
 import { useMemo } from "react";
 import { getSessionActivityTime, getSessionRunState, isSessionActive, type Task, type Session } from "../api";
 
+export interface TaskSessionSource {
+  loading: boolean;
+  error?: string;
+}
+
 export interface TaskIndicator {
   busy: boolean;
   stalled: boolean;
@@ -8,6 +13,13 @@ export interface TaskIndicator {
   busyCount: number;
   unreadCount: number;
   needsUserInputCount?: number;
+  deferCount?: number;
+  backgroundRunningCount?: number;
+  externalCount?: number;
+  sessionStateKnown?: boolean;
+  readStateKnown?: boolean;
+  readStateError?: string;
+  sessionSource?: TaskSessionSource;
   lastActivity: string;
 }
 
@@ -128,17 +140,30 @@ export function getTaskIndicator(
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
   activeSessionId?: string | null,
   archivedActivityByTask?: Map<string, string>,
+  readStateKnown = isUnread !== undefined,
+  readStateError?: string,
+  sessionSource?: TaskSessionSource,
 ): TaskIndicator {
+  readStateKnown ||= task.activeSessionIds.length === 0;
   let busyCount = 0;
   let stalledCount = 0;
   let unreadCount = 0;
   let needsUserInputCount = 0;
+  let deferCount = 0;
+  let backgroundRunningCount = 0;
+  let externalCount = 0;
+  let sessionStateKnown = true;
 
   for (const sid of task.activeSessionIds) {
     const session = sessionMap.get(sid);
-    if (!session || session.archived) continue;
+    if (!session) { sessionStateKnown = false; continue; }
+    if (session.archived) continue;
+    if (session.runState === undefined) sessionStateKnown = false;
 
     if (sessionNeedsUserInput(session)) needsUserInputCount++;
+    deferCount += session.deferSummary?.count ?? 0;
+    if (session.backgroundAgents?.source === "live") backgroundRunningCount += session.backgroundAgents.running;
+    if (session.externallyInUse) externalCount++;
 
     if (isSessionActive(session)) {
       busyCount++;
@@ -146,7 +171,7 @@ export function getTaskIndicator(
       continue;
     }
     if (sid === activeSessionId) continue;
-    if (isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
+    if (readStateKnown && isUnread?.(sid, getSessionActivityTime(session))) unreadCount++;
   }
 
   const lastActivity = getTaskLastActivity(task, sessionMap, archivedActivityByTask);
@@ -158,6 +183,9 @@ export function getTaskIndicator(
     busyCount,
     unreadCount,
     needsUserInputCount,
+    deferCount, backgroundRunningCount, externalCount, sessionStateKnown, readStateKnown,
+    ...(task.activeSessionIds.length > 0 && readStateError ? { readStateError } : {}),
+    ...(task.activeSessionIds.length > 0 && sessionSource ? { sessionSource } : {}),
     lastActivity,
   };
 }
@@ -171,6 +199,9 @@ export default function useTaskIndicators(
   sessions: Session[],
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean,
   activeSessionId?: string | null,
+  readStateKnown = isUnread !== undefined,
+  readStateError?: string,
+  sessionSource?: TaskSessionSource,
 ): Map<string, TaskIndicator> {
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -183,10 +214,10 @@ export default function useTaskIndicators(
   const indicators = useMemo(() => {
     const result = new Map<string, TaskIndicator>();
     for (const task of tasks) {
-      result.set(task.id, getTaskIndicator(task, sessionMap, isUnread, activeSessionId, archivedActivityByTask));
+      result.set(task.id, getTaskIndicator(task, sessionMap, isUnread, activeSessionId, archivedActivityByTask, readStateKnown, readStateError, sessionSource));
     }
     return result;
-  }, [tasks, sessionMap, isUnread, activeSessionId, archivedActivityByTask]);
+  }, [tasks, sessionMap, isUnread, activeSessionId, archivedActivityByTask, readStateKnown, readStateError, sessionSource]);
 
   return indicators;
 }

@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { Task, Session } from "../api";
+import type { TaskOverviewRow } from "../../shared/task-overview";
+import { createTaskActivity } from "../../test-support/task-attention";
 import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
 
 const useTaskWorkspaceMock = vi.hoisted(() => vi.fn());
@@ -14,6 +16,13 @@ const taskNotesSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const agentDefinitionsSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const fetchTaskGitStatusMock = vi.hoisted(() => vi.fn());
 const patchTaskMock = vi.hoisted(() => vi.fn());
+const taskOverviewMock = vi.hoisted(() => vi.fn(() => ({
+  data: undefined as { tasks: TaskOverviewRow[] } | undefined,
+  isError: false,
+})));
+vi.mock("../hooks/queries/useTaskOverview", () => ({
+  useTaskOverviewQuery: () => taskOverviewMock(),
+}));
 const queryClientMock = vi.hoisted(() => ({
   fetchQuery: vi.fn(),
   invalidateQueries: vi.fn(),
@@ -162,6 +171,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     modifiedTime: "2026-01-01T00:00:00.000Z",
     lastVisibleActivityAt: "2026-01-01T00:00:00.000Z",
     archived: false,
+    runState: "idle",
     deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
@@ -244,6 +254,11 @@ beforeEach(() => {
   fetchTaskGitStatusMock.mockResolvedValue(null);
   patchTaskMock.mockReset();
   patchTaskMock.mockResolvedValue(null);
+  taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{
+    id: "task-1", title: "Workspace task", kind: "task", muted: false, deferred: false, order: 0,
+    state: "no_next_step", reasons: [], staleWait: false, idleDays: 0, busyCount: 0, stalledCount: 0,
+    inputCount: 0, automationCount: 0, activity: createTaskActivity(),
+  }] } });
 });
 
 async function renderTaskPanelHtml(task: Task, workspaceOverrides: Record<string, unknown> = {}) {
@@ -266,6 +281,62 @@ async function renderTaskPanelHtml(task: Task, workspaceOverrides: Record<string
 }
 
 describe("TaskPanel", () => {
+  it("marks review and explicit input in the header but keeps routine continuation as plain context", async () => {
+    const data = taskOverviewMock().data!;
+    expect(await renderTaskPanelHtml(createTask())).toContain("Needs a look");
+    taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{
+      ...data.tasks[0], activity: createTaskActivity({ scheduledCount: 1 }),
+    }] } });
+    const scheduled = await renderTaskPanelHtml(createTask());
+    expect(scheduled).toContain("Automatic work scheduled");
+    expect(scheduled).not.toContain("Needs a look");
+    expect(scheduled).not.toContain('data-status="working"');
+    taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{ ...data.tasks[0], inputCount: 1 }] } });
+    const input = await renderTaskPanelHtml(createTask());
+    expect(input).toContain("Needs you");
+    expect(input).toContain('data-status="needs-input"');
+  });
+
+  it("changes a read reply into Needs a look when no continuation remains", async () => {
+    useTaskWorkspaceMock.mockReturnValue(createWorkspace());
+    useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
+    const { default: TaskPanel } = await import("./TaskPanel");
+    const harness = await createReactDomHarness();
+    const sessions = [createSession()];
+    const task = createTask({ activeSessionIds: ["session-1"], sessionCount: 1 });
+    let unread = true;
+    const panel = () => createElement(MemoryRouter, null, createElement(TaskPanel, {
+      task, taskGroups: [], sessions, activeSessionId: null,
+      isUnread: () => unread, readStateReady: true,
+      onSelectSession: vi.fn(), onNewSession: vi.fn(), onUpdateTask: async () => null,
+    }));
+    try {
+      await harness.render(panel());
+      expect(harness.dom.container.textContent).toContain("New replies");
+      unread = false;
+      await harness.render(panel());
+      expect(harness.dom.container.textContent).toContain("Needs a look");
+      expect(harness.dom.container.textContent).not.toContain("New replies");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("describes a shared source gap separately from the selected task's attention badge", async () => {
+    const data = taskOverviewMock().data!;
+    taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{
+      ...data.tasks[0], activity: createTaskActivity({
+        known: false, sessionIndexKnown: false,
+        unavailable: { scope: "source", reason: "Preview conversations are isolated." },
+      }),
+    }] } });
+    const html = await renderTaskPanelHtml(createTask());
+    expect(html).toContain("Activity data incomplete");
+    expect(html).toContain("Preview conversations are isolated.");
+    expect(html).not.toContain('data-status="unknown"');
+    expect(html).not.toContain("Needs a look</span>");
+  });
+
   it("opens Overview from the title and keeps task-kind and rename controls out of the panel", async () => {
     useTaskWorkspaceMock.mockReturnValue(createWorkspace());
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });

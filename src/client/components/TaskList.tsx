@@ -4,11 +4,13 @@ import { ChevronDown, ChevronRight, ArrowUp, ArrowDown, Plus, FileText } from "l
 import NotesSheet from "./NotesSheet";
 import EmptyState from "./shared/EmptyState";
 import useLongPressMenu from "../hooks/useLongPressMenu";
-import useTaskIndicators, { countUnreadTasks, unreadTasksLabel } from "../hooks/useTaskIndicators";
+import { countUnreadTasks, unreadTasksLabel, type TaskSessionSource } from "../hooks/useTaskIndicators";
+import { useTaskAttention } from "../hooks/useTaskAttention";
 import useDueSetAsideIds from "../hooks/useDueSetAsideIds";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
-import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
+import TaskAttentionSummary from "./TaskAttentionSummary";
+import TaskAttentionNotice from "./TaskAttentionNotice";
 import { needsYouCount, setAsideAttention } from "../lib/task-state-ui";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
 import { DS, cx } from "../design/tokens";
@@ -27,6 +29,9 @@ interface TaskListProps {
   onNewTask: (groupId?: string) => void;
   sessions?: Session[];
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  readStateReady?: boolean;
+  readStateError?: string;
+  sessionSource?: TaskSessionSource;
   markRead?: (sessionId: string) => void;
   onUpdateTask?: (
     taskId: string,
@@ -58,6 +63,9 @@ export default function TaskList({
   onNewTask,
   sessions = [],
   isUnread,
+  readStateReady,
+  readStateError,
+  sessionSource,
   markRead,
   onUpdateTask,
   onDeleteTask,
@@ -76,7 +84,7 @@ export default function TaskList({
     return map;
   }, [sessions]);
 
-  const taskIndicators = useTaskIndicators(tasks, sessions, isUnread, activeSessionId);
+  const { overview, taskIndicators, taskSignals, activityDescriptions, health } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
 
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget, resetClickGuard } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
@@ -100,8 +108,6 @@ export default function TaskList({
   const moveAndReorderVisible = useMemo(() => onMoveAndReorder
     ? (taskId: string, groupId: string | undefined, ids: string[]) => onMoveAndReorder(taskId, groupId, mergeVisibleOrder(statusGroups.active, setAsideIds, ids, groupId ?? null))
     : undefined, [onMoveAndReorder, setAsideIds, statusGroups]);
-  const overview = useTaskOverviewQuery();
-  const quietIds = useMemo(() => new Set((overview.data?.tasks ?? []).filter((row) => row.state === "gone_quiet").map((row) => row.id)), [overview.data]);
   const setAsideNeeds = useMemo(() => setAsideAttention(overview.data?.tasks, setAsideIds), [overview.data, setAsideIds]);
   const setAsideUnread = useMemo(() => countUnreadTasks(grouped.setAside, taskIndicators), [grouped, taskIndicators]);
   const archivedUnread = useMemo(() => countUnreadTasks(grouped.archived, taskIndicators), [grouped, taskIndicators]);
@@ -199,7 +205,8 @@ export default function TaskList({
               isLongPressTarget={isTarget(task.id)}
               bindLongPress={bindLongPress}
               onSelectTask={onSelectTask}
-              quiet={quietIds.has(task.id)}
+              attention={taskSignals.get(task.id)}
+              activityDescription={activityDescriptions.get(task.id)}
               reordering={sortable && reorderMode.reordering}
             />
           ))}
@@ -213,6 +220,8 @@ export default function TaskList({
       <Button ref={newTaskButtonRef} fullWidth icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
         New task
       </Button>
+      <TaskAttentionSummary signals={taskSignals} />
+      <TaskAttentionNotice health={health} />
       {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
       <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
       <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
@@ -236,6 +245,11 @@ export default function TaskList({
                     {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                     <IdentitySwatch color={group.color} />
                     {group.name}
+                    {isCollapsed && section.tasks.some(task => taskSignals.get(task.id)) && (
+                      <span className="ml-auto shrink-0 text-text-secondary">
+                        {section.tasks.filter(task => taskSignals.get(task.id)).length} marked
+                      </span>
+                    )}
                   </button>
                   <button
                     onClick={(e) => {
@@ -303,7 +317,8 @@ export default function TaskList({
                         isLongPressTarget={isTarget(task.id)}
                         bindLongPress={bindLongPress}
                         onSelectTask={onSelectTask}
-                        quiet={quietIds.has(task.id)}
+                        attention={taskSignals.get(task.id)}
+                        activityDescription={activityDescriptions.get(task.id)}
                         reordering={reorderMode.reordering}
                       />
                     ))}

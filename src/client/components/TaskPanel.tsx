@@ -4,6 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { Task, TaskGroup, Session } from "../api";
 import { fetchTaskGitStatus, patchTask } from "../api";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
+import { useTaskAttention } from "../hooks/useTaskAttention";
+import type { TaskSessionSource } from "../hooks/useTaskIndicators";
+import TaskAttentionBadge from "./TaskAttentionBadge";
+import TaskAttentionNotice from "./TaskAttentionNotice";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
 import { queryKeys } from "../queryClient";
 import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
@@ -81,6 +85,9 @@ interface TaskPanelProps {
   ) => Promise<Task | null>;
   onTasksChanged?: () => void;
   isUnread?: (sessionId: string, modifiedTime?: string) => boolean;
+  readStateReady?: boolean;
+  readStateError?: string;
+  sessionSource?: TaskSessionSource;
   onArchiveSession?: (id: string, archived: boolean) => void;
   archivingIds?: Set<string>;
   exitingIds?: Set<string>;
@@ -155,6 +162,9 @@ export default function TaskPanel({
   onUpdateTask,
   onTasksChanged,
   isUnread,
+  readStateReady,
+  readStateError,
+  sessionSource,
   onArchiveSession,
   archivingIds,
   exitingIds,
@@ -317,6 +327,8 @@ export default function TaskPanel({
   }, [task]);
 
   const currentTask = task && momentumTask && momentumTask.id === task.id ? momentumTask : task;
+  const attentionTasks = useMemo(() => currentTask ? [currentTask] : [], [currentTask]);
+  const { taskSignals, activityDescriptions, health } = useTaskAttention(attentionTasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
   const alertChips = useMemo(() => {
     if (!currentTask) return [];
     return getTaskAlertChips({
@@ -397,6 +409,7 @@ export default function TaskPanel({
     setDetailsExpanded(expanded);
   };
   const showChecklistComposer = checklistItems.some((item) => !item.done) || checklistComposerOpen;
+  const attention = taskSignals.get(task.id);
 
   const showCompletionButton = currentTask.kind !== "ongoing"
     && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
@@ -437,6 +450,9 @@ export default function TaskPanel({
         scrollRestoration={scrollRestoration}
       >
         <div className="mx-auto w-full max-w-3xl">
+        {health?.affectedTasks.some(affected => affected.id === task.id) && (
+          <div className="mx-3 mt-3 md:hidden"><TaskAttentionNotice health={health} /></div>
+        )}
         <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-2 p-3")}>
         <div className="flex items-start gap-1">
           <div className="min-w-0 flex-1 space-y-1.5">
@@ -455,6 +471,7 @@ export default function TaskPanel({
             )}
 
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {attention && <TaskAttentionBadge signal={attention} icon />}
               <TaskKindBadge kind={currentTask.kind} showTask />
               {group && (
                 <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
@@ -497,6 +514,9 @@ export default function TaskPanel({
           </IconButton>
         </div>
 
+        {!attention && currentTask.status === "active" && !currentTask.completedAt && (
+          <p className={DS.text.meta}>{activityDescriptions.get(task.id)}</p>
+        )}
         {alertChips.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {alertChips.map((chip) => (

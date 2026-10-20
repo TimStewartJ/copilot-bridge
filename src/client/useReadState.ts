@@ -16,11 +16,13 @@ export function useReadState() {
   const [state, setState] = useState<ReadState>({});
   // Until the server's state arrives every chat looks unread, so a list of unread chats must wait.
   const [hydrated, setHydrated] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Apply server state as the single source of truth
   const applyServerState = useCallback((server: ReadState) => {
     setState(server);
     setHydrated(true);
+    setError(null);
   }, []);
 
   // Hydrate from server on mount
@@ -28,7 +30,11 @@ export function useReadState() {
     let cancelled = false;
     fetchReadState()
       .then((server) => { if (!cancelled) applyServerState(server); })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.warn("[read-state] Could not load conversation read status:", error);
+        setError((error instanceof Error ? error.message : String(error)) || "Conversation read status is unavailable.");
+      });
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -36,7 +42,10 @@ export function useReadState() {
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState === "visible") {
-        fetchReadState().then(applyServerState).catch(() => {});
+        fetchReadState().then(applyServerState).catch((error: unknown) => {
+          console.warn("[read-state] Could not refresh conversation read status:", error);
+          setError((error instanceof Error ? error.message : String(error)) || "Conversation read status is unavailable.");
+        });
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -84,5 +93,5 @@ export function useReadState() {
     [isUnread],
   );
 
-  return { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated };
+  return { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated, error };
 }
