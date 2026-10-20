@@ -138,6 +138,7 @@ describe("session event projection", () => {
       [{ queryKey: ["sessions"] }],
       [{ queryKey: queryKeys.taskArchivedSessionsRoot }],
       [{ queryKey: queryKeys.tasks }],
+      [{ queryKey: TASK_OVERVIEW_KEY }],
     ]);
   });
 
@@ -174,6 +175,7 @@ describe("session event projection", () => {
     expect(effects.queries.invalidateQueries.mock.calls).toEqual([
       [{ queryKey: activeKey }],
       [{ queryKey: queryKeys.tasks }],
+      [{ queryKey: TASK_OVERVIEW_KEY }],
       [{ queryKey: queryKeys.task("task") }],
       [{ queryKey: queryKeys.scheduleSessions("schedule") }],
     ]);
@@ -185,6 +187,17 @@ describe("session event projection", () => {
     expect(project({ type: "task:changed", taskId: "task" })).toBe(false);
     expect(project({ type: "docs:changed", docPath: "note" })).toBe(false);
     expect(effects.queries.invalidateQueries).not.toHaveBeenCalled();
+    expect(effects.onBusy).not.toHaveBeenCalled();
+  });
+
+  it("refreshes continuation evidence when helpers or attached commands change, without inventing unread", () => {
+    const { project, effects, queryClient, activeKey } = fixture();
+    for (const type of ["session:continuation", "session:agents"] as const) {
+      effects.queries.invalidateQueries.mockClear();
+      expect(project({ type, sessionId: "one" })).toBe(true);
+      expect(effects.queries.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: TASK_OVERVIEW_KEY });
+    }
+    expect(queryClient.getQueryData<Session[]>(activeKey)?.[0].runState).toBe("idle");
     expect(effects.onBusy).not.toHaveBeenCalled();
   });
 

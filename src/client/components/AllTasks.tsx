@@ -1,12 +1,16 @@
 import { useMemo, useState } from "react";
-import { Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Moon, Pin, Plus, RefreshCw, Sparkles, Activity, ArrowRight, Hourglass, CircleDashed, EyeOff } from "lucide-react";
+import { Archive, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Moon, Pin, RefreshCw, Sparkles, Activity, ArrowRight, Hourglass, CircleDashed, EyeOff } from "lucide-react";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { TASK_STATE_LABELS, TASK_STATE_ORDER, type TaskState } from "../../shared/task-state";
-import { Badge, Button, EmptyHint, IdentitySwatch, Notice, SegmentedControl } from "../design/primitives";
+import { Badge, Button, EmptyHint, IdentitySwatch, SegmentedControl, StatusIcon } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import { useTaskOutcomes } from "../hooks/useTaskOutcomes";
-import { contextLine, describeIdle, describeTouch, stateBadge } from "../lib/task-state-ui";
+import { contextLine, describeIdle, describeTouch } from "../lib/task-state-ui";
+import type { TaskIndicator } from "../hooks/useTaskIndicators";
+import { useTaskAttentionPresentation } from "../hooks/useTaskAttention";
+import TaskAttentionBadge from "./TaskAttentionBadge";
+import TaskAttentionNotice from "./TaskAttentionNotice";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { OutcomeNotice, QuietReviewDialog } from "./QuietTasks";
 
@@ -42,10 +46,11 @@ interface Props {
   /** Return to Home, which is where All tasks is opened from on a phone. */
   onBack?: () => void;
   scrollRestoration?: PullToRefreshScrollRestoration;
+  taskIndicators?: ReadonlyMap<string, TaskIndicator>;
 }
 
 /** Every active task grouped by what it needs, for reviewing and tidying the whole list. The sidebar keeps Tim's own order. */
-export default function AllTasks({ onSelectTask, compact = false, onBack, scrollRestoration }: Props) {
+export default function AllTasks({ onSelectTask, compact = false, onBack, scrollRestoration, taskIndicators }: Props) {
   const query = useTaskOverviewQuery();
   const outcomes = useTaskOutcomes();
   const [grouping, setGroupingState] = useState<Grouping>(loadGrouping);
@@ -55,6 +60,8 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
   const [reviewing, setReviewing] = useState(false);
   const rows = query.data?.tasks ?? [];
   const counts = query.data?.counts;
+  const attentionTasks = useMemo(() => rows.map(row => ({ ...row, status: "active" as const })), [rows]);
+  const { taskSignals: signals, activityDescriptions, health } = useTaskAttentionPresentation(attentionTasks, taskIndicators, query);
   const byId = useMemo(() => new Map(rows.map(row => [row.id, row])), [rows]);
   const quiet = useMemo(() => sortForState("gone_quiet", rows.filter(row => row.state === "gone_quiet")), [rows]);
   const visibleRows = filter ? rows.filter(row => row.state === filter) : rows;
@@ -71,11 +78,11 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
   const sections: Array<{ key: string; title: string; hint?: string; state?: TaskState; color?: string; rows: TaskOverviewRow[] }> = grouping === "state"
     ? TASK_STATE_ORDER.map(state => ({ key: state, title: TASK_STATE_LABELS[state], hint: STATE_HINT[state], state, rows: sortForState(state, visibleRows.filter(row => row.state === state)) }))
       .filter(section => section.rows.length)
-    : [...new Map(visibleRows.map(row => [row.groupId ?? "", { name: row.groupName ?? "Ungrouped", color: row.groupColor }])).entries()]
-      .sort(([a], [b]) => (a === "" ? 1 : 0) - (b === "" ? 1 : 0))
+    : [...new Map(visibleRows.map(row => [row.groupId ?? "", { name: row.groupName ?? "Ungrouped", color: row.groupColor, order: row.groupOrder ?? 0 }])).entries()]
+      .sort(([a, ga], [b, gb]) => (a === "" ? 1 : 0) - (b === "" ? 1 : 0) || ga.order - gb.order)
       .map(([groupId, group]) => ({ key: `group:${groupId}`, title: group.name, color: group.color,
         rows: visibleRows.filter(row => (row.groupId ?? "") === groupId)
-          .sort((a, b) => TASK_STATE_ORDER.indexOf(a.state) - TASK_STATE_ORDER.indexOf(b.state) || engaged(b) - engaged(a)) }));
+          .sort((a, b) => Number(b.kind === "ongoing") - Number(a.kind === "ongoing") || a.order - b.order) }));
 
   const activeTotal = rows.length;
   const header = <header className="flex flex-wrap items-end justify-between gap-3">
@@ -108,8 +115,9 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
       </button>)}
     </div>);
 
-  const renderRow = (row: TaskOverviewRow, showState: boolean) => {
-    const badge = showState ? { label: TASK_STATE_LABELS[row.state], tone: row.state === "needs_you" ? "warning" as const : "neutral" as const } : stateBadge(row);
+  const renderRow = (row: TaskOverviewRow) => {
+    const attention = signals.get(row.id);
+    const activity = activityDescriptions.get(row.id);
     const context = contextLine(row);
     const picked = selected.has(row.id);
     return <div key={row.id} className={cx("flex min-w-0 items-center gap-3 border-t border-border px-4 py-2.5 first:border-t-0", picked && DS.row.selected)}>
@@ -118,14 +126,17 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
         <span className={cx(DS.checkbox.base, "h-4 w-4", picked ? DS.checkbox.checked : "border-text-faint")}>{picked && <Check size={11} strokeWidth={3} />}</span>
       </button>}
       {row.groupColor && grouping === "state" ? <IdentitySwatch color={row.groupColor} /> : <span className="w-2 shrink-0" />}
-      <button type="button" className={cx(DS.focus, "min-w-0 flex-1 rounded-sm text-left")} onClick={() => onSelectTask(row.id)}>
+      <span className="flex w-3 shrink-0 items-center justify-center">
+        {attention && <StatusIcon kind={attention.status} decorative />}
+      </span>
+      <button type="button" className={cx(DS.focus, "min-w-0 flex-1 rounded-sm text-left")}
+        aria-label={attention ? `${row.title}, ${attention.label}` : row.title} onClick={() => onSelectTask(row.id)}>
         <span className="flex items-center gap-1.5 truncate font-semibold text-text-primary">{row.title}
           {row.kind === "ongoing" && <Pin size={11} className="shrink-0 rotate-45 text-text-faint" aria-label="Ongoing" />}</span>
-        <span className={cx("mt-0.5 block truncate text-[13px]", context.empty ? "text-text-secondary" : "text-text-muted")}>{context.text}</span>
+        <span className={cx("mt-0.5 block truncate text-[13px]", context.empty ? "text-text-secondary" : "text-text-muted")} title={activity}>{context.empty ? activity : context.text}</span>
       </button>
-      {row.state === "no_next_step" && !compact
-        ? <Button size="sm" variant="ghost" icon={<Plus size={13} aria-hidden="true" />} onClick={() => onSelectTask(row.id)}>Next step</Button>
-        : badge && <Badge tone={badge.tone === "warning" ? "warning" : badge.tone === "info" ? "info" : "neutral"}>{badge.label}</Badge>}
+      {attention && <TaskAttentionBadge signal={attention} />}
+      {row.state === "set_aside" && <span className={DS.text.meta}>{row.muted ? "Muted" : "Deferred"}</span>}
       {/* Outside Set aside, say that it was set aside: it surfaced for a reason, not because it resumed. */}
       {row.deferred && row.state !== "set_aside" && <Badge>Deferred</Badge>}
       {row.muted && row.state !== "set_aside" && <Badge>Muted</Badge>}
@@ -148,7 +159,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
         <span className={DS.text.meta}>{section.rows.length}{section.hint && !compact ? ` · ${section.hint}` : ""}</span>
         {section.state === "gone_quiet" && <Button className="ml-auto" size="sm" variant="ghost" onClick={() => setReviewing(true)}>Review one by one <ArrowRight size={13} /></Button>}
       </div>
-      {shown.map(row => renderRow(row, grouping === "group"))}
+      {shown.map(row => renderRow(row))}
       {open && section.rows.length > shown.length && <button type="button" onClick={() => toggleSection(section.key)} className={cx(DS.focus, "w-full border-t border-border px-4 py-2.5 text-left text-[13px] text-text-secondary hover:text-text-primary")}>
         + {section.rows.length - shown.length} more</button>}
     </section>;
@@ -157,8 +168,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
   const content = <div className={cx(compact ? "space-y-3 px-4 py-4" : cx(DS.layout.pageColumn, "max-w-5xl space-y-5"), selectedRows.length > 0 && "pb-24")}>
     {header}
     <OutcomeNotice receipt={outcomes.receipt} error={outcomes.error} pending={outcomes.pending} onUndo={() => void outcomes.undoLast()} onDismiss={outcomes.dismiss} />
-    {query.error && <Notice tone="warning" title="Task states unavailable">{query.error.message}{query.data ? " Showing the last result." : ""}</Notice>}
-    {query.data?.sourceErrors.map(error => <Notice key={error} tone="warning" title="Some information is unavailable">{error}</Notice>)}
+    <TaskAttentionNotice health={health} />
     {stats}
     {compact && quiet.length > 0 && <Button fullWidth size="sm" icon={<Sparkles size={13} aria-hidden="true" />} onClick={() => setReviewing(true)}>Review {quiet.length} quiet {quiet.length === 1 ? "task" : "tasks"}</Button>}
     {!query.data ? <EmptyHint>{query.error ? "Task states are unavailable, not empty." : "Loading task states…"}</EmptyHint>

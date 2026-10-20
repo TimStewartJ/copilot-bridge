@@ -57,4 +57,19 @@ describe("useReadState", () => {
     });
     expect(harness.dom.container.textContent).toBe("false:true");
   });
+
+  it.each(["Read store offline", ""])("exposes a load failure (%s) and clears it when read state recovers", async message => {
+    fetchReadStateMock.mockRejectedValue(new Error(message));
+    let reading: ReturnType<typeof useReadState>;
+    function ErrorProbe() { reading = useReadState(); return null; }
+    harness = await createReactDomHarness();
+    await harness.render(createElement(ErrorProbe));
+    await waitUntilAct(harness.act, () => reading.error !== null);
+    expect(reading!.hydrated).toBe(false);
+    expect(reading!.error).toBe(message || "Conversation read status is unavailable.");
+    await harness.act(async () => { reading.applyServerState({ "session-1": ACTIVITY_AT }); });
+    expect(reading!.hydrated).toBe(true);
+    expect(reading!.error).toBeNull();
+    expect(reading!.isUnread("session-1", ACTIVITY_AT)).toBe(false);
+  });
 });

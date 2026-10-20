@@ -6,6 +6,9 @@ import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../../test-react-harness";
 import SortableTaskItem from "./SortableTaskItem";
+import { getTaskAttentionSignal, getTaskActivityDescription } from "../../task-row-signals";
+import { createTaskActivity } from "../../../test-support/task-attention";
+import type { TaskActivity } from "../../../shared/task-attention";
 
 const { rowPointerDown } = vi.hoisted(() => ({ rowPointerDown: vi.fn() }));
 
@@ -61,13 +64,15 @@ describe("SortableTaskItem", () => {
     rowTask: Task,
     rowIndicator: TaskIndicator,
     variant: "rail" | "list" = "rail",
-    extra: { rowDrag?: boolean; reordering?: boolean; onSelectTask?: (id: string) => void } = {},
+    extra: { rowDrag?: boolean; reordering?: boolean; onSelectTask?: (id: string) => void; activity?: TaskActivity } = {},
   ) {
     harness ??= await createReactDomHarness();
     const row = createElement(SortableTaskItem, {
       task: rowTask,
       isActive: false,
       indicator: rowIndicator,
+      attention: getTaskAttentionSignal(rowTask, rowIndicator, undefined, { activity: extra.activity ?? createTaskActivity() }),
+      activityDescription: getTaskActivityDescription(rowTask, rowIndicator, extra.activity ?? createTaskActivity()),
       isCtxTarget: false,
       isLongPressTarget: false,
       bindLongPress: (_id: string, onClick: () => void) => ({ onClick }) as never,
@@ -81,14 +86,14 @@ describe("SortableTaskItem", () => {
   }
 
   describe("leading attention mark", () => {
-    it("draws an open question in the leading slot, without an Answer badge", async () => {
+    it("names an input request with a blue badge and one decorative leading glyph", async () => {
       for (const variant of ["rail", "list"] as const) {
         const root = await renderRow(task, indicator({ needsUserInputCount: 1, unreadCount: 1 }), variant);
         const leading = leadingIcon(root);
         expect(getReactProps(leading)?.["data-status"]).toBe("needs-input");
-        expect(getReactProps(leading)?.["aria-label"]).toBe("Answer needed");
+        expect(getReactProps(leading)?.["aria-hidden"]).toBe(true);
         expect(statusIcons(root)).not.toContain("unread");
-        expect(root.textContent).not.toContain("Answer");
+        expect(root.textContent).toContain("Needs you");
       }
     });
 
@@ -105,37 +110,36 @@ describe("SortableTaskItem", () => {
       expect(root.textContent).not.toContain("working");
     });
 
-    it("draws unread activity and a working agent as one mark in both variants", async () => {
+    it("uses a plain unread mark without mixing work activity into the attention slot", async () => {
       for (const variant of ["rail", "list"] as const) {
         const root = await renderRow(task, indicator({ busy: true, busyCount: 2, unreadCount: 1, unread: true }), variant);
         const leading = leadingIcon(root);
-        expect(getReactProps(leading)?.["data-status"]).toBe("unread-working");
-        expect(getReactProps(leading)?.["aria-label"]).toBe("Unread conversation, 2 sessions working");
-        expect(statusIcons(root)).toEqual(["unread-working"]);
+        expect(getReactProps(leading)?.["data-status"]).toBe("unread");
+        expect(statusIcons(root)).toEqual(["unread"]);
         expect(root.textContent).not.toContain("working");
         // The row still counts as unread for the bold title and the unread jump bands.
         expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.["data-unread-task-id"]).toBe("task-1");
       }
     });
 
-    it("names both counts on the combined mark", async () => {
+    it("keeps unread counts in context rather than adding a working ring", async () => {
       const root = await renderRow(task, indicator({ busy: true, busyCount: 1, unreadCount: 3, unread: true }));
-      expect(getReactProps(leadingIcon(root))?.["aria-label"]).toBe("3 unread conversations, agent working");
+      expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.title).toBe("3 unread conversations.");
     });
 
-    it("keeps the plain unread dot beside a Stalled badge, since a stalled agent is not working", async () => {
+    it("keeps a single unread cue when a legacy stalled flag is also present", async () => {
       const root = await renderRow(task, indicator({ busy: true, busyCount: 1, stalled: true, unreadCount: 1, unread: true }));
       expect(getReactProps(leadingIcon(root))?.["data-status"]).toBe("unread");
-      expect(statusIcons(root)).toEqual(["unread", "warning"]);
-      expect(root.textContent).toContain("Stalled");
+      expect(statusIcons(root)).toEqual(["unread"]);
+      expect(root.textContent).not.toContain("Stalled");
     });
 
-    it("draws a working agent in the leading slot when there is no unread activity", async () => {
+    it("keeps a normal working task iconless and exposes progress on hover", async () => {
       const root = await renderRow(task, indicator({ busy: true, busyCount: 2 }));
       const leading = leadingIcon(root);
-      expect(getReactProps(leading)?.["data-status"]).toBe("working");
-      expect(getReactProps(leading)?.["aria-label"]).toBe("2 sessions working");
-      expect(statusIcons(root)).toEqual(["working"]);
+      expect(leading).toBeNull();
+      expect(statusIcons(root)).toEqual([]);
+      expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.title).toBe("Agent working");
     });
 
     it("keeps Stalled as a badge and draws no spinner for it", async () => {
@@ -147,6 +151,31 @@ describe("SortableTaskItem", () => {
     it("shows no question mark for a muted task", async () => {
       const root = await renderRow({ ...task, muted: true }, indicator({ needsUserInputCount: 1 }));
       expect(statusIcons(root)).not.toContain("needs-input");
+    });
+
+    it("marks no known continuation with a softer review cue, even when everything is read", async () => {
+      for (const variant of ["rail", "list"] as const) {
+        const root = await renderRow(task, indicator(), variant);
+        expect(statusIcons(root)).toEqual(["review"]);
+        expect(root.textContent).toContain(variant === "rail" ? "Review" : "Needs a look");
+        expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.["data-unread-task-id"]).toBeUndefined();
+        const badge = findAllByTag(root, "SPAN").find(node => node.textContent === (variant === "rail" ? "Review" : "Needs a look"));
+        expect(getReactProps(badge)?.className).toContain("text-text-secondary");
+      }
+    });
+
+    it.each(["deferredCount", "scheduledCount", "pendingDeliveryCount", "runningCommandCount", "managementJobCount"] as const)(
+      "keeps %s unmarked while retaining its activity context", async key => {
+        const root = await renderRow(task, indicator(), "rail", { activity: createTaskActivity({ [key]: 1 }) });
+        expect(statusIcons(root)).toEqual([]);
+        expect(root.textContent).not.toContain("Review");
+      },
+    );
+
+    it("shows unavailable evidence explicitly instead of a healthy blank", async () => {
+      const root = await renderRow(task, indicator(), "list", { activity: createTaskActivity({ known: false }) });
+      expect(statusIcons(root)).toEqual(["unknown"]);
+      expect(root.textContent).toContain("Status unavailable");
     });
   });
 
@@ -198,7 +227,7 @@ describe("SortableTaskItem", () => {
         expect(getReactProps(handle)?.["aria-label"]).toBe("Reorder Ship it");
         expect(getReactProps(handle)?.className).toContain("touch-none");
         expect(typeof getReactProps(handle)?.onKeyDown).toBe("function");
-        expect(statusIcons(root)).toEqual(["working"]);
+        expect(statusIcons(root)).toEqual([]);
         expect(onSelectTask).not.toHaveBeenCalled();
       }
     });

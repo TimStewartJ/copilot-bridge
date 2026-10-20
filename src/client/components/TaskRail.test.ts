@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, Task } from "../api";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
 import { advanceTimersByTimeAct, findAllByTag, getReactProps, waitTick, waitUntilAct } from "../test-react-harness";
+import { createTaskActivity } from "../../test-support/task-attention";
 
 const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
@@ -28,6 +29,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     modifiedTime: NOW,
     lastVisibleActivityAt: NOW,
     archived: false,
+    runState: "idle",
     diskSizeBytes: 0,
     deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
@@ -232,7 +234,7 @@ describe("TaskRail navigation attention", () => {
     const marks = (node: unknown) => findAllByTag(node, "SPAN").map((span) => getReactProps(span)?.["data-status"]).filter(Boolean);
     // Due, so it sits with current work and not behind the Set aside toggle.
     expect(tile("Quiet feed")).toBeDefined();
-    expect(marks(tile("Quiet feed"))).toEqual([]);
+    expect(marks(tile("Quiet feed"))).toEqual(["paused"]);
     expect(marks(tile("Current work"))).toEqual(["unread"]);
     expect(findAllByTag(harness!.dom.container, "BUTTON").some((node) => String(getReactProps(node)?.["aria-label"] ?? "").startsWith("Set aside"))).toBe(false);
   });
@@ -276,7 +278,51 @@ describe("TaskRail navigation attention", () => {
     expect(text()).not.toContain("Parked idea");
     const toggle = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.includes("Set aside (1)"));
     await harness!.act(async () => { getReactProps(toggle)!.onClick(); await waitTick(); });
-    expect(text()).toContain("Answer needed");
+    expect(text()).toContain("Needs you");
     expect(text()).toContain("Deferred");
+  });
+
+  it.each([false, true])("keeps a late question on an archived task visible (expanded: %s)", async expanded => {
+    await renderRail({
+      expanded,
+      tasks: [createTask({ id: "closed-question", status: "archived", activeSessionIds: ["late-chat"] })],
+      sessions: [createSession({ sessionId: "late-chat", needsUserInput: true })],
+      isUnread: () => false,
+    });
+    const toggle = findAllByTag(harness!.dom.container, "BUTTON").find(node =>
+      String(getReactProps(node)?.["aria-label"] ?? node.textContent).startsWith("Archived ("));
+    expect(toggle).toBeDefined();
+    await harness!.act(async () => { getReactProps(toggle)!.onClick(); });
+    const row = findAllByTag(harness!.dom.container, "BUTTON").find(node =>
+      getReactProps(node)?.["data-task-id"] === "closed-question");
+    expect(getReactProps(row)?.["data-task-attention"]).toBe("needs-input");
+    expect(findAllByTag(row, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual(["needs-input"]);
+  });
+
+  it("keeps shared unavailability out of task badges and reports it once for the list", async () => {
+    const tasks = ["one", "two"].map((id, order) => createTask({ id, title: `Copied ${id}`, order }));
+    await renderRail({ tasks, expanded: true }, tasks.map(task => ({
+      ...task, activity: createTaskActivity({
+        known: false, sessionIndexKnown: false,
+        unavailable: { scope: "source", reason: "Preview conversations are isolated." },
+      }),
+    })));
+    await waitUntilAct(harness!.act, () => harness!.dom.container.textContent?.includes("Activity data incomplete") === true);
+    expect(findAllByTag(harness!.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(1);
+    const rows = findAllByTag(harness!.dom.container, "BUTTON").filter(node => getReactProps(node)?.["data-task-id"]);
+    expect(rows.map(node => getReactProps(node)?.["data-task-id"])).toEqual(["one", "two"]);
+    expect(rows.every(node => !getReactProps(node)?.["data-task-attention"])).toBe(true);
+    expect(rows.every(node => !node.textContent?.includes("Unknown"))).toBe(true);
+  });
+
+  it("leaves the source notice to All tasks while that view is open", async () => {
+    const tasks = [createTask()];
+    await renderRail({ tasks, expanded: true, isAllTasksActive: true }, tasks.map(task => ({
+      ...task, activity: createTaskActivity({
+        known: false, sessionIndexKnown: false,
+        unavailable: { scope: "source", reason: "Preview conversations are isolated." },
+      }),
+    })));
+    expect(findAllByTag(harness!.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(0);
   });
 });

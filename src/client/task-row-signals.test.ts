@@ -1,34 +1,48 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "./api";
-import { getTaskRowSignals } from "./task-row-signals";
-import { getTaskAlertChips } from "./components/task-momentum-alerts";
+import type { TaskIndicator } from "./hooks/useTaskIndicators";
+import { getTaskActivityDescription, getTaskAttentionSignal } from "./task-row-signals";
+import { createTaskActivity } from "../test-support/task-attention";
 
-describe("native task-row meaning", () => {
-  it("does not manufacture a Decision when momentum is not recorded", () => {
-    const task: Task = { id: "task", title: "Existing ongoing task", kind: "ongoing", muted: false, deferred: false, status: "active",
-      notes: "", priority: 0, order: 0, createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [] };
-    expect(getTaskRowSignals(task)).toEqual([]);
+const task: Task = { id: "task", title: "Existing ongoing task", kind: "ongoing", muted: false, deferred: false, status: "active",
+  notes: "", priority: 0, order: 0, createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [] };
+const indicator = (overrides: Partial<TaskIndicator> = {}): TaskIndicator => ({
+  busy: false, stalled: false, unread: false, busyCount: 0, unreadCount: 0, lastActivity: "",
+  readStateKnown: true, sessionStateKnown: true, ...overrides,
+});
+const NOW = new Date("2026-10-19T22:00:00Z");
+
+describe("attention-only task rows", () => {
+  it("marks no known continuation without inventing a Decision, failure, or completion", () => {
+    expect(getTaskAttentionSignal(task, indicator(), NOW, { activity: createTaskActivity() }))
+      .toMatchObject({ kind: "needs-look", label: "Needs a look", shortLabel: "Review", tone: "faint", status: "review" });
+    expect(getTaskAttentionSignal(task, indicator(), NOW))
+      .toMatchObject({ kind: "status-unknown", status: "unknown" });
   });
-  it("keeps deferral visible when muted and never turns a revisit or wait into danger", () => {
-    const task: Task = { id: "task", title: "Set aside", kind: "task", muted: false, deferred: true, status: "active",
-      notes: "", priority: 0, order: 0, createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [],
-      waitingOn: "A normal delivery", nextTouchAt: "2000-01-01T00:00:00Z" };
-    // Back for its date, a set-aside task says in one badge why it surfaced and that it has not resumed.
-    expect(getTaskRowSignals(task)).toEqual([
-      expect.objectContaining({ kind: "follow-up-overdue", label: "Deferred · ready to revisit", shortLabel: "Revisit", status: "paused", tone: "faint" }),
-    ]);
-    expect(getTaskRowSignals({ ...task, muted: true })).toEqual([expect.objectContaining({ label: "Muted · ready to revisit", shortLabel: "Revisit", status: "paused" })]);
-    expect(getTaskRowSignals({ ...task, nextTouchAt: "9999-01-01T00:00:00Z" })).toEqual([expect.objectContaining({ kind: "deferred", label: "Deferred" })]);
-    expect(getTaskRowSignals({ ...task, muted: true, nextTouchAt: "9999-01-01T00:00:00Z" })).toEqual([expect.objectContaining({ kind: "deferred" })]);
-    expect(getTaskRowSignals({ ...task, muted: true, deferred: false, nextTouchAt: undefined })).toEqual([]);
-    expect(getTaskRowSignals({ ...task, deferred: false })).toEqual([expect.objectContaining({ label: "Ready to revisit", shortLabel: "Revisit", status: "open" })]);
-    // The header leaves a reached date to the prompt beneath it.
-    expect(getTaskAlertChips({ task })).toEqual([expect.objectContaining({ label: "Waiting for", tone: "neutral" })]);
+  it("keeps normal work and dated or checked waits blank while leaving their context available", () => {
+    expect(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1 }), NOW)).toBeNull();
+    expect(getTaskAttentionSignal(task, indicator({ deferCount: 1 }), NOW)).toBeNull();
+    const waiting = { ...task, waitingOn: "Reviewer" };
+    expect(getTaskAttentionSignal({ ...waiting, nextTouchAt: "2026-10-25T22:00:00Z" }, indicator(), NOW)).toBeNull();
+    expect(getTaskAttentionSignal(waiting, indicator({ deferCount: 1 }), NOW)).toBeNull();
+    expect(getTaskActivityDescription(waiting, indicator())).toBe("Waiting for: Reviewer");
+    expect(getTaskActivityDescription(task, indicator(), createTaskActivity({ pendingDeliveryCount: 1 }))).toContain("queued");
   });
-  it("marks a quiet task only when task states say so, as a faint status", () => {
-    const task: Task = { id: "task", title: "Old", kind: "task", muted: false, deferred: false, status: "active",
-      notes: "", priority: 0, order: 0, createdAt: "", updatedAt: "", activeSessionIds: [], sessionCount: 0, archivedSessionCount: 0, sessionLinksRevision: "rev-0", workItems: [], pullRequests: [] };
-    expect(getTaskRowSignals(task)).toEqual([]);
-    expect(getTaskRowSignals(task, undefined, new Date(), { quiet: true })).toEqual([expect.objectContaining({ kind: "quiet", shortLabel: "Quiet", tone: "faint" })]);
+  it("marks a bare wait for review and says how to quiet it", () => {
+    expect(getTaskAttentionSignal({ ...task, waitingOn: "Reviewer" }, indicator(), NOW, { activity: createTaskActivity() }))
+      .toMatchObject({ kind: "needs-look", label: "Needs a look", detail: expect.stringContaining("Waiting for: Reviewer, with no revisit date or automatic check") });
+  });
+  it("uses one attention mark for unread work, never a working ring", () => {
+    expect(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1, unreadCount: 1 }), NOW))
+      .toMatchObject({ kind: "unread", label: "New replies", status: "unread" });
+    expect(getTaskAttentionSignal(task, indicator({ needsUserInputCount: 1, unreadCount: 1 }), NOW))
+      .toMatchObject({ kind: "needs-input", label: "Needs you", tone: "accent" });
+  });
+  it("keeps a set-aside revisit marked without silently resuming it", () => {
+    const due = { ...task, deferred: true, nextTouchAt: "2000-01-01T00:00:00Z" };
+    expect(getTaskAttentionSignal(due, indicator(), NOW)).toMatchObject({ label: "Revisit", status: "paused", detail: "Deferred · ready to revisit" });
+    expect(getTaskAttentionSignal({ ...due, muted: true }, indicator({ needsUserInputCount: 1 }), NOW))
+      .toMatchObject({ status: "paused", detail: "Muted · ready to revisit" });
+    expect(getTaskAttentionSignal({ ...task, deferred: true, nextTouchAt: "9999-01-01T00:00:00Z" }, indicator(), NOW)).toBeNull();
   });
 });

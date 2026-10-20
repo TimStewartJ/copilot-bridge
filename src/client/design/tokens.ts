@@ -269,6 +269,8 @@ export const DS = {
       open: "text-text-secondary",
       closed: "text-text-faint",
       paused: "text-text-faint",
+      review: "text-text-faint",
+      unknown: "text-text-secondary",
       on: "text-icon-success",
       autopilot: "text-agent",
     },

@@ -1,157 +1,96 @@
 import type { Task } from "./api";
+import { deriveTaskAttention, type TaskActivity } from "../shared/task-attention";
 import { getRevisitState } from "./lib/task-revisit";
 import type { DsStatusKind } from "./design/tokens";
 import type { TaskIndicator } from "./hooks/useTaskIndicators";
 import { getTaskLifecycleDisplayState } from "./task-completion-helpers";
 
 export type TaskRowSignalKind =
-  | "needs-input"
-  | "stalled"
-  | "busy"
-  | "follow-up-overdue"
-  | "follow-up-due"
-  | "unread"
-  | "completed"
-  | "deferred"
-  | "quiet"
-  | "archived";
-
-export type TaskRowSignalTone = "accent" | "info" | "warning" | "success" | "danger" | "faint";
+  | "needs-input" | "stalled" | "follow-up-overdue" | "follow-up-due" | "unread"
+  | "needs-look" | "status-unknown";
+export type TaskRowSignalTone = "accent" | "warning" | "faint";
 
 export interface TaskRowSignal {
   kind: TaskRowSignalKind;
   label: string;
   shortLabel: string;
   tone: TaskRowSignalTone;
-  /** The glyph drawn beside the label; shape carries the state (see StatusIcon). */
   status: DsStatusKind;
-  animated?: boolean;
+  detail?: string;
 }
 
-/** The one state a compact task tile shows, when it has no room for words. */
-export interface TaskStatus {
-  kind: DsStatusKind;
-  label: string;
+type SignalTask = Pick<Task, "status" | "completedAt" | "muted" | "deferred" | "nextTouchAt" | "waitingOn">;
+export interface TaskRowSignalOptions {
+  activity?: TaskActivity;
+  inputCount?: number;
 }
 
-const SIGNAL_STATUS: Record<TaskRowSignalKind, DsStatusKind> = {
-  "needs-input": "needs-input",
-  stalled: "warning",
-  busy: "working",
-  "follow-up-overdue": "open",
-  "follow-up-due": "open",
-  unread: "unread",
-  completed: "done",
-  deferred: "paused",
-  quiet: "paused",
-  archived: "closed",
-};
-
-function signal(
-  kind: TaskRowSignalKind,
-  label: string,
-  shortLabel: string,
-  tone: TaskRowSignalTone,
-  animated = false,
-  status: DsStatusKind = SIGNAL_STATUS[kind],
-): TaskRowSignal {
-  return { kind, label, shortLabel, tone, status, animated };
+function signal(kind: TaskRowSignalKind, label: string, shortLabel: string, tone: TaskRowSignalTone, status: DsStatusKind, detail?: string): TaskRowSignal {
+  return { kind, label, shortLabel, tone, status, ...(detail ? { detail } : {}) };
 }
 
-/**
- * Returns task-row states in product priority order. Muting suppresses live
- * attention states, while completed and archived lifecycle states stay visible.
- */
-export function getTaskRowSignals(
-  task: Task,
+/** The same answer/read/review meaning in task navigation, lists and the selected task header. */
+export function getTaskAttentionSignal(
+  task: SignalTask,
   indicator?: TaskIndicator,
   now = new Date(),
-  /** From task states: untouched long enough to be worth a look. Never derived from checklist items. */
-  options: { quiet?: boolean } = {},
-): TaskRowSignal[] {
-  const lifecycleState = getTaskLifecycleDisplayState(task);
-  if (lifecycleState === "archived") {
-    return [signal("archived", "Archived", "Archived", "faint")];
+  options: TaskRowSignalOptions = {},
+): TaskRowSignal | null {
+  const lifecycle = getTaskLifecycleDisplayState(task);
+  const attention = deriveTaskAttention({
+    active: lifecycle === "active",
+    muted: task.muted, deferred: task.deferred, waitingOn: task.waitingOn, nextTouchAt: task.nextTouchAt,
+    inputCount: Math.max(indicator?.needsUserInputCount ?? 0, options.inputCount ?? 0),
+    unreadCount: indicator?.unreadCount ?? 0,
+    stalled: indicator?.stalled,
+    readStateKnown: indicator?.readStateKnown ?? true,
+    sessionStateKnown: indicator?.sessionStateKnown ?? true,
+    liveWorkCount: (indicator?.busyCount ?? 0) + (indicator?.deferCount ?? 0)
+      + (indicator?.backgroundRunningCount ?? 0) + (indicator?.externalCount ?? 0),
+    activity: options.activity,
+  }, now.getTime());
+  switch (attention) {
+    case "needs-input": return signal("needs-input", "Needs you", "Needs you", "accent", "needs-input", "A question or approval is waiting for your input.");
+    case "unread": return signal("unread", "New replies", "New", "faint", "unread",
+      `${indicator?.unreadCount ?? 0} unread conversation${indicator?.unreadCount === 1 ? "" : "s"}.`);
+    case "stalled": return signal("stalled", "Stalled", "Stalled", "warning", "warning", "A linked conversation reports a stalled run.");
+    case "revisit": {
+      const ready = getRevisitState(task.nextTouchAt, now) === "ready";
+      const standing = task.muted ? "Muted" : task.deferred ? "Deferred" : null;
+      return signal(ready ? "follow-up-overdue" : "follow-up-due", "Revisit", "Revisit", "faint", standing ? "paused" : "open",
+        `${standing ? `${standing} · ` : ""}${ready ? "ready to revisit" : "revisit today"}`);
+    }
+    case "review": return signal("needs-look", "Needs a look", "Review", "faint", "review", task.waitingOn?.trim()
+      ? `Waiting for: ${task.waitingOn.trim()}, with no revisit date or automatic check. Add one so the task comes back to you.`
+      : "No running work or planned continuation is known. Review the task or decide its next step.");
+    case "unavailable": return signal("status-unknown", "Status unavailable", "Unknown", "faint", "unknown",
+      options.activity?.unavailable?.reason ?? (indicator?.readStateKnown === false ? "Read status is unavailable." : "Task activity could not be classified reliably."));
+    default: return null;
   }
-  if (lifecycleState === "completed") {
-    return [signal("completed", "Completed", "Done", "faint")];
-  }
-  const followUpState = getRevisitState(task.nextTouchAt, now);
-  const revisitDue = followUpState === "ready" || followUpState === "today";
-  const setAside = task.muted ? "Muted" : task.deferred ? "Deferred" : null;
-  // A set-aside task back for its revisit date says why it is here in the word and that it has not resumed in the
-  // glyph, the paused mark a deferred row carries. A narrow list has no room for both words; the tooltip has them.
-  const standing = setAside && revisitDue
-    ? [signal(followUpState === "ready" ? "follow-up-overdue" : "follow-up-due",
-      `${setAside} · ${followUpState === "ready" ? "ready to revisit" : "revisit today"}`, "Revisit", "faint", false, "paused")]
-    : task.deferred ? [signal("deferred", "Deferred", "Deferred", "faint")] : [];
-  if (task.muted) return standing;
-
-  const signals: TaskRowSignal[] = [];
-  const needsUserInputCount = indicator?.needsUserInputCount ?? 0;
-  const busyCount = indicator?.busyCount ?? 0;
-  const unreadCount = indicator?.unreadCount ?? 0;
-
-  if (needsUserInputCount > 0) {
-    signals.push(signal(
-      "needs-input",
-      needsUserInputCount === 1 ? "Answer needed" : `${needsUserInputCount} answers needed`,
-      needsUserInputCount === 1 ? "Answer" : `${needsUserInputCount} answers`,
-      "accent",
-    ));
-  }
-  if (indicator?.stalled) {
-    signals.push(signal("stalled", "Stalled", "Stalled", "warning", true));
-  } else if (indicator?.busy) {
-    signals.push(signal(
-      "busy",
-      busyCount > 1 ? `${busyCount} sessions working` : "Agent working",
-      busyCount > 1 ? `${busyCount} working` : "Agent working",
-      "faint",
-      true,
-    ));
-  }
-
-  signals.push(...standing);
-  if (!setAside && followUpState === "ready") {
-    signals.push(signal("follow-up-overdue", "Ready to revisit", "Revisit", "faint"));
-  } else if (!setAside && followUpState === "today") {
-    signals.push(signal("follow-up-due", "Revisit today", "Revisit", "faint"));
-  }
-
-  if (unreadCount > 0) {
-    signals.push(signal(
-      "unread",
-      unreadCount === 1 ? "Unread conversation" : `${unreadCount} unread conversations`,
-      unreadCount === 1 ? "New" : `${unreadCount} new`,
-      "faint",
-    ));
-  }
-  if (options.quiet) signals.push(signal("quiet", "Quiet for a month or more", "Quiet", "faint"));
-
-  return signals;
 }
 
-/** The single highest-priority live state of a task, for tiles and rows with no room for words. */
-export function getTaskStatus(indicator?: TaskIndicator): TaskStatus | null {
-  const needsUserInputCount = indicator?.needsUserInputCount ?? 0;
-  if (needsUserInputCount > 0) {
-    return { kind: "needs-input", label: needsUserInputCount === 1 ? "Answer needed" : `${needsUserInputCount} answers needed` };
-  }
-  if (indicator?.stalled) return { kind: "warning", label: "Stalled" };
-  if ((indicator?.unreadCount ?? 0) > 0 || indicator?.unread) {
-    // Unread results do not hide an agent that is still working: the dot gains the working ring.
-    return indicator?.busy
-      ? { kind: "unread-working", label: "Unread conversations, agent working" }
-      : { kind: "unread", label: "Unread conversations" };
-  }
-  if (indicator?.busy) return { kind: "working", label: "Agent working" };
-  return null;
+/** Progress is available as context, never as a routine leading attention mark. */
+export function getTaskActivityDescription(task: SignalTask, indicator?: TaskIndicator, activity?: TaskActivity): string {
+  if (indicator?.busy || (activity?.runCount ?? 0) > 0) return "Agent working";
+  if ((activity?.runningCommandCount ?? 0) > 0) return "A background command is running";
+  if (Math.max(indicator?.backgroundRunningCount ?? 0, activity?.runningAgentCount ?? 0) > 0) return "A background agent is working";
+  if ((activity?.heldCount ?? 0) > 0) return "A continuation is pending";
+  if ((activity?.managementJobCount ?? 0) > 0) return "A background management job is pending";
+  if ((activity?.pendingDeliveryCount ?? 0) > 0) return "A result is queued for delivery";
+  if (Math.max(indicator?.deferCount ?? 0, activity?.deferredCount ?? 0) > 0) return "Automatic check scheduled";
+  if ((activity?.scheduledCount ?? 0) > 0) return "Automatic work scheduled";
+  if (Math.max(indicator?.externalCount ?? 0, activity?.externalCount ?? 0) > 0) return "Open in another client";
+  if (task.waitingOn?.trim()) return `Waiting for: ${task.waitingOn.trim()}`;
+  if (getRevisitState(task.nextTouchAt) === "upcoming") return "A future revisit is planned";
+  const lifecycle = getTaskLifecycleDisplayState(task);
+  if (lifecycle === "completed") return "Completed";
+  if (lifecycle === "archived") return "Archived";
+  if (task.muted) return "Muted";
+  if (task.deferred) return "Intentionally set aside";
+  if (!activity?.known) return "Task activity unavailable";
+  return "No running work or planned continuation";
 }
 
-export function shouldShowTaskRowUnreadDot(
-  task: Task,
-  indicator: TaskIndicator | undefined,
-): boolean {
-  return !task.muted && (indicator?.unreadCount ?? 0) > 0;
+export function shouldShowTaskRowUnreadDot(task: Pick<Task, "muted">, indicator: TaskIndicator | undefined): boolean {
+  return !task.muted && (indicator?.readStateKnown ?? true) && (indicator?.unreadCount ?? 0) > 0;
 }

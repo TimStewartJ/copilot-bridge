@@ -71,9 +71,11 @@ One vocabulary everywhere. Each kind has one meaning, and a row shows at most on
 | Kind | Glyph | Colour | Means |
 | --- | --- | --- | --- |
 | `needs-input` | filled `?` | accent | A question or approval waits on the reader |
+| `review` | eye outline | neutral | An active task has no known work or planned continuation and needs a look |
+| `unknown` | outlined `?` | neutral | A task-specific problem prevents classification, or a collapsed source-health control opens the shared notice |
 | `working` | spinning ring | neutral | Work in flight; the motion is the signal, and it stops under reduced motion |
 | `unread` | solid dot, with a bold title | primary text | New results since the reader last looked |
-| `unread-working` | the unread dot inside the spinning ring, with a bold title | primary dot, neutral ring | New results, while other work under the same heading is still in flight (a task with an unread chat and a running one). The ring stops under reduced motion and the shape still says both |
+| `unread-working` | the unread dot inside the spinning ring, with a bold title | primary dot, neutral ring | New results, while other work under the same heading is still in flight. The ring stops under reduced motion and the shape still says both |
 | `warning` | triangle | warning | Stalled, due today, needs a decision |
 | `danger` | filled `!` | error | Overdue, failed, disconnected |
 | `done` | check in a ring | faint | Finished; it steps back |
@@ -89,6 +91,20 @@ and `unread` otherwise, matching the glyphs.
 Two states that hold at once are drawn as one glyph built from both, as `unread-working` is, not as
 two marks side by side and not as a pulsing dot: a pulse is lost under reduced motion, and it reads
 as urgency when it means that more is still coming.
+
+Task navigation, the phone task list, All tasks and task headers show attention rather than routine
+activity. A question gets `needs-input` and "Needs you"; unread information gets a plain `unread` dot
+and "New replies", even if other work continues. A known lack of continuation gets `review` and
+"Needs a look" ("Review" in narrow rows); a saved wait with no revisit date and nothing checking on it
+counts as no continuation. Reached revisits retain their cue. Working, scheduled, deferred tasks and
+waits with a date or a check otherwise leave the leading slot blank. Show that context
+in hover text, metadata or task details, and keep lifecycle labels separate from attention.
+Loading has one message per view. Shared source gaps use one activity-data disclosure with affected
+tasks, rather than repeating Unknown badges. Individual `unknown` marks are for task-specific
+problems. A failed refresh keeps the previous reading, explicitly labelled stale; incomplete
+evidence never creates a new review suggestion. Known questions, replies and reached revisits
+remain visible despite other missing information. These marks never reorder tasks, mark messages
+unread, or create notifications. Session/chat activity glyphs retain their existing meanings.
 
 ## Haptics
 
