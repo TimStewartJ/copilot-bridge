@@ -93,11 +93,12 @@ two marks side by side and not as a pulsing dot: a pulse is lost under reduced m
 as urgency when it means that more is still coming.
 
 Task navigation, the phone task list, All tasks and task headers show attention rather than routine
-activity. A question gets `needs-input` and "Needs you"; unread information gets a plain `unread` dot
-and "New replies", even if other work continues. A known lack of continuation gets `review` and
+activity. A question gets `needs-input` and "Needs you"; unread information gets "New replies", drawn
+as `unread`, or as `unread-working` while a turn is running. A known lack of continuation gets `review` and
 "Needs a look" ("Review" in narrow rows); a saved wait with no revisit date and nothing checking on it
-counts as no continuation. Reached revisits retain their cue. Working, scheduled, deferred tasks and
-waits with a date or a check otherwise leave the leading slot blank. Show that context
+counts as no continuation. Reached revisits retain their cue. In task rows, a task with no attention
+mark and a turn running shows the `working` spinner, which is not counted as attention. Scheduled,
+deferred tasks and waits with a date or a check otherwise leave the leading slot blank. Show that context
 in hover text, metadata or task details, and keep lifecycle labels separate from attention.
 Loading has one message per view. Shared source gaps use one activity-data disclosure with affected
 tasks, rather than repeating Unknown badges. Individual `unknown` marks are for task-specific

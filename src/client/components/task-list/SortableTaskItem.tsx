@@ -6,7 +6,7 @@ import type { Task } from "../../api";
 import type { TaskIndicator } from "../../hooks/useTaskIndicators";
 import type { LongPressBindings } from "../../hooks/useLongPressMenu";
 import TaskKindBadge from "../TaskKindBadge";
-import { DS } from "../../design/tokens";
+import { DS, type DsStatusKind } from "../../design/tokens";
 import { IconButton, StatusIcon } from "../../design/primitives";
 import { shouldShowTaskRowUnreadDot, type TaskRowSignal } from "../../task-row-signals";
 import TaskAttentionBadge from "../TaskAttentionBadge";
@@ -27,6 +27,8 @@ interface SortableTaskItemProps {
   /** Reorder mode: the row stops opening the task and shows a drag handle beside it. */
   reordering?: boolean;
   attention?: TaskRowSignal | null;
+  /** Leading glyph: the attention mark, or the working spinner when a turn is running. */
+  glyph?: DsStatusKind | null;
   activityDescription?: string;
 }
 
@@ -42,6 +44,7 @@ export default function SortableTaskItem({
   rowDrag = false,
   reordering = false,
   attention = null,
+  glyph = attention?.status ?? null,
   activityDescription,
 }: SortableTaskItemProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
@@ -85,7 +88,7 @@ export default function SortableTaskItem({
     <>
       <div className="flex items-center gap-1.5">
         <span data-task-row-leading="" className="flex w-3 shrink-0 items-center justify-center">
-          {attention && <StatusIcon kind={attention.status} decorative />}
+          {glyph && <StatusIcon kind={glyph} decorative />}
         </span>
         <span className={`truncate flex-1 ${emphasizeTitle ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
           {task.title}

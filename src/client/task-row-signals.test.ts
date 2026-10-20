@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "./api";
 import type { TaskIndicator } from "./hooks/useTaskIndicators";
-import { getTaskActivityDescription, getTaskAttentionSignal } from "./task-row-signals";
+import { getTaskActivityDescription, getTaskAttentionSignal, getTaskLeadingGlyph } from "./task-row-signals";
 import { createTaskActivity } from "../test-support/task-attention";
 
 const task: Task = { id: "task", title: "Existing ongoing task", kind: "ongoing", muted: false, deferred: false, status: "active",
@@ -45,4 +45,11 @@ describe("attention-only task rows", () => {
       .toMatchObject({ status: "paused", detail: "Muted · ready to revisit" });
     expect(getTaskAttentionSignal({ ...task, deferred: true, nextTouchAt: "9999-01-01T00:00:00Z" }, indicator(), NOW)).toBeNull();
   });
-});
+  it("draws the working spinner only when no attention mark claims the slot", () => {
+    const busy = indicator({ busy: true, busyCount: 1 });
+    expect(getTaskLeadingGlyph(null, busy)).toBe("working");
+    expect(getTaskLeadingGlyph(null, indicator(), createTaskActivity({ runCount: 1 }))).toBe("working");
+    expect(getTaskLeadingGlyph(null, indicator({ deferCount: 1 }), createTaskActivity({ deferredCount: 1 }))).toBeNull();
+    expect(getTaskLeadingGlyph(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1, unreadCount: 1 }), NOW), busy)).toBe("unread-working");
+    expect(getTaskLeadingGlyph(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1, needsUserInputCount: 1 }), NOW), busy)).toBe("needs-input");
+  });});

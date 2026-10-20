@@ -69,6 +69,16 @@ export function getTaskAttentionSignal(
   }
 }
 
+/**
+ * The leading glyph: an attention mark first, then the working spinner for a task with a turn running.
+ * Unread replies on a working task keep both as one glyph. The spinner never counts as attention.
+ */
+export function getTaskLeadingGlyph(attention: TaskRowSignal | null, indicator?: TaskIndicator, activity?: TaskActivity): DsStatusKind | null {
+  const working = !!indicator?.busy || (activity?.runCount ?? 0) > 0;
+  if (attention) return attention.kind === "unread" && working ? "unread-working" : attention.status;
+  return working ? "working" : null;
+}
+
 /** Progress is available as context, never as a routine leading attention mark. */
 export function getTaskActivityDescription(task: SignalTask, indicator?: TaskIndicator, activity?: TaskActivity): string {
   if (indicator?.busy || (activity?.runCount ?? 0) > 0) return "Agent working";

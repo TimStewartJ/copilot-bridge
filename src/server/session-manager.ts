@@ -5633,22 +5633,20 @@ export class SessionManager {
     return this.agentRegistry.getSummary(sessionId);
   }
 
-  /** Cached work evidence only: no SDK calls, process inspection or disk reads. */
+  /**
+   * Cached work evidence only: no SDK calls, process inspection or disk reads. Counts what the agent
+   * registry last saw in a loaded chat. A chat it never checked has no work: starting an agent or
+   * command triggers a check. Unloading a chat stops its agents and commands.
+   */
   getSessionContinuationState(sessionId: string): {
-    known: boolean;
     runningAgentCount: number;
     runningCommandCount: number;
     held: boolean;
   } {
-    const agents = this.agentRegistry.getSummary(sessionId);
-    const commands = this.agentRegistry.getRunningCommands(sessionId);
     const loaded = this.sessionObjects.has(sessionId);
-    const known = !loaded || agents.source === "live"
-      || (agents.source === "lastSeen" && agents.running === 0 && commands.length === 0);
     return {
-      known,
-      runningAgentCount: agents.source === "live" ? agents.running : 0,
-      runningCommandCount: known ? commands.length : 0,
+      runningAgentCount: loaded ? this.agentRegistry.getSummary(sessionId).running : 0,
+      runningCommandCount: loaded ? this.agentRegistry.getRunningCommands(sessionId).length : 0,
       held: this.sessionHolds.has(sessionId) || this.isSessionResuming(sessionId)
         || this.pendingSessionCreations.has(sessionId) || this.agentRegistry.hasProtectedCommand(sessionId),
     };

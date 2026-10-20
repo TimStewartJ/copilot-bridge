@@ -789,6 +789,21 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
+  it("counts an opened idle chat the agent registry never checked as having no background work", async () => {
+    const { manager } = createManager();
+    const { session } = makeSession();
+    (session as any).listTasks = vi.fn(async () => ({ tasks: [] }));
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+
+    await manager.warmSession("opened-chat");
+    await flushMicrotasks();
+
+    expect(manager.backend.resumeSession).toHaveBeenCalledOnce();
+    expect(manager.agentRegistry.getSummary("opened-chat").source).toBe("unknown");
+    expect(manager.getSessionContinuationState("opened-chat"))
+      .toEqual({ runningAgentCount: 0, runningCommandCount: 0, held: false });
+  });
+
   it("notices a background command starting and finishing while no run is open", async () => {
     const { manager, globalBus } = createManager();
     const continuationEvents: string[] = [];
@@ -829,16 +844,17 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-command")).toBe("idle");
     expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
     expect(manager.getLifecycleBlockingSessionIds()).toEqual(["session-command"]);
-    expect(manager.getSessionContinuationState("session-command")).toMatchObject({ known: true, runningCommandCount: 1, held: true });
+    expect(manager.getSessionContinuationState("session-command")).toMatchObject({ runningCommandCount: 1, held: true });
     expect(continuationEvents).toEqual(["session-command"]);
 
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
+      // Past the protection window the command is still counted as running work, not as an unknown state.
       vi.setSystemTime(Date.now() + 46 * 60_000);
-      expect(manager.getSessionContinuationState("session-command").known).toBe(false);
+      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ runningCommandCount: 1, held: false });
       getHandler()?.({ type: "session.background_tasks_changed", data: {}, timestamp: new Date().toISOString() });
       await flushMicrotasks();
-      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ known: true, runningCommandCount: 1, held: false });
+      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ runningCommandCount: 1, held: false });
     } finally {
       vi.useRealTimers();
     }
@@ -856,7 +872,7 @@ describe("SessionManager run state", () => {
     try {
       vi.setSystemTime(Date.now() + 31_000);
       expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ known: true, runningCommandCount: 0, held: false });
+      expect(manager.getSessionContinuationState("session-command")).toMatchObject({ runningCommandCount: 0, held: false });
     } finally {
       vi.useRealTimers();
     }
