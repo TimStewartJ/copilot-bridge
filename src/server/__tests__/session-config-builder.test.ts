@@ -10,9 +10,12 @@ import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
   BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
+  ASK_OR_PROCEED_GUIDANCE,
+  HOME_GUIDANCE,
   removeCliOutputSurfaceNote,
   removeConciseReplyDirective,
   RESPONSE_QUALITY_GUIDANCE,
+  STAGING_INSTRUCTIONS,
 } from "../session-instructions.js";
 import { PROMPT_PROFILE_DEFINITIONS } from "../prompt-profiles.js";
 import type { ChecklistStore } from "../checklist-store.js";
@@ -143,9 +146,51 @@ describe("session-config-builder prompt profiles", () => {
         options: { promptProfile },
       });
       const rules = cfg.systemMessage.sections.code_change_rules;
-      expect(rules.content).toContain("<staging_workflow>");
+      expect(rules.content).toBe(STAGING_INSTRUCTIONS);
       expect(rules.action).toBe(PROMPT_PROFILE_DEFINITIONS[promptProfile].keepCodingRules ? "append" : "replace");
     }
+  });
+
+  it.each([false, true])("keeps profiles limited to prompt sections and preserves user guidance (resume: %s)", (forResume) => {
+    const settingsStore = createSettingsStore(setupTestDb());
+    const customInstructions = "Keep exact approved wording and do not send unapproved messages.";
+    const taskInstructions = "Do not deploy until the user reviews the preview.";
+    settingsStore.updateSettings({
+      customInstructions,
+      responseStyle: { detail: "concise", guidance: "Use plain language." },
+    });
+    const permissionPolicy = vi.fn();
+    const configs = (["engineer", "assistant", "monitor"] as const).map((promptProfile) => buildSessionConfig({
+      deps: createDeps({ settingsStore, permissionPolicy }),
+      callbacks: createCallbacks(),
+      options: { promptProfile, forResume, task: createTask({ instructions: taskInstructions }) },
+    }));
+    for (const config of configs) {
+      expect(config.onPermissionRequest).toBe(permissionPolicy);
+      expect(config.memory).toEqual({ enabled: false });
+      expect(config.systemMessage.content).toContain(customInstructions);
+      expect(config.systemMessage.content).toContain(taskInstructions);
+      expect(config.systemMessage.content).toContain(ASK_OR_PROCEED_GUIDANCE);
+      expect(config.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
+      expect(config.systemMessage.content).toContain(HOME_GUIDANCE);
+      expect(config.systemMessage.content.match(/<asking_and_proceeding>/g)).toHaveLength(1);
+      expect(config.systemMessage.sections.tone.content).toContain("Use plain language.");
+      expect(config.systemMessage.sections.tool_instructions.content).toContain(BROWSER_GUIDANCE);
+    }
+    const [first, ...rest] = configs.map(({ systemMessage: _systemMessage, ...runtime }) => runtime);
+    for (const runtime of rest) expect(runtime).toEqual(first);
+    expect(settingsStore.getSettings().customInstructions).toBe(customInstructions);
+  });
+
+  it("keeps decision support within accepted scope and one shared clarification policy", () => {
+    const engineer = sectionsFor({ promptProfile: "engineer" });
+    expect(engineer.sections.guidelines.content).toContain("Do not expand scope or replace a completion condition without agreement.");
+    expect(engineer.sections.guidelines.content).toContain("connect the evidence to its consequence for the user's goal");
+    const assistant = sectionsFor({ promptProfile: "assistant" });
+    expect(assistant.sections.guidelines.content).toContain("shared asking-and-proceeding rule");
+    expect(assistant.sections.guidelines.content).toContain("task size alone is not a reason to ask");
+    expect(assistant.sections.guidelines.content).toContain("Scheduled runs state assumptions rather than asking.");
+    expect(assistant.sections.guidelines.content).not.toContain("and the work is substantial, ask");
   });
 
   it("uses the stored profile on resume and the legacy Engineer prompt for chats without one", () => {
@@ -830,9 +875,9 @@ describe("session-config-builder", () => {
       expect(cfg.systemMessage.sections.tool_instructions.action).toBe("append");
       const guidance = cfg.systemMessage.sections.tool_instructions.content;
       expect(guidance).toContain('mode "sync" are one-shot: never call write_agent on them');
-      expect(guidance).toContain("Launch an agent in background mode when you may need to send it follow-ups");
+      expect(guidance).toContain("background needs independent work or an expected same-task follow-up");
       // Waiting follows the runtime's read_agent contract instead of contradicting it.
-      expect(guidance).toContain("call read_agent once with wait: true. If it is still running, end your turn");
+      expect(guidance).toContain("call read_agent once with wait: true. If still running, end the turn");
       expect(guidance).not.toContain("To block while preserving multi-turn support");
     }
   });
@@ -846,15 +891,15 @@ describe("session-config-builder", () => {
     const created = guidance();
 
     // Work alongside the command instead of blocking on it.
-    expect(created).toContain('start it with mode "async" and carry on');
-    expect(created).toContain("start independent slow commands together");
+    expect(created).toContain('Use mode "async" for work taking more than a minute or two when you can do other work meanwhile.');
+    expect(created).toContain("Start independent slow commands together");
     // Waits stay under the provider's cache lifetime, and the reason is given so the cap is not read as arbitrary.
-    expect(created).toContain("wait in steps of at most 240 seconds");
-    expect(created).toContain("prompt cache expire");
+    expect(created).toContain("Wait in steps of at most 240 seconds");
+    expect(created).toContain("expire the prompt cache");
     // Long outside waits go to a defer; a command's lifetime is stated as it is.
-    expect(created).toContain("To wait longer than about 45 minutes on something outside this session that your work depends on");
+    expect(created).toContain("For an external dependency taking more than about 45 minutes");
     expect(created).toContain("create a defer and end the turn instead of polling");
-    expect(created).toContain("holds its own restarts for about 45 minutes after the command started");
+    expect(created).toContain("holds restarts for about 45 minutes after the command started");
     expect(created.indexOf("**Sub-agent lifecycle**")).toBeLessThan(created.indexOf("**Long-running commands and waiting**"));
     expect(created.indexOf("**Long-running commands and waiting**")).toBeLessThan(created.indexOf("<ask_user_context>"));
     // The same bytes on every build keep a session's cached prompt prefix intact.

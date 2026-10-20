@@ -113,9 +113,13 @@ function buildTaskState(
   }
   const checklist = deps.checklistStore?.listChecklistItems(task.id) ?? [];
   if (checklist.length > 0) {
-    lines.push(`Checklist:\n${checklist.map((item) => (
-      `- [${item.done ? "x" : " "}] ${item.text} [id: ${item.id}]${item.deadline ? ` (due ${item.deadline})` : ""}`
-    )).join("\n")}`);
+    const open = checklist.filter((item) => !item.done);
+    lines.push([
+      `Checklist: ${open.length} open, ${checklist.length - open.length} completed. Use action_list for the full checklist.`,
+      ...open.map((item) => (
+        `- [ ] ${item.text} [id: ${item.id}]${item.deadline ? ` (due ${item.deadline})` : ""}`
+      )),
+    ].join("\n"));
   }
   const historyTotal = deps.taskHistoryStore?.countEntries(task.id) ?? 0;
   if (historyTotal > 0) {
