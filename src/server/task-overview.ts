@@ -105,7 +105,6 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
       }
       const runtime = ctx.sessionManager.getSessionContinuationState?.(id);
       if (!runtime) unavailable("source", "Runtime continuation status is unavailable.");
-      else if (!runtime.known) unavailable("task", "A linked conversation's runtime activity is not current.");
       if (runState(id) !== "idle") activity.runCount++;
       if (runtime) {
         activity.runningAgentCount += runtime.runningAgentCount;

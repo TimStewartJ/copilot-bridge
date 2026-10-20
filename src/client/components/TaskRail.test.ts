@@ -299,6 +299,19 @@ describe("TaskRail navigation attention", () => {
     expect(findAllByTag(row, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual(["needs-input"]);
   });
 
+  it("spins for a task with a running turn without counting it as attention", async () => {
+    await renderRail({
+      expanded: true,
+      tasks: [createTask({ id: "running-task", title: "Running task", activeSessionIds: ["running-chat"] })],
+      sessions: [createSession({ sessionId: "running-chat", runState: "busy" })],
+      isUnread: () => false,
+    });
+    const row = findAllByTag(harness!.dom.container, "BUTTON").find(node =>
+      getReactProps(node)?.["data-task-id"] === "running-task");
+    expect(findAllByTag(row, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual(["working"]);
+    expect(harness!.dom.container.textContent).not.toMatch(/need[s]? a look|marked/);
+  });
+
   it("keeps shared unavailability out of task badges and reports it once for the list", async () => {
     const tasks = ["one", "two"].map((id, order) => createTask({ id, title: `Copied ${id}`, order }));
     await renderRail({ tasks, expanded: true }, tasks.map(task => ({

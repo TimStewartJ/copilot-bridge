@@ -32,7 +32,6 @@ import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
 import { shouldShowTaskRowUnreadDot } from "../task-row-signals";
 import TaskAttentionBadge from "./TaskAttentionBadge";
-import TaskAttentionSummary from "./TaskAttentionSummary";
 import TaskAttentionNotice from "./TaskAttentionNotice";
 import { DS, cx } from "../design/tokens";
 import { Button, CountBadge, IdentitySwatch, StatusIcon } from "../design/primitives";
@@ -185,7 +184,7 @@ export default function TaskRail({
     return map;
   }, [sessions]);
 
-  const { overview, taskIndicators, taskSignals, activityDescriptions, health } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
+  const { overview, taskIndicators, taskSignals, taskGlyphs, activityDescriptions, health } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
 
   const { nonArchived, archived: archivedTasks } = useMemo(
     () => splitArchivedTasks(tasks),
@@ -674,7 +673,6 @@ export default function TaskRail({
               <Button ref={newTaskButtonRef} fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
                 New task
               </Button>
-              <TaskAttentionSummary signals={taskSignals} />
               <TaskAttentionNotice health={isAllTasksActive ? null : health} compact />
               {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
               <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
@@ -757,6 +755,7 @@ export default function TaskRail({
                                     onSelectTask={onSelectTask}
                                     variant="rail"
                                     attention={taskSignals.get(task.id)}
+                                    glyph={taskGlyphs.get(task.id)}
                                     activityDescription={activityDescriptions.get(task.id)}
                                     rowDrag={canReorder}
                                     reordering={reorderMode.reordering}
@@ -784,6 +783,7 @@ export default function TaskRail({
                         onSelectTask={onSelectTask}
                         variant="rail"
                         attention={taskSignals.get(task.id)}
+                        glyph={taskGlyphs.get(task.id)}
                         activityDescription={activityDescriptions.get(task.id)}
                         rowDrag={canReorder}
                         reordering={reorderMode.reordering}
@@ -840,7 +840,7 @@ export default function TaskRail({
                               ctxMenu?.id === task.id ? "bg-bg-hover ring-1 ring-border" : task.id === activeTaskId ? DS.row.selected : "hover:bg-bg-hover/60")}
                           >
                             <span className="flex w-3 shrink-0 items-center justify-center">
-                              {attention && <StatusIcon kind={attention.status} decorative />}
+                              {taskGlyphs.get(task.id) && <StatusIcon kind={taskGlyphs.get(task.id)!} decorative />}
                             </span>
                             <span className={cx("min-w-0 flex-1 truncate text-text-primary", unread ? "font-semibold" : "font-medium")}>{task.title}</span>
                             <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />
@@ -899,7 +899,7 @@ export default function TaskRail({
                       >
                         <div className="flex items-center gap-2">
                           <span className="flex w-3 shrink-0 items-center justify-center">
-                            {attention && <StatusIcon kind={attention.status} decorative />}
+                            {taskGlyphs.get(task.id) && <StatusIcon kind={taskGlyphs.get(task.id)!} decorative />}
                           </span>
                           <span className={cx("truncate flex-1", attention ? "font-semibold" : "font-medium")}>
                             {task.title}

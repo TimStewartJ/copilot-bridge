@@ -3,7 +3,8 @@ import type { Session, Task } from "../api";
 import type { TaskOverview, TaskOverviewRow } from "../../shared/task-overview";
 import useTaskIndicators, { type TaskIndicator, type TaskSessionSource } from "./useTaskIndicators";
 import { useTaskOverviewQuery } from "./queries/useTaskOverview";
-import { getTaskActivityDescription, getTaskAttentionSignal, type TaskRowSignal } from "../task-row-signals";
+import { getTaskActivityDescription, getTaskAttentionSignal, getTaskLeadingGlyph, type TaskRowSignal } from "../task-row-signals";
+import type { DsStatusKind } from "../design/tokens";
 import { useNow } from "./useNow";
 
 type AttentionTask = Pick<Task, "id" | "title" | "status" | "completedAt" | "muted" | "deferred" | "waitingOn" | "nextTouchAt">;
@@ -45,6 +46,7 @@ export function useTaskAttentionPresentation(
   const projection = useMemo(() => {
     const rows = new Map((query.data?.tasks ?? []).map(row => [row.id, row]));
     const taskSignals = new Map<string, TaskRowSignal | null>();
+    const taskGlyphs = new Map<string, DsStatusKind | null>();
     const activityDescriptions = new Map<string, string>();
     const affectedTasks: TaskAttentionHealth["affectedTasks"] = [];
     const messages = new Set(query.data?.sourceErrors ?? []);
@@ -122,6 +124,7 @@ export function useTaskAttentionPresentation(
         nextReadings.set(task.id, { key, signal: previousCleared ? null : signal, updatedAt: query.data?.generatedAt });
       } else if (matchingPrevious) nextReadings.set(task.id, matchingPrevious);
       taskSignals.set(task.id, displayed);
+      taskGlyphs.set(task.id, getTaskLeadingGlyph(displayed, indicator, row?.activity));
       const description = getTaskActivityDescription(task, indicator, row?.activity);
       activityDescriptions.set(task.id, sharedGap && description === "Task activity unavailable" ? "" : description);
       if (reasons.length > 0) {
@@ -142,10 +145,10 @@ export function useTaskAttentionPresentation(
       affectedTasks,
       ...(updatedAt ? { updatedAt } : {}),
     };
-    return { taskSignals, activityDescriptions, health, nextReadings };
+    return { taskSignals, taskGlyphs, activityDescriptions, health, nextReadings };
   }, [tasks, indicators, query.data, query.isError, query.error, now]);
   useEffect(() => { previousReadings.current = projection.nextReadings; }, [projection.nextReadings]);
-  return { taskSignals: projection.taskSignals, activityDescriptions: projection.activityDescriptions, health: projection.health };
+  return { taskSignals: projection.taskSignals, taskGlyphs: projection.taskGlyphs, activityDescriptions: projection.activityDescriptions, health: projection.health };
 }
 
 /** Adds server continuation evidence without changing unread state, notifications or task order. */
