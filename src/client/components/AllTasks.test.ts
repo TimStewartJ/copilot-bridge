@@ -126,20 +126,24 @@ describe("All tasks", () => {
     expect(findAllByTag(harness.dom.container, "SECTION").map(node => getReactProps(node)?.["aria-label"])).toEqual(["First", "Second"]);
   });
 
-  it("shows new replies and questions distinctly and keeps automatic work unbadged", async () => {
+  it("shows new replies and questions distinctly, spins for a running turn and keeps automatic work blank", async () => {
     const indicators = new Map<string, TaskIndicator>([
       ["new", { busy: true, busyCount: 1, stalled: false, unread: true, unreadCount: 1, readStateKnown: true, sessionStateKnown: true, lastActivity: "" }],
+      ["running", { busy: true, busyCount: 1, stalled: false, unread: false, unreadCount: 0, readStateKnown: true, sessionStateKnown: true, lastActivity: "" }],
     ]);
     await render([
       row({ id: "asks", title: "Approval", state: "needs_you", inputCount: 1 }),
       row({ id: "new", title: "Finished output" }),
+      row({ id: "running", title: "Building" }),
       row({ id: "auto", title: "Monitoring", activity: createTaskActivity({ deferredCount: 1 }) }),
     ], false, indicators);
     const iconKinds = findAllByTag(harness.dom.container, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean);
-    expect(iconKinds).toEqual(["needs-input", "unread"]);
+    expect(iconKinds).toEqual(["needs-input", "unread-working", "working"]);
     expect(text()).toContain("New replies");
     expect(text()).toContain("Automatic check scheduled");
-    expect(iconKinds).not.toContain("working");
+    // The spinner is not an attention mark, so the running task carries no attention label.
+    expect(buttons().find(node => node.textContent?.startsWith("Building"))
+      && getReactProps(buttons().find(node => node.textContent?.startsWith("Building"))!)?.["aria-label"]).toBe("Building");
   });
 
   it("shows a shared source gap once instead of putting Unknown on every affected row", async () => {

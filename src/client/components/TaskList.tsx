@@ -9,7 +9,6 @@ import { useTaskAttention } from "../hooks/useTaskAttention";
 import useDueSetAsideIds from "../hooks/useDueSetAsideIds";
 import useCrossGroupDnd from "../hooks/useCrossGroupDnd";
 import { groupTasksByStatus, buildGroupSections, isSetAsideTask, mergeVisibleOrder } from "../task-helpers";
-import TaskAttentionSummary from "./TaskAttentionSummary";
 import TaskAttentionNotice from "./TaskAttentionNotice";
 import { needsYouCount, setAsideAttention } from "../lib/task-state-ui";
 import { SortableTaskItem, DroppableGroup, TaskDragOverlay, TaskContextMenu, TaskReorderBar, UnreadTaskEdgePill, useTaskReorderMode, useUnreadTaskEdges } from "./task-list";
@@ -84,7 +83,7 @@ export default function TaskList({
     return map;
   }, [sessions]);
 
-  const { overview, taskIndicators, taskSignals, activityDescriptions, health } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
+  const { overview, taskIndicators, taskSignals, taskGlyphs, activityDescriptions, health } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
 
   const { bind: bindLongPress, menu: ctxMenu, closeMenu, isTarget, resetClickGuard } = useLongPressMenu<string>();
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
@@ -206,6 +205,7 @@ export default function TaskList({
               bindLongPress={bindLongPress}
               onSelectTask={onSelectTask}
               attention={taskSignals.get(task.id)}
+              glyph={taskGlyphs.get(task.id)}
               activityDescription={activityDescriptions.get(task.id)}
               reordering={sortable && reorderMode.reordering}
             />
@@ -220,7 +220,6 @@ export default function TaskList({
       <Button ref={newTaskButtonRef} fullWidth icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
         New task
       </Button>
-      <TaskAttentionSummary signals={taskSignals} />
       <TaskAttentionNotice health={health} />
       {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
       <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
@@ -318,6 +317,7 @@ export default function TaskList({
                         bindLongPress={bindLongPress}
                         onSelectTask={onSelectTask}
                         attention={taskSignals.get(task.id)}
+                        glyph={taskGlyphs.get(task.id)}
                         activityDescription={activityDescriptions.get(task.id)}
                         reordering={reorderMode.reordering}
                       />

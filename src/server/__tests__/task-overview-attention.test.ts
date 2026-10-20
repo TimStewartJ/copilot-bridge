@@ -22,7 +22,7 @@ describe("task continuation evidence", () => {
     const manager = {
       getSessionRunState: vi.fn< TaskOverviewContext["sessionManager"]["getSessionRunState"] >(() => "idle"),
       getPendingUserInputCount: vi.fn(() => 0),
-      getSessionContinuationState: vi.fn(() => ({ known: true, runningAgentCount: 0, runningCommandCount: 0, held: false })),
+      getSessionContinuationState: vi.fn(() => ({ runningAgentCount: 0, runningCommandCount: 0, held: false })),
     };
     const ctx = {
       taskStore: createTaskStore(db, bus), taskGroupStore: createTaskGroupStore(db, bus),
@@ -104,11 +104,9 @@ describe("task continuation evidence", () => {
 
   it("retains command, agent, held and external-use evidence", () => {
     const { read, manager } = setup();
-    manager.getSessionContinuationState.mockReturnValue({ known: true, runningAgentCount: 2, runningCommandCount: 1, held: true });
+    manager.getSessionContinuationState.mockReturnValue({ runningAgentCount: 2, runningCommandCount: 1, held: true });
     expect(read([{ sessionId: "conversation", externallyInUse: true }]).activity)
       .toMatchObject({ known: true, runningAgentCount: 2, runningCommandCount: 1, heldCount: 1, externalCount: 1 });
-    manager.getSessionContinuationState.mockReturnValue({ known: false, runningAgentCount: 0, runningCommandCount: 0, held: false });
-    expect(read().activity?.known).toBe(false);
   });
 
   it("treats a missing active record as unknown but knows when an absent record was archived", () => {

@@ -61,7 +61,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
   const rows = query.data?.tasks ?? [];
   const counts = query.data?.counts;
   const attentionTasks = useMemo(() => rows.map(row => ({ ...row, status: "active" as const })), [rows]);
-  const { taskSignals: signals, activityDescriptions, health } = useTaskAttentionPresentation(attentionTasks, taskIndicators, query);
+  const { taskSignals: signals, taskGlyphs, activityDescriptions, health } = useTaskAttentionPresentation(attentionTasks, taskIndicators, query);
   const byId = useMemo(() => new Map(rows.map(row => [row.id, row])), [rows]);
   const quiet = useMemo(() => sortForState("gone_quiet", rows.filter(row => row.state === "gone_quiet")), [rows]);
   const visibleRows = filter ? rows.filter(row => row.state === filter) : rows;
@@ -127,7 +127,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
       </button>}
       {row.groupColor && grouping === "state" ? <IdentitySwatch color={row.groupColor} /> : <span className="w-2 shrink-0" />}
       <span className="flex w-3 shrink-0 items-center justify-center">
-        {attention && <StatusIcon kind={attention.status} decorative />}
+        {taskGlyphs.get(row.id) && <StatusIcon kind={taskGlyphs.get(row.id)!} decorative />}
       </span>
       <button type="button" className={cx(DS.focus, "min-w-0 flex-1 rounded-sm text-left")}
         aria-label={attention ? `${row.title}, ${attention.label}` : row.title} onClick={() => onSelectTask(row.id)}>
