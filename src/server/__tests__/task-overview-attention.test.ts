@@ -109,9 +109,10 @@ describe("task continuation evidence", () => {
       .toMatchObject({ known: true, runningAgentCount: 2, runningCommandCount: 1, heldCount: 1, externalCount: 1 });
   });
 
-  it("treats a missing active record as unknown but knows when an absent record was archived", () => {
+  it("treats a linked conversation absent from a fully read list as deleted, and archived ones as archived", () => {
     const { ctx, read } = setup();
-    expect(read([]).activity).toMatchObject({ known: false, sessionIndexKnown: false });
+    expect(read([]).activity).toMatchObject({ known: true, sessionIndexKnown: true });
+    expect(read([]).activity?.unavailable).toBeUndefined();
     ctx.sessionMetaStore.setArchived("conversation", true);
     expect(read([]).activity).toMatchObject({ known: true, sessionIndexKnown: true });
     ctx.deferredPromptStore.create("conversation", "Check archived work", "2026-10-20T22:00:00Z");
@@ -136,7 +137,7 @@ describe("task continuation evidence", () => {
     expect(overview.sessionsComplete).toBe(false);
     expect(overview.tasks.find(row => row.id === other.id)?.activity).toMatchObject({ known: true, sessionIndexKnown: true });
     expect(overview.tasks.find(row => row.id === task.id)?.activity)
-      .toMatchObject({ known: false, unavailable: { scope: "task", reason: expect.stringContaining("missing") } });
+      .toMatchObject({ known: false, unavailable: { scope: "task", reason: expect.stringContaining("could not be read") } });
   });
 
   it("keeps expected preview gaps out of source errors without inventing complete evidence", () => {

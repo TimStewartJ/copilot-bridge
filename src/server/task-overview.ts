@@ -96,12 +96,14 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     }
     for (const id of task.sessionIds) {
       const session = sessionById.get(id);
-      if (!session && !archivedIds.has(id)) {
+      // A linked conversation is always listed unless archived, so one absent from a fully read list was deleted.
+      const deleted = !session && !archivedIds.has(id) && !!sessions && !ctx.isStaging && !!ctx.sessionMetaStore && invalidSessions === 0;
+      if (!session && !archivedIds.has(id) && !deleted) {
         activity.sessionIndexKnown = false;
         if (!sessions) unavailable("source", sourceErrors[0]);
         else if (ctx.isStaging) unavailable("source", "Production conversations are not copied into this isolated preview.", true);
         else if (!ctx.sessionMetaStore) unavailable("source", "Conversation archive status is unavailable.");
-        else unavailable("task", "A linked conversation is missing from the conversation index.");
+        else unavailable("task", "A linked conversation could not be read.");
       }
       const runtime = ctx.sessionManager.getSessionContinuationState?.(id);
       if (!runtime) unavailable("source", "Runtime continuation status is unavailable.");
