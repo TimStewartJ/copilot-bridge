@@ -873,7 +873,7 @@ export function useSessionStream(
                 : current.pendingUserMessages.map((entry, entryIndex) => (
                     entryIndex === index ? { ...entry, ...message } : entry
                   )),
-              hadVisibleOutput: true,
+              // A user message is not run output, so the status line stays put while it arrives.
             };
           });
         }
