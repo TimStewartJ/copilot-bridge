@@ -408,9 +408,19 @@ describe("Copilot owned-runtime fence", () => {
     expect(child.listenerCount("exit")).toBeLessThanOrEqual(baseline);
   });
 
+  // SDK forceStop waits for its child to exit after SIGKILL. Model the loader dying while its native
+  // runtime descendants may survive, which is what the Bridge fence must still account for.
+  function killLoaderOnSigkill(child: ChildProcess) {
+    vi.spyOn(child, "kill").mockImplementation((signal) => {
+      Reflect.set(child, "signalCode", signal ?? "SIGTERM");
+      child.emit("exit", null, signal ?? "SIGTERM");
+      return true;
+    });
+  }
+
   it("retains the child and runtime identities through the real SDK forceStop", async () => {
     const { backend, child, client } = backendFixture();
-    vi.spyOn(child, "kill").mockReturnValue(true);
+    killLoaderOnSigkill(child);
     await backend.start();
     await backend.forceStop();
     expect(Reflect.get(client, "cliProcess")).toBeNull();
@@ -419,9 +429,22 @@ describe("Copilot owned-runtime fence", () => {
     await expect(backend.fence()).rejects.toThrow("survivors");
   });
 
+  it("still fences the retained runtime when SDK forceStop times out on a child that ignores SIGKILL", async () => {
+    vi.useFakeTimers();
+    const { backend, child, client } = backendFixture();
+    vi.spyOn(child, "kill").mockReturnValue(true);
+    await backend.start();
+    const stopped = expect(backend.forceStop()).rejects.toThrow("Timed out waiting for CLI process to exit");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await stopped;
+    expect(Reflect.get(client, "cliProcess")).toBe(child);
+    await expect(backend.fence()).resolves.toBeUndefined();
+    expect(vi.mocked(terminateProcessTree).mock.calls.map(([identity]) => identity)).toEqual([runtime, root]);
+  });
+
   it("captures the native runtime before SDK failure cleanup clears the child", async () => {
     const child = Object.assign(new ChildProcess(), { pid: root.pid });
-    vi.spyOn(child, "kill").mockReturnValue(true);
+    killLoaderOnSigkill(child);
     const client = new CopilotClient();
     vi.spyOn(client, "start").mockImplementation(async () => {
       Reflect.set(client, "cliProcess", child);
