@@ -158,7 +158,7 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().terminalCompletion).toBeUndefined();
     });
 
-    it("only commits the matching projected user message", () => {
+    it("text fallback only commits the projected user message with matching text", () => {
       const bus = getOrCreateBus("test-pending-prompt-match-1");
       bus.setPendingPrompt("steer me");
 
@@ -177,7 +177,7 @@ describe("event-bus", () => {
       });
     });
 
-    it("commits identical projected prompts in FIFO order", () => {
+    it("text fallback commits identical projected prompts in FIFO order", () => {
       const bus = getOrCreateBus("test-pending-prompt-fifo-1");
       const firstId = bus.setPendingPrompt("yes");
       const secondId = bus.setPendingPrompt("yes");
