@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { RESTART_IN_PROGRESS_FILE_NAME, RESTART_SIGNAL_FILE_NAME } from "./restart-state.js";
+import {
+  RESTART_IN_PROGRESS_FILE_NAME,
+  RESTART_SIGNAL_FILE_NAME,
+  retryTransientRestartStateFsOperation,
+} from "./restart-state.js";
 
 export type RestartValidationMode = "deploy" | "operational";
 /** A launcher from before restart-when-idle only picks up a newer release candidate for this source. */
@@ -149,6 +153,15 @@ export interface RestartRequest {
   releaseCandidate?: RestartReleaseCandidate;
 }
 
+/**
+ * On Windows, removing the temp hard link after publishing makes a scanner hold the signal open
+ * against deletion, measured at 12 to 30+ seconds. Replacing it in that window fails with EPERM, and a
+ * deploy whose restart cannot be requested fails its whole batch, so wait out a hold of up to a minute.
+ */
+const RESTART_SIGNAL_PUBLISH_RETRY_DELAYS_MS: readonly number[] = [
+  25, 50, 100, 250, 500, ...Array.from({ length: 59 }, () => 1_000),
+];
+
 /** Join the pending restart; the serialized management runner publishes its newest release here. */
 export async function requestRestart(dataDir: string, request: RestartRequest): Promise<RestartSignal> {
   const signalFile = join(dataDir, RESTART_SIGNAL_FILE_NAME);
@@ -164,19 +177,21 @@ export async function requestRestart(dataDir: string, request: RestartRequest): 
       releaseCandidate: request.releaseCandidate,
     });
     const tempFile = join(dataDir, `.${RESTART_SIGNAL_FILE_NAME}.${randomUUID()}.tmp`);
+    const publish = <T>(operation: () => Promise<T>) =>
+      retryTransientRestartStateFsOperation(operation, RESTART_SIGNAL_PUBLISH_RETRY_DELAYS_MS);
     try {
-      await writeFile(tempFile, serializeRestartSignal(signal), "utf8");
+      await retryTransientRestartStateFsOperation(() => writeFile(tempFile, serializeRestartSignal(signal), "utf8"));
       if (request.releaseCandidate) {
-        await rename(tempFile, signalFile);
+        await publish(() => rename(tempFile, signalFile));
       } else {
         // Create, never overwrite: an operational request racing a deploy must not erase its candidate.
-        await link(tempFile, signalFile);
+        await publish(() => link(tempFile, signalFile));
       }
       return signal;
     } catch (error) {
       if (request.releaseCandidate || !isErrnoException(error) || error.code !== "EEXIST") throw error;
     } finally {
-      await rm(tempFile, { force: true });
+      await publish(() => rm(tempFile, { force: true }));
     }
   }
 }
@@ -185,7 +200,8 @@ export async function requestRestart(dataDir: string, request: RestartRequest): 
 export async function readPendingRestartSignal(dataDir: string): Promise<RestartSignal | null> {
   for (const name of [RESTART_SIGNAL_FILE_NAME, RESTART_IN_PROGRESS_FILE_NAME]) {
     try {
-      return parseRestartSignalContent(await readFile(join(dataDir, name), "utf-8"));
+      const content = await retryTransientRestartStateFsOperation(() => readFile(join(dataDir, name), "utf-8"));
+      return parseRestartSignalContent(content);
     } catch (error) {
       if (isErrnoException(error) && error.code === "ENOENT") continue;
       throw error;

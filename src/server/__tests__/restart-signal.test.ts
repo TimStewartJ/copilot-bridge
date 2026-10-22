@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { rename } from "node:fs/promises";
 import { join } from "node:path";
 import {
   consumeRestartSignalFile,
@@ -10,7 +11,17 @@ import {
   serializeRestartSignal,
   writeRestartSignalFile,
 } from "../restart-signal.js";
+import { __setRestartStateFsRetrySleepForTests } from "../restart-state.js";
 import { makeTestDir } from "./helpers.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
+
+afterEach(() => {
+  __setRestartStateFsRetrySleepForTests();
+});
 
 describe("restart requests", () => {
   function candidate(dir: string, index: number) {
@@ -48,6 +59,20 @@ describe("restart requests", () => {
       ...Array.from({ length: 12 }, () => requestRestart(dir, { validationMode: "operational", source: "self_restart" })),
     ]);
     await expect(readPendingRestartSignal(dir)).resolves.toMatchObject({ validationMode: "deploy", releaseCandidate: candidate(dir, 1) });
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("waits out a scanner holding the signal while replacing it with a newer deployment", async () => {
+    const dir = makeTestDir("restart-eperm");
+    __setRestartStateFsRetrySleepForTests(() => Promise.resolve());
+    const initial = await requestRestart(dir, { validationMode: "operational", source: "self_restart" });
+    // Longer than the restart-state retry budget: the hold measured on Windows lasts tens of seconds.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      vi.mocked(rename).mockRejectedValueOnce(Object.assign(new Error("signal held open"), { code: "EPERM" }));
+    }
+    const updated = await requestRestart(dir, { validationMode: "deploy", source: "staging_deploy_batch", releaseCandidate: candidate(dir, 1) });
+    expect(updated).toMatchObject({ requestId: initial.requestId, releaseCandidate: candidate(dir, 1) });
+    await expect(readPendingRestartSignal(dir)).resolves.toEqual(updated);
     expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 

@@ -7,6 +7,7 @@ import { CopilotBackend } from "../agent-backend/copilot-backend.js";
 import type { AgentSession } from "../agent-backend/types.js";
 import { buildCopilotClientOptions } from "../copilot-client-options.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 function sdkSession(session: AgentSession): CopilotSession {
   const raw: unknown = Reflect.get(session, "session");
@@ -55,9 +56,9 @@ async function fixture(signal: AbortSignal) {
     if (closing) throw new Error("Native permission fixture is closed");
     await startClient();
   };
-  // Process-tree fencing is covered by copilot-backend-recovery.native.test.ts.
-  // Permissions need the real SDK adapter, not its recovery/host-snapshot machinery.
-  const backend = new CopilotBackend(client);
+  // Owned so cleanup can prove the CLI's process tree exited before the temp folders go.
+  // Recovery fencing itself is covered by copilot-backend-recovery.native.test.ts.
+  const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd);
     await writeFile(file, "before\n");
@@ -73,7 +74,7 @@ async function fixture(signal: AbortSignal) {
       await setup;
     } finally {
       try {
-        await backend.stop();
+        await stopCopilotRuntime(backend);
       } finally {
         provider.closeAllConnections();
         if (provider.listening) {
@@ -166,6 +167,7 @@ describe("native Copilot automatic tool approvals", () => {
       await cleanup();
     }
     expect(backend.getConnectionStatus().state).toBe("disconnected");
-    await expect(backend.createSession(config)).rejects.toThrow("Native permission fixture is closed");
+    // Cleanup fenced the runtime, so a late create cannot start it again.
+    await expect(backend.createSession(config)).rejects.toThrow("Cannot create a session on a fenced backend");
   });
 });

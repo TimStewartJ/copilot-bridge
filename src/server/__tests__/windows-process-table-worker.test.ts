@@ -55,6 +55,13 @@ describe("native Windows process enumeration with controlled APIs", () => {
       { pid: 101, ppid: 100, startMarker: "", identityError: "GetProcessTimes failed with Windows error 18" },
     ]);
     expect(f.api.close).toHaveBeenCalledTimes(2);
+
+    // Access denied (5) marks a process the caller cannot even query, unlike other open failures.
+    const denied = fixture([{ pid: 100, ppid: 1, accessible: false }]);
+    denied.api.lastError = vi.fn().mockReturnValueOnce(5).mockReturnValue(18);
+    expect(enumerateWindowsProcessTable(denied.api)).toEqual([
+      { pid: 100, ppid: 1, startMarker: "", identityError: "OpenProcess failed with Windows error 5", accessDenied: true },
+    ]);
   });
 
   it("excludes only the system idle PID zero", () => {

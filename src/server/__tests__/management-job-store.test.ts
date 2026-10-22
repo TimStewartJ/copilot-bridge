@@ -425,7 +425,8 @@ describe("management job runner", () => {
       const processed: string[] = [];
       await runManagementJobRunnerLoop({
         store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {},
-        shouldStop: () => processed.length === 3,
+        // A failed deploy cancels the rest of the queue; stop then so the assertions report it.
+        shouldStop: () => processed.length === 3 || store.listActive().length === 0,
         dispatch: async (job, options) => {
           processed.push(job.id);
           if (job.type !== "staging_deploy") return { success: true };
@@ -450,7 +451,7 @@ describe("management job runner", () => {
       let processed = 0;
       await runManagementJobRunnerLoop({
         store, deployBatchDataDir: dataDir, pollIntervalMs: 1, log: () => {},
-        shouldStop: () => processed === jobs.length,
+        shouldStop: () => processed === jobs.length || store.listActive().length === 0,
         dispatch: async () => ({ restartDeferred: true, releaseCandidate: release(dataDir, ++processed) }),
         getActiveRelease: () => null,
       });
