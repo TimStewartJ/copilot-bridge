@@ -1733,3 +1733,21 @@ describe("event-transform autopilot", () => {
     expect(entries).toEqual([]);
   });
 });
+describe("event-transform user message ids", () => {
+  it("carries the runtime's message id on user messages that have one", () => {
+    const entries = transformEventsToMessages([
+      { id: "u1", type: "user.message", timestamp: "2026-10-22T10:00:00.000Z", data: { content: "First", messageId: "message-1" } },
+      { id: "a1", type: "assistant.message", timestamp: "2026-10-22T10:00:05.000Z", data: { content: "Reply", messageId: "assistant-message" } },
+      { id: "u2", type: "user.message", timestamp: "2026-10-22T10:01:00.000Z", data: { content: "Second", messageId: "" } },
+      { id: "u3", type: "user.message", timestamp: "2026-10-22T10:02:00.000Z", data: { content: "Third" } },
+    ]);
+
+    expect(entries.map((entry) => [entry.role, entry.messageId])).toEqual([
+      ["user", "message-1"],
+      ["assistant", undefined],
+      ["user", undefined],
+      ["user", undefined],
+    ]);
+    expect(entries[2]).not.toHaveProperty("messageId");
+  });
+});

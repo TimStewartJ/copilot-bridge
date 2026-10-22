@@ -391,6 +391,10 @@ export interface ChatMessage {
   forkBoundaryEventId?: string;
   /** Raw user-message event that starts this turn and can be used to rewind history. */
   undoEventId?: string;
+  /** User messages: the runtime's id for the saved message. */
+  messageId?: string;
+  /** User messages: the id the browser sent this message with, when the server recorded it. */
+  clientMessageId?: string;
   role: "user" | "assistant";
   content: string;
   timestamp?: string;
