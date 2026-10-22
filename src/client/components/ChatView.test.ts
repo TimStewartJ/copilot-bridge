@@ -2621,6 +2621,72 @@ describe("ChatView steering sends", () => {
     }
   });
 
+  it("hands off a send whose request settles after its projection was committed", async () => {
+    const sendAccepted = createDeferred<{ status: "accepted" }>();
+    const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+    sendMessageMock.mockReturnValueOnce(sendAccepted.promise);
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      let sendPromise!: Promise<void>;
+      await act(async () => {
+        sendPromise = props.onSend("settles late");
+        await waitTick();
+      });
+      const clientMessageId = sendMessageMock.mock.calls[0]?.[3] as string;
+      const findBubbles = () => findAllByTag(dom.container, "DIV").filter((candidate) => (
+        candidate.getAttribute?.("data-testid") === "message-bubble"
+        && candidate.textContent?.includes("settles late")
+      ));
+
+      // The stream projects and commits the message while the request is still settling.
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [{ id: clientMessageId, content: "settles late" }],
+          isStreaming: true,
+          streamStatus: "thinking",
+        },
+      });
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [{
+            id: clientMessageId,
+            content: "settles late",
+            sourceEventId: "late-event-1",
+            timestamp: "2026-01-01T00:00:00.000Z",
+          }],
+          isStreaming: false,
+          streamStatus: "idle",
+        },
+      });
+
+      await act(async () => {
+        sendAccepted.resolve({ status: "accepted" });
+        await sendPromise;
+        await waitTick();
+      });
+
+      // The next send starts with an empty projection; the settled send must not reappear.
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [],
+          isStreaming: false,
+          streamStatus: "sending",
+        },
+      });
+      expect(findBubbles()).toHaveLength(0);
+    } finally {
+      sendAccepted.resolve({ status: "accepted" });
+      await cleanup();
+    }
+  });
+
   it("retains a failed optimistic message and retries the original payload", async () => {
     const retryAccepted = createDeferred<void>();
     const attachment: Attachment = {

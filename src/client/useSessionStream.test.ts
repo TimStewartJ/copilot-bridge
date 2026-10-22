@@ -336,6 +336,28 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
+  it("settles a send without waiting for the chat list refresh", async () => {
+    await withHarness(async ({ getState, queryClient, act }) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "accepted" }),
+      } as Response);
+      const refresh = vi.spyOn(queryClient, "invalidateQueries").mockReturnValue(new Promise<void>(() => {}));
+
+      let settled = false;
+      await act(async () => {
+        void getState().sendMessage("hello", undefined, "interactive", "client-message-1")
+          .then(() => { settled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(refresh).toHaveBeenCalledWith({
+        queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+      });
+      expect(settled).toBe(true);
+    });
+  });
+
   it("restores a failure on navigation back without opening a stream", async () => {
     await withHarness(async ({ getState, setSessionId, act }) => {
       const notice = { kind: "error" as const, message: "upstream failed", retryRunId: "failed-run" };
