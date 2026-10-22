@@ -15,6 +15,7 @@ import { managementJobDeliveryId } from "../management-job-delivery.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 function completionSignal() {
   let complete = () => {};
@@ -107,7 +108,7 @@ async function fixture(signal: AbortSignal) {
     if (closing) throw new Error("Native wait fixture is closed");
     await start();
   };
-  const backend = new CopilotBackend(client);
+  const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd);
     await new Promise<void>((resolve, reject) => {
@@ -120,7 +121,7 @@ async function fixture(signal: AbortSignal) {
     closing = true;
     try { await setup; }
     finally {
-      try { await backend.stop(); }
+      try { await stopCopilotRuntime(backend); }
       finally {
         if (waitStarted) await settled.promise;
         provider.closeAllConnections();

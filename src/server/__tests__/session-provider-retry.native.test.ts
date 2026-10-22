@@ -1,5 +1,5 @@
 import { CopilotClient } from "@github/copilot-sdk";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import { createSessionContextStore } from "../session-context-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { isRecord } from "../../shared/is-record.js";
 import { createTestBus, makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 let runtime: { home: string; backend: CopilotBackend } | undefined;
 
@@ -26,14 +27,12 @@ beforeAll(async () => {
     ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: home, BRIDGE_WORKSPACE_DIR: join(home, "workspace") }),
     useLoggedInUser: false, baseDirectory: home, logLevel: "error",
   });
-  runtime = { home, backend: new CopilotBackend(client) };
+  runtime = { home, backend: new CopilotBackend(client, { localStdioOwnership: true }) };
   await runtime.backend.start();
 });
 
 afterAll(async () => {
-  if (!runtime) return;
-  try { await runtime.backend.stop(); }
-  finally { await rm(runtime.home, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); }
+  if (runtime) await stopCopilotRuntime(runtime.backend, runtime.home);
 });
 
 async function fixture(signal: AbortSignal) {

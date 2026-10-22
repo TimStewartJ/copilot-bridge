@@ -155,18 +155,26 @@ export function __setRestartStateFsRetrySleepSyncForTests(sleep?: RestartStateFs
   restartStateFsRetrySleepSync = sleep ?? defaultRestartStateFsRetrySleepSync;
 }
 
-async function retryTransientRestartStateFsOperation<T>(operation: () => Promise<T>): Promise<T> {
+/**
+ * Retries Windows sharing violations (antivirus, indexer) on restart control files. Exported for the
+ * restart signal, which lives beside the restart state and races the same scanners; it passes a longer
+ * schedule because a scanner can hold the signal for tens of seconds.
+ */
+export async function retryTransientRestartStateFsOperation<T>(
+  operation: () => Promise<T>,
+  delaysMs: readonly number[] = RESTART_STATE_FS_RETRY_DELAYS_MS,
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await operation();
     } catch (error) {
       if (
-        attempt >= RESTART_STATE_FS_RETRY_DELAYS_MS.length
+        attempt >= delaysMs.length
         || !isTransientRestartStateFsError(error)
       ) {
         throw error;
       }
-      await restartStateFsRetrySleep(RESTART_STATE_FS_RETRY_DELAYS_MS[attempt]);
+      await restartStateFsRetrySleep(delaysMs[attempt]);
     }
   }
 }
