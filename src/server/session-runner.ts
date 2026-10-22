@@ -20,6 +20,7 @@ import type { GlobalBus } from "./global-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
+import type { ChatMessageIdStore } from "./chat-message-id-store.js";
 import type { Task } from "./task-store.js";
 import {
   normalizePendingElicitationRequest,
@@ -400,6 +401,8 @@ export interface SessionRunnerDeps {
   sessionMetaStore?: SessionMetaStore;
   telemetryStore?: TelemetryStore;
   sessionContextStore?: SessionContextStore;
+  /** Records the browser message id each sent chat message was given by the runtime. */
+  chatMessageIdStore?: Pick<ChatMessageIdStore, "record">;
   copilotHome?: string;
 
   isSessionBusy(sessionId: string): boolean;
@@ -799,11 +802,21 @@ export class SessionRunner {
     this.noteAgentMode(sessionId, options.mode ?? DEFAULT_SEND_MODE, true);
     const hiddenPrompt = options.promptSource === "system";
     const visiblePrompt = options.displayPrompt ?? prompt;
-    if (!hiddenPrompt) bus.setPendingPrompt(visiblePrompt, attachments, options.clientMessageId);
+    const projectedUserMessageId = hiddenPrompt
+      ? undefined
+      : bus.setPendingPrompt(visiblePrompt, attachments, options.clientMessageId);
     return this.startBackgroundRun(
       sessionId,
       bus,
-      (runController) => this.doWork(sessionId, prompt, bus, runController, attachments, options),
+      (runController) => this.doWork(
+        sessionId,
+        prompt,
+        bus,
+        runController,
+        attachments,
+        options,
+        projectedUserMessageId,
+      ),
       {
         ...(hiddenPrompt ? {} : { pendingPrompt: visiblePrompt }),
         promptAccepted: false,
@@ -884,7 +897,7 @@ export class SessionRunner {
     const t0 = Date.now();
     console.log(`[sdk] [${sid}] Steering prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`);
 
-    bus.setPendingPrompt(prompt, attachments, clientMessageId);
+    const projectedUserMessageId = bus.setPendingPrompt(prompt, attachments, clientMessageId);
     this.touchSessionRun(sessionId);
     try {
       if (
@@ -894,13 +907,14 @@ export class SessionRunner {
       ) {
         throw new Error("Session ended before steering could attach; send a normal message instead");
       }
-      await session.send({
+      const messageId = await session.send({
         prompt,
         ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
         mode: "immediate",
       });
+      this.claimSentUserMessage(sessionId, bus, projectedUserMessageId, messageId, clientMessageId);
       if (runController.isCompleted()) {
-        bus.discardPendingPrompt(prompt);
+        bus.discardPendingPrompt(projectedUserMessageId);
         throw new Error("Session ended before steering could attach; send a normal message instead");
       }
       this.touchSessionRun(sessionId);
@@ -909,8 +923,29 @@ export class SessionRunner {
         attachments: attachCount,
       });
     } catch (error) {
-      bus.discardPendingPrompt(prompt);
+      bus.discardPendingPrompt(projectedUserMessageId);
       throw error;
+    }
+  }
+
+  /**
+   * Ties a projected prompt to the runtime's id for the message it was sent as, so its saved
+   * `user.message` commits it, and remembers which browser message that was. Never throws.
+   */
+  private claimSentUserMessage(
+    sessionId: string,
+    bus: SessionEventBus,
+    projectedUserMessageId: string | undefined,
+    messageId: unknown,
+    clientMessageId: string | undefined,
+  ): void {
+    if (!projectedUserMessageId || typeof messageId !== "string" || !messageId) return;
+    bus.assignUserMessageId(projectedUserMessageId, messageId);
+    if (!clientMessageId || projectedUserMessageId !== clientMessageId) return;
+    try {
+      this.deps.chatMessageIdStore?.record(sessionId, messageId, clientMessageId);
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to record the client id of a sent message:`, err);
     }
   }
 
@@ -958,8 +993,11 @@ export class SessionRunner {
     runController?: SessionRunController,
     attachments?: StartWorkAttachment[],
     options: StartWorkOptions = {},
+    /** The live entry showing this prompt, from `setPendingPrompt`; absent for hidden prompts. */
+    projectedUserMessageId?: string,
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
+    let projectedEntryId = projectedUserMessageId;
     const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
     const activeRunController = runController ?? this.createRunController(sessionId, bus);
@@ -988,7 +1026,7 @@ export class SessionRunner {
           displayPrompt = commandResult.displayPrompt;
           mode = commandResult.mode ?? mode;
           this.noteAgentMode(sessionId, toSendMode(mode) ?? DEFAULT_SEND_MODE);
-          bus.replacePendingPrompt(displayPrompt ?? sendPrompt);
+          projectedEntryId = bus.replacePendingPrompt(displayPrompt ?? sendPrompt);
           this.deps.runStateController.setSessionRunMetadata(sessionId, {
             pendingPrompt: displayPrompt ?? sendPrompt,
           });
@@ -1001,13 +1039,14 @@ export class SessionRunner {
         const turnContext = this.deps.prepareTurnContext?.(sessionId);
         const turnPrompt = turnContext?.block ? `${turnContext.block}\n\n${sendPrompt}` : sendPrompt;
         const turnDisplayPrompt = turnContext?.block ? displayPrompt ?? sendPrompt : displayPrompt;
-        await session.send({
+        const messageId = await session.send({
           prompt: turnPrompt,
           ...(turnDisplayPrompt ? { displayPrompt: turnDisplayPrompt } : {}),
           ...(options.promptSource ? { source: options.promptSource } : {}),
           ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
         });
         turnContext?.commit();
+        this.claimSentUserMessage(sessionId, bus, projectedEntryId, messageId, options.clientMessageId);
       },
       retryExecute: async (session, claimSend) => {
         if (options.reasoningEffort) {
@@ -1715,15 +1754,23 @@ export class SessionRunner {
             }
             break;
           }
-          bus.commitPendingPrompt(
-            typeof data?.content === "string"
-              ? data.content
-              : typeof data?.prompt === "string"
-                ? data.prompt
-                : undefined,
-            getSdkEventId(event),
-            getEventTimestampIso(event),
-          );
+          const savedMessageId = typeof data?.messageId === "string" && data.messageId
+            ? data.messageId
+            : undefined;
+          if (savedMessageId) {
+            bus.recordSavedUserMessage(savedMessageId, getSdkEventId(event), getEventTimestampIso(event));
+          } else {
+            // Runtimes that do not save the message id: match the prompt by its text instead.
+            bus.commitPendingPrompt(
+              typeof data?.content === "string"
+                ? data.content
+                : typeof data?.prompt === "string"
+                  ? data.prompt
+                  : undefined,
+              getSdkEventId(event),
+              getEventTimestampIso(event),
+            );
+          }
           if (getSdkEventId(event)) originalPromptRecorded = true;
           runController.markPromptAccepted();
           if (typeof data?.content === "string" && !("source" in (data ?? {}))) {

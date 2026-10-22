@@ -61,6 +61,7 @@ import { AUTOMATIC_ANSWERS, type AutomaticAnswerReason } from "../shared/automat
 import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
+import type { ChatMessageIdStore } from "./chat-message-id-store.js";
 import type { BackgroundCommandStore } from "./background-command-store.js";
 import {
   BACKGROUND_COMMAND_PROTECT_MS,
@@ -560,6 +561,8 @@ export interface SessionManagerDeps {
   taskHistoryStore?: TaskHistoryStore;
   sessionMetaStore?: SessionMetaStore;
   interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
+  /** Records the browser message id each sent chat message was given by the runtime. */
+  chatMessageIdStore?: Pick<ChatMessageIdStore, "record" | "forgetSession">;
   /** Called when a run ends in the ordinary way while a resume the Bridge had put off is still to come. */
   onPostponedResumeSuperseded?: (sessionId: string) => void;
   /** Markers for commands running in attached shells, so one the Bridge stops can be reported. */
@@ -720,6 +723,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     taskHistoryStore: ctx.taskHistoryStore,
     sessionMetaStore: ctx.sessionMetaStore,
     interruptedRunStore: ctx.interruptedRunStore,
+    chatMessageIdStore: ctx.chatMessageIdStore,
     onPostponedResumeSuperseded: (sessionId) => {
       if (ctx.isStaging || !ctx.deferredPromptStore) return;
       const cancelled = cancelScheduledRestartResume(
@@ -1098,6 +1102,7 @@ export class SessionManager {
       sessionMetaStore: deps.sessionMetaStore,
       telemetryStore: deps.telemetryStore,
       sessionContextStore: deps.sessionContextStore,
+      chatMessageIdStore: deps.chatMessageIdStore,
       copilotHome: deps.copilotHome,
       isSessionBusy: (sessionId) => this.isSessionBusy(sessionId),
       hasPlan: (sessionId) => this.hasPlan(sessionId),
@@ -5315,6 +5320,7 @@ export class SessionManager {
       this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
       this.deliveredTurnContext.delete(sessionId);
       this.deps.backgroundCommandStore?.forgetSession(sessionId);
+      this.deps.chatMessageIdStore?.forgetSession(sessionId);
 
       // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
       const copilotHome = this.getCopilotHome();

@@ -61,6 +61,7 @@ describe("fresh database schema", () => {
       "copilot_usage_scan_state",
       "event_log_stats_folds",
       "idx_event_log_stats_folds_updated",
+      "chat_message_client_ids",
       "idx_tags_name_key",
       "idx_tasks_nextTouchAt",
       "task_momentum_events",

@@ -1202,6 +1202,16 @@ function withLatestEventId(coverage: SessionHistoryCoverage, tailEvents: readonl
   return coverage;
 }
 
+type AroundEventMessage = SearchableMessage & { messageId?: string };
+
+/** The runtime's id for a saved user message, as returned by `session.send`. */
+function getSavedUserMessageId(event: unknown): string | undefined {
+  const data = (event as { data?: unknown } | null)?.data;
+  if (!data || typeof data !== "object") return undefined;
+  const messageId = (data as { messageId?: unknown }).messageId;
+  return typeof messageId === "string" && messageId ? messageId : undefined;
+}
+
 export async function readMessagesAroundEventFromDisk(
   deps: SessionDiskReaderDeps,
   sessionId: string,
@@ -1211,8 +1221,8 @@ export async function readMessagesAroundEventFromDisk(
   const startedAt = Date.now();
   const copilotHome = deps.copilotHome ?? join(homedir(), ".copilot");
   const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
-  const beforeMessages: SearchableMessage[] = [];
-  const windowMessages: SearchableMessage[] = [];
+  const beforeMessages: AroundEventMessage[] = [];
+  const windowMessages: AroundEventMessage[] = [];
   let targetOffset = -1;
   let total = 0;
   let lineNumber = 0;
@@ -1230,8 +1240,10 @@ export async function readMessagesAroundEventFromDisk(
         }`,
       );
     }
-    const message = projectSearchableMessage(event);
-    if (!message) continue;
+    const projected = projectSearchableMessage(event);
+    if (!projected) continue;
+    const messageId = projected.role === "user" ? getSavedUserMessageId(event) : undefined;
+    const message: AroundEventMessage = messageId ? { ...projected, messageId } : projected;
     const messageOffset = total;
     total += 1;
     if (message.timestamp) lastVisibleActivityAt = message.timestamp;
@@ -1268,6 +1280,7 @@ export async function readMessagesAroundEventFromDisk(
       role: message.role,
       content: message.content,
       ...(message.timestamp ? { timestamp: message.timestamp } : {}),
+      ...(message.messageId ? { messageId: message.messageId } : {}),
     })),
     total,
     targetOffset,

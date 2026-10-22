@@ -14,6 +14,7 @@ import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
+import { createChatMessageIdStore } from "../chat-message-id-store.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
@@ -44,11 +45,13 @@ describe("SessionManager run state", () => {
     const copilotHome = opts.copilotHome ?? runtimePaths.copilotHome;
 
     const sessionMetaStore = createSessionMetaStore(db);
+    const chatMessageIdStore = createChatMessageIdStore(db);
     const manager = new SessionManager({
       globalBus,
       eventBusRegistry,
       sessionTitles: createSessionTitlesStore(db),
       sessionMetaStore,
+      chatMessageIdStore,
       taskStore: {
         findTaskBySessionId: vi.fn().mockReturnValue(null),
       } as any,
@@ -65,7 +68,17 @@ describe("SessionManager run state", () => {
       runtimePaths,
     }) as any;
 
-    return { manager, globalBus, eventBusRegistry, db, telemetryStore, sessionContextStore, sessionMetaStore, copilotHome };
+    return {
+      manager,
+      globalBus,
+      eventBusRegistry,
+      db,
+      telemetryStore,
+      sessionContextStore,
+      sessionMetaStore,
+      chatMessageIdStore,
+      copilotHome,
+    };
   }
 
   function writeSessionEvents(copilotHome: string | undefined, sessionId: string, events: unknown[]): void {
@@ -89,10 +102,11 @@ describe("SessionManager run state", () => {
           if (idx !== -1) handlers.splice(idx, 1);
         });
       }),
-      send: vi.fn(async () => {
+      send: vi.fn(async (): Promise<unknown> => {
         await new Promise<void>((resolve) => {
           releaseSend = resolve;
         });
+        return undefined;
       }),
       invokeSlashCommand: vi.fn(),
       listSlashCommands: vi.fn(),
@@ -598,6 +612,81 @@ describe("SessionManager run state", () => {
         pending: false,
         sourceEventId: "user-event-steer",
       }),
+    ]));
+  });
+
+  it("joins sent and steered prompts to their saved messages by the runtime's message id", async () => {
+    const { manager, eventBusRegistry, chatMessageIdStore } = createManager();
+    const { session, getHandler } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+    let releaseFirstSend: (() => void) | undefined;
+    session.send.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFirstSend = resolve;
+      });
+      return "message-first";
+    });
+
+    manager.startWork("session-1", "same text", undefined, { clientMessageId: "client-first" });
+    await flushMicrotasks();
+    const bus = eventBusRegistry.getBus("session-1");
+
+    // The runtime can save the message before `send` returns its id.
+    getHandler()?.({
+      id: "event-first",
+      type: "user.message",
+      data: { content: "same text", messageId: "message-first" },
+      timestamp: "2026-10-22T12:00:00.000Z",
+    });
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual([
+      expect.objectContaining({ id: "client-first", pending: true }),
+    ]);
+
+    releaseFirstSend?.();
+    await flushMicrotasks();
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual([
+      expect.objectContaining({
+        id: "client-first",
+        messageId: "message-first",
+        pending: false,
+        sourceEventId: "event-first",
+      }),
+    ]);
+
+    session.send.mockResolvedValueOnce("message-steer");
+    await manager.steerSession("session-1", "same text", undefined, "client-steer");
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual([
+      expect.objectContaining({ id: "client-first", sourceEventId: "event-first" }),
+      expect.objectContaining({ id: "client-steer", messageId: "message-steer", pending: true }),
+    ]);
+
+    getHandler()?.({
+      id: "event-steer",
+      type: "user.message",
+      data: { content: "same text", messageId: "message-steer" },
+      timestamp: "2026-10-22T12:00:01.000Z",
+    });
+    expect(bus?.getSnapshot().pendingUserMessages).toEqual([
+      expect.objectContaining({ id: "client-first", sourceEventId: "event-first" }),
+      expect.objectContaining({ id: "client-steer", pending: false, sourceEventId: "event-steer" }),
+    ]);
+
+    // A prompt sent without a browser id is joined live but has nothing to record.
+    session.send.mockResolvedValueOnce("message-server");
+    await manager.steerSession("session-1", "from a tool");
+    expect(bus?.getSnapshot().pendingUserMessages.at(-1)).toMatchObject({
+      content: "from a tool",
+      messageId: "message-server",
+    });
+
+    expect(chatMessageIdStore.getClientMessageIds(
+      "session-1",
+      ["message-first", "message-steer", "message-server"],
+    )).toEqual(new Map([
+      ["message-first", "client-first"],
+      ["message-steer", "client-steer"],
     ]));
   });
 

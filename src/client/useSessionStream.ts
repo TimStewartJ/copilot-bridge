@@ -115,6 +115,8 @@ export interface LivePendingUserMessage {
   id: string;
   content: string;
   attachments?: Attachment[];
+  /** The runtime's id for the message once it was sent. */
+  messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
 }
@@ -331,6 +333,7 @@ export function normalizePendingUserMessage(value: unknown): LivePendingUserMess
     id: value.id,
     content: value.content,
     ...(Array.isArray(value.attachments) ? { attachments: value.attachments as Attachment[] } : {}),
+    ...(optionalString(value.messageId) ? { messageId: optionalString(value.messageId) } : {}),
     ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
     ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
   };

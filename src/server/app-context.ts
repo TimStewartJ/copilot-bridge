@@ -7,6 +7,7 @@ import type { ScheduleStore } from "./schedule-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
+import type { ChatMessageIdStore } from "./chat-message-id-store.js";
 import type { BackgroundCommandStore } from "./background-command-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
@@ -93,6 +94,8 @@ export interface AppContext {
   /** Deferred prompt persistence */
   deferredPromptStore?: DeferredPromptStore;
   interruptedRunStore?: InterruptedRunStore;
+  /** The browser message id each saved chat message was sent as. */
+  chatMessageIdStore?: ChatMessageIdStore;
   /** Commands running in attached shells, kept so one the Bridge stops can be reported to its agent. */
   backgroundCommandStore?: BackgroundCommandStore;
   /** Recurring defer loop persistence */

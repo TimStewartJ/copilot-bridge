@@ -223,9 +223,23 @@ export interface ProjectedUserMessage {
   content: string;
   attachments?: StartWorkAttachment[];
   pending: boolean;
+  /** The runtime's id for the submitted message, returned by `session.send` and saved on its `user.message`. */
+  messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
 }
+
+/** A saved `user.message` whose runtime message id no projected entry has claimed yet. */
+interface SavedUserMessage {
+  sourceEventId?: string;
+  timestamp?: string;
+}
+
+/**
+ * Saved user messages kept waiting for their `session.send` result. Hidden prompts and runtime
+ * turns are saved too but never claimed, so only the newest few are kept.
+ */
+const MAX_UNCLAIMED_SAVED_USER_MESSAGES = 32;
 
 
 type Listener = (event: StreamEvent) => void;
@@ -422,6 +436,8 @@ export class SessionEventBus {
   private runId = randomUUID();
   private streamingContent = "";
   private userMessages: ProjectedUserMessage[] = [];
+  /** Saved user messages by runtime message id, until the entry they belong to is known. */
+  private unclaimedSavedUserMessages = new Map<string, SavedUserMessage>();
   private liveAssistantSegments: LiveAssistantSegment[] = [];
   private liveReasoning: LiveReasoningBlock[] = [];
   private liveTools: LiveTool[] = [];
@@ -566,13 +582,13 @@ export class SessionEventBus {
     return userMessage.id;
   }
 
-  /** Replace the newest uncommitted prompt while preserving its stable live identity. */
-  replacePendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): void {
+  /**
+   * Replace the newest uncommitted prompt while preserving its stable live identity. Returns the
+   * id of the entry that now shows the prompt.
+   */
+  replacePendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): string {
     const index = this.findPendingPromptIndex(undefined, true);
-    if (index < 0) {
-      this.setPendingPrompt(prompt, attachments);
-      return;
-    }
+    if (index < 0) return this.setPendingPrompt(prompt, attachments);
     const current = this.userMessages[index]!;
     const next: ProjectedUserMessage = {
       ...current,
@@ -585,16 +601,77 @@ export class SessionEventBus {
     };
     this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
     this.broadcast({ type: "user_message_updated", userMessage: structuredClone(next) });
+    return next.id;
   }
 
   /**
-   * Commit the oldest matching pending prompt in FIFO order. The entry stays on the stream until
-   * the client sees its `sourceEventId` in disk history, so the prompt can never flicker out.
+   * Fallback for runtimes whose `user.message` carries no message id: commit the oldest pending
+   * prompt with the same text, in FIFO order. With no text, commits the oldest pending prompt.
+   * The entry stays on the stream until the client sees its `sourceEventId` in disk history, so
+   * the prompt can never flicker out.
    */
   commitPendingPrompt(expectedPrompt?: string, sourceEventId?: string, timestamp?: string): void {
     const index = this.findPendingPromptIndex(expectedPrompt, false);
     if (index < 0) return;
+    this.commitUserMessageAt(index, sourceEventId, timestamp);
+  }
+
+  /**
+   * Records the runtime's id for the message a projected entry was sent as (the result of
+   * `session.send`). The entry commits once its saved `user.message` has been seen as well,
+   * whichever of the two arrives first.
+   */
+  assignUserMessageId(entryId: string, messageId: string): void {
+    const index = this.userMessages.findIndex((message) => message.id === entryId);
+    if (index < 0) return;
     const current = this.userMessages[index]!;
+    if (current.messageId === messageId) return;
+    const next: ProjectedUserMessage = { ...current, messageId };
+    this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
+    const saved = this.unclaimedSavedUserMessages.get(messageId);
+    if (saved) {
+      this.commitUserMessageAt(index, saved.sourceEventId, saved.timestamp);
+      return;
+    }
+    if (next.sourceEventId === undefined) {
+      this.broadcast({ type: "user_message_updated", userMessage: structuredClone(next) });
+    }
+  }
+
+  /**
+   * Records that the runtime saved the user message with this id. Commits the projected entry
+   * the id was assigned to, or keeps the save until `assignUserMessageId` names that entry.
+   */
+  recordSavedUserMessage(messageId: string, sourceEventId?: string, timestamp?: string): void {
+    const index = this.userMessages.findIndex((message) => message.messageId === messageId);
+    if (index >= 0) {
+      this.commitUserMessageAt(index, sourceEventId, timestamp);
+      return;
+    }
+    this.unclaimedSavedUserMessages.delete(messageId);
+    this.unclaimedSavedUserMessages.set(messageId, {
+      ...(sourceEventId ? { sourceEventId } : {}),
+      ...(timestamp ? { timestamp } : {}),
+    });
+    while (this.unclaimedSavedUserMessages.size > MAX_UNCLAIMED_SAVED_USER_MESSAGES) {
+      const oldest = this.unclaimedSavedUserMessages.keys().next().value;
+      if (oldest === undefined) break;
+      this.unclaimedSavedUserMessages.delete(oldest);
+    }
+  }
+
+  /** Remove a projected prompt that was never saved, when its delivery fails. */
+  discardPendingPrompt(entryId: string): void {
+    const removed = this.userMessages.find((message) => message.id === entryId);
+    if (!removed || removed.sourceEventId !== undefined) return;
+    this.userMessages = this.userMessages.filter((message) => message !== removed);
+    this.broadcast({ type: "user_message_discarded", id: removed.id });
+  }
+
+  private commitUserMessageAt(index: number, sourceEventId?: string, timestamp?: string): void {
+    const current = this.userMessages[index]!;
+    if (current.sourceEventId !== undefined) return;
+    if (current.messageId) this.unclaimedSavedUserMessages.delete(current.messageId);
     const next: ProjectedUserMessage = {
       ...current,
       pending: false,
@@ -606,20 +683,11 @@ export class SessionEventBus {
       type: "user_message_committed",
       id: next.id,
       pending: false,
+      ...(next.messageId ? { messageId: next.messageId } : {}),
       sourceEventId,
       timestamp,
     });
     if (sourceEventId) this.advanceHistory();
-  }
-
-  /** Remove the newest matching pending prompt when delivery fails. */
-  discardPendingPrompt(expectedPrompt?: string): void {
-    const index = this.findPendingPromptIndex(expectedPrompt, true);
-    if (index < 0) return;
-    const removed = this.userMessages[index];
-    if (!removed) return;
-    this.userMessages = this.userMessages.filter((_, entryIndex) => entryIndex !== index);
-    this.broadcast({ type: "user_message_discarded", id: removed.id });
   }
 
   setContextSummary(summary: SessionContextSummary | null): void {
@@ -1145,6 +1213,7 @@ export class SessionEventBus {
     this.cancelAgentChangeRecheck();
     this.clearPendingInteractionIndex();
     this.userMessages = [];
+    this.unclaimedSavedUserMessages.clear();
     this.liveAssistantSegments = [];
     this.lastAssistantSegment = undefined;
   }

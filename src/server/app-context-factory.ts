@@ -45,6 +45,7 @@ import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
 import { createDeferLoopStore } from "./defer-loop-store.js";
 import { createInterruptedRunStore } from "./interrupted-run-store.js";
+import { createChatMessageIdStore } from "./chat-message-id-store.js";
 import { createBackgroundCommandStore } from "./background-command-store.js";
 import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
@@ -140,6 +141,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const deferredPromptStore = createDeferredPromptStore(db);
   const deferLoopStore = createDeferLoopStore(db);
   const interruptedRunStore = createInterruptedRunStore(db);
+  const chatMessageIdStore = createChatMessageIdStore(db);
   const backgroundCommandStore = createBackgroundCommandStore(db);
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
@@ -200,6 +202,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     deferredPromptStore,
     deferLoopStore,
     interruptedRunStore,
+    chatMessageIdStore,
     backgroundCommandStore,
     scheduler,
     copilotHome,

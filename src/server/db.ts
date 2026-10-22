@@ -874,6 +874,15 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_event_log_stats_folds_updated ON event_log_stats_folds(updatedAt);
 
+    -- The browser's id for a chat message, by the runtime id of the user message it was sent as
+    CREATE TABLE IF NOT EXISTS chat_message_client_ids (
+      sessionId TEXT NOT NULL,
+      messageId TEXT NOT NULL,
+      clientMessageId TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      PRIMARY KEY (sessionId, messageId)
+    );
+
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name_key ON tags(nameKey);
     CREATE INDEX IF NOT EXISTS idx_tasks_nextTouchAt ON tasks(nextTouchAt);
     CREATE INDEX IF NOT EXISTS idx_bridge_session_state_lastAttentionAt

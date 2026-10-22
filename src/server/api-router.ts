@@ -215,6 +215,7 @@ import {
   readMessagesAroundEventFromDisk,
   SessionMessageNotFoundError,
 } from "./session-disk-reader.js";
+import { annotateClientMessageIds } from "./chat-message-id-store.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 /** Idle grace windows (minutes) accepted by the hibernate-on-idle watcher. */
@@ -1824,7 +1825,8 @@ export function createApiRouter(
         );
         const status = getSessionStatus(ctx, req.params.id);
         const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-        return res.json({ ...result, ...status, warm, aroundEventId });
+        const messages = annotateClientMessageIds(ctx.chatMessageIdStore, req.params.id, result.messages);
+        return res.json({ ...result, messages, ...status, warm, aroundEventId });
       }
       if (req.query.after !== undefined) {
         return res.status(400).json({ error: "after is only valid with aroundEventId" });
@@ -1842,7 +1844,16 @@ export function createApiRouter(
       );
       const status = getSessionStatus(ctx, req.params.id);
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
-      res.json({ messages, ...status, total, hasMore, lastVisibleActivityAt, coverage, warm, agents });
+      res.json({
+        messages: annotateClientMessageIds(ctx.chatMessageIdStore, req.params.id, messages),
+        ...status,
+        total,
+        hasMore,
+        lastVisibleActivityAt,
+        coverage,
+        warm,
+        agents,
+      });
     } catch (err) {
       if (err instanceof SessionMessageNotFoundError || getErrorCode(err) === "ENOENT") {
         return res.status(404).json({

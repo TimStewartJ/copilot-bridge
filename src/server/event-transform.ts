@@ -54,6 +54,10 @@ export interface TransformedEntry {
   timestamp?: string;
   forkBoundaryEventId?: string;
   undoEventId?: string;
+  /** User messages: the runtime's id for the message, as returned by `session.send`. */
+  messageId?: string;
+  /** User messages: the browser's id for the message it sent, when Bridge recorded one. */
+  clientMessageId?: string;
   attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
   /** Set on a user message sent in autopilot; absent for interactive sends. */
   agentMode?: "autopilot";
@@ -790,6 +794,7 @@ export function transformEventsToMessages(
         role: "user",
         content,
         timestamp: data.timestamp ?? (event as any).timestamp,
+        ...(typeof data?.messageId === "string" && data.messageId ? { messageId: data.messageId } : {}),
         ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         ...(allAttachments.length ? { attachments: allAttachments } : {}),
         ...(data?.agentMode === "autopilot" ? { agentMode: "autopilot" as const } : {}),

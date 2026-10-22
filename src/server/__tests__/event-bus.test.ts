@@ -222,7 +222,7 @@ describe("event-bus", () => {
         attachments: [{ displayName: "evidence.png" }],
       }]);
 
-      bus.discardPendingPrompt("updated");
+      bus.discardPendingPrompt(id);
 
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -240,6 +240,154 @@ describe("event-bus", () => {
         { type: "user_message_discarded", id },
       ]));
       expect(bus.getSnapshot().pendingUserMessages).toEqual([]);
+    });
+
+    it("commits a prompt by message id when the id is assigned before the saved message", () => {
+      const bus = getOrCreateBus("test-message-id-assign-first");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+      const id = bus.setPendingPrompt("hello", undefined, "client-a");
+
+      bus.assignUserMessageId(id, "message-1");
+
+      expect(bus.getSnapshot().pendingUserMessages).toEqual([
+        expect.objectContaining({ id, messageId: "message-1", pending: true }),
+      ]);
+      expect(events.at(-1)).toEqual({
+        type: "user_message_updated",
+        userMessage: expect.objectContaining({ id, messageId: "message-1", pending: true }),
+      });
+
+      bus.recordSavedUserMessage("message-1", "event-1", "2026-10-22T10:00:00.000Z");
+
+      expect(bus.getSnapshot().pendingUserMessages).toEqual([
+        expect.objectContaining({
+          id,
+          messageId: "message-1",
+          pending: false,
+          sourceEventId: "event-1",
+          timestamp: "2026-10-22T10:00:00.000Z",
+        }),
+      ]);
+      expect(events.slice(-2)).toEqual([
+        {
+          type: "user_message_committed",
+          id,
+          pending: false,
+          messageId: "message-1",
+          sourceEventId: "event-1",
+          timestamp: "2026-10-22T10:00:00.000Z",
+        },
+        { type: "history_advanced" },
+      ]);
+    });
+
+    it("commits a prompt by message id when the saved message arrives before the id", () => {
+      const bus = getOrCreateBus("test-message-id-saved-first");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+      const id = bus.setPendingPrompt("hello");
+
+      bus.recordSavedUserMessage("message-1", "event-1", "2026-10-22T10:00:00.000Z");
+
+      expect(bus.getSnapshot().pendingUserMessages).toEqual([
+        expect.objectContaining({ id, pending: true }),
+      ]);
+
+      bus.assignUserMessageId(id, "message-1");
+
+      expect(bus.getSnapshot().pendingUserMessages).toEqual([
+        expect.objectContaining({ id, messageId: "message-1", pending: false, sourceEventId: "event-1" }),
+      ]);
+      expect(events.filter((event) => event.type === "user_message_updated")).toEqual([]);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "user_message_committed",
+        id,
+        messageId: "message-1",
+        sourceEventId: "event-1",
+      }));
+    });
+
+    it("commits identical prompts to the entries their message ids name", () => {
+      const bus = getOrCreateBus("test-message-id-identical-text");
+      const firstId = bus.setPendingPrompt("yes");
+      const secondId = bus.setPendingPrompt("yes");
+      bus.assignUserMessageId(firstId, "message-1");
+      bus.assignUserMessageId(secondId, "message-2");
+
+      bus.recordSavedUserMessage("message-2", "event-2");
+
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([
+        { id: firstId, pending: true },
+        { id: secondId, pending: false, sourceEventId: "event-2" },
+      ]);
+
+      bus.recordSavedUserMessage("message-1", "event-1");
+
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([
+        { id: firstId, pending: false, sourceEventId: "event-1" },
+        { id: secondId, pending: false, sourceEventId: "event-2" },
+      ]);
+    });
+
+    it("leaves a saved message without an id to the text fallback", () => {
+      const bus = getOrCreateBus("test-message-id-text-fallback");
+      const id = bus.setPendingPrompt("hello");
+      bus.assignUserMessageId(id, "message-1");
+
+      bus.commitPendingPrompt("hello", "event-1");
+
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([
+        { id, messageId: "message-1", pending: false, sourceEventId: "event-1" },
+      ]);
+      // A later save of the same message does not commit it twice.
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+      bus.recordSavedUserMessage("message-1", "event-other");
+      expect(events.filter((event) => event.type === "user_message_committed")).toEqual([]);
+    });
+
+    it("discards an unsaved prompt by its entry id only", () => {
+      const bus = getOrCreateBus("test-message-id-discard");
+      const events: StreamEvent[] = [];
+      bus.subscribe((event) => events.push(event));
+      const firstId = bus.setPendingPrompt("same");
+      const secondId = bus.setPendingPrompt("same");
+      const savedId = bus.setPendingPrompt("saved");
+      bus.assignUserMessageId(savedId, "message-saved");
+      bus.recordSavedUserMessage("message-saved", "event-saved");
+
+      bus.discardPendingPrompt(firstId);
+      bus.discardPendingPrompt(savedId);
+      bus.discardPendingPrompt("unknown-entry");
+
+      expect(bus.getSnapshot().pendingUserMessages.map((message) => message.id)).toEqual([secondId, savedId]);
+      expect(events.filter((event) => event.type === "user_message_discarded")).toEqual([
+        { type: "user_message_discarded", id: firstId },
+      ]);
+    });
+
+    it("forgets unclaimed saved messages on reset and keeps only the newest", () => {
+      const bus = getOrCreateBus("test-message-id-unclaimed");
+      bus.recordSavedUserMessage("message-before-reset", "event-before-reset");
+      bus.reset();
+      const id = bus.setPendingPrompt("hello");
+      bus.assignUserMessageId(id, "message-before-reset");
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([{ id, pending: true }]);
+
+      for (let index = 0; index < 100; index += 1) {
+        bus.recordSavedUserMessage(`unclaimed-${index}`, `event-${index}`);
+      }
+      const oldId = bus.setPendingPrompt("old");
+      const newId = bus.setPendingPrompt("new");
+      bus.assignUserMessageId(oldId, "unclaimed-0");
+      bus.assignUserMessageId(newId, "unclaimed-99");
+
+      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([
+        { id, pending: true },
+        { id: oldId, pending: true },
+        { id: newId, pending: false, sourceEventId: "event-99" },
+      ]);
     });
 
     it("indexes pending interactions for reconnect hydration and clears them per request", () => {
