@@ -27,25 +27,6 @@ describe("sendChatMessage", () => {
     vi.resetModules();
   });
 
-  it("returns the accepted response envelope", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = String(input);
-      if (url === "/api/chat") {
-        return jsonResponse({ status: "accepted", mode: "steered" });
-      }
-      throw new Error(`Unexpected fetch URL: ${url}`);
-    });
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
-
-    const { sendChatMessage } = await import("./api.js");
-
-    await expect(sendChatMessage("session-1", "adjust course")).resolves.toEqual({
-      status: "accepted",
-      mode: "steered",
-    });
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/chat");
-  });
-
   it("includes attachments in the request body when provided, omits the key otherwise", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
@@ -66,6 +47,7 @@ describe("sendChatMessage", () => {
       },
     ]);
 
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/chat");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       sessionId: "session-1",
       prompt: "(attachment)",

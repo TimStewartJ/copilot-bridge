@@ -111,20 +111,6 @@ const CLOUDFLARE_CHECK = {
   block: { kind: "challenge", by: "Cloudflare", status: 403 },
 } as const;
 
-const SITE_REFUSAL = {
-  signals: {
-    url: "https://tickets.example.com/events",
-    title: "Access Denied",
-    status: 403,
-    textLength: 180,
-    text: "Access Denied You don't have permission to access this page. Reference #18.2f1a3b17 "
-      + "https://errors.edgesuite.net/18.2f1a3b17",
-    links: 1,
-    markers: [],
-  },
-  block: { kind: "denied", by: "This site", status: 403 },
-} as const;
-
 const FORM_WITH_CAPTCHA = {
   signals: {
     url: "https://forms.example.com/contact",
@@ -341,14 +327,13 @@ describe("browser_exec tool", () => {
   });
 
   describe("page check", () => {
+    // One page per result field; which pages are blocked is covered by the page check's own tests.
     const blockingPages = [
-      ["a human check", { page: CLOUDFLARE_CHECK, field: "blocked", otherField: "captcha", userCanPass: true }],
-      // Nothing names who refused, so the site may only want its visitor signed in.
-      ["a refusal", { page: SITE_REFUSAL, field: "blocked", otherField: "captcha", userCanPass: true }],
-      ["a CAPTCHA inside an ordinary page", { page: FORM_WITH_CAPTCHA, field: "captcha", otherField: "blocked", userCanPass: true }],
+      ["a human check", { page: CLOUDFLARE_CHECK, field: "blocked", otherField: "captcha" }],
+      ["a CAPTCHA inside an ordinary page", { page: FORM_WITH_CAPTCHA, field: "captcha", otherField: "blocked" }],
     ] as const;
 
-    it.each(blockingPages)("reports %s after commands that all succeeded", async (_name, { page, field, otherField, userCanPass }) => {
+    it.each(blockingPages)("reports %s after commands that all succeeded", async (_name, { page, field, otherField }) => {
       mockAgentBrowser((call) => {
         if (call.command === "eval") return evalOutput(pageSignals(page.signals));
         if (call.command === "open") return "opened";
@@ -375,7 +360,7 @@ describe("browser_exec tool", () => {
       // The browser of this call is gone when the agent reads the result, so there is no session to name.
       expect(notice.guidance).not.toContain("browserSessionId");
       for (const sessionTool of ["browser_session_start", "browser_session_handoff"]) {
-        expect(notice.guidance.includes(sessionTool)).toBe(userCanPass);
+        expect(notice.guidance).toContain(sessionTool);
       }
     });
 

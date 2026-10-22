@@ -13,7 +13,6 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import SearchView from "./SearchView";
-import { getSearchHighlightTerms } from "../lib/search-text";
 import { installDialogDom } from "../test-dialog-harness";
 
 const searchBridgeMock = vi.hoisted(() => vi.fn());
@@ -187,10 +186,6 @@ describe("SearchView", () => {
       "/tasks/task-1/sessions/session-1?message=event-77",
     );
     expect(rendered.dom.container.textContent).toContain("from=%2Fsearch");
-  });
-
-  it("parses quoted phrases and separate terms for safe highlighting", () => {
-    expect(getSearchHighlightTerms(`"exact phrase" other`)).toEqual(["exact phrase", "other"]);
   });
 
   it("keeps incomplete scope syntax out of requests and commits inline type chips atomically", async () => {
@@ -393,46 +388,6 @@ describe("SearchView", () => {
 
     expect(rendered.dom.container.textContent).toContain("/tasks/task-1");
     expect(rendered.dom.container.textContent).not.toContain("q=pending");
-  });
-
-  it("restores the result list scroll position after opening and returning from a result", async () => {
-    searchBridgeMock.mockResolvedValue(response({
-      tasks: {
-        total: 1,
-        items: [{ taskId: "task-1", title: "Result task", snippet: "match", archived: false }],
-      },
-    }));
-    harness = await createReactDomHarness({ installDom: installDialogDom });
-    await harness.render(createElement(
-      MemoryRouter,
-      { initialEntries: ["/search?q=match"] },
-      createElement(Routes, null,
-        createElement(Route, { path: "/search", element: createElement(SearchView) }),
-        createElement(Route, { path: "/tasks/:taskId", element: createElement(ReturnToSearch) }),
-      ),
-    ));
-    await waitUntilAct(harness.act, () => harness!.dom.container.textContent?.includes("Result task") ?? false);
-    const firstSearchRoot = findAllByTag(harness.dom.container, "DIV").find(
-      (candidate) => getReactProps(candidate)?.["data-testid"] === "search-scroll",
-    );
-    if (!firstSearchRoot) throw new Error("Search scroll container not found");
-    Object.defineProperty(firstSearchRoot, "scrollTop", {
-      configurable: true,
-      writable: true,
-      value: 321,
-    });
-
-    await harness.act(async () => {
-      getReactProps(findButton(harness!.dom.container, "Result task"))?.onClick?.();
-    });
-    await harness.act(async () => {
-      getReactProps(findButton(harness!.dom.container, "Return to search"))?.onClick?.();
-    });
-    await waitUntilAct(harness.act, () => harness!.dom.container.textContent?.includes("Result task") ?? false);
-    const restoredSearchRoot = findAllByTag(harness.dom.container, "DIV").find(
-      (candidate) => getReactProps(candidate)?.["data-testid"] === "search-scroll",
-    );
-    expect(restoredSearchRoot?.scrollTop).toBe(321);
   });
 
   it("waits for a delayed matching response before restoring and accepts browser scroll clamping", async () => {

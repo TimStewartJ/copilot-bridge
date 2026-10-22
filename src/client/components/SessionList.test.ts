@@ -9,7 +9,6 @@ import {
   waitUntilAct,
 } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
-import { formatReasoningEffortLabel } from "../reasoning-effort";
 import { queryClient, queryKeys } from "../queryClient";
 import { formatSessionModelLabel } from "../lib/session-model";
 import { canKeepCurrentReasoningEffortForModel } from "./SessionList";
@@ -294,18 +293,27 @@ describe("SessionList archived paging", () => {
 });
 
 describe("SessionList defer summary indicator", () => {
-  it("renders a single defer with the next run time", async () => {
+  it.each([
+    { name: "a single defer with the next run time", count: 1, runningCount: 0, label: "Deferred in 5m" },
+    { name: "multiple defers with the count and next run time", count: 2, runningCount: 0, label: "2 defers · next in 5m" },
+    { name: "running and queued defer counts together", count: 2, runningCount: 1, label: "1 running · 1 queued" },
+    { name: "no defer label when the summary is cleared", count: 0, runningCount: 0, label: null },
+  ])("renders $name", async ({ count, runningCount, label }) => {
     const { dom, cleanup } = await renderSessionList([
       createSession({
         sessionId: "session-1",
         summary: "Deferred session",
-        deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
+        deferSummary: { count, runningCount, nextRunAt: minutesFromNow(5) },
       }),
     ]);
 
     try {
       expect(dom.container.textContent).toContain("Deferred session");
-      expect(dom.container.textContent).toContain("Deferred in 5m");
+      if (label) {
+        expect(dom.container.textContent).toContain(label);
+      } else {
+        expect(dom.container.textContent).not.toMatch(/Deferred in|defers|running|queued/);
+      }
     } finally {
       await cleanup();
     }
@@ -332,22 +340,6 @@ describe("SessionList defer summary indicator", () => {
     }
   });
 
-  it("shows running and queued defer counts together", async () => {
-    const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Mixed deferred session",
-        deferSummary: { count: 2, runningCount: 1, nextRunAt: minutesFromNow(5) },
-      }),
-    ]);
-
-    try {
-      expect(dom.container.textContent).toContain("1 running · 1 queued");
-    } finally {
-      await cleanup();
-    }
-  });
-
   it("opens deferred work from the defer badge", async () => {
     const session = createSession({
       sessionId: "session-1",
@@ -368,40 +360,6 @@ describe("SessionList defer summary indicator", () => {
         session,
         onClose: expect.any(Function),
       }));
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("renders multiple defers with the count and next run time", async () => {
-    const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Queued session",
-        deferSummary: { count: 2, runningCount: 0, nextRunAt: minutesFromNow(5) },
-      }),
-    ]);
-
-    try {
-      expect(dom.container.textContent).toContain("2 defers · next in 5m");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("does not render a defer label when the summary is cleared", async () => {
-    const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Cleared session",
-        deferSummary: { count: 0, runningCount: 0, nextRunAt: minutesFromNow(5) },
-      }),
-    ]);
-
-    try {
-      expect(dom.container.textContent).toContain("Cleared session");
-      expect(dom.container.textContent).not.toContain("Deferred");
-      expect(dom.container.textContent).not.toContain("defers");
     } finally {
       await cleanup();
     }
@@ -461,10 +419,6 @@ describe("session model menu labels", () => {
         },
       }],
     )).toBe("GPT-5.5 · Xhigh · Long context (922K)");
-  });
-
-  it("humanizes unknown reasoning effort values generically", () => {
-    expect(formatReasoningEffortLabel("experimental")).toBe("Experimental");
   });
 
   it("keeps the current reasoning effort only when lookup confirms it is supported", () => {

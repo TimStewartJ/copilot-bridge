@@ -7,8 +7,6 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import ChatInput from "./ChatInput";
-import { useDrafts } from "../useDrafts";
-import type { Session } from "../api";
 
 const useVoiceInputMock = vi.hoisted(() => vi.fn());
 
@@ -47,6 +45,30 @@ function findTextarea(root: any): any {
   return textarea;
 }
 
+/** What useVoiceInput returns for an available recorder at rest, with `overrides` applied. */
+function voiceInputState(overrides: Record<string, unknown> = {}) {
+  return {
+    browserSupported: true,
+    status: {
+      available: true,
+      provider: "speech-engine",
+      label: "Parakeet v3 (local)",
+      maxDurationSeconds: 120,
+    },
+    statusError: null,
+    isCheckingStatus: false,
+    phase: "idle",
+    isRecording: false,
+    isTranscribing: false,
+    error: null,
+    startRecording: vi.fn(),
+    stopRecording: vi.fn(),
+    cancelRecording: vi.fn(() => true),
+    refreshStatus: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe("ChatInput voice retry", () => {
   let harness: ReactDomHarness | null = null;
   let pointerFineMatches = true;
@@ -69,25 +91,7 @@ describe("ChatInput voice retry", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     }));
-    useVoiceInputMock.mockReturnValue({
-      browserSupported: true,
-      status: {
-        available: true,
-        provider: "speech-engine",
-        label: "Parakeet v3 (local)",
-        maxDurationSeconds: 120,
-      },
-      statusError: null,
-      isCheckingStatus: false,
-      phase: "idle",
-      isRecording: false,
-      isTranscribing: false,
-      error: null,
-      startRecording: vi.fn(),
-      stopRecording: vi.fn(),
-      cancelRecording: vi.fn(() => true),
-      refreshStatus: vi.fn(),
-    });
+    useVoiceInputMock.mockReturnValue(voiceInputState());
   });
 
   afterEach(async () => {
@@ -106,38 +110,6 @@ describe("ChatInput voice retry", () => {
     }));
   }
 
-  it("keeps typed text for a session omitted from the loaded session list", async () => {
-    function DraftOwner() {
-      const otherSession: Session = {
-        sessionId: "other-session",
-        deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
-      };
-      const draftApi = useDrafts([otherSession], "archived-session");
-      return createElement(ChatInput, {
-        onSend: vi.fn(),
-        composerKey: "archived-session",
-        sessionId: "archived-session",
-        draft: draftApi.getDraft("archived-session"),
-        onDraftChange: (text, attachments) => draftApi.setDraft("archived-session", text, attachments),
-        onSubmitVoiceCapture: vi.fn(),
-      });
-    }
-
-    await getHarness().render(createElement(DraftOwner));
-    const textarea = findTextarea(getHarness().dom.container);
-    await getHarness().act(async () => {
-      getReactProps(textarea)?.onChange?.({
-        target: {
-          value: "hello",
-          style: { height: "" },
-          scrollHeight: 48,
-        },
-      });
-    });
-
-    expect(textarea.value).toBe("hello");
-  });
-
   it("takes focus when a focus request arrives on a fine-pointer device", async () => {
     await renderChatInput({ focusRequest: 0 });
     const textarea = findTextarea(getHarness().dom.container);
@@ -155,15 +127,6 @@ describe("ChatInput voice retry", () => {
 
     await renderChatInput({ focusRequest: 1 });
     expect(document.activeElement).not.toBe(textarea);
-  });
-
-  it("keeps the composer visible in constrained chat layouts", async () => {
-    await renderChatInput();
-
-    const composer = findAllByTag(getHarness().dom.container, "DIV")
-      .find((element) => String(getReactProps(element)?.className ?? "").includes("shrink-0"));
-    expect(composer).toBeDefined();
-    expect(getReactProps(findTextarea(getHarness().dom.container))?.placeholder).toBe("Type a message...");
   });
 
   function setVisualViewport(layoutHeight: number, visualHeight: number): void {
@@ -268,24 +231,7 @@ describe("ChatInput voice retry", () => {
     expect(getReactProps(removeButton)?.className).toContain("focus-visible:opacity-100");
     expect(getReactProps(removeButton)?.className).toContain("group-focus-within:opacity-100");
 
-    useVoiceInputMock.mockReturnValue({
-      browserSupported: true,
-      status: {
-        available: true,
-        provider: "speech-engine",
-        label: "Parakeet v3 (local)",
-        maxDurationSeconds: 120,
-      },
-      statusError: null,
-      isCheckingStatus: false,
-      phase: "recording",
-      isRecording: true,
-      isTranscribing: false,
-      error: null,
-      startRecording: vi.fn(),
-      stopRecording: vi.fn(),
-      refreshStatus: vi.fn(),
-    });
+    useVoiceInputMock.mockReturnValue(voiceInputState({ phase: "recording", isRecording: true }));
     await renderChatInput({
       draft: {
         text: "",
@@ -306,25 +252,13 @@ describe("ChatInput voice retry", () => {
 
   it("shows the recording clock and ends a recording that reaches the limit like a press on stop", async () => {
     const stopRecording = vi.fn();
-    useVoiceInputMock.mockReturnValue({
-      browserSupported: true,
-      status: {
-        available: true,
-        provider: "speech-engine",
-        label: "Parakeet v3 (local)",
-        maxDurationSeconds: 300,
-      },
-      statusError: null,
-      isCheckingStatus: false,
+    useVoiceInputMock.mockReturnValue(voiceInputState({
+      status: { ...voiceInputState().status, maxDurationSeconds: 300 },
       phase: "recording",
       isRecording: true,
-      isTranscribing: false,
       elapsedSeconds: 83,
-      error: null,
-      startRecording: vi.fn(),
       stopRecording,
-      refreshStatus: vi.fn(),
-    });
+    }));
     await renderChatInput();
 
     const container = getHarness().dom.container;
@@ -755,10 +689,10 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("run autonomously", undefined, "autopilot");
   });
 
+  // How each key, modifier and device classifies is covered in lib/composer-enter.test.ts; these
+  // cases prove the composer acts on that classification.
   it.each([
     { label: "new chat with the keyboard visible", visualHeight: 480, isDraft: true, steering: false },
-    { label: "new chat without viewport shrink", visualHeight: 800, isDraft: true, steering: false },
-    { label: "existing chat without viewport shrink", visualHeight: 800, isDraft: false, steering: false },
     { label: "steering note without viewport shrink", visualHeight: 800, isDraft: false, steering: true },
   ])("keeps mobile Enter as a newline in a $label", async ({ visualHeight, isDraft, steering }) => {
     pointerFineMatches = false;
@@ -813,40 +747,9 @@ describe("ChatInput voice retry", () => {
     expect(textarea.value).toBe("");
   });
 
-  it("keeps Shift+Enter as a newline with a hardware keyboard on a touch device", async () => {
-    pointerFineMatches = false;
-    setVisualViewport(800, 800);
-    const onSend = vi.fn();
-    await renderChatInput({ onSend, isDraft: true });
-
-    const textarea = findTextarea(getHarness().dom.container);
-    const preventDefault = vi.fn();
-    await getHarness().act(async () => {
-      getReactProps(textarea)?.onChange?.({
-        target: {
-          value: "first line",
-          style: { height: "" },
-          scrollHeight: 48,
-        },
-      });
-      getReactProps(textarea)?.onKeyDown?.({
-        key: "Enter",
-        code: "Enter",
-        shiftKey: true,
-        preventDefault,
-      });
-    });
-
-    expect(preventDefault).not.toHaveBeenCalled();
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
   it.each([
-    { code: "Enter", isDraft: true, steering: false, mode: "interactive" as const },
     { code: "NumpadEnter", isDraft: true, steering: false, mode: "interactive" as const },
-    { code: "Enter", isDraft: false, steering: false, mode: "interactive" as const },
     { code: "Enter", isDraft: false, steering: true, mode: "interactive" as const },
-    { code: "Enter", isDraft: true, steering: false, mode: "autopilot" as const },
   ])("sends hardware-style Enter with an unobscured touch viewport %j", async ({ code, isDraft, steering, mode }) => {
     pointerFineMatches = false;
     setVisualViewport(800, 800);
@@ -867,59 +770,6 @@ describe("ChatInput voice retry", () => {
     if (steering) expect(onSend).toHaveBeenCalledWith("hardware message", undefined);
     else expect(onSend).toHaveBeenCalledWith("hardware message", undefined, mode);
     expect(textarea.value).toBe("");
-  });
-
-  it.each([
-    { label: "software-style Enter", code: "", visualHeight: 800 },
-    { label: "unidentified Enter", code: "Unidentified", visualHeight: 800 },
-    { label: "unrelated physical code", code: "KeyA", visualHeight: 800 },
-    { label: "software Enter with a physical-style code", code: "Enter", visualHeight: 480 },
-    { label: "keypad Enter while the soft keyboard is visible", code: "NumpadEnter", visualHeight: 480 },
-    { label: "Enter without viewport data", code: "Enter" },
-    { label: "Enter with invalid viewport data", code: "Enter", visualHeight: NaN },
-  ])("leaves $label as native newline", async ({ code, visualHeight }) => {
-    pointerFineMatches = false;
-    if (visualHeight !== undefined) setVisualViewport(800, visualHeight);
-    const onSend = vi.fn();
-    await renderChatInput({ onSend, draft: { text: "keep draft", attachments: [] } });
-    const textarea = findTextarea(getHarness().dom.container);
-    const preventDefault = vi.fn();
-    await getHarness().act(async () => {
-      getReactProps(textarea)?.onKeyDown?.({ key: "Enter", code, shiftKey: false, preventDefault });
-    });
-    expect(preventDefault).not.toHaveBeenCalled();
-    expect(onSend).not.toHaveBeenCalled();
-    expect(textarea.value).toBe("keep draft");
-  });
-
-  it("keeps Enter native when a soft keyboard occludes a fine-pointer device", async () => {
-    setVisualViewport(800, 480);
-    const onSend = vi.fn();
-    await renderChatInput({ onSend, draft: { text: "keep draft", attachments: [] } });
-    const preventDefault = vi.fn();
-    await getHarness().act(async () => {
-      getReactProps(findTextarea(getHarness().dom.container))?.onKeyDown?.({
-        key: "Enter", code: "Enter", preventDefault,
-      });
-    });
-    expect(preventDefault).not.toHaveBeenCalled();
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { keyCode: 13, nativeEvent: { isComposing: true } },
-    { keyCode: 229, nativeEvent: { isComposing: false } },
-  ])("never sends an IME confirmation even with a physical code and Ctrl %j", async (composition) => {
-    const onSend = vi.fn();
-    await renderChatInput({ onSend, draft: { text: "composing", attachments: [] } });
-    const preventDefault = vi.fn();
-    await getHarness().act(async () => {
-      getReactProps(findTextarea(getHarness().dom.container))?.onKeyDown?.({
-        key: "Enter", code: "Enter", ctrlKey: true, preventDefault, ...composition,
-      });
-    });
-    expect(preventDefault).not.toHaveBeenCalled();
-    expect(onSend).not.toHaveBeenCalled();
   });
 
   it("keeps composition Enter native until composition ends and resets on composer changes", async () => {
@@ -947,37 +797,8 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["ctrlKey", "metaKey"] as const)("still sends on %s+Enter on a touch device", async (modifier) => {
-    pointerFineMatches = false;
-    setVisualViewport(800, 800);
-    const onSend = vi.fn();
-    await renderChatInput({ onSend, isDraft: true });
-
-    const textarea = findTextarea(getHarness().dom.container);
-    const preventDefault = vi.fn();
-    await getHarness().act(async () => {
-      getReactProps(textarea)?.onChange?.({
-        target: {
-          value: "send me",
-          style: { height: "" },
-          scrollHeight: 48,
-        },
-      });
-      getReactProps(textarea)?.onKeyDown?.({
-        key: "Enter",
-        shiftKey: false,
-        [modifier]: true,
-        preventDefault,
-      });
-    });
-
-    expect(preventDefault).toHaveBeenCalled();
-    expect(onSend).toHaveBeenCalledWith("send me", undefined, "interactive");
-  });
-
   it.each([
     { label: "mobile software keyboard", finePointer: false, code: "", completes: false },
-    { label: "mobile hardware keyboard", finePointer: false, code: "Enter", completes: true },
     { label: "desktop", finePointer: true, code: "Enter", completes: true },
   ])("handles Enter in slash suggestions on $label", async ({ finePointer, code, completes }) => {
     pointerFineMatches = finePointer;
@@ -1009,7 +830,7 @@ describe("ChatInput voice retry", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it.each(["shiftKey", "ctrlKey", "metaKey"] as const)("preserves %s+Enter while slash suggestions are open", async (modifier) => {
+  it.each(["shiftKey", "ctrlKey"] as const)("preserves %s+Enter while slash suggestions are open", async (modifier) => {
     pointerFineMatches = false;
     setVisualViewport(800, 800);
     const onSend = vi.fn();

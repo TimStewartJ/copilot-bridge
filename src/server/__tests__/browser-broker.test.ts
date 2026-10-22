@@ -326,12 +326,16 @@ describe("browser broker", () => {
     expect(spansNamed("browser.broker.readiness")).toEqual([expect.objectContaining({ success: true })]);
   });
 
-  it("records an unavailable state when readiness never succeeds", async () => {
+  it.each([
+    { output: "connection refused", reason: "connection refused" },
+    // A browser that gave no reason still gets an explanation.
+    { output: " \n", reason: "agent-browser did not complete the readiness handshake" },
+  ])("records an unavailable state when readiness never succeeds ($reason)", async ({ output, reason }) => {
     const root = makeTestDir("browser-broker-unavailable");
     const { telemetryStore, spansNamed } = spanRecorder();
     const broker = new BrowserBroker({
       copilotHome: root,
-      runCommand: vi.fn(async () => ({ ok: false, output: "connection refused" })),
+      runCommand: vi.fn(async () => ({ ok: false, output })),
       telemetryStore,
     });
 
@@ -342,7 +346,7 @@ describe("browser broker", () => {
     expect(failure).toBeInstanceOf(BrowserUnavailableError);
     expect(failure).toMatchObject({
       name: "BrowserUnavailableError",
-      message: "Browser authenticated context is unavailable: connection refused",
+      message: `Browser authenticated context is unavailable: ${reason}`,
     });
     expect(broker.getSnapshot().authenticated).toMatchObject({
       status: "unavailable",
@@ -351,20 +355,6 @@ describe("browser broker", () => {
     // Diagnostics counts these.
     expect(spansNamed("browser.broker.readiness"))
       .toEqual([expect.objectContaining({ success: false, browserContext: "authenticated" })]);
-  });
-
-  it("says that the handshake did not complete when the browser gave no reason", async () => {
-    const root = makeTestDir("browser-broker-unavailable-silent");
-    const broker = new BrowserBroker({
-      copilotHome: root,
-      runCommand: vi.fn(async () => ({ ok: false, output: " \n" })),
-    });
-
-    await expect(
-      withoutReadinessWaits(() => broker.withEphemeralContext("authenticated", OP, async () => undefined)),
-    ).rejects.toThrow(
-      "Browser authenticated context is unavailable: agent-browser did not complete the readiness handshake",
-    );
   });
 
   it("does not treat a skip-readiness launch as a completed functional probe", async () => {
@@ -588,23 +578,17 @@ describe("public browser targets", () => {
 describe("public profile slots", () => {
   it("uses the same profile for one operation after another and keeps what the browser left in it", async () => {
     const root = makeTestDir("browser-broker-slot-reuse");
-    const events: string[] = [];
-    const shutdownTarget = vi.fn<ShutdownTarget>(async (target) => {
-      events.push(`close ${slotOf(target)}`);
-      return successfulShutdown();
-    });
     const removeProfile = mockRemoveProfile();
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget, removeProfile });
+    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget: mockShutdown(), removeProfile });
     const leases: BrowserBrokerLease[] = [];
 
     await broker.withEphemeralContext("public", QUIET, async (lease) => {
-      events.push("first operation");
       leases.push(lease);
       await writeFile(join(lease.browserTarget.profileDir, "Cookies"), "left by the first");
     });
     const found = await broker.withEphemeralContext("public", QUIET, async (lease) => {
-      events.push("second operation");
       leases.push(lease);
+
       return readFile(join(lease.browserTarget.profileDir, "Cookies"), "utf-8");
     });
 
@@ -612,8 +596,6 @@ describe("public profile slots", () => {
     expect(leases[1].browserTarget).toEqual(leases[0].browserTarget);
     expect(leases[0].browserTarget.profileDir).toBe(slotDir(root, 1));
     expect(found).toBe("left by the first");
-    // Checked for a leftover browser once, then closed after each operation.
-    expect(events).toEqual(["close 1", "first operation", "close 1", "second operation", "close 1"]);
     expect(await readdir(publicRoot(root))).toEqual(["slot-1"]);
     expect(removeProfile).not.toHaveBeenCalled();
   });

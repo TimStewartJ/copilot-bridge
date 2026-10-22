@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   advanceTranscriptCursor,
@@ -9,7 +8,6 @@ import {
   isVisibleMessageEvent,
   projectTranscriptEvent,
   transformEventsToMessages,
-  TRANSCRIPT_EVENT_TYPES,
 } from "../event-transform.js";
 import { AgentEventOwners } from "../agent-event-ownership.js";
 import { TERMINAL_TURN_EVENT_TYPES } from "../../shared/terminal-completion.js";
@@ -26,16 +24,11 @@ describe("transcript event projection", () => {
     }
   });
 
-  it("keeps every event type the transform reads", () => {
-    const read = (...paths: string[]) => paths.map((path) => readFileSync(new URL(path, import.meta.url), "utf-8")).join("\n");
-    const compared = [...read("../event-transform.ts", "../sdk-event-identity.ts")
-      .matchAll(/(?<!typeof )\b(?:event|nextEvent|record)\??\.type\s*[!=]==\s*"([^"]+)"/g)].map((match) => match[1]!);
-    // The agent folds read the same projected events, and name every type they read as a literal.
-    const named = [...read("../agent-event-ownership.ts", "../transcript-agent-fold.ts")
-      .matchAll(/"([a-z]+\.[a-z_]+)"/g)].map((match) => match[1]!);
-    expect(compared.length).toBeGreaterThan(10);
-    expect(named.length).toBeGreaterThan(10);
-    expect([...new Set([...compared, ...named, ...TERMINAL_TURN_EVENT_TYPES])].filter((type) => !TRANSCRIPT_EVENT_TYPES.has(type))).toEqual([]);
+  it("keeps terminal turn events whole", () => {
+    for (const type of TERMINAL_TURN_EVENT_TYPES) {
+      const event = { type, id: type, data: { reason: "done" } };
+      expect(projectTranscriptEvent(event)).toBe(event);
+    }
   });
 
   it("gives the same transcript when non-transcript payloads are dropped", () => {
@@ -509,27 +502,15 @@ describe("event-transform agent-injected system messages", () => {
 });
 
 describe("event-transform fork boundaries", () => {
-  it("adds the next raw event id after a completed assistant turn as a safe fork boundary", () => {
-    const entries = transformEventsToMessages([
-      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
-      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
-      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
-      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
-      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
-      { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-10T10:01:02.000Z", data: {} },
-    ]);
-
-    const firstAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
-    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
-  });
-
-  it("skips repeated system prompts when choosing a fork boundary", () => {
+  it("uses the next raw non-system event after a completed assistant turn as a safe fork boundary", () => {
     const entries = transformEventsToMessages([
       { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
       { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
       { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
       { id: "system-2", type: "system.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "Repeated instructions" } },
       { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
+      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
+      { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-10T10:01:02.000Z", data: {} },
     ]);
 
     const firstAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Answer one");

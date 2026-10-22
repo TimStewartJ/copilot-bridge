@@ -118,24 +118,32 @@ function expectedCostEstimate(overrides: {
   };
 }
 
+function usageMetric(requests: number, usage: Record<string, number>, extra: Record<string, unknown> = {}) {
+  return { requests: { count: requests }, usage, ...extra };
+}
+
+function usageShutdown(
+  timestamp: string,
+  modelMetrics: Record<string, ReturnType<typeof usageMetric>>,
+  data: Record<string, unknown> = {},
+) {
+  return { type: "session.shutdown", timestamp, data: { ...data, modelMetrics } };
+}
+
+function writeUsageShutdown(copilotHome: string, timestamp: string, modelMetrics: Parameters<typeof usageShutdown>[1]): void {
+  writeCopilotUsageEvents(copilotHome, "usage-session", [usageShutdown(timestamp, modelMetrics)]);
+}
+
 describe("Copilot usage routes", () => {
-  it("GET /api/copilot-usage preserves authoritative metering and its unattributed daily bucket", async () => {
+  // Metering arithmetic is covered in copilot-usage.test.ts; this checks the unattributed bucket is serialized at each level.
+  it("GET /api/copilot-usage serializes authoritative metering and its unattributed bucket", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-08-11T12:00:00.000Z",
-        data: {
-          totalNanoAiu: 300_000_000_000,
-          modelMetrics: {
-            "gpt-5.4": {
-              requests: { count: 1 },
-              usage: { inputTokens: 100 },
-              totalNanoAiu: 100_000_000_000,
-            },
-          },
-        },
-      },
+      usageShutdown(
+        "2026-08-11T12:00:00.000Z",
+        { "gpt-5.4": usageMetric(1, { inputTokens: 100 }, { totalNanoAiu: 100_000_000_000 }) },
+        { totalNanoAiu: 300_000_000_000 },
+      ),
     ]);
     ({ app } = createTestApp({ copilotHome }));
 
@@ -145,12 +153,7 @@ describe("Copilot usage routes", () => {
     expect(res.body.totals.meteredAiCredits).toBe(300);
     expect(unattributed?.meteredAiCredits).toBe(200);
     expect(res.body.days[0].meteredAiCredits).toBe(300);
-    expect(res.body.days[0].models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL)?.meteredAiCredits)
-      .toBe(200);
     expect(res.body.sessions[0].meteredAiCredits).toBe(300);
-    expect(res.body.sessions[0].days[0].meteredAiCredits).toBe(300);
-    expect(res.body.totals.unpricedModelCount).toBe(1);
-    expect(res.body.unpricedModels.map((row) => row.model)).toEqual(["gpt-5.4"]);
   });
 
   it("GET /api/copilot-usage returns a safe aggregated payload", async () => {
@@ -367,103 +370,27 @@ describe("Copilot usage routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("secret-");
   });
 
-  it("GET /api/copilot-usage resolves observed SDK model IDs through listModels metadata", async () => {
-    const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T13:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "opaque-sdk-id": {
-              requests: { count: 1 },
-              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
-            },
-          },
-        },
-      },
-    ]);
-    const listModels = vi.fn(async () => [
-      {
-        id: "opaque-sdk-id",
-        name: "Claude Opus 4.7",
-        billing: { note: "secret-sdk-field" },
-      },
-      sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
-    ]);
-    ({ app } = createTestApp({
-      copilotHome,
-      sessionManager: { ...createMockSessionManager(), listModels },
-    }));
-
-    const res = await requestUsageUntil((body) => (
-      body.index.state === "idle"
-      && body.models[0]?.pricingStatus === "sdk-name"
-    ));
-
-    expect(res.status).toBe(200);
-    expect(listModels).toHaveBeenCalledTimes(1);
-    expect(res.body.models[0]).toMatchObject({
-      model: "opaque-sdk-id",
-      pricingKey: "claude-opus-4.7",
-      pricedAs: "claude-opus-4.7",
-      pricingStatus: "sdk-name",
-      normalizedPricingModel: "claude-opus-4.7",
-    });
-    expect(res.body.models[0].estimatedCostUsd).toBeCloseTo(30);
-    expect(res.body.totals.unpricedModelCount).toBe(0);
-    expect(JSON.stringify(res.body)).not.toContain("secret-sdk-field");
-  });
-
   it("filters per-session rows for settings and task-scoped callers while keeping global totals", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "task-session", [{
-      type: "session.shutdown",
-      timestamp: "2026-05-01T12:00:00.000Z",
-      data: {
-        modelMetrics: {
-          "gpt-5.4": {
-            requests: { count: 1 },
-            usage: { inputTokens: 10 },
-          },
-        },
-      },
-    }]);
-    writeCopilotUsageEvents(copilotHome, "other-session", [{
-      type: "session.shutdown",
-      timestamp: "2026-05-01T13:00:00.000Z",
-      data: {
-        modelMetrics: {
-          "gpt-5.4": {
-            requests: { count: 1 },
-            usage: { inputTokens: 20 },
-          },
-        },
-      },
-    }]);
+    writeCopilotUsageEvents(copilotHome, "task-session", [
+      usageShutdown("2026-05-01T12:00:00.000Z", { "gpt-5.4": usageMetric(1, { inputTokens: 10 }) }),
+    ]);
+    writeCopilotUsageEvents(copilotHome, "other-session", [
+      usageShutdown("2026-05-01T13:00:00.000Z", { "gpt-5.4": usageMetric(1, { inputTokens: 20 }) }),
+    ]);
     const usageDb = openMemoryDatabase();
     const copilotUsageStore = createCopilotUsageStore(usageDb);
     const sessionStateDir = join(copilotHome, "session-state");
-    copilotUsageStore.upsertEntries([
-      {
-        sessionId: "task-session",
-        parserVersion: COPILOT_USAGE_PARSER_VERSION,
-        fingerprint: {
-          events: { state: "missing" },
-          modelState: { state: "missing" },
-        },
-        result: await scanCopilotUsageSession(sessionStateDir, "task-session"),
+    const cachedEntry = async (sessionId: string) => ({
+      sessionId,
+      parserVersion: COPILOT_USAGE_PARSER_VERSION,
+      fingerprint: {
+        events: { state: "missing" as const },
+        modelState: { state: "missing" as const },
       },
-      {
-        sessionId: "other-session",
-        parserVersion: COPILOT_USAGE_PARSER_VERSION,
-        fingerprint: {
-          events: { state: "missing" },
-          modelState: { state: "missing" },
-        },
-        result: await scanCopilotUsageSession(sessionStateDir, "other-session"),
-      },
-    ]);
+      result: await scanCopilotUsageSession(sessionStateDir, sessionId),
+    });
+    copilotUsageStore.upsertEntries([await cachedEntry("task-session"), await cachedEntry("other-session")]);
     copilotUsageStore.setLastCompletedAt(new Date().toISOString());
     const state = createTestApp({ copilotHome, copilotUsageStore });
     app = state.app;
@@ -491,22 +418,12 @@ describe("Copilot usage routes", () => {
     usageDb.close();
   });
 
+  // Name-based price resolution is covered in copilot-usage.test.ts; this checks listModels wiring, toJSON-only SDK objects and field sanitizing.
   it("GET /api/copilot-usage resolves SDK model objects through their serialized metadata", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-          timestamp: "2026-05-01T13:30:00.000Z",
-          data: {
-            modelMetrics: {
-            "opaque-serialized-sdk-id": {
-              requests: { count: 1 },
-              usage: { outputTokens: 10 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-01T13:30:00.000Z", {
+      "opaque-serialized-sdk-id": usageMetric(1, { outputTokens: 10 }),
+    });
     const listModels = vi.fn(async () => [
       {
         toJSON: () => ({
@@ -543,20 +460,7 @@ describe("Copilot usage routes", () => {
 
   it("GET /api/copilot-usage continues without SDK metadata when listModels fails", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T14:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "opaque-sdk-id": {
-              requests: { count: 1 },
-              usage: { inputTokens: 10, outputTokens: 5 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-01T14:00:00.000Z", { "opaque-sdk-id": usageMetric(1, { inputTokens: 10, outputTokens: 5 }) });
     const listModels = vi.fn(async () => {
       throw new Error("models unavailable");
     });
@@ -595,20 +499,7 @@ describe("Copilot usage routes", () => {
 
   it("caches live model prices and serves them when listModels later fails", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T15:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.4": {
-              requests: { count: 1 },
-              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-01T15:00:00.000Z", { "gpt-5.4": usageMetric(1, { inputTokens: 1_000_000, outputTokens: 1_000_000 }) });
     let calls = 0;
     const listModels = vi.fn(async () => {
       calls += 1;
@@ -653,20 +544,7 @@ describe("Copilot usage routes", () => {
 
   it("prefers fresh live prices over a stale cached price for the same model id", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T16:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.4": {
-              requests: { count: 1 },
-              usage: { outputTokens: 1_000_000 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-01T16:00:00.000Z", { "gpt-5.4": usageMetric(1, { outputTokens: 1_000_000 }) });
     let calls = 0;
     const listModels = vi.fn(async () => {
       calls += 1;
@@ -697,20 +575,7 @@ describe("Copilot usage routes", () => {
 
   it("keeps the incremental index scanning until delayed live prices are published", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T16:30:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.4": {
-              requests: { count: 1 },
-              usage: { outputTokens: 1_000_000 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-01T16:30:00.000Z", { "gpt-5.4": usageMetric(1, { outputTokens: 1_000_000 }) });
     const usageDb = openMemoryDatabase();
     const copilotUsageStore = createCopilotUsageStore(usageDb);
     const copilotModelPriceStore = createCopilotModelPriceStore(usageDb);
@@ -763,20 +628,7 @@ describe("Copilot usage routes", () => {
 
   it("returns cached staging usage immediately while refresh=1 scans and publishes updates progressively", async () => {
     const copilotHome = createCopilotUsageTestHome();
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-01T12:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 1 },
-              usage: { inputTokens: 5, outputTokens: 4 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-01T12:00:00.000Z", { "gpt-4o": usageMetric(1, { inputTokens: 5, outputTokens: 4 }) });
     ({ app } = createTestApp({ copilotHome, isStaging: true }));
 
     const initial = await requestUsageUntil((body) => (
@@ -786,20 +638,7 @@ describe("Copilot usage routes", () => {
     expect(initial.status).toBe(200);
     expect(initial.body.totals.totalTokens).toBe(9);
 
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-02T12:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 20, outputTokens: 10 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-02T12:00:00.000Z", { "gpt-4o": usageMetric(2, { inputTokens: 20, outputTokens: 10 }) });
 
     const cached = await request(app).get("/api/copilot-usage");
     expect(cached.status).toBe(200);
@@ -819,20 +658,7 @@ describe("Copilot usage routes", () => {
 
   it("GET /api/copilot-usage reads from injected copilotHome", async () => {
     const copilotHome = createCopilotUsageTestHome({ dotDir: true });
-    writeCopilotUsageEvents(copilotHome, "usage-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-05-03T12:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "claude-sonnet": {
-              requests: { count: 2 },
-              usage: { outputTokens: 11 },
-            },
-          },
-        },
-      },
-    ]);
+    writeUsageShutdown(copilotHome, "2026-05-03T12:00:00.000Z", { "claude-sonnet": usageMetric(2, { outputTokens: 11 }) });
     ({ app } = createTestApp({ copilotHome }));
 
     const res = await requestUsageUntil((body) => body.index.state === "idle");
@@ -873,21 +699,7 @@ describe("Copilot usage range filtering", () => {
     return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
   }
 
-  function rangedShutdown(timestamp: string, cumulativeInputTokens: number) {
-    return {
-      type: "session.shutdown",
-      timestamp,
-      data: {
-        modelMetrics: {
-          "gpt-5.4": {
-            requests: { count: 1 },
-            usage: { inputTokens: cumulativeInputTokens },
-          },
-        },
-      },
-    };
-  }
-
+  // Window arithmetic is covered in copilot-usage.test.ts; this checks the range query reaches the summary and is echoed back.
   it("GET /api/copilot-usage?range= narrows totals to the requested window", async () => {
     // Freeze only the calendar. The usage index yields with setImmediate, so
     // faking every timer left the background scan progressing only as fast as
@@ -897,28 +709,14 @@ describe("Copilot usage range filtering", () => {
     try {
       const copilotHome = createCopilotUsageTestHome();
       writeCopilotUsageEvents(copilotHome, "ranged-session", [
-        rangedShutdown(localIso(2026, 1, 10), 300),
-        rangedShutdown(localIso(2026, 4, 12), 1_500),
+        usageShutdown(localIso(2026, 1, 10), { "gpt-5.4": usageMetric(1, { inputTokens: 300 }) }),
+        usageShutdown(localIso(2026, 4, 12), { "gpt-5.4": usageMetric(1, { inputTokens: 1_500 }) }),
       ]);
       ({ app } = createTestApp({ copilotHome }));
 
       const all = await requestUsageUntil((body) => body.index.state === "idle");
       expect(all.body.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
       expect(all.body.totals.inputTokens).toBe(1_500);
-      expect(all.body.days.map((day) => ({
-        date: day.date,
-        inputTokens: day.inputTokens,
-      }))).toEqual([
-        { date: "2026-02-10", inputTokens: 300 },
-        { date: "2026-05-12", inputTokens: 1_200 },
-      ]);
-      expect(all.body.sessions[0].days.map((day) => ({
-        date: day.date,
-        inputTokens: day.inputTokens,
-      }))).toEqual([
-        { date: "2026-02-10", inputTokens: 300 },
-        { date: "2026-05-12", inputTokens: 1_200 },
-      ]);
 
       const mtd = await requestUsageUntil(
         (body) => body.index.state === "idle",
@@ -927,10 +725,6 @@ describe("Copilot usage range filtering", () => {
       expect(mtd.body.range.key).toBe("mtd");
       expect(mtd.body.range.startDate).toBe("2026-05-01");
       expect(mtd.body.totals.inputTokens).toBe(1_200);
-      expect(mtd.body.coverage.sessionsIncluded).toBe(1);
-      expect(mtd.body.days).toEqual([
-        expect.objectContaining({ date: "2026-05-12", inputTokens: 1_200 }),
-      ]);
       expect(mtd.body.sessions[0].days).toEqual([
         expect.objectContaining({ date: "2026-05-12", inputTokens: 1_200 }),
       ]);

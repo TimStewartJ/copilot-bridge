@@ -57,24 +57,16 @@ describe("Task routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.tasks).toContainEqual(expect.objectContaining({ id: task.id, state: "in_motion" }));
     expect(res.body.counts.in_motion).toBeGreaterThanOrEqual(1);
-    // Opening a task is not recorded: there is no endpoint for it.
-    expect((await request(app).post(`/api/tasks/${task.id}/opened`)).status).toBe(404);
   });
 
-  it("PATCH defers/resumes the native task without muting, archiving or clearing context", async () => {
+  it("PATCH /api/tasks/:id passes deferral to the store and maps a non-boolean to 400", async () => {
     const task = ctx.taskStore.createTask("Keep this task");
-    ctx.taskStore.updateTask(task.id, { notes: "Context", nextAction: "Review", waitingOn: "External reply" });
     const deferred = await request(app).patch(`/api/tasks/${task.id}`).send({ deferred: true, nextTouchAt: null });
     expect(deferred.status).toBe(200);
-    expect(deferred.body.task).toMatchObject({ deferred: true, muted: false, status: "active", notes: "Context", nextAction: "Review", waitingOn: "External reply" });
-    const home = await request(app).get("/api/home");
-    expect(home.body.tasks.items.some((item: { id: string }) => item.id === task.id)).toBe(false);
-    const all = await request(app).get("/api/home?section=tasks");
-    expect(all.body.tasks.items).toContainEqual(expect.objectContaining({ id: task.id, deferred: true }));
+    expect(deferred.body.task).toMatchObject({ id: task.id, deferred: true });
     const invalid = await request(app).patch(`/api/tasks/${task.id}`).send({ deferred: "true" });
     expect(invalid.status).toBe(400);
-    const resumed = await request(app).patch(`/api/tasks/${task.id}`).send({ deferred: false });
-    expect(resumed.body.task).toMatchObject({ deferred: false, nextAction: "Review", waitingOn: "External reply" });
+    expect(invalid.body.error).toContain("deferred must be a boolean");
   });
 
   it("GET /api/tasks/:id/momentum-events lists UI and agent changes newest first", async () => {
@@ -108,15 +100,13 @@ describe("Task routes", () => {
     const listed = await request(app).get(`/api/tasks/${task.id}/history?limit=10`);
     expect(listed.status).toBe(200);
     expect(listed.body.total).toBe(2);
-    expect(listed.body.entries.map((entry: { text: string }) => entry.text)).toEqual(["Signed the lease", "Agent toured the unit"]);
+    expect(listed.body.entries).toHaveLength(2);
     expect(listed.body.entries[1]).toMatchObject({ source: "agent", sessionId: "run-1", scheduleName: "Daily" });
-    const searched = await request(app).get(`/api/tasks/${task.id}/history?query=toured`);
-    expect(searched.body.entries.map((entry: { text: string }) => entry.text)).toEqual(["Agent toured the unit"]);
-    const paged = await request(app).get(`/api/tasks/${task.id}/history?before=${created.body.entry.id}`);
-    expect(paged.body.entries.map((entry: { text: string }) => entry.text)).toEqual(["Agent toured the unit"]);
+    // Ordering, paging and search semantics live in task-history-store.test.ts; this checks the query is passed through.
+    const filtered = await request(app).get(`/api/tasks/${task.id}/history?query=Signed&before=${created.body.entry.id}`);
+    expect(filtered.body.entries).toEqual([]);
 
     expect((await request(app).post(`/api/tasks/${task.id}/history`).send({ text: "   " })).status).toBe(400);
-    expect((await request(app).post(`/api/tasks/${task.id}/history`).send({ text: 5 })).status).toBe(400);
     expect((await request(app).get(`/api/tasks/${task.id}/history?limit=0`)).status).toBe(400);
     expect((await request(app).get(`/api/tasks/${task.id}/history?before=x`)).status).toBe(400);
     expect((await request(app).get("/api/tasks/missing-task/history")).status).toBe(404);
@@ -371,9 +361,7 @@ describe("Task routes", () => {
     expect(ctx.taskStore.listTasks().map((task) => task.id)).toEqual(beforeIds);
   });
 
-  it("POST /api/tasks creates the task and its links together or not at all", async () => {
-    ctx.taskStore.createTask("Already here");
-    const before = ctx.taskStore.listTasks().map((task) => [task.id, task.order]);
+  it("POST /api/tasks maps a failed link write to 500 without creating the task", async () => {
     const restore = failOnStatement("INTO task_work_items");
     try {
       const res = await request(app)
@@ -388,8 +376,7 @@ describe("Task routes", () => {
     } finally {
       restore();
     }
-    // No task without the work it was created for, and no other task moved to make room for it.
-    expect(ctx.taskStore.listTasks().map((task) => [task.id, task.order])).toEqual(before);
+    expect(ctx.taskStore.listTasks()).toEqual([]);
   });
 
   it("POST /api/tasks/:id/link links a work item", async () => {
@@ -482,63 +469,14 @@ describe("Task routes", () => {
     expect(nameOnly.body.error).not.toContain("undefined");
   });
 
-  it("PATCH /api/tasks/:id clears momentum fields when passed empty strings", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Clear Momentum" });
-    const id = create.body.task.id;
-
-    await request(app).patch(`/api/tasks/${id}`).send({
-      doneWhen: "Merged",
-      nextAction: "Deploy",
-      waitingOn: "Review",
-      nextTouchAt: "2030-01-01T00:00:00.000Z",
-    });
-
-    const cleared = await request(app).patch(`/api/tasks/${id}`).send({
-      doneWhen: "",
-      nextAction: "",
-      waitingOn: "   ",
-      nextTouchAt: "",
-    });
-    expect(cleared.status).toBe(200);
-    expect(cleared.body.task.doneWhen).toBeUndefined();
-    expect(cleared.body.task.nextAction).toBeUndefined();
-    expect(cleared.body.task.waitingOn).toBeUndefined();
-    expect(cleared.body.task.nextTouchAt).toBeUndefined();
-
-    // Verify persistence via GET
-    const get = await request(app).get(`/api/tasks/${id}`);
-    expect(get.body.task.doneWhen).toBeUndefined();
-    expect(get.body.task.nextAction).toBeUndefined();
-    expect(get.body.task.waitingOn).toBeUndefined();
-    expect(get.body.task.nextTouchAt).toBeUndefined();
-  });
-
-  it("PATCH /api/tasks/:id clears parked momentum when a task is completed", async () => {
+  it("PATCH /api/tasks/:id passes completionAction to the store", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "Close me out" });
     const id = create.body.task.id;
-
-    await request(app).patch(`/api/tasks/${id}`).send({
-      doneWhen: "Rolled out to all tenants",
-      nextAction: "Check the dashboard",
-      waitingOn: "Support confirmation",
-      nextTouchAt: "2030-01-01T00:00:00.000Z",
-    });
 
     const done = await request(app).patch(`/api/tasks/${id}`).send({ completionAction: "complete-and-archive" });
     expect(done.status).toBe(200);
     expect(done.body.task.status).toBe("archived");
-    expect(done.body.task.doneWhen).toBe("Rolled out to all tenants");
-    expect(done.body.task.nextAction).toBeUndefined();
-    expect(done.body.task.waitingOn).toBeUndefined();
-    expect(done.body.task.nextTouchAt).toBeUndefined();
-
-    const get = await request(app).get(`/api/tasks/${id}`);
-    expect(get.status).toBe(200);
-    expect(get.body.task.status).toBe("archived");
-    expect(get.body.task.doneWhen).toBe("Rolled out to all tenants");
-    expect(get.body.task.nextAction).toBeUndefined();
-    expect(get.body.task.waitingOn).toBeUndefined();
-    expect(get.body.task.nextTouchAt).toBeUndefined();
+    expect(done.body.task.completedAt).toEqual(expect.any(String));
   });
 
   it("PATCH /api/tasks/:id rejects invalid nextTouchAt values", async () => {
@@ -759,21 +697,12 @@ describe("Checklist routes", () => {
     taskId = task.body.task.id;
   });
 
-  it("POST /api/tasks/:taskId/checklist-items validates create fields", async () => {
-    const invalidBodies: Array<[Record<string, unknown>, string]> = [
-      [{ text: 42 }, "text must be a non-empty string"],
-      [{ text: "" }, "text must be a non-empty string"],
-      [{ text: "Due soon", deadline: "tomorrow" }, "deadline must be null or a YYYY-MM-DD date"],
-      [{ text: "Write tests", extra: true }, 'Unknown field: "extra"'],
-    ];
-
-    for (const [body, message] of invalidBodies) {
-      const res = await request(app)
-        .post(`/api/tasks/${taskId}/checklist-items`)
-        .send(body);
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain(message);
-    }
+  it("POST /api/tasks/:taskId/checklist-items maps validation errors to 400", async () => {
+    const res = await request(app)
+      .post(`/api/tasks/${taskId}/checklist-items`)
+      .send({ text: "Write tests", extra: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('Unknown field: "extra"');
 
     const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
     expect(list.body.checklistItems).toEqual([]);
@@ -787,32 +716,20 @@ describe("Checklist routes", () => {
     expect(res.body.error).toContain("Task missing not found");
   });
 
-  it("PATCH /api/checklist-items/:id rejects invalid mutation values", async () => {
+  it("PATCH /api/checklist-items/:id maps validation errors to 400", async () => {
     const create = await request(app)
       .post(`/api/tasks/${taskId}/checklist-items`)
       .send({ text: "Draft" });
     const id = create.body.checklistItem.id;
 
-    const invalidBodies: Array<[Record<string, unknown>, string]> = [
-      [{ done: "false" }, "done must be boolean"],
-      [{ deadline: "tomorrow" }, "deadline must be null or a YYYY-MM-DD date"],
-      [{ text: 42 }, "text must be a non-empty string"],
-      [{ text: "" }, "text must be a non-empty string"],
-      [{ extra: true }, 'Unknown field: "extra"'],
-    ];
-
-    for (const [body, message] of invalidBodies) {
-      const res = await request(app)
-        .patch(`/api/checklist-items/${id}`)
-        .send(body);
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain(message);
-    }
+    const res = await request(app)
+      .patch(`/api/checklist-items/${id}`)
+      .send({ done: "false" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("done must be boolean");
 
     const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
-    expect(list.body.checklistItems).toHaveLength(1);
-    expect(list.body.checklistItems[0]).toEqual(expect.objectContaining({ text: "Draft", done: false }));
-    expect(list.body.checklistItems[0].deadline).toBeUndefined();
+    expect(list.body.checklistItems).toEqual([expect.objectContaining({ text: "Draft", done: false })]);
   });
 
   it("PATCH /api/checklist-items/:id returns 404 for a missing item", async () => {

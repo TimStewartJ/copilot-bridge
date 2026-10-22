@@ -1,6 +1,7 @@
 import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionsOnDisk, setupTestDb } from "./helpers.js";
+import { makeMockDeferSessionManager, type MockDeferSessionManagerOptions } from "./defer-test-helpers.js";
 import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
 import { parseDeferId } from "../defer-ids.js";
 import { createDeferLoopRunner, FAILING_LOOP_NOTICE_AFTER } from "../defer-loop-runner.js";
@@ -23,42 +24,8 @@ import {
 } from "../backend-availability.js";
 import type { DatabaseSync } from "../db.js";
 
-function makeMockSessionManager(overrides: Partial<{
-  sessions: string[];
-  busySessions: Set<string>;
-  startWorkError?: Error;
-}> = {}) {
-  const { sessions = [], busySessions = new Set(), startWorkError } = overrides;
-  const started: Array<{ sessionId: string; prompt: string; options?: unknown }> = [];
-  const attention: Array<{ sessionId: string; at?: string }> = [];
-  const sm = {
-    // Each check runs in a worker. Unless a test supplies one, the check records itself in `_started`
-    // and continues quietly, so scheduling tests can assert on what ran without caring how.
-    runDeferWorker: undefined as undefined | ((input: any) => Promise<any> | any),
-    tryAcquireDeferWorker: (): { run: (input: any) => Promise<any>; release: () => void } | undefined => ({
-      run: async (input: any) => {
-        if (sm.runDeferWorker) return sm.runDeferWorker(input);
-        if (startWorkError) throw startWorkError;
-        started.push({ sessionId: input.parentSessionId, prompt: input.prompt });
-        return { action: "continue" };
-      },
-      release: () => {},
-    }),
-    readSessionsFromDisk: sessionsOnDisk(async (options: { includeArchived?: boolean } = {}) =>
-      sessions.map((s) => ({ sessionId: s, archived: false, ...options }))),
-    isSessionBusy: (sid: string) => busySessions.has(sid),
-    startWorkAndWaitForDelivery: async (sessionId: string, prompt: string, _attachments?: unknown, options?: unknown) => {
-      if (startWorkError) throw startWorkError;
-      started.push({ sessionId, prompt, options });
-    },
-    markSessionAttention: (sessionId: string, at?: string) => {
-      attention.push({ sessionId, at });
-    },
-    _started: started,
-    _attention: attention,
-  };
-  return sm;
-}
+const makeMockSessionManager = (options: MockDeferSessionManagerOptions = {}) =>
+  makeMockDeferSessionManager({ defaultAction: "continue", ...options });
 
 function capacityError(): SessionCapacityError {
   return new SessionCapacityError("context-limit", {

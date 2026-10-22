@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { ChecklistNotFoundError, ChecklistValidationError, createChecklistStore } from "../checklist-store.js";
+import { ChecklistNotFoundError, ChecklistValidationError, createChecklistStore, normalizeChecklistItemCreate } from "../checklist-store.js";
 import { createTaskStore } from "../task-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import type { TaskStore } from "../task-store.js";
@@ -44,6 +44,8 @@ describe("checklist-store", () => {
         expect(action).toThrow(ChecklistValidationError);
         expect(action).toThrow(message);
       }
+      expect(() => normalizeChecklistItemCreate({ text: "Write tests", extra: true }))
+        .toThrow('Unknown field: "extra"');
     });
 
     it("createChecklistItem assigns incrementing order", () => {

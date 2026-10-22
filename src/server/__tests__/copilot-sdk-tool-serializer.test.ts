@@ -1,45 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-
-const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
-
-function readSdkClientSource(format: "esm" | "cjs"): string {
-  const filePath = format === "esm"
-    ? join(REPO_ROOT, "node_modules", "@github", "copilot-sdk", "dist", "client.js")
-    : join(REPO_ROOT, "node_modules", "@github", "copilot-sdk", "dist", "cjs", "client.js");
-  return readFileSync(filePath, "utf8");
-}
+import { describe, expect, it, vi } from "vitest";
+import { approveAll, CopilotClient } from "@github/copilot-sdk";
 
 describe("Copilot SDK native session contracts", () => {
-  it("forwards the session-wide tool-search policy on create and resume", () => {
-    for (const format of ["esm", "cjs"] as const) {
-      const source = readSdkClientSource(format);
-      expect(source.match(/toolSearch: config\.toolSearch/g)?.length ?? 0, format).toBeGreaterThanOrEqual(2);
-    }
-  });
+  it("forwards Bridge session options to the runtime on create and resume", async () => {
+    const client = new CopilotClient();
+    const sendRequest = vi.fn(async (method: string, params: { sessionId?: string }) =>
+      method === "session.create" || method === "session.resume" ? { sessionId: params.sessionId } : {});
+    (client as unknown as { connection: unknown }).connection = { sendRequest };
+    const config = {
+      onPermissionRequest: approveAll,
+      tools: [{ name: "bridge_tool", description: "Bridge tool", parameters: { type: "object" }, defer: true, handler: async () => "ok" }],
+      toolSearch: { enabled: false },
+      githubMcpToolConfig: { additionalTools: ["web_search"] },
+      askUserVariant: "elicitation",
+    } as unknown as Parameters<CopilotClient["createSession"]>[0];
 
-  it("forwards Bridge eager-loading metadata on create and resume", () => {
-    for (const format of ["esm", "cjs"] as const) {
-      const source = readSdkClientSource(format);
-      const deferForwardingCount = source.match(/defer: tool\.defer/g)?.length ?? 0;
-      expect(deferForwardingCount, format).toBeGreaterThanOrEqual(2);
-    }
-  });
+    const session = await client.createSession(config);
+    await client.resumeSession(session.sessionId, config);
 
-  it("forwards the official GitHub MCP tool config on create and resume", () => {
-    for (const format of ["esm", "cjs"] as const) {
-      const source = readSdkClientSource(format);
-      const optionsForwardingCount = source.match(/githubMcpToolConfig: config\.githubMcpToolConfig/g)?.length ?? 0;
-      expect(optionsForwardingCount, format).toBeGreaterThanOrEqual(2);
-    }
-  });
-
-  it("forwards the structured ask_user variant on create and resume", () => {
-    for (const format of ["esm", "cjs"] as const) {
-      const source = readSdkClientSource(format);
-      const variantForwardingCount = source.match(/askUserVariant: config\.askUserVariant/g)?.length ?? 0;
-      expect(variantForwardingCount, format).toBe(2);
+    for (const method of ["session.create", "session.resume"]) {
+      const params = sendRequest.mock.calls.find(([name]) => name === method)?.[1];
+      expect(params, method).toMatchObject({
+        tools: [expect.objectContaining({ name: "bridge_tool", defer: true })],
+        toolSearch: { enabled: false },
+        githubMcpToolConfig: { additionalTools: ["web_search"] },
+        askUserVariant: "elicitation",
+      });
     }
   });
 });

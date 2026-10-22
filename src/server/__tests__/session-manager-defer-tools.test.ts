@@ -408,26 +408,19 @@ describe("unified defer tools", () => {
     expect(String(legacyCancel.textResultForLlm)).toContain("missing required property: deferId");
   });
 
-  it("does not cancel another session's defer", async () => {
+  it("does not cancel another session's one-shot or recurring defer", async () => {
     const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const cancelTool = findTool(tools, "defer_cancel");
 
-    const created = await createTool.handler({ prompt: "not yours", delaySeconds: 60 }, makeInvocation("owner")) as any;
-    const text = expectFailure(await cancelTool.handler({ deferId: created.deferId }, makeInvocation("attacker")));
-    expect(text).toContain("does not belong to this session");
-  });
-
-  it("does not cancel another session's recurring interval defer", async () => {
-    const { ctx } = createTestApp();
-    const tools = getBridgeToolDefinitions(ctx);
-    const createTool = findTool(tools, "defer_create");
-    const cancelTool = findTool(tools, "defer_cancel");
-
-    const created = await createTool.handler({ prompt: "not yours", intervalSeconds: 300 }, makeInvocation("owner")) as any;
-    const text = expectFailure(await cancelTool.handler({ deferId: created.deferId }, makeInvocation("attacker")));
-    expect(text).toContain("does not belong to this session");
-    expect(ctx.deferLoopStore!.get(parseDeferId(created.deferId)!.id)!.status).toBe("active");
+    const once = await createTool.handler({ prompt: "not yours", delaySeconds: 60 }, makeInvocation("owner")) as any;
+    const interval = await createTool.handler({ prompt: "not yours", intervalSeconds: 300 }, makeInvocation("owner")) as any;
+    for (const created of [once, interval]) {
+      const text = expectFailure(await cancelTool.handler({ deferId: created.deferId }, makeInvocation("attacker")));
+      expect(text).toContain("does not belong to this session");
+    }
+    expect(ctx.deferredPromptStore!.get(parseDeferId(once.deferId)!.id)!.status).not.toBe("cancelled");
+    expect(ctx.deferLoopStore!.get(parseDeferId(interval.deferId)!.id)!.status).toBe("active");
   });
 });

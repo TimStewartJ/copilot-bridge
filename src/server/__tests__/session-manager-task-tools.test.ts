@@ -430,63 +430,39 @@ describe("session manager task tools", () => {
     });
   });
 
-  it("task_update_momentum treats no-op updates as successful unchanged requests", async () => {
+  it.each([
+    {
+      label: "values that match the stored momentum",
+      initial: { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" },
+      args: {
+        nextAction: "Check existing review",
+        waitingOn: "Initial reviewer",
+        followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
+      },
+      result: { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" },
+      stored: { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" },
+    },
+    {
+      label: "a clear when momentum is already empty",
+      initial: undefined,
+      args: { nextAction: null, waitingOn: null, followUp: { mode: "clear" } },
+      result: { nextAction: null, waitingOn: null, nextTouchAt: null },
+      stored: { nextAction: undefined, waitingOn: undefined, nextTouchAt: undefined },
+    },
+  ])("task_update_momentum reports $label as an unchanged success", async ({ initial, args, result, stored }) => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Momentum no-op");
-    ctx.taskStore.updateTask(task.id, {
-      nextAction: "Check existing review",
-      waitingOn: "Initial reviewer",
-      nextTouchAt: "2026-05-02T10:00:00.000Z",
-    });
+    if (initial) ctx.taskStore.updateTask(task.id, initial);
     const tool = getTool(ctx, "task_update_momentum");
 
-    const noOpArgs = {
-      taskId: task.id,
-      nextAction: "Check existing review",
-      waitingOn: "Initial reviewer",
-      followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
-    };
-
-    await expect(tool.handler(noOpArgs, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+    await expect(tool.handler({ taskId: task.id, ...args }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
       success: true,
       changed: false,
       message: "Task momentum is already current; no changes were applied.",
-      nextAction: "Check existing review",
-      waitingOn: "Initial reviewer",
-      nextTouchAt: "2026-05-02T10:00:00.000Z",
+      ...result,
     });
 
-    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
-      nextAction: "Check existing review",
-      waitingOn: "Initial reviewer",
-      nextTouchAt: "2026-05-02T10:00:00.000Z",
-    }));
-  });
-
-  it("task_update_momentum treats clear requests as unchanged when momentum is already empty", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Momentum clear no-op");
-    const tool = getTool(ctx, "task_update_momentum");
-
-    await expect(tool.handler({
-      taskId: task.id,
-      nextAction: null,
-      waitingOn: null,
-      followUp: { mode: "clear" },
-    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
-      success: true,
-      changed: false,
-      message: "Task momentum is already current; no changes were applied.",
-      nextAction: null,
-      waitingOn: null,
-      nextTouchAt: null,
-    });
-
-    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining({
-      nextAction: undefined,
-      waitingOn: undefined,
-      nextTouchAt: undefined,
-    }));
+    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining(stored));
   });
 
   it("task_history_add records attributed entries that task_history_list pages and searches", async () => {

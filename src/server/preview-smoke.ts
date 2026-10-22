@@ -350,7 +350,7 @@ async function main(): Promise<void> {
     assert(Array.isArray(tasksRes.body.tasks), "tasks response did not include an array");
     const home = await requestWithBackendRetry(app, `${result.previewPath}api/home`);
     assert.equal(home.status, 200, "native Home did not return 200");
-    assert(home.body.tasks.items.some((task: { id: string }) => task.id === source.taskId), "Home must reference the original fixture Task");
+    assert(home.body.resume.some((task: { id: string }) => task.id === source.taskId), "Home must reference the original fixture Task");
     assert.equal((await request(app).get(`${result.previewPath}api/focus`)).status, 410);
 
     const createTaskRes = await request(app)

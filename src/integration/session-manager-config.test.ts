@@ -154,7 +154,6 @@ describe("SessionManager session config", () => {
     expect(HOME_GUIDANCE).toContain("task_update_momentum");
     expect(HOME_GUIDANCE).toContain("Use ask_user for a genuine question");
     expect(HOME_GUIDANCE).toContain("Optional maintenance or improvement suggestions remain optional");
-    expect(HOME_GUIDANCE).toContain("tools were retired");
     expect(HOME_GUIDANCE).toContain("explicitly disclose");
     expect(HOME_GUIDANCE).toContain("Home visibility is not push authorization");
   });

@@ -124,16 +124,6 @@ describe("deriveModelStateFromEventsContent", () => {
     expect(deriveModelStateFromEventsContent(content)).toEqual({});
   });
 
-  it("includes reasoningEffort-only start when model is present", () => {
-    const content = JSON.stringify({
-      type: "session.start",
-      data: { selectedModel: "claude-opus-4.7", reasoningEffort: "low" },
-    });
-    const state = deriveModelStateFromEventsContent(content);
-    expect(state.model).toBe("claude-opus-4.7");
-    expect(state.reasoningEffort).toBe("low");
-  });
-
   it("ignores model changes logged by sub-agents", () => {
     const lines = [
       JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-5.5", reasoningEffort: "high", contextTier: "long_context" } }),

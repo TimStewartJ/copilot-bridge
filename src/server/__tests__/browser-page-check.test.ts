@@ -1301,19 +1301,17 @@ describe("describePageBlock", () => {
 });
 
 describe("pageBlockFields", () => {
-  it.each<PageBlock>([
-    { kind: "challenge", by: "Cloudflare", status: 403 },
-    { kind: "denied", by: "This site", status: 403 },
-  ])("reports a $kind as `blocked`, with the guidance for the browser session", (block) => {
-    expect(pageBlockFields({ block }, "bs-42")).toStrictEqual({ blocked: describePageBlock(block, "bs-42") });
-    expect(pageBlockFields({ block })).toStrictEqual({ blocked: describePageBlock(block) });
-  });
+  it.each<{ block: PageBlock; field: "blocked" | "captcha" }>([
+    { block: { kind: "challenge", by: "Cloudflare", status: 403 }, field: "blocked" },
+    { block: { kind: "denied", by: "This site", status: 403 }, field: "blocked" },
+    { block: { kind: "captcha", by: "hCaptcha", status: 200 }, field: "captcha" },
+  ])("reports a $block.kind as `$field`, with the guidance for the browser session", ({ block, field }) => {
+    const fields = pageBlockFields({ block }, "bs-42");
 
-  it("reports a CAPTCHA inside a page as `captcha`", () => {
-    const block: PageBlock = { kind: "captcha", by: "hCaptcha", status: 200 };
-
-    expect(pageBlockFields({ signals: contactFormWithRecaptcha, block }, "bs-42"))
-      .toStrictEqual({ captcha: describePageBlock(block, "bs-42") });
+    expect(Object.keys(fields)).toEqual([field]);
+    expect(fields[field]).toMatchObject({ kind: block.kind, by: block.by });
+    expect(fields[field]?.guidance).toContain("bs-42");
+    expect(Object.keys(pageBlockFields({ block }))).toEqual([field]);
   });
 
   it("adds nothing for a page that is not blocked or could not be read", () => {

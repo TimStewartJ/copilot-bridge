@@ -13,7 +13,7 @@ import NativeHome from "./NativeHome";
 import { CHECKLIST_UNDO_MS, describeDeadline } from "./HomeChecklist";
 const emptyPage = () => ({ items: [], total: 0, offset: 0, hasMore: false });
 const counts = () => ({ needs_you: 0, in_motion: 0, up_next: 0, waiting: 0, no_next_step: 0, gone_quiet: 0, set_aside: 0 });
-const empty = (): HomeSnapshot => ({ section: "overview", tasks: emptyPage(), deferredTaskTotal: 0, inputs: emptyPage(), followUps: emptyPage(), actions: emptyPage(), replies: emptyPage(),
+const empty = (): HomeSnapshot => ({ section: "overview", inputs: emptyPage(), actions: emptyPage(), replies: emptyPage(),
   attention: [], resume: [], quiet: emptyPage(), taskCounts: counts(),
   inputErrors: [], sourceErrors: [], actionCounts: { open: 0, overdue: 0, dueToday: 0 }, today: "2026-09-22", timezone: "UTC" });
 const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id: "task", title: "Task", kind: "task", muted: false, deferred: false,

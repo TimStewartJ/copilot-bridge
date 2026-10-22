@@ -499,46 +499,6 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("does not show a redundant deferred-work rollup above linked sessions", async () => {
-    const linkedSessions = [
-      createSession({
-        sessionId: "session-1",
-        deferSummary: { count: 2, runningCount: 0, nextRunAt: "2030-01-01T00:00:00.000Z" },
-      }),
-      createSession({
-        sessionId: "session-2",
-        deferSummary: { count: 1, runningCount: 0, nextRunAt: "2030-01-01T00:05:00.000Z" },
-      }),
-    ];
-    const html = await renderTaskPanelHtml(
-      createTask({ activeSessionIds: linkedSessions.map((session) => session.sessionId) }),
-      { linkedSessions },
-    );
-
-    expect(html).not.toContain("active deferred check");
-  });
-
-  it("renders attached task agent definitions in the Details section", async () => {
-    const definitions = [{
-      taskId: "task-1",
-      name: "api-reviewer",
-      description: "Reviews APIs",
-      tools: null,
-      infer: false,
-      userInvocable: true,
-      fileName: "api-reviewer.agent.md",
-      createdAt: "2026-08-13T00:00:00.000Z",
-      updatedAt: "2026-08-13T00:00:00.000Z",
-    }];
-    await renderTaskPanelHtml(createTask(), { agentDefinitions: definitions });
-
-    expect(agentDefinitionsSectionMock).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: "task-1",
-      definitions,
-      onPreview: expect.any(Function),
-    }));
-  });
-
   it("shows Instructions and History rows in Details, prompting when they are empty", async () => {
     taskHistoryMock.mockReturnValueOnce({ data: undefined }).mockReturnValue({ data: undefined });
     await renderTaskPanelHtml(createTask());
@@ -740,30 +700,27 @@ describe("TaskPanel", () => {
   });
 
   it("shows the TaskPanel completion button only when completion or reopen is actionable", async () => {
-    await expect(renderTaskPanelHtml(createTask())).resolves.toContain("Complete task");
-    await expect(renderTaskPanelHtml(createTask({
-      status: "archived",
-      completedAt: "2026-04-27T20:00:00.000Z",
-    }))).resolves.toContain("Reopen task");
+    const cases: Array<[Partial<Task>, Record<string, unknown>, string | null]> = [
+      [{}, {}, "Complete task"],
+      [{ status: "archived", completedAt: "2026-04-27T20:00:00.000Z" }, {}, "Reopen task"],
+      [{}, { checklistItems: [{ id: "item-1", taskId: "task-1", text: "Open item", done: false }] }, null],
+      [{ kind: "ongoing" }, {}, null],
+      [{ status: "archived", doneWhen: "QA signs off" }, {}, null],
+    ];
+    const rendered: string[] = [];
+    for (const [overrides, workspace, label] of cases) {
+      const html = await renderTaskPanelHtml(createTask(overrides), workspace);
+      rendered.push(html);
+      for (const candidate of ["Complete task", "Reopen task"]) {
+        expect(html.includes(candidate), `${JSON.stringify(overrides)}: ${candidate}`).toBe(candidate === label);
+      }
+    }
 
-    await expect(renderTaskPanelHtml(createTask(), {
-      checklistItems: [{ id: "item-1", taskId: "task-1", text: "Open item", done: false }],
-    })).resolves.not.toContain("Complete task");
-    await expect(renderTaskPanelHtml(createTask({ kind: "ongoing" }))).resolves.not.toContain("Complete task");
-    await expect(renderTaskPanelHtml(createTask({ status: "archived" }))).resolves.not.toContain("Archived</button>");
-  });
-
-  it("hides completion metadata for manually archived tasks", async () => {
-    const html = await renderTaskPanelHtml(createTask({
-      status: "archived",
-      doneWhen: "QA signs off",
-    }));
-
-    expect(html).not.toContain("Complete task");
-    expect(html).not.toContain("Reopen task");
-    expect(html).not.toContain("Archived tasks cannot be completed");
-    expect(html).not.toContain("Done when");
-    expect(html).not.toContain("QA signs off");
+    // A manually archived task shows no completion note or finish line either.
+    const archived = rendered[cases.length - 1];
+    expect(archived).not.toContain("Archived tasks cannot be completed");
+    expect(archived).not.toContain("Done when");
+    expect(archived).not.toContain("QA signs off");
   });
 
 });

@@ -4,9 +4,8 @@ import type { DatabaseSync } from "./db.js";
 import { validateHelmSettingsPatch, type UnifiedHelmSettings } from "../shared/helm-settings.js";
 
 import type { ProvidersConfig } from "./providers/types.js";
-import { assertMcpServerConfig, type McpServerConfig } from "./mcp-config.js";
+import type { McpServerConfig } from "./mcp-config.js";
 import { createMcpServerStore } from "./mcp-server-store.js";
-import { runTransaction } from "./db-transaction.js";
 import {
   isCopilotContextTier,
   type CopilotContextTier,
@@ -38,7 +37,6 @@ import {
   resolveResponseStyle,
   type ResponseStyleSettings,
 } from "../shared/response-style.js";
-import { migrateLegacyResponseQualityBlock } from "./response-style-migration.js";
 
 export type ThemePreference = "light" | "dark" | "system";
 export type MotionPreference = "system" | "reduce" | "full";
@@ -127,7 +125,6 @@ export type AppSettingsUpdates = Partial<AppSettings>;
 export interface PreparedSettingsUpdate {
   current: AppSettings;
   next: AppSettings;
-  nextMcpServers?: Record<string, McpServerConfig>;
 }
 
 export class SettingsValidationError extends Error {
@@ -528,28 +525,6 @@ function normalizeLastModelPreset(value: unknown): ModelPresetSlot | undefined {
   return value;
 }
 
-function normalizeMcpServers(value: unknown): Record<string, McpServerConfig> {
-  if (!isRecord(value)) validationError("mcpServers must be an object");
-  const names = new Set<string>();
-  const entries: Array<[string, McpServerConfig]> = [];
-  for (const [name, config] of Object.entries(value)) {
-    const normalizedName = name.trim();
-    if (!normalizedName) validationError("MCP server name is required");
-    const lowerName = normalizedName.toLocaleLowerCase();
-    if (names.has(lowerName)) validationError(`MCP server name "${normalizedName}" already exists`);
-    names.add(lowerName);
-    try {
-      assertMcpServerConfig(config);
-    } catch (error) {
-      validationError(
-        `mcpServers.${normalizedName}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    entries.push([normalizedName, config]);
-  }
-  return Object.fromEntries(entries);
-}
-
 function normalizeResponseStyle(value: unknown): ResponseStyleSettings | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) validationError("responseStyle must be an object");
@@ -621,11 +596,6 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
-  const legacy = migrateLegacyResponseQualityBlock(normalized.customInstructions);
-  if (legacy.migrated) {
-    normalized.customInstructions = legacy.customInstructions;
-    normalized.responseStyle ??= resolveResponseStyle();
-  }
   return normalized;
 }
 
@@ -646,35 +616,6 @@ export function createSettingsStore(db: DatabaseSync) {
     ).run(serialized, serialized);
   }
 
-  function syncDefaultMcpServers(nextServers: Record<string, McpServerConfig>): void {
-    const nextNames = new Set(
-      Object.keys(nextServers).map((name) => name.toLocaleLowerCase()),
-    );
-    for (const server of mcpServerStore.listMcpServers()) {
-      if (server.enabledByDefault && !nextNames.has(server.name.toLocaleLowerCase())) {
-        mcpServerStore.setMcpServerEnabledByDefault(server.id, false);
-      }
-    }
-
-    for (const [name, config] of Object.entries(nextServers)) {
-      const existing = mcpServerStore.getMcpServerByName(name);
-      if (existing) {
-        if (!existing.enabledByDefault) {
-          validationError(
-            `MCP server name "${name}" is already used by a non-default registry server; manage it from MCP Servers settings`,
-          );
-        }
-        mcpServerStore.updateMcpServer(existing.id, {
-          name,
-          config,
-          enabledByDefault: true,
-        });
-      } else {
-        mcpServerStore.createMcpServer({ name, config, enabledByDefault: true });
-      }
-    }
-  }
-
   function getSettings(): AppSettings {
     const row = db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value?: unknown } | undefined;
     if (!row) return { ...structuredClone(DEFAULT_SETTINGS), mcpServers: getDefaultMcpServers() };
@@ -693,26 +634,12 @@ export function createSettingsStore(db: DatabaseSync) {
       validationError("Focus delivery policy is retired. Native session notification subscriptions remain available.");
     }
     const current = getSettings();
-    const nextMcpServers = isRecord(updates) && "mcpServers" in updates
-      ? normalizeMcpServers(updates.mcpServers)
-      : undefined;
-    const next = normalizeAppSettings(current, updates);
-    return {
-      current,
-      next,
-      ...(nextMcpServers ? { nextMcpServers } : {}),
-    };
+    return { current, next: normalizeAppSettings(current, updates) };
   }
 
   function commitPreparedSettingsUpdate(prepared: PreparedSettingsUpdate): AppSettings {
-    const { next, nextMcpServers } = prepared;
-    runTransaction(db, () => {
-      if (nextMcpServers) syncDefaultMcpServers(nextMcpServers);
-      persistSettings(next);
-    });
-
-    if (nextMcpServers) next.mcpServers = getDefaultMcpServers();
-    return next;
+    persistSettings(prepared.next);
+    return prepared.next;
   }
 
   function updateSettings(updates: AppSettingsUpdates): AppSettings {

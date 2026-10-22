@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   MODEL_FAMILIES,
   getModelFamily,
-  getModelFamilyLabel,
   isModelFamily,
 } from "./model-families.js";
 
@@ -54,13 +53,5 @@ describe("isModelFamily", () => {
     expect(isModelFamily(undefined)).toBe(false);
     expect(isModelFamily(null)).toBe(false);
     expect(isModelFamily(3)).toBe(false);
-  });
-});
-
-describe("getModelFamilyLabel", () => {
-  it("labels each family", () => {
-    expect(getModelFamilyLabel("gpt")).toBe("GPT");
-    expect(getModelFamilyLabel("claude")).toBe("Claude");
-    expect(getModelFamilyLabel("other")).toBe("Other");
   });
 });

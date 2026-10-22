@@ -433,12 +433,11 @@ describe("browser_fetch tool", () => {
       });
     });
 
+    // One page per result field; which pages are blocked is covered by the page check's own tests.
     it.each([
-      ["a human check", { page: CLOUDFLARE_CHECK, field: "blocked", otherField: "captcha", userCanPass: true }],
-      // Nothing names who refused, so the site may only want its visitor signed in.
-      ["a refusal", { page: SITE_REFUSAL, field: "blocked", otherField: "captcha", userCanPass: true }],
-      ["a CAPTCHA inside an ordinary page", { page: FORM_WITH_CAPTCHA, field: "captcha", otherField: "blocked", userCanPass: true }],
-    ] as const)("reports %s with what to do in a call that has no browser session", async (_name, { page, field, otherField, userCanPass }) => {
+      ["a human check", { page: CLOUDFLARE_CHECK, field: "blocked", otherField: "captcha" }],
+      ["a CAPTCHA inside an ordinary page", { page: FORM_WITH_CAPTCHA, field: "captcha", otherField: "blocked" }],
+    ] as const)("reports %s with what to do in a call that has no browser session", async (_name, { page, field, otherField }) => {
       mockAgentBrowser((call) => (call.command === "eval" ? evalOutput(pageSignals(page.signals)) : undefined));
       const { tool, describePageBlock } = await loadBrowserFetch();
 
@@ -458,7 +457,7 @@ describe("browser_fetch tool", () => {
       // The browser of this call is gone when the agent reads the result, so there is no session to name.
       expect(notice.guidance).not.toContain("browserSessionId");
       for (const sessionTool of ["browser_session_start", "browser_session_handoff"]) {
-        expect(notice.guidance.includes(sessionTool)).toBe(userCanPass);
+        expect(notice.guidance).toContain(sessionTool);
       }
     });
 

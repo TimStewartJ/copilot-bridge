@@ -25,36 +25,22 @@ afterEach(() => {
 });
 
 describe("runGitSync", () => {
-  it("invokes git with --no-pager, the provided cwd, the non-interactive env, and the default timeout", async () => {
+  it("invokes git with --no-pager, the provided cwd, the non-interactive env, and the default or explicit timeout", async () => {
     const { runGitSync } = await loadLauncherGit();
     execFileSyncMock.mockReturnValue("  abc123\n");
 
-    const result = runGitSync("/repo", ["rev-parse", "--short", "HEAD"]);
+    expect(runGitSync("/repo", ["rev-parse", "--short", "HEAD"])).toEqual({ ok: true, output: "abc123" });
+    runGitSync("/repo", ["log"], 999);
 
-    expect(result).toEqual({ ok: true, output: "abc123" });
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", "rev-parse", "--short", "HEAD"],
-      expect.objectContaining({
+    expect(execFileSyncMock.mock.calls).toEqual([
+      ["git", ["--no-pager", "rev-parse", "--short", "HEAD"], expect.objectContaining({
         cwd: "/repo",
         encoding: "utf-8",
         env: expect.objectContaining(NON_INTERACTIVE_ENV),
         timeout: 5_000,
-      }),
-    );
-  });
-
-  it("honors an explicit timeout override", async () => {
-    const { runGitSync } = await loadLauncherGit();
-    execFileSyncMock.mockReturnValue("ok");
-
-    runGitSync("/repo", ["log"], 999);
-
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", "log"],
-      expect.objectContaining({ timeout: 999 }),
-    );
+      })],
+      ["git", ["--no-pager", "log"], expect.objectContaining({ timeout: 999 })],
+    ]);
   });
 
   it("formats thrown errors via their stderr", async () => {
@@ -79,11 +65,7 @@ describe("gitHash", () => {
     expect(execFileSyncMock).toHaveBeenCalledWith(
       "git",
       ["--no-pager", "rev-parse", "--short", "HEAD"],
-      expect.objectContaining({
-        encoding: "utf-8",
-        env: expect.objectContaining(NON_INTERACTIVE_ENV),
-        timeout: 5_000,
-      }),
+      expect.any(Object),
     );
   });
 

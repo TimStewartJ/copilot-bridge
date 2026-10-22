@@ -3912,7 +3912,6 @@ export function createApiRouter(
   };
 
   router.get("/dashboard/focus", sendDashboardFocus);
-  router.get("/dashboard/checklist", sendDashboardFocus);
 
   const workMapBuilds = createWorkMapBuilds();
   const workMapRequest = (query: express.Request["query"]) => {
@@ -4723,7 +4722,6 @@ export function createApiRouter(
       const updated = ctx.settingsStore.commitPreparedSettingsUpdate(prepared);
       clearProviderCache();
 
-      const mcpChanged = JSON.stringify(prev.mcpServers) !== JSON.stringify(updated.mcpServers);
       const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
       // The runtime sub-agent override is applied on create/resume, so a cached
       // session keeps its old policy until it is resumed.
@@ -4732,10 +4730,10 @@ export function createApiRouter(
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
-      // MCP server and plugin changes can't be hot-swapped on a live session — evict
+      // Plugin and sub-agent changes can't be hot-swapped on a live session — evict
       // so the next resume rebuilds with the new config.
-      if (mcpChanged || computerUseChanged || subagentsChanged) {
-        const reason = mcpChanged ? "MCP servers" : computerUseChanged ? "Computer use" : "Sub-agent models";
+      if (computerUseChanged || subagentsChanged) {
+        const reason = computerUseChanged ? "Computer use" : "Sub-agent models";
         console.log(`[settings] ${reason} changed — evicting cached sessions for re-resume`);
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {

@@ -17,10 +17,3 @@ export function getMcpStatusQueryOptions(sessionId: string | null) {
 export function useMcpStatusSnapshotQuery(sessionId: string | null) {
   return useQuery(getMcpStatusQueryOptions(sessionId));
 }
-
-export function useMcpStatusQuery(sessionId: string | null) {
-  return useQuery({
-    ...getMcpStatusQueryOptions(sessionId),
-    select: (snapshot) => snapshot.servers,
-  });
-}

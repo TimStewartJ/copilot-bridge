@@ -277,8 +277,6 @@ The Engineer, Assistant and Monitor profiles customize the native CLI prompt rat
 
 Changing task state travels with user messages, outside the stable system-prompt prefix. It includes task notes, completion criteria, open checklist items in their saved order, and a count of completed items. Completed item text stays available through `action_list` and the task UI; it is not repeatedly injected as current work. No stored checklist data is removed. An empty open checklist does not imply that the task is complete. Existing context refresh after compaction, truncation or undo is unchanged.
 
-The unmodified `<anti_slop_response_quality>` block previously added to Custom Instructions is normalized into the new defaults without duplicating it in the prompt. Saving settings persists the migrated fields. Other custom instructions and explicitly configured response styles are preserved. Edited or incomplete legacy blocks remain untouched and show a review notice in settings.
-
 The settings API accepts `responseStyle: { detail: "adaptive" | "concise" | "detailed", guidance: string }`. Omitted fields within a supplied object use their defaults; `{}` resets the style. Unsupported keys, invalid types or detail values, and guidance longer than 4,000 characters after trimming are rejected without changing settings.
 
 ### Validate

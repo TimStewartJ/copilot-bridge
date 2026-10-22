@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatSearchExcerpt } from "./search-text";
+import { formatSearchExcerpt, getSearchHighlightTerms } from "./search-text";
+
+describe("getSearchHighlightTerms", () => {
+  it("parses quoted phrases and separate terms for safe highlighting", () => {
+    expect(getSearchHighlightTerms(`"exact phrase" other`)).toEqual(["exact phrase", "other"]);
+  });
+});
 
 describe("saved document and note excerpts", () => {
   it("reuses Markdown text normalization without showing formatting noise", () => {

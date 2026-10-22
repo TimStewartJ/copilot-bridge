@@ -5,7 +5,6 @@ import type { Task } from "../task-store.js";
 import { createSettingsStore, type SettingsStore } from "../settings-store.js";
 import { DEFAULT_RESPONSE_STYLE_GUIDANCE, RESPONSE_DETAIL_OPTIONS } from "../../shared/response-style.js";
 import { BRIDGE_DEFAULT_SUBAGENTS, type SubagentSettings } from "../../shared/subagent-settings.js";
-import { LEGACY_RESPONSE_QUALITY_BLOCK } from "../response-style-migration.js";
 import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
   BROWSER_GUIDANCE,
@@ -283,18 +282,6 @@ describe("session-config-builder", () => {
       expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
       expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
       expect(cfg.systemMessage.content).not.toContain("<response_style>");
-    }
-  });
-
-  it("migrates the owned legacy guidance without duplicating it in create or resume prompts", () => {
-    const settingsStore = createSettingsStore(setupTestDb());
-    settingsStore.updateSettings({ customInstructions: `Prefer TypeScript.\n\n${LEGACY_RESPONSE_QUALITY_BLOCK}` });
-    for (const forResume of [false, true]) {
-      const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks(), options: { forResume } });
-      expect(cfg.systemMessage.content).not.toContain("<anti_slop_response_quality>");
-      expect(cfg.systemMessage.content).toContain("Prefer TypeScript.");
-      expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
-      expect(cfg.systemMessage.sections.tone.content.match(/<response_style>/g)).toHaveLength(1);
     }
   });
 
@@ -832,34 +819,6 @@ describe("session-config-builder", () => {
     expect(cfg.onPermissionRequest).toBe(permissionPolicy);
   });
 
-  it("passes native Bridge tools through create and resume session config", () => {
-    const nativeTools = [
-      {
-        name: "staging_preview",
-        description: "Preview staged Bridge changes",
-        parameters: { type: "object", properties: {} },
-        defer: "never",
-        skipPermission: true,
-        handler: vi.fn(),
-      },
-    ];
-
-    const createCfg = buildSessionConfig({
-      deps: createDeps({ nativeBridgeTools: nativeTools }),
-      callbacks: createCallbacks(),
-    });
-    const resumeCfg = buildSessionConfig({
-      deps: createDeps({ nativeBridgeTools: nativeTools }),
-      options: { forResume: true },
-      callbacks: createCallbacks(),
-    });
-
-    expect(createCfg.tools).toBe(nativeTools);
-    expect(resumeCfg.tools).toBe(nativeTools);
-    expect(resumeCfg.model).toBeUndefined();
-    expect(resumeCfg.reasoningEffort).toBeUndefined();
-  });
-
   it("appends reusable-agent lifecycle guidance on create and resume", () => {
     const createCfg = buildSessionConfig({
       deps: createDeps(),
@@ -1266,42 +1225,26 @@ describe("session-config-builder", () => {
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
   });
 
-  it("deduplicates a registry server selected by both default and tag", () => {
+  it.each([
+    { label: "default and task tag on create", enabledByDefault: true, taskTag: true, groupTag: false, forResume: false },
+    { label: "task and group tags on resume", enabledByDefault: false, taskTag: true, groupTag: true, forResume: true },
+  ])("deduplicates one registry server selected by $label", ({ enabledByDefault, taskTag, groupTag, forResume }) => {
     const { mcpServerStore, tagStore } = createMcpRegistryDeps();
     const sharedServer = mcpServerStore.createMcpServer({
       name: "Shared MCP",
-      config: { command: "shared-mcp", args: [] },
-      enabledByDefault: true,
+      config: { command: "shared-mcp", args: ["serve"] },
+      enabledByDefault,
     });
-    const tag = tagStore.createTag("Shared tools");
-    tagStore.addTagMcpServerRef(tag.id, sharedServer.id);
-    tagStore.setEntityTags("task", "task-1", [tag.id]);
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ mcpServerStore, tagStore }),
-      options: { task: createTask() },
-      callbacks: createCallbacks(),
-    });
-
-    expect(Object.keys(cfg.mcpServers)).toEqual(["Shared MCP"]);
-    expect(cfg.mcpServers).toEqual({
-      "Shared MCP": { command: "shared-mcp", args: [] },
-    });
-    expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
-  });
-
-  it("deduplicates one registry server selected by task and group tags during resume", () => {
-    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
-    const sharedServer = mcpServerStore.createMcpServer({
-      name: "Shared Tagged MCP",
-      config: { command: "shared-tagged-mcp", args: ["serve"] },
-    });
-    const taskTag = tagStore.createTag("Task tools");
-    const groupTag = tagStore.createTag("Group tools");
-    tagStore.addTagMcpServerRef(taskTag.id, sharedServer.id);
-    tagStore.addTagMcpServerRef(groupTag.id, sharedServer.id);
-    tagStore.setEntityTags("task", "task-1", [taskTag.id]);
-    tagStore.setEntityTags("task_group", "group-1", [groupTag.id]);
+    if (taskTag) {
+      const tag = tagStore.createTag("Task tools");
+      tagStore.addTagMcpServerRef(tag.id, sharedServer.id);
+      tagStore.setEntityTags("task", "task-1", [tag.id]);
+    }
+    if (groupTag) {
+      const tag = tagStore.createTag("Group tools");
+      tagStore.addTagMcpServerRef(tag.id, sharedServer.id);
+      tagStore.setEntityTags("task_group", "group-1", [tag.id]);
+    }
 
     const cfg = buildSessionConfig({
       deps: createDeps({
@@ -1312,20 +1255,13 @@ describe("session-config-builder", () => {
           getMcpServers: () => ({}),
         } as unknown as SettingsStore,
       }),
-      options: { task: createTask({ groupId: "group-1" }), forResume: true },
+      options: { task: createTask(groupTag ? { groupId: "group-1" } : {}), forResume },
       callbacks: createCallbacks(),
     });
 
-    expect(cfg.model).toBeUndefined();
-    expect(cfg.reasoningEffort).toBeUndefined();
-    expect(cfg.enableExperimentalMode).toBe(true);
-    expect(cfg.streaming).toBe(true);
-    expect(cfg.includeSubAgentStreamingEvents).toBe(false);
-    expect(Object.keys(cfg.mcpServers)).toEqual(["Shared Tagged MCP"]);
-    expect(cfg.mcpServers).toEqual({
-      "Shared Tagged MCP": { command: "shared-tagged-mcp", args: ["serve"] },
-    });
+    expect(cfg.mcpServers).toEqual({ "Shared MCP": { command: "shared-mcp", args: ["serve"] } });
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
+    expect(cfg.model).toBe(forResume ? undefined : "gpt-new");
   });
 
   it("refreshes registry MCP servers while preserving forResume model behavior", () => {

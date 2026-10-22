@@ -3,7 +3,6 @@ import type { ModelInfo, ModelPresets } from "../api";
 import {
   buildModelPresetsPatch,
   findPresetSlotForModel,
-  migrateLegacyFamilyDefaults,
   resolveModelPresetState,
   selectPreset,
 } from "./model-presets";
@@ -95,15 +94,5 @@ describe("model presets", () => {
       },
       preferredSlot: "preset2",
     })).toBe("preset2");
-  });
-
-  it("migrates legacy family memory into the initial preset slots", () => {
-    expect(migrateLegacyFamilyDefaults({
-      gpt: { model: "gpt-5-mini" },
-      claude: { model: "claude-opus-5", contextTier: "long_context" },
-    })).toEqual({
-      preset1: { model: "gpt-5-mini" },
-      preset2: { model: "claude-opus-5", contextTier: "long_context" },
-    });
   });
 });
