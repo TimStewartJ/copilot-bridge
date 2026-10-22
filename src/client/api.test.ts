@@ -240,7 +240,18 @@ describe("serializeSettingsPatch", () => {
       ]);
     });
 
-    it("creates a task with an initial work item link", async () => {
+    it.each([
+      {
+        name: "several work item links",
+        links: {
+          workItems: [
+            { workItemId: "37655015", provider: "ado" as const },
+            { workItemId: "37655016", provider: "ado" as const },
+          ],
+        },
+      },
+      { name: "a single work item link", links: { workItem: { workItemId: "37655015", provider: "ado" as const } } },
+    ])("creates a task with $name", async ({ links }) => {
       vi.stubGlobal("fetch", vi.fn(async () => ({
         ok: true,
         status: 200,
@@ -248,48 +259,13 @@ describe("serializeSettingsPatch", () => {
         json: async () => ({ task: { id: "task-1" } }),
       })));
 
-      await createTask("New Task", {
-        workItems: [
-          { workItemId: "37655015", provider: "ado" },
-          { workItemId: "37655016", provider: "ado" },
-        ],
-      });
+      await createTask("New Task", links);
 
       expect(vi.mocked(fetch).mock.calls[0]).toEqual([
         "/api/tasks",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({
-            title: "New Task",
-            workItems: [
-              { workItemId: "37655015", provider: "ado" },
-              { workItemId: "37655016", provider: "ado" },
-            ],
-          }),
-        }),
-      ]);
-    });
-
-    it("creates a task with a single initial work item link", async () => {
-      vi.stubGlobal("fetch", vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        json: async () => ({ task: { id: "task-1" } }),
-      })));
-
-      await createTask("New Task", {
-        workItem: { workItemId: "37655015", provider: "ado" },
-      });
-
-      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
-        "/api/tasks",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            title: "New Task",
-            workItem: { workItemId: "37655015", provider: "ado" },
-          }),
+          body: JSON.stringify({ title: "New Task", ...links }),
         }),
       ]);
     });
@@ -373,45 +349,29 @@ describe("docs DB entry client API", () => {
     })));
   }
 
-  it("updateDbEntryPage PATCHes the DB entry route with the editor content", async () => {
-    stubJsonResponse({ path: "incidents/march-outage", success: true });
+  it("encodes each path segment and sends PATCH content or a bodyless DELETE", async () => {
+    stubJsonResponse({});
 
-    await expect(updateDbEntryPage("incidents/march-outage", { content: "---\ntitle: X\n---\n\nbody" }))
-      .resolves.toEqual({ path: "incidents/march-outage", success: true });
+    await updateDbEntryPage("incidents/march outage", { content: "---\ntitle: X\n---\n\nbody" });
+    await deleteDbEntryPage("incidents/march outage");
 
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      "/api/docs/db/incidents/march-outage",
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: "---\ntitle: X\n---\n\nbody" }),
-      },
-    );
+    expect(vi.mocked(fetch).mock.calls).toEqual([
+      [
+        "/api/docs/db/incidents/march%20outage",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: "---\ntitle: X\n---\n\nbody" }),
+        },
+      ],
+      ["/api/docs/db/incidents/march%20outage", { method: "DELETE" }],
+    ]);
   });
 
-  it("updateDbEntryPage throws the server error message on failure", async () => {
+  it("throws the server error message on failure", async () => {
     stubJsonResponse({ error: "Invalid frontmatter: bad" }, { ok: false, status: 400 });
 
     await expect(updateDbEntryPage("incidents/x", { content: "bad" }))
       .rejects.toThrow("Invalid frontmatter: bad");
-  });
-
-  it("deleteDbEntryPage DELETEs the DB entry route", async () => {
-    stubJsonResponse({ path: "incidents/march-outage", deleted: true });
-
-    await expect(deleteDbEntryPage("incidents/march-outage"))
-      .resolves.toEqual({ path: "incidents/march-outage", deleted: true });
-
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      "/api/docs/db/incidents/march-outage",
-      { method: "DELETE" },
-    );
-  });
-
-  it("deleteDbEntryPage throws the server error message on failure", async () => {
-    stubJsonResponse({ error: "No database collection found at \"incidents\"" }, { ok: false, status: 400 });
-
-    await expect(deleteDbEntryPage("incidents/x"))
-      .rejects.toThrow('No database collection found at "incidents"');
   });
 });

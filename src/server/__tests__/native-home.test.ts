@@ -34,9 +34,8 @@ describe("native Home composition", () => {
     app.taskStore.linkSession(task.id, "conversation");
     const before = app.taskStore.getTask(task.id);
     const home = await app.snapshot();
-    expect(home.tasks.items[0]).toMatchObject({ id: task.id, kind: "ongoing", nextAction: "Read the comparison", waitingOn: "A reply", sessionId: "conversation" });
-    expect(home.tasks.items[0]).not.toHaveProperty("notes");
-    expect(home.followUps.items[0].taskId).toBe(task.id);
+    expect(home.attention[0]).toMatchObject({ id: task.id, kind: "ongoing", nextAction: "Read the comparison", waitingOn: "A reply", sessionId: "conversation", reasons: ["revisit"] });
+    expect(home.attention[0]).not.toHaveProperty("notes");
     expect(app.taskStore.getTask(task.id)).toEqual(before);
     expect(home.replies.items[0].sourceEventId).toBe("reply-conversation");
     expect(app.readStateStore.getReadState()).toEqual({});
@@ -53,20 +52,16 @@ describe("native Home composition", () => {
     app.manager.hydratePendingInteractions.mockResolvedValue({ pendingElicitations: [], pendingUserInputs: [{ requestId: "ask", question: "Choose", allowFreeform: true }] });
     const action = app.checklistStore.createChecklistItem(task.id, "Accepted deadline", "2000-01-01");
     const home = await app.snapshot();
-    expect(home.tasks.total).toBe(0);
-    expect(home.deferredTaskTotal).toBe(1);
-    expect(home.followUps.items).toEqual([expect.objectContaining({ taskId: task.id, deferred: true })]);
+    expect(home.attention).toEqual([expect.objectContaining({ id: task.id, deferred: true, reasons: expect.arrayContaining(["revisit"]) })]);
+    expect(home.resume).toEqual([]);
     expect(home.inputs.items[0]).toMatchObject({ sessionId: "waiting", requestId: "ask" });
     expect(home.replies.items[0]).toMatchObject({ sessionId: "reply", sourceEventId: "reply-reply" });
     expect(home.actions.items[0].id).toBe(action.id);
-    expect((await app.snapshot("tasks")).tasks.items[0]).toMatchObject({ id: task.id, deferred: true });
     expect(app.taskStore.getTask(task.id)?.deferred).toBe(true);
     const context = formatTaskMomentumContext(app.taskStore.getTask(task.id)!);
     expect(context).toContain("- Deferred:");
     expect(context).toContain("Running sessions, schedules and session defers are not paused");
     expect(context).toContain("- Next step: Read comparison");
-    app.taskStore.updateTask(task.id, { deferred: false });
-    expect((await app.snapshot()).tasks.items[0].id).toBe(task.id);
   });
 
   it("keeps undated deferred work reachable and does not treat future revisit dates as deferral", async () => {
@@ -76,12 +71,11 @@ describe("native Home composition", () => {
     app.taskStore.updateTask(deferred.id, { deferred: true });
     app.taskStore.updateTask(future.id, { nextTouchAt: "9999-01-01T00:00:00Z" });
     const home = await app.snapshot();
-    expect(home.tasks.items.map(task => task.id)).toEqual([future.id]);
-    expect(home.followUps.items).toEqual([]);
-    expect((await app.snapshot("tasks")).tasks.total).toBe(2);
-    app.taskStore.updateTask(deferred.id, { muted: true });
-    expect((await app.snapshot("tasks")).tasks.total).toBe(1);
-    expect((await app.snapshot()).deferredTaskTotal).toBe(0);
+    expect(home.resume.map(row => row.id)).toEqual([future.id]);
+    expect(home.attention).toEqual([]);
+    expect(home.taskCounts.set_aside).toBe(1);
+    app.taskStore.updateTask(deferred.id, { deferred: false });
+    expect((await app.snapshot()).resume.map(row => row.id).sort()).toEqual([deferred.id, future.id].sort());
   });
 
   it("lists what arrives in an archived task's conversation, says it is archived, and keeps muted tasks silent", async () => {
@@ -153,7 +147,7 @@ describe("native Home composition", () => {
     const global = app.checklistStore.createChecklistItem(null, "Accepted global action");
     const due = app.checklistStore.createChecklistItem(task.id, "Due action", "2000-01-01");
     const home = await app.snapshot();
-    expect(home.followUps.total).toBe(0);
+    expect(home.attention).toEqual([]);
     expect(home.actions.items.map(item => item.id)).toEqual([due.id, global.id]);
     expect(home.actionCounts).toEqual({ open: 2, overdue: 1, dueToday: 0 });
     expect((await app.snapshot("actions")).actions.items.some(item => item.id === global.id)).toBe(true);
@@ -204,6 +198,7 @@ describe("native Home composition", () => {
     const result = await app.snapshot();
     expect(result.inputErrors[0].error).toBe("Disconnected");
     expect(() => parseHomeQuery({ section: "decisions" })).toThrow("Unknown");
+    expect(parseHomeQuery({ section: "quiet" }).section).toBe("quiet");
     expect(() => parseHomeQuery({ offset: "-1" })).toThrow("offset");
   });
   it("bounds native hydration to the current page of waiting conversations", async () => {
@@ -224,7 +219,7 @@ describe("native Home composition", () => {
     const app = setup([null, { sessionId: "valid" }]);
     const task = app.taskStore.createTask("Still readable");
     const home = await app.snapshot();
-    expect(home.tasks.items[0].id).toBe(task.id);
+    expect(home.resume[0].id).toBe(task.id);
     expect(home.sourceErrors[0]).toContain("1 session record");
     expect(home.inputs.total).toBeNull();
     expect(home.replies.total).toBeNull();
@@ -316,14 +311,5 @@ describe("native Home composition", () => {
     const home = await app.snapshot();
     expect(home.quiet.total).toBe(0);
     expect(home.taskCounts.no_next_step).toBe(1);
-  });
-
-  it("still serves the legacy task fields for a client loaded before task states", async () => {
-    const app = setup();
-    app.taskStore.createTask("Legacy");
-    const legacy = await app.snapshot("tasks");
-    expect(legacy.tasks.items).toHaveLength(1);
-    expect(Array.isArray(legacy.followUps.items)).toBe(true);
-    expect(parseHomeQuery({ section: "quiet" }).section).toBe("quiet");
   });
 });

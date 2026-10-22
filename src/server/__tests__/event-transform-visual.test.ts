@@ -91,21 +91,14 @@ describe("event-transform: visual entries", () => {
     expect(entriesWrapped.filter((e) => e.type === "visual")[0].visual?.artifactId, "content-wrapped form").toBe("550e8400-e29b-41d4-a716-446655440000");
   });
 
-  it("also emits the tool entry for the publish_visual call", () => {
+  it("emits the publish_visual tool entry before its visual entry", () => {
     const entries = transformEventsToMessages(makePublishVisualEvents(), SESSION_ID);
 
     const toolEntries = entries.filter((e) => e.type === "tool");
     expect(toolEntries).toHaveLength(1);
     expect(toolEntries[0].toolCall?.name).toBe("publish_visual");
     expect(toolEntries[0].toolCall?.success).toBe(true);
-  });
-
-  it("orders the tool entry before the visual entry", () => {
-    const entries = transformEventsToMessages(makePublishVisualEvents(), SESSION_ID);
-    const toolIdx = entries.findIndex((e) => e.type === "tool");
-    const visualIdx = entries.findIndex((e) => e.type === "visual");
-    expect(toolIdx).toBeGreaterThanOrEqual(0);
-    expect(visualIdx).toBeGreaterThan(toolIdx);
+    expect(entries.findIndex((e) => e.type === "visual")).toBeGreaterThan(entries.indexOf(toolEntries[0]));
   });
 
   it("does not emit a visual entry when publish_visual fails", () => {

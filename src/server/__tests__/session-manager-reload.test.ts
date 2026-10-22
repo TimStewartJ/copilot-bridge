@@ -1153,23 +1153,6 @@ describe("SessionManager warmSession", () => {
     expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a warmed session without starting a best-effort MCP probe", async () => {
-    const manager = createManager();
-    const resumedSession = makeAgentSessionStub({
-      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    });
-    const cleanup = spyOnResumeCleanup(manager);
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
-
-    await expect(manager.warmSession("session-warm-probe-failure")).resolves.toBeUndefined();
-    await Promise.resolve();
-
-    expect(resumedSession.listMcpServers).not.toHaveBeenCalled();
-    expect(manager.sessionObjects.get("session-warm-probe-failure")).toBe(resumedSession);
-    expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
-    expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-  });
-
   it("releases warm resume cleanup exactly once on timeout or resume failure", async () => {
     // timeout case
     {

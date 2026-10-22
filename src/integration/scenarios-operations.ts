@@ -34,11 +34,11 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-04", title: "updates MCP configuration and evicts stale cached sessions",
+    id: "OPS-04", title: "adds a default MCP server and evicts stale cached sessions",
     async run(world) {
       const evict = vi.spyOn(world.ctx.sessionManager, "evictAllCachedSessions");
-      const updated = await request(world.app).patch("/api/settings").send({ mcpServers: { local: { command: "node", args: ["server.js"] } } });
-      expect(updated.status).toBe(200);
+      const created = await request(world.app).post("/api/mcp-servers").send({ name: "local", config: { command: "node", args: ["server.js"] }, enabledByDefault: true });
+      expect(created.status).toBe(201);
       expect(evict).toHaveBeenCalledOnce();
       expect(world.ctx.settingsStore.getMcpServers()).toEqual({ local: { command: "node", args: ["server.js"] } });
     },
@@ -295,7 +295,7 @@ export const operationScenarios: IntegrationScenario[] = [
       expect(agents.body.agentDefinitions[0].name).toBe("launch-reviewer");
       expect(schedules.body[0].id).toBe(schedule.id);
       expect(search.body.results[0].path).toBe("launch/readiness");
-      expect((await request(world.app).get("/api/home")).body.tasks.items[0]).toMatchObject({ id: task.id, nextAction: "Run the launch review" });
+      expect((await request(world.app).get("/api/home")).body.resume[0]).toMatchObject({ id: task.id, nextAction: "Run the launch review" });
     },
   },
 ];

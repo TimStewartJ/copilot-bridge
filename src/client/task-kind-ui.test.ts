@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CopilotUsageCostEstimate,
+  CopilotUsageModelRow,
   CopilotUsageSessionRow,
   CopilotUsageSummary,
   Task,
@@ -17,7 +18,6 @@ import { useTagsQuery } from "./hooks/queries/useTags";
 import { useTaskWorkspace } from "./hooks/useTaskWorkspace";
 import TaskDashboard, { buildSessionUsageAnalytics } from "./components/TaskDashboard";
 import TaskKindBadge from "./components/TaskKindBadge";
-import TaskMomentumFields from "./components/TaskMomentumFields";
 import TaskContextMenu from "./components/task-list/TaskContextMenu";
 import { createReactDomHarness, findAllByTag, getReactProps } from "./test-react-harness";
 
@@ -203,6 +203,42 @@ function createUnpricedModelMetadata() {
     pricedAs: null,
     pricingStatus: "unpriced" as const,
     normalizedPricingModel: null,
+  };
+}
+
+function usageModel(model: string, totalTokens: number, cost?: { usd: number; credits: number }): CopilotUsageModelRow {
+  return {
+    model,
+    sessions: 1,
+    ...createUsageTotals({ requests: 1, totalTokens }),
+    ...createZeroCostEstimate(cost && { estimatedCostUsd: cost.usd, estimatedAiCredits: cost.credits }),
+    ...(cost ? createPricedModelMetadata(model) : createUnpricedModelMetadata()),
+  };
+}
+
+/** One usage session posted on `date`, with totals, cost and day row summed from its models. */
+function usageSession(sessionId: string, date: string, models: CopilotUsageModelRow[]): CopilotUsageSessionRow {
+  const sum = (pick: (row: CopilotUsageModelRow) => number) => models.reduce((total, row) => total + pick(row), 0);
+  const totals = createUsageTotals({ requests: sum((row) => row.requests), totalTokens: sum((row) => row.totalTokens) });
+  const cost = createZeroCostEstimate({
+    estimatedCostUsd: sum((row) => row.estimatedCostUsd),
+    estimatedAiCredits: sum((row) => row.estimatedAiCredits),
+  });
+  return {
+    sessionId,
+    shutdownAt: `${date}T12:00:00.000Z`,
+    ...totals,
+    ...cost,
+    models,
+    days: [{ date, ...totals, ...cost, models: [] }],
+    unpricedModels: models
+      .filter((row) => row.pricingStatus === "unpriced")
+      .map((row) => ({
+        model: row.model,
+        sessions: row.sessions,
+        ...createUsageTotals({ requests: row.requests, totalTokens: row.totalTokens }),
+        ...createUnpricedModelMetadata(),
+      })),
   };
 }
 
@@ -397,20 +433,6 @@ describe("kind-aware task UI", () => {
     }
   });
 
-  it("TaskMomentumFields starts collapsed and does not summarize an ongoing finish line", () => {
-    const html = renderToStaticMarkup(createElement(TaskMomentumFields, {
-      task: createTask({ kind: "ongoing", doneWhen: "Ship it" }),
-    }));
-
-    expect(html).not.toContain("Done when");
-    expect(html).not.toContain("Ship it");
-    expect(html).not.toContain("Add next step");
-    expect(html).toContain("No next step set");
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain("Where things stand");
-    expect(html).not.toContain("Defer task");
-  });
-
   it("TaskContextMenu suppresses Mark done for ongoing items", () => {
     const html = renderTaskContextMenu(createTask({ kind: "ongoing" }));
 
@@ -582,246 +604,18 @@ describe("TaskDashboard unique overview", () => {
 
   it("builds session token analytics from linked session usage", () => {
     vi.mocked(useCopilotUsageQuery).mockReturnValue({ data: createUsageSummary({
-      totals: {
-        ...createUsageTotals({
-          requests: 6,
-          inputTokens: 1_800,
-          outputTokens: 1_000,
-          cacheReadTokens: 500,
-          cacheWriteTokens: 200,
-          reasoningTokens: 500,
-          totalTokens: 4_000,
-        }),
-        ...createZeroCostEstimate({
-          estimatedCostUsd: 0.20,
-          estimatedAiCredits: 20,
-          costBreakdownUsd: {
-            input: 0.06,
-            cachedInput: 0.01,
-            cacheWrite: 0.01,
-            output: 0.09,
-            reasoning: 0.03,
-            total: 0.20,
-          },
-          billableOutputTokens: 1_500,
-        }),
-        unpricedModelCount: 1,
-        unpricedTokens: createUsageTotals({
-          requests: 1,
-          inputTokens: 300,
-          outputTokens: 200,
-          totalTokens: 500,
-        }),
-      },
-      unpricedModels: [
-        {
-          model: "mystery-model",
-          sessions: 1,
-          ...createUsageTotals({
-            requests: 1,
-            inputTokens: 300,
-            outputTokens: 200,
-            totalTokens: 500,
-          }),
-          ...createUnpricedModelMetadata(),
-        },
-      ],
       sessions: [
-        {
-          sessionId: "session-1",
-          shutdownAt: "2026-05-01T14:00:00.000Z",
-          requests: 3,
-          inputTokens: 1_000,
-          uncachedInputTokens: 600,
-          outputTokens: 500,
-          cacheReadTokens: 300,
-          cacheWriteTokens: 100,
-          reasoningTokens: 100,
-          totalTokens: 2_000,
-          meteredAiCredits: 0,
-          meteredTokens: 0,
-          ...createZeroCostEstimate({
-            estimatedCostUsd: 0.12,
-            estimatedAiCredits: 12,
-            costBreakdownUsd: {
-              input: 0.04,
-              cachedInput: 0.01,
-              cacheWrite: 0.01,
-              output: 0.05,
-              reasoning: 0.01,
-              total: 0.12,
-            },
-            billableOutputTokens: 600,
-          }),
-          models: [
-            {
-              model: "gpt-5.5",
-              sessions: 1,
-              requests: 3,
-              inputTokens: 1_000,
-              uncachedInputTokens: 600,
-              outputTokens: 500,
-              cacheReadTokens: 300,
-              cacheWriteTokens: 100,
-              reasoningTokens: 100,
-              totalTokens: 2_000,
-              meteredAiCredits: 0,
-              meteredTokens: 0,
-              ...createZeroCostEstimate({
-                estimatedCostUsd: 0.12,
-                estimatedAiCredits: 12,
-                costBreakdownUsd: {
-                  input: 0.04,
-                  cachedInput: 0.01,
-                  cacheWrite: 0.01,
-                  output: 0.05,
-                  reasoning: 0.01,
-                  total: 0.12,
-                },
-                billableOutputTokens: 600,
-              }),
-              ...createPricedModelMetadata("gpt-5.5"),
-            },
-          ],
-          days: [
-            {
-              date: "2026-05-01",
-              ...createUsageTotals({
-                requests: 3,
-                inputTokens: 1_000,
-                uncachedInputTokens: 600,
-                outputTokens: 500,
-                cacheReadTokens: 300,
-                cacheWriteTokens: 100,
-                reasoningTokens: 100,
-                totalTokens: 2_000,
-              }),
-              ...createZeroCostEstimate({
-                estimatedCostUsd: 0.12,
-                estimatedAiCredits: 12,
-                billableOutputTokens: 600,
-              }),
-              models: [],
-            },
-          ],
-          unpricedModels: [],
-        },
-        {
-          sessionId: "session-2",
-          shutdownAt: "2026-05-02T10:00:00.000Z",
-          requests: 3,
-          inputTokens: 800,
-          uncachedInputTokens: 500,
-          outputTokens: 500,
-          cacheReadTokens: 200,
-          cacheWriteTokens: 100,
-          reasoningTokens: 400,
-          totalTokens: 2_000,
-          meteredAiCredits: 0,
-          meteredTokens: 0,
-          ...createZeroCostEstimate({
-            estimatedCostUsd: 0.08,
-            estimatedAiCredits: 8,
-            costBreakdownUsd: {
-              input: 0.02,
-              cachedInput: 0,
-              cacheWrite: 0,
-              output: 0.04,
-              reasoning: 0.02,
-              total: 0.08,
-            },
-            billableOutputTokens: 900,
-          }),
-          models: [
-            {
-              model: "claude-opus-4.7",
-              sessions: 1,
-              requests: 2,
-              inputTokens: 500,
-              uncachedInputTokens: 200,
-              outputTokens: 300,
-              cacheReadTokens: 200,
-              cacheWriteTokens: 100,
-              reasoningTokens: 400,
-              totalTokens: 1_500,
-              meteredAiCredits: 0,
-              meteredTokens: 0,
-              ...createZeroCostEstimate({
-                estimatedCostUsd: 0.08,
-                estimatedAiCredits: 8,
-                costBreakdownUsd: {
-                  input: 0.02,
-                  cachedInput: 0,
-                  cacheWrite: 0,
-                  output: 0.04,
-                  reasoning: 0.02,
-                  total: 0.08,
-                },
-                billableOutputTokens: 700,
-              }),
-              ...createPricedModelMetadata("claude-opus-4.7"),
-            },
-            {
-              model: "mystery-model",
-              sessions: 1,
-              requests: 1,
-              inputTokens: 300,
-              uncachedInputTokens: 300,
-              outputTokens: 200,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-              reasoningTokens: 0,
-              totalTokens: 500,
-              meteredAiCredits: 0,
-              meteredTokens: 0,
-              ...createZeroCostEstimate({ billableOutputTokens: 200 }),
-              ...createUnpricedModelMetadata(),
-            },
-          ],
-          days: [
-            {
-              date: "2026-05-02",
-              ...createUsageTotals({
-                requests: 3,
-                inputTokens: 800,
-                uncachedInputTokens: 500,
-                outputTokens: 500,
-                cacheReadTokens: 200,
-                cacheWriteTokens: 100,
-                reasoningTokens: 400,
-                totalTokens: 2_000,
-              }),
-              ...createZeroCostEstimate({
-                estimatedCostUsd: 0.08,
-                estimatedAiCredits: 8,
-                billableOutputTokens: 900,
-              }),
-              models: [],
-            },
-          ],
-          unpricedModels: [
-            {
-              model: "mystery-model",
-              sessions: 1,
-              requests: 1,
-              inputTokens: 300,
-              uncachedInputTokens: 300,
-              outputTokens: 200,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-              reasoningTokens: 0,
-              totalTokens: 500,
-              meteredAiCredits: 0,
-              meteredTokens: 0,
-              ...createUnpricedModelMetadata(),
-            },
-          ],
-        },
+        usageSession("session-1", "2026-05-01", [usageModel("gpt-5.5", 2_000, { usd: 0.12, credits: 12 })]),
+        usageSession("session-2", "2026-05-02", [
+          usageModel("claude-opus-4.7", 1_500, { usd: 0.08, credits: 8 }),
+          usageModel("mystery-model", 500),
+        ]),
       ],
     }) } as any);
 
     const html = renderTaskDashboard(createTask({
       activeSessionIds: ["session-1", "session-2", "session-pending"],
+      sessionCount: 3,
     }), {
       linkedSessions: [
         { sessionId: "session-1", summary: "Build dashboard overview", modifiedTime: "2026-05-01T13:00:00.000Z", archived: false },
@@ -836,7 +630,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Models used");
     expect(html).toContain("4,000");
     expect(html).toContain("Pending");
-    expect(html).toContain("1");
+    expect(html).toContain("1 linked session has no token total yet.");
     expect(html).toContain("Build dashboard overview");
     expect(html).toContain("Review usage metrics");
     expect(html).toContain("gpt-5.5");
@@ -844,9 +638,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Est. cost");
     expect(html).toContain("$0.20");
     expect(html).toContain("20 AI credits");
-    expect(html).toContain("mystery-model");
-    expect(html).toContain("Estimated cost excludes");
-    expect(html).toContain("500 tokens");
+    expect(html).toContain("Estimated cost excludes 500 tokens from unpriced linked model: mystery-model.");
     expect(html).not.toContain("Activity timeline");
   });
 

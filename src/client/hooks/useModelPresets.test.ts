@@ -150,22 +150,4 @@ describe("useModelPresets", () => {
 
     expect(fetch).not.toHaveBeenCalled();
   });
-
-  it("reads legacy family memory as preset slots", async () => {
-    queryClient.setQueryData<AppSettings>(queryKeys.settings, {
-      mcpServers: {},
-      familyDefaults: {
-        claude: { model: "claude-opus-5", contextTier: "long_context" },
-      },
-      lastModelFamily: "claude",
-    });
-    await harness!.render(createElement(TestComponent, { enabled: false }));
-
-    expect(memory?.presets?.preset2).toEqual({
-      model: "claude-opus-5",
-      contextTier: "long_context",
-    });
-    expect(memory?.lastPresetSlot).toBe("preset2");
-    expect(fetch).not.toHaveBeenCalled();
-  });
 });

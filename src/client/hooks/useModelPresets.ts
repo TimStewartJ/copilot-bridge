@@ -9,7 +9,6 @@ import {
 import {
   buildModelPresetsPatch,
   findPresetSlotForModel,
-  mergeStoredModelPresets,
   resolveModelPresetState,
   selectModelInPreset,
   selectPreset,
@@ -19,10 +18,7 @@ import {
 import { queryClient, queryKeys } from "../queryClient";
 import { settingsWriter } from "./queries/useSettings";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
-import {
-  getModelPresetSlotForFamily,
-  type ModelPresetSlot,
-} from "../../shared/model-presets.js";
+import type { ModelPresetSlot } from "../../shared/model-presets.js";
 
 /** The shared writer applies the change to the cached settings at once and sends it in order. */
 function enqueueSettingsPatch(updates: Partial<AppSettings>): void {
@@ -67,12 +63,8 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     enabled: options?.enabled ?? true,
   }, queryClient);
   const settings = settingsQuery.data;
-  const presets = useMemo(
-    () => mergeStoredModelPresets(settings?.modelPresets, settings?.familyDefaults),
-    [settings?.familyDefaults, settings?.modelPresets],
-  );
-  const lastPresetSlot = settings?.lastModelPreset
-    ?? (settings?.lastModelFamily ? getModelPresetSlotForFamily(settings.lastModelFamily) : undefined);
+  const presets = settings?.modelPresets;
+  const lastPresetSlot = settings?.lastModelPreset;
   const globalDefaultModelId = settings?.model;
 
   const resolvePickerState = useCallback((context: ModelPresetPickerContext) => (
@@ -127,10 +119,7 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
   }: RememberModelPresetSelection) => {
     if (!modelId) return;
     const cachedSettings = queryClient.getQueryData<AppSettings>(queryKeys.settings);
-    const currentPresets = mergeStoredModelPresets(
-      cachedSettings?.modelPresets,
-      cachedSettings?.familyDefaults,
-    ) ?? presets;
+    const currentPresets = cachedSettings?.modelPresets ?? presets;
     const nextPresets = buildModelPresetsPatch({
       current: currentPresets,
       slot,

@@ -1,6 +1,7 @@
 import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTestDir, sessionsOnDisk, setupTestDb } from "./helpers.js";
+import { makeMockDeferSessionManager } from "./defer-test-helpers.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import { managementJobDeliveryId } from "../management-job-delivery.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
@@ -33,60 +34,6 @@ import type { DatabaseSync } from "../db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-function makeMockSessionManager(overrides: Partial<{
-  sessions: string[];
-  archivedSessions: Set<string>;
-  busySessions: Set<string>;
-  startWorkError?: Error;
-  persistedUserMessage?: boolean;
-}> = {}) {
-  const {
-    sessions = [],
-    archivedSessions = new Set(),
-    busySessions = new Set(),
-    startWorkError,
-    persistedUserMessage = false,
-  } = overrides;
-  const started: Array<{ sessionId: string; prompt: string }> = [];
-  const deliveryOptions: unknown[] = [];
-  const attention: Array<{ sessionId: string; at?: string }> = [];
-  const sm = {
-    // A one-shot check runs in a worker. Unless a test supplies one, the check records itself in `_started`
-    // and finishes silently, so scheduling tests can assert on what ran without caring how.
-    runDeferWorker: undefined as undefined | ((input: any) => Promise<any> | any),
-    tryAcquireDeferWorker: (): { run: (input: any) => Promise<any>; release: () => void } | undefined => ({
-      run: async (input: any) => {
-        if (sm.runDeferWorker) return sm.runDeferWorker(input);
-        if (startWorkError) throw startWorkError;
-        started.push({ sessionId: input.parentSessionId, prompt: input.prompt });
-        return { action: "finish" };
-      },
-      release: () => {},
-    }),
-    readSessionsFromDisk: sessionsOnDisk(async (options: { includeArchived?: boolean } = {}) =>
-      sessions
-        .filter((s) => options.includeArchived !== false || !archivedSessions.has(s))
-        .map((s) => ({ sessionId: s }))),
-    isSessionBusy: (sid: string) => busySessions.has(sid),
-    hasPersistedUserMessage: vi.fn(async () => persistedUserMessage),
-    startWork: (sessionId: string, prompt: string) => {
-      if (startWorkError) throw startWorkError;
-      started.push({ sessionId, prompt });
-    },
-    startWorkAndWaitForDelivery: async (sessionId: string, prompt: string, _attachments?: unknown, options?: unknown) => {
-      if (startWorkError) throw startWorkError;
-      started.push({ sessionId, prompt });
-      deliveryOptions.push(options);
-    },
-    markSessionAttention: (sessionId: string, at?: string) => {
-      attention.push({ sessionId, at });
-    },
-    _started: started,
-    _deliveryOptions: deliveryOptions,
-    _attention: attention,
-  };
-  return sm;
-}
 
 /**
  * Lets a hand-built session manager run one-shot checks: its worker does what the manager's own
@@ -131,7 +78,7 @@ describe("deferred-prompt-runner", () => {
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Do something", past);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
 
       runner.start();
@@ -160,7 +107,7 @@ describe("deferred-prompt-runner", () => {
         "Check status",
         new Date(Date.now() - 1_000).toISOString(),
       );
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       sm.runDeferWorker = vi.fn(async () => ({ action: "finish" }));
       const runner = createDeferredPromptRunner(store, sm, bus);
 
@@ -186,7 +133,7 @@ describe("deferred-prompt-runner", () => {
         "Check status",
         new Date(Date.now() - 1_000).toISOString(),
       );
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       sm.hasPersistedUserMessage = vi.fn(async () => false);
       sm.runDeferWorker = vi.fn(async () => ({
         action: "return",
@@ -222,7 +169,7 @@ describe("deferred-prompt-runner", () => {
         "Build completed.",
         { deliveryId: "delivery-1" },
       ), new Date(Date.now() + 1_000).toISOString());
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         archivedSessions: new Set(["session-1"]),
       });
@@ -244,7 +191,7 @@ describe("deferred-prompt-runner", () => {
     it("sends a queued chat message under its client id even when the same text is already on disk", async () => {
       const store = createDeferredPromptStore(db);
       const id = queueChatMessageDelivery(store, "session-1", "yes", "client-1");
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         busySessions: new Set(["session-1"]),
         persistedUserMessage: true,
@@ -275,7 +222,7 @@ describe("deferred-prompt-runner", () => {
         "Already delivered.",
         { deliveryId: "delivery-1" },
       ));
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         persistedUserMessage: true,
       });
@@ -299,7 +246,7 @@ describe("deferred-prompt-runner", () => {
       ));
       db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
         .run(MAX_ATTEMPTS, delivery.id);
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         persistedUserMessage: true,
       });
@@ -328,7 +275,7 @@ describe("deferred-prompt-runner", () => {
       const workerResult = new Promise<{ action: "finish" }>((resolve) => {
         resolveWorker = resolve;
       });
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       sm.runDeferWorker = vi.fn(() => workerResult);
       const runner = createDeferredPromptRunner(store, sm, bus);
 
@@ -353,7 +300,7 @@ describe("deferred-prompt-runner", () => {
       const dp = store.create("session-1", "Do something", past);
       let readinessCalls = 0;
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       sm.getDeferDeliveryReadiness = vi.fn(() => {
         readinessCalls += 1;
         return readinessCalls >= 3
@@ -416,7 +363,7 @@ describe("deferred-prompt-runner", () => {
         WHERE id = '${dp.id}'
       `);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -433,7 +380,7 @@ describe("deferred-prompt-runner", () => {
       const dp = store.create("session-1", "Prompt", past);
       store.claimDue(dp.id, LEASE_MS);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -452,34 +399,16 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it("skips sessions that do not exist on disk", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const past = new Date(Date.now() - 1000).toISOString();
-      const missing = store.create("ghost-session", "Do something", past);
-      db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
-        .run(MAX_ATTEMPTS, missing.id);
-
-      const sm = makeMockSessionManager({ sessions: [] }); // ghost not in list
-      const runner = createDeferredPromptRunner(store, sm as any, bus);
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm._started).toHaveLength(0);
-      const dp = store.listForSession("ghost-session")[0];
-      expect(dp.status).toBe("cancelled");
-      expect(store.listDeliveriesForSession("ghost-session")).toEqual([]);
-      runner.shutdown();
-    });
-
-    it("cancels all pending deferrals for a missing session", async () => {
+    it("cancels every pending deferral, including one out of attempts, for a session missing from disk", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const past = new Date(Date.now() - 1000).toISOString();
       const first = store.create("ghost-session", "First", past);
       const second = store.create("ghost-session", "Second", past);
+      db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
+        .run(MAX_ATTEMPTS, first.id);
 
-      const sm = makeMockSessionManager({ sessions: [] });
+      const sm = makeMockDeferSessionManager({ sessions: [] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -487,6 +416,7 @@ describe("deferred-prompt-runner", () => {
       expect(sm._started).toHaveLength(0);
       expect(store.get(first.id)!.status).toBe("cancelled");
       expect(store.get(second.id)!.status).toBe("cancelled");
+      expect(store.listDeliveriesForSession("ghost-session")).toEqual([]);
       runner.shutdown();
     });
 
@@ -498,7 +428,7 @@ describe("deferred-prompt-runner", () => {
       db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
         .run(MAX_ATTEMPTS, archived.id);
 
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["archived-session"],
         archivedSessions: new Set(["archived-session"]),
       });
@@ -520,7 +450,7 @@ describe("deferred-prompt-runner", () => {
       store.create("session-1", "Prompt", past);
 
       const busySessions = new Set(["session-1"]);
-      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       // Only advance microtasks/promises — no retry timers should be armed for past-due busy items
@@ -647,28 +577,6 @@ describe("deferred-prompt-runner", () => {
   });
 
   describe("session:idle bus event", () => {
-    it("processes due deferral when session becomes idle", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const past = new Date(Date.now() - 1000).toISOString();
-      store.create("session-1", "Follow-up", past);
-
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
-      const runner = createDeferredPromptRunner(store, sm as any, bus);
-      runner.start();
-      // Drain initial pass (session was busy on first pass)
-      await vi.advanceTimersByTimeAsync(0);
-
-      // Simulate session going idle
-      bus.emit({ type: "session:idle", sessionId: "session-1" });
-      await vi.advanceTimersByTimeAsync(0);
-
-      // Should have been processed in one of the two passes
-      const dp = store.listForSession("session-1")[0];
-      expect(["completed", "pending"]).toContain(dp.status);
-      runner.shutdown();
-    });
-
     it("reruns due processing when an idle event arrives during an in-flight pass", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
@@ -724,7 +632,7 @@ describe("deferred-prompt-runner", () => {
       const future = new Date(Date.now() + 60_000).toISOString();
       store.create("session-1", "Later", future);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -744,7 +652,7 @@ describe("deferred-prompt-runner", () => {
       store.create("session-2", "Later", future);
       store.create("session-3", "Later", future);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1", "session-2", "session-3"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1", "session-2", "session-3"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -763,7 +671,7 @@ describe("deferred-prompt-runner", () => {
       const future = new Date(Date.now() + 60_000).toISOString();
       store.create("session-1", "Later", future);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -785,7 +693,7 @@ describe("deferred-prompt-runner", () => {
       const bus = createGlobalBus();
       const dueAt = new Date(Date.now() - 1_000).toISOString();
       const check = store.create("session-1", "Check status", dueAt);
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       let full = true;
       sm.getSessionCapacityWait = vi.fn(() => (full ? FULL : undefined));
       const runner = createDeferredPromptRunner(store, sm, bus);
@@ -820,7 +728,7 @@ describe("deferred-prompt-runner", () => {
         "Build finished.",
         { deliveryId: "to-unloaded" },
       ));
-      const sm = makeMockSessionManager({ sessions: ["loaded-chat", "unloaded-chat"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["loaded-chat", "unloaded-chat"] }) as any;
       let full = true;
       // The real manager answers undefined for a chat it already holds: that chat needs no new context.
       sm.getSessionCapacityWait = vi.fn((sessionId?: string) =>
@@ -848,7 +756,7 @@ describe("deferred-prompt-runner", () => {
       const bus = createGlobalBus();
       const dueAt = new Date(Date.now() - 1_000).toISOString();
       const check = store.create("session-1", "Check status", dueAt);
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       let full = true;
       sm.runDeferWorker = vi.fn(async () => {
         if (full) {
@@ -947,7 +855,7 @@ describe("deferred-prompt-runner", () => {
         "Build finished.",
         { deliveryId: "result" },
       ));
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       setup(sm);
       const runner = createDeferredPromptRunner(store, sm, bus);
 
@@ -973,7 +881,7 @@ describe("deferred-prompt-runner", () => {
         "Build finished.",
         { deliveryId: "second" },
       ), new Date(Date.now() - 1_000).toISOString());
-      const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
       let full = true;
       sm.getSessionCapacityWait = vi.fn(() => (full ? FULL : undefined));
       const runner = createDeferredPromptRunner(store, sm, bus);
@@ -1002,7 +910,7 @@ describe("deferred-prompt-runner", () => {
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Prompt", past);
 
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         startWorkError: new Error("Session is busy processing another message"),
       });
@@ -1073,7 +981,7 @@ describe("deferred-prompt-runner", () => {
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Prompt", past);
 
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         startWorkError: new Error(message),
       });
@@ -1098,7 +1006,7 @@ describe("deferred-prompt-runner", () => {
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Prompt", past);
 
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         startWorkError: new Error(message),
       });
@@ -1125,7 +1033,7 @@ describe("deferred-prompt-runner", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         startWorkError: new Error(message),
       });
@@ -1177,7 +1085,7 @@ describe("deferred-prompt-runner", () => {
       // Set attempts to MAX_ATTEMPTS - 1 so next attempt exceeds max
       db.exec(`UPDATE deferred_prompts SET attempts = ${MAX_ATTEMPTS - 1} WHERE id = '${dp.id}'`);
 
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         startWorkError: new Error("Fatal error"),
       });
@@ -1208,7 +1116,7 @@ describe("deferred-prompt-runner", () => {
       ));
       db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
         .run(MAX_ATTEMPTS - 1, delivery.id);
-      const sm = makeMockSessionManager({
+      const sm = makeMockDeferSessionManager({
         sessions: ["session-1"],
         startWorkError: new Error("Parent delivery failed"),
       });
@@ -1238,7 +1146,7 @@ describe("deferred-prompt-runner", () => {
             claimToken = 'stale-claim', leaseExpiresAt = '2000-01-01T00:00:00.000Z'
         WHERE id = ?
       `).run(MAX_ATTEMPTS, "Previous attempt failed", dp.id);
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const runner = createDeferredPromptRunner(store, sm as any, bus);
 
@@ -1266,7 +1174,7 @@ describe("deferred-prompt-runner", () => {
       const future = new Date(Date.now() + 5_000).toISOString();
       store.create("session-1", "Delayed", future);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -1289,7 +1197,7 @@ describe("deferred-prompt-runner", () => {
       const future = new Date(Date.now() + MAX_TIMER_DELAY_MS + 60_000).toISOString();
       store.create("session-1", "Much later", future);
 
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -1309,7 +1217,7 @@ describe("deferred-prompt-runner", () => {
       store.create("other-session", "Other follow-up", future);
 
       const busySessions = new Set(["busy-session"]);
-      const sm = makeMockSessionManager({ sessions: ["busy-session", "other-session"], busySessions });
+      const sm = makeMockDeferSessionManager({ sessions: ["busy-session", "other-session"], busySessions });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -1333,7 +1241,7 @@ describe("deferred-prompt-runner", () => {
       store.create("session-1", "Should not run", past);
 
       const busySessions = new Set(["session-1"]);
-      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
@@ -1354,7 +1262,7 @@ describe("deferred-prompt-runner", () => {
         const bus = createGlobalBus();
         const busySessions = new Set(["session-1"]);
         const deferred = store.create("session-1", "Follow-up", new Date(Date.now() - 1_000).toISOString());
-        const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+        const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
         const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
@@ -1376,7 +1284,7 @@ describe("deferred-prompt-runner", () => {
         const bus = createGlobalBus();
         const future = new Date(Date.now() + 5_000).toISOString();
         const deferred = store.create("session-1", "Wake after sleep", future);
-        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
         const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
         const runner = createDeferredPromptRunner(
           store,
@@ -1474,7 +1382,7 @@ describe("deferred-prompt-runner", () => {
           throw new Error("simulated summary failure");
         });
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
         const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
@@ -1499,7 +1407,7 @@ describe("deferred-prompt-runner", () => {
           "Exactly once",
           new Date(Date.now() + DEFER_WATCHDOG_INTERVAL_MS).toISOString(),
         );
-        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
         const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
@@ -1519,7 +1427,7 @@ describe("deferred-prompt-runner", () => {
           "Exact wake",
           new Date(Date.now() + 5_000).toISOString(),
         );
-        const sm = makeMockSessionManager({ sessions: ["session-1"] });
+        const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
         const runner = createDeferredPromptRunner(
           store,
           sm as any,
@@ -1547,7 +1455,7 @@ describe("deferred-prompt-runner", () => {
         const store = createDeferredPromptStore(db);
         const telemetryStore = createTelemetryStore(db);
         const bus = createGlobalBus();
-        const sm = makeMockSessionManager({ sessions: [] });
+        const sm = makeMockDeferSessionManager({ sessions: [] });
         const runner = createDeferredPromptRunner(
           store,
           sm as any,
@@ -1584,7 +1492,7 @@ describe("deferred-prompt-runner", () => {
         const bus = createGlobalBus();
         const busySessions = new Set(["session-1"]);
         const deferred = store.create("session-1", "Do not run", new Date(Date.now() - 1_000).toISOString());
-        const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+        const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
         const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
@@ -1689,7 +1597,7 @@ describe("deferred-prompt-runner", () => {
       const bus = createGlobalBus();
       const deliveryId = failJobFor("session-1");
       const busySessions = new Set(["session-1"]);
-      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
 
       runner.start();
@@ -1711,7 +1619,7 @@ describe("deferred-prompt-runner", () => {
 
     it("finds a result another process queued at its next sweep", async () => {
       const store = createDeferredPromptStore(db);
-      const sm = makeMockSessionManager({ sessions: ["session-1"] });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
       const runner = createDeferredPromptRunner(store, sm as any, createGlobalBus());
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -1734,7 +1642,7 @@ describe("deferred-prompt-runner", () => {
         "Defer result.",
         { deliveryId: "defer-delivery-1" },
       ));
-      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions });
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
 
       runner.start();
@@ -1757,7 +1665,7 @@ describe("deferred-prompt-runner", () => {
       commands.syncRunning("session-1", [{ shellId: "3", startedAt, description: "Test refresh" }]);
       commands.markSessionStopped("session-1", "unloaded");
       const busySessions = new Set(["session-1"]);
-      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions }) as any;
       sm.runDeferWorker = vi.fn();
       sm.tryAcquireDeferWorker = vi.fn();
       const runner = createDeferredPromptRunner(store, sm, bus);
@@ -1794,7 +1702,7 @@ describe("deferred-prompt-runner", () => {
       commands.markSessionStopped("session-1", "unloaded");
       // A reload: the session is busy while it loads, and no run is in flight.
       const busySessions = new Set(["session-1"]);
-      const sm = makeMockSessionManager({ sessions: ["session-1"], busySessions }) as any;
+      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions }) as any;
       const runner = createDeferredPromptRunner(store, sm, bus);
       runner.start();
 

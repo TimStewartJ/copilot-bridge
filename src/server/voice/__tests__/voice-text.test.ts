@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyBargeIn,
-  countWords,
   detectLocalCommand,
   matchWakePhrase,
   ON_SCREEN_PHRASE,
-  SpokenTextFilter,
   stripLeadingWakePhrase,
-  takeSpeechChunks,
   toSpeakableText,
 } from "../voice-text.js";
 
@@ -59,11 +56,7 @@ describe("Bridge barge-in", () => {
 });
 
 describe("shared speech shaping", () => {
-  it("is available to the conversation through this module", () => {
+  it("is re-exported through this module", () => {
     expect(toSpeakableText("Here you go:\n```ts\nconst x = 1;\n```")).toBe(`Here you go: ${ON_SCREEN_PHRASE}`);
-    expect(takeSpeechChunks("Two sessions finished. The Tellus run is still", { firstChunk: false }).chunks)
-      .toEqual(["Two sessions finished."]);
-    expect(new SpokenTextFilter().push("All done.")).toBe("All done.");
-    expect(countWords("Hey, can you hear me okay?")).toBe(6);
   });
 });

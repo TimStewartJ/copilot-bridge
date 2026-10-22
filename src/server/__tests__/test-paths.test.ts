@@ -23,22 +23,16 @@ describe("test source checkout fixture", () => {
     expect(actualExistsSync).toHaveBeenCalledWith(gitPath);
   });
 
-  it.each([true, false])("preserves non-checkout existence results of %s", (result) => {
+  it.each([
+    ["a true string result", resolve(SOURCE_GIT_PATH, "..", "package.json"), true],
+    ["a false string result", resolve(SOURCE_GIT_PATH, "..", "package.json"), false],
+    ["a Buffer path", Buffer.from(testPath("docs")), false],
+    ["a URL path", pathToFileURL(testPath("docs")), false],
+  ] as const)("delegates %s without changing it", (_label, path, result) => {
     const actualExistsSync = vi.fn<typeof import("node:fs").existsSync>(() => result);
     const existsSync = withTestSourceCheckout(actualExistsSync);
-    const path = resolve(SOURCE_GIT_PATH, "..", "package.json");
 
     expect(existsSync(path)).toBe(result);
     expect(actualExistsSync).toHaveBeenCalledWith(path);
-  });
-
-  it("delegates Buffer and URL paths without changing them", () => {
-    const actualExistsSync = vi.fn<typeof import("node:fs").existsSync>(() => false);
-    const existsSync = withTestSourceCheckout(actualExistsSync);
-
-    for (const path of [Buffer.from(testPath("docs")), pathToFileURL(testPath("docs"))]) {
-      expect(existsSync(path)).toBe(false);
-      expect(actualExistsSync).toHaveBeenCalledWith(path);
-    }
   });
 });

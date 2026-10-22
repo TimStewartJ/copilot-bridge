@@ -483,48 +483,6 @@ describe("SessionManager run state", () => {
   });
 
   it("allows startWork while persisted restart state is active or launcher is waiting for active sessions", async () => {
-    // allows startWork while persisted restart state is active and updates waiting sessions
-    {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-    try {
-      const { manager } = createManager({
-        copilotHome,
-      });
-      const { session, getHandler, getReleaseSend } = makeSession();
-      manager.backend = {
-        resumeSession: vi.fn().mockResolvedValue(session),
-      };
-
-      await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
-
-      expect(() => manager.startWork("session-1", "hello")).not.toThrow();
-      await flushMicrotasks();
-
-      expect(manager.backend.resumeSession).toHaveBeenCalled();
-      expect(manager.backend.resumeSession.mock.calls[0]?.[0]).toBe("session-1");
-      expect(manager.getSessionRunState("session-1")).toBe("busy");
-      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
-
-      getReleaseSend()?.();
-      await flushMicrotasks();
-      getHandler()?.({
-        type: "session.idle",
-        data: {},
-        timestamp: new Date(Date.now() + 1).toISOString(),
-      });
-      await flushMicrotasks();
-      expect(manager.getSessionRunState("session-1")).toBe("idle");
-      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-    } finally {
-
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
-    }
-
-    // allows startWork while the launcher is waiting for active sessions
-    {
     const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
     try {
@@ -554,11 +512,10 @@ describe("SessionManager run state", () => {
       });
       await flushMicrotasks();
       expect(manager.getSessionRunState("session-1")).toBe("idle");
+      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
     } finally {
-
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(copilotHome, { recursive: true, force: true });
-    }
     }
   });
   it("sends steering prompts immediately through the active cached session", async () => {
@@ -1530,7 +1487,6 @@ describe("SessionManager run state", () => {
       }],
     });
     expect(session.listSlashCommands).toHaveBeenCalledOnce();
-    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
     expect(manager.backend.resumeSession).not.toHaveBeenCalled();
   });
 

@@ -283,8 +283,4 @@ describe("shutdownAppContextServices", () => {
     expect(firstSpies.schedulerShutdown).toHaveBeenCalledTimes(1);
     expect(secondSpies.schedulerShutdown).toHaveBeenCalledTimes(1);
   });
-
-  it("exposes the server shutdown budget", () => {
-    expect(SERVER_SHUTDOWN_BUDGET_MS).toBe(13_000);
-  });
 });

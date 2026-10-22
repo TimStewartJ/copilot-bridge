@@ -90,43 +90,24 @@ describe("formatGitError", () => {
 });
 
 describe("runGit", () => {
-  it("invokes git with --no-pager, the provided cwd, the non-interactive env, and the default timeout", async () => {
-    const { runGit, LOCAL_GIT_TIMEOUT_MS } = await loadGitCommandModule();
+  it("invokes git with --no-pager, the provided cwd, the non-interactive env, and the default or explicit timeout", async () => {
+    const { runGit } = await loadGitCommandModule();
     execFileMock.mockImplementation((_command, _args, _options, callback) => {
       callback(null, "  on output\n", "");
     });
 
-    const result = await runGit("/work/dir", ["status", "--branch"]);
+    expect(await runGit("/work/dir", ["status", "--branch"])).toEqual({ ok: true, output: "on output" });
+    await runGit("/work/dir", ["fetch"], 1_234);
 
-    expect(result).toEqual({ ok: true, output: "on output" });
-    expect(LOCAL_GIT_TIMEOUT_MS).toBe(5_000);
-    expect(execFileMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", "status", "--branch"],
-      expect.objectContaining({
+    expect(execFileMock.mock.calls.map(([command, args, options]) => [command, args, options])).toEqual([
+      ["git", ["--no-pager", "status", "--branch"], expect.objectContaining({
         cwd: "/work/dir",
         encoding: "utf-8",
         env: expect.objectContaining(NON_INTERACTIVE_ENV),
         timeout: 5_000,
-      }),
-      expect.any(Function),
-    );
-  });
-
-  it("honors an explicit timeout override", async () => {
-    const { runGit } = await loadGitCommandModule();
-    execFileMock.mockImplementation((_command, _args, _options, callback) => {
-      callback(null, "ok", "");
-    });
-
-    await runGit("/work/dir", ["fetch"], 1_234);
-
-    expect(execFileMock).toHaveBeenCalledWith(
-      "git",
-      ["--no-pager", "fetch"],
-      expect.objectContaining({ timeout: 1_234 }),
-      expect.any(Function),
-    );
+      })],
+      ["git", ["--no-pager", "fetch"], expect.objectContaining({ timeout: 1_234 })],
+    ]);
   });
 
   it("formats errors from stderr", async () => {

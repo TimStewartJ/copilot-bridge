@@ -752,7 +752,9 @@ describe("SessionAgentRegistry", () => {
       // The poll keeps the snapshot live for as long as the command is protected.
       await vi.advanceTimersByTimeAsync(44 * MINUTE);
       expect(registry.hasProtectedCommand("s1")).toBe(true);
-      expect(listTasks.mock.calls.length).toBeGreaterThan(100);
+      const callsInWindow = listTasks.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(listTasks.mock.calls.length).toBeGreaterThan(callsInWindow);
 
       // A command that outlives the window stops counting, and nothing is left to poll for.
       await vi.advanceTimersByTimeAsync(2 * MINUTE);

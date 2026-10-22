@@ -17,7 +17,7 @@ describe("native Home API and retained Bridge routes", () => {
     const item = ctx.checklistStore.createChecklistItem(null, "Accepted global action", "2000-01-01", { key: "test-global" });
     const home = await request(app).get("/api/home");
     expect(home.status).toBe(200);
-    expect(home.body.tasks.items[0]).toMatchObject({ id: task.id, nextAction: "Read and decide" });
+    expect(home.body.resume[0]).toMatchObject({ id: task.id, nextAction: "Read and decide" });
     expect(home.body.actions.items[0].id).toBe(item.id);
     const changed = await request(app).patch(`/api/actions/${item.id}`).send({ done: true });
     expect(changed.status).toBe(200);

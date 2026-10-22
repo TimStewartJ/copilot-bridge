@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers.js";
-import { isLocalMcpServerConfig } from "../mcp-config.js";
 import { createSettingsStore } from "../settings-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { DatabaseSync } from "../db.js";
@@ -10,7 +9,6 @@ import {
   MAX_RESPONSE_STYLE_GUIDANCE_LENGTH,
   resolveResponseStyle,
 } from "../../shared/response-style.js";
-import { LEGACY_RESPONSE_QUALITY_BLOCK } from "../response-style-migration.js";
 
 let db: DatabaseSync;
 let store: SettingsStore;
@@ -89,72 +87,30 @@ describe("settings-store", () => {
     expect(readRawSettings()).toBe(raw);
   });
 
-  it("normalizes the exact owned legacy block on read and persists the migration on the next save", () => {
-    const raw = JSON.stringify({ customInstructions: LEGACY_RESPONSE_QUALITY_BLOCK, theme: "dark" });
-    writeRawSettings(raw);
-    const migrated = store.getSettings();
-    expect(migrated.customInstructions).toBeUndefined();
-    expect(migrated.responseStyle).toEqual(resolveResponseStyle());
-    expect(migrated.theme).toBe("dark");
-    expect(readRawSettings()).toBe(raw);
-    store.updateSettings({ identity: "Bridge" });
-    expect(readRawSettings()).not.toContain("anti_slop_response_quality");
-    expect(createSettingsStore(db).getSettings()).toMatchObject({ responseStyle: resolveResponseStyle(), theme: "dark", identity: "Bridge" });
+  it("serves MCP servers from the registry and never persists them in the settings row", () => {
+    const remoteConfig = {
+      type: "http" as const,
+      url: "https://mcp.linear.app/mcp",
+      headers: { Authorization: "******" },
+      tools: ["linear_search"],
+    };
+    store.getMcpServerStore().createMcpServer({ name: "linear", config: remoteConfig, enabledByDefault: true });
+
+    const updated = store.updateSettings({ theme: "dark" });
+
+    expect(updated.mcpServers).toEqual({ linear: remoteConfig });
+    expect(store.getMcpServers()).toEqual({ linear: remoteConfig });
+    expect(JSON.parse(readRawSettings())).toEqual({ theme: "dark" });
   });
 
-  it("migrates CRLF and repeated owned blocks while preserving all surrounding custom text and an explicit style", () => {
-    const before = "  Keep my terminology.\r\n\r\n";
-    const after = "\r\n\r\nPrefer TypeScript.  ";
-    const responseStyle = { detail: "detailed" as const, guidance: "Keep my chosen style." };
-    writeRawSettings(JSON.stringify({
-      customInstructions: before + LEGACY_RESPONSE_QUALITY_BLOCK.replace(/\n/g, "\r\n") + LEGACY_RESPONSE_QUALITY_BLOCK + after,
-      responseStyle,
-    }));
-    expect(store.getSettings().customInstructions).toBe(before + after);
-    expect(store.getSettings().responseStyle).toEqual(responseStyle);
-  });
-
-  it.each([
-    LEGACY_RESPONSE_QUALITY_BLOCK.replace("Answer directly.", "Use a formal voice."),
-    "<anti_slop_response_quality>Incomplete custom guidance.",
-    "Ordinary instructions with no legacy block.",
-  ])("preserves edited, incomplete, or unrelated custom instructions", (customInstructions) => {
-    writeRawSettings(JSON.stringify({ customInstructions }));
-    expect(store.getSettings().customInstructions).toBe(customInstructions);
-    expect(store.getSettings().responseStyle).toBeUndefined();
-  });
-
-  it("updateSettings persists and returns updated settings", () => {
-    const updated = store.updateSettings({
-      mcpServers: {
-        custom: { command: "test", args: ["--flag"] },
-      },
-    });
-    expect(updated.mcpServers.custom).toBeDefined();
-    expect(isLocalMcpServerConfig(updated.mcpServers.custom)).toBe(true);
-    if (isLocalMcpServerConfig(updated.mcpServers.custom)) {
-      expect(updated.mcpServers.custom.command).toBe("test");
-    }
-
-    // Verify persistence
-    const reloaded = store.getSettings();
-    expect(reloaded.mcpServers.custom).toBeDefined();
-    const raw = JSON.parse((db.prepare("SELECT value FROM settings WHERE key = 'app'").get() as any).value);
-    expect(raw.mcpServers).toBeUndefined();
-  });
-
-  it("prepareSettingsUpdate normalizes without persisting or changing MCP rows", () => {
-    store.updateSettings({
-      theme: "dark",
-      mcpServers: { before: { command: "before", args: [] } },
-    });
+  it("prepareSettingsUpdate normalizes without persisting", () => {
+    store.updateSettings({ theme: "dark" });
 
     const prepared = store.prepareSettingsUpdate({
       model: " gpt-5.6-sol ",
       modelPresets: {
         preset2: { model: " claude-opus-5 ", reasoningEffort: " high " },
       },
-      mcpServers: { after: { command: "after", args: [] } },
     });
 
     expect(prepared.current.theme).toBe("dark");
@@ -164,48 +120,9 @@ describe("settings-store", () => {
         preset2: { model: "claude-opus-5", reasoningEffort: "high" },
       },
     });
-    expect(prepared.nextMcpServers).toEqual({
-      after: { command: "after", args: [] },
-    });
-    expect(store.getSettings()).toMatchObject({
-      theme: "dark",
-      mcpServers: { before: { command: "before", args: [] } },
-    });
+    expect(store.getSettings().theme).toBe("dark");
     expect(store.getSettings().model).toBeUndefined();
     expect(store.getSettings().modelPresets).toBeUndefined();
-  });
-
-  it("getMcpServers returns current config", () => {
-    store.updateSettings({ mcpServers: { test: { command: "echo", args: [] } } });
-    const servers = store.getMcpServers();
-    expect(servers.test).toBeDefined();
-    expect(isLocalMcpServerConfig(servers.test)).toBe(true);
-    if (isLocalMcpServerConfig(servers.test)) {
-      expect(servers.test.command).toBe("echo");
-    }
-  });
-
-  it("persists remote MCP server configs", () => {
-    const remoteConfig = {
-      type: "http" as const,
-      url: "https://mcp.linear.app/mcp",
-      headers: { Authorization: "Bearer test-token" },
-      tools: ["linear_search"],
-    };
-
-    store.updateSettings({ mcpServers: { linear: remoteConfig } });
-
-    const reloaded = store.getSettings();
-    expect(reloaded.mcpServers.linear).toEqual(remoteConfig);
-    expect(store.getMcpServers().linear).toEqual(remoteConfig);
-  });
-
-  it("updateSettings replaces mcpServers entirely", () => {
-    store.updateSettings({ mcpServers: { only: { command: "x", args: [] } } });
-    const servers = store.getMcpServers();
-    expect(servers.only).toBeDefined();
-    // Default 'ado' should be gone since mcpServers was replaced
-    expect(servers.ado).toBeUndefined();
   });
 
   it("updateSettings persists and clears reasoningEffort and model", () => {
@@ -431,48 +348,6 @@ describe("settings-store", () => {
     expect(updated.lastModelPreset).toBe("preset2");
     expect(updated.familyDefaults).toBeUndefined();
     expect(updated.lastModelFamily).toBeUndefined();
-  });
-
-  it("validates the full update before changing MCP registry rows", () => {
-    store.updateSettings({
-      mcpServers: { before: { command: "before", args: [] } },
-      theme: "dark",
-    });
-
-    expect(() => store.updateSettings({
-      mcpServers: { after: { command: "after", args: [] } },
-      contextTier: "invalid" as any,
-    })).toThrow("contextTier must be default or long_context");
-
-    expect(store.getMcpServers()).toEqual({
-      before: { command: "before", args: [] },
-    });
-    expect(store.getSettings().theme).toBe("dark");
-  });
-
-  it("rolls back MCP registry changes when the settings row write fails", () => {
-    store.updateSettings({
-      mcpServers: { before: { command: "before", args: [] } },
-      theme: "dark",
-    });
-    db.exec(`
-      CREATE TRIGGER block_app_settings_update
-      BEFORE UPDATE ON settings
-      WHEN NEW.key = 'app'
-      BEGIN
-        SELECT RAISE(ABORT, 'settings write blocked');
-      END;
-    `);
-
-    expect(() => store.updateSettings({
-      mcpServers: { after: { command: "after", args: [] } },
-      theme: "light",
-    })).toThrow("settings write blocked");
-
-    expect(store.getMcpServers()).toEqual({
-      before: { command: "before", args: [] },
-    });
-    expect(store.getSettings().theme).toBe("dark");
   });
 
   it.each([
