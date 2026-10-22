@@ -845,6 +845,24 @@ describe("useSessionStream ephemeral state", () => {
     });
   });
 
+  it("does not count the user's own message as run output", async () => {
+    await withHarness(async ({ getState, getSource, act }) => {
+      await act(async () => getState().reconnect("session-1"));
+      const source = getSource();
+
+      await emitAndWait(act, source, snapshot({ pendingUserMessages: [{ id: "client-1", content: "hello" }] }),
+        () => getState().pendingUserMessages.length === 1);
+      await emitAndWait(act, source, {
+        type: "user_message_updated",
+        userMessage: { id: "client-1", content: "hello", messageId: "runtime-1" },
+      }, () => getState().pendingUserMessages[0]?.messageId === "runtime-1");
+      await emitAndWait(act, source, { type: "user_message", userMessage: { id: "client-2", content: "steer" } },
+        () => getState().pendingUserMessages.length === 2);
+
+      expect(getState().hadVisibleOutput).toBe(false);
+    });
+  });
+
   it("streams model thinking, closes it when the reply starts, and commits it by message id", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
