@@ -55,6 +55,13 @@ import {
   shouldFillFromTop,
   shouldPrefetchOlderPage,
 } from "./chat/transcript-scroll-policy";
+import {
+  indexUserMessageHistory,
+  isAtOrBeforeWatermark,
+  mergeUserMessages,
+  settlePendingSends,
+  type PendingSend,
+} from "./chat/user-message-merge";
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
@@ -286,14 +293,6 @@ type FailedOptimisticChatMessage = ChatMessage & {
   delivery: ChatMessageDelivery & { failed: true };
 };
 
-/** A message this client is delivering (or failed to deliver); never part of disk history. */
-interface PendingSend {
-  id: string;
-  content: string;
-  attachments?: Attachment[];
-  delivery?: ChatMessageDelivery;
-}
-
 /**
  * How far back a refresh re-reads, shallowest first: "live" the newest page, which is all a run
  * in flight rewrites; "tail" the newest entries a finished run may have touched; "window" every
@@ -454,17 +453,6 @@ function isAbortError(error: unknown): boolean {
   return typeof DOMException !== "undefined" && error instanceof DOMException
     ? error.name === "AbortError"
     : error instanceof Error && error.name === "AbortError";
-}
-
-/**
- * True when `timestamp` is at or before the newest committed entry, meaning disk already carries
- * this item even if the loaded window does not reach it. Items with no timestamp are treated as
- * uncommitted, since an accepted-but-unpersisted prompt has none yet.
- */
-function isAtOrBeforeWatermark(timestamp: string | undefined, watermarkMs: number): boolean {
-  if (!timestamp || !Number.isFinite(watermarkMs)) return false;
-  const itemMs = Date.parse(timestamp);
-  return Number.isFinite(itemMs) && itemMs <= watermarkMs;
 }
 
 function getCommittedSourceEventIds(entries: ChatEntry[]): Set<string> {
@@ -845,20 +833,15 @@ export default function ChatView({
   // Identity alone is not enough: the loaded window is only a suffix of history, so an item whose
   // disk entry sits above the window would otherwise re-render at the bottom, out of order. Disk is
   // append-ordered, so its newest entry is a watermark — anything at or before it is committed.
-  const committedWatermarkMs = useMemo(() => {
-    const latest = getLatestEntryActivityTimestamp(entries);
-    return latest ? Date.parse(latest) : Number.NaN;
-  }, [entries]);
+  const userMessageHistory = useMemo(() => indexUserMessageHistory(entries), [entries]);
+  const committedWatermarkMs = userMessageHistory.watermarkMs;
   const isCommittedByWatermark = useCallback(
     (timestamp?: string) => isAtOrBeforeWatermark(timestamp, committedWatermarkMs),
     [committedWatermarkMs],
   );
-  const uncommittedUserMessages = useMemo(
-    () => pendingUserMessages.filter((message) => (
-      (!message.sourceEventId || !committedSourceEventIds.has(message.sourceEventId))
-      && !isCommittedByWatermark(message.timestamp)
-    )),
-    [committedSourceEventIds, isCommittedByWatermark, pendingUserMessages],
+  const userMessageMerge = useMemo(
+    () => mergeUserMessages({ history: userMessageHistory, live: pendingUserMessages, placeholders: pendingSends }),
+    [pendingSends, pendingUserMessages, userMessageHistory],
   );
   const uncommittedAssistantSegments = useMemo(
     () => liveAssistantSegments.filter((segment) => {
@@ -956,11 +939,11 @@ export default function ChatView({
     for (const segment of uncommittedAssistantSegments) {
       liveReadThrough = maxActivityTimestamp(liveReadThrough, segment.timestamp);
     }
-    for (const message of uncommittedUserMessages) {
+    for (const message of userMessageMerge.liveEntries) {
       liveReadThrough = maxActivityTimestamp(liveReadThrough, message.timestamp);
     }
     if (liveReadThrough) onRenderedReadThrough?.(sessionId, liveReadThrough);
-  }, [onRenderedReadThrough, sessionId, uncommittedAssistantSegments, uncommittedUserMessages]);
+  }, [onRenderedReadThrough, sessionId, uncommittedAssistantSegments, userMessageMerge.liveEntries]);
 
   useEffect(() => {
     if (!sessionId || historicalMode || loading || creating) {
@@ -1735,37 +1718,13 @@ export default function ChatView({
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
   const displayedReasoning = useThrottledReasoning(uncommittedReasoning, STREAM_RENDER_INTERVAL_MS);
-  const clientOwnedCommittedSourceEventIds = useMemo(() => {
-    const sendsById = new Map(pendingSends.map((send) => [send.id, send]));
-    return new Set(pendingUserMessages.flatMap((message) => (
-      message.sourceEventId && sendsById.get(message.id)?.delivery !== undefined
-        ? [message.sourceEventId]
-        : []
-    )));
-  }, [pendingSends, pendingUserMessages]);
   /**
    * The live overlay, rendered strictly after committed history. It never interleaves with, or is
    * merged into, the disk-backed transcript: it only holds prompts and assistant text that
    * `events.jsonl` has not surfaced yet, plus optimistic sends this client owns.
    */
   const liveEntries = useMemo<ChatEntry[]>(() => {
-    const nextEntries: ChatEntry[] = [];
-    const pendingSendsById = new Map(pendingSends.map((send) => [send.id, send]));
-    const projectedUserMessageIds = new Set(pendingUserMessages.map((message) => message.id));
-    const uncommittedProjectedUserMessageIds = new Set(uncommittedUserMessages.map((message) => message.id));
-    for (const message of uncommittedUserMessages) {
-      const pendingSend = pendingSendsById.get(message.id);
-      if (pendingSend?.delivery?.failed) continue;
-      nextEntries.push({
-        id: `live-user-${message.id}`,
-        type: "message",
-        role: "user",
-        content: message.content,
-        ...(pendingSend?.delivery ? { delivery: pendingSend.delivery } : {}),
-        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-        ...(message.timestamp ? { timestamp: message.timestamp } : {}),
-      });
-    }
+    const nextEntries: ChatEntry[] = [...userMessageMerge.liveEntries];
     // Within one model call the order is fixed: thinking, then text, then tool calls. The overlay
     // can briefly hold the turn that just ended as well (its history read is still in flight), and
     // that turn's items come first.
@@ -1865,24 +1824,7 @@ export default function ChatView({
         ...(uncommittedCompletion.timestamp ? { timestamp: uncommittedCompletion.timestamp } : {}),
       });
     }
-    for (const send of pendingSends) {
-      const hasProjectedMessage = projectedUserMessageIds.has(send.id);
-      const hasVisibleProjectedMessage = uncommittedProjectedUserMessageIds.has(send.id);
-      if (
-        (send.delivery === undefined && hasProjectedMessage)
-        || (send.delivery?.failed === false && hasVisibleProjectedMessage)
-      ) {
-        continue;
-      }
-      nextEntries.push({
-        id: send.id,
-        type: "message",
-        role: "user",
-        content: send.content,
-        delivery: send.delivery,
-        ...(send.attachments?.length ? { attachments: send.attachments } : {}),
-      });
-    }
+    nextEntries.push(...userMessageMerge.placeholderEntries);
     if (isStreaming && hasStreamingText) {
       nextEntries.push({
         id: LIVE_STREAMING_MESSAGE_ID,
@@ -1901,35 +1843,22 @@ export default function ChatView({
     displayedStreamingContent,
     hasStreamingText,
     isStreaming,
-    pendingSends,
-    pendingUserMessages,
     uncommittedAssistantSegments,
     uncommittedCompletion,
     uncommittedLiveTools,
-    uncommittedUserMessages,
     uncommittedVisuals,
+    userMessageMerge,
   ]);
 
+  // Learn each send's saved ids from its live copy, and drop the sends history now holds.
   useEffect(() => {
-    const projectedUserMessageIds = new Set(pendingUserMessages.map((message) => message.id));
-    // A queued message is done waiting once the server starts its turn under the same id.
-    const handedOff = (send: PendingSend) => (
-      (send.delivery === undefined || send.delivery.queued === true) && projectedUserMessageIds.has(send.id)
-    );
-    if (!pendingSendsRef.current.some(handedOff)) return;
-    updatePendingSends((current) => current.filter((send) => !handedOff(send)));
-    // The send request can settle after its projection arrived, so re-check when delivery changes too.
-  }, [pendingSends, pendingUserMessages, updatePendingSends]);
+    const current = pendingSendsRef.current;
+    if (settlePendingSends(current, pendingUserMessages, userMessageHistory) === current) return;
+    updatePendingSends((latest) => settlePendingSends(latest, pendingUserMessages, userMessageHistory));
+  }, [pendingSends, pendingUserMessages, updatePendingSends, userMessageHistory]);
   const committedEntries = useMemo(() => {
-    const visibleEntries = clientOwnedCommittedSourceEventIds.size === 0
-      ? entries
-      : entries.filter((entry) => (
-          !isChatMessageEntry(entry)
-          || !entry.sourceEventId
-          || !clientOwnedCommittedSourceEventIds.has(entry.sourceEventId)
-        ));
-    if (liveToolsById.size === 0) return visibleEntries;
-    return visibleEntries.map((entry) => {
+    if (liveToolsById.size === 0) return entries;
+    return entries.map((entry) => {
       if (entry.type !== "tool") return entry;
       const live = liveToolsById.get(entry.toolCall.toolCallId);
       if (!live) return entry;
@@ -1985,7 +1914,7 @@ export default function ChatView({
         },
       };
     });
-  }, [clientOwnedCommittedSourceEventIds, entries, liveToolsById]);
+  }, [entries, liveToolsById]);
   /**
    * A step with no recorded end is only "running" while something can still end it: this view's
    * stream, a run the last disk read reported (or no read yet), a background agent, or another
