@@ -2503,7 +2503,7 @@ describe("ChatView steering sends", () => {
     }
   });
 
-  it("hands off a send whose request settles after its projection was committed", async () => {
+  it("keeps a send whose request settles after its projection was committed until history holds it", async () => {
     const sendAccepted = createDeferred<{ status: "accepted" }>();
     const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
       streamOverrides: {
@@ -2554,7 +2554,7 @@ describe("ChatView steering sends", () => {
         await waitTick();
       });
 
-      // The next send starts with an empty projection; the settled send must not reappear.
+      // The next send starts with an empty projection; the settled send stays exactly once.
       await render({
         streamOverrides: {
           pendingUserMessages: [],
@@ -2562,7 +2562,43 @@ describe("ChatView steering sends", () => {
           streamStatus: "sending",
         },
       });
-      expect(findBubbles()).toHaveLength(0);
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
+
+      // Once history holds it, the saved entry is the only bubble and nothing reappears after it.
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [{
+          id: "saved-late-user",
+          role: "user",
+          content: "settles late",
+          sourceEventId: "late-event-1",
+          clientMessageId,
+          timestamp: "2026-01-01T00:00:00.000Z",
+        }],
+        runState: "idle",
+        total: 1,
+        warm: true,
+        hasMore: false,
+        coverage: {},
+      });
+      await render({
+        streamOverrides: {
+          pendingUserMessages: [],
+          isStreaming: false,
+          streamStatus: "sending",
+          historyEpoch: 1,
+        },
+      });
+      await waitUntilAct(act, () => {
+        try {
+          findMessageWrapperByAnchorKey(dom.container, "saved-late-user");
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      expect(findBubbles()).toHaveLength(1);
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
     } finally {
       sendAccepted.resolve({ status: "accepted" });
       await cleanup();
@@ -2659,7 +2695,7 @@ describe("ChatView steering sends", () => {
     }
   });
 
-  it("keeps a busy-session steering message gray until the server accepts it", async () => {
+  it("keeps a busy-session steering message gray until the server accepts or saves it", async () => {
     vi.useFakeTimers();
     const sendAccepted = createDeferred<{ status: "accepted"; mode: "steered" }>();
     const { dom, act, cleanup, render, sendMessageMock } = await renderChatView({
@@ -2739,8 +2775,10 @@ describe("ChatView steering sends", () => {
       });
       await advanceTimersByTimeAct(act, 300);
       expect(dom.container.textContent).toContain("disk-refresh-marker");
+      // History holds the message, so its saved entry is the one bubble, before the request settles.
       expect(findBubbles()).toHaveLength(1);
-      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sending");
+      expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
+      expect(findMessageWrapperByAnchorKey(dom.container, "canonical-before-acceptance")).toBeDefined();
 
       await act(async () => {
         sendAccepted.resolve({ status: "accepted", mode: "steered" });
@@ -2749,6 +2787,7 @@ describe("ChatView steering sends", () => {
       });
       expect(findBubbles()).toHaveLength(1);
       expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
+      expect(findMessageWrapperByAnchorKey(dom.container, "canonical-before-acceptance")).toBeDefined();
     } finally {
       sendAccepted.resolve({ status: "accepted", mode: "steered" });
       await cleanup();
