@@ -1220,9 +1220,12 @@ export function useSessionStream(
         throw error;
       }
     },
-    onSettled: () => queryClient.invalidateQueries({
-      queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
-    }),
+    // Refresh the chat list without making the send wait for it.
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+      });
+    },
   });
   const sendMessage = useCallback((...args: SendMessageArgs) => sendMessageRequest(args), [sendMessageRequest]);
 
@@ -1263,9 +1266,11 @@ export function useSessionStream(
         throw error;
       }
     },
-    onSettled: () => queryClient.invalidateQueries({
-      queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
-    }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+      });
+    },
   });
 
   const restoreRunNotice = useCallback((sid: string, notice: RunNotice | undefined, observedEpoch: number) => {
