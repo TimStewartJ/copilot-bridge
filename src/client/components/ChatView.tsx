@@ -1914,7 +1914,8 @@ export default function ChatView({
     );
     if (!pendingSendsRef.current.some(handedOff)) return;
     updatePendingSends((current) => current.filter((send) => !handedOff(send)));
-  }, [pendingUserMessages, updatePendingSends]);
+    // The send request can settle after its projection arrived, so re-check when delivery changes too.
+  }, [pendingSends, pendingUserMessages, updatePendingSends]);
   const committedEntries = useMemo(() => {
     const visibleEntries = clientOwnedCommittedSourceEventIds.size === 0
       ? entries
