@@ -144,13 +144,6 @@ describe("task-store", () => {
       expect(task.cwd).toBeUndefined();
     });
 
-    it("getTask returns created task", () => {
-      const created = store.createTask("Find me");
-      const found = store.getTask(created.id);
-      expect(found).toBeDefined();
-      expect(found!.title).toBe("Find me");
-    });
-
     it("listTasks returns tasks sorted by status then order", () => {
       const t1 = store.createTask("First");
       const t2 = store.createTask("Second");

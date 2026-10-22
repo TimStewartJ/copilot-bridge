@@ -1,7 +1,7 @@
 import type { Request, Router } from "express";
 import type { AppContext } from "./app-context.js";
 import type { Task } from "./task-store.js";
-import type { HomeAction, HomeInput, HomeInputSummary, HomePage, HomeReply, HomeSection, HomeSessionRef, HomeSnapshot, HomeTask } from "../shared/home.js";
+import type { HomeAction, HomeInput, HomeInputSummary, HomePage, HomeReply, HomeSection, HomeSessionRef, HomeSnapshot } from "../shared/home.js";
 import type { TransformedEntry } from "./event-transform.js";
 import { isRecord } from "../shared/is-record.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
@@ -12,7 +12,7 @@ interface Session {
   sessionId: string; summary?: string; archived?: boolean; triggeredBy?: string;
   lastAttentionAt?: string; lastVisibleActivityAt?: string; lastActivityAt?: string; modifiedTime?: string;
 }
-const SECTIONS: HomeSection[] = ["overview", "tasks", "inputs", "follow-ups", "actions", "replies", "quiet"];
+const SECTIONS: HomeSection[] = ["overview", "inputs", "actions", "replies", "quiet"];
 const RESUME_SIZE = 5;
 const PAGE_SIZE = 20;
 const OVERVIEW_SIZE = 3;
@@ -48,7 +48,6 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
     const allTasks = ctx.taskStore.listTasks();
     const taskById = new Map(allTasks.map(task => [task.id, task]));
     const taskRank = new Map(allTasks.map((task, index) => [task.id, index]));
-    const tasks = allTasks.filter(task => task.status === "active" && !task.muted);
     const groupById = new Map(ctx.taskGroupStore.listGroups().map(group => [group.id, group]));
     const sourceErrors: string[] = [];
     let rawSessions: unknown[] = [];
@@ -87,23 +86,11 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
         ...(task ? { taskId: task.id, taskTitle: task.title, taskArchived: task.status === "archived" } : {}) };
       return [session.sessionId, ref];
     }));
-    const sessionById = new Map(visible.map(session => [session.sessionId, session]));
     function page<T>(items: T[], target: HomeSection, overviewSize = OVERVIEW_SIZE): HomePage<T> {
       const start = target === section ? offset : 0;
       const limit = target === section ? PAGE_SIZE : overviewSize;
       return { items: items.slice(start, start + limit), total: items.length, offset: start, hasMore: items.length > start + limit };
     }
-    const taskRows: HomeTask[] = tasks.map(task => {
-      const linked = task.sessionIds.flatMap(id => { const session = sessionById.get(id); return session ? [session] : []; })
-        .sort((a, b) => Date.parse(activity(b)) - Date.parse(activity(a)) || a.sessionId.localeCompare(b.sessionId));
-      const group = task.groupId ? groupById.get(task.groupId) : undefined;
-      return { id: task.id, title: task.title, kind: task.kind, deferred: task.deferred, nextAction: clip(task.nextAction), waitingOn: clip(task.waitingOn),
-        nextTouchAt: task.nextTouchAt, doneWhen: clip(task.doneWhen), groupName: group?.name, groupColor: group?.color,
-        sessionId: linked[0]?.sessionId, sessionTitle: clip(linked[0]?.summary, 160),
-        runningCount: linked.filter(session => ctx.sessionManager.getSessionRunState(session.sessionId) === "busy").length,
-        stalledCount: linked.filter(session => ctx.sessionManager.getSessionRunState(session.sessionId) === "stalled").length,
-        inputCount: linked.reduce((total, session) => total + ctx.sessionManager.getPendingUserInputCount(session.sessionId), 0) };
-    });
     const inputRows: HomeInputSummary[] = [], inputErrors: HomeSnapshot["inputErrors"] = [];
     const pending = visible.filter(session => ctx.sessionManager.getPendingUserInputCount(session.sessionId) > 0)
       .sort((a,b) => Date.parse(activity(b)) - Date.parse(activity(a)) || a.sessionId.localeCompare(b.sessionId));
@@ -126,9 +113,6 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
     });
     inputRows.sort((a, b) => (a.requestedAt ?? "").localeCompare(b.requestedAt ?? "") || a.sessionId.localeCompare(b.sessionId));
     const now = new Date();
-    const followUps = tasks.filter(task => task.nextTouchAt && Date.parse(task.nextTouchAt) <= now.getTime())
-      .sort((a, b) => a.nextTouchAt!.localeCompare(b.nextTouchAt!) || a.id.localeCompare(b.id))
-      .map(task => ({ taskId: task.id, title: task.title, at: task.nextTouchAt!, deferred: task.deferred, nextAction: clip(task.nextAction), waitingOn: clip(task.waitingOn) }));
     const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const allActions = ctx.checklistStore.listAllOpenChecklistItems();
     const actionCounts = { open: allActions.length, overdue: allActions.filter(item => item.deadline && item.deadline < date).length,
@@ -185,10 +169,8 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
     const resume = overview.tasks.filter(row => row.state === "in_motion" && !attentionIds.has(row.id)).sort(byRecentEngagement).slice(0, RESUME_SIZE);
     const quiet = overview.tasks.filter(row => row.state === "gone_quiet").sort(byLongestIdle);
     return { section, attention, resume, quiet: page(quiet, "quiet"), taskCounts: overview.counts,
-      tasks: page(section === "tasks" ? taskRows : taskRows.filter(task => !task.deferred), "tasks"),
-      deferredTaskTotal: tasks.filter(task => task.deferred).length,
       inputs: { ...inputPage, items: inputRows, total: sourceErrors.length ? null : pending.length - ended },
-      followUps: page(followUps, "follow-ups"), actionCounts, today: date,
+      actionCounts, today: date,
       actions: page(actionRows, "actions", OVERVIEW_ACTIONS), replies: { ...replyPage, items: replies, total: sourceErrors.length ? null : replyPage.total }, inputErrors, sourceErrors,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }

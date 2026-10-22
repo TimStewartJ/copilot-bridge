@@ -74,20 +74,6 @@ const CHALLENGE_PAGE: PageSignals = {
   markers: ["cloudflare_challenge", "turnstile"],
 };
 
-/** A refusal with nothing to pass. */
-const DENIED_PAGE: PageSignals = {
-  url: "https://www.example.com/pricing",
-  title: "Attention Required! | Cloudflare",
-  status: 403,
-  textLength: 96,
-  text: "Sorry, you have been blocked You are unable to access example.com Cloudflare Ray ID: 8f2a6c1d9e3b4a57",
-  inputs: 0,
-  links: 2,
-  scripts: 0,
-  captchaSolved: false,
-  markers: ["cloudflare_block"],
-};
-
 /** An ordinary sign-up form with a CAPTCHA in front of its submit button. */
 const CAPTCHA_PAGE: PageSignals = {
   url: "https://www.example.com/signup",
@@ -363,11 +349,10 @@ describe("browser session tools", () => {
       return { ...loaded, browserSessionId: started.browserSessionId as string };
     }
 
-    /** What each kind of page is reported as, and whether the user can be handed it. */
+    /** One page per result field; which pages are blocked, and how, is covered by the page check's own tests. */
     const blockingPages = [
-      { name: "a human check", page: CHALLENGE_PAGE, field: "blocked", other: "captcha", kind: "challenge", by: "Cloudflare", handoff: true },
-      { name: "a refusal", page: DENIED_PAGE, field: "blocked", other: "captcha", kind: "denied", by: "Cloudflare", handoff: false },
-      { name: "a CAPTCHA inside a usable page", page: CAPTCHA_PAGE, field: "captcha", other: "blocked", kind: "captcha", by: "reCAPTCHA", handoff: true },
+      { name: "a human check", page: CHALLENGE_PAGE, field: "blocked", other: "captcha", kind: "challenge", by: "Cloudflare" },
+      { name: "a CAPTCHA inside a usable page", page: CAPTCHA_PAGE, field: "captcha", other: "blocked", kind: "captcha", by: "reCAPTCHA" },
     ] as const;
 
     it("attaches nothing for a page a person would simply read", async () => {
@@ -387,7 +372,7 @@ describe("browser session tools", () => {
       }
     });
 
-    it.each(blockingPages)("reports $name beside the work, with what to do about it", async ({ page, field, other, kind, by, handoff }) => {
+    it.each(blockingPages)("reports $name beside the work, with what to do about it", async ({ page, field, other, kind, by }) => {
       const browser = fakeAgentBrowser();
       const { tools, browserSessionId } = await startPublicSession(browser);
       browser.page = page;
@@ -403,9 +388,9 @@ describe("browser session tools", () => {
         expect(result).not.toHaveProperty("resultType");
         expect(result).not.toHaveProperty(other);
         expect(result[field]).toEqual({ kind, by, guidance: expect.any(String) });
-        // Only something a person can pass is worth handing over, and then in this session.
-        expect(result[field].guidance.includes("browser_session_handoff")).toBe(handoff);
-        expect(result[field].guidance.includes(browserSessionId)).toBe(handoff);
+        // Something a person can pass is handed over in this session.
+        expect(result[field].guidance).toContain("browser_session_handoff");
+        expect(result[field].guidance).toContain(browserSessionId);
       }
       // The work itself is reported as usual.
       expect(exec.steps).toHaveLength(1);

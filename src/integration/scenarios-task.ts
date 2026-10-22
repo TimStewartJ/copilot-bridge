@@ -160,7 +160,7 @@ export const taskScenarios: IntegrationScenario[] = [
       const second = await world.createChecklistItem(task.id, "Verify");
       const complete = await request(world.app).patch(`/api/checklist-items/${first.id}`).send({ done: true });
       expect(complete.status).toBe(200);
-      const dashboard = await request(world.app).get("/api/dashboard/checklist");
+      const dashboard = await request(world.app).get("/api/dashboard/focus");
       expect(dashboard.body.completedChecklistItems.map((item: any) => item.id)).toContain(first.id);
       expect(dashboard.body.openChecklistItems.map((item: any) => item.id)).toContain(second.id);
     },

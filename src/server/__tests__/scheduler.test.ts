@@ -396,46 +396,6 @@ describe("scheduler restart gating", () => {
     }
   });
 
-  it("archives older schedule sessions after a retained run", async () => {
-    const { ctx } = createTestApp();
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      readSessionsFromDisk: sessionsOnDisk(vi.fn().mockResolvedValue([
-        { sessionId: "old-session", summary: "Old run" },
-        { sessionId: "new-session", summary: "New run" },
-      ])),
-      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
-      startWorkAndWaitForDelivery: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
-
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-      deferredPromptStore: ctx.deferredPromptStore,
-      deferLoopStore: ctx.deferLoopStore,
-    });
-
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Retained schedule",
-      prompt: "run now",
-      type: "cron",
-      cron: "0 0 * * *",
-      autoArchiveKeep: 1,
-    });
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "old-session", "2026-01-01T00:00:00.000Z");
-
-    const result = await scheduler.triggerSchedule(schedule.id);
-
-    expect(result).toEqual({ sessionId: "new-session" });
-    expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
-    expect(ctx.sessionMetaStore.isArchived("old-session")).toBe(true);
-  });
-
   it("prunes run history after retention, preserving retryable sessions", async () => {
     const { ctx } = createTestApp();
     const sessionManager = {
@@ -476,7 +436,8 @@ describe("scheduler restart gating", () => {
     const result = await scheduler.triggerSchedule(schedule.id);
 
     expect(result).toEqual({ sessionId: "new-session" });
-    // Retention behavior unchanged: the idle older session is archived, the busy one is not.
+    // Retention keeps the new run, archives the idle older session, and leaves the busy one.
+    expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
     expect(ctx.sessionMetaStore.isArchived("archivable-old")).toBe(true);
     expect(ctx.sessionMetaStore.isArchived("busy-old")).toBe(false);
     // Prune runs after retention with the resolved cap and protects retryable sessions.

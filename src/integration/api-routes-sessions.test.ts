@@ -24,34 +24,18 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Session routes (mocked)", () => {
-  it("POST /api/sessions/external-use returns confirmed external session use", async () => {
+  it("POST /api/sessions/external-use passes valid IDs to the session manager", async () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const result = { status: "available" as const, inUse: [sessionId], checkedAt: "2026-08-26T20:00:00.000Z" };
     const sessionManager = createMockSessionManager();
-    sessionManager.getExternalSessionUse = vi.fn(async () => ({
-      status: "available" as const,
-      inUse: ["11111111-1111-4111-8111-111111111111"],
-      checkedAt: "2026-08-26T20:00:00.000Z",
-    }));
+    sessionManager.getExternalSessionUse = vi.fn(async () => result);
     ({ app } = createTestApp({ sessionManager }));
 
-    const res = await request(app)
-      .post("/api/sessions/external-use")
-      .send({
-        sessionIds: [
-          "11111111-1111-4111-8111-111111111111",
-          "22222222-2222-4222-8222-222222222222",
-        ],
-      });
+    const res = await request(app).post("/api/sessions/external-use").send({ sessionIds: [sessionId] });
 
     expect(res.status).toBe(200);
-    expect(sessionManager.getExternalSessionUse).toHaveBeenCalledWith([
-      "11111111-1111-4111-8111-111111111111",
-      "22222222-2222-4222-8222-222222222222",
-    ]);
-    expect(res.body).toEqual({
-      status: "available",
-      inUse: ["11111111-1111-4111-8111-111111111111"],
-      checkedAt: "2026-08-26T20:00:00.000Z",
-    });
+    expect(sessionManager.getExternalSessionUse).toHaveBeenCalledWith([sessionId]);
+    expect(res.body).toEqual(result);
   });
 
   it("POST /api/sessions/external-use rejects invalid session IDs", async () => {

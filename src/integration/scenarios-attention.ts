@@ -61,7 +61,7 @@ export const attentionScenarios: IntegrationScenario[] = [
       const task = await world.createTask("Historical checklist");
       const item = await world.createChecklistItem(task.id, "Complete me");
       await request(world.app).patch(`/api/checklist-items/${item.id}`).send({ done: true });
-      const dashboard = await request(world.app).get("/api/dashboard/checklist");
+      const dashboard = await request(world.app).get("/api/dashboard/focus");
       const completed = dashboard.body.completedChecklistItems.find((entry: any) => entry.id === item.id);
       expect(completed).toMatchObject({ taskId: task.id, taskTitle: "Historical checklist" });
     },
@@ -72,7 +72,7 @@ export const attentionScenarios: IntegrationScenario[] = [
       const task = await world.createTask("Old dashboard title");
       const item = await world.createChecklistItem(task.id, "Visible item");
       await world.updateTask(task.id, { title: "New dashboard title" });
-      const dashboard = await request(world.app).get("/api/dashboard/checklist");
+      const dashboard = await request(world.app).get("/api/dashboard/focus");
       expect(dashboard.body.openChecklistItems.find((entry: any) => entry.id === item.id).taskTitle).toBe("New dashboard title");
     },
   },
@@ -81,9 +81,9 @@ export const attentionScenarios: IntegrationScenario[] = [
     async run(world) {
       const task = await world.createTask("Dashboard cleanup");
       const item = await world.createChecklistItem(task.id, "Remove from dashboard");
-      expect((await request(world.app).get("/api/dashboard/checklist")).body.openChecklistItems.map((entry: any) => entry.id)).toContain(item.id);
+      expect((await request(world.app).get("/api/dashboard/focus")).body.openChecklistItems.map((entry: any) => entry.id)).toContain(item.id);
       await request(world.app).delete(`/api/checklist-items/${item.id}`);
-      expect((await request(world.app).get("/api/dashboard/checklist")).body.openChecklistItems.map((entry: any) => entry.id)).not.toContain(item.id);
+      expect((await request(world.app).get("/api/dashboard/focus")).body.openChecklistItems.map((entry: any) => entry.id)).not.toContain(item.id);
     },
   },
 ];

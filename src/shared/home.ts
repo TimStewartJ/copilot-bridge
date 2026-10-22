@@ -3,14 +3,8 @@ import type { PendingElicitationRequestView } from "../server/elicitation-types.
 import type { TaskOverviewRow } from "./task-overview.js";
 import type { TaskState } from "./task-state.js";
 
-/** `tasks` and `follow-ups` remain accepted for clients loaded before task states; new clients never request them. */
-export type HomeSection = "overview" | "tasks" | "inputs" | "follow-ups" | "actions" | "replies" | "quiet";
+export type HomeSection = "overview" | "inputs" | "actions" | "replies" | "quiet";
 export interface HomePage<T> { items: T[]; total: number | null; offset: number; hasMore: boolean }
-export interface HomeTask {
-  id: string; title: string; kind: "task" | "ongoing"; deferred: boolean; groupName?: string; groupColor?: string;
-  nextAction?: string; waitingOn?: string; nextTouchAt?: string; doneWhen?: string;
-  sessionId?: string; sessionTitle?: string; runningCount: number; stalledCount?: number; inputCount?: number;
-}
 export interface HomeSessionRef {
   sessionId: string; title: string; taskId?: string; taskTitle?: string;
   /** The conversation's only tasks are archived: it is listed because something new arrived after they were closed. */
@@ -23,7 +17,6 @@ export type HomeInput = HomeSessionRef & (
 export interface HomeInputSummary extends HomeSessionRef {
   kind: HomeInput["kind"]; requestId: string; question: string; pendingCount: number; requestedAt?: string;
 }
-export interface HomeFollowUp { taskId: string; title: string; at: string; deferred: boolean; nextAction?: string; waitingOn?: string }
 export interface HomeAction { id: string; taskId: string | null; taskTitle?: string; groupColor?: string; text: string; deadline?: string }
 /** Open checklist counts across every page, measured against the server's local date. */
 export interface HomeActionCounts { open: number; overdue: number; dueToday: number }
@@ -39,11 +32,7 @@ export interface HomeSnapshot {
   /** Tasks that have gone quiet, longest untouched first. */
   quiet: HomePage<TaskOverviewRow>;
   taskCounts: Record<TaskState, number>;
-  /** Legacy fields for clients loaded before task states. */
-  tasks: HomePage<HomeTask>;
-  deferredTaskTotal: number;
   inputs: HomePage<HomeInputSummary>;
-  followUps: HomePage<HomeFollowUp>;
   actions: HomePage<HomeAction>;
   replies: HomePage<HomeReply>;
   inputErrors: Array<HomeSessionRef & { error: string }>;

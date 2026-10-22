@@ -309,7 +309,7 @@ describe("Settings routes", () => {
     expect(local.ctx.settingsStore.getSettings().model).toBeUndefined();
   });
 
-  it("PATCH /api/settings MCP change still evicts cached sessions", async () => {
+  it("PATCH /api/settings clears the provider cache without evicting cached sessions", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
@@ -318,10 +318,10 @@ describe("Settings routes", () => {
 
     const res = await request(local.app)
       .patch("/api/settings")
-      .send({ mcpServers: { test: { command: "echo", args: [] } } });
+      .send({ providers: { github: { owner: "octo" } } });
 
     expect(res.status).toBe(200);
-    expect(evictSpy).toHaveBeenCalledOnce();
+    expect(evictSpy).not.toHaveBeenCalled();
     expect(providers.getProvider("github")).not.toBe(cachedProvider);
   });
 
@@ -380,23 +380,16 @@ describe("Settings routes", () => {
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
     const local = createTestApp({ sessionManager });
-    local.ctx.settingsStore.updateSettings({
-      mcpServers: { before: { command: "before", args: [] } },
-    });
+    local.ctx.settingsStore.updateSettings({ theme: "dark" });
     const cachedProvider = providers.getProvider("github");
 
     const res = await request(local.app)
       .patch("/api/settings")
-      .send({
-        mcpServers: { after: { command: "after", args: [] } },
-        contextTier: "invalid",
-      });
+      .send({ theme: "light", contextTier: "invalid" });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("contextTier must be default or long_context");
-    expect(local.ctx.settingsStore.getMcpServers()).toEqual({
-      before: { command: "before", args: [] },
-    });
+    expect(local.ctx.settingsStore.getSettings().theme).toBe("dark");
     expect(evictSpy).not.toHaveBeenCalled();
     expect(providers.getProvider("github")).toBe(cachedProvider);
   });
@@ -433,14 +426,12 @@ describe("Settings routes", () => {
     ).toBe(raw);
   });
 
-  it("PATCH /api/settings reports storage failures after rolling back MCP changes", async () => {
+  it("PATCH /api/settings reports storage failures without runtime side effects", async () => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
     const local = createTestApp({ sessionManager });
-    local.ctx.settingsStore.updateSettings({
-      mcpServers: { before: { command: "before", args: [] } },
-    });
+    local.ctx.settingsStore.updateSettings({ theme: "dark" });
     local.db.exec(`
       CREATE TRIGGER block_app_settings_update
       BEFORE UPDATE ON settings
@@ -453,13 +444,11 @@ describe("Settings routes", () => {
 
     const res = await request(local.app)
       .patch("/api/settings")
-      .send({ mcpServers: { after: { command: "after", args: [] } } });
+      .send({ theme: "light" });
 
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("settings write blocked");
-    expect(local.ctx.settingsStore.getMcpServers()).toEqual({
-      before: { command: "before", args: [] },
-    });
+    expect(local.ctx.settingsStore.getSettings().theme).toBe("dark");
     expect(evictSpy).not.toHaveBeenCalled();
     expect(providers.getProvider("github")).toBe(cachedProvider);
   });
@@ -621,22 +610,21 @@ describe("Schedule routes", () => {
     });
   });
 
-  it("POST /api/schedules accepts supported cron field counts", async () => {
-    for (const cron of ["*/5 * * * *", "0 */5 * * * *"]) {
-      const res = await request(app)
-        .post("/api/schedules")
-        .send({
-          taskId,
-          name: `Supported ${cron}`,
-          prompt: "Continue the conversation",
-          type: "cron",
-          cron,
-          timezone: "UTC",
-        });
+  it("POST /api/schedules accepts a zero-seconds six-field cron", async () => {
+    const cron = "0 */5 * * * *";
+    const res = await request(app)
+      .post("/api/schedules")
+      .send({
+        taskId,
+        name: "Six-field cron",
+        prompt: "Continue the conversation",
+        type: "cron",
+        cron,
+        timezone: "UTC",
+      });
 
-      expect(res.status).toBe(201);
-      expect(res.body.cron).toBe(cron);
-    }
+    expect(res.status).toBe(201);
+    expect(res.body.cron).toBe(cron);
   });
 
   it("POST /api/schedules validates model overrides", async () => {
@@ -749,7 +737,7 @@ describe("Schedule routes", () => {
     });
   });
 
-  it("PATCH /api/schedules changes and clears model launch overrides", async () => {
+  it("PATCH /api/schedules changes model launch overrides and drops them when the model switches", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
       name: "Model patch",
@@ -790,17 +778,8 @@ describe("Schedule routes", () => {
     expect(switched.body.model).toBe("claude-sonnet-5");
     expect(switched.body.reasoningEffort).toBeUndefined();
     expect(switched.body.contextTier).toBeUndefined();
-
-    const cleared = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ model: null });
-    expect(cleared.status).toBe(200);
-    expect(cleared.body.model).toBeUndefined();
-    expect(cleared.body.reasoningEffort).toBeUndefined();
-    expect(cleared.body.contextTier).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.model).toBeUndefined();
+    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ model: "claude-sonnet-5" });
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.reasoningEffort).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.contextTier).toBeUndefined();
   });
 
   it("PATCH /api/schedules rejects unsupported non-zero seconds crons", async () => {

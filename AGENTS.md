@@ -7,7 +7,7 @@ Rules for one area live in `.github/instructions/`. Read the matching file befor
 - `src/client/**`: `.github/instructions/client-ui.instructions.md`
 - `src/server/**`: `.github/instructions/server-runtime.instructions.md`
 - `src/packages/**`: `.github/instructions/packages.instructions.md`
-- Tests and test support: `.github/instructions/tests.instructions.md`
+- Tests and test support: `.github/instructions/tests.instructions.md` (also read it before adding tests anywhere: it says which tests are worth writing)
 
 Add a rule here only if it applies across the repository and no check enforces it. Put area rules in the matching instructions file, and the reasoning behind a check next to the check.
 

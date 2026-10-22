@@ -100,6 +100,26 @@ function summaryTotals(totals: CopilotUsageTotals): CopilotUsageSummary["totals"
   };
 }
 
+interface ShutdownModelMetric {
+  requests?: number;
+  usage?: Record<string, number>;
+  totalNanoAiu?: number;
+  tokenDetails?: Record<string, { tokenCount: number }>;
+}
+
+/** A cumulative session.shutdown snapshot. Each model's request count defaults to 1. */
+function shutdownEvent(timestamp: string, models: Record<string, ShutdownModelMetric>, totalNanoAiu?: number) {
+  return {
+    type: "session.shutdown",
+    timestamp,
+    data: {
+      ...(totalNanoAiu === undefined ? {} : { totalNanoAiu }),
+      modelMetrics: Object.fromEntries(Object.entries(models).map(([model, { requests = 1, ...metric }]) =>
+        [model, { requests: { count: requests }, ...metric }])),
+    },
+  };
+}
+
 describe("readCopilotUsageSummary", () => {
   it("aggregates retained defer-worker shutdown usage with explicit attribution", () => {
     const copilotHome = createCopilotHome();
@@ -172,22 +192,10 @@ describe("readCopilotUsageSummary", () => {
   it("aggregates included sessions, defaults missing metrics to zero, and sorts models by total tokens", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-02T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 3 },
-            },
-            "claude-sonnet": {
-              requests: { count: 1 },
-              usage: { outputTokens: 7, cacheWriteTokens: 2, reasoningTokens: 1 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-02T10:00:00.000Z", {
+        "gpt-4o": { requests: 2, usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 3 } },
+        "claude-sonnet": { usage: { outputTokens: 7, cacheWriteTokens: 2, reasoningTokens: 1 } },
+      }),
     ]);
     writeEvents(copilotHome, "session-2", [
       {
@@ -419,29 +427,17 @@ describe("readCopilotUsageSummary", () => {
   it("prefers the reported uncached input count over subtracting cache tokens", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: {
-                inputTokens: 2_000_000,
-                outputTokens: 10,
-                cacheReadTokens: 1_500_000,
-                cacheWriteTokens: 400_000,
-              },
-              tokenDetails: {
-                input: { tokenCount: 100_000 },
-                cache_read: { tokenCount: 1_500_000 },
-                cache_write: { tokenCount: 400_000 },
-                output: { tokenCount: 10 },
-              },
-            },
+      shutdownEvent("2026-01-05T10:00:00.000Z", {
+        "gpt-5.5": {
+          usage: { inputTokens: 2_000_000, outputTokens: 10, cacheReadTokens: 1_500_000, cacheWriteTokens: 400_000 },
+          tokenDetails: {
+            input: { tokenCount: 100_000 },
+            cache_read: { tokenCount: 1_500_000 },
+            cache_write: { tokenCount: 400_000 },
+            output: { tokenCount: 10 },
           },
         },
-      },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -478,18 +474,9 @@ describe("readCopilotUsageSummary", () => {
   it("never reports negative uncached input when cache counts exceed the reported input", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: { inputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 50 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T10:00:00.000Z", {
+        "gpt-5.5": { usage: { inputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 50 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -500,32 +487,12 @@ describe("readCopilotUsageSummary", () => {
   it("carries GitHub's metered cost through as forward progress only", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: { inputTokens: 100, outputTokens: 10 },
-              totalNanoAiu: 250_000_000_000,
-            },
-          },
-        },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T11:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 2 },
-              usage: { inputTokens: 180, outputTokens: 30 },
-              totalNanoAiu: 400_000_000_000,
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T10:00:00.000Z", {
+        "gpt-5.5": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 250_000_000_000 },
+      }),
+      shutdownEvent("2026-01-05T11:00:00.000Z", {
+        "gpt-5.5": { requests: 2, usage: { inputTokens: 180, outputTokens: 30 }, totalNanoAiu: 400_000_000_000 },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -540,48 +507,15 @@ describe("readCopilotUsageSummary", () => {
     const copilotHome = createCopilotHome();
     const shutdownAt = (day: number) => new Date(2026, 7, day, 10, 0, 0).toISOString();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: shutdownAt(6),
-        data: {
-          totalNanoAiu: 407_200_000_000,
-          modelMetrics: {
-            "claude-opus-5": {
-              requests: { count: 1 },
-              usage: { inputTokens: 100 },
-              totalNanoAiu: 407_200_000_000,
-            },
-          },
-        },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: shutdownAt(7),
-        data: {
-          totalNanoAiu: 10_025_100_000_000,
-          modelMetrics: {
-            "claude-opus-5": {
-              requests: { count: 2 },
-              usage: { inputTokens: 200 },
-              totalNanoAiu: 1_901_500_000_000,
-            },
-          },
-        },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: shutdownAt(11),
-        data: {
-          totalNanoAiu: 34_013_900_000_000,
-          modelMetrics: {
-            "claude-opus-5": {
-              requests: { count: 3 },
-              usage: { inputTokens: 300 },
-              totalNanoAiu: 11_321_200_000_000,
-            },
-          },
-        },
-      },
+      shutdownEvent(shutdownAt(6), {
+        "claude-opus-5": { usage: { inputTokens: 100 }, totalNanoAiu: 407_200_000_000 },
+      }, 407_200_000_000),
+      shutdownEvent(shutdownAt(7), {
+        "claude-opus-5": { requests: 2, usage: { inputTokens: 200 }, totalNanoAiu: 1_901_500_000_000 },
+      }, 10_025_100_000_000),
+      shutdownEvent(shutdownAt(11), {
+        "claude-opus-5": { requests: 3, usage: { inputTokens: 300 }, totalNanoAiu: 11_321_200_000_000 },
+      }, 34_013_900_000_000),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -622,25 +556,10 @@ describe("readCopilotUsageSummary", () => {
   it("keeps named model metering within an authoritative top-level total", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-08-11T21:45:10.000Z",
-        data: {
-          totalNanoAiu: 100_000_000_000,
-          modelMetrics: {
-            "model-a": {
-              requests: { count: 1 },
-              usage: { inputTokens: 80 },
-              totalNanoAiu: 80_000_000_000,
-            },
-            "model-b": {
-              requests: { count: 1 },
-              usage: { inputTokens: 70 },
-              totalNanoAiu: 70_000_000_000,
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-08-11T21:45:10.000Z", {
+        "model-a": { usage: { inputTokens: 80 }, totalNanoAiu: 80_000_000_000 },
+        "model-b": { usage: { inputTokens: 70 }, totalNanoAiu: 70_000_000_000 },
+      }, 100_000_000_000),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -655,33 +574,10 @@ describe("readCopilotUsageSummary", () => {
     const copilotHome = createCopilotHome();
     const shutdownAt = (day: number) => new Date(2026, 7, day, 10, 0, 0).toISOString();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: shutdownAt(10),
-        data: {
-          modelMetrics: {
-            "model-a": {
-              requests: { count: 1 },
-              usage: { inputTokens: 80 },
-              totalNanoAiu: 80_000_000_000,
-            },
-          },
-        },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: shutdownAt(11),
-        data: {
-          totalNanoAiu: 100_000_000_000,
-          modelMetrics: {
-            "model-a": {
-              requests: { count: 2 },
-              usage: { inputTokens: 150 },
-              totalNanoAiu: 150_000_000_000,
-            },
-          },
-        },
-      },
+      shutdownEvent(shutdownAt(10), { "model-a": { usage: { inputTokens: 80 }, totalNanoAiu: 80_000_000_000 } }),
+      shutdownEvent(shutdownAt(11), {
+        "model-a": { requests: 2, usage: { inputTokens: 150 }, totalNanoAiu: 150_000_000_000 },
+      }, 100_000_000_000),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -698,14 +594,7 @@ describe("readCopilotUsageSummary", () => {
     // Days bucket by local date, so pin the event to local noon.
     const shutdownAt = new Date(2026, 7, 11, 12, 0, 0).toISOString();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: shutdownAt,
-        data: {
-          totalNanoAiu: 125_000_000_000,
-          modelMetrics: {},
-        },
-      },
+      shutdownEvent(shutdownAt, {}, 125_000_000_000),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -726,30 +615,12 @@ describe("readCopilotUsageSummary", () => {
   it("tracks metered coverage separately so a partly metered range is not read as complete", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "metered-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: { inputTokens: 100, outputTokens: 10 },
-              totalNanoAiu: 300_000_000_000,
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T10:00:00.000Z", {
+        "gpt-5.5": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 300_000_000_000 },
+      }),
     ]);
     writeEvents(copilotHome, "legacy-session", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T11:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": { requests: { count: 1 }, usage: { inputTokens: 300, outputTokens: 40 } },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T11:00:00.000Z", { "gpt-5.5": { usage: { inputTokens: 300, outputTokens: 40 } } }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -762,19 +633,9 @@ describe("readCopilotUsageSummary", () => {
   it("keeps metered coverage when GitHub genuinely billed zero", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "free-alpha": {
-              requests: { count: 1 },
-              usage: { inputTokens: 100, outputTokens: 10 },
-              totalNanoAiu: 0,
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T10:00:00.000Z", {
+        "free-alpha": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 0 },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -786,15 +647,7 @@ describe("readCopilotUsageSummary", () => {
   it("reports zero metered credits for sessions logged before the field existed", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": { requests: { count: 1 }, usage: { inputTokens: 100, outputTokens: 10 } },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T10:00:00.000Z", { "gpt-5.5": { usage: { inputTokens: 100, outputTokens: 10 } } }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -811,22 +664,9 @@ describe("readCopilotUsageSummary", () => {
       contextTier: "long_context",
     }));
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: {
-                inputTokens: 2_000_000,
-                outputTokens: 1_000_000,
-                cacheReadTokens: 1_000_000,
-              },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-05T10:00:00.000Z", {
+        "gpt-5.5": { usage: { inputTokens: 2_000_000, outputTokens: 1_000_000, cacheReadTokens: 1_000_000 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({
@@ -870,18 +710,9 @@ describe("readCopilotUsageSummary", () => {
   it("resolves generic model variants through the pricing resolver", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-06T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "claude-opus-4.7-context-low": {
-              requests: { count: 1 },
-              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-06T10:00:00.000Z", {
+        "claude-opus-4.7-context-low": { usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({
@@ -904,18 +735,9 @@ describe("readCopilotUsageSummary", () => {
   it("resolves arbitrary observed model IDs through supplied SDK display names", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-06T11:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "opaque-sdk-id": {
-              requests: { count: 1 },
-              usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-06T11:00:00.000Z", {
+        "opaque-sdk-id": { usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({
@@ -941,26 +763,10 @@ describe("readCopilotUsageSummary", () => {
   it("marks unknown models unpriced and excludes them from cost totals", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-07T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: { outputTokens: 1_000_000 },
-            },
-            "unknown-model": {
-              requests: { count: 1 },
-              usage: {
-                inputTokens: 1_000_000,
-                outputTokens: 1_000_000,
-                reasoningTokens: 1_000_000,
-              },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-01-07T10:00:00.000Z", {
+        "gpt-5.5": { usage: { outputTokens: 1_000_000 } },
+        "unknown-model": { usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, reasoningTokens: 1_000_000 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({
@@ -1056,11 +862,7 @@ describe("readCopilotUsageSummary", () => {
       { type: "assistant.message", timestamp: "2026-02-01T09:00:00.000Z", data: { content: "still running" } },
     ]);
     writeEvents(copilotHome, "session-empty", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-02-01T10:00:00.000Z",
-        data: { modelMetrics: {} },
-      },
+      shutdownEvent("2026-02-01T10:00:00.000Z", {}),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -1296,18 +1098,7 @@ describe("readCopilotUsageSummary", () => {
         timestamp: "2026-02-03T09:01:00.000Z",
         data: { requestId: "request-1", outputTokens: 100 },
       },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-02-03T09:02:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: { outputTokens: 20 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-02-03T09:02:00.000Z", { "gpt-5.5": { usage: { outputTokens: 20 } } }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -1321,23 +1112,10 @@ describe("readCopilotUsageSummary", () => {
   it("counts only forward progress and ignores empty later shutdowns", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-01T08:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 10 },
-              usage: { inputTokens: 100, outputTokens: 50 },
-            },
-          },
-        },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-01T08:30:00.000Z",
-        data: { modelMetrics: {} },
-      },
+      shutdownEvent("2026-03-01T08:00:00.000Z", {
+        "gpt-4o": { requests: 10, usage: { inputTokens: 100, outputTokens: 50 } },
+      }),
+      shutdownEvent("2026-03-01T08:30:00.000Z", {}),
       {
         type: "session.shutdown",
         timestamp: "2026-03-01T09:00:00.000Z",
@@ -1375,44 +1153,17 @@ describe("readCopilotUsageSummary", () => {
   it("does not double count a resumed session that rewrites cumulative shutdown snapshots", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-04T08:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 100 },
-              usage: { inputTokens: 1_000, outputTokens: 200, cacheReadTokens: 500 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-04T08:00:00.000Z", {
+        "gpt-4o": { requests: 100, usage: { inputTokens: 1_000, outputTokens: 200, cacheReadTokens: 500 } },
+      }),
       { type: "session.resume", timestamp: "2026-03-04T09:00:00.000Z", data: {} },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-04T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 250 },
-              usage: { inputTokens: 3_000, outputTokens: 450, cacheReadTokens: 1_400 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-04T10:00:00.000Z", {
+        "gpt-4o": { requests: 250, usage: { inputTokens: 3_000, outputTokens: 450, cacheReadTokens: 1_400 } },
+      }),
       { type: "session.resume", timestamp: "2026-03-04T11:00:00.000Z", data: {} },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-04T12:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 320 },
-              usage: { inputTokens: 4_100, outputTokens: 600, cacheReadTokens: 1_900 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-04T12:00:00.000Z", {
+        "gpt-4o": { requests: 320, usage: { inputTokens: 4_100, outputTokens: 600, cacheReadTokens: 1_900 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -1586,30 +1337,12 @@ describe("readCopilotUsageSummary", () => {
   it("treats a decreasing shutdown snapshot as a restarted counter", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-04T08:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 40 },
-              usage: { inputTokens: 900, outputTokens: 120 },
-            },
-          },
-        },
-      },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-04T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 7 },
-              usage: { inputTokens: 150, outputTokens: 30 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-04T08:00:00.000Z", {
+        "gpt-4o": { requests: 40, usage: { inputTokens: 900, outputTokens: 120 } },
+      }),
+      shutdownEvent("2026-03-04T10:00:00.000Z", {
+        "gpt-4o": { requests: 7, usage: { inputTokens: 150, outputTokens: 30 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -1625,39 +1358,18 @@ describe("readCopilotUsageSummary", () => {
   it("accumulates forward progress per model in a non-active session file", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-05T08:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 10, outputTokens: 3 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-05T08:00:00.000Z", {
+        "gpt-4o": { requests: 2, usage: { inputTokens: 10, outputTokens: 3 } },
+      }),
       {
         type: "assistant.message",
         timestamp: "2026-03-05T08:05:00.000Z",
         data: { role: "assistant" },
       },
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-05T09:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 3 },
-              usage: { inputTokens: 10, outputTokens: 7 },
-            },
-            "o3": {
-              requests: { count: 1 },
-              usage: { reasoningTokens: 6 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-05T09:00:00.000Z", {
+        "gpt-4o": { requests: 3, usage: { inputTokens: 10, outputTokens: 7 } },
+        "o3": { usage: { reasoningTokens: 6 } },
+      }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -1704,18 +1416,7 @@ describe("readCopilotUsageSummary", () => {
   it("keeps persisted shutdown summaries when a later active tail exists", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-03-06T08:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 10 },
-            },
-          },
-        },
-      },
+      shutdownEvent("2026-03-06T08:00:00.000Z", { "gpt-4o": { requests: 2, usage: { inputTokens: 10 } } }),
       {
         type: "assistant.message",
         timestamp: "2026-03-06T08:05:00.000Z",
@@ -1746,18 +1447,7 @@ describe("readCopilotUsageSummary", () => {
   it("drops malformed shutdown timestamps from coverage windows without losing usage totals", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "definitely-not-a-date",
-        data: {
-          modelMetrics: {
-            "gpt-4o": {
-              requests: { count: 2 },
-              usage: { inputTokens: 9, outputTokens: 4 },
-            },
-          },
-        },
-      },
+      shutdownEvent("definitely-not-a-date", { "gpt-4o": { requests: 2, usage: { inputTokens: 9, outputTokens: 4 } } }),
     ]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
@@ -1957,15 +1647,6 @@ describe("copilot usage time ranges", () => {
     expect(past7.totals.outputTokens).toBe(60);
     expect(past7.totals.requests).toBe(1);
   });
-});
-
-describe("copilot usage window session counting", () => {
-  const NOW = new Date(2026, 4, 15, 12, 0, 0);
-  const now = () => NOW.getTime();
-
-  function localIso(year: number, monthIndex: number, day: number): string {
-    return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
-  }
 
   // Each shutdown snapshot repeats cumulative totals for every model the session
   // has ever used, so a resume with no new work on that model yields a zero delta.
@@ -2011,18 +1692,9 @@ describe("copilot usage window session counting", () => {
       expect.objectContaining({ model: "claude-opus-5", sessions: 1, inputTokens: 400 }),
     ]);
     expect(past7.models.some((row) => row.model === "gpt-5.4")).toBe(false);
-  });
-
-  it("keeps zero-usage rows out of per-session window rows", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "resumed-session", [
-      multiModelShutdown(localIso(2026, 0, 10), { old: 900, current: 0 }),
-      multiModelShutdown(localIso(2026, 4, 12), { old: 900, current: 400 }),
-    ]);
-
-    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
-    const session = past7.sessions.find((row) => row.sessionId === "resumed-session");
-    expect(session?.totalTokens).toBe(400);
-    expect(session?.models.map((row) => row.model)).toEqual(["claude-opus-5"]);
+    // Zero-usage model rows stay out of the per-session window rows too.
+    const resumed = past7.sessions.find((row) => row.sessionId === "resumed-session");
+    expect(resumed?.totalTokens).toBe(400);
+    expect(resumed?.models.map((row) => row.model)).toEqual(["claude-opus-5"]);
   });
 });

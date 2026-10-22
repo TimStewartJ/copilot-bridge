@@ -18,6 +18,7 @@ import {
 } from "../lib/voice-submit-mode";
 import { isDraftComposerKey } from "../lib/composer-key";
 import { hasFinePointer, usesSoftKeyboard } from "../lib/pointer";
+import { classifyComposerKey } from "../lib/composer-enter";
 import {
   shouldClearAcceptedFlashHandoff,
   shouldFlashAcceptedHandoff,
@@ -632,17 +633,16 @@ export default function ChatInput({
   }, [chooseSendMode, clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, nextSendMode, onAbort, onClearVoiceJobError, onSend, uploading]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (composingRef.current || e.nativeEvent?.isComposing || e.keyCode === 229) return;
-    if (e.key === "Enter") {
-      if (e.shiftKey) return;
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        handleSend();
-        return;
-      }
-      // A physical-style code alone is not proof: some software keyboards supply it too.
-      const hardwareStyleEnter = e.code === "Enter" || e.code === "NumpadEnter";
-      if (usesSoftKeyboard() || (!hasFinePointer() && !hardwareStyleEnter)) return;
+    const intent = classifyComposerKey(e, {
+      composing: composingRef.current,
+      usesSoftKeyboard,
+      hasFinePointer,
+    });
+    if (intent === "composing" || intent === "newline") return;
+    if (intent === "send") {
+      e.preventDefault();
+      handleSend();
+      return;
     }
     if (slashSuggestions.length > 0) {
       if (e.key === "ArrowDown") {
@@ -655,13 +655,13 @@ export default function ChatInput({
         setSelectedSlashCommandIndex((index) => (index + slashSuggestions.length - 1) % slashSuggestions.length);
         return;
       }
-      if (e.key === "Tab" || e.key === "Enter") {
+      if (e.key === "Tab" || intent === "submit") {
         e.preventDefault();
         insertSlashCommand(slashSuggestions[selectedSlashCommandIndex] ?? slashSuggestions[0]!);
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (intent === "submit") {
       e.preventDefault();
       handleSend();
     }

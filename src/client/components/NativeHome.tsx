@@ -22,7 +22,7 @@ import { RevisitChoices, RevisitLaterDialog } from "./RevisitPrompt";
 import { OutcomeNotice, QuietReviewDialog, QuietTaskActions, quietLabel } from "./QuietTasks";
 
 const SECTIONS: HomeSection[] = ["overview", "inputs", "actions", "replies"];
-const LABELS: Record<HomeSection, string> = { overview: "Home", tasks: "All tasks", inputs: "Needs your answer", "follow-ups": "Home", actions: "Checklist", replies: "New replies", quiet: "Worth a look" };
+const LABELS: Record<HomeSection, string> = { overview: "Home", inputs: "Needs your answer", actions: "Checklist", replies: "New replies", quiet: "Worth a look" };
 const ROW = "min-w-0 border-t border-border py-4";
 // A server from before checklist counts omits `today`; the browser's date is the closest stand-in.
 function localDate(now = new Date()): string {

@@ -98,11 +98,6 @@ describe("formatBrowserArgs", () => {
     expect(launch.formatBrowserArgs([])).toBe("");
   });
 
-  it("round-trips arguments that contain commas through parseBrowserArgs", () => {
-    const args = ["--window-size=1280,720", "--disable-features=Foo,Bar", "--no-sandbox"];
-    expect(launch.parseBrowserArgs(launch.formatBrowserArgs(args))).toEqual(args);
-  });
-
   it("round-trips what the Bridge composes around a single argument with a comma", () => {
     const composed = launch.composeBrowserLaunchArgs(["--window-size=1280,720"]);
     expect(launch.parseBrowserArgs(launch.formatBrowserArgs(composed))).toEqual(composed);

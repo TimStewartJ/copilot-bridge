@@ -589,20 +589,28 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(settled).toBe(true);
   });
 
-  it("forwards send/abort/setModel with identical arguments", async () => {
-    const session = createFakeSession();
-    const backend = new CopilotBackend(createFakeClient(session) as any);
-    const wrapped = await backend.createSession({} as any);
+  it("forwards send, abort, setModel, sessionId, disconnect and on() to the SDK session", async () => {
+    const unsub = vi.fn();
+    const on = vi.fn(() => unsub);
+    const session = { ...createFakeSession(), on };
+    const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
+    expect(wrapped.sessionId).toBe("fake-session-id");
 
     const sendArgs = { prompt: "hi", attachments: [{ kind: "image" }], mode: "immediate" as const };
     await wrapped.send(sendArgs);
     expect(session.send).toHaveBeenCalledWith(sendArgs);
-
     await wrapped.abort();
     expect(session.abort).toHaveBeenCalledOnce();
-
     await wrapped.setModel("gpt-5", { reasoningEffort: "high" });
     expect(session.setModel).toHaveBeenCalledWith("gpt-5", { reasoningEffort: "high" });
+
+    const handler = vi.fn();
+    const off = wrapped.on(handler);
+    expect(on).toHaveBeenCalledWith(handler);
+    off();
+    expect(unsub).toHaveBeenCalledOnce();
+    await wrapped.disconnect?.();
+    expect(session.disconnect).toHaveBeenCalledOnce();
   });
 
   it("returns the runtime switchTo result so callers can see the compaction preflight", async () => {
@@ -626,53 +634,19 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(session.setModel).not.toHaveBeenCalled();
   });
 
-  it("exposes sessionId and disconnect from the underlying session", async () => {
-    const session = createFakeSession();
-    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
-    expect(wrapped.sessionId).toBe("fake-session-id");
-    await wrapped.disconnect?.();
-    expect(session.disconnect).toHaveBeenCalledOnce();
-  });
-
-  it("registers and unregisters event handlers via on()", async () => {
-    const unsub = vi.fn();
-    const onImpl = vi.fn(() => unsub);
-    const session = { ...createFakeSession(), on: onImpl };
-    const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
-
-    const handler = vi.fn();
-    const off = wrapped.on(handler);
-    expect(onImpl).toHaveBeenCalledWith(handler);
-    off();
-    expect(unsub).toHaveBeenCalledOnce();
-  });
-
-  it("exposes no full-history read even though the SDK session implements getEvents", async () => {
+  it("deliberately omits full-history reads and pending-interaction listings", async () => {
+    // A single large history response tears down the shared JSON-RPC connection, so the Bridge reads
+    // events.jsonl from disk. The runtime has no pending user-input/elicitation listing (only
+    // permission prompts), so the Bridge serves listings from its own event-derived index.
     const getEvents = vi.fn().mockResolvedValue([{ type: "test" }]);
-    const session = { ...createFakeSession(), getEvents };
+    const pendingRequests = vi.fn().mockResolvedValue({ items: [] });
+    const session = { ...createFakeSession({ permissions: { pendingRequests } }), getEvents };
     const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
 
-    // A single `session.getMessages` response for a large transcript tears
-    // down the shared JSON-RPC connection, so the Bridge reads history from
-    // events.jsonl on disk and the facade deliberately does not forward it.
-    expect("getEvents" in wrapped).toBe(false);
-    expect((wrapped as unknown as Record<string, unknown>).getEvents).toBeUndefined();
+    for (const method of ["getEvents", "getPendingUserInputRequests", "getPendingElicitationRequests"]) {
+      expect(method in wrapped, method).toBe(false);
+    }
     expect(getEvents).not.toHaveBeenCalled();
-  });
-
-  it("has no pending-interaction listing surface: the SDK exposes no wire method", async () => {
-    // `session.permissions.pendingRequests` exists, but its declared result
-    // (`PendingPermissionRequestList`) carries permission prompts only — there is
-    // no `pendingUserInputs` / `pendingElicitations` field anywhere in the
-    // generated RPC surface. Reading it cost a wire round-trip that could only
-    // ever fail, so the wrapper no longer offers a listing method at all and
-    // Bridge serves listings from its own event-derived index instead.
-    const pendingRequests = vi.fn().mockResolvedValue({ items: [] });
-    const session = createFakeSession({ permissions: { pendingRequests } });
-    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
-
-    expect("getPendingUserInputRequests" in wrapped).toBe(false);
-    expect("getPendingElicitationRequests" in wrapped).toBe(false);
     expect(pendingRequests).not.toHaveBeenCalled();
   });
 

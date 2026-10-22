@@ -48,7 +48,13 @@ import {
   getSafeScrollTop,
   useChatScroll,
 } from "./chat/useChatScroll";
-import { SCROLL_REST_MS, scrollerAtRest, ViewportKeeper, type ScrollActivity } from "./chat/TranscriptViewport";
+import { scrollerAtRest, ViewportKeeper, type ScrollActivity } from "./chat/TranscriptViewport";
+import {
+  isHeldOnParkedReply,
+  isTranscriptAtRest,
+  shouldFillFromTop,
+  shouldPrefetchOlderPage,
+} from "./chat/transcript-scroll-policy";
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
@@ -1416,10 +1422,7 @@ export default function ChatView({
     scroller.scrollTop = getSafeScrollTop(scroller) + delta;
     settleProgrammaticScroll();
   }, [settleProgrammaticScroll]);
-  const transcriptAtRest = useCallback(() => {
-    const { movedAt, touching } = scrollActivityRef.current;
-    return !touching && Date.now() - movedAt >= SCROLL_REST_MS;
-  }, []);
+  const transcriptAtRest = useCallback(() => isTranscriptAtRest(scrollActivityRef.current, Date.now()), []);
 
   const loadOlderMessages = useCallback(async () => {
     const before = firstItemIndex.current;
@@ -1460,21 +1463,18 @@ export default function ChatView({
     void loadOlderMessages();
   }, [handleUserScrollIntent, loadOlderMessages]);
 
-  // Track bottom-following, and fetch the previous page once the reader is heading for the top
-  // and within a screen of it, so it is usually in place before they get there.
+  // Track bottom-following, and fetch the previous page as the reader heads for the top.
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     viewportKeeperRef.current?.moved();
     const top = getSafeScrollTop(el);
-    const movedUp = top < lastScrollTopRef.current;
+    const previousTop = lastScrollTopRef.current;
     lastScrollTopRef.current = top;
     if (programmaticScrollRef.current) return;
-    // A browser that anchors scrolling moves the view itself when content above it changes
-    // height, and that is a scroll event too. The reader is still parked on the same reply.
     const parkedOn = anchoredMessageKeyRef.current;
     const parkedTop = parkedOn ? getMessageTopWithinScroller(parkedOn) : null;
-    if (parkedTop != null && Math.abs(parkedTop - top) <= LATEST_MESSAGE_TOP_THRESHOLD_PX) return;
+    if (isHeldOnParkedReply(parkedTop, top, LATEST_MESSAGE_TOP_THRESHOLD_PX)) return;
     scrollActivityRef.current.movedAt = Date.now();
 
     const following = getDistanceFromBottom(el) <= FOLLOW_BOTTOM_THRESHOLD_PX;
@@ -1486,10 +1486,12 @@ export default function ChatView({
       setShowJumpToLatest(true);
     }
 
-    // Only moving up asks for older messages. A chat often opens near the top of what is loaded
-    // (a long reply under a collapsed run), and reading down from there must not fetch anything.
-    // A failed page waits for Retry instead of refiring on every scroll event.
-    if (movedUp && !loadMoreError && top < el.clientHeight) void loadOlderMessages();
+    if (shouldPrefetchOlderPage({
+      previousScrollTop: previousTop,
+      scrollTop: top,
+      clientHeight: el.clientHeight,
+      loadFailed: Boolean(loadMoreError),
+    })) void loadOlderMessages();
   }, [creating, getMessageTopWithinScroller, isStreaming, loadMoreError, loadOlderMessages, pendingInteractionCount]);
 
   const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
@@ -1507,12 +1509,14 @@ export default function ChatView({
     event.target.addEventListener("touchcancel", onLift, { signal: lifted.signal });
   }, []);
 
-  // Neither a window too short to scroll nor a reader parked at its very top produces a scroll
-  // event that could ask for more, so keep filling from the top.
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (!el || loading || loadMoreError || !(el.clientHeight > 0)) return;
-    if (getMaxScrollTop(el) > 0 && getSafeScrollTop(el) > 0) return;
+    if (!el || loading || loadMoreError) return;
+    if (!shouldFillFromTop({
+      clientHeight: el.clientHeight,
+      maxScrollTop: getMaxScrollTop(el),
+      scrollTop: getSafeScrollTop(el),
+    })) return;
     void loadOlderMessages();
   }, [entries, loadMoreError, loadOlderMessages, loading]);
 

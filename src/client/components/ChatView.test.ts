@@ -1711,29 +1711,28 @@ describe("ChatView history pagination", () => {
     }
   });
 
+  // ViewportKeeper's own handling of late height changes is covered in chat/TranscriptViewport.test.ts.
+  // These cases prove ChatView feeds it the reader's scrolling: scroll events and when they stopped.
   describe("content above the reader that changes height long after it rendered", () => {
     /**
      * Six rows of 150px, the reader at the top of the fifth, in a browser that does not anchor
-     * scrolling. `grow` makes one row taller, as an image in it finishing loading would, which
-     * pushes the rows after it down.
+     * scrolling. `grow` makes the second row taller, as an image in it finishing loading would,
+     * which pushes the rows after it down.
      */
-    async function renderSixRows({ growingRow = 2, anchoring = false } = {}) {
+    async function renderSixRows() {
       vi.useFakeTimers();
-      if (anchoring) vi.stubGlobal("CSS", { supports: () => true });
       const resizes = stubResizeObserver();
       const view = await renderPaginatedSession(createMessages(1, 7), 7);
       const { scrollContainer, dom } = view;
       let grown = 0;
       const rowOf = (index: number) => findMessageWrapperByAnchorKey(dom.container, `entry-${index}`);
       for (let index = 1; index <= 6; index += 1) {
-        placeInScroller(rowOf(index), scrollContainer, () => (index - 1) * 150 + (index > growingRow ? grown : 0), 150);
+        placeInScroller(rowOf(index), scrollContainer, () => (index - 1) * 150 + (index > 2 ? grown : 0), 150);
       }
       setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 600 });
       const rows = rowOf(1).parentNode;
       return {
         ...view,
-        rows,
-        resizes,
         /** The row is taller, and the browser has not said so yet. */
         grow: (by: number) => { grown += by; },
         /** The browser reports that the rows changed size. */
@@ -1746,25 +1745,6 @@ describe("ChatView history pagination", () => {
       };
     }
 
-    it("holds the row the reader is on when an image above it finishes loading", async () => {
-      const view = await renderSixRows();
-
-      try {
-        // Rendering settles the view, as opening a chat does.
-        await view.render();
-        view.grow(463);
-        await view.reportResize();
-        expect(view.scrollContainer.scrollTop).toBe(1063);
-
-        // A second image, measured from where the first one left the view.
-        view.grow(100);
-        await view.reportResize();
-        expect(view.scrollContainer.scrollTop).toBe(1163);
-      } finally {
-        await view.cleanup();
-      }
-    });
-
     it("measures from where the reader stopped scrolling", async () => {
       const view = await renderSixRows();
 
@@ -1774,36 +1754,6 @@ describe("ChatView history pagination", () => {
         view.grow(463);
         await view.reportResize();
         expect(view.scrollContainer.scrollTop).toBe(1063);
-      } finally {
-        await view.cleanup();
-      }
-    });
-
-    it("is not thrown off by a scroll event that did not move the view", async () => {
-      const view = await renderSixRows();
-
-      try {
-        await view.render();
-        view.grow(463);
-        // The event for a move made from code arrives a frame late: this time after the image.
-        await view.scrollHere();
-        await advanceTimersByTimeAct(view.act, 120);
-        await view.reportResize();
-        expect(view.scrollContainer.scrollTop).toBe(1063);
-      } finally {
-        await view.cleanup();
-      }
-    });
-
-    it("does not take a move of the view for a change in height", async () => {
-      const view = await renderSixRows();
-
-      try {
-        await view.render();
-        // Following live output scrolls from code, and the scroll event for it is still on its way.
-        view.scrollContainer.scrollTop = 900;
-        await view.reportResize();
-        expect(view.scrollContainer.scrollTop).toBe(900);
       } finally {
         await view.cleanup();
       }
@@ -1827,51 +1777,10 @@ describe("ChatView history pagination", () => {
         await view.cleanup();
       }
     });
-
-    it("holds it when the transcript renders again before the browser has reported the change", async () => {
-      const view = await renderSixRows();
-
-      try {
-        await view.render();
-        view.grow(463);
-        // A streamed chunk, say. Settling after it would take the image's shift for granted.
-        await view.render();
-        expect(view.scrollContainer.scrollTop).toBe(1063);
-      } finally {
-        await view.cleanup();
-      }
-    });
-
-    it("does not follow something that grows in view", async () => {
-      // The fifth row is the one at the top of the view: opening something in it pushes the sixth down.
-      const view = await renderSixRows({ growingRow: 5 });
-
-      try {
-        await view.render();
-        view.grow(300);
-        await view.reportResize();
-        expect(view.scrollContainer.scrollTop).toBe(600);
-      } finally {
-        await view.cleanup();
-      }
-    });
-
-    it("leaves it to a browser that anchors scrolling itself", async () => {
-      const view = await renderSixRows({ anchoring: true });
-
-      try {
-        await view.render();
-        expect(view.resizes.observed()).not.toContain(view.rows);
-        view.grow(463);
-        await view.reportResize();
-        expect(view.scrollContainer.scrollTop).toBe(600);
-      } finally {
-        await view.cleanup();
-      }
-    });
   });
 
-  it("prefetches the previous page once the reader scrolls within a screen of the top", async () => {
+  // Which scroll positions and directions ask for a page is covered in chat/transcript-scroll-policy.test.ts.
+  it("prefetches the previous page once the reader scrolls up within a screen of the top", async () => {
     const view = await renderPaginatedSession(createMessages(3, 5), 5);
 
     try {
@@ -1889,33 +1798,6 @@ describe("ChatView history pagination", () => {
         await waitTick();
       });
       expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 200, before: 3 });
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("does not fetch older messages when the reader scrolls down from near the top", async () => {
-    // A long reply under a collapsed run opens with the reader almost at the top of what is loaded.
-    const view = await renderPaginatedSession(createMessages(3, 5), 5);
-
-    try {
-      const { scrollContainer, act } = view;
-      setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 90 });
-      for (const scrollTop of [90, 300]) {
-        scrollContainer.scrollTop = scrollTop;
-        await act(async () => {
-          scroll(scrollContainer);
-          await waitTick();
-        });
-      }
-      expect(fetchOlderMessagesFastMock).not.toHaveBeenCalled();
-
-      scrollContainer.scrollTop = 250;
-      await act(async () => {
-        scroll(scrollContainer);
-        await waitTick();
-      });
-      expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(1);
     } finally {
       await view.cleanup();
     }
@@ -4727,8 +4609,8 @@ describe("ChatView disk-authoritative synchronization", () => {
     const loaded = () => [createMessage("entry-1", "first reply"), createMessage("entry-2", "second reply")];
     const renderedMessageIds = () => messageBubbleRenderMock.mock.calls.map(([message]) => (message as ChatMessage).id);
 
-    // Rendering a reply means parsing its markdown again, so both of these keep a long chat cheap.
-    it("renders streamed text without rendering them again", async () => {
+    // Rendering a reply means parsing its markdown again, so this keeps a long chat cheap.
+    it("renders neither streamed text nor a refresh through the replies that did not change", async () => {
       vi.useFakeTimers();
       const streaming = { isStreaming: true, streamStatus: "streaming", streamingContent: "one" };
       const { dom, act, cleanup, render } = await renderChatView({
@@ -4747,32 +4629,19 @@ describe("ChatView disk-authoritative synchronization", () => {
         expect(dom.container.textContent).toContain("one two three");
         expect(renderedMessageIds()).not.toContain("entry-1");
         expect(renderedMessageIds()).not.toContain("entry-2");
-      } finally {
-        await cleanup();
-      }
-    });
 
-    it("renders only what a refresh changed", async () => {
-      const { dom, act, cleanup, render } = await renderChatView({
-        fetchMessagesFastResult: { messages: loaded(), runState: "idle", total: 2, warm: true },
-        streamOverrides: { isStreaming: false, pendingOrigin: null },
-      });
-
-      try {
-        await waitUntilAct(act, () => dom.container.textContent?.includes("second reply") ?? false);
         messageBubbleRenderMock.mockClear();
         // A read returns fresh copies of everything, including what did not change.
         fetchMessagesFastMock.mockResolvedValueOnce({
           messages: [...loaded(), createMessage("entry-3", "third reply")],
-          runState: "idle",
+          runState: "busy",
           total: 3,
           warm: true,
         });
-
-        await render({ streamOverrides: { historyEpoch: 1 } });
+        await render({ streamOverrides: { ...streaming, streamingContent: "one two three", historyEpoch: 1 } });
         await waitUntilAct(act, () => dom.container.textContent?.includes("third reply") ?? false);
 
-        expect(renderedMessageIds()).toEqual(["entry-3"]);
+        expect(renderedMessageIds().filter((id) => id?.startsWith("entry-"))).toEqual(["entry-3"]);
       } finally {
         await cleanup();
       }
@@ -5080,7 +4949,13 @@ describe("ChatView disk-authoritative synchronization", () => {
       status: "success" as const,
       sourceEventType: "session.task_complete",
     };
-    const { dom, act, cleanup } = await renderChatView({
+    const idleWithCompletion = {
+      liveCompletion: { completion, sourceEventId: "terminal-1" },
+      isStreaming: false,
+      streamStatus: "idle",
+      pendingOrigin: null,
+    };
+    const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [createMessage("entry-1", "assistant reply")],
         runState: "idle",
@@ -5088,18 +4963,30 @@ describe("ChatView disk-authoritative synchronization", () => {
         warm: true,
         hasMore: false,
       },
-      streamOverrides: {
-        liveCompletion: { completion, sourceEventId: "terminal-1" },
-        isStreaming: false,
-        streamStatus: "idle",
-        pendingOrigin: null,
-      },
+      streamOverrides: idleWithCompletion,
     });
+    const occurrences = () => (dom.container.textContent ?? "").split("Task wrapped up").length - 1;
 
     try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Task wrapped up") ?? false);
-      const text = dom.container.textContent ?? "";
-      expect(text.indexOf("Task wrapped up")).toBe(text.lastIndexOf("Task wrapped up"));
+      await waitUntilAct(act, () => occurrences() > 0);
+      expect(occurrences()).toBe(1);
+
+      // Disk now carries the same completion; the live copy must retire, not duplicate it.
+      fetchMessagesFastMock.mockResolvedValue({
+        messages: [
+          createMessage("entry-1", "assistant reply"),
+          { id: "committed-completion", type: "completion", sourceEventId: "terminal-1", content: completion.content, completion },
+          createMessage("entry-2", "disk caught up"),
+        ],
+        runState: "idle",
+        total: 3,
+        warm: true,
+        hasMore: false,
+      });
+      await render({ streamOverrides: { ...idleWithCompletion, historyEpoch: 1 } });
+      await waitUntilAct(act, () => dom.container.textContent?.includes("disk caught up") ?? false);
+
+      expect(occurrences()).toBe(1);
     } finally {
       await cleanup();
     }

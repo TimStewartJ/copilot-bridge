@@ -172,19 +172,4 @@ describe("SystemPromptSection", () => {
     expect(setDraft).toHaveBeenCalledWith({ ...draft, responseStyle: resolveResponseStyle() });
     expect(draft.responseStyle?.guidance).toBe("Explain thoroughly.");
   });
-
-  it.each([
-    "<anti_slop_response_quality>Edited guidance.</anti_slop_response_quality>",
-    "<anti_slop_response_quality>Incomplete guidance.",
-    "<anti_slop_response_quality",
-  ])("shows a review notice for preserved legacy guidance", async (customInstructions) => {
-    const { container } = await renderSection({ mcpServers: {}, customInstructions });
-    expect(container.textContent).toContain("An edited or incomplete legacy response-quality block was preserved");
-    expect(getReactProps(findAllByTag(container, "TEXTAREA")[2])?.value).toBe(customInstructions);
-  });
-
-  it("keeps ordinary custom instructions free of legacy warnings", async () => {
-    const { container } = await renderSection({ mcpServers: {}, customInstructions: "Prefer TypeScript." });
-    expect(container.textContent).not.toContain("legacy response-quality block was preserved");
-  });
 });

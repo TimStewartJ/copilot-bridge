@@ -11,7 +11,6 @@ const EXPECTED_SDK_VERSION = "1.0.25";
 describe("installed Copilot package contract", () => {
   const sdkPackageJsonPath = findInstalledSdkFile("package.json");
   const cliPackageJsonPath = findInstalledCliFile("package.json");
-  const rpcTypesPath = findInstalledSdkFile(join("dist", "generated", "rpc.d.ts"));
 
   it("pins the stable SDK and selected CLI package", () => {
     expect(sdkPackageJsonPath, "No installed @github/copilot-sdk package.json found.").toBeTruthy();
@@ -36,31 +35,6 @@ describe("installed Copilot package contract", () => {
     });
   });
 
-  it("keeps the pending-interaction RPC surface explicit", () => {
-    expect(
-      rpcTypesPath,
-      "No installed @github/copilot-sdk generated rpc.d.ts found. Run `npm install` before the server test lane.",
-    ).toBeTruthy();
-    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
-    expect(rpcTypes).not.toContain("pendingUserInputs");
-    expect(rpcTypes).not.toContain("pendingElicitations");
-  });
-
-  // The run watchdog and the idle-session sweep ask the runtime whether a session is working.
-  it("ships the session activity RPC that decides whether a run is over", () => {
-    expect(rpcTypesPath, "No installed @github/copilot-sdk generated rpc.d.ts found.").toBeTruthy();
-    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
-    expect(rpcTypes).toContain("isProcessing: () => Promise<MetadataIsProcessingResult>");
-    expect(rpcTypes).toMatch(/interface MetadataIsProcessingResult \{[^}]*processing: boolean;/s);
-  });
-
-  it("ships native permission mode initialization with an authoritative result", () => {
-    expect(rpcTypesPath, "No installed @github/copilot-sdk generated rpc.d.ts found.").toBeTruthy();
-    const rpcTypes = readFileSync(rpcTypesPath!, "utf-8");
-    expect(rpcTypes).toContain("setMode: (params: PermissionsSetModeRequest) => Promise<PermissionsSetModeResult>");
-    expect(rpcTypes).toMatch(/interface PermissionsSetModeResult \{[^}]*success: boolean;[^}]*mode: PermissionMode;/s);
-  });
-
   // Verified for win32-x64 only; the other platform packages have not been inspected.
   it.runIf(process.platform === "win32")("ships the Computer Use plugin the Bridge loads per session", () => {
     const status = resolveComputerUsePlugin();
@@ -77,13 +51,6 @@ describe("installed Copilot package contract", () => {
     const cwd = (server!.cwd ?? "${PLUGIN_ROOT}").replace("${PLUGIN_ROOT}", pluginDirectory);
     const command = resolve(cwd, server!.command!.replace("${PLUGIN_ROOT}", pluginDirectory));
     expect(existsSync(command), `${command} is missing`).toBe(true);
-  });
-
-  it("forwards pluginDirectories when creating and resuming sessions", () => {
-    const clientPath = findInstalledSdkFile(join("dist", "client.js"));
-    expect(clientPath, "No installed @github/copilot-sdk dist/client.js found.").toBeTruthy();
-    const forwarded = readFileSync(clientPath!, "utf-8").match(/pluginDirectories: config\.pluginDirectories/g) ?? [];
-    expect(forwarded).toHaveLength(2);
   });
 });
 

@@ -1310,8 +1310,6 @@ describe("BrowserLiveGateway relay to the browser", () => {
     for (const dropped of [
       { type: "eval", script: "document.cookie" },
       { type: "stream", action: "disable" },
-      // No longer part of the protocol: the client turns touches into mouse input.
-      { type: "input_touch", eventType: "touchStart", touchPoints: [{ x: 3, y: 4 }] },
       { type: "frame", seq: 1, data: "QQ==" },
       { type: "input_mouse", eventType: "click", x: 1, y: 1 },
       [{ type: "ack", seq: 1 }],
@@ -1706,7 +1704,6 @@ describe("parseBrowserLiveClientMessage", () => {
   it("rejects every other kind of message, and what is not an object", () => {
     for (const message of [
       { type: "eval", script: "document.cookie" },
-      { type: "input_touch", eventType: "touchStart", touchPoints: [{ x: 1, y: 2 }] },
       { type: "input_clipboard", text: "paste" },
       { type: "ACK", seq: 1 },
       // String(["input_mouse"]) is "input_mouse", so a check that coerces the type lets this through.

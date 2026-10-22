@@ -1,5 +1,4 @@
 import type {
-  ModelFamilyDefaults,
   ModelInfo,
   ModelPreset,
   ModelPresets,
@@ -7,7 +6,6 @@ import type {
 import {
   DEFAULT_MODEL_PRESET_FAMILIES,
   MODEL_PRESET_SLOTS,
-  getModelPresetSlotForFamily,
   getModelPresetSlotLabel,
   type ModelPresetSlot,
 } from "../../shared/model-presets.js";
@@ -40,27 +38,6 @@ interface ResolveModelPresetStateOptions {
   selectedPresetSlot?: ModelPresetSlot;
   globalDefaultModelId?: string;
   presets?: ModelPresets;
-}
-
-export function migrateLegacyFamilyDefaults(
-  familyDefaults: ModelFamilyDefaults | undefined,
-): ModelPresets | undefined {
-  if (!familyDefaults) return undefined;
-  const presets: ModelPresets = {};
-  for (const [family, preset] of Object.entries(familyDefaults)) {
-    if (preset) presets[getModelPresetSlotForFamily(family as keyof ModelFamilyDefaults)] = preset;
-  }
-  return Object.keys(presets).length > 0 ? presets : undefined;
-}
-
-export function mergeStoredModelPresets(
-  modelPresets: ModelPresets | undefined,
-  familyDefaults: ModelFamilyDefaults | undefined,
-): ModelPresets | undefined {
-  const legacy = migrateLegacyFamilyDefaults(familyDefaults);
-  if (!legacy) return modelPresets;
-  if (!modelPresets) return legacy;
-  return { ...legacy, ...modelPresets };
 }
 
 function getAvailableModels(models: readonly ModelInfo[]): ModelInfo[] {

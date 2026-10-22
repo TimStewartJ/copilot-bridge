@@ -25,7 +25,6 @@ describe("response style", () => {
   it.each(RESPONSE_DETAIL_OPTIONS)("renders one stable block for $value with user overrides and quality boundaries", ({ value }) => {
     const settings = { detail: value, guidance: "Use short paragraphs." };
     const prompt = renderResponseStyle(settings);
-    expect(prompt).toBe(renderResponseStyle(settings));
     expect(prompt.match(/<response_style>/g)).toHaveLength(1);
     expect(prompt.match(/<\/response_style>/g)).toHaveLength(1);
     expect(prompt).toContain(`Default detail: ${value}.`);

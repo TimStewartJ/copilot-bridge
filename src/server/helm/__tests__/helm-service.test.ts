@@ -92,23 +92,6 @@ describe("HelmService conversations", () => {
     helm.dispose();
   });
 
-  it("accepts the hub's exact eleven-field fixture and returns it unchanged", async () => {
-    const { helm, ctx } = createHarness();
-    ctx.settingsStore = createSettingsStore(setupTestDb());
-    const app = express().use(express.json()).use("/api/helm", createHelmRouter(helm));
-    const fixture = {
-      model: "", typedReasoningEffort: "high", spokenReasoningEffort: "low",
-      glossary: "SELFTEST names", voice: "af_heart", speed: 1.15, patience: 0.7,
-      bargeIn: false, announce: "off", echoSafe: true, transport: "http",
-    };
-    expect(Object.keys(fixture)).toHaveLength(11);
-    const saved = await request(app).patch("/api/helm/settings").send(fixture).expect(200);
-    expect(saved.body.settings).toEqual(fixture);
-    expect(saved.body.schemaVersion).toBe(1);
-    expect((await request(app).get("/api/helm/settings").expect(200)).body.settings).toEqual(fixture);
-    helm.dispose();
-  });
-
   it("round-trips the complete dedicated settings contract without touching unrelated settings", async () => {
     const { helm, ctx, sessionManager } = createHarness();
     const db = setupTestDb();
@@ -136,6 +119,16 @@ describe("HelmService conversations", () => {
     await helm.createConversation();
     expect(sessionManager.createSession).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-opus-5", reasoningEffort: "high" }));
     expect(helm.getTurnReasoningEffort("spoken")).toBe("low");
+    // The hub sends exactly these eleven fields, including an empty model, and reads them back unchanged.
+    const hubFixture = {
+      model: "", typedReasoningEffort: "high", spokenReasoningEffort: "low",
+      glossary: "SELFTEST names", voice: "af_heart", speed: 1.15, patience: 0.7,
+      bargeIn: false, announce: "off", echoSafe: true, transport: "http",
+    };
+    const hubSaved = await request(app).patch("/api/helm/settings").send(hubFixture).expect(200);
+    expect(hubSaved.body).toMatchObject({ schemaVersion: 1 });
+    expect(hubSaved.body.settings).toEqual(hubFixture);
+    expect((await request(app).get("/api/helm/settings").expect(200)).body.settings).toEqual(hubFixture);
     helm.dispose();
   });
 

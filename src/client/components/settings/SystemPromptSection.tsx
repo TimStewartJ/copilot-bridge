@@ -40,7 +40,6 @@ export function SystemPromptSection({
   const customInstructions = draft.customInstructions ?? "";
   const { failedKeys, pendingKeys, error: writeError } = useSettingsWriter();
   const responseStyleError = failedKeys.has("responseStyle") ? writeError?.message : null;
-  const hasLegacyBlock = customInstructions.includes("<anti_slop_response_quality") || customInstructions.includes("</anti_slop_response_quality");
 
   const commit = (changes: Partial<AppSettings>) => setDraft({ ...structuredClone(draft), ...changes });
   const profileSetting = draft.promptProfile ?? DEFAULT_PROMPT_PROFILE_SETTING;
@@ -174,9 +173,6 @@ export function SystemPromptSection({
             </div>
           </Details>
         </div>
-        {hasLegacyBlock && (
-          <p role="note" className="mt-2 text-xs text-text-secondary">An edited or incomplete legacy response-quality block was preserved here. Review it to avoid overlapping response-style guidance.</p>
-        )}
       </SettingsSection>
     </>
   );

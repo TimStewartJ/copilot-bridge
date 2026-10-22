@@ -11,8 +11,8 @@ afterEach(() => {
 });
 
 describe("deferred work client API", () => {
-  it("uses session-scoped detail and run endpoints", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ runs: [] }), {
+  it("encodes session and defer IDs in every session-scoped endpoint", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("{}", {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }));
@@ -20,32 +20,14 @@ describe("deferred work client API", () => {
 
     await fetchSessionDefers("session/1");
     await fetchSessionDeferRuns("session/1", "interval/1");
+    await cancelSessionDefer("session/1", "interval/1");
+    await reactivateSessionDefer("session/1", "interval/1");
 
-    expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/sessions/session%2F1/defers");
-    expect(fetchMock.mock.calls[1]?.[0]).toContain(
-      "/api/sessions/session%2F1/defers/interval%2F1/runs",
-    );
-  });
-
-  it("posts cancel and reactivate mutations", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await cancelSessionDefer("session-1", "interval_1");
-    await reactivateSessionDefer("session-1", "interval_1");
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining("/api/sessions/session-1/defers/interval_1/cancel"),
-      { method: "POST" },
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining("/api/sessions/session-1/defers/interval_1/reactivate"),
-      { method: "POST" },
-    );
+    expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
+      [expect.stringContaining("/api/sessions/session%2F1/defers"), "GET"],
+      [expect.stringContaining("/api/sessions/session%2F1/defers/interval%2F1/runs"), "GET"],
+      [expect.stringContaining("/api/sessions/session%2F1/defers/interval%2F1/cancel"), "POST"],
+      [expect.stringContaining("/api/sessions/session%2F1/defers/interval%2F1/reactivate"), "POST"],
+    ]);
   });
 });

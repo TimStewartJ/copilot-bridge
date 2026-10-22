@@ -4,7 +4,6 @@ import {
   evictIdleCache,
   fetchBridgeRuntimeStatus,
   restartBridge,
-  type BridgeRuntimeStatus,
 } from "./bridge-management-api";
 
 function stubJsonResponse(body: unknown, init: { ok?: boolean; status?: number; statusText?: string } = {}) {
@@ -21,83 +20,21 @@ afterEach(() => {
 });
 
 describe("bridge management client API", () => {
-  it("fetches runtime status and queues restart requests", async () => {
-    const runtime: BridgeRuntimeStatus = {
-      fetchedAt: "2026-07-15T12:00:00.000Z",
-      serverInstanceId: "server-1",
-      pid: 1234,
-      uptimeSeconds: 90,
-      isStaging: false,
-      sourceManagementAvailable: true,
-      agentBackend: {
-        state: "ready",
-        connection: "connected",
-        pid: 12345,
-        createdAt: "2026-07-15T12:00:00.000Z",
-        lastDisconnect: null,
-        disconnectCount: 0,
-        recoveryCount: 0,
-        lastRecoveryAt: null,
-        lastRecoveryError: null,
-        recoveryBlockedAt: null,
-        lastInterruptedSessionCount: 0,
-        lastAutoResumedSessionCount: 0,
-      },
-      sessions: { active: 2, stalled: 1, waitingForUserInput: 1 },
-      agents: {
-        running: 3,
-        idle: 1,
-        failed: 0,
-        total: 5,
-        liveSessions: 2,
-        staleSessions: 0,
-        unknownSessions: 0,
-      },
-      capacity: {
-        contexts: { used: 8, retained: 10, limit: 32 },
-        weightedUnits: { used: 12.5, retained: 15, limit: 64 },
-        localMcpSlots: { used: 18, retained: 20 },
-        cache: { readyParents: 7, protectedParents: 2, limit: 16 },
-        cleanup: { pending: 0, failed: 0, limit: 32 },
-        waitingRequests: 0,
-        localMcpWeight: 0.25,
-        waitTimeoutSeconds: 30,
-      },
-    };
-    stubJsonResponse(runtime);
+  it("calls the runtime, cache and restart endpoints with the restart options in the body", async () => {
+    stubJsonResponse({ ok: true });
 
-    await expect(fetchBridgeRuntimeStatus()).resolves.toEqual(runtime);
-    expect(fetch).toHaveBeenLastCalledWith("/api/server/runtime-status", { signal: undefined });
+    await fetchBridgeRuntimeStatus();
+    await evictIdleCache();
+    await restartBridge();
+    await restartBridge({ force: true, resume: true });
 
-    stubJsonResponse({ ok: true, evictedSessions: 7, protectedSessions: 3 });
-    await expect(evictIdleCache()).resolves.toEqual({
-      ok: true,
-      evictedSessions: 7,
-      protectedSessions: 3,
-    });
-    expect(fetch).toHaveBeenLastCalledWith(
-      "/api/server/cache/evict-idle",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
-    );
-
-    stubJsonResponse({ ok: true, waitingOn: { sessions: 2, jobs: 0 } }, { status: 202 });
-    await expect(restartBridge()).resolves.toEqual({ ok: true, waitingOn: { sessions: 2, jobs: 0 } });
-    expect(fetch).toHaveBeenLastCalledWith(
-      "/api/server/restart",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{\"force\":false}" },
-    );
-
-    stubJsonResponse({ ok: true, forced: true, abortedRuns: 2, resumingRuns: 1 }, { status: 202 });
-    await expect(restartBridge({ force: true, resume: true })).resolves.toEqual({
-      ok: true,
-      forced: true,
-      abortedRuns: 2,
-      resumingRuns: 1,
-    });
-    expect(fetch).toHaveBeenLastCalledWith(
-      "/api/server/restart",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{\"force\":true,\"resume\":true}" },
-    );
+    const post = (body: string) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body });
+    expect(vi.mocked(fetch).mock.calls).toEqual([
+      ["/api/server/runtime-status", { signal: undefined }],
+      ["/api/server/cache/evict-idle", post("{}")],
+      ["/api/server/restart", post("{\"force\":false}")],
+      ["/api/server/restart", post("{\"force\":true,\"resume\":true}")],
+    ]);
   });
 
   it("surfaces restart errors as ApiError", async () => {

@@ -5,7 +5,7 @@ import type { GlobalBus } from "./global-bus.js";
 import { isRecord } from "../shared/is-record.js";
 import { runImmediateTransaction, runTransaction } from "./db-transaction.js";
 import type { ArchivedChecklistSource } from "../shared/checklist-origin.js";
-type ChecklistActor = "user" | "agent" | "system" | "legacy";
+type ChecklistActor = "user" | "agent" | "system";
 
 // ── Types ─────────────────────────────────────────────────────────
 

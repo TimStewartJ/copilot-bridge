@@ -20,7 +20,6 @@ import type {
 } from "../shared/copilot-context.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import type { RunNotice } from "../shared/session-stream.js";
-import type { ModelFamily } from "../shared/model-families.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { ResponseStyleSettings } from "../shared/response-style.js";
 import type { DeferCheckpoint } from "../shared/defer-checkpoint.js";
@@ -2339,14 +2338,6 @@ export interface ComputerUseStatus {
   reason?: string;
 }
 
-export interface ModelFamilyDefault {
-  model: string;
-  reasoningEffort?: ReasoningEffort;
-  contextTier?: CopilotContextTier;
-}
-
-export type ModelFamilyDefaults = Partial<Record<ModelFamily, ModelFamilyDefault>>;
-
 export interface ModelPreset {
   model: string;
   reasoningEffort?: ReasoningEffort;
@@ -2380,9 +2371,6 @@ export interface AppSettings {
   contextTier?: CopilotContextTier;
   modelPresets?: ModelPresets;
   lastModelPreset?: ModelPresetSlot;
-  /** Legacy fields accepted while persisted settings migrate to presets. */
-  familyDefaults?: ModelFamilyDefaults;
-  lastModelFamily?: ModelFamily;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   /** Canonical sub-agent models; unset means Bridge sessions use the CLI user settings. */
