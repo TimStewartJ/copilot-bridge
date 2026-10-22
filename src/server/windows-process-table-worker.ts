@@ -7,6 +7,8 @@ export interface WindowsProcessTableEntry {
   ppid: number;
   startMarker: string;
   identityError?: string;
+  /** OpenProcess refused even limited query access: another user's or a protected process. */
+  accessDenied?: true;
 }
 
 export interface WindowsProcessTableApi {
@@ -26,6 +28,7 @@ export interface WindowsProcessTableApi {
 
 const FILETIME_TO_DOTNET_TICKS = 504_911_232_000_000_000n;
 const ERROR_NO_MORE_FILES = 18;
+const ERROR_ACCESS_DENIED = 5;
 
 export async function loadWindowsProcessTableApi(): Promise<WindowsProcessTableApi> {
   const imported = await import("koffi");
@@ -107,9 +110,12 @@ export function enumerateWindowsProcessTable(api: WindowsProcessTableApi): Windo
       if (pid > 0) {
         const handle = api.open(pid);
         let identityError: string | undefined;
+        let accessDenied = false;
         let created: bigint | undefined;
         if (api.invalidHandle(handle)) {
-          identityError = `OpenProcess failed with Windows error ${api.lastError()}`;
+          const code = api.lastError();
+          identityError = `OpenProcess failed with Windows error ${code}`;
+          accessDenied = code === ERROR_ACCESS_DENIED;
         } else {
           created = withHandle(api, handle, () => {
             const time = api.creationTime(handle);
@@ -120,7 +126,8 @@ export function enumerateWindowsProcessTable(api: WindowsProcessTableApi): Windo
         if (created !== undefined && created > startedAt) identityError = "Process was created after the parent snapshot began";
         // CIM birth markers have microsecond precision; keep persisted identities compatible.
         entries.push({ pid, ppid, startMarker: created !== undefined && created > 0n && created <= startedAt
-          ? ((created / 10n) * 10n + FILETIME_TO_DOTNET_TICKS).toString() : "", ...(identityError ? { identityError } : {}) });
+          ? ((created / 10n) * 10n + FILETIME_TO_DOTNET_TICKS).toString() : "", ...(identityError ? { identityError } : {}),
+          ...(accessDenied ? { accessDenied: true as const } : {}) });
       }
       present = api.next(snapshot, entry);
     }

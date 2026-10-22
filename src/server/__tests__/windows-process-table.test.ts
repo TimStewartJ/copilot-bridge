@@ -14,7 +14,7 @@ function fixture({ autoReady = true }: { autoReady?: boolean } = {}) {
   const reader = new WindowsProcessTableReader({ createWorker });
   return { worker, reader, createWorker, ready: () => worker.emit("message", { ready: true }) };
 }
-const entries = [{ pid: 100, ppid: 1, startMarker: "1000" }];
+const entries = [{ pid: 100, ppid: 1, startMarker: "1000" }, { pid: 900, ppid: 100, startMarker: "", accessDenied: true }];
 afterEach(() => { vi.useRealTimers(); });
 
 describe("bounded Windows snapshot worker", () => {

@@ -38,7 +38,7 @@ const PROCESS_TREE_EXIT_POLL_MS = 25;
 // Initial snapshot, taskkill, and verification snapshot, plus the exit settle window and process spawn overhead.
 export const PROCESS_TREE_TERMINATION_BUDGET_MS =
   (PROCESS_TABLE_READ_TIMEOUT_MS * 2) + TASKKILL_TIMEOUT_MS + PROCESS_TREE_EXIT_SETTLE_MS + PROCESS_TREE_DEADLINE_OVERHEAD_MS;
-type ProcessTableEntry = { ppid: number; startMarker: string };
+type ProcessTableEntry = { ppid: number; startMarker: string; accessDenied?: true };
 type ProcessTableReadResult =
   | { ok: true; table: Map<number, ProcessTableEntry> }
   | { ok: false; error: string };
@@ -206,7 +206,8 @@ async function readWindowsProcessTable(
   if (timeoutMs <= 0) return { ok: false, error: "deadline exceeded before native Windows snapshot" };
   try {
     const entries = await readNativeWindowsProcessTable(timeoutMs);
-    return { ok: true, table: new Map(entries.map(({ pid, ppid, startMarker }) => [pid, { ppid, startMarker }])) };
+    return { ok: true, table: new Map(entries.map(({ pid, ppid, startMarker, accessDenied }) =>
+      [pid, { ppid, startMarker, ...(accessDenied ? { accessDenied } : {}) }])) };
   } catch (error) {
     return { ok: false, error: `Native Windows process snapshot failed: ${commandError(error)}` };
   }
@@ -246,6 +247,11 @@ function readProcessTable(
 
 // Drop child-before-parent edges. They indicate that a recycled PID, not the
 // captured parent, owns the relationship represented by this snapshot.
+// Also drop a child we may not even query (Windows access denied). Processes in our tree
+// inherit our token and can always be queried, so such a child is another user's or a
+// protected process whose recorded parent PID was recycled for ours. Without a birth
+// marker it could never be ordered against the parent and would leave the tree
+// unverifiable; and since limited query is the weakest right, taskkill could not stop it.
 function collectDescendantIdentities(
   rootPid: number,
   table: Map<number, ProcessTableEntry>,
@@ -273,6 +279,7 @@ function collectDescendantIdentities(
     if (pid === undefined || seen.has(pid)) continue;
     seen.add(pid);
     const entry = table.get(pid);
+    if (entry?.accessDenied) continue;
     if (!entry?.startMarker) {
       missingMarker = true;
     } else {

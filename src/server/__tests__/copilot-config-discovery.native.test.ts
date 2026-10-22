@@ -12,6 +12,7 @@ import { buildSessionConfig } from "../session-config-builder.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { createTaskStore } from "../task-store.js";
 import { createTestBus, makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 function sdkSession(session: AgentSession): CopilotSession {
   const raw: unknown = Reflect.get(session, "session");
@@ -92,7 +93,7 @@ async function fixture(signal: AbortSignal) {
     ...buildCopilotClientOptions(env),
     useLoggedInUser: false, baseDirectory: join(home, "session-state"), logLevel: "error",
   });
-  const backend = new CopilotBackend(client);
+  const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd, { recursive: true });
     await mkdir(otherProject);
@@ -138,7 +139,7 @@ async function fixture(signal: AbortSignal) {
   const cleanup = registerTestAppCleanup(async () => {
     try { await setup; }
     finally {
-      try { await backend.stop(); }
+      try { await stopCopilotRuntime(backend); }
       finally {
         db.close();
         server.closeAllConnections();

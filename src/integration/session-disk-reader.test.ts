@@ -17,6 +17,29 @@ import { createEventLogStatsFoldStore } from "../server/event-log-stats-fold-sto
 import { runAndCountEventLoopYields } from "../server/__tests__/event-loop-test-utils.js";
 import { createTestBus, makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
 
+/**
+ * Lets a test hold record scans of chosen byte ranges open. The event-log stats scan calls
+ * `scanJsonlRecords` only after it has its scan slot, so a held scan keeps its slot taken.
+ */
+const scanHold = vi.hoisted(() => ({
+  current: undefined as undefined | { heldEnds: ReadonlySet<number>; onHold: () => void; release: Promise<void> },
+}));
+vi.mock("../server/jsonl-lines.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../server/jsonl-lines.js")>();
+  return {
+    ...actual,
+    scanJsonlRecords: async (...args: Parameters<typeof actual.scanJsonlRecords>) => {
+      const hold = scanHold.current;
+      const end = args[2]?.end;
+      if (hold && end !== undefined && hold.heldEnds.has(end)) {
+        hold.onHold();
+        await hold.release;
+      }
+      return actual.scanJsonlRecords(...args);
+    },
+  };
+});
+
 function createDeps(copilotHome: string) {
   const spans: Array<{
     name: string;
@@ -1842,29 +1865,57 @@ describe("event-log stats fold persistence and scan scheduling", () => {
   it("limits concurrent large cold scans and lets small reads through", async () => {
     const copilotHome = makeTestDir("session-disk-reader-scan-gate");
     const ids = ["gate-a", "gate-b", "gate-c", "gate-d"];
-    for (const id of ids) writeLargeLog(copilotHome, id, 20_000);
+    const heldEnds = new Set(ids.map((id) => statSync(writeLargeLog(copilotHome, id, 20_000)).size));
+    // ~1 MB: past the tail read, so it takes the stats scan, but under the gate threshold.
+    const smallId = "gate-small";
+    expect(heldEnds.has(statSync(writeLargeLog(copilotHome, smallId, 4_000)).size)).toBe(false);
     const { deps, spans } = createDeps(copilotHome);
 
-    let maxActive = 0;
-    let sawWaiter = false;
-    const sampler = setInterval(() => {
-      const { active, waiting } = getEventLogStatsScanConcurrencyForTests();
-      maxActive = Math.max(maxActive, active);
-      if (waiting > 0) sawWaiter = true;
-    }, 1);
+    // Hold every admitted large scan until the other two have reached the gate; otherwise a slow
+    // start (a loaded machine) lets them arrive after a slot frees and nothing ever queues.
+    let releaseHold!: () => void;
+    let scansAtHold = 0;
+    let maxActiveAtScan = 0;
+    let twoHeld!: () => void;
+    const twoScansHeld = new Promise<void>((resolve) => { twoHeld = resolve; });
+    scanHold.current = {
+      heldEnds,
+      release: new Promise<void>((resolve) => { releaseHold = resolve; }),
+      onHold: () => {
+        maxActiveAtScan = Math.max(maxActiveAtScan, getEventLogStatsScanConcurrencyForTests().active);
+        scansAtHold += 1;
+        if (scansAtHold === 2) twoHeld();
+      },
+    };
+    const reads = ids.map((id) => readMessagesFromDisk(deps, id, { limit: 50 }));
     try {
-      const results = await Promise.all(ids.map((id) => readMessagesFromDisk(deps, id, { limit: 50 })));
-      expect(results.every((r) => r.total === 60)).toBe(true);
+      await twoScansHeld;
+      await vi.waitFor(() => expect(getEventLogStatsScanConcurrencyForTests()).toEqual({ active: 2, waiting: 2 }));
+      expect(scansAtHold).toBe(2);
+
+      const small = await readMessagesFromDisk(deps, smallId, { limit: 50 });
+      expect(small.total).toBe(60);
+      expect(getEventLogStatsScanConcurrencyForTests()).toEqual({ active: 2, waiting: 2 });
     } finally {
-      clearInterval(sampler);
+      releaseHold();
+      await Promise.allSettled(reads);
+      scanHold.current = undefined;
     }
-    expect(maxActive).toBeLessThanOrEqual(2);
-    expect(sawWaiter).toBe(true);
-    const waits = spans
-      .filter((s) => s.name === "session.readFromDisk.stats")
+
+    const results = await Promise.all(reads);
+    expect(results.every((r) => r.total === 60)).toBe(true);
+    expect(scansAtHold).toBe(4);
+    expect(maxActiveAtScan).toBe(2);
+    const statsSpans = spans.filter((s) => s.name === "session.readFromDisk.stats");
+    const largeWaits = statsSpans
+      .filter((s) => s.sessionId !== smallId)
       .map((s) => Number(s.metadata?.scanQueueWaitMs ?? 0));
-    expect(waits.length).toBe(4);
-    expect(Math.max(...waits)).toBeGreaterThan(0);
+    expect(largeWaits.length).toBe(4);
+    expect(largeWaits.filter((wait) => wait > 0).length).toBeGreaterThanOrEqual(2);
+    expect(statsSpans.find((s) => s.sessionId === smallId)?.metadata).toMatchObject({
+      cacheResult: "miss",
+      scanQueueWaitMs: 0,
+    });
     expect(getEventLogStatsScanConcurrencyForTests()).toEqual({ active: 0, waiting: 0 });
   });
 

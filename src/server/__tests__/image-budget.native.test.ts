@@ -1,5 +1,5 @@
 import { CopilotClient } from "@github/copilot-sdk";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import { buildSessionConfig } from "../session-config-builder.js";
 import { ImageBudgetController } from "../image-budget.js";
 import type { ImageBudgetSettings } from "../../shared/image-budget.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 // Drives the real Copilot CLI against a local model server that rejects any request over a byte cap
 // with a bodyless 400, the way Google Vertex rejects oversized Claude requests. The CLI cannot
@@ -292,14 +293,12 @@ beforeAll(async () => {
     ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: home, BRIDGE_WORKSPACE_DIR: join(home, "bridge-workspace") }),
     useLoggedInUser: false, baseDirectory: join(home, "session-state"), logLevel: "error",
   });
-  runtime = { home, backend: new CopilotBackend(client) };
+  runtime = { home, backend: new CopilotBackend(client, { localStdioOwnership: true }) };
   await runtime.backend.start();
 });
 
 afterAll(async () => {
-  if (!runtime) return;
-  try { await runtime.backend.stop(); }
-  finally { await rm(runtime.home, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); }
+  if (runtime) await stopCopilotRuntime(runtime.backend, runtime.home);
 });
 
 describe("native image budget", () => {

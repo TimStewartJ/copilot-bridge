@@ -8,6 +8,7 @@ import { CopilotBackend } from "../agent-backend/copilot-backend.js";
 import type { AgentSession } from "../agent-backend/types.js";
 import { buildCopilotClientOptions } from "../copilot-client-options.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 function sdkSession(session: AgentSession): CopilotSession {
   const raw: unknown = Reflect.get(session, "session");
@@ -80,7 +81,7 @@ async function fixture(signal: AbortSignal) {
     if (closing) throw new Error("Eager tools fixture is closed");
     await start();
   };
-  const backend = new CopilotBackend(client);
+  const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd);
     await new Promise<void>((resolve, reject) => {
@@ -93,7 +94,7 @@ async function fixture(signal: AbortSignal) {
     closing = true;
     try { await setup; }
     finally {
-      try { await backend.stop(); }
+      try { await stopCopilotRuntime(backend); }
       finally {
         server.closeAllConnections();
         if (server.listening) await new Promise<void>((resolve, reject) => {

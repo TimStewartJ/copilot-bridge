@@ -43,12 +43,14 @@ function snapshotEntries(value: unknown): WindowsProcessTableEntry[] {
       || typeof entry.ppid !== "number" || !Number.isSafeInteger(entry.ppid) || entry.ppid < 0
       || typeof entry.startMarker !== "string" || (entry.startMarker !== "" && !/^\d+$/.test(entry.startMarker))
       || (entry.identityError !== undefined && typeof entry.identityError !== "string")
+      || (entry.accessDenied !== undefined && entry.accessDenied !== true)
       || pids.has(entry.pid)) {
       throw new Error("Windows process snapshot worker returned an invalid or duplicate identity");
     }
     pids.add(entry.pid);
     return { pid: entry.pid, ppid: entry.ppid, startMarker: entry.startMarker,
-      ...(typeof entry.identityError === "string" ? { identityError: entry.identityError } : {}) };
+      ...(typeof entry.identityError === "string" ? { identityError: entry.identityError } : {}),
+      ...(entry.accessDenied === true ? { accessDenied: true as const } : {}) };
   });
 }
 

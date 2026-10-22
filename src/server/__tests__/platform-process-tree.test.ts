@@ -72,8 +72,10 @@ function mockExec(handler: ExecHandler): void {
     execFileMock("mock-native-process-snapshot", [], { timeout }, (error: Error | null, output: string) => {
       if (error) { reject(error); return; }
       resolve(output.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
-        const [pid, ppid, startMarker = ""] = line.trim().split(/\s+/);
-        return { pid: Number(pid), ppid: Number(ppid), startMarker };
+        const [pid, ppid, marker = ""] = line.trim().split(/\s+/);
+        return marker === "denied"
+          ? { pid: Number(pid), ppid: Number(ppid), startMarker: "", accessDenied: true }
+          : { pid: Number(pid), ppid: Number(ppid), startMarker: marker };
       }));
     });
   }));
@@ -328,6 +330,24 @@ describe("process tree platform helpers", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("ignores a process it may not query that lists the root's recycled PID as its parent", async () => {
+    setPlatform("win32");
+    let snapshots = 0;
+    mockExec((command, _args, _options, callback) => {
+      if (command === "mock-native-process-snapshot") {
+        snapshots++;
+        // A SYSTEM process whose own parent exited long ago; Windows reused that PID for our root.
+        callback(null, snapshots === 1 ? "100 1 1000\n101 100 1001\n900 100 denied" : "900 100 denied", "");
+      } else callback(null, "", "");
+    });
+
+    const result = await terminateProcessTree({ pid: 100, startMarker: "1000" }, createDeadline(5_000));
+
+    expect(result).toMatchObject({ ok: true, status: "terminated" });
+    expect(result.snapshot?.descendants).toEqual([{ pid: 101, startMarker: "1001" }]);
+    expect(snapshots).toBe(2);
   });
 
   it("waits for a complete pre-kill identity snapshot instead of signalling through a churning unreadable edge", async () => {

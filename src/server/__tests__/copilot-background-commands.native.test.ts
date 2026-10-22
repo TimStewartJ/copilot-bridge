@@ -8,6 +8,7 @@ import type { AgentSession } from "../agent-backend/types.js";
 import { buildCopilotClientOptions } from "../copilot-client-options.js";
 import { SessionAgentRegistry } from "../session-agent-registry.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 /**
  * The Bridge's handling of background commands rests on four things the runtime does, none of
@@ -56,7 +57,7 @@ async function fixture(signal: AbortSignal) {
     baseDirectory: join(home, "session-state"),
     logLevel: "error",
   });
-  const backend = new CopilotBackend(client);
+  const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd);
     await new Promise<void>((resolve, reject) => {
@@ -70,7 +71,7 @@ async function fixture(signal: AbortSignal) {
       await setup;
     } finally {
       try {
-        await backend.stop();
+        await stopCopilotRuntime(backend);
       } finally {
         provider.closeAllConnections();
         if (provider.listening) {

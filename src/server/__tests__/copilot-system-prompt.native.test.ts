@@ -15,6 +15,7 @@ import type { PromptProfileId } from "../../shared/prompt-profiles.js";
 import { buildBridgeContextSections, renderBridgeContextBlock } from "../session-context-block.js";
 import type { Task } from "../task-store.js";
 import { makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
+import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 // Guards the system prompt the pinned Copilot CLI actually assembles from the Bridge's
 // section overrides. The CLI renders sections itself, so builder unit tests cannot see
@@ -83,7 +84,7 @@ async function fixture(signal: AbortSignal, completeAutopilot = false) {
     ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: home, BRIDGE_WORKSPACE_DIR: workspace }),
     useLoggedInUser: false, baseDirectory: join(home, "session-state"), logLevel: "error",
   });
-  const backend = new CopilotBackend(client);
+  const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd);
     await new Promise<void>((resolve, reject) => {
@@ -95,7 +96,7 @@ async function fixture(signal: AbortSignal, completeAutopilot = false) {
   const cleanup = registerTestAppCleanup(async () => {
     try { await setup; }
     finally {
-      try { await backend.stop(); }
+      try { await stopCopilotRuntime(backend); }
       finally {
         server.closeAllConnections();
         if (server.listening) await new Promise<void>((resolve, reject) => {
