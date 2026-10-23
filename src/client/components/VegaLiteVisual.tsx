@@ -285,16 +285,13 @@ export default function VegaLiteVisual({ visual, mode = "inline", viewport }: Ve
             <div className="text-sm text-error font-mono whitespace-pre-wrap max-w-full break-all" role="alert">
               Vega-Lite render error: {renderError}
             </div>
-          ) : (
-            <>
-            {!rendered && (
-              <div className="text-xs text-text-muted animate-pulse absolute">
-                {sourceLoading ? "Loading chart…" : "Rendering chart…"}
-              </div>
-            )}
-            <div ref={containerRef} className="w-full min-w-0" />
-            </>
+          ) : !rendered && (
+            <div className="text-xs text-text-muted animate-pulse absolute">
+              {sourceLoading ? "Loading chart…" : "Rendering chart…"}
+            </div>
           )}
+          {/* Stays mounted through an error: the render effect needs it when the error clears. */}
+          <div ref={containerRef} className={`w-full min-w-0 ${renderError ? "hidden" : ""}`} />
         </div>
       </div>
     </div>
