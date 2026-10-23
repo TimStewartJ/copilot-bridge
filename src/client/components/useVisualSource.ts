@@ -40,42 +40,47 @@ export function hasVisualSource(visual: VisualArtifact): boolean {
   return visual.kind !== "image" && Boolean(visual.source || visual.url);
 }
 
+const EMPTY_SOURCE_STATE: VisualSourceState = { source: "", loading: false, error: null };
+
+/**
+ * The state a visual's source is in right now, before any fetch this render would start. A source
+ * another view already fetched is ready at once, and one still to fetch reads as loading, so a
+ * renderer never sees a passing empty source and mistakes it for an empty spec.
+ */
+function currentSourceState(
+  kind: VisualArtifact["kind"],
+  url: string | undefined,
+  embeddedSource: string | undefined,
+  enabled: boolean,
+): VisualSourceState {
+  if (kind === "image") return EMPTY_SOURCE_STATE;
+  if (embeddedSource !== undefined) return { source: embeddedSource, loading: false, error: null };
+  if (!enabled) return EMPTY_SOURCE_STATE;
+  if (!url) return { source: "", loading: false, error: "Source is unavailable" };
+  const cachedSource = sourceTextCache.get(url);
+  if (cachedSource !== undefined) return { source: cachedSource, loading: false, error: null };
+  return { source: "", loading: true, error: null };
+}
+
+function sameSourceState(a: VisualSourceState, b: VisualSourceState): boolean {
+  return a.source === b.source && a.loading === b.loading && a.error === b.error;
+}
+
 export function useVisualSource(visual: VisualArtifact, options: UseVisualSourceOptions = {}): VisualSourceState {
   const enabled = options.enabled ?? true;
   const embeddedSource = visual.kind !== "image" && typeof visual.source === "string"
     ? visual.source
     : undefined;
-  const [state, setState] = useState<VisualSourceState>({
-    source: embeddedSource ?? "",
-    loading: false,
-    error: null,
-  });
+  const { kind, url } = visual;
+  const [state, setState] = useState<VisualSourceState>(() => currentSourceState(kind, url, embeddedSource, enabled));
 
   useEffect(() => {
-    if (visual.kind === "image") {
-      setState({ source: "", loading: false, error: null });
-      return;
-    }
-
-    if (embeddedSource !== undefined) {
-      setState({ source: embeddedSource, loading: false, error: null });
-      return;
-    }
-
-    if (!enabled) {
-      setState({ source: "", loading: false, error: null });
-      return;
-    }
-
-    if (!visual.url) {
-      setState({ source: "", loading: false, error: "Source is unavailable" });
-      return;
-    }
+    const next = currentSourceState(kind, url, embeddedSource, enabled);
+    setState((current) => sameSourceState(current, next) ? current : next);
+    if (!next.loading || !url) return;
 
     let cancelled = false;
-    setState({ source: "", loading: true, error: null });
-
-    loadVisualSource(visual.url).then(
+    loadVisualSource(url).then(
       (source) => {
         if (!cancelled) setState({ source, loading: false, error: null });
       },
@@ -93,7 +98,7 @@ export function useVisualSource(visual: VisualArtifact, options: UseVisualSource
     return () => {
       cancelled = true;
     };
-  }, [embeddedSource, enabled, visual.kind, visual.url]);
+  }, [embeddedSource, enabled, kind, url]);
 
   return state;
 }
