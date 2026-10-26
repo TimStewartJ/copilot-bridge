@@ -1028,6 +1028,32 @@ export function createTaskStore(
     return affectedTaskIds;
   }
 
+  /** Every task-to-session link with the time it was made. */
+  function listSessionLinks(): SessionLink[] {
+    return db.prepare("SELECT taskId, sessionId, linkedAt FROM task_sessions").all() as unknown as SessionLink[];
+  }
+
+  /**
+   * Remove exactly these links, in one transaction, and return the affected task IDs. A link that
+   * was removed and made again since it was read has a new `linkedAt` and stays.
+   */
+  function removeSessionLinks(links: readonly SessionLink[]): string[] {
+    if (links.length === 0) return [];
+    const affected = new Set<string>();
+    const now = new Date().toISOString();
+    runTransaction(db, () => {
+      const remove = db.prepare("DELETE FROM task_sessions WHERE taskId = ? AND sessionId = ? AND linkedAt = ?");
+      for (const link of links) {
+        const result = remove.run(link.taskId, link.sessionId, link.linkedAt) as { changes?: number };
+        if (result.changes) affected.add(link.taskId);
+      }
+      const touch = db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?");
+      for (const taskId of affected) touch.run(now, taskId);
+    });
+    for (const taskId of affected) emitChange(taskId);
+    return [...affected];
+  }
+
   function reorderTasks(taskIds: string[]): Task[] {
     runTransaction(db, () => {
       const stmt = db.prepare('UPDATE tasks SET "order" = ? WHERE id = ?');
@@ -1162,11 +1188,13 @@ export function createTaskStore(
     listTasks, listTasksWithoutSessions, listTaskLinksBySession, listArchivedSessionIdsForTask, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask, listOpenSessionIdsWithoutActiveTask,
     getTaskSessionCounts, listTaskSessionSummaries,
-    linkSession, unlinkSession, unlinkSessionFromAllTasks, linkWorkItem, unlinkWorkItem,
+    linkSession, unlinkSession, unlinkSessionFromAllTasks, listSessionLinks, removeSessionLinks, linkWorkItem, unlinkWorkItem,
     findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, recordUserMessage, listMomentumSignals,
   };
 }
 
 export type TaskStore = ReturnType<typeof createTaskStore>;
+
+export interface SessionLink { taskId: string; sessionId: string; linkedAt: string }
 
 export interface MomentumSignals { userEditedAt?: string; lastMessageAt?: string; waitingChangedAt?: string }

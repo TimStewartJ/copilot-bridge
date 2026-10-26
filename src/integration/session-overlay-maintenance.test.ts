@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import { installApiRouteTestHooks } from "../test-support/api-routes.js";
 import { createSessionOverlayMaintenance } from "../server/session-overlay-maintenance.js";
@@ -24,10 +26,17 @@ function ageDefer(table: string, id: string, updatedAt = OLD_ISO): void {
 }
 
 describe("session overlay maintenance", () => {
-  it("runs the reaper, deletes deleted-schedule runs, and prunes terminal defers", async () => {
-    ctx.cliSessionCatalog = { listSessions: () => [] } as any;
+  it("removes dangling task links, runs the reaper, deletes deleted-schedule runs, and prunes terminal defers", async () => {
+    ctx.cliSessionCatalog = { listSessions: () => [], hasSession: async () => false } as any;
     ctx.bridgeSessionStateStore.setTitleOverride("orphan-overlay", "Orphan");
     ageState("orphan-overlay");
+
+    const task = ctx.taskStore.createTask("Dangling");
+    for (const sessionId of ["present-session", "gone-linked"]) ctx.taskStore.linkSession(task.id, sessionId);
+    db.prepare("UPDATE task_sessions SET linkedAt = ?").run(OLD_ISO);
+    mkdirSync(join(ctx.copilotHome!, "session-state", "present-session"), { recursive: true });
+    ctx.bridgeSessionStateStore.setTitleOverride("gone-linked", "Gone");
+    ageState("gone-linked");
 
     db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
       .run("deleted-schedule", "run-1", OLD_ISO);
@@ -70,7 +79,10 @@ describe("session overlay maintenance", () => {
     const result = await maintenance.runOnce();
     maintenance.stop();
 
-    expect(result.reaped).toBe(1);
+    expect(result.removedDanglingLinks).toBe(1);
+    expect(ctx.taskStore.getTask(task.id)!.sessionIds).toEqual(["present-session"]);
+    expect(result.reaped).toBe(2);
+    expect(ctx.bridgeSessionStateStore.getState("gone-linked")).toBeUndefined();
     expect(result.deletedScheduleRuns).toBe(1);
     expect(result.prunedDeferredPrompts).toBe(2);
     expect(result.prunedDeferLoops).toBe(1);
