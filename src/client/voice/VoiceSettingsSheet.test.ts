@@ -1,4 +1,5 @@
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
@@ -23,7 +24,9 @@ vi.mock("../hooks/queries/useModels", () => ({
   }),
 }));
 
-const { VoiceSettingsSheet } = await import("./VoiceSettingsSheet");
+const { VoiceSettingsSheet: Sheet } = await import("./VoiceSettingsSheet");
+// The sheet links to Settings › Models, so it renders inside a router.
+const VoiceSettingsSheet = (props: ComponentProps<typeof Sheet>) => createElement(MemoryRouter, null, createElement(Sheet, props));
 
 const controller = {
   status: { voices: [{ id: "af_heart", name: "Heart", gender: "female", accent: "American" }] },
@@ -51,7 +54,7 @@ describe("Helm settings sheet", () => {
   it("names every select and preserves setting values and handlers", async () => {
     const selects = findAllByTag(harness.dom.container, "select");
     const labels = findAllByTag(harness.dom.container, "label");
-    expect(selects).toHaveLength(4);
+    expect(selects).toHaveLength(3);
     for (const select of selects) {
       const props = getReactProps(select)!;
       expect(labels.some((label) => getReactProps(label)?.htmlFor === props.id)).toBe(true);
@@ -59,20 +62,15 @@ describe("Helm settings sheet", () => {
       expect(props.className).toContain("text-base");
       expect(props.className).toContain("sm:text-sm");
     }
-    const [model, voice, announce, connection] = selects.map((select) => getReactProps(select)!);
-    expect(findAllByTag(selects[2], "option").map((option) => getReactProps(option)!.value))
+    const [voice, announce, connection] = selects.map((select) => getReactProps(select)!);
+    expect(findAllByTag(selects[1], "option").map((option) => getReactProps(option)!.value))
       .toEqual(["watched", "all", "off"]);
     expect(announce["aria-describedby"]).toBe("voice-announce-help");
-    expect(model["aria-describedby"]).toBe("helm-model-help");
     await harness.act(() => {
-      model.onChange({ target: { value: "test-model" } });
-      model.onChange({ target: { value: "" } });
       voice.onChange({ target: { value: "af_heart" } });
       announce.onChange({ target: { value: "all" } });
       connection.onChange({ target: { value: "http" } });
     });
-    // Helm's model belongs to the conversation, not to the voice: it never rides along with voice settings.
-    expect(mocks.onModelChange.mock.calls).toEqual([["test-model"], [""]]);
     expect(mocks.updateSettings.mock.calls).toEqual([[{ voice: "af_heart" }], [{ announce: "all" }]]);
     expect(mocks.setTransportPreference).toHaveBeenCalledWith("http");
   });
@@ -95,15 +93,15 @@ describe("Helm settings sheet", () => {
     expect(mocks.onClose).toHaveBeenCalledOnce();
   });
 
-  it("still offers the Helm model before the speech engine status is known", async () => {
+  it("shows Helm's model, set in Settings › Models, before the speech engine status is known", async () => {
     await harness.render(createElement(VoiceSettingsSheet, {
       controller: { ...controller, status: null, settings: null } as unknown as VoiceModeController,
       helmModel: { value: "test-model", onChange: mocks.onModelChange },
       onClose: mocks.onClose,
     }));
-    const selects = findAllByTag(harness.dom.container, "select");
-    expect(selects).toHaveLength(1);
-    expect(getReactProps(selects[0])!.value).toBe("test-model");
+    expect(findAllByTag(harness.dom.container, "select")).toHaveLength(0);
+    expect(harness.dom.container.textContent).toContain("A very long assistant model name");
+    expect(harness.dom.container.textContent).toContain("Settings › Models");
   });
 
   it("edits Helm's names list and saves it only when it changed and the field loses focus", async () => {

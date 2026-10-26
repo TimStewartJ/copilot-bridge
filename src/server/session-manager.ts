@@ -245,6 +245,7 @@ import {
   type SetSessionNameOptions,
   type SessionNameRpc,
 } from "./session-name-rpc.js";
+import { resolveModelRole } from "./model-roles.js";
 import {
   createSessionNameAutogenerator,
   type SessionAutoNameOptions,
@@ -784,6 +785,11 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     copilotHome,
     runtimePaths,
     resolveSessionProfile: (sessionId) => {
+      if (ctx.helmThinkerStore?.isRunSession(sessionId)) {
+        // Fail closed: a thinker run must never come back as a general-purpose session.
+        if (!ctx.helmThinker) throw new Error("Helm is still starting; try again in a moment");
+        return ctx.helmThinker.getSessionProfile();
+      }
       if (!ctx.helmStore?.isHelmSession(sessionId)) return undefined;
       // Fail closed: a Helm conversation must never be resumed as a general-purpose session.
       if (!ctx.helm) throw new Error("Helm is still starting; try again in a moment");
@@ -1043,6 +1049,10 @@ export class SessionManager {
     });
     this.sessionNameAutogenerator = createSessionNameAutogenerator({
       listModels: () => this.listModels(),
+      resolveHelperRole: (models) => {
+        const settings = this.deps.settingsStore?.getSettings();
+        return settings ? resolveModelRole(settings, "helper", models) : {};
+      },
       createSession: async (sessionConfig) => {
         const client = await this.getBackendAfterRotation();
         return this.createOwnedSession(client, sessionConfig);

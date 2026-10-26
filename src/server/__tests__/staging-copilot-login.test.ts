@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTestDir } from "./helpers.js";
 import {
@@ -64,6 +64,28 @@ describe("seedStagingCopilotLogin", () => {
     expect(seeded.trustedFolders).toBeUndefined();
     expect(seeded.expAssignmentsCache).toBeUndefined();
     expect(seeded.staff).toBeUndefined();
+  });
+
+  it("copies the signed-in accounts' saved tokens when the CLI keeps them in its config", () => {
+    // On a host without a usable keyring the CLI stores tokens here; without them the preview is signed out.
+    const root = makeTestDir("bridge-staging-copilot-login-");
+    const source = join(root, "source");
+    const target = join(root, "target");
+    writeConfig(source, {
+      ...LOGIN_POINTER,
+      authTokens: {
+        "https://github.com:someone_example": { token: "a" },
+        "https://github.com:someone_example:github": { token: "b" },
+        "https://github.com:someone_else": { token: "c" },
+      },
+    });
+
+    expect(seedStagingCopilotLogin(target, { sourceCopilotHome: source })).toBe(true);
+    expect(readConfig(target).authTokens).toEqual({
+      "https://github.com:someone_example": { token: "a" },
+      "https://github.com:someone_example:github": { token: "b" },
+    });
+    if (process.platform !== "win32") expect(statSync(join(target, "config.json")).mode & 0o777).toBe(0o600);
   });
 
   it("reads a source config written as JSONC with a comment header", () => {

@@ -296,7 +296,8 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     !isDisposableTitleSessionId(sessionId)
     && !isDisposableDeferWorkerSessionId(sessionId)
     // Helm conversations live in Helm's own history, not in the chat lists.
-    && !ctx.helmStore?.isHelmSession(sessionId);
+    && !ctx.helmStore?.isHelmSession(sessionId)
+    && !ctx.helmThinkerStore?.isRunSession(sessionId);
 
   const fromCatalogRow = (session: SessionListRow): SessionListRow =>
     ({ ...session, modifiedTime: session.modifiedTime ?? session.startTime });

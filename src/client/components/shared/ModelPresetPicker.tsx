@@ -176,6 +176,7 @@ export default function ModelPresetPicker({
   allowUnselected = false,
   disabled = false,
   idPrefix,
+  showSlotLabels = false,
   onSelectPreset,
   onSelectModel,
   onSelectionCommitted,
@@ -188,6 +189,8 @@ export default function ModelPresetPicker({
   allowUnselected?: boolean;
   disabled?: boolean;
   idPrefix: string;
+  /** Names each tile's tier (Fast, Standard, Deep) before its model, as Settings › Models does. */
+  showSlotLabels?: boolean;
   onSelectPreset: (slot: ModelPresetSlot) => void;
   onSelectModel: (slot: ModelPresetSlot, modelId: string) => void;
   /** Called after a preset or model is chosen, so the host can move focus onward (e.g. to the composer). */
@@ -288,6 +291,7 @@ export default function ModelPresetPicker({
                     DS.focus,
                   )}
                 >
+                  {showSlotLabels && <span className="mr-1.5 font-normal opacity-70">{tile.label}</span>}
                   {tile.model?.name ?? "None"}
                 </button>
                 <button

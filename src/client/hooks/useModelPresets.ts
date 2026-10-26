@@ -54,6 +54,8 @@ export interface ModelPresetMemory {
   resolveRememberedSelection: (models: readonly ModelInfo[]) => ModelPresetSelection | null;
   findSlotForModel: (modelId: string, models: readonly ModelInfo[]) => ModelPresetSlot | undefined;
   remember: (selection: RememberModelPresetSelection) => void;
+  /** Makes a chat's model, effort and context the tier's own (Settings › Models changes with it). */
+  saveToTier: (selection: RememberModelPresetSelection) => void;
 }
 
 export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMemory {
@@ -111,29 +113,22 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     })
   ), [globalDefaultModelId, lastPresetSlot, presets]);
 
-  const remember = useCallback(({
-    slot,
-    modelId,
-    reasoningEffort,
-    contextTier,
-  }: RememberModelPresetSelection) => {
+  /**
+   * Remembers which tier was picked last. The tiers themselves (Fast, Standard, Deep) are shared by
+   * Helm, background work and sub-agents, so a choice made in one chat never rewrites them; they are
+   * edited only in Settings › Models.
+   */
+  const remember = useCallback(({ slot, modelId }: RememberModelPresetSelection) => {
     if (!modelId) return;
     const cachedSettings = queryClient.getQueryData<AppSettings>(queryKeys.settings);
-    const currentPresets = cachedSettings?.modelPresets ?? presets;
-    const nextPresets = buildModelPresetsPatch({
-      current: currentPresets,
-      slot,
-      modelId,
-      reasoningEffort,
-      contextTier,
-    });
-    if (!nextPresets && cachedSettings?.lastModelPreset === slot) return;
+    if (cachedSettings?.lastModelPreset === slot) return;
+    enqueueSettingsPatch({ lastModelPreset: slot });
+  }, []);
 
-    const mergedPresets = nextPresets ?? currentPresets;
-    enqueueSettingsPatch({
-      ...(mergedPresets ? { modelPresets: mergedPresets } : {}),
-      lastModelPreset: slot,
-    });
+  const saveToTier = useCallback(({ slot, modelId, reasoningEffort, contextTier }: RememberModelPresetSelection) => {
+    const current = queryClient.getQueryData<AppSettings>(queryKeys.settings)?.modelPresets ?? presets;
+    const next = buildModelPresetsPatch({ current, slot, modelId, reasoningEffort, contextTier });
+    if (next) enqueueSettingsPatch({ modelPresets: next });
   }, [presets]);
 
   return useMemo<ModelPresetMemory>(() => ({
@@ -147,7 +142,9 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     resolveRememberedSelection,
     findSlotForModel: findSlot,
     remember,
+    saveToTier,
   }), [
+    saveToTier,
     findSlot,
     globalDefaultModelId,
     lastPresetSlot,

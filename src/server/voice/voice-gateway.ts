@@ -1,6 +1,7 @@
 // Hands-free gateway: owns voice conversations and bridges browser transports (WebSocket, or
 // HTTP POST + SSE through proxies that block upgrades) to the shared speech engine. Each
 // conversation speaks for one Helm conversation; the Helm session holds all the context.
+import { resolveModelRole } from "../model-roles.js";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -141,7 +142,10 @@ class ConversationSession implements VoiceClientSink {
       snapshot: async () => buildBridgeSnapshotLine(await gateway.facade.listSessions()),
       // Everything hands-free answers is spoken, including a message typed while it is on.
       resolveReasoningEffort: (userText) => gateway.helm.getTurnReasoningEffort("spoken", userText),
-      talker: new HelmTalker({ listModels: () => gateway.ctx.sessionManager.listModels(), createHelperSession: (config) => gateway.ctx.sessionManager.createHelperSession(config), logger: console }),
+      talker: new HelmTalker({
+        listModels: () => gateway.ctx.sessionManager.listModels(),
+        resolveHelperRole: (models) => resolveModelRole(gateway.ctx.settingsStore.getSettings(), "helper", models),
+        createHelperSession: (config) => gateway.ctx.sessionManager.createHelperSession(config), logger: console }),
       glossary: () => gateway.ctx.settingsStore.getSettings().helm?.glossary,
       logger: console,
       onTiming: (timing) => this.log.write("agent_timing", { ...timing }),

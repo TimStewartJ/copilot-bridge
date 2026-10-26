@@ -116,29 +116,21 @@ describe("useModelPresets", () => {
     });
   });
 
-  it("merges rapid slot choices before persisting them", async () => {
+  it("remembers only the last tier picked, never rewriting a tier from a chat's choice", async () => {
     await harness!.render(createElement(TestComponent));
+    const before = queryClient.getQueryData<AppSettings>(queryKeys.settings)?.modelPresets;
 
     await harness!.act(async () => {
       memory?.remember({ slot: "preset1", modelId: "gpt-5-mini", reasoningEffort: "high" });
       memory?.remember({ slot: "preset2", modelId: "gpt-5.6", contextTier: "long_context" });
     });
 
-    expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject({
-      modelPresets: {
-        preset1: { model: "gpt-5-mini", reasoningEffort: "high" },
-        preset2: { model: "gpt-5.6", contextTier: "long_context" },
-      },
-      lastModelPreset: "preset2",
-    });
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1]?.[1]?.body))).toMatchObject({
-      modelPresets: {
-        preset1: { model: "gpt-5-mini", reasoningEffort: "high" },
-        preset2: { model: "gpt-5.6", contextTier: "long_context" },
-      },
-      lastModelPreset: "preset2",
-    });
+    expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject({ lastModelPreset: "preset2" });
+    expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)?.modelPresets).toEqual(before);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    for (const call of vi.mocked(fetch).mock.calls) {
+      expect(JSON.parse(String(call[1]?.body))).not.toHaveProperty("modelPresets");
+    }
   });
 
   it("skips the write when the preset already matches memory", async () => {
@@ -149,5 +141,19 @@ describe("useModelPresets", () => {
     });
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("saves a chat's choice into a tier only when asked", async () => {
+    await harness!.render(createElement(TestComponent));
+
+    await harness!.act(async () => {
+      memory?.saveToTier({ slot: "preset1", modelId: "gpt-5-mini", reasoningEffort: "high" });
+    });
+
+    expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)?.modelPresets).toEqual({
+      preset1: { model: "gpt-5-mini", reasoningEffort: "high" },
+      preset2: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
   });
 });

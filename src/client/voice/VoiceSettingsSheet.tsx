@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 import { useModelsQuery } from "../hooks/queries/useModels";
@@ -102,15 +103,13 @@ export function VoiceSettingsSheet({
           {(controller.error || helmModel?.error) && <div role="alert" className="text-xs text-error">{controller.error || helmModel?.error}</div>}
           {helmModel && (
             <div>
-              <label htmlFor="helm-setting-model" className={label}>Helm model</label>
-              <div className="relative mt-1">
-                <select id="helm-setting-model" aria-describedby="helm-model-help" className={field} value={helmModel.value} onChange={(event) => helmModel.onChange(event.target.value)}>
-                  <option value="">Auto (fast and cheap)</option>
-                  {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-                </select>
-                {selectArrow}
+              <div className={label}>Helm model</div>
+              <div className="mt-1 text-sm text-text-primary">
+                {helmModel.value ? models.find((model) => model.id === helmModel.value)?.name ?? helmModel.value : "Automatic (your default chat model)"}
               </div>
-              <div id="helm-model-help" className={help}>Used for new Helm conversations. Helm only coordinates; real work still goes to sessions on your default or chosen models.</div>
+              <div className={help}>
+                Set in <Link to="/settings?group=chat" onClick={onClose} className="text-accent hover:underline">Settings › Models</Link>, with the tiers everything else uses. Spoken replies on a larger model take a few seconds longer.
+              </div>
             </div>
           )}
           {helmGlossary && (

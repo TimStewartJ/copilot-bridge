@@ -147,8 +147,8 @@ export function ModelSection({
 
   return (
     <SettingsSection
-      title="New chats"
-      description="Chats already open keep their own model."
+      title="New chats: their own model"
+      description="Used while New chats is set to its own model in Models above. Chats already open keep their model."
       action={(
         <Button size="sm" variant="ghost" onClick={() => void handleRefresh()} disabled={refreshing}
           title="Refresh available models. The SDK client rotates when no sessions are active."

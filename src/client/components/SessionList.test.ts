@@ -661,7 +661,7 @@ describe("SessionList change model dialog", () => {
       );
 
       await clickButton(harness, "High");
-      await clickPresetTile(harness, "Preset 3");
+      await clickPresetTile(harness, "Deep");
 
       await clickButton(harness, "Save");
       await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
@@ -696,12 +696,12 @@ describe("SessionList change model dialog", () => {
       );
 
       const preset2 = findAllByTag(harness.dom.container, "BUTTON")
-        .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Preset 2:"));
+        .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Standard:"));
       expect(preset2?.textContent).toContain("Claude Sonnet 5");
 
       const caret = findAllByTag(harness.dom.container, "BUTTON")
-        .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 2 model");
-      if (!caret) throw new Error("Preset 2 refine caret was not rendered");
+        .find((button) => getReactProps(button)?.["aria-label"] === "Choose Standard model");
+      if (!caret) throw new Error("Standard refine caret was not rendered");
       await harness.act(async () => {
         getReactProps(caret)?.onClick?.();
       });
@@ -796,7 +796,7 @@ describe("SessionList change model dialog", () => {
         () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
         { label: "model metadata" },
       );
-      await clickPresetTile(harness, "Preset 2");
+      await clickPresetTile(harness, "Standard");
       await harness.act(async () => {
         getReactProps(findProfileButton(harness.dom.container, "Assistant"))?.onClick?.();
       });
@@ -861,7 +861,7 @@ describe("SessionList change model dialog", () => {
         () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
         { label: "model metadata" },
       );
-      await clickPresetTile(harness, "Preset 2");
+      await clickPresetTile(harness, "Standard");
       await clickButton(harness, "Cancel");
 
       expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
@@ -915,7 +915,7 @@ describe("SessionList change model dialog", () => {
       const findPreset = (preset: string) => findAllByTag(harness.dom.container, "BUTTON")
         .find((candidate) => String(getReactProps(candidate)?.["aria-label"] ?? "")
           .startsWith(`${preset}:`));
-      expect(getReactProps(findPreset("Preset 1"))?.["aria-pressed"]).toBe(true);
+      expect(getReactProps(findPreset("Fast"))?.["aria-pressed"]).toBe(true);
 
       await harness.act(async () => {
         resolveModelState({
@@ -926,10 +926,10 @@ describe("SessionList change model dialog", () => {
       });
       await waitUntilAct(
         harness.act,
-        () => getReactProps(findPreset("Preset 2"))?.["aria-pressed"] === true,
+        () => getReactProps(findPreset("Standard"))?.["aria-pressed"] === true,
         { label: "fresh model dialog state" },
       );
-      expect(getReactProps(findPreset("Preset 1"))?.["aria-pressed"]).toBe(false);
+      expect(getReactProps(findPreset("Fast"))?.["aria-pressed"]).toBe(false);
     } finally {
       await harness.cleanup();
     }
@@ -1092,9 +1092,9 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        expect(findTile(harness, "Preset 2").textContent).toContain("Claude Opus 5");
+        expect(findTile(harness, "Standard").textContent).toContain("Claude Opus 5");
 
-        await clickPresetTile(harness, "Preset 2");
+        await clickPresetTile(harness, "Standard");
         await clickButton(harness, "Save");
         await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
           label: "session model patch",
@@ -1128,7 +1128,7 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await clickPresetTile(harness, "Preset 2");
+        await clickPresetTile(harness, "Standard");
         await clickButton(harness, "Save");
         await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
           label: "session model patch",
@@ -1168,7 +1168,7 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await clickPresetTile(harness, "Preset 2");
+        await clickPresetTile(harness, "Standard");
         await clickButton(harness, "High");
         await clickButton(harness, "Long context (1M)");
         await clickButton(harness, "Save");
@@ -1176,13 +1176,8 @@ describe("SessionList change model dialog", () => {
           label: "settings patch",
         });
 
-        const expected = {
-          modelPresets: {
-            preset1: { model: "gpt-5.6", reasoningEffort: "low" },
-            preset2: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
-          },
-          lastModelPreset: "preset2",
-        };
+        // Only the tier picked last is remembered; the tiers are edited in Settings › Models.
+        const expected = { lastModelPreset: "preset2" };
         expect(apiMocks.patchSettings).toHaveBeenCalledWith(expected);
         expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject(expected);
       } finally {
@@ -1190,7 +1185,7 @@ describe("SessionList change model dialog", () => {
       }
     });
 
-    it("can assign any model to a preset slot", async () => {
+    it("can run a chat on any model under a tier without rewriting the tier", async () => {
       seedSettings({
         modelPresets: {
           preset1: { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default" },
@@ -1213,11 +1208,11 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await selectPresetModel(harness, "Preset 1", "Claude Opus 5");
+        await selectPresetModel(harness, "Fast", "Claude Opus 5");
         await clickButton(harness, "Medium");
         await clickButton(harness, "Save");
-        await waitUntilAct(harness.act, () => apiMocks.patchSettings.mock.calls.length > 0, {
-          label: "settings patch",
+        await waitUntilAct(harness.act, () => apiMocks.patchSessionModel.mock.calls.length > 0, {
+          label: "session model patch",
         });
 
         expect(apiMocks.patchSessionModel).toHaveBeenCalledWith(
@@ -1226,13 +1221,8 @@ describe("SessionList change model dialog", () => {
           "medium",
           "default",
         );
-        expect(apiMocks.patchSettings).toHaveBeenCalledWith({
-          modelPresets: {
-            preset1: { model: "claude-opus-5", reasoningEffort: "medium", contextTier: "default" },
-            preset2: { model: "claude-opus-5", reasoningEffort: "medium" },
-          },
-          lastModelPreset: "preset1",
-        });
+        // Fast stays Fast for Helm, background work and sub-agents; this chat just runs on Claude.
+        expect(apiMocks.patchSettings).not.toHaveBeenCalled();
       } finally {
         await harness.cleanup();
       }
@@ -1254,7 +1244,7 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
-        await clickPresetTile(harness, "Preset 2");
+        await clickPresetTile(harness, "Standard");
         await clickButton(harness, "Cancel");
 
         expect(apiMocks.patchSettings).not.toHaveBeenCalled();

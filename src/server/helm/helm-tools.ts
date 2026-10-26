@@ -55,6 +55,11 @@ export const HELM_TOOL_NAMES = [
   "mark_sessions_read",
   "archive_sessions",
   "list_models",
+  "helm_brief",
+  "remember",
+  "read_bridge",
+  "read_conversation",
+  "refresh_brief",
   "hands_free",
 ] as const;
 
@@ -442,13 +447,13 @@ export function createHelmToolDefinitions(
       },
     }),
     defineBridgeTool("read_session", {
-      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Give a task instead of a session to read that task's most recently active session in one step (\"anything from the car task?\"). Marks it read by default. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked.",
+      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Give a task instead of a session to read that task's most recently active session in one step (\"anything from the car task?\"). Set markRead when you are telling the user this reply; looking things up leaves it unread. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked.",
       parameters: {
         type: "object",
         properties: {
           session: { type: "string", description: "Session ref, id, link, or title words." },
           task: { type: "string", description: "Instead of session: a task id, link, or topic words." },
-          markRead: { type: "boolean", description: "Mark the session read after reading. Defaults to true." },
+          markRead: { type: "boolean", description: "Mark the session read: only when you are relaying this reply to the user. Defaults to false." },
           history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
         },
       },
@@ -482,7 +487,7 @@ export function createHelmToolDefinitions(
         const live = session.runState !== "idle" ? bus?.getLastAssistantSegment() : undefined;
         const questions = pendingQuestions(ctx, session.sessionId);
         const historyCount = Math.min(MAX_HISTORY_MESSAGES, Math.max(0, Math.floor(Number(args.history) || 0)));
-        if (args.markRead !== false && session.unread) facade.markRead([session.sessionId]);
+        if (args.markRead === true && session.unread) facade.markRead([session.sessionId]);
         return {
           ...describeSession(ctx, session),
           ...taskInfo,
@@ -686,6 +691,111 @@ export function createHelmToolDefinitions(
               ...(model.supportedReasoningEfforts?.length ? { reasoningEfforts: model.supportedReasoningEfforts } : {}),
             })),
         };
+      },
+    }),
+    defineBridgeTool("helm_brief", {
+      description: "Helm's latest brief on Home and everything Helm remembers: what needs the user and what Helm recommended, what it handled and is watching, the user's priorities and rules, people, dates, one line per live task, and the standing picture of their world. Call this first for anything about what matters, what to do next, or how things connect; then read live detail with read_bridge, read_conversation or read_session.",
+      parameters: { type: "object", properties: {} },
+      handler: async () => {
+        const thinker = ctx.helmThinker;
+        if (!thinker) return toolFailure("Helm's brief isn't available on this Bridge.");
+        const view = await thinker.getBrief();
+        const memory = thinker.listMemory();
+        const open = (view.brief?.items ?? []).filter((item) => (view.itemStates[item.id]?.status ?? "open") === "open");
+        return {
+          ...(view.run ? { writtenAt: view.run.startedAt } : { note: "Helm hasn't written a brief yet. Offer to write one (refresh_brief)." }),
+          ...(view.running ? { refreshingNow: true } : {}),
+          bridges: thinker.listBridges(),
+          summary: view.brief?.summary ?? null,
+          needsYou: open.map((item) => ({ title: item.title, recommendation: item.recommendation, ...(item.why ? { why: item.why } : {}), bridge: item.bridge })),
+          done: (view.brief?.items ?? []).filter((item) => view.itemStates[item.id] && view.itemStates[item.id]!.status !== "open").map((item) => ({ title: item.title, outcome: view.itemStates[item.id]!.outcome })),
+          proposals: (view.brief?.proposals ?? []).map((proposal) => proposal.text),
+          watching: (view.brief?.watching ?? []).map((watch) => watch.text),
+          handled: view.handled.filter((entry) => !entry.undoneAt).map((entry) => `Marked read: ${entry.title} (${entry.why})`),
+          since: view.since,
+          priorities: memory.filter((entry) => entry.kind === "priority" && entry.status === "active").map((entry) => entry.text),
+          rules: memory.filter((entry) => entry.kind === "rule" && entry.status === "active").map((entry) => entry.text),
+          people: memory.filter((entry) => entry.kind === "person" && entry.status === "active").map((entry) => entry.text),
+          dates: memory.filter((entry) => entry.kind === "date" && entry.status === "active").map((entry) => entry.text),
+          threads: memory.filter((entry) => entry.kind === "thread" && entry.status === "active").map((entry) => ({ task: entry.key, text: entry.text })),
+          picture: memory.find((entry) => entry.kind === "picture")?.text ?? null,
+        };
+      },
+    }),
+    defineBridgeTool("remember", {
+      description: "Save something the user tells Helm to remember, in their words: a priority (what matters now), a rule (how Helm should judge or handle things), a person or a date. Helm follows these in chat and when it writes the brief. Only when the user asks you to remember or keep something in mind.",
+      parameters: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["priority", "rule", "person", "date"] },
+          text: { type: "string", description: "One clear sentence, as the user meant it." },
+        },
+        required: ["kind", "text"],
+      },
+      handler: async (args: any) => {
+        const thinker = ctx.helmThinker;
+        if (!thinker) return toolFailure("Helm's memory isn't available on this Bridge.");
+        try {
+          const entry = thinker.addMemory({ kind: args.kind, text: args.text }, "Said to Helm in chat");
+          return { success: true, kind: entry.kind, text: entry.text };
+        } catch (error) {
+          return toolFailure(error instanceof Error ? error.message : String(error));
+        }
+      },
+    }),
+    defineBridgeTool("read_bridge", {
+      description: "What one Bridge looks like right now: questions waiting on the user, unread replies with excerpts, checklist items due, agents at work, and every task with its state, next step and what it waits on. Bridges are listed by helm_brief (\"local\" is this one). Use it for the user's other Bridges, or for a full picture of this one. Read-only.",
+      parameters: {
+        type: "object",
+        properties: { bridge: { type: "string", description: "Bridge id, such as \"local\" or a peer's id." } },
+        required: ["bridge"],
+      },
+      handler: async (args: any) => {
+        const thinker = ctx.helmThinker;
+        if (!thinker) return toolFailure("Other Bridges aren't available here.");
+        try {
+          return await thinker.readBridge(args.bridge);
+        } catch (error) {
+          return toolFailure(error instanceof Error ? error.message : String(error));
+        }
+      },
+    }),
+    defineBridgeTool("read_conversation", {
+      description: "Read the latest messages of a conversation on any Bridge (\"local\" or a peer), by the sessionId read_bridge or helm_brief gave. Read-only: it never marks anything read.",
+      parameters: {
+        type: "object",
+        properties: {
+          bridge: { type: "string" },
+          sessionId: { type: "string" },
+          messages: { type: "number", description: "How many recent messages (default 6, max 20)." },
+        },
+        required: ["bridge", "sessionId"],
+      },
+      handler: async (args: any) => {
+        const thinker = ctx.helmThinker;
+        if (!thinker) return toolFailure("Other Bridges aren't available here.");
+        try {
+          return await thinker.readConversation(args.bridge, args.sessionId, args.messages);
+        } catch (error) {
+          return toolFailure(error instanceof Error ? error.message : String(error));
+        }
+      },
+    }),
+    defineBridgeTool("refresh_brief", {
+      description: "Start Helm's full look at every Bridge, which rewrites the brief on Home and updates Helm's memory. It runs in the background for a few minutes. Only when the user asks to refresh the brief or look at everything again.",
+      parameters: {
+        type: "object",
+        properties: { rebuild: { type: "boolean", description: "Re-read every task in detail, not just what changed. Only when the user asks for a full re-read." } },
+      },
+      handler: async (args: any) => {
+        const thinker = ctx.helmThinker;
+        if (!thinker) return toolFailure("Helm's brief isn't available on this Bridge.");
+        try {
+          const run = await thinker.think({ trigger: "manual", rebuild: args.rebuild === true });
+          return { success: true, started: run.startedAt, note: "The brief on Home updates when it finishes, usually within a few minutes." };
+        } catch (error) {
+          return toolFailure(error instanceof Error ? error.message : String(error));
+        }
       },
     }),
     defineBridgeTool("hands_free", {

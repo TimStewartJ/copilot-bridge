@@ -480,6 +480,7 @@ export default function SessionModelDialog({
             ) : (
               <ModelPresetPicker
                 idPrefix="session-model"
+                showSlotLabels
                 models={availableModels}
                 selectedModelId={modelDraft}
                 selectedPresetSlot={dialogPresetSlot}

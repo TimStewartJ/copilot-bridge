@@ -5,7 +5,8 @@ import { resolveBridgeControlRoot } from "./control-root.js";
 import type { Task } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SettingsStore } from "./settings-store.js";
-import { resolveSubagentSettings, type ResolvedSubagentSettings } from "../shared/subagent-settings.js";
+import { resolveSubagentSettings, subagentDefaultsFor, type ResolvedSubagentSettings } from "../shared/subagent-settings.js";
+import { resolveModelRole } from "./model-roles.js";
 import type { TagStore } from "./tag-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore } from "./docs-store.js";
@@ -283,10 +284,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   const settings = deps.settingsStore?.getSettings();
   // Applied on create and resume: the runtime drops this override on resume.
-  const subagents = resolveSubagentSettings(settings?.subagents, params.options?.modelMetadata);
+  const subagentDefaults = settings ? subagentDefaultsFor(resolveModelRole(settings, "subagents", params.options?.modelMetadata)) : undefined;
+  const subagents = resolveSubagentSettings(settings?.subagents, params.options?.modelMetadata, subagentDefaults);
   if (subagents) {
     cfg.subagents = subagents;
-    warnDroppedSubagentModels(resolveSubagentSettings(settings?.subagents), subagents);
+    warnDroppedSubagentModels(resolveSubagentSettings(settings?.subagents, undefined, subagentDefaults), subagents);
   }
 
   // Computer Use is upstream's plugin from the SDK platform package. Loading it per

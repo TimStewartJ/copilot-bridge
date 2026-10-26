@@ -58,6 +58,19 @@ export const BRIDGE_DEFAULT_SUBAGENTS: Readonly<Record<string, Readonly<{ model:
   "rubber-duck": { model: "gpt-6-sol", effortLevel: "high" },
 };
 
+export type SubagentDefaults = Readonly<Record<string, Readonly<{ model: string; effortLevel?: string }>>>;
+
+/** The helpers whose Bridge default follows the Sub-agents role in Settings › Models. */
+export const TIERED_SUBAGENTS = ["task", "explore", "research"] as const;
+
+/** Bridge defaults with the Sub-agents role's model in place of the built-in one for task, explore and research. */
+export function subagentDefaultsFor(role: { model?: string; reasoningEffort?: string } | undefined): SubagentDefaults {
+  if (!role?.model) return BRIDGE_DEFAULT_SUBAGENTS;
+  const defaults: Record<string, { model: string; effortLevel?: string }> = { ...BRIDGE_DEFAULT_SUBAGENTS };
+  for (const name of TIERED_SUBAGENTS) defaults[name] = { model: role.model, ...(role.reasoningEffort ? { effortLevel: role.reasoningEffort } : {}) };
+  return defaults;
+}
+
 export const SUBAGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export const SUBAGENT_EFFORT_PATTERN = /^[a-z][a-z-]{0,31}$/;
 
@@ -75,8 +88,9 @@ export function isConcreteSubagentModel(model: string | undefined): model is str
 export function effectiveSubagentSetting(
   name: string,
   override: SubagentAgentSetting | undefined,
+  defaults: SubagentDefaults = BRIDGE_DEFAULT_SUBAGENTS,
 ): SubagentAgentSetting {
-  const fallback = BRIDGE_DEFAULT_SUBAGENTS[name];
+  const fallback = defaults[name];
   const model = override?.model ?? fallback?.model;
   const keepsDefaultModel = override?.model === undefined || override.model === fallback?.model;
   const effort = override?.effortLevel ?? (keepsDefaultModel ? fallback?.effortLevel : undefined);
@@ -97,13 +111,14 @@ export function effectiveSubagentSetting(
 export function resolveSubagentSettings(
   settings: SubagentSettings | undefined,
   models?: readonly SubagentModelMetadata[],
+  defaults: SubagentDefaults = BRIDGE_DEFAULT_SUBAGENTS,
 ): ResolvedSubagentSettings | undefined {
   if (settings?.source === "cli") return undefined;
   const catalog = models && models.length > 0 ? models : undefined;
-  const names = new Set([...Object.keys(BRIDGE_DEFAULT_SUBAGENTS), ...Object.keys(settings?.agents ?? {})]);
+  const names = new Set([...Object.keys(defaults), ...Object.keys(settings?.agents ?? {})]);
   const agents: Record<string, SubagentAgentSetting> = {};
   for (const name of names) {
-    const entry = effectiveSubagentSetting(name, settings?.agents?.[name]);
+    const entry = effectiveSubagentSetting(name, settings?.agents?.[name], defaults);
     const metadata = catalog && isConcreteSubagentModel(entry.model)
       ? catalog.find((model) => model.id === entry.model && model.policy?.state !== "disabled")
       : undefined;

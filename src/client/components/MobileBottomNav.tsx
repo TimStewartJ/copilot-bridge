@@ -1,4 +1,4 @@
-import { BookOpen, Layers, LayoutDashboard, Settings, ShipWheel, type LucideIcon } from "lucide-react";
+import { BookOpen, Layers, LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
 import { useMemo } from "react";
 import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import {
@@ -31,7 +31,6 @@ export function MobileBottomNav({
   const tabs: { id: MobileNavTab; label: string; icon: LucideIcon }[] = useMemo(() => [
     { id: "home", label: "Home", icon: LayoutDashboard },
     { id: "work", label: "Work", icon: Layers },
-    { id: "helm", label: "Helm", icon: ShipWheel },
     ...(showDocs ? [{ id: "docs" as MobileNavTab, label: "Docs", icon: BookOpen }] : []),
     { id: "settings", label: "Settings", icon: Settings },
   ], [showDocs]);

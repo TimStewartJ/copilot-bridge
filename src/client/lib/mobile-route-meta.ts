@@ -140,10 +140,11 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
     });
   }
 
-  if (normalizedPath === "/helm") {
+  // Helm shares Home's page (its Talk side) and What Helm knows draws its own header.
+  if (normalizedPath === "/helm" || normalizedPath === "/helm/memory") {
     return buildMeta({
       route: "helm",
-      activeTab: "helm",
+      activeTab: "home",
       showBottomNav: true,
       isRoot: true,
       isDetail: false,

@@ -176,7 +176,7 @@ describe("staging tools", () => {
     ]);
     expect(spawnConfig.env.BRIDGE_STAGING_API_BASE_PATH).toBe("/staging/test/api");
     expect(spawnConfig.env.BRIDGE_STAGING_BACKEND_PORT).toBe("0");
-    expect(spawnConfig.env.BRIDGE_STAGING_MODEL).toBe("claude-haiku-4.5");
+    expect(spawnConfig.env.BRIDGE_STAGING_MODEL).toBe("gpt-6-luna");
     expect(spawnConfig.env.BRIDGE_DISTRIBUTION_MODE).toBe("development");
     expect(spawnConfig.env.BRIDGE_CONTROL_DISTRIBUTION_MODE).toBe("development");
     expect(spawnConfig.env.BRIDGE_ACTIVE_RELEASE_ROOT).toBeUndefined();
@@ -255,7 +255,7 @@ describe("staging tools", () => {
       expect(usageScanState.count).toBe(0);
       const settingsRow = stagingDb.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
       const settings = JSON.parse(settingsRow.value) as Record<string, unknown>;
-      expect(settings.model).toBe("claude-haiku-4.5");
+      expect(settings.model).toBe("gpt-6-luna");
       expect("reasoningEffort" in settings).toBe(false);
       expect(settings.theme).toBe("dark");
       expect(settings.customInstructions).toBe("keep me");
@@ -336,7 +336,7 @@ describe("staging tools", () => {
     try {
       const settingsRow1 = stagingDb1.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
       const settings1 = JSON.parse(settingsRow1.value) as Record<string, unknown>;
-      expect(settings1, "missing row").toEqual({ model: "claude-haiku-4.5" });
+      expect(settings1, "missing row").toEqual({ model: "gpt-6-luna" });
     } finally {
       stagingDb1.close();
     }
@@ -356,7 +356,7 @@ describe("staging tools", () => {
     try {
       const settingsRow2 = stagingDb2.prepare("SELECT value FROM settings WHERE key = 'app'").get() as { value: string };
       const settings2 = JSON.parse(settingsRow2.value) as Record<string, unknown>;
-      expect(settings2, "malformed JSON").toEqual({ model: "claude-haiku-4.5" });
+      expect(settings2, "malformed JSON").toEqual({ model: "gpt-6-luna" });
     } finally {
       stagingDb2.close();
     }

@@ -1,4 +1,5 @@
 import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createReactDomHarness, findAllByTag, getReactProps, waitUntilAct, type ReactDomHarness } from "../test-react-harness";
 import type { HelmConversation, HelmState } from "./helm-api";
@@ -145,7 +146,7 @@ describe("HelmView", () => {
   let props: ReturnType<typeof createProps>;
 
   async function render() {
-    await harness.render(createElement(HelmView, props));
+    await harness.render(createElement(MemoryRouter, { initialEntries: ["/helm"] }, createElement(HelmView, props)));
   }
 
   beforeEach(async () => {
@@ -187,6 +188,8 @@ describe("HelmView", () => {
 
     await harness.act(() => state.chatViewProps!.onCreateAndSend("what needs me?", undefined, "interactive", "client-1"));
     expect(api.createHelmConversation).toHaveBeenCalledOnce();
+    // The server picks Helm's model, so the tier's effort and context apply.
+    expect(api.createHelmConversation).toHaveBeenCalledWith();
     expect(api.sendMaterializedFirstPrompt).toHaveBeenCalledWith({
       sessionId: SESSION_B,
       prompt: "what needs me?",

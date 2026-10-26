@@ -52,6 +52,8 @@ import type { SessionOverlayMaintenance } from "./session-overlay-maintenance.js
 import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import type { HelmService } from "./helm/helm-service.js";
 import type { HelmStore } from "./helm/helm-store.js";
+import type { HelmThinkerStore } from "./helm/thinker/store.js";
+import type { HelmThinker } from "./helm/thinker/thinker.js";
 import type { VoiceGateway } from "./voice/voice-gateway.js";
 import type { VoiceRuntime } from "./voice/voice-runtime.js";
 
@@ -125,6 +127,10 @@ export interface AppContext {
   helmStore?: HelmStore;
   /** Helm, Bridge's orchestration manager. Created by the API router, which owns the facade it acts through. */
   helm?: HelmService;
+  /** Which sessions are Helm thinker runs, their briefs and Helm's memory. Available before the API router. */
+  helmThinkerStore?: HelmThinkerStore;
+  /** Helm's looks over every Bridge, which write the brief Home shows, and Helm's memory. Created with Helm. */
+  helmThinker?: HelmThinker;
   /** Hands-free voice conversations for Helm. Created by the API router. */
   voiceGateway?: VoiceGateway;
   /** Local speech engine and installer shared by voice mode and chat mic transcription. */

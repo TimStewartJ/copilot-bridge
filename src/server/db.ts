@@ -566,6 +566,79 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_helm_conversations_lastActiveAt ON helm_conversations(lastActiveAt);
 
+    -- Helm's brief and memory: layered memory, one row per run (with its brief), item states, feedback,
+    -- routine things it handled (undoable) and its settings.
+    CREATE TABLE IF NOT EXISTS helm_memory (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      key TEXT,
+      text TEXT NOT NULL,
+      source TEXT,
+      author TEXT NOT NULL,
+      status TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      confirmedAt TEXT NOT NULL,
+      uses INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_helm_memory_key ON helm_memory(kind, key) WHERE key IS NOT NULL AND status != 'forgotten';
+    CREATE TABLE IF NOT EXISTS helm_runs (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL UNIQUE,
+      trigger TEXT NOT NULL,
+      rebuild INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL,
+      startedAt TEXT NOT NULL,
+      finishedAt TEXT,
+      error TEXT,
+      model TEXT,
+      effort TEXT,
+      credits REAL,
+      changeCount INTEGER,
+      bridgesJson TEXT,
+      contextJson TEXT,
+      briefJson TEXT,
+      changesJson TEXT,
+      sessionDeleted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_helm_runs_startedAt ON helm_runs(startedAt);
+    CREATE TABLE IF NOT EXISTS helm_item_state (
+      runId TEXT NOT NULL,
+      itemId TEXT NOT NULL,
+      status TEXT NOT NULL,
+      outcome TEXT,
+      updatedAt TEXT NOT NULL,
+      PRIMARY KEY (runId, itemId)
+    );
+    CREATE TABLE IF NOT EXISTS helm_feedback (
+      id TEXT PRIMARY KEY,
+      runId TEXT NOT NULL,
+      itemId TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      note TEXT,
+      itemTitle TEXT,
+      at TEXT NOT NULL,
+      consumedByRun TEXT
+    );
+    CREATE TABLE IF NOT EXISTS helm_handled (
+      id TEXT PRIMARY KEY,
+      runId TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      bridge TEXT NOT NULL,
+      sessionId TEXT NOT NULL,
+      title TEXT NOT NULL,
+      why TEXT NOT NULL,
+      previousReadAt TEXT,
+      readThrough TEXT,
+      at TEXT NOT NULL,
+      undoneAt TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_helm_handled_runId ON helm_handled(runId);
+    CREATE TABLE IF NOT EXISTS helm_kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     -- Docs knowledge base — structured metadata table
     CREATE TABLE IF NOT EXISTS docs_pages (
       rowid INTEGER PRIMARY KEY,

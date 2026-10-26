@@ -190,10 +190,12 @@ describe("Helm tools", () => {
     expect(archived.sessions).toEqual([expect.objectContaining({ title: "Old archived chat", archived: true })]);
   });
 
-  it("reads a reply and marks it read", async () => {
+  it("reads a reply without marking it read, and marks it when Helm tells the user", async () => {
     const { ctx } = createContext();
     const facade = createFacade();
-    const result = await tool(ctx, facade, "read_session").run({ session: "tellus", history: 5 });
+    await tool(ctx, facade, "read_session").run({ session: "tellus" });
+    expect(facade.marked).toEqual([]);
+    const result = await tool(ctx, facade, "read_session").run({ session: "tellus", history: 5, markRead: true });
     expect(result.latestReply).toBe("Fixed the quantization bug and added tests.");
     expect(result.recentMessages).toEqual([
       { role: "user", content: "Fix the transition bands" },

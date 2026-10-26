@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildHelmSystemPrompt, composeHandsFreePrompt, HANDS_FREE_MARKER, SCREEN_DIVIDER } from "../helm-prompt.js";
-import { selectHelmModel } from "../helm-session-profile.js";
+import { selectTalkerModel } from "../helm-talker.js";
 
 const context = { timeZone: "America/Los_Angeles", now: new Date("2026-09-18T16:23:00.000Z") };
 
@@ -78,7 +78,7 @@ describe("composeHandsFreePrompt", () => {
   });
 });
 
-describe("selectHelmModel", () => {
+describe("selectTalkerModel", () => {
   const priced = (inputPrice: number, outputPrice: number) => ({
     tokenPrices: { inputPrice, outputPrice, cachePrice: 0, batchSize: 1_000_000 },
   });
@@ -90,10 +90,10 @@ describe("selectHelmModel", () => {
   ] as any;
 
   it("uses the helper model and starts it at the wanted effort, clamped to what it has", () => {
-    expect(selectHelmModel(models, undefined, "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
-    expect(selectHelmModel(models, undefined, "low")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
+    expect(selectTalkerModel(models, undefined, "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
+    expect(selectTalkerModel(models, undefined, "low")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
     // Without a wanted effort the model keeps its own default.
-    expect(selectHelmModel(models)).toEqual({ model: "gpt-6-luna" });
+    expect(selectTalkerModel(models)).toEqual({ model: "gpt-6-luna" });
   });
 
   it("falls back to the next helper model when the cheapest one is unavailable or disabled", () => {
@@ -101,19 +101,19 @@ describe("selectHelmModel", () => {
     const disabledLunaSix = models.map((model: { id: string; policy?: { state: string } }) =>
       model.id === "gpt-6-luna" ? { ...model, policy: { state: "disabled" } } : model,
     );
-    expect(selectHelmModel(withoutLunaSix, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
-    expect(selectHelmModel(disabledLunaSix, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
+    expect(selectTalkerModel(withoutLunaSix, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
+    expect(selectTalkerModel(disabledLunaSix, undefined, "max")).toEqual({ model: "gpt-5-mini", reasoningEffort: "medium" });
   });
 
   it("honors a requested model", () => {
-    expect(selectHelmModel(models, "claude-opus-5", "max")).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
-    expect(selectHelmModel(models, "claude-opus-5", "high")).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
-    expect(selectHelmModel(models, "claude-opus-5", "none")).toEqual({ model: "claude-opus-5", reasoningEffort: "low" });
+    expect(selectTalkerModel(models, "claude-opus-5", "max")).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
+    expect(selectTalkerModel(models, "claude-opus-5", "high")).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
+    expect(selectTalkerModel(models, "claude-opus-5", "none")).toEqual({ model: "claude-opus-5", reasoningEffort: "low" });
   });
 
   it("falls back sensibly when the catalog is empty or the request is unknown or disabled", () => {
-    expect(selectHelmModel([], undefined, "max")).toEqual({});
-    expect(selectHelmModel([], "some-model", "max")).toEqual({ model: "some-model" });
-    expect(selectHelmModel(models, "gpt-5.6-luna", "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
+    expect(selectTalkerModel([], undefined, "max")).toEqual({});
+    expect(selectTalkerModel([], "some-model", "max")).toEqual({ model: "some-model" });
+    expect(selectTalkerModel(models, "gpt-5.6-luna", "max")).toEqual({ model: "gpt-6-luna", reasoningEffort: "low" });
   });
 });
