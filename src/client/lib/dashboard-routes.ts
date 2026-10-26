@@ -20,7 +20,6 @@ const LEGACY_FOCUS_PATHS = new Set([
   "/dashboard",
   "/dashboard/checklist",
   "/dashboard/feed",
-  "/dashboard/archive",
 ]);
 
 function normalizePathname(pathname: string): string {
@@ -70,6 +69,7 @@ export function isAllTasksPath(pathname: string): boolean {
 export function isDashboardRoutePath(pathname: string): boolean {
   const normalized = normalizePathname(pathname);
   return normalized === DASHBOARD_TAB_PATHS.focus
+    || normalized === "/dashboard/archive"
     || normalized === DASHBOARD_TAB_PATHS["work-map"]
     || LEGACY_FOCUS_PATHS.has(normalized);
 }
