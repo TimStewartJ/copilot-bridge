@@ -12,7 +12,6 @@ import {
   ModelMoveDisclosure,
   ModelsSection,
   DeferWorkerSection,
-  SubagentModelsSection,
   ComputerUseSection,
   ImageBudgetSection,
   AppearanceSection,
@@ -322,7 +321,6 @@ export default function SettingsView() {
                 ? <ModelMoveDisclosure />
                 : <ModelSection draft={draft} setDraft={setDraft}><ModelMoveDisclosure /></ModelSection>}
               {!isTierChoice(draft.modelRoles?.background) && <DeferWorkerSection draft={draft} setDraft={setDraft} />}
-              <SubagentModelsSection draft={draft} setDraft={setDraft} />
               <ImageBudgetSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>
 

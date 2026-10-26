@@ -83,5 +83,14 @@ describe("ModelsSection", () => {
     expect(findAllByTag(helm, "button").map((element) => element.textContent)).toEqual(["Fast", "Standard", "Deep", "Auto", "Own"]);
     await harness.act(() => getReactProps(button(helm, "Deep"))!.onClick());
     expect(setDraft).toHaveBeenLastCalledWith(expect.objectContaining({ modelRoles: { helm: { tier: "preset3" } } }));
+
+    // Reviewers offer the chat's own model instead of a model of their own; rubber-duck is described, not set.
+    const reviewers = group(harness.dom.container, "Reviewers and delegated work runs on");
+    expect(findAllByTag(reviewers, "button").map((element) => element.textContent)).toEqual(["Fast", "Standard", "Deep", "Same as chat"]);
+    expect(harness.dom.container.textContent).toContain("Standard (GPT-6.1 Sol) in Claude chats, Deep (Claude Opus 5.5) in GPT chats");
+
+    // Use recommended leaves Reviewers on the chat's model.
+    await harness.act(() => getReactProps(button(harness!.dom.container, "Use recommended"))!.onClick());
+    expect(setDraft.mock.lastCall?.[0].modelRoles).not.toHaveProperty("reviewers");
   });
 });

@@ -21,6 +21,8 @@ import {
   type ModelRoles,
   type ResolvedModelRole,
 } from "../../../shared/model-roles.js";
+import { pickSecondOpinion } from "../../../shared/subagent-settings.js";
+import { getModelFamilyLabel, type ModelFamily } from "../../../shared/model-families.js";
 import { Badge, Button, FormRow, Notice, SegmentedControl, SettingList, SettingRow } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
 import { SettingsSection } from "./SettingsSection";
@@ -31,6 +33,23 @@ const OWN_MODEL_BELOW: Partial<Record<ModelRole, string>> = {
   chat: "Its own model (set below)",
   background: "Its own model (set below)",
 };
+/** Roles that offer no model of their own; Helpers keep "Own" only while one is already saved. */
+const NO_OWN_MODEL: ReadonlySet<ModelRole> = new Set(["subagents", "reviewers"]);
+
+/** Says which tier rubber-duck uses in Claude and in GPT chats: the strongest from the other family. */
+function describeSecondOpinion(presets: NonNullable<AppSettings["modelPresets"]>, models: readonly ModelInfo[]): string {
+  // The same rule the server applies: with a model list, a tier whose model is not on it is skipped.
+  const usable = (model: string) => models.length === 0 || models.some((entry) => entry.id === model);
+  const tiers = [...MODEL_PRESET_SLOTS].reverse().flatMap((slot) => presets[slot]?.model && usable(presets[slot]!.model) ? [{ slot, model: presets[slot]!.model }] : []);
+  const parts = (["claude", "gpt"] as const satisfies readonly ModelFamily[]).flatMap((family) => {
+    const pick = pickSecondOpinion(tiers, family);
+    if (!pick) return [];
+    const name = models.find((model) => model.id === pick.model)?.name ?? pick.model;
+    return [`${MODEL_TIER_INFO[pick.slot].label} (${name}) in ${getModelFamilyLabel(family)} chats`];
+  });
+  if (!parts.length) return "Rubber-duck, the second opinion, runs on Copilot's own pick from another model family.";
+  return `Rubber-duck, the second opinion, uses your strongest tier from the other model family: ${parts.join(", ")}. Other chats get Copilot's own pick.`;
+}
 
 type RoleValue = ModelPresetSlot | "automatic" | "custom";
 
@@ -121,7 +140,10 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
   const allTiersSet = MODEL_PRESET_SLOTS.every((slot) => presets[slot]?.model);
   const recommended = () => {
     const nextRoles: ModelRoles = {};
-    for (const role of MODEL_ROLES) nextRoles[role] = { tier: MODEL_ROLE_INFO[role].recommended };
+    for (const role of MODEL_ROLES) {
+      const tier = MODEL_ROLE_INFO[role].recommended;
+      if (tier) nextRoles[role] = { tier };
+    }
     setDraft({ ...draft, modelRoles: nextRoles });
   };
 
@@ -162,16 +184,17 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
           ?? (role === "helm" && value === "custom" ? describeResolved({ role, source: "custom", model: draft.helm?.model }, models) : undefined);
         const options = [
           ...MODEL_PRESET_SLOTS.map((slot) => ({ value: slot as RoleValue, label: MODEL_TIER_INFO[slot].label, disabled: !presets[slot]?.model, title: presets[slot]?.model ? undefined : "Set this tier first" })),
-          ...(ownBelow ? [] : [{ value: "automatic" as RoleValue, label: "Auto", title: `Automatic: ${info.automatic}` }]),
-          { value: "custom" as RoleValue, label: "Own", title: "Its own model" },
+          ...(ownBelow ? [] : [{ value: "automatic" as RoleValue, label: info.automaticLabel ?? "Auto", title: info.automaticLabel ? info.automatic : `Automatic: ${info.automatic}` }]),
+          ...(NO_OWN_MODEL.has(role) && value !== "custom" ? [] : [{ value: "custom" as RoleValue, label: "Own", title: "Its own model" }]),
         ];
         return <SettingRow key={role} label={info.label} hint={info.description}>
           <SegmentedControl<RoleValue> ariaLabel={`${info.label} runs on`} options={options} value={value} fullWidth onChange={(next) => { if (next !== value) setRole(role, next); }} />
           <p className={cx(DS.text.meta, "mt-2 flex flex-wrap items-center gap-1.5")}>
-            {value === "automatic" ? <>Automatic: {info.automatic}</> : runsOn ? <>Runs on {runsOn}</> : value === "custom" && ownBelow ? <>Its own model is set below.</> : null}
+            {value === "automatic" ? <>{info.automaticLabel ? info.automatic : `Automatic: ${info.automatic}`}</> : runsOn ? <>Runs on {runsOn}</> : value === "custom" && ownBelow ? <>Its own model is set below.</> : null}
             {info.effortNote && value !== "automatic" && <span>· {info.effortNote}</span>}
             {view?.source === "tier" && <Badge>{MODEL_TIER_INFO[view.tier!].label}</Badge>}
           </p>
+          {role === "reviewers" && <p className={cx(DS.text.meta, "mt-1")}>{describeSecondOpinion(presets, available)}</p>}
           {view?.warning && <p className="mt-1 text-xs text-warning">{view.warning}</p>}
           {value === "custom" && role === "helm" && (
             <div className="mt-2 sm:max-w-sm"><ModelSelect id="role-helm-model" label="Helm chat model" value={draft.helm?.model ?? ""} models={available} onChange={(model) => setDraft({ ...draft, modelRoles: { ...draft.modelRoles }, helm: { ...draft.helm, model } })} /></div>

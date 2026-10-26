@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createSettingsStore } from "../settings-store.js";
 import { resolveModelRole } from "../model-roles.js";
-import { subagentDefaultsFor, resolveSubagentSettings } from "../../shared/subagent-settings.js";
+import { buildSubagentPlan, subagentSettingsForModel } from "../../shared/subagent-settings.js";
 
 const PRESETS = {
   preset1: { model: "gpt-6-luna", reasoningEffort: "max", contextTier: "long_context" as const },
@@ -72,6 +72,7 @@ describe("model roles in settings", () => {
     expect(() => store.updateSettings({ modelRoles: { chat: { model: "x" } } } as never)).toThrow(/takes a tier/);
     expect(() => store.updateSettings({ modelRoles: { nope: { tier: "preset1" } } } as never)).toThrow(/not a known role/);
     expect(() => store.updateSettings({ modelRoles: { helm: { model: "x" } } } as never)).toThrow(/takes a tier/);
+    expect(() => store.updateSettings({ modelRoles: { reviewers: { model: "x" } } } as never)).toThrow(/takes a tier/);
     // Helm's own look at all Bridges was once a role of its own; it is Helm now.
     expect(() => store.updateSettings({ modelRoles: { thinker: { tier: "preset3" } } } as never)).toThrow(/not a known role/);
     expect(() => store.updateSettings({ modelRoles: { subagents: { tier: "preset9" } } } as never)).toThrow(/preset1/);
@@ -112,13 +113,44 @@ describe("resolveModelRole", () => {
     expect(resolveModelRole({ modelRoles: { helm: { tier: "preset2" } } }, "helm", MODELS)).toMatchObject({ source: "automatic", warning: expect.stringMatching(/no model yet/) });
     expect(resolveModelRole(settings, "background", MODELS)).toEqual({ role: "background", source: "automatic" });
   });
+});
 
-  it("gives task, explore and research the Sub-agents role's model, leaving per-agent choices and other agents alone", () => {
-    const defaults = subagentDefaultsFor(resolveModelRole({ modelPresets: PRESETS, modelRoles: { subagents: { tier: "preset2" } } }, "subagents", MODELS));
-    const resolved = resolveSubagentSettings({ agents: { explore: { model: "gpt-6-luna" } } }, MODELS as never, defaults);
-    expect(resolved?.agents.task).toEqual({ model: "gpt-6.1-sol", effortLevel: "max" });
-    expect(resolved?.agents.explore).toEqual({ model: "gpt-6-luna" });
-    expect(resolved?.agents["rubber-duck"]).toBeUndefined();
-    expect(subagentDefaultsFor(undefined).task).toEqual({ model: "gpt-6-luna", effortLevel: "max" });
+describe("sub-agent plan", () => {
+  const TIERS = [PRESETS.preset3, PRESETS.preset2, PRESETS.preset1];
+  const plan = (modelRoles: Record<string, unknown>) => {
+    const settings = { modelPresets: PRESETS, modelRoles } as never;
+    return buildSubagentPlan({
+      helpers: resolveModelRole(settings, "subagents", MODELS),
+      reviewers: resolveModelRole(settings, "reviewers", MODELS),
+      tiers: TIERS,
+    }, MODELS);
+  };
+
+  it("runs helpers and reviewers on their roles, or on the built-in helper default and the chat's model", () => {
+    const automatic = plan({}).agents;
+    expect(automatic.task).toEqual({ model: "gpt-6-luna", effortLevel: "max" });
+    expect(automatic.research).toEqual(automatic.task);
+    expect(automatic["code-review"]).toEqual({ model: "inherit" });
+    expect(automatic["general-purpose"]).toEqual({ model: "inherit" });
+    const tiered = plan({ subagents: { tier: "preset2" }, reviewers: { tier: "preset3" } }).agents;
+    expect(tiered.explore).toEqual({ model: "gpt-6.1-sol", effortLevel: "max" });
+    expect(tiered["security-review"]).toEqual({ model: "claude-opus-5.5", effortLevel: "high" });
+  });
+
+  it.each([
+    ["claude-opus-5.5", { model: "gpt-6.1-sol", effortLevel: "max" }],
+    ["gpt-6-luna", { model: "claude-opus-5.5", effortLevel: "high" }],
+    // A router's family is unknown, so Copilot picks the critic itself.
+    ["auto", undefined],
+    [undefined, undefined],
+  ])("gives rubber-duck in a %s chat the strongest tier from the other family", (chat, expected) => {
+    expect(subagentSettingsForModel(plan({}), chat).agents["rubber-duck"]).toEqual(expected);
+  });
+
+  it("leaves rubber-duck to Copilot when every tier is from the chat's family", () => {
+    const gptOnly = buildSubagentPlan({ tiers: [PRESETS.preset2, PRESETS.preset1] }, MODELS);
+    expect(subagentSettingsForModel(gptOnly, "gpt-6.1-sol").agents).not.toHaveProperty("rubber-duck");
+    expect(subagentSettingsForModel(gptOnly, "claude-opus-5.5").agents["rubber-duck"]).toEqual({ model: "gpt-6.1-sol", effortLevel: "max" });
   });
 });
+

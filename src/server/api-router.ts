@@ -80,7 +80,6 @@ import {
   type VisualArtifactOwner,
 } from "./visual-artifacts.js";
 import { normalizeCopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
-import { changedSubagentSelections } from "../shared/subagent-settings.js";
 import {
   matchesAdoOrganization,
   parseAdoWorkReferenceUrl,
@@ -2144,7 +2143,6 @@ export function createApiRouter(
     return JSON.stringify({
       model: settings.model,
       modelPresets: MODEL_PRESET_SLOTS.map((slot) => settings.modelPresets?.[slot]),
-      subagents: settings.subagents?.agents,
       modelRoles: settings.modelRoles,
       reasoningEffort: settings.reasoningEffort,
       contextTier: settings.contextTier,
@@ -2163,7 +2161,6 @@ export function createApiRouter(
       const nextModel = next.modelPresets?.[slot]?.model;
       if (nextModel && currentModel !== nextModel) add({ model: nextModel });
     }
-    for (const selection of changedSubagentSelections(current.subagents, next.subagents)) add(selection);
     // A role given a model of its own is checked like any other model choice.
     for (const role of MODEL_ROLES) {
       const choice = next.modelRoles?.[role];
@@ -4696,18 +4693,15 @@ export function createApiRouter(
       clearProviderCache();
 
       const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
-      // The runtime sub-agent override is applied on create/resume, so a cached
-      // session keeps its old policy until it is resumed.
-      const subagentsChanged = JSON.stringify(prev.subagents) !== JSON.stringify(updated.subagents);
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
-      // Plugin and sub-agent changes can't be hot-swapped on a live session — evict
-      // so the next resume rebuilds with the new config.
-      if (computerUseChanged || subagentsChanged) {
-        const reason = computerUseChanged ? "Computer use" : "Sub-agent models";
-        console.log(`[settings] ${reason} changed — evicting cached sessions for re-resume`);
+      // Plugin changes can't be hot-swapped on a live session — evict so the next
+      // resume rebuilds with the new config. Sub-agent models (Helpers, Reviewers,
+      // tiers) reach a loaded chat the next time it is resumed.
+      if (computerUseChanged) {
+        console.log("[settings] Computer use changed — evicting cached sessions for re-resume");
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached
