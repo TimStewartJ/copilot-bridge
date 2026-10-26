@@ -19,7 +19,8 @@ import type { SessionConfigProfile } from "../session-manager.js";
 import { parseWorkspaceYamlSessionName } from "../session-workspace-yaml.js";
 import { REASONING_EFFORT_LEVELS } from "../../shared/reasoning-effort.js";
 import { isActionRequest } from "./helm-prompt.js";
-import { applyHelmSessionProfile, selectHelmModel } from "./helm-session-profile.js";
+import { applyHelmSessionProfile } from "./helm-session-profile.js";
+import { chooseHelmModel } from "./helm-model.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
 import {
   createHelmToolDefinitions,
@@ -339,8 +340,10 @@ export class HelmService implements HelmToolRuntime {
   async createConversation(options: { model?: string } = {}): Promise<HelmConversationView> {
     const previous = this.store.getCurrent();
     const models = await this.ctx.sessionManager.listModels().catch(() => []);
-    const model = options.model ?? this.ctx.settingsStore.getSettings().helm?.model;
-    const selection = selectHelmModel(models, model?.trim() || undefined, this.getTurnReasoningEffort("typed"));
+    const selection = chooseHelmModel(this.ctx.settingsStore.getSettings(), models, {
+      ...(options.model?.trim() ? { requested: options.model.trim() } : {}),
+      effort: this.getTurnReasoningEffort("typed"),
+    });
     const sessionId = randomUUID();
     // Registered before creation so the session is built with the Helm profile from its first config.
     this.store.create(sessionId, new Date(this.now()).toISOString());
@@ -349,6 +352,7 @@ export class HelmService implements HelmToolRuntime {
         expectedSessionId: sessionId,
         ...(selection.model ? { model: selection.model } : {}),
         ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
+        ...(selection.contextTier ? { contextTier: selection.contextTier } : {}),
       });
     } catch (error) {
       this.store.remove(sessionId);

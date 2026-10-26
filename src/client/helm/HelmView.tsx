@@ -4,6 +4,7 @@
 // conversation lifecycle (new, resume, keep, delete) and the hands-free dock.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
   AudioLines,
   History,
@@ -202,6 +203,7 @@ function HelmWelcome({
         <div className="flex items-center gap-2 text-text-primary">
           <ShipWheel size={22} aria-hidden="true" className="text-accent" />
           <h1 className="text-xl font-semibold tracking-tight">Helm</h1>
+          <Link to="/helm/memory" className={cx(DS.text.meta, DS.focus, "ml-auto rounded hover:text-text-primary")}>What Helm knows</Link>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-text-muted">
           Steer Bridge from one place. Ask what needs you, hear what finished, hand work to sessions, and keep tasks tidy. Type like any chat, or go hands-free and just talk. It's the same conversation either way.
@@ -321,13 +323,14 @@ export default function HelmView({
   /** The current conversation, created on demand. Concurrent callers share one creation. */
   const ensureConversation = useCallback(async (): Promise<string> => {
     if (sessionId) return sessionId;
-    creatingRef.current ??= createHelmConversation(helmModel ? { model: helmModel } : {}).finally(() => {
+    // The server picks Helm's model (Settings › Models), with its tier's effort and context.
+    creatingRef.current ??= createHelmConversation().finally(() => {
       creatingRef.current = null;
     });
     const conversation = await creatingRef.current;
     adoptConversation(conversation);
     return conversation.sessionId;
-  }, [adoptConversation, helmModel, sessionId]);
+  }, [adoptConversation, sessionId]);
 
   const reportError = (error: unknown) => setActionError(error instanceof Error ? error.message : String(error));
 
@@ -388,11 +391,11 @@ export default function HelmView({
       void refreshHelm();
     }
     async function createAndAdopt() {
-      const conversation = await createHelmConversation(helmModel ? { model: helmModel } : {});
+      const conversation = await createHelmConversation();
       adoptConversation(conversation);
       return conversation;
     }
-  }, [adoptConversation, handsFree, helmModel, refreshHelm]);
+  }, [adoptConversation, handsFree, refreshHelm]);
 
   const handleNewConversation = useCallback(() => switchConversation(async () => {
     queryClient.setQueryData<HelmState>(helmStateQueryKey, await startFreshHelm());

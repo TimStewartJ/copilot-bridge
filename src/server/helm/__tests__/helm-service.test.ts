@@ -175,7 +175,7 @@ describe("HelmService conversations", () => {
     expect(helm.getTurnReasoningEffort("spoken", "archive the finished ones")).toBe("high");
   });
 
-  it("creates a conversation on GPT-6 Luna with the Helm profile registered first", async () => {
+  it("creates a conversation on Helm's model with the Helm profile registered first", async () => {
     const { helm, store, sessionManager } = createHarness();
     sessionManager.createSession.mockImplementationOnce(async (options: { expectedSessionId?: string }) => {
       // The profile resolver must already recognize the id while the session is being built.
@@ -183,11 +183,11 @@ describe("HelmService conversations", () => {
       return { sessionId: options.expectedSessionId! };
     });
     const conversation = await helm.createConversation();
-    // Starts at the typed effort, clamped to what GPT-6 Luna supports here.
+    // Automatic: the user's default model, at the typed effort clamped to what it supports.
     expect(sessionManager.createSession).toHaveBeenCalledWith({
       expectedSessionId: conversation.sessionId,
-      model: "gpt-6-luna",
-      reasoningEffort: "low",
+      model: "claude-opus-5",
+      reasoningEffort: "high",
     });
     expect(conversation).toMatchObject({ turnCount: 0, kept: false, busy: false, handsFree: false, title: null });
     expect((await helm.getState()).current?.sessionId).toBe(conversation.sessionId);

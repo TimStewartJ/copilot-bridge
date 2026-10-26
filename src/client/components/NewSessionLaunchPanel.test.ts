@@ -143,16 +143,31 @@ describe("NewSessionLaunchPanel", () => {
       selectedModelId: "",
     }));
 
-    expect(findTile(harness!.dom.container, "Preset 1").textContent).toContain("GPT-5.6");
-    expect(findTile(harness!.dom.container, "Preset 2").textContent).toContain("Claude Opus 5");
-    expect(findTile(harness!.dom.container, "Preset 3").textContent).toContain("Gemini 3.1 Pro");
+    expect(findTile(harness!.dom.container, "Fast").textContent).toContain("GPT-5.6");
+    expect(findTile(harness!.dom.container, "Standard").textContent).toContain("Claude Opus 5");
+    expect(findTile(harness!.dom.container, "Deep").textContent).toContain("Gemini 3.1 Pro");
 
     const text = harness!.dom.container.textContent ?? "";
     expect(text).not.toContain("Disabled Model");
-    expect(text).not.toContain("Preset 1");
-    expect(text).not.toContain("Preset 2");
-    expect(text).not.toContain("Preset 3");
-    expect(tileLabels(harness!.dom.container)).toContain("Preset 1: GPT-5.6");
+    // Each tile names its tier before its model.
+    expect(findTile(harness!.dom.container, "Fast").textContent).toBe("FastGPT-5.6");
+    expect(text).not.toContain("This chat only");
+    expect(tileLabels(harness!.dom.container)).toContain("Fast: GPT-5.6");
+  });
+
+  it("offers to reset or save a chat that departs from its tier", async () => {
+    const onReset = vi.fn();
+    const onSave = vi.fn();
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      tierChange: { tierLabel: "Deep", onReset, onSave },
+    }));
+    expect(harness!.dom.container.textContent).toContain("This chat only");
+    const buttons = findAllByTag(harness!.dom.container, "button");
+    await harness!.act(() => getReactProps(buttons.find((button) => button.textContent === "Reset"))!.onClick());
+    await harness!.act(() => getReactProps(buttons.find((button) => button.textContent === "Save as Deep"))!.onClick());
+    expect(onReset).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledTimes(1);
   });
 
   it("shows a blank-default agent picker for task chats", async () => {
@@ -212,8 +227,8 @@ describe("NewSessionLaunchPanel", () => {
       selectedPresetSlot: "preset2",
     }));
 
-    expect(getReactProps(findTile(harness!.dom.container, "Preset 2"))?.["aria-pressed"]).toBe(true);
-    expect(getReactProps(findTile(harness!.dom.container, "Preset 1"))?.["aria-pressed"]).toBe(false);
+    expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(true);
+    expect(getReactProps(findTile(harness!.dom.container, "Fast"))?.["aria-pressed"]).toBe(false);
   });
 
   it("marks an explicitly remembered preset live when the model inherits the Bridge default", async () => {
@@ -228,8 +243,8 @@ describe("NewSessionLaunchPanel", () => {
       selectedPresetSlot: "preset2",
     }));
 
-    expect(getReactProps(findTile(harness!.dom.container, "Preset 2"))?.["aria-pressed"]).toBe(true);
-    expect(getReactProps(findTile(harness!.dom.container, "Preset 1"))?.["aria-pressed"]).toBe(false);
+    expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(true);
+    expect(getReactProps(findTile(harness!.dom.container, "Fast"))?.["aria-pressed"]).toBe(false);
   });
 
   it("shows the remembered model for each preset slot", async () => {
@@ -249,8 +264,8 @@ describe("NewSessionLaunchPanel", () => {
       },
     }));
 
-    expect(findTile(harness!.dom.container, "Preset 1").textContent).toContain("GPT-5 mini");
-    expect(findTile(harness!.dom.container, "Preset 2").textContent).toContain("Claude Opus 5");
+    expect(findTile(harness!.dom.container, "Fast").textContent).toContain("GPT-5 mini");
+    expect(findTile(harness!.dom.container, "Standard").textContent).toContain("Claude Opus 5");
   });
 
   it("does not mark a fallback model as selected when the SDK default is unresolved", async () => {
@@ -262,8 +277,8 @@ describe("NewSessionLaunchPanel", () => {
       ],
     }));
 
-    expect(getReactProps(findTile(harness!.dom.container, "Preset 1"))?.["aria-pressed"]).toBe(false);
-    expect(getReactProps(findTile(harness!.dom.container, "Preset 2"))?.["aria-pressed"]).toBe(false);
+    expect(getReactProps(findTile(harness!.dom.container, "Fast"))?.["aria-pressed"]).toBe(false);
+    expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(false);
     expect(harness!.dom.container.textContent).toContain(
       "No concrete default model is available.",
     );
@@ -291,7 +306,7 @@ describe("NewSessionLaunchPanel", () => {
     }));
 
     const buttons = findAllByTag(harness!.dom.container, "BUTTON");
-    const preset2 = findTile(harness!.dom.container, "Preset 2");
+    const preset2 = findTile(harness!.dom.container, "Standard");
     const autopilot = buttons.find((button) => button.textContent === "Autopilot");
     const lowEffort = buttons.find((button) => button.textContent === "Low");
     const standardContext = buttons.find(
@@ -367,8 +382,8 @@ describe("NewSessionLaunchPanel", () => {
     }));
 
     const caret = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 1 model");
-    if (!caret) throw new Error("Preset 1 refine caret was not rendered");
+      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Fast model");
+    if (!caret) throw new Error("Fast refine caret was not rendered");
 
     await harness!.act(async () => {
       getReactProps(caret)?.onClick?.();
@@ -405,11 +420,11 @@ describe("NewSessionLaunchPanel", () => {
       selectedModelId: "gpt-5.6",
     }));
 
-    expect(findTile(harness!.dom.container, "Preset 2").textContent).toContain("Claude Sonnet 5");
+    expect(findTile(harness!.dom.container, "Standard").textContent).toContain("Claude Sonnet 5");
 
     const caret = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 2 model");
-    if (!caret) throw new Error("Preset 2 refine caret was not rendered");
+      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Standard model");
+    if (!caret) throw new Error("Standard refine caret was not rendered");
     await harness!.act(async () => {
       getReactProps(caret)?.onClick?.();
     });
@@ -442,7 +457,7 @@ describe("NewSessionLaunchPanel", () => {
       presets: { preset1: { model: "gpt-5-mini" } },
     }));
 
-    const liveTile = findTile(harness!.dom.container, "Preset 1");
+    const liveTile = findTile(harness!.dom.container, "Fast");
     expect(getReactProps(liveTile)?.["aria-haspopup"]).toBe("listbox");
     expect(getReactProps(liveTile)?.["aria-expanded"]).toBe(false);
     await harness!.act(async () => {
@@ -477,7 +492,7 @@ describe("NewSessionLaunchPanel", () => {
       selectedPresetSlot: "preset1",
     }));
 
-    const inactive = findTile(harness!.dom.container, "Preset 2");
+    const inactive = findTile(harness!.dom.container, "Standard");
     expect(getReactProps(inactive)?.["aria-haspopup"]).toBeUndefined();
     await harness!.act(async () => {
       getReactProps(inactive)?.onClick?.();
@@ -502,7 +517,7 @@ describe("NewSessionLaunchPanel", () => {
 
     const addListener = vi.spyOn(document, "addEventListener");
     const caret = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 2 model");
+      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Standard model");
     await harness!.act(async () => {
       getReactProps(caret)?.onClick?.();
     });
@@ -531,7 +546,7 @@ describe("NewSessionLaunchPanel", () => {
 
     expect(findAllByTag(harness!.dom.container, "BUTTON")
       .some((button) => getReactProps(button)?.role === "option")).toBe(false);
-    expect(document.activeElement).toBe(findTile(harness!.dom.container, "Preset 2"));
+    expect(document.activeElement).toBe(findTile(harness!.dom.container, "Standard"));
     expect(props.onModelSelectionCommitted).not.toHaveBeenCalled();
   });
 
@@ -546,11 +561,11 @@ describe("NewSessionLaunchPanel", () => {
       selectedModelId: "",
     }));
 
-    expect(findTile(harness!.dom.container, "Preset 1").textContent).toContain("GPT-5 mini");
+    expect(findTile(harness!.dom.container, "Fast").textContent).toContain("GPT-5 mini");
 
     const caret = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Preset 1 model");
-    if (!caret) throw new Error("Preset 1 refine caret was not rendered");
+      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Fast model");
+    if (!caret) throw new Error("Fast refine caret was not rendered");
     await harness!.act(async () => {
       getReactProps(caret)?.onClick?.();
     });

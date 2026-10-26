@@ -18,14 +18,15 @@ export function isModelPresetSlot(value: unknown): value is ModelPresetSlot {
   return value === "preset1" || value === "preset2" || value === "preset3";
 }
 
+/** The tier names presets carry everywhere (Settings › Models): Fast, Standard, Deep. */
 export function getModelPresetSlotLabel(slot: ModelPresetSlot): string {
   switch (slot) {
     case "preset1":
-      return "Preset 1";
+      return "Fast";
     case "preset2":
-      return "Preset 2";
+      return "Standard";
     default:
-      return "Preset 3";
+      return "Deep";
   }
 }
 

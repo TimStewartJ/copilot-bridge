@@ -1,9 +1,34 @@
-// Helm's quick voice. While the real Helm (tools, slower) works on a hands-free turn, a small
+// Hands-free lead-in. While Helm (tools, a larger model) works on a hands-free turn, a small
 // tool-less model says a lead-in that names what Helm is about to look up or do, so the user hears
 // something relevant in about a second and a half instead of a canned "One sec." after three.
 // It never answers or claims anything was done; the real reply follows as before.
 import type { AgentModelInfo, AgentSession, AgentSessionConfig } from "../agent-backend/index.js";
-import { selectHelmModel } from "./helm-session-profile.js";
+import { selectHelperModel } from "../helper-model.js";
+import { resolveSupportedReasoningEffort } from "../../shared/reasoning-effort.js";
+
+interface TalkerModelSelection {
+  model?: string;
+  reasoningEffort?: string;
+}
+
+function isModelEnabled(model: AgentModelInfo): boolean {
+  const policy = (model as { policy?: { state?: string } }).policy;
+  return !policy || policy.state === "enabled";
+}
+
+/**
+ * The lead-in's model: the Small jobs model when it can be used, otherwise the Bridge's helper model
+ * (the cheapest one that can skip reasoning), at the wanted effort or the nearest it supports.
+ */
+export function selectTalkerModel(models: AgentModelInfo[], requested?: string, wantedEffort?: string): TalkerModelSelection {
+  const enabled = models.filter(isModelEnabled);
+  const requestedModel = requested ? enabled.find((model) => model.id === requested) : undefined;
+  const helperId = requestedModel ? undefined : selectHelperModel(enabled)?.model;
+  const chosen = requestedModel ?? enabled.find((model) => model.id === helperId);
+  if (!chosen) return requested ? { model: requested } : {};
+  const reasoningEffort = resolveSupportedReasoningEffort(wantedEffort, chosen.supportedReasoningEfforts);
+  return { model: chosen.id, ...(reasoningEffort ? { reasoningEffort } : {}) };
+}
 
 /**
  * Measured on 6 Oct 2026 with gpt-6-luna: at low, 21 of 21 lead-ins were right, in 1.1 to 3.0 s
@@ -38,6 +63,8 @@ export function parseLeadIn(content: unknown): string | undefined {
 
 export interface HelmTalkerDeps {
   listModels(): Promise<AgentModelInfo[]>;
+  /** The "Small jobs" role from Settings › Models, when it names a model. */
+  resolveHelperRole?(models: AgentModelInfo[]): { model?: string; reasoningEffort?: string };
   createHelperSession(config: AgentSessionConfig): Promise<{ session: AgentSession; dispose(): Promise<void> }>;
   logger?: Pick<Console, "warn">;
 }
@@ -86,7 +113,10 @@ export class HelmTalker {
 
   private async open(): Promise<Helper | undefined> {
     try {
-      const { model, reasoningEffort } = selectHelmModel(await this.deps.listModels(), undefined, TALKER_EFFORT);
+      const models = await this.deps.listModels();
+      const role = this.deps.resolveHelperRole?.(models);
+      // The lead-in keeps its own low effort: it has to name the right task, which "none" got wrong.
+      const { model, reasoningEffort } = selectTalkerModel(models, role?.model, TALKER_EFFORT);
       if (!model) return undefined;
       return await this.deps.createHelperSession({
         clientName: "Copilot Bridge Helm Talker",

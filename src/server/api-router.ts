@@ -132,6 +132,9 @@ import {
 } from "./device-hibernate.js";
 import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { createHelmRouter } from "./helm/helm-router.js";
+import { describeModelRoles } from "./model-roles.js";
+import { MODEL_ROLES, isTierChoice } from "../shared/model-roles.js";
+import { createHelmThinkerRouter } from "./helm/thinker/router.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
 import {
   formatLoopDeferActivity,
@@ -1120,6 +1123,7 @@ export function createApiRouter(
   router.use(express.json({ limit: "20mb" }));
   router.use(createApiJsonErrorHandler());
 
+  if (ctx.helmThinker) router.use("/helm", createHelmThinkerRouter(ctx.helmThinker));
   if (ctx.helm) router.use("/helm", createHelmRouter(ctx.helm));
   router.use("/voice", createVoiceRouter(voiceGateway));
 
@@ -2141,8 +2145,11 @@ export function createApiRouter(
   function settingsModelSnapshot(settings: AppSettings): string {
     return JSON.stringify({
       model: settings.model,
-      modelPresets: MODEL_PRESET_SLOTS.map((slot) => settings.modelPresets?.[slot]?.model),
+      modelPresets: MODEL_PRESET_SLOTS.map((slot) => settings.modelPresets?.[slot]),
       subagents: settings.subagents?.agents,
+      modelRoles: settings.modelRoles,
+      reasoningEffort: settings.reasoningEffort,
+      contextTier: settings.contextTier,
     });
   }
 
@@ -2159,6 +2166,13 @@ export function createApiRouter(
       if (nextModel && currentModel !== nextModel) add({ model: nextModel });
     }
     for (const selection of changedSubagentSelections(current.subagents, next.subagents)) add(selection);
+    // A role given a model of its own is checked like any other model choice.
+    for (const role of MODEL_ROLES) {
+      const choice = next.modelRoles?.[role];
+      if (!choice || isTierChoice(choice)) continue;
+      const before = current.modelRoles?.[role];
+      if (JSON.stringify(before) !== JSON.stringify(choice)) add({ model: choice.model });
+    }
     return [...selections.values()];
   }
 
@@ -4772,6 +4786,18 @@ export function createApiRouter(
       res.json({ servers });
     } catch (err) {
       res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /models/roles — what each kind of work runs on (Settings › Models)
+  router.get("/models/roles", async (_req, res) => {
+    try {
+      const settings = ctx.settingsStore.getSettings();
+      const models = await ctx.sessionManager.listModels().catch(() => undefined);
+      const scheduleOverrides = ctx.scheduleStore.listSchedules().filter((schedule) => schedule.enabled && !!schedule.model).length;
+      res.json(describeModelRoles(settings, models, scheduleOverrides, MODEL_ROLES));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

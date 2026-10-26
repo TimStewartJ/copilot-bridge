@@ -47,8 +47,8 @@ export function DeferWorkerSection({
 
   return (
     <SettingsSection
-      title="Deferred workers"
-      description="Each check runs in a temporary session that is deleted afterwards."
+      title="Background checks: their own model"
+      description="Used while Background checks is set to its own model in Models above. Each check runs in a temporary session that is deleted afterwards."
     >
       <SettingList>
         <SettingRow label="Model" htmlFor="defer-worker-model" control={(

@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { getMobileRouteMeta, resolveMobileWorkTabTarget } from "./mobile-route-meta";
 
 describe("getMobileRouteMeta", () => {
-  it("treats Helm as a root tab that keeps the bottom navigation", () => {
+  it("keeps Helm's routes under the Home tab with the bottom navigation", () => {
     expect(getMobileRouteMeta("/helm")).toMatchObject({
       route: "helm",
-      activeTab: "helm",
+      activeTab: "home",
       workSegment: null,
       showBottomNav: true,
       showSharedHeader: false,
@@ -15,6 +15,7 @@ describe("getMobileRouteMeta", () => {
       taskId: null,
     });
     expect(getMobileRouteMeta("/helm/").route).toBe("helm");
+    expect(getMobileRouteMeta("/helm/memory")).toMatchObject({ route: "helm", activeTab: "home", showBottomNav: true });
   });
 
   it("still resolves chat routes next to it", () => {

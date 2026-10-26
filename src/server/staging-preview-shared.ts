@@ -36,7 +36,7 @@ export const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --inclu
 // five minutes, which failed a deploy whose checks had already passed. The limit only has to
 // catch an install that hangs.
 export const STAGING_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
-export const STAGING_PREVIEW_MODEL = "claude-haiku-4.5";
+export const STAGING_PREVIEW_MODEL = "gpt-6-luna";
 export const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
 export const STAGING_BACKEND_IDENTITY_RECAPTURE_TIMEOUT_MS = 10_000;
 export const STAGING_BACKEND_SWITCH_STOP_MAX_ATTEMPTS = 2;

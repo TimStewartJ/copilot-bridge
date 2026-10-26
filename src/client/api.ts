@@ -1,3 +1,4 @@
+import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
 import type {
@@ -2371,6 +2372,8 @@ export interface AppSettings {
   contextTier?: CopilotContextTier;
   modelPresets?: ModelPresets;
   lastModelPreset?: ModelPresetSlot;
+  /** Which tier or model each kind of work runs on (Settings › Models); a missing role is Automatic. */
+  modelRoles?: ModelRoles;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   /** Canonical sub-agent models; unset means Bridge sessions use the CLI user settings. */
@@ -2918,6 +2921,10 @@ export interface ModelInfo extends CopilotModelContextMetadata {
   policy?: { state: "enabled" | "disabled" | "unconfigured" };
   supportedReasoningEfforts?: ReasoningEffort[];
   defaultReasoningEffort?: ReasoningEffort;
+}
+
+export async function fetchModelRoles(signal?: AbortSignal): Promise<ModelRolesView> {
+  return apiFetch<ModelRolesView>("/api/models/roles", undefined, { signal });
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {

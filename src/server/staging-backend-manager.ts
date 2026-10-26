@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
@@ -507,11 +507,34 @@ function resolveStagingPreviewRuntimePaths(
 
 /**
  * Fields in the Copilot CLI config that identify the signed-in account. These
- * are plain identifiers (host and login) and hold no secret material: the token
- * itself lives in the OS credential store, which the preview backend can
- * already read because it runs as the same OS user.
+ * are plain identifiers (host and login) and hold no secret material. The token
+ * usually lives in the OS credential store, which the preview backend can read
+ * because it runs as the same OS user.
  */
 const COPILOT_LOGIN_POINTER_FIELDS = ["loggedInUsers", "lastLoggedInUser"] as const;
+
+/**
+ * Where the CLI keeps tokens when the OS credential store is unusable (a headless
+ * Linux host without a working keyring). Without them the preview runtime is
+ * signed out: it lists no models and every request that needs the account fails.
+ * Only the signed-in accounts' entries are copied, into a file only this user can read.
+ */
+const COPILOT_PLAINTEXT_TOKENS_FIELD = "authTokens";
+
+function signedInTokenEntries(config: Record<string, unknown>): Record<string, unknown> | undefined {
+  const tokens = config[COPILOT_PLAINTEXT_TOKENS_FIELD];
+  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) return undefined;
+  const users = [
+    ...(Array.isArray(config.loggedInUsers) ? config.loggedInUsers : []),
+    ...(config.lastLoggedInUser ? [config.lastLoggedInUser] : []),
+  ].flatMap((user) => {
+    const { host, login } = (user ?? {}) as { host?: unknown; login?: unknown };
+    return typeof host === "string" && typeof login === "string" ? [`${host}:${login}`] : [];
+  });
+  const entries = Object.entries(tokens as Record<string, unknown>)
+    .filter(([key]) => users.some((user) => key === user || key.startsWith(`${user}:`)));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
 
 export function resolveDefaultCopilotHome(
   env: NodeJS.ProcessEnv = process.env,
@@ -554,6 +577,8 @@ export function seedStagingCopilotLogin(
     if (sourceConfig[field] !== undefined) pointer[field] = sourceConfig[field];
   }
   if (Object.keys(pointer).length === 0) return false;
+  const tokens = signedInTokenEntries(sourceConfig);
+  if (tokens) pointer[COPILOT_PLAINTEXT_TOKENS_FIELD] = tokens;
 
   const targetConfigPath = join(targetCopilotHome, "config.json");
   let targetConfig: Record<string, unknown> = {};
@@ -568,7 +593,9 @@ export function seedStagingCopilotLogin(
 
   try {
     mkdirSync(targetCopilotHome, { recursive: true });
-    writeFileSync(targetConfigPath, JSON.stringify({ ...targetConfig, ...pointer }, null, 2));
+    writeFileSync(targetConfigPath, JSON.stringify({ ...targetConfig, ...pointer }, null, 2), { mode: 0o600 });
+    // The mode above applies only to a new file; an existing one is narrowed too.
+    chmodSync(targetConfigPath, 0o600);
   } catch (err) {
     log(`Warning: could not seed the Copilot login pointer: ${err}`);
     return false;

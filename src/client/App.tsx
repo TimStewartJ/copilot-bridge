@@ -78,7 +78,7 @@ import {
   resolveNewSessionLaunchState,
 } from "./lib/new-session-launch";
 import type { ModelPresetSelection } from "./lib/model-presets";
-import type { ModelPresetSlot } from "../shared/model-presets.js";
+import { getModelPresetSlotLabel, type ModelPresetSlot } from "../shared/model-presets.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { resolvePromptProfile, type PromptProfileId, type PromptProfileSetting } from "../shared/prompt-profiles.js";
@@ -114,6 +114,7 @@ import SearchView from "./components/SearchView";
 import { FileViewerHost } from "./components/FilePreview";
 
 const HelmView = lazy(() => import("./helm/HelmView"));
+const HelmMemory = lazy(() => import("./helm/HelmMemory"));
 import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
 import { HandsFreeProvider, useHandsFree } from "./voice/HandsFreeProvider";
 import { HandsFreePill } from "./voice/HandsFreeDock";
@@ -126,7 +127,8 @@ import PullToRefresh, { type PullToRefreshScrollRestoration } from "./components
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileWorkSegments } from "./components/MobileWorkSegments";
 import { MobileDetailHeader } from "./components/MobileDetailHeader";
-import { useIsMobile } from "./useIsMobile";
+import { useIsMobile, useMediaQuery } from "./useIsMobile";
+import { HELM_PAGE_WIDE_QUERY } from "./helm/HelmPage";
 import { useFavicon } from "./useFavicon";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { resolveDocumentTitle } from "./lib/document-title";
@@ -165,6 +167,12 @@ function AppShell() {
   const isHelmRoute = location.pathname === "/helm";
   const handsFree = useHandsFree();
   const isMobile = useIsMobile();
+  const helmPageWide = useMediaQuery(HELM_PAGE_WIDE_QUERY);
+  const homeSearch = new URLSearchParams(location.search);
+  const isHelmBriefRoute = (location.pathname === "/" || location.pathname === "/dashboard/home")
+    && homeSearch.get("view") !== "classic" && !homeSearch.has("section");
+  // Wide screens show the Helm conversation beside the brief on Home, so the hands-free dock isn't needed there either.
+  const helmTalkVisible = isHelmRoute || (isHelmBriefRoute && helmPageWide);
   const { hasAttention, hasAttentionRef } = usePageAttention();
   const pageHasAttention = hasAttention && !searchOpen;
   const searchOpenRef = useRef(searchOpen);
@@ -1716,6 +1724,26 @@ function AppShell() {
     search: location.pathname === "/search",
     helm: mobileRouteMeta.route === "helm",
   };
+
+  const helmTalk = (
+    <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading Helm…</div>}>
+      <HelmView
+        onMessageSent={invalidateSessions}
+        getDraft={getDraft}
+        setDraft={setDraft}
+        clearDraft={clearDraft}
+        getVoiceJob={getJobForComposer}
+        startBackgroundVoiceJob={startBackgroundVoiceJob}
+        retryVoiceJobUpload={retryVoiceJobUpload}
+        reviewVoiceJob={reviewInstead}
+        clearVoiceJobError={clearVoiceJobError}
+        discardVoiceRecording={discardVoiceRecording}
+        sessionReloadSignals={sessionReloadSignals}
+        sessionBusySignals={sessionBusySignals}
+        sessionHistorySignals={sessionHistorySignals}
+      />
+    </Suspense>
+  );
   return (
     <>
     <BridgeReferenceContext.Provider value={bridgeReferenceContext}>
@@ -1763,11 +1791,9 @@ function AppShell() {
         isAllTasksActive={isAllTasksActive}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
-        onOpenHelm={handleOpenHelm}
-        isHelmActive={isHelmRoute}
         onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
         isDocsActive={isDocsActive}
-        isDashboardActive={isDashboardActive}
+        isDashboardActive={isDashboardActive || isHelmRoute || location.pathname === "/helm/memory"}
         homeChecklistIndicator={homeChecklistIndicator}
         expanded={railExpanded}
         onToggleExpanded={() => setRailExpanded((v) => !v)}
@@ -1959,6 +1985,7 @@ function AppShell() {
                   tasks={tasks}
                   taskGroups={taskGroups}
                   taskIndicators={navTaskIndicators}
+                  helmTalk={helmTalk}
                 />
               }
             />
@@ -1977,6 +2004,7 @@ function AppShell() {
                   tasks={tasks}
                   taskGroups={taskGroups}
                   taskIndicators={navTaskIndicators}
+                  helmTalk={helmTalk}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -2200,22 +2228,23 @@ function AppShell() {
             <Route
               path="helm"
               element={
-                <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading Helm…</div>}>
-                  <HelmView
-                    onMessageSent={invalidateSessions}
-                    getDraft={getDraft}
-                    setDraft={setDraft}
-                    clearDraft={clearDraft}
-                    getVoiceJob={getJobForComposer}
-                    startBackgroundVoiceJob={startBackgroundVoiceJob}
-                    retryVoiceJobUpload={retryVoiceJobUpload}
-                    reviewVoiceJob={reviewInstead}
-                    clearVoiceJobError={clearVoiceJobError}
-                    discardVoiceRecording={discardVoiceRecording}
-                    sessionReloadSignals={sessionReloadSignals}
-                    sessionBusySignals={sessionBusySignals}
-                    sessionHistorySignals={sessionHistorySignals}
-                  />
+                <Dashboard
+                  onSelectTask={handleSelectTask}
+                  onCreateTaskForWorkItems={handleCreateTaskForWorkItems}
+                  onSelectSession={navigateToSession}
+                  onStartPromptSession={handleStartPromptSession}
+                  tasks={tasks}
+                  taskGroups={taskGroups}
+                  taskIndicators={navTaskIndicators}
+                  helmTalk={helmTalk}
+                />
+              }
+            />
+            <Route
+              path="helm/memory"
+              element={
+                <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading…</div>}>
+                  <HelmMemory />
                 </Suspense>
               }
             />
@@ -2258,7 +2287,7 @@ function AppShell() {
       activeSessionId={activeSessionId}
       onClose={closeSearch}
     />}
-    {handsFree.active && !isHelmRoute && !searchOpen && (
+    {handsFree.active && !helmTalkVisible && !searchOpen && (
       <HandsFreePill
         controller={handsFree}
         onOpenHelm={handleOpenHelm}
@@ -2699,6 +2728,37 @@ function SessionRoute({
     applyLaunchSelection(modelPresetMemory.selectModel(slot, modelId));
   }, [applyLaunchSelection, modelPresetMemory]);
 
+  // What the selected tier gives on its own, to tell when this chat departs from it.
+  const tierBaseline = useMemo(() => {
+    if (!activePresetSlot) return null;
+    const selection = modelPresetMemory.selectPreset(activePresetSlot, { models: launchState.availableModels, selectedModelId: "" });
+    if (!selection) return null;
+    const state = resolveNewSessionLaunchState({
+      models: launchState.availableModels,
+      selectedModelId: selection.modelId,
+      defaultModelId,
+      defaultReasoningEffort,
+      defaultContextTier,
+      reasoningEffortSelection: selection.reasoningEffort ? { modelId: selection.modelId, value: selection.reasoningEffort } : undefined,
+      contextTierSelection: selection.contextTier ? { modelId: selection.modelId, value: selection.contextTier } : undefined,
+    });
+    return { selection, modelId: state.modelKey, reasoningEffort: state.selectedReasoningEffort, contextTier: state.selectedContextTier };
+  }, [activePresetSlot, defaultContextTier, defaultModelId, defaultReasoningEffort, launchState.availableModels, modelPresetMemory]);
+  const launchTierChange = activePresetSlot && tierBaseline && (
+    tierBaseline.modelId !== launchState.modelKey
+    || tierBaseline.reasoningEffort !== launchState.selectedReasoningEffort
+    || tierBaseline.contextTier !== launchState.selectedContextTier
+  ) ? {
+      tierLabel: getModelPresetSlotLabel(activePresetSlot),
+      onReset: () => applyLaunchSelection(tierBaseline.selection),
+      onSave: () => modelPresetMemory.saveToTier({
+        slot: activePresetSlot,
+        modelId: launchState.modelKey,
+        reasoningEffort: launchState.selectedReasoningEffort,
+        contextTier: launchState.selectedContextTier,
+      }),
+    } : undefined;
+
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const requestComposerFocus = useCallback(() => {
     setComposerFocusRequest((current) => current + 1);
@@ -2910,6 +2970,7 @@ function SessionRoute({
       onModeChange={setLaunchMode}
       onAgentChange={handleLaunchAgentChange}
       onModelSelectionCommitted={requestComposerFocus}
+      tierChange={launchTierChange}
     />
   ) : undefined;
 

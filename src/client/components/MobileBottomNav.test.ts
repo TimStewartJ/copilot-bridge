@@ -37,11 +37,11 @@ describe("MobileBottomNav", () => {
     harness = null;
   });
 
-  it("keeps the bar to five destinations, with tasks and chats under Work and no quota slot", async () => {
+  it("keeps the bar to four destinations, with tasks and chats under Work, Helm inside Home and no quota slot", async () => {
     harness = await createReactDomHarness();
     await harness.render(createElement(MobileBottomNav, { activeTab: "home", onSelectTab: vi.fn() }));
 
-    expect(navLabels(harness.dom.container)).toEqual(["Home", "Work", "Helm", "Docs", "Settings"]);
+    expect(navLabels(harness.dom.container)).toEqual(["Home", "Work", "Docs", "Settings"]);
 
     const nav = findAllByTag(harness.dom.container, "NAV")[0];
     expect(getReactProps(nav)?.style).toEqual({
@@ -85,18 +85,9 @@ describe("MobileBottomNav", () => {
     expect(getReactProps(attentionBadge(needsAnswer))?.className).toContain("bg-accent");
   });
 
-  it("offers Helm as a tab that stays inside the app shell", async () => {
-    const onSelectTab = vi.fn();
+  it("has no separate Helm tab: Helm's conversation lives on Home", async () => {
     harness = await createReactDomHarness();
-    await harness.render(createElement(MobileBottomNav, { activeTab: "helm", onSelectTab }));
-
-    const helm = findButtonByLabel(harness.dom.container, "Helm");
-    expect(getReactProps(helm)?.["aria-current"]).toBe("page");
-    expect(getReactProps(findButtonByLabel(harness.dom.container, "Work"))?.["aria-current"]).toBeUndefined();
-    await harness.act(() => getReactProps(helm)!.onClick());
-    expect(onSelectTab).toHaveBeenCalledWith("helm");
-
-    await harness.act(() => getReactProps(findButtonByLabel(harness!.dom.container, "Work"))!.onClick());
-    expect(onSelectTab).toHaveBeenLastCalledWith("work");
+    await harness.render(createElement(MobileBottomNav, { activeTab: "home", onSelectTab: vi.fn() }));
+    expect(navLabels(harness.dom.container)).not.toContain("Helm");
   });
 });

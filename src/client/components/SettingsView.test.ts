@@ -67,6 +67,7 @@ vi.mock("./settings", () => {
     BridgeRuntimeSection: EmptySection,
     ModelSection: EmptySection,
     ModelMoveDisclosure: EmptySection,
+    ModelsSection: EmptySection,
     NotificationsSection: EmptySection,
     ProvidersSection: ({
       draft,

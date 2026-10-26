@@ -26,6 +26,8 @@ const RECENT_USER_MESSAGE_LIMIT = 20;
 
 export interface SessionNameAutogeneratorDeps {
   listModels(): Promise<AgentModelInfo[]>;
+  /** The "Small jobs" role from Settings › Models, when it names a model. */
+  resolveHelperRole?(models: AgentModelInfo[]): { model?: string; reasoningEffort?: string };
   createSession(config: any): Promise<any>;
   deleteSession(sessionId: string): Promise<void>;
   getCopilotHome(): string;
@@ -226,7 +228,9 @@ export class SessionNameAutogenerator {
   private async generateSessionName(
     userMessages: string[],
   ): Promise<{ title?: string; model: string; reply: ReturnType<typeof describeTitleReply> } | undefined> {
-    const selection = selectHelperModel(await this.deps.listModels());
+    const models = await this.deps.listModels();
+    const role = this.deps.resolveHelperRole?.(models);
+    const selection = role?.model ? { model: role.model, reasoningEffort: role.reasoningEffort } : selectHelperModel(models);
     if (!selection) return undefined;
 
     const helperSessionId = createDisposableTitleSessionId();

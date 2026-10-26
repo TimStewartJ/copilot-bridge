@@ -13,7 +13,7 @@ import {
   type PromptProfileId,
   type ResolvedPromptProfile,
 } from "../../shared/prompt-profiles.js";
-import { DS } from "../design/tokens";
+import { DS, cx } from "../design/tokens";
 import { FormRow, Select } from "../design/primitives";
 
 interface NewSessionLaunchPanelProps {
@@ -44,6 +44,8 @@ interface NewSessionLaunchPanelProps {
   onAgentChange?: (agentName?: string) => void;
   /** Called after a preset or model is chosen so the composer can take focus. */
   onModelSelectionCommitted?: () => void;
+  /** Set when this chat's model, effort or context differ from its tier's. */
+  tierChange?: { tierLabel: string; onReset: () => void; onSave: () => void };
 }
 
 const PROFILE_OPTIONS: LaunchOption<PromptProfileId>[] = PROMPT_PROFILES.map((profile) => ({
@@ -94,6 +96,7 @@ export default function NewSessionLaunchPanel({
   onModeChange,
   onAgentChange,
   onModelSelectionCommitted,
+  tierChange,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
   const hasResolvedModelSelection = Boolean(
@@ -147,6 +150,7 @@ export default function NewSessionLaunchPanel({
             ) : (
               <ModelPresetPicker
                 idPrefix="new-session"
+                showSlotLabels
                 models={availableModels}
                 selectedModelId={selectedModelId}
                 selectedPresetSlot={selectedPresetSlot}
@@ -200,6 +204,14 @@ export default function NewSessionLaunchPanel({
                 }}
               />
             </FormRow>
+          )}
+
+          {tierChange && (
+            <div className={cx(DS.text.meta, "-mt-2 flex flex-wrap items-center gap-x-3 gap-y-1")}>
+              <span>This chat only</span>
+              <button type="button" className={cx(DS.focus, "rounded hover:text-text-primary hover:underline")} onClick={tierChange.onReset}>Reset</button>
+              <button type="button" className={cx(DS.focus, "rounded hover:text-text-primary hover:underline")} onClick={tierChange.onSave}>Save as {tierChange.tierLabel}</button>
+            </div>
           )}
 
           <FormRow label="Profile" hideLabel>

@@ -70,7 +70,19 @@ export function createReadStateStore(db: DatabaseSync) {
     db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
   }
 
-  return { getReadState, getReadStateFor, markRead, markReadMany, isUnread, markUnread };
+  /**
+   * Puts a conversation's read point back to what it was, only if nobody moved it since `expected`
+   * was set. Returns false when it had moved (the user read it meanwhile), leaving it alone.
+   */
+  function restoreRead(sessionId: string, previous: string | null, expected: string): boolean {
+    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
+    if (!row || row.lastReadAt !== normalizeTimestamp(expected)) return false;
+    if (previous) db.prepare("UPDATE read_state SET lastReadAt = ? WHERE sessionId = ?").run(normalizeTimestamp(previous), sessionId);
+    else db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
+    return true;
+  }
+
+  return { getReadState, getReadStateFor, markRead, markReadMany, isUnread, markUnread, restoreRead };
 }
 
 export type ReadStateStore = ReturnType<typeof createReadStateStore>;

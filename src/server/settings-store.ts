@@ -17,6 +17,7 @@ import {
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
+import { isModelRole, isTierChoice, type ModelRoleChoice, type ModelRoles } from "../shared/model-roles.js";
 import { isPromptProfileSetting, type PromptProfileSetting } from "../shared/prompt-profiles.js";
 import {
   IMAGE_BUDGET_MAX_CEILING_MB,
@@ -107,6 +108,14 @@ export interface AppSettings {
   contextTier?: CopilotContextTier;
   modelPresets?: ModelPresets;
   lastModelPreset?: ModelPresetSlot;
+  /**
+   * Which model each kind of work runs on (Settings › Models). A missing role is "Automatic": the
+   * behaviour from before roles. New chats, Helm chat and background checks keep their older
+   * fields (model…, helm.model, deferWorker) in step with a tier, so every reader of those still
+   * works; changing one of those fields directly makes that role follow the field again.
+   * Present (even empty) once the roles have been set up or inferred.
+   */
+  modelRoles?: ModelRoles;
   /** Legacy input fields migrated into modelPresets. */
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
@@ -507,6 +516,115 @@ function migrateFamilyDefaults(familyDefaults: ModelFamilyDefaults | undefined):
   return Object.keys(presets).length > 0 ? presets : undefined;
 }
 
+function normalizeModelRoleChoice(value: unknown, role: string): ModelRoleChoice | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError(`modelRoles.${role} must be an object`);
+  if ("tier" in value) {
+    if (!isModelPresetSlot(value.tier)) validationError(`modelRoles.${role}.tier must be preset1, preset2 or preset3`);
+    return { tier: value.tier };
+  }
+  if (typeof value.model !== "string" || !value.model.trim() || value.model.length > 200) {
+    validationError(`modelRoles.${role} needs a tier or a model`);
+  }
+  if (value.reasoningEffort !== undefined && value.reasoningEffort !== null
+    && (typeof value.reasoningEffort !== "string" || value.reasoningEffort.length > 32)) {
+    validationError(`modelRoles.${role}.reasoningEffort must be a reasoning effort name`);
+  }
+  const effort = typeof value.reasoningEffort === "string" ? value.reasoningEffort.trim() : "";
+  const contextTier = value.contextTier;
+  if (contextTier !== undefined && contextTier !== null && contextTier !== "" && !isCopilotContextTier(contextTier)) {
+    validationError(`modelRoles.${role}.contextTier must be default or long_context`);
+  }
+  return {
+    model: value.model.trim(),
+    ...(effort ? { reasoningEffort: effort } : {}),
+    ...(isCopilotContextTier(contextTier) ? { contextTier } : {}),
+  };
+}
+
+function normalizeModelRoles(value: unknown): ModelRoles | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("modelRoles must be an object");
+  const roles: ModelRoles = {};
+  for (const [role, choice] of Object.entries(value)) {
+    if (!isModelRole(role)) validationError(`modelRoles key "${role}" is not a known role`);
+    const normalized = normalizeModelRoleChoice(choice, role);
+    // New chats, Helm chat and background checks keep a custom model in their older fields.
+    if (normalized && !isTierChoice(normalized) && (role === "chat" || role === "background" || role === "helm")) {
+      validationError(`modelRoles.${role} takes a tier; its own model is set with the matching setting`);
+    }
+    if (normalized) roles[role] = normalized;
+  }
+  return roles;
+}
+
+function sameChoice(a: { model?: string; reasoningEffort?: string; contextTier?: string } | undefined, b: { model?: string; reasoningEffort?: string; contextTier?: string } | undefined): boolean {
+  return !!a?.model && !!b?.model && a.model === b.model
+    && (a.reasoningEffort ?? "") === (b.reasoningEffort ?? "")
+    && (a.contextTier ?? "default") === (b.contextTier ?? "default");
+}
+
+/**
+ * Keeps the role map and the older per-feature fields in step:
+ * - a direct change to a role's older field (model/effort/context, deferWorker, helm.model) in this
+ *   update, without a change to that role, makes the role follow the field again ("custom");
+ * - a role on a tier writes the tier into its older field, so existing readers use it;
+ * - settings from before roles get them inferred once, only where the current setup already
+ *   equals a tier exactly, so nothing changes behaviour.
+ */
+function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: Record<string, unknown>): void {
+  const baseRoles = base === DEFAULT_SETTINGS ? undefined : base.modelRoles;
+  // A role counts as set by this write only when the write changes it.
+  const roleTouched = (role: keyof ModelRoles) => "modelRoles" in value
+    && JSON.stringify(normalized.modelRoles?.[role]) !== JSON.stringify(baseRoles?.[role]);
+  const presets = normalized.modelPresets ?? {};
+  if (!normalized.modelRoles) {
+    const inferred: ModelRoles = {};
+    const slots = Object.keys(presets) as ModelPresetSlot[];
+    const chatSlot = slots.find((slot) => sameChoice(presets[slot], normalized));
+    if (chatSlot) inferred.chat = { tier: chatSlot };
+    const backgroundSlot = slots.find((slot) => sameChoice(presets[slot], normalized.deferWorker));
+    if (backgroundSlot) inferred.background = { tier: backgroundSlot };
+    // Nothing to infer leaves no map, so settings rows stay as they were until a role is chosen.
+    if (Object.keys(inferred).length) normalized.modelRoles = inferred;
+    return;
+  }
+  const roles = { ...normalized.modelRoles };
+  const triple = (entry: { model?: string; reasoningEffort?: string; contextTier?: string } | undefined) =>
+    `${entry?.model ?? ""}|${entry?.reasoningEffort ?? ""}|${entry?.contextTier ?? ""}`;
+  // Only a real change counts: clients that send unchanged values back leave the role alone.
+  const fieldChanged = {
+    chat: base !== DEFAULT_SETTINGS && ("model" in value || "reasoningEffort" in value || "contextTier" in value)
+      && triple(normalized) !== triple(base),
+    background: base !== DEFAULT_SETTINGS && "deferWorker" in value && triple(normalized.deferWorker) !== triple(base.deferWorker),
+    helm: base !== DEFAULT_SETTINGS && "helm" in value && isRecord(value.helm) && "model" in value.helm
+      && (normalized.helm?.model ?? "") !== (base.helm?.model ?? ""),
+  };
+  for (const role of ["chat", "background", "helm"] as const) {
+    if (fieldChanged[role] && !roleTouched(role)) delete roles[role];
+  }
+  // A role can't stay on a tier that has no model: it keeps what it last ran on (its older field) or goes back to Automatic.
+  for (const role of Object.keys(roles) as Array<keyof ModelRoles>) {
+    const choice = roles[role];
+    if (isTierChoice(choice) && !presets[choice.tier]?.model) delete roles[role];
+  }
+  normalized.modelRoles = roles;
+  const tierOf = (role: "chat" | "background" | "helm") => {
+    const choice = roles[role];
+    return isTierChoice(choice) ? presets[choice.tier] : undefined;
+  };
+  const chat = tierOf("chat");
+  if (chat) {
+    normalized.model = chat.model;
+    if (chat.reasoningEffort) normalized.reasoningEffort = chat.reasoningEffort; else delete normalized.reasoningEffort;
+    if (chat.contextTier) normalized.contextTier = chat.contextTier; else delete normalized.contextTier;
+  }
+  const background = tierOf("background");
+  if (background) normalized.deferWorker = { ...background };
+  const helm = tierOf("helm");
+  if (helm) normalized.helm = { ...normalized.helm, model: helm.model };
+}
+
 function normalizeContextTier(value: unknown): CopilotContextTier | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (!isCopilotContextTier(value)) validationError("contextTier must be default or long_context");
@@ -596,6 +714,9 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
+  // Like every other settings object, a write sends the whole role map; a missing role is Automatic.
+  if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
+  reconcileModelRoles(base, normalized, value);
   return normalized;
 }
 

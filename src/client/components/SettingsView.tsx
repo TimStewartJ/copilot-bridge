@@ -1,3 +1,4 @@
+import { isTierChoice } from "../../shared/model-roles.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { AppSettings } from "../api";
@@ -9,6 +10,7 @@ import {
   SystemPromptSection,
   ModelSection,
   ModelMoveDisclosure,
+  ModelsSection,
   DeferWorkerSection,
   SubagentModelsSection,
   ComputerUseSection,
@@ -314,10 +316,12 @@ export default function SettingsView() {
               </Notice>
             )}
             <CategoryPanel category="chat" activeCategory={activeCategory}>
-              <ModelSection draft={draft} setDraft={setDraft}>
-                <ModelMoveDisclosure />
-              </ModelSection>
-              <DeferWorkerSection draft={draft} setDraft={setDraft} />
+              <ModelsSection draft={draft} setDraft={setDraft} />
+              {/* New chats and background checks on a tier need no model of their own. */}
+              {isTierChoice(draft.modelRoles?.chat)
+                ? <ModelMoveDisclosure />
+                : <ModelSection draft={draft} setDraft={setDraft}><ModelMoveDisclosure /></ModelSection>}
+              {!isTierChoice(draft.modelRoles?.background) && <DeferWorkerSection draft={draft} setDraft={setDraft} />}
               <SubagentModelsSection draft={draft} setDraft={setDraft} />
               <ImageBudgetSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>

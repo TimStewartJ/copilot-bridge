@@ -20,8 +20,9 @@ export function useTaskOutcomes() {
       client.invalidateQueries({ queryKey: ["task"] })]);
   }, [client]);
 
-  const apply = useCallback(async (rows: TaskOverviewRow[], outcome: TaskOutcome, revisitAt?: string) => {
-    if (!rows.length) return;
+  /** Resolves true only when every task was changed. */
+  const applyAll = useCallback(async (rows: TaskOverviewRow[], outcome: TaskOutcome, revisitAt?: string): Promise<boolean> => {
+    if (!rows.length) return false;
     setPending(true); setError("");
     const undo: OutcomeReceipt["undo"] = [];
     try {
@@ -35,15 +36,20 @@ export function useTaskOutcomes() {
       const subject = rows.length === 1 ? `“${rows[0].title}”` : `${rows.length} tasks`;
       haptic("success");
       setReceipt({ message: `${OUTCOME_DONE[outcome]}: ${subject}`, undo });
+      return true;
     } catch (cause) {
       haptic("error");
       setError(`${cause instanceof Error ? cause.message : String(cause)}${undo.length ? ` (${undo.length} of ${rows.length} changed)` : ""}`);
       if (undo.length) setReceipt({ message: `${OUTCOME_DONE[outcome]}: ${undo.length} of ${rows.length} tasks`, undo });
+      return false;
     } finally {
       setPending(false);
       await refresh();
     }
   }, [refresh]);
+  const apply = useCallback(async (rows: TaskOverviewRow[], outcome: TaskOutcome, revisitAt?: string): Promise<void> => {
+    await applyAll(rows, outcome, revisitAt);
+  }, [applyAll]);
 
   const undoLast = useCallback(async () => {
     if (!receipt) return;
@@ -59,5 +65,5 @@ export function useTaskOutcomes() {
     }
   }, [receipt, refresh]);
 
-  return { apply, undoLast, pending, receipt, error, dismiss: () => { setReceipt(null); setError(""); } };
+  return { apply, applyAll, undoLast, pending, receipt, error, dismiss: () => { setReceipt(null); setError(""); } };
 }

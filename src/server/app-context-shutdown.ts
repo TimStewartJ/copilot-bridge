@@ -35,6 +35,7 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.helm?.dispose();
+    ctx.helmThinker?.dispose();
     shutdownBrowserLive(ctx);
     const handsFreeOutcome = await settleByDeadline(async () => {
       await ctx.voiceGateway?.shutdown();

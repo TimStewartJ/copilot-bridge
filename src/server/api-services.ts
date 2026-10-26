@@ -16,6 +16,7 @@ import { createIncrementalCopilotUsageReader } from "./copilot-usage-index.js";
 import type { CopilotUsageReader } from "./copilot-usage.js";
 import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
+import { HelmThinker } from "./helm/thinker/thinker.js";
 import { HelmService, HELM_DEFAULT_REASONING_EFFORTS } from "./helm/helm-service.js";
 import type { HelmBridgeFacade, HelmSessionSummary } from "./helm/helm-tools.js";
 import { VoiceGateway, type VoiceGatewayHelm } from "./voice/voice-gateway.js";
@@ -189,6 +190,17 @@ export function createApiServices(ctx: AppContext, options: ApiServiceOptions = 
       },
     });
     ctx.helm.startRetention();
+  }
+  if (ctx.helm && ctx.helmThinkerStore && !ctx.helmThinker) {
+    ctx.helmThinker = new HelmThinker({
+      ctx, store: ctx.helmThinkerStore, facade, runtime: ctx.helm,
+      readSessions: () => sessionList.read(),
+      deleteSession: async (sessionId) => {
+        await deleteSessionWithOwnedState(sessionId, "helm:thinker-run:delete");
+      },
+      emitReadStateChanged,
+    });
+    ctx.helmThinker.start();
   }
   ctx.voiceGateway ??= new VoiceGateway({ ctx, facade, helm: ctx.helm ?? HELM_UNAVAILABLE, runtime: voiceRuntime });
   setSettingsGetter(() => ctx.settingsStore.getSettings());
