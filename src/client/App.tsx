@@ -53,7 +53,7 @@ import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { looksUntouched } from "./lib/untouched-task";
 import { ALL_TASKS_PATH, getRememberedDashboardPath, isAllTasksPath, isDashboardRoutePath } from "./lib/dashboard-routes";
-import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
+import { getMobileRouteMeta, resolveMobileHomeTabTarget, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
@@ -930,7 +930,11 @@ function AppShell() {
   const handleMobileTab = useCallback((tab: MobileNavTab) => {
     switch (tab) {
       case "helm": handleOpenHelm(); break;
-      case "home": handleOpenDashboard(); break;
+      case "home": {
+        const target = resolveMobileHomeTabTarget(location.pathname, location.search);
+        navigate(target.to, { replace: target.replace });
+        break;
+      }
       case "work": {
         const target = resolveMobileWorkTabTarget(
           { isRoot: mobileRouteMeta.isRoot, workSegment: mobileRouteMeta.workSegment },
@@ -942,7 +946,7 @@ function AppShell() {
       case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
+  }, [handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, location.pathname, location.search, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment, navigate]);
 
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;

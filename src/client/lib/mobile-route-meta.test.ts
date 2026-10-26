@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getMobileRouteMeta, resolveMobileWorkTabTarget } from "./mobile-route-meta";
+import { getMobileRouteMeta, resolveMobileHomeTabTarget, resolveMobileWorkTabTarget } from "./mobile-route-meta";
 
 describe("getMobileRouteMeta", () => {
   it("keeps Helm's routes under the Home tab with the bottom navigation", () => {
@@ -70,5 +70,19 @@ describe("resolveMobileWorkTabTarget", () => {
   it("leads back to the task list from inside a task, whatever was shown last", () => {
     expect(resolveMobileWorkTabTarget(getMobileRouteMeta("/tasks/t1"), "chats")).toEqual({ segment: "tasks", replace: false });
     expect(resolveMobileWorkTabTarget(getMobileRouteMeta("/tasks/t1/overview"), "chats")).toEqual({ segment: "tasks", replace: false });
+  });
+});
+
+describe("resolveMobileHomeTabTarget", () => {
+  it("flips between Helm's brief and its conversation without adding history", () => {
+    expect(resolveMobileHomeTabTarget("/dashboard/home")).toEqual({ to: "/helm", replace: true });
+    expect(resolveMobileHomeTabTarget("/dashboard/focus")).toEqual({ to: "/helm", replace: true });
+    expect(resolveMobileHomeTabTarget("/helm/")).toEqual({ to: "/dashboard/home", replace: true });
+  });
+
+  it("opens the brief from every other page, including Home's other views", () => {
+    for (const [path, search] of [["/", ""], ["/settings", ""], ["/helm/memory", ""], ["/dashboard/work-map", ""], ["/dashboard/tasks", ""], ["/dashboard/archive", ""], ["/dashboard/home", "?view=classic"], ["/dashboard/home", "?section=inputs"]]) {
+      expect(resolveMobileHomeTabTarget(path, search)).toEqual({ to: "/dashboard/home", replace: false });
+    }
   });
 });

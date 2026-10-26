@@ -26,7 +26,7 @@ export default function HelmPage({ pane, brief, talk }: {
   }
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className={cx(DS.surface.pane, "flex shrink-0 justify-center border-b border-border px-3 py-1.5")}>
-      <SegmentedControl<HelmPagePane> ariaLabel="Brief or talk" size="sm" value={pane}
+      <SegmentedControl<HelmPagePane> ariaLabel="Brief or talk" size="sm" value={pane} fullWidth className="max-w-xs"
         options={[{ value: "brief", label: "Brief" }, { value: "talk", label: "Talk" }]}
         onChange={(next) => { if (next !== pane) navigate(next === "talk" ? "/helm" : "/dashboard/home", { replace: true }); }} />
     </div>
