@@ -2600,7 +2600,7 @@ function SessionRoute({
   const modelPresetMemory = useModelPresets({ enabled: isDraft });
   const { presets } = modelPresetMemory;
   const rememberedLaunchSelection = !draftLaunch?.model
-    ? modelPresetMemory.resolveRememberedSelection(modelsQuery.data ?? [])
+    ? modelPresetMemory.resolveNewChatSelection(modelsQuery.data ?? [])
     : null;
   const effectiveSelectedModelId = draftLaunch?.model
     || rememberedLaunchSelection?.modelId

@@ -19,6 +19,7 @@ import { queryClient, queryKeys } from "../queryClient";
 import { settingsWriter } from "./queries/useSettings";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
+import { isTierChoice } from "../../shared/model-roles.js";
 
 /** The shared writer applies the change to the cached settings at once and sends it in order. */
 function enqueueSettingsPatch(updates: Partial<AppSettings>): void {
@@ -51,7 +52,7 @@ export interface ModelPresetMemory {
     context: ModelPresetPickerContext,
   ) => ModelPresetSelection | null;
   selectModel: (slot: ModelPresetSlot, modelId: string) => ModelPresetSelection;
-  resolveRememberedSelection: (models: readonly ModelInfo[]) => ModelPresetSelection | null;
+  resolveNewChatSelection: (models: readonly ModelInfo[]) => ModelPresetSelection | null;
   findSlotForModel: (modelId: string, models: readonly ModelInfo[]) => ModelPresetSlot | undefined;
   remember: (selection: RememberModelPresetSelection) => void;
   /** Makes a chat's model, effort and context the tier's own (Settings › Models changes with it). */
@@ -94,14 +95,16 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     selectModelInPreset({ slot, modelId, presets })
   ), [presets]);
 
-  const resolveRememberedSelection = useCallback((models: readonly ModelInfo[]) => {
-    if (!lastPresetSlot) return null;
-    return selectPresetWithMemory(lastPresetSlot, {
+  // A new chat starts on the "New chats" tier from Settings › Models; with its own model, on that model.
+  const newChatSlot = isTierChoice(settings?.modelRoles?.chat) ? settings.modelRoles.chat.tier : undefined;
+  const resolveNewChatSelection = useCallback((models: readonly ModelInfo[]) => {
+    if (!newChatSlot) return null;
+    return selectPresetWithMemory(newChatSlot, {
       models,
       selectedModelId: "",
-      selectedPresetSlot: lastPresetSlot,
+      selectedPresetSlot: newChatSlot,
     });
-  }, [lastPresetSlot, selectPresetWithMemory]);
+  }, [newChatSlot, selectPresetWithMemory]);
 
   const findSlot = useCallback((modelId: string, models: readonly ModelInfo[]) => (
     findPresetSlotForModel({
@@ -139,7 +142,7 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     resolvePickerState,
     selectPreset: selectPresetWithMemory,
     selectModel,
-    resolveRememberedSelection,
+    resolveNewChatSelection,
     findSlotForModel: findSlot,
     remember,
     saveToTier,
@@ -151,7 +154,7 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     presets,
     remember,
     resolvePickerState,
-    resolveRememberedSelection,
+    resolveNewChatSelection,
     selectModel,
     selectPresetWithMemory,
     settingsQuery.isLoading,

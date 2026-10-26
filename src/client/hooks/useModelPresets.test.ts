@@ -87,28 +87,17 @@ describe("useModelPresets", () => {
     });
   });
 
-  it("starts a surface from the last preset used", async () => {
+  it("starts a new chat on the New chats tier, whatever was picked last", async () => {
     await harness!.render(createElement(TestComponent));
-
-    expect(memory!.resolveRememberedSelection(MODELS)).toEqual({
-      slot: "preset1",
-      modelId: "gpt-5.6",
-    });
+    // No New chats tier: the chat starts on the default model.
+    expect(memory!.resolveNewChatSelection(MODELS)).toBeNull();
 
     await harness!.act(async () => {
-      memory!.remember({
-        slot: "preset2",
-        modelId: "claude-opus-5",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      });
+      queryClient.setQueryData<AppSettings>(queryKeys.settings, (current) => ({ ...current!, modelRoles: { chat: { tier: "preset2" } } }));
+      memory!.remember({ slot: "preset1", modelId: "gpt-5.6" });
     });
-    await waitUntilAct(
-      harness!.act,
-      () => memory?.lastPresetSlot === "preset2",
-      { label: "remembered preset" },
-    );
-    expect(memory!.resolveRememberedSelection(MODELS)).toEqual({
+    await waitUntilAct(harness!.act, () => memory?.resolveNewChatSelection(MODELS) !== null, { label: "New chats tier" });
+    expect(memory!.resolveNewChatSelection(MODELS)).toEqual({
       slot: "preset2",
       modelId: "claude-opus-5",
       reasoningEffort: "high",
