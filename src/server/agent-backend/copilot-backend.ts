@@ -15,7 +15,7 @@
 import { CopilotClient } from "@github/copilot-sdk";
 import { ChildProcess } from "node:child_process";
 import { isRecord } from "../../shared/is-record.js";
-import type { SubagentSettings } from "../../shared/subagent-settings.js";
+import { subagentSettingsForModel, type SubagentPlan } from "../../shared/subagent-settings.js";
 
 import {
   HYDRAFUSION_MODEL_ID,
@@ -277,6 +277,11 @@ class CopilotAgentSession implements AgentSession {
   private modeTail: Promise<void> = Promise.resolve();
   private releasePromise: Promise<AgentSessionRelease> | undefined;
   private toolPermissionsReady: Promise<void> | undefined;
+  private subagentTail: Promise<void> = Promise.resolve();
+  private subagentModel: string | undefined;
+  private subagentModelFromEvent = false;
+  private appliedSubagents: string | undefined;
+  private stopSubagentWatch: (() => void) | undefined;
   constructor(
     private readonly session: any,
     private readonly rpc: CopilotRpcGuard,
@@ -285,7 +290,69 @@ class CopilotAgentSession implements AgentSession {
     ) => () => void,
     private readonly useNativeToolPermissions: boolean,
     private readonly excludedTools: readonly string[],
+    private readonly logger: Pick<Console, "warn">,
   ) {}
+
+  /**
+   * Applies the Bridge's sub-agent models and keeps rubber-duck on a model from another family
+   * than the session's: re-applied on every committed model change of the session itself, however
+   * it was made (Bridge switch, `/model`, a deferred switch draining). Sub-agents log their own
+   * model changes into the session tagged with agentId; those are ignored.
+   */
+  async startSubagentPlan(plan: SubagentPlan, initialModel: string | undefined): Promise<void> {
+    if (plan.secondOpinion.length > 0 && typeof this.session.on === "function") {
+      this.stopSubagentWatch = this.session.on((event: any) => {
+        if (event?.type !== "session.model_change" || (typeof event.agentId === "string" && event.agentId)) return;
+        const model = event.data?.newModel;
+        if (typeof model !== "string" || !model) return;
+        this.subagentModel = model;
+        this.subagentModelFromEvent = true;
+        void this.applySubagentPlan(plan);
+      });
+    }
+    const model = initialModel ?? (plan.secondOpinion.length > 0 ? await this.readModelForSubagents() : undefined);
+    // A model change seen while reading is newer than the read.
+    if (!this.subagentModelFromEvent) this.subagentModel = model;
+    await this.applySubagentPlan(plan);
+  }
+
+  private async readModelForSubagents(): Promise<string | undefined> {
+    try {
+      return (await this.getCurrentModel())?.modelId;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Serialized and idempotent: each run applies the plan for the latest model seen. The queue holds
+  // the update itself, not the caller's timeout-bound wait, so a slow update cannot land after a newer one.
+  private applySubagentPlan(plan: SubagentPlan): Promise<void> {
+    const sid = typeof this.session?.sessionId === "string" ? this.session.sessionId.slice(0, 8) : "unknown";
+    const raw = this.subagentTail.then(async () => {
+      if (this.releasePromise) return;
+      const subagents = subagentSettingsForModel(plan, this.subagentModel);
+      const key = JSON.stringify(subagents);
+      if (key === this.appliedSubagents) return;
+      const update = this.session?.rpc?.tools?.updateSubagentSettings;
+      if (typeof update !== "function") {
+        this.logger.warn(`[copilot-backend] [${sid}] Runtime cannot apply Bridge sub-agent settings; using CLI user settings`);
+        this.stopSubagentWatch?.();
+        return;
+      }
+      // The runtime override replaces the CLI user's sub-agent settings for this session only.
+      await update.call(this.session.rpc.tools, { subagents });
+      this.appliedSubagents = key;
+    });
+    this.subagentTail = raw.catch(() => undefined);
+    // A failed apply leaves the session usable on the CLI user's settings, so it is logged, not thrown.
+    return this.rpc("session.updateSubagentSettings", () => raw).catch((error) => {
+      this.logger.warn(
+        `[copilot-backend] [${sid}] Failed to apply Bridge sub-agent settings; using CLI user settings: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
 
   get sessionId(): string {
     return this.session.sessionId;
@@ -398,7 +465,8 @@ class CopilotAgentSession implements AgentSession {
   }
 
   release(): Promise<AgentSessionRelease> {
-    this.releasePromise ??= Promise.all([this.taskTail, this.modeTail]).then(async () => {
+    this.stopSubagentWatch?.();
+    this.releasePromise ??= Promise.all([this.taskTail, this.modeTail, this.subagentTail]).then(async () => {
       if (typeof this.session.disconnect !== "function") {
         return { status: "unsupported", detail: "SDK session disconnect is unavailable" };
       }
@@ -693,7 +761,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   sdkConfig: Record<string, unknown>;
   pendingInteractionEvents: boolean;
   useNativeToolPermissions: boolean;
-  subagents: SubagentSettings | undefined;
+  subagents: SubagentPlan | undefined;
 } {
   const {
     pendingInteractionEvents = false,
@@ -727,14 +795,15 @@ function wrapCopilotSession(
   onBackendDisconnect: (handler: (info: AgentBackendDisconnect) => void) => () => void,
   useNativeToolPermissions: boolean,
   excludedTools: readonly string[],
-): AgentSession {
+  logger: Pick<Console, "warn">,
+): CopilotAgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
     // event interest during create/resume. Remove it before exposing the
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools);
+  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger);
 }
 
 /** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
@@ -1338,15 +1407,7 @@ export class CopilotBackend implements AgentBackend {
     if (this.fenceRequested) throw new Error("Cannot create a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config);
     const session = await this.client.createSession(prepared.sdkConfig as any);
-    await this.applySubagentSettings(session, prepared.subagents);
-    return wrapCopilotSession(
-      session,
-      prepared.pendingInteractionEvents,
-      this.rpc,
-      (handler) => this.subscribeSessionDisconnect(handler),
-      prepared.useNativeToolPermissions,
-      normalizeStringArray(prepared.sdkConfig.excludedTools) ?? [],
-    );
+    return this.wrapSession(session, prepared, typeof prepared.sdkConfig.model === "string" ? prepared.sdkConfig.model : undefined);
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
@@ -1366,37 +1427,21 @@ export class CopilotBackend implements AgentBackend {
         throw error;
       }
     }
-    await this.applySubagentSettings(session, prepared.subagents);
-    return wrapCopilotSession(
+    return this.wrapSession(session, prepared, undefined);
+  }
+
+  private async wrapSession(session: any, prepared: ReturnType<typeof prepareCopilotSessionConfig>, initialModel: string | undefined): Promise<AgentSession> {
+    const wrapped = wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,
       this.rpc,
       (handler) => this.subscribeSessionDisconnect(handler),
       prepared.useNativeToolPermissions,
       normalizeStringArray(prepared.sdkConfig.excludedTools) ?? [],
+      this.logger,
     );
-  }
-
-  // The runtime override replaces the CLI user's subagent settings for this
-  // session only, and a resume starts from user settings again. A failed apply
-  // leaves the session usable on those user settings, so it is logged, not thrown.
-  private async applySubagentSettings(session: any, subagents: SubagentSettings | undefined): Promise<void> {
-    if (!subagents) return;
-    const sid = typeof session?.sessionId === "string" ? session.sessionId.slice(0, 8) : "unknown";
-    const update = session?.rpc?.tools?.updateSubagentSettings;
-    if (typeof update !== "function") {
-      this.logger.warn(`[copilot-backend] [${sid}] Runtime cannot apply Bridge sub-agent settings; using CLI user settings`);
-      return;
-    }
-    try {
-      await this.rpc("session.updateSubagentSettings", () => update.call(session.rpc.tools, { subagents }));
-    } catch (error) {
-      this.logger.warn(
-        `[copilot-backend] [${sid}] Failed to apply Bridge sub-agent settings; using CLI user settings: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+    if (prepared.subagents) await wrapped.startSubagentPlan(prepared.subagents, initialModel);
+    return wrapped;
   }
 
   deleteSession(sessionId: string): Promise<unknown> {

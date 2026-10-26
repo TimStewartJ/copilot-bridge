@@ -10,7 +10,6 @@ import type {
 import type { UnifiedHelmSettings } from "../shared/helm-settings.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import { isRecord } from "../shared/is-record.js";
-import type { SubagentSettings } from "../shared/subagent-settings.js";
 import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
@@ -2365,8 +2364,6 @@ export interface AppSettings {
   modelRoles?: ModelRoles;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
-  /** Canonical sub-agent models; unset means Bridge sessions use the CLI user settings. */
-  subagents?: SubagentSettings;
   computerUse?: ComputerUseSettings;
   helm?: HelmSettings;
   imageBudget?: ImageBudgetSettings;

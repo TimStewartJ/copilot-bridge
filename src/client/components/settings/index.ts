@@ -7,7 +7,6 @@ export { ModelSection } from "./ModelSection";
 export { ModelMoveDisclosure } from "./ModelMoveDisclosure";
 export { ReasoningEffortSection } from "./ReasoningEffortSection";
 export { DeferWorkerSection } from "./DeferWorkerSection";
-export { SubagentModelsSection } from "./SubagentModelsSection";
 export { ComputerUseSection } from "./ComputerUseSection";
 export { ImageBudgetSection } from "./ImageBudgetSection";
 export { AppearanceSection } from "./AppearanceSection";

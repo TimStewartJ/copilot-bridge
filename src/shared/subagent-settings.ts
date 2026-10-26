@@ -1,33 +1,35 @@
-// Bridge-owned sub-agent model preferences. Bridge ships its own defaults and
-// applies the resolved map to every session through the runtime's live
-// subagent-settings override, which replaces (not merges with) the CLI user's
-// `subagents` settings. Choosing the CLI source sends nothing, so the CLI's own
-// settings.json applies instead.
+// Which model each built-in sub-agent runs on. Settings › Models sets two roles: Helpers (task,
+// explore, research; stored as the `subagents` role) and Reviewers (code-review, security-review,
+// general-purpose). Rubber-duck has no setting: it gets the strongest tier from another model
+// family than the chat's current model, so its second opinion does not share the chat's blind
+// spots. The plan is applied to each live session through the runtime's sub-agent override,
+// which replaces (not merges with) the CLI user's own `subagents` settings.
+import { getModelFamily, type ModelFamily } from "./model-families.js";
 
 /** Use the parent session's model. Understood by the runtime. */
 export const SUBAGENT_INHERIT_MODEL = "inherit";
-/** Bridge-only marker: omit the value so the runtime chooses. */
-export const SUBAGENT_RUNTIME_DEFAULT = "runtime-default";
 
-export type SubagentSettingsSource = "bridge" | "cli";
+export const HELPER_SUBAGENTS = ["task", "explore", "research"] as const;
+export const REVIEWER_SUBAGENTS = ["code-review", "security-review", "general-purpose"] as const;
+export const SECOND_OPINION_SUBAGENT = "rubber-duck";
+
+/** What Helpers run on when their role is Automatic. */
+export const BRIDGE_HELPER_DEFAULT: Readonly<{ model: string; effortLevel: string }> = { model: "gpt-6-luna", effortLevel: "max" };
 
 export interface SubagentAgentSetting {
-  /** A model id, `inherit`, or `runtime-default`. Absent keeps the Bridge default. */
   model?: string;
-  /** A reasoning effort, or `runtime-default`. Absent keeps the Bridge default. */
   effortLevel?: string;
-}
-
-/** Stored user choices. Absent means Bridge defaults with no overrides. */
-export interface SubagentSettings {
-  source?: SubagentSettingsSource;
-  /** Per-agent overrides layered over the Bridge defaults. */
-  agents?: Record<string, SubagentAgentSetting>;
 }
 
 /** The map sent to the runtime. */
 export interface ResolvedSubagentSettings {
   agents: Record<string, SubagentAgentSetting>;
+}
+
+export interface SubagentPlan {
+  agents: Record<string, SubagentAgentSetting>;
+  /** Rubber-duck candidates, strongest first; the first from another family than the chat's model wins. */
+  secondOpinion: Array<SubagentAgentSetting & { model: string }>;
 }
 
 export interface SubagentModelMetadata {
@@ -36,115 +38,67 @@ export interface SubagentModelMetadata {
   readonly policy?: { readonly state?: string };
 }
 
-/** Built-in runtime agents shown in Settings, in display order. */
-export const BUILT_IN_SUBAGENTS = [
-  { name: "task", description: "Runs commands such as tests, builds and installs." },
-  { name: "explore", description: "Read-only codebase exploration." },
-  { name: "research", description: "Web and GitHub research with citations." },
-  { name: "code-review", description: "Reviews diffs for bugs and logic errors." },
-  { name: "security-review", description: "Looks for exploitable vulnerabilities." },
-  { name: "general-purpose", description: "Full-capability delegated implementation." },
-  { name: "rubber-duck", description: "Second-opinion review of plans and changes." },
-] as const;
-
-/** What Bridge applies when the user has not overridden an agent. */
-export const BRIDGE_DEFAULT_SUBAGENTS: Readonly<Record<string, Readonly<{ model: string; effortLevel?: string }>>> = {
-  task: { model: "gpt-6-luna", effortLevel: "max" },
-  explore: { model: "gpt-6-luna", effortLevel: "max" },
-  research: { model: "gpt-6-luna", effortLevel: "max" },
-  "code-review": { model: SUBAGENT_INHERIT_MODEL },
-  "security-review": { model: SUBAGENT_INHERIT_MODEL },
-  "general-purpose": { model: SUBAGENT_INHERIT_MODEL },
-  "rubber-duck": { model: "gpt-6-sol", effortLevel: "high" },
-};
-
-export type SubagentDefaults = Readonly<Record<string, Readonly<{ model: string; effortLevel?: string }>>>;
-
-/** The helpers whose Bridge default follows the Sub-agents role in Settings › Models. */
-export const TIERED_SUBAGENTS = ["task", "explore", "research"] as const;
-
-/** Bridge defaults with the Sub-agents role's model in place of the built-in one for task, explore and research. */
-export function subagentDefaultsFor(role: { model?: string; reasoningEffort?: string } | undefined): SubagentDefaults {
-  if (!role?.model) return BRIDGE_DEFAULT_SUBAGENTS;
-  const defaults: Record<string, { model: string; effortLevel?: string }> = { ...BRIDGE_DEFAULT_SUBAGENTS };
-  for (const name of TIERED_SUBAGENTS) defaults[name] = { model: role.model, ...(role.reasoningEffort ? { effortLevel: role.reasoningEffort } : {}) };
-  return defaults;
-}
-
-export const SUBAGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-export const SUBAGENT_EFFORT_PATTERN = /^[a-z][a-z-]{0,31}$/;
-
-export function isConcreteSubagentModel(model: string | undefined): model is string {
-  return !!model && model !== SUBAGENT_INHERIT_MODEL && model !== SUBAGENT_RUNTIME_DEFAULT;
+export interface SubagentModelChoice {
+  model?: string;
+  reasoningEffort?: string;
 }
 
 /**
- * The model and effort an agent should use before availability checks. The
- * default effort belongs to the default model, so overriding only the model
- * drops it. Effort only applies to a named model: the runtime fails a
- * sub-agent whose effort its model does not support, and Bridge cannot know
- * the model behind `inherit` or the runtime's own choice.
+ * A runtime entry for a model, or undefined when the known model list lacks it (the runtime would
+ * silently run a different model). Effort is kept only when the list confirms the model supports
+ * it, because the runtime fails a sub-agent whose effort its model rejects.
  */
-export function effectiveSubagentSetting(
-  name: string,
-  override: SubagentAgentSetting | undefined,
-  defaults: SubagentDefaults = BRIDGE_DEFAULT_SUBAGENTS,
-): SubagentAgentSetting {
-  const fallback = defaults[name];
-  const model = override?.model ?? fallback?.model;
-  const keepsDefaultModel = override?.model === undefined || override.model === fallback?.model;
-  const effort = override?.effortLevel ?? (keepsDefaultModel ? fallback?.effortLevel : undefined);
-  const concreteModel = isConcreteSubagentModel(model);
-  return {
-    ...(model && model !== SUBAGENT_RUNTIME_DEFAULT ? { model } : {}),
-    ...(concreteModel && effort && effort !== SUBAGENT_RUNTIME_DEFAULT ? { effortLevel: effort } : {}),
-  };
-}
-
-/**
- * Bridge defaults plus user overrides, or `undefined` when the CLI settings
- * should apply. With a known model list, a missing or disabled model is
- * omitted (the runtime would silently run a different model). An effort is
- * sent only when the model list confirms the model supports it, because the
- * runtime fails a sub-agent whose effort its model rejects.
- */
-export function resolveSubagentSettings(
-  settings: SubagentSettings | undefined,
-  models?: readonly SubagentModelMetadata[],
-  defaults: SubagentDefaults = BRIDGE_DEFAULT_SUBAGENTS,
-): ResolvedSubagentSettings | undefined {
-  if (settings?.source === "cli") return undefined;
+function entryFor(model: string, effort: string | undefined, models: readonly SubagentModelMetadata[] | undefined): (SubagentAgentSetting & { model: string }) | undefined {
   const catalog = models && models.length > 0 ? models : undefined;
-  const names = new Set([...Object.keys(defaults), ...Object.keys(settings?.agents ?? {})]);
-  const agents: Record<string, SubagentAgentSetting> = {};
-  for (const name of names) {
-    const entry = effectiveSubagentSetting(name, settings?.agents?.[name], defaults);
-    const metadata = catalog && isConcreteSubagentModel(entry.model)
-      ? catalog.find((model) => model.id === entry.model && model.policy?.state !== "disabled")
-      : undefined;
-    if (catalog && isConcreteSubagentModel(entry.model) && !metadata) continue;
-    if (entry.effortLevel && !metadata?.supportedReasoningEfforts?.includes(entry.effortLevel)) {
-      delete entry.effortLevel;
-    }
-    if (entry.model || entry.effortLevel) agents[name] = entry;
-  }
-  return { agents };
+  if (!catalog) return { model };
+  const metadata = catalog.find((candidate) => candidate.id === model && candidate.policy?.state !== "disabled");
+  if (!metadata) return undefined;
+  return { model, ...(effort && metadata.supportedReasoningEfforts?.includes(effort) ? { effortLevel: effort } : {}) };
 }
 
-/** Named model selections introduced by an overrides change, for validation. */
-export function changedSubagentSelections(
-  current: SubagentSettings | undefined,
-  next: SubagentSettings | undefined,
-): Array<{ model: string; reasoningEffort?: string }> {
-  const selections: Array<{ model: string; reasoningEffort?: string }> = [];
-  for (const [name, override] of Object.entries(next?.agents ?? {})) {
-    if (JSON.stringify(current?.agents?.[name]) === JSON.stringify(override)) continue;
-    const entry = effectiveSubagentSetting(name, override);
-    if (!isConcreteSubagentModel(entry.model)) continue;
-    selections.push({
-      model: entry.model,
-      ...(override.effortLevel && entry.effortLevel ? { reasoningEffort: entry.effortLevel } : {}),
-    });
+/** Only GPT and Claude are told apart; any other model (a router such as Auto included) has no known family. */
+function knownFamily(model: string | undefined): Exclude<ModelFamily, "other"> | undefined {
+  const family = model ? getModelFamily(model) : "other";
+  return family === "other" ? undefined : family;
+}
+
+/**
+ * The sub-agent plan for every session. `helpers` and `reviewers` are the resolved roles (no model
+ * means Automatic); `tiers` are the tier models strongest first (Deep, Standard, Fast).
+ */
+export function buildSubagentPlan(
+  roles: { helpers?: SubagentModelChoice; reviewers?: SubagentModelChoice; tiers: ReadonlyArray<SubagentModelChoice | undefined> },
+  models?: readonly SubagentModelMetadata[],
+): SubagentPlan {
+  const agents: Record<string, SubagentAgentSetting> = {};
+  const helper = roles.helpers?.model
+    ? entryFor(roles.helpers.model, roles.helpers.reasoningEffort, models)
+    : entryFor(BRIDGE_HELPER_DEFAULT.model, BRIDGE_HELPER_DEFAULT.effortLevel, models);
+  // Without a usable helper model the runtime chooses, as it does for any unknown model.
+  if (helper) for (const name of HELPER_SUBAGENTS) agents[name] = { ...helper };
+  const reviewer = roles.reviewers?.model ? entryFor(roles.reviewers.model, roles.reviewers.reasoningEffort, models) : undefined;
+  for (const name of REVIEWER_SUBAGENTS) agents[name] = reviewer ? { ...reviewer } : { model: SUBAGENT_INHERIT_MODEL };
+  const secondOpinion: SubagentPlan["secondOpinion"] = [];
+  for (const tier of roles.tiers) {
+    if (!tier?.model || !knownFamily(tier.model) || secondOpinion.some((entry) => entry.model === tier.model)) continue;
+    const entry = entryFor(tier.model, tier.reasoningEffort, models);
+    if (entry) secondOpinion.push(entry);
   }
-  return selections;
+  return { agents, secondOpinion };
+}
+
+/** The strongest candidate from another family than the chat's; none when that family is unknown. */
+export function pickSecondOpinion<T extends { model?: string }>(candidates: readonly T[], chatFamily: ModelFamily): T | undefined {
+  const family = chatFamily === "other" ? undefined : chatFamily;
+  if (!family) return undefined;
+  return candidates.find((candidate) => {
+    const other = knownFamily(candidate.model);
+    return other !== undefined && other !== family;
+  });
+}
+
+/** What to send the runtime for a session currently on `chatModel`. Without a pick, Copilot chooses rubber-duck's model itself. */
+export function subagentSettingsForModel(plan: SubagentPlan, chatModel: string | undefined): ResolvedSubagentSettings {
+  const pick = pickSecondOpinion(plan.secondOpinion, chatModel ? getModelFamily(chatModel) : "other");
+  return { agents: { ...plan.agents, ...(pick ? { [SECOND_OPINION_SUBAGENT]: { ...pick } } : {}) } };
 }

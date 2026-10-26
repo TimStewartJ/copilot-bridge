@@ -4,7 +4,6 @@ import { buildSessionConfig, type SessionConfigBuilderCallbacks, type SessionCon
 import type { Task } from "../task-store.js";
 import { createSettingsStore, type SettingsStore } from "../settings-store.js";
 import { DEFAULT_RESPONSE_STYLE_GUIDANCE, RESPONSE_DETAIL_OPTIONS } from "../../shared/response-style.js";
-import { BRIDGE_DEFAULT_SUBAGENTS, type SubagentSettings } from "../../shared/subagent-settings.js";
 import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
   BROWSER_GUIDANCE,
@@ -485,23 +484,24 @@ describe("session-config-builder", () => {
   });
 
   describe("sub-agent settings", () => {
-    const settingsStoreWith = (subagents?: SubagentSettings) => ({
-      getSettings: () => ({ ...(subagents ? { subagents } : {}) }),
-      updateSettings: vi.fn(),
-      getMcpServers: () => ({}),
-    }) as unknown as SettingsStore;
     const allEfforts = ["none", "low", "medium", "high", "xhigh", "max"];
     const catalog = [
       { id: "gpt-6-luna", supportedReasoningEfforts: allEfforts },
-      { id: "gpt-6-sol", supportedReasoningEfforts: allEfforts },
-      { id: "gpt-5.6-terra", supportedReasoningEfforts: allEfforts },
-      { id: "claude-haiku-4.5" },
+      { id: "gpt-6.1-sol", supportedReasoningEfforts: allEfforts },
+      { id: "claude-opus-5.5", supportedReasoningEfforts: ["low", "high"] },
     ];
+    const modelPresets = {
+      preset1: { model: "gpt-6-luna", reasoningEffort: "max" },
+      preset2: { model: "gpt-6.1-sol", reasoningEffort: "max" },
+      preset3: { model: "claude-opus-5.5", reasoningEffort: "high" },
+    };
     const build = (
-      subagents: SubagentSettings | undefined,
-      options: { forResume?: boolean; models?: typeof catalog } = {},
+      settings: Record<string, unknown> | undefined,
+      options: { forResume?: boolean; models?: unknown[] } = {},
     ) => buildSessionConfig({
-      deps: createDeps({ settingsStore: settingsStoreWith(subagents) }),
+      deps: createDeps(settings ? {
+        settingsStore: { getSettings: () => settings, updateSettings: vi.fn(), getMcpServers: () => ({}) } as unknown as SettingsStore,
+      } : {}),
       options: {
         forResume: options.forResume ?? false,
         ...(options.models ? { modelMetadata: options.models as any } : {}),
@@ -509,84 +509,29 @@ describe("session-config-builder", () => {
       callbacks: createCallbacks(),
     });
 
-    it("applies the Bridge defaults, including effort, on create and resume when nothing is configured", () => {
+    it("plans Helpers and Reviewers from their roles and rubber-duck's candidates from the tiers, on create and resume", () => {
       for (const forResume of [false, true]) {
-        expect(build(undefined, { forResume, models: catalog }).subagents).toEqual({
-          agents: {
-            task: { model: "gpt-6-luna", effortLevel: "max" },
-            explore: { model: "gpt-6-luna", effortLevel: "max" },
-            research: { model: "gpt-6-luna", effortLevel: "max" },
-            "code-review": { model: "inherit" },
-            "security-review": { model: "inherit" },
-            "general-purpose": { model: "inherit" },
-            "rubber-duck": { model: "gpt-6-sol", effortLevel: "high" },
-          },
-        });
+        const plan = build({ modelPresets, modelRoles: { reviewers: { tier: "preset2" } } }, { forResume, models: catalog }).subagents;
+        expect(plan.agents.task).toEqual({ model: "gpt-6-luna", effortLevel: "max" });
+        expect(plan.agents["code-review"]).toEqual({ model: "gpt-6.1-sol", effortLevel: "max" });
+        // Strongest first: Deep, Standard, Fast.
+        expect(plan.secondOpinion.map((entry: { model: string }) => entry.model)).toEqual(["claude-opus-5.5", "gpt-6.1-sol", "gpt-6-luna"]);
       }
-      expect(Object.keys(BRIDGE_DEFAULT_SUBAGENTS)).toHaveLength(7);
     });
 
-    it("layers model and effort overrides over the defaults", () => {
-      const cfg = build({
-        agents: {
-          // Model only: the default effort belonged to the default model, so it is dropped.
-          task: { model: "gpt-5.6-terra" },
-          // Effort only: keeps the default model.
-          explore: { effortLevel: "low" },
-          research: { effortLevel: "runtime-default" },
-          "rubber-duck": { model: "runtime-default" },
-        },
-      }, { models: catalog });
-      expect(cfg.subagents.agents.task).toEqual({ model: "gpt-5.6-terra" });
-      expect(cfg.subagents.agents.explore).toEqual({ model: "gpt-6-luna", effortLevel: "low" });
-      expect(cfg.subagents.agents.research).toEqual({ model: "gpt-6-luna" });
-      expect(cfg.subagents.agents).not.toHaveProperty("rubber-duck");
-    });
-
-    it("never sends an effort the model may not support", () => {
-      const cfg = build({
-        agents: {
-          // The runtime fails a sub-agent whose inherited model rejects the effort.
-          "code-review": { model: "inherit", effortLevel: "max" },
-          task: { model: "claude-haiku-4.5", effortLevel: "max" },
-        },
-      }, { models: catalog });
-      expect(cfg.subagents.agents["code-review"]).toEqual({ model: "inherit" });
-      expect(cfg.subagents.agents.task).toEqual({ model: "claude-haiku-4.5" });
-    });
-
-    it("sends no effort without a model list that confirms support", () => {
+    it("omits unavailable models and sends no effort the model list does not confirm", () => {
+      const missing = build({ modelPresets }, { models: [{ id: "gpt-6.1-sol", supportedReasoningEfforts: allEfforts }, { id: "gpt-6-luna", policy: { state: "disabled" } }] }).subagents;
+      expect(missing.agents).not.toHaveProperty("task");
+      expect(missing.secondOpinion).toEqual([{ model: "gpt-6.1-sol", effortLevel: "max" }]);
       for (const models of [undefined, []]) {
-        const cfg = build({ agents: { explore: { effortLevel: "low" } } }, { models: models as any });
-        expect(cfg.subagents.agents.task).toEqual({ model: "gpt-6-luna" });
-        expect(cfg.subagents.agents.explore).toEqual({ model: "gpt-6-luna" });
-        expect(cfg.subagents.agents["rubber-duck"]).toEqual({ model: "gpt-6-sol" });
+        const unknown = build({ modelPresets }, { models }).subagents;
+        expect(unknown.agents.task).toEqual({ model: "gpt-6-luna" });
+        expect(unknown.secondOpinion[0]).toEqual({ model: "claude-opus-5.5" });
       }
     });
 
-    it("treats a disabled model as unavailable", () => {
-      const cfg = build(undefined, {
-        models: [
-          { id: "gpt-6-luna", supportedReasoningEfforts: allEfforts },
-          { id: "gpt-6-sol", supportedReasoningEfforts: allEfforts, policy: { state: "disabled" } } as any,
-        ],
-      });
-      expect(cfg.subagents.agents).not.toHaveProperty("rubber-duck");
-      expect(cfg.subagents.agents.task).toEqual({ model: "gpt-6-luna", effortLevel: "max" });
-    });
-
-    it("omits models missing from the known model list so the runtime picks instead", () => {
-      const cfg = build(undefined, { models: [{ id: "gpt-6-luna", supportedReasoningEfforts: allEfforts }] });
-      expect(cfg.subagents.agents.task).toEqual({ model: "gpt-6-luna", effortLevel: "max" });
-      expect(cfg.subagents.agents).not.toHaveProperty("rubber-duck");
-      expect(cfg.subagents.agents["general-purpose"]).toEqual({ model: "inherit" });
-    });
-
-    it("sends nothing so the CLI user settings apply when the CLI source is chosen", () => {
-      for (const forResume of [false, true]) {
-        expect(build({ source: "cli", agents: { task: { model: "gpt-5.6-terra" } } }, { forResume }))
-          .not.toHaveProperty("subagents");
-      }
+    it("sends no sub-agent plan without Bridge settings", () => {
+      expect(build(undefined)).not.toHaveProperty("subagents");
     });
   });
 

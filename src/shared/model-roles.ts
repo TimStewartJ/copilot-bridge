@@ -4,21 +4,24 @@
 // its effort and context size, edited only in Settings › Models. A role is a kind of work Bridge
 // runs (your new chats, Helm, chat titles, background checks, sub-agents); each
 // points at a tier, at a model of its own ("custom"), or is left automatic, which keeps the
-// behaviour it had before tiers existed.
+// behaviour it had before tiers existed. Sub-agents are two roles: `subagents` (shown as Helpers)
+// and `reviewers`; rubber-duck follows the tiers by itself (shared/subagent-settings.ts).
 import type { CopilotContextTier } from "./copilot-context.js";
 import type { ModelPresetSlot } from "./model-presets.js";
 
-export type ModelRole = "chat" | "helm" | "helper" | "background" | "subagents";
+export type ModelRole = "chat" | "helm" | "helper" | "background" | "subagents" | "reviewers";
 
-export const MODEL_ROLES: readonly ModelRole[] = ["chat", "helm", "background", "subagents", "helper"];
+export const MODEL_ROLES: readonly ModelRole[] = ["chat", "helm", "background", "subagents", "reviewers", "helper"];
 
 export interface ModelRoleInfo {
   label: string;
   description: string;
   /** What "Automatic" means for this role: the behaviour from before tiers. */
   automatic: string;
-  /** The tier the recommended setup uses. */
-  recommended: ModelPresetSlot;
+  /** The name of the Automatic choice when it is not "Auto". */
+  automaticLabel?: string;
+  /** The tier the recommended setup uses; none leaves the role on Automatic. */
+  recommended?: ModelPresetSlot;
   /** How this role's reasoning effort is decided when it uses a tier. */
   effortNote?: string;
 }
@@ -44,10 +47,16 @@ export const MODEL_ROLE_INFO: Record<ModelRole, ModelRoleInfo> = {
     recommended: "preset1",
   },
   subagents: {
-    label: "Sub-agents",
-    description: "Default for the task, explore and research helpers agents start. Per-agent choices below still win.",
+    label: "Helpers",
+    description: "The task, explore and research helpers agents start: running commands, reading code, searching the web.",
     automatic: "GPT-6 Luna at max effort (Bridge's built-in default)",
     recommended: "preset1",
+  },
+  reviewers: {
+    label: "Reviewers and delegated work",
+    description: "code-review, security-review, and general-purpose, which takes over implementation.",
+    automatic: "Runs on the chat's own model",
+    automaticLabel: "Same as chat",
   },
   helper: {
     label: "Small jobs",

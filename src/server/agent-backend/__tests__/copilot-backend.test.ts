@@ -190,25 +190,49 @@ describe("CopilotBackend wrap fidelity", () => {
       .rejects.toMatchObject({ errors: [error, disconnectError] });
   });
 
-  it.each(["create", "resume"] as const)("applies Bridge sub-agent settings after %s without forwarding them to the SDK", async (operation) => {
+  const subagentPlan = {
+    agents: { task: { model: "gpt-6-luna" }, "code-review": { model: "inherit" } },
+    secondOpinion: [{ model: "claude-opus-5.5", effortLevel: "high" }, { model: "gpt-6.1-sol", effortLevel: "max" }],
+  };
+  const withSecondOpinion = (model: string) => ({ subagents: { agents: { ...subagentPlan.agents, "rubber-duck": model === "claude" ? { model: "gpt-6.1-sol", effortLevel: "max" } : { model: "claude-opus-5.5", effortLevel: "high" } } } });
+
+  it.each(["create", "resume"] as const)("applies Bridge sub-agent settings for the session's model after %s without forwarding them to the SDK", async (operation) => {
     const calls: string[] = [];
     const updateSubagentSettings = vi.fn(async () => { calls.push("update"); return {}; });
-    const session = createFakeSession({ tools: { updateSubagentSettings } });
+    // A resume takes the session's model from the runtime; a create knows it.
+    const getCurrent = vi.fn(async () => ({ modelId: "claude-opus-5.5" }));
+    const session = createFakeSession({ tools: { updateSubagentSettings }, model: { getCurrent } });
     const client = createFakeClient(session);
     client.createSession.mockImplementation(async () => { calls.push("create"); return session; });
     client.resumeSession.mockImplementation(async () => { calls.push("resume"); return session; });
     const backend = new CopilotBackend(client as any);
-    const subagents = { agents: { task: { model: "gpt-6-luna" }, "code-review": { model: "inherit" } } };
-    const config = { model: "claude-opus-5", subagents };
+    const config = { model: "gpt-6-luna", subagents: subagentPlan };
 
     if (operation === "create") await backend.createSession(config);
     else await backend.resumeSession("existing", config);
 
-    const expected = { model: "claude-opus-5", toolSearch: { enabled: false } };
+    const expected = { model: "gpt-6-luna", toolSearch: { enabled: false } };
     if (operation === "create") expect(client.createSession).toHaveBeenCalledWith(expected);
     else expect(client.resumeSession).toHaveBeenCalledWith("existing", expected);
-    expect(updateSubagentSettings).toHaveBeenCalledWith({ subagents });
+    expect(updateSubagentSettings).toHaveBeenCalledWith(withSecondOpinion(operation === "create" ? "gpt" : "claude"));
     expect(calls).toEqual([operation, "update"]);
+  });
+
+  it("re-applies rubber-duck's model when the session's own model changes, not a sub-agent's", async () => {
+    const updateSubagentSettings = vi.fn(async () => ({}));
+    const session = createFakeSession({ tools: { updateSubagentSettings } });
+    let emit: (event: any) => void = () => undefined;
+    session.on.mockImplementation((handler: (event: any) => void) => { emit = handler; return () => undefined; });
+    const backend = new CopilotBackend(createFakeClient(session) as any);
+    await backend.createSession({ model: "claude-opus-5.5", subagents: subagentPlan });
+    expect(updateSubagentSettings).toHaveBeenCalledWith(withSecondOpinion("claude"));
+
+    emit({ type: "session.model_change", agentId: "sub-1", data: { newModel: "gpt-6-luna" } });
+    // Still Claude, so rubber-duck keeps its GPT pick and nothing is sent for this one.
+    emit({ type: "session.model_change", data: { newModel: "claude-sonnet-5" } });
+    emit({ type: "session.model_change", data: { newModel: "gpt-6.1-sol" } });
+    await vi.waitFor(() => expect(updateSubagentSettings).toHaveBeenCalledTimes(2));
+    expect(updateSubagentSettings).toHaveBeenLastCalledWith(withSecondOpinion("gpt"));
   });
 
   it("does not call the sub-agent override when Bridge has no sub-agent settings", async () => {
@@ -227,7 +251,7 @@ describe("CopilotBackend wrap fidelity", () => {
     const logger = { warn: vi.fn(), error: vi.fn() };
     const session = createFakeSession(updateSubagentSettings ? { tools: { updateSubagentSettings } } : {});
     const backend = new CopilotBackend(createFakeClient(session) as any, { logger });
-    const created = await backend.createSession({ subagents: { agents: { task: { model: "gpt-6-luna" } } } });
+    const created = await backend.createSession({ subagents: { agents: { task: { model: "gpt-6-luna" } }, secondOpinion: [] } });
     expect(created.sessionId).toBe("fake-session-id");
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("using CLI user settings"));
   });
