@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildHelmSystemPrompt, composeHandsFreePrompt, HANDS_FREE_MARKER, SCREEN_DIVIDER } from "../helm-prompt.js";
+import { buildHelmChatGuidance, composeHandsFreePrompt, HANDS_FREE_MARKER, SCREEN_DIVIDER } from "../helm-prompt.js";
 import { selectTalkerModel } from "../helm-talker.js";
 
 const context = { timeZone: "America/Los_Angeles", now: new Date("2026-09-18T16:23:00.000Z") };
 
-describe("buildHelmSystemPrompt", () => {
+describe("buildHelmChatGuidance", () => {
   it("explains both modes, Bridge links and the on-screen divider", () => {
-    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles", defaultWorkModel: "claude-opus-5" });
-    expect(prompt).toContain("You are Helm");
+    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles", defaultWorkModel: "claude-opus-5" });
+    expect(prompt).toMatch(/^<helm>[\s\S]*<\/helm>$/);
     expect(prompt).toContain(HANDS_FREE_MARKER);
     expect(prompt).toContain("bridge://session/<ref>");
     expect(prompt).toContain(`a line containing only ${SCREEN_DIVIDER}`);
@@ -17,14 +17,14 @@ describe("buildHelmSystemPrompt", () => {
   });
 
   it("asks which task or session before acting on an ambiguous spoken name, and keeps spoken lists short", () => {
-    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles" });
+    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles" });
     expect(prompt).toContain("ask which before acting");
     expect(prompt).toContain("Never start a second session for a request you already dispatched");
     expect(prompt).toContain("name the first two or three in one sentence");
   });
 
   it("uses find for loosely named tasks, reports progress, flags automated sessions and lets acknowledgements pass", () => {
-    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles" });
+    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles" });
     expect(prompt).toContain("call find first");
     expect(prompt).toContain("report its progress");
     expect(prompt).toContain("is automated: say so");
@@ -33,7 +33,7 @@ describe("buildHelmSystemPrompt", () => {
   });
 
   it("includes the user's names list when there is one", () => {
-    const prompt = buildHelmSystemPrompt({ timeZone: "America/Los_Angeles", glossary: "timmiepc = Timmy PC" });
+    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles", glossary: "timmiepc = Timmy PC" });
     expect(prompt).toContain("Names the user uses (speech recognition may mishear them; map what you hear onto these): timmiepc = Timmy PC");
   });
 });

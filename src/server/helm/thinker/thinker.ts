@@ -204,7 +204,7 @@ export class HelmThinker {
   getSessionProfile(): SessionConfigProfile {
     const tools = this.getTools();
     return {
-      toolNames: tools.map((tool) => tool.name),
+      expectedToolNames: () => tools.map((tool) => tool.name),
       apply: (config) => {
         const settings = this.store.getSettings();
         return applyHelmSessionProfile(config, {

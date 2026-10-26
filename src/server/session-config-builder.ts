@@ -98,6 +98,10 @@ export interface SessionConfigOptions {
    * Chats created before profiles existed have none and keep the legacy (Engineer) prompt.
    */
   promptProfile?: PromptProfileId;
+  /** Replaces the profile's role sentence in the preamble (Helm's chat says it is Helm). */
+  promptRole?: string;
+  /** Guidance appended after the Bridge's own, for chats with a role of their own (Helm). */
+  extraGuidance?: string;
   /**
    * When true, omit `model` and `reasoningEffort` from the config.
    * The SDK silently overwrites _selectedModel via updateOptions() without sanitizing
@@ -415,7 +419,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // guidance and the model self-identification, so only the preamble is replaced.
   // Child overrides apply before the group transform sees the rendered group.
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
-  const preambleText = `${identityText}\n\n${promptProfile.role}`;
+  const preambleText = `${identityText}\n\n${params.options?.promptRole ?? promptProfile.role}`;
   sections.identity = { action: createCodingModeStatementRemover(preambleText) };
   sections.preamble = { action: "replace", content: preambleText };
   // The CLI's tone differs by model family and conflicts with the Bridge style setting.
@@ -455,6 +459,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // server's IANA zone name for scheduling and timezone-specific prompts.
   const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   sections.environment_context = { action: "append", content: `\n* Server timezone: ${serverTz}` };
+
+  if (params.options?.extraGuidance?.trim()) contextParts.push(params.options.extraGuidance.trim());
 
   const hasContent = contextParts.length > 0;
 

@@ -7,7 +7,6 @@
 //   one-click way back to where you left off.
 // - Recent conversations expire after a retention window unless the user keeps them.
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -18,12 +17,16 @@ import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import type { SessionConfigProfile } from "../session-manager.js";
 import { parseWorkspaceYamlSessionName } from "../session-workspace-yaml.js";
 import { REASONING_EFFORT_LEVELS } from "../../shared/reasoning-effort.js";
-import { isActionRequest } from "./helm-prompt.js";
-import { applyHelmSessionProfile } from "./helm-session-profile.js";
+import { ensureNeutralWorkspaceDir } from "../neutral-workspace.js";
+import { pathsEqual } from "../path-utils.js";
+import { hasActiveDeferredWork } from "../schedule-session-retention.js";
+import { buildHelmChatGuidance, HELM_CHAT_ROLE, isActionRequest } from "./helm-prompt.js";
+import { applyHelmChatProfile, HELM_CHAT_EXCLUDED_TOOLS } from "./helm-session-profile.js";
 import { chooseHelmModel } from "./helm-model.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
 import {
   createHelmToolDefinitions,
+  HELM_TOOL_NAMES,
   type HelmBridgeFacade,
   type HelmHandsFreeHooks,
   type HelmToolRuntime,
@@ -105,7 +108,6 @@ export class HelmService implements HelmToolRuntime {
   private readonly now: () => number;
   private tools?: BridgeToolDefinition[];
   private profile?: SessionConfigProfile;
-  private workingDirectory?: string;
   private readonly handsFree = new Map<string, HelmHandsFreeHooks>();
   private readonly watched = new Map<string, Set<string>>();
   /** Session names, fed by title events; null means the session is known to be unnamed. */
@@ -128,6 +130,28 @@ export class HelmService implements HelmToolRuntime {
         this.titles.set(event.sessionId, event.title.trim() || null);
       }
     });
+  }
+
+  /**
+   * Conversations from before Helm's chat became an ordinary chat were pinned to data/helm, which
+   * can sit inside the Bridge's own checkout and would load its repository instructions. Moves
+   * them to the Bridge workspace new conversations get. Returns how many moved.
+   */
+  moveLegacyWorkspaces(): number {
+    const dataDir = this.ctx.runtimePaths?.dataDir;
+    const workspace = this.ctx.runtimePaths ? ensureNeutralWorkspaceDir(this.ctx.runtimePaths) : undefined;
+    if (!dataDir || !workspace) return 0;
+    const legacy = join(dataDir, "helm");
+    let moved = 0;
+    for (const record of this.store.list()) {
+      const pinned = this.ctx.sessionWorkspaceStore.getWorkspace(record.sessionId)?.cwd;
+      if (pinned && pathsEqual(pinned, legacy)) {
+        this.ctx.sessionWorkspaceStore.setWorkspace(record.sessionId, workspace);
+        moved++;
+      }
+    }
+    if (moved > 0) console.log(`[helm] Moved ${moved} conversation${moved === 1 ? "" : "s"} to the Bridge workspace`);
+    return moved;
   }
 
   /** Starts background retention. Separate from construction so tests stay timer-free. */
@@ -187,32 +211,32 @@ export class HelmService implements HelmToolRuntime {
 
   // ── Session profile ────────────────────────────────────────────
 
+  /** Helm's own tools. The chat already has the Bridge's task, docs and schedule tools as an ordinary chat. */
   private getTools(): BridgeToolDefinition[] {
-    this.tools ??= createHelmToolDefinitions(this.ctx, this.facade, this);
+    const own = new Set<string>(HELM_TOOL_NAMES);
+    this.tools ??= createHelmToolDefinitions(this.ctx, this.facade, this).filter((tool) => own.has(tool.name));
     return this.tools;
-  }
-
-  private getWorkingDirectory(): string {
-    if (!this.workingDirectory) {
-      const dataDir = this.ctx.runtimePaths?.dataDir;
-      const directory = dataDir ? join(dataDir, "helm") : process.cwd();
-      if (dataDir) mkdirSync(directory, { recursive: true });
-      this.workingDirectory = directory;
-    }
-    return this.workingDirectory;
   }
 
   getSessionProfile(): SessionConfigProfile {
     if (!this.profile) {
       const tools = this.getTools();
+      const excluded = new Set<string>(HELM_CHAT_EXCLUDED_TOOLS);
       this.profile = {
-        toolNames: tools.map((tool) => tool.name),
-        apply: (config) => applyHelmSessionProfile(config, {
-          tools,
-          workingDirectory: this.getWorkingDirectory(),
-          defaultWorkModel: this.ctx.settingsStore.getSettings().model,
-          glossary: this.ctx.settingsStore.getSettings().helm?.glossary,
-        }),
+        expectedToolNames: (bridgeToolNames) => [...new Set([...bridgeToolNames, ...tools.map((tool) => tool.name)])].filter((name) => !excluded.has(name)),
+        configOptions: () => {
+          const settings = this.ctx.settingsStore.getSettings();
+          return {
+            promptProfile: "assistant",
+            promptRole: HELM_CHAT_ROLE,
+            extraGuidance: buildHelmChatGuidance({
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              ...(settings.model ? { defaultWorkModel: settings.model } : {}),
+              ...(settings.helm?.glossary ? { glossary: settings.helm.glossary } : {}),
+            }),
+          };
+        },
+        apply: (config) => applyHelmChatProfile(config, { tools }),
         // Anything that isn't a hands-free turn (chat, a transcribed recording) is answered in the chat.
         defaultTurnReasoningEffort: () => this.getTurnReasoningEffort("typed"),
       };
@@ -297,6 +321,15 @@ export class HelmService implements HelmToolRuntime {
 
   private isInUse(sessionId: string): boolean {
     return this.handsFree.has(sessionId) || this.ctx.sessionManager.isSessionBusy(sessionId);
+  }
+
+  /** Deferred work or a result still on its way: deleting the conversation would cancel or lose it. */
+  private hasPendingWork(sessionId: string): boolean {
+    const { deferredPromptStore, deferLoopStore } = this.ctx;
+    if (!deferredPromptStore && !deferLoopStore) return false;
+    return hasActiveDeferredWork(sessionId, { deferredPromptStore, deferLoopStore })
+      || (deferredPromptStore?.listDeliveriesForSession(sessionId)
+        .some((delivery) => delivery.status === "pending" || delivery.status === "running") ?? false);
   }
 
   /** Lets a conversation that has sat idle stop being current, so Helm opens fresh. */
@@ -422,7 +455,8 @@ export class HelmService implements HelmToolRuntime {
 
   private async runPrune(): Promise<number> {
     const now = this.now();
-    const candidates = this.store.list().filter((record) => !record.kept && !record.isCurrent && !this.isInUse(record.sessionId));
+    const candidates = this.store.list().filter((record) => !record.kept && !record.isCurrent
+      && !this.isInUse(record.sessionId) && !this.hasPendingWork(record.sessionId));
     const expired = new Set<string>();
     for (const record of candidates) {
       const idleMs = now - Date.parse(record.lastActiveAt);
