@@ -2,9 +2,9 @@
 // narrower ones switch between them, and the address says which is showing (Home is the brief,
 // /helm the conversation) so links, the back button and the hands-free dock keep working.
 import type { ReactNode } from "react";
+import { MessageSquare, Newspaper } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { SegmentedControl } from "../design/primitives";
-import { cx, DS } from "../design/tokens";
 import { useMediaQuery } from "../useIsMobile";
 
 export const HELM_PAGE_WIDE_QUERY = "(min-width: 1280px)";
@@ -25,9 +25,13 @@ export default function HelmPage({ pane, brief, talk }: {
     </div>;
   }
   return <div className="flex min-h-0 flex-1 flex-col">
-    <div className={cx(DS.surface.pane, "flex shrink-0 justify-center border-b border-border px-3 py-1.5")}>
-      <SegmentedControl<HelmPagePane> ariaLabel="Brief or talk" size="sm" value={pane} fullWidth className="max-w-xs"
-        options={[{ value: "brief", label: "Brief" }, { value: "talk", label: "Talk" }]}
+    {/* Same bar as the Work tab's Tasks/Chats switch, so moving between the two tabs keeps it still. */}
+    <div className="flex shrink-0 items-center border-b border-border bg-bg-secondary px-4 py-3">
+      <SegmentedControl<HelmPagePane> ariaLabel="Brief or talk" value={pane} fullWidth
+        options={[
+          { value: "brief", label: "Brief", icon: <Newspaper size={14} aria-hidden="true" /> },
+          { value: "talk", label: "Talk", icon: <MessageSquare size={14} aria-hidden="true" /> },
+        ]}
         onChange={(next) => { if (next !== pane) navigate(next === "talk" ? "/helm" : "/dashboard/home", { replace: true }); }} />
     </div>
     {pane === "talk" ? talk : brief("full")}
