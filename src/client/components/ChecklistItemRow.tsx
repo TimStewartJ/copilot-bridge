@@ -309,17 +309,6 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
               )}
             </div>
           )}
-          {checklistItem.sources && checklistItem.sources.length > 0 && (
-            <div className="mt-1 space-y-1 text-xs text-text-muted">
-              {checklistItem.done && <p>Action complete; source outcomes are separate.</p>}
-              {checklistItem.sources.map((source) => (
-                <div key={`${source.sourceId}:${source.activationId}`} className="break-words">
-                  <span>Archived {source.sourceType}: {source.title} — {source.lifecycle.replaceAll("_", " ")} at retirement</span>
-                  <a className="ml-1 text-accent underline" href={`${import.meta.env.BASE_URL}dashboard/archive?id=${encodeURIComponent(source.sourceId)}`}>Historical source</a>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Hidden date input — uses opacity-0 instead of sr-only so

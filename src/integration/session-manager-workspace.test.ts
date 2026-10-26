@@ -1,4 +1,3 @@
-import { createDashboardArchiveStore } from "../server/dashboard-archive.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -107,7 +106,6 @@ describe("SessionManager workspace resolution", () => {
       bridgeSessionStateStore: createBridgeSessionStateStore(db),
       readStateStore: createReadStateStore(db),
       checklistStore,
-      dashboardArchive: createDashboardArchiveStore(db),
       copilotUsageStore: createCopilotUsageStore(db),
       globalBus,
       eventBusRegistry,

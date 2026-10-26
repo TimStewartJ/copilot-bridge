@@ -657,7 +657,6 @@ export interface ChecklistItem {
   deadline?: string; // YYYY-MM-DD
   stableKey?: string;
   sourceUrl?: string;
-  sources?: import("../shared/checklist-origin").ArchivedChecklistSource[];
   originalTaskId?: string;
   originalTaskTitle?: string;
   orphanedAt?: string;
@@ -848,16 +847,6 @@ export function fetchTaskOverview(signal?: AbortSignal): Promise<import("../shar
 export function fetchHomeInput(input: import("../shared/home").HomeInputSummary, signal?: AbortSignal): Promise<import("../shared/home").HomeInput> {
   return apiFetch(`/api/home/inputs/${encodeURIComponent(input.sessionId)}/${input.kind}/${encodeURIComponent(input.requestId)}`, undefined, { signal });
 }
-export function fetchDashboardArchive(offset = 0, query = "", openOnly = false, signal?: AbortSignal): Promise<import("../shared/dashboard-archive").DashboardArchivePage> {
-  return apiFetch(`/api/home/archive?${new URLSearchParams({ offset: String(offset), q: query, open: String(openOnly) })}`, undefined, { signal });
-}
-export function fetchDashboardArchiveObject(id: string, recordOffset = 0, signal?: AbortSignal): Promise<import("../shared/dashboard-archive").DashboardArchiveDetail> {
-  return apiFetch(`/api/home/archive/${encodeURIComponent(id)}?recordOffset=${recordOffset}`, undefined, { signal });
-}
-export function fetchDashboardRetirement(signal?: AbortSignal): Promise<{ retiredAt: string | null; manifest: Record<string, unknown> | null }> {
-  return apiFetch("/api/home/archive-readiness", undefined, { signal });
-}
-
 /** Fire-and-forget: report a client-side timing span to the server */
 export async function reportTiming(
   name: string,

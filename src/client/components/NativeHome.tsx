@@ -209,8 +209,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
           </div>
         </div>
         : <div className="space-y-7">{section === "inputs" ? questions : section === "actions" ? actions : replies}</div>}
-      <footer className={cx(DS.text.meta, "flex flex-wrap items-center gap-2")}><Clock3 size={13} />{data && `Dates: ${data.timezone}`}
-        <Button size="sm" variant="ghost" onClick={() => navigate("/dashboard/archive")}>Previous dashboard records</Button></footer>
+      <footer className={cx(DS.text.meta, "flex flex-wrap items-center gap-2")}><Clock3 size={13} />{data && `Dates: ${data.timezone}`}</footer>
     </div>
   </PullToRefresh>{deferralTask && <TaskDeferralDialog task={deferralTask}
     onClose={() => setDeferralTask(undefined)} onSaved={() => void changed()} />}
