@@ -9,6 +9,7 @@
 
 import type { AppContext } from "./app-context.js";
 import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
+import { repairDanglingTaskSessionLinks } from "./task-session-link-repair.js";
 
 /** Overlay rows are only reaped once they are at least this old. */
 export const OVERLAY_MAINTENANCE_MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
@@ -18,6 +19,8 @@ export const DEFER_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const OVERLAY_MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export interface SessionOverlayMaintenanceResult {
+  /** Task links to conversations that no longer exist, removed. */
+  removedDanglingLinks: number;
   reaped: number;
   deletedScheduleRuns: number;
   prunedDeferredPrompts: number;
@@ -54,6 +57,22 @@ export function createSessionOverlayMaintenance(
   let stopped = false;
 
   async function runOnce(): Promise<SessionOverlayMaintenanceResult> {
+    // Before the reaper, so the overlay rows of conversations that are gone lose their last task link.
+    let removedDanglingLinks = 0;
+    try {
+      const repair = await repairDanglingTaskSessionLinks(ctx, { now });
+      removedDanglingLinks = repair.removedLinks;
+      if (repair.removedLinks > 0) {
+        logger.log(`[task-links] Removed ${repair.removedLinks} task link(s) to ${repair.goneSessionIds.length} `
+          + `conversation(s) that no longer exist: ${repair.goneSessionIds.join(", ")}`);
+      } else if (repair.skipped === "mass_loss" || repair.skipped === "session_state_unreadable") {
+        logger.error(`[task-links] Left task links alone (${repair.skipped}): the session-state folder is empty `
+          + "or most linked conversations are missing from it, so check COPILOT_HOME.");
+      }
+    } catch (error) {
+      logger.error("[task-links] Repairing task links failed:", error);
+    }
+
     const report = await runSessionOverlayReaper(ctx, {
       dryRun: false,
       cleanupDeletedScheduleRuns: true,
@@ -65,6 +84,7 @@ export function createSessionOverlayMaintenance(
     const prunedDeferLoops = ctx.deferLoopStore?.pruneTerminalRows(deferCutoff) ?? 0;
 
     const result: SessionOverlayMaintenanceResult = {
+      removedDanglingLinks,
       reaped: report.reaped,
       deletedScheduleRuns: report.deletedScheduleRuns.deleted,
       prunedDeferredPrompts,
