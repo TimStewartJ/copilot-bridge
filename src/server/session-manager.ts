@@ -626,10 +626,15 @@ export interface SessionManagerDeps {
   onUserPrompt?(sessionId: string): void;
 }
 
-/** Replaces what a session is and can do while keeping the manager's lifecycle fields. */
+/** Changes what a session is and can do while keeping the manager's lifecycle fields. */
 export interface SessionConfigProfile {
-  /** Tool names the session must expose once its tools are initialized. */
-  readonly toolNames: readonly string[];
+  /**
+   * Tool names the session must expose once its tools are initialized, given the Bridge tools an
+   * ordinary chat gets.
+   */
+  expectedToolNames(bridgeToolNames: readonly string[]): readonly string[];
+  /** Prompt choices for the ordinary config the profile starts from; they win over the chat's stored ones. */
+  configOptions?(): Pick<SessionConfigOptions, "promptProfile" | "promptRole" | "extraGuidance">;
   apply<T extends Record<string, unknown>>(config: T): T;
   /**
    * Reasoning effort for a turn that did not ask for one. Read at the start of each turn, so
@@ -2795,6 +2800,7 @@ export class SessionManager {
   private buildSessionConfig(opts: SessionConfigOptions = {}) {
     const nativeBridgeTools = this.resolveNativeBridgeTools();
     const modelMetadata = opts.modelMetadata ?? this.modelMetadata;
+    const profile = opts.sessionId ? this.deps.resolveSessionProfile?.(opts.sessionId) : undefined;
     const cfg = buildSessionConfigWithDeps({
       deps: {
         ...this.deps,
@@ -2806,6 +2812,7 @@ export class SessionManager {
           ? readSessionLaunchContext(this.getSessionStateDir(opts.sessionId))
           : {}),
         ...opts,
+        ...profile?.configOptions?.(),
         modelMetadata,
       },
       callbacks: {
@@ -2813,7 +2820,6 @@ export class SessionManager {
         getCopilotHome: () => this.getCopilotHome(),
       },
     });
-    const profile = opts.sessionId ? this.deps.resolveSessionProfile?.(opts.sessionId) : undefined;
     return profile ? profile.apply(cfg) : cfg;
   }
 
@@ -2989,8 +2995,8 @@ export class SessionManager {
 
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
     if (!this.supportsSessionToolInitialization()) return;
-    const expectedTools = this.deps.resolveSessionProfile?.(sessionId)?.toolNames
-      ?? this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
+    const bridgeTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
+    const expectedTools = this.deps.resolveSessionProfile?.(sessionId)?.expectedToolNames(bridgeTools) ?? bridgeTools;
     const startedAt = Date.now();
     let outcome = "ready";
     let phase = "discovery";
@@ -5429,7 +5435,7 @@ export class SessionManager {
   /** The bridge_context block to put in front of this user message, if anything changed. */
   private prepareBridgeContext(sessionId: string): { block?: string; commit(): void } {
     const none = { commit: () => {} };
-    // Chats with their own replace-mode prompt (Helm) take no Bridge task context.
+    // Profiled chats (Helm and its looks) have no task and read the Bridge through their own tools.
     if (this.deps.resolveSessionProfile?.(sessionId)) return none;
     const task = this.findLinkedTask(sessionId) ?? null;
     const sections = buildBridgeContextSections(this.deps, task, this.lookupGroupNotes(task?.groupId));
@@ -5518,7 +5524,7 @@ export class SessionManager {
     }).id;
   }
 
-  /** Undefined for chats whose own replace-mode prompt ignores profiles, such as Helm. */
+  /** Undefined for chats whose profile decides their prompt, such as Helm. */
   getSessionPromptProfile(sessionId: string): PromptProfileId | undefined {
     if (this.deps.resolveSessionProfile?.(sessionId)) return undefined;
     return this.deps.sessionPromptProfileStore?.getPromptProfile(sessionId) ?? LEGACY_PROMPT_PROFILE;

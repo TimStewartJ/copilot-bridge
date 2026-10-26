@@ -215,6 +215,29 @@ describe("HelmVoiceAgent", () => {
     expect(events).toEqual(["delta:All quiet.", "message-end", "done:false:"]);
   });
 
+  it("says a form is on screen and ends the spoken turn instead of waiting on it in silence", async () => {
+    const { agent, sessionManager, emit } = createHarness();
+    const { listener, events, done } = createListener();
+    agent.startTurn({ kind: "user", text: "check the plugs" }, listener);
+    await vi.waitFor(() => expect(sessionManager.startWork).toHaveBeenCalled());
+    emit({ type: "delta", content: "Checking." });
+    emit({ type: "elicitation_requested", requestId: "e1", message: "Allow access to the plugs?" });
+    expect(await done).toEqual({ aborted: false });
+    expect(events).toEqual([
+      "delta:Checking.",
+      "delta: There's a question for you on screen in Helm: Allow access to the plugs?",
+      "message-end",
+      "done:false:",
+    ]);
+
+    // The run still waits on that question; an announcement must not stop it.
+    const announcement = createListener();
+    agent.startTurn({ kind: "event", text: "The research session finished." }, announcement.listener);
+    expect(await announcement.done).toEqual({ aborted: false });
+    expect(sessionManager.abortSession).not.toHaveBeenCalled();
+    expect(sessionManager.startWork).toHaveBeenCalledTimes(1);
+  });
+
   it("aborts the running turn and starts the next one only after it settles", async () => {
     const { agent, sessionManager } = createHarness();
     const first = createListener();

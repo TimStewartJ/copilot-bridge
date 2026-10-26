@@ -189,6 +189,7 @@ export function createApiServices(ctx: AppContext, options: ApiServiceOptions = 
         emitReadStateChanged();
       },
     });
+    ctx.helm.moveLegacyWorkspaces();
     ctx.helm.startRetention();
   }
   if (ctx.helm && ctx.helmThinkerStore && !ctx.helmThinker) {

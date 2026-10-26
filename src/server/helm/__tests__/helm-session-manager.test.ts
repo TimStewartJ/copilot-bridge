@@ -7,7 +7,7 @@ import { createSessionTitlesStore } from "../../session-titles.js";
 import type { SessionConfigBuilderDeps } from "../../session-config-builder.js";
 import { SessionManager, type SessionConfigProfile, type SessionManagerDeps } from "../../session-manager.js";
 import { createTestBus, makeAgentSessionStub, makeTestRuntimePaths, setupTestDb } from "../../__tests__/helpers.js";
-import { applyHelmSessionProfile } from "../helm-session-profile.js";
+import { applyHelmChatProfile, applyHelmSessionProfile } from "../helm-session-profile.js";
 
 const HELM_TOOLS = [
   defineBridgeTool("bridge_overview", { description: "Overview", handler: async () => "ok" }),
@@ -55,7 +55,13 @@ function createFakeSession(sessionId: string, tools: Array<{ name: string }>, re
 
 function createManager(
   helmSessionIds: Set<string>,
-  options: { supportedEfforts?: string[]; defaultTurnEffort?: () => string | undefined; computerUsePluginDirectory?: string } = {},
+  options: {
+    supportedEfforts?: string[];
+    defaultTurnEffort?: () => string | undefined;
+    computerUsePluginDirectory?: string;
+    /** Sessions built as a look (locked down) instead of as Helm's chat. */
+    lookSessionIds?: Set<string>;
+  } = {},
 ) {
   const db = setupTestDb();
   const runtimePaths = makeTestRuntimePaths("helm-session-manager");
@@ -80,10 +86,16 @@ function createManager(
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({})),
   };
+  const chatTools = [HELM_TOOLS[0]!];
   const profile: SessionConfigProfile = {
-    toolNames: HELM_TOOLS.map((tool) => tool.name),
-    apply: (config) => applyHelmSessionProfile(config, { tools: HELM_TOOLS, workingDirectory: runtimePaths.dataDir, timeZone: "UTC" }),
+    expectedToolNames: (bridgeToolNames) => [...bridgeToolNames, ...chatTools.map((tool) => tool.name)],
+    configOptions: () => ({ promptProfile: "assistant", promptRole: "In this chat you are Helm.", extraGuidance: "<helm>Helm's guidance</helm>" }),
+    apply: (config) => applyHelmChatProfile(config, { tools: chatTools }),
     ...(options.defaultTurnEffort ? { defaultTurnReasoningEffort: options.defaultTurnEffort } : {}),
+  };
+  const lookProfile: SessionConfigProfile = {
+    expectedToolNames: () => HELM_TOOLS.map((tool) => tool.name),
+    apply: (config) => applyHelmSessionProfile(config, { tools: HELM_TOOLS, workingDirectory: runtimePaths.dataDir, systemPrompt: "You are Helm's look." }),
   };
   const onUserPrompt = vi.fn();
   // The manager hands its deps to the config builder, which is how the plugin resolver gets there.
@@ -98,7 +110,7 @@ function createManager(
     createBackend: vi.fn(() => backend as any),
     runtimePaths,
     copilotHome: runtimePaths.copilotHome,
-    resolveSessionProfile: (sessionId) => (helmSessionIds.has(sessionId) ? profile : undefined),
+    resolveSessionProfile: (sessionId) => (options.lookSessionIds?.has(sessionId) ? lookProfile : helmSessionIds.has(sessionId) ? profile : undefined),
     onUserPrompt,
     ...(options.computerUsePluginDirectory
       ? {
@@ -120,7 +132,7 @@ afterEach(() => {
 });
 
 describe("SessionManager with the Helm profile", () => {
-  it("builds a Helm conversation as Helm on create and leaves ordinary sessions alone", async () => {
+  it("builds Helm's chat as an ordinary Assistant chat with Helm's role, guidance and tools", async () => {
     const helmId = crypto.randomUUID();
     const plainId = crypto.randomUUID();
     const { manager, backend, db } = createManager(new Set([helmId]));
@@ -128,76 +140,65 @@ describe("SessionManager with the Helm profile", () => {
       await manager.initialize();
       await manager.createSession({ expectedSessionId: helmId, model: "gpt-5.6-luna" });
       await manager.createSession({ expectedSessionId: plainId });
-
-      const helmConfig = backend.createSession.mock.calls[0]![0];
-      expect(helmConfig.sessionId).toBe(helmId);
-      expect(helmConfig.model).toBe("gpt-5.6-luna");
-      expect(helmConfig.systemMessage).toMatchObject({ mode: "replace" });
-      expect(helmConfig.systemMessage.content).toContain("You are Helm");
-      expect(helmConfig.tools.map((tool: { name: string }) => tool.name)).toEqual(["bridge_overview", "task_list"]);
-      expect(helmConfig.availableTools).toEqual(["bridge_overview", "task_list"]);
-      expect(helmConfig.mcpServers).toEqual({});
-      // Helm can use none of GitHub's tools, and connecting them holds its first reply back.
-      expect(helmConfig.disabledMcpServers).toEqual(["github-mcp-server"]);
-      expect(helmConfig.memory).toEqual({ enabled: false });
-
-      const plainConfig = backend.createSession.mock.calls[1]![0];
-      expect(plainConfig.systemMessage.mode).toBe("customize");
-      expect(plainConfig.tools.map((tool: { name: string }) => tool.name)).toContain("staging_deploy");
-      expect(plainConfig.availableTools).toBeUndefined();
-      expect(Object.keys(plainConfig.mcpServers)).toContain("custom");
-      expect(plainConfig.disabledMcpServers).toBeUndefined();
-    } finally {
-      await manager.gracefulShutdown();
-      db.close();
-    }
-  });
-
-  it("resumes a Helm conversation as Helm, never as a general-purpose session", async () => {
-    const helmId = crypto.randomUUID();
-    const { manager, backend, db } = createManager(new Set([helmId]));
-    try {
-      await manager.initialize();
-      await manager.createSession({ expectedSessionId: helmId });
       await manager.evictAllCachedSessions();
       await manager.warmSession(helmId);
 
-      expect(backend.resumeSession).toHaveBeenCalledTimes(1);
-      const [resumedId, resumeConfig] = backend.resumeSession.mock.calls[0]!;
-      expect(resumedId).toBe(helmId);
-      expect(resumeConfig.systemMessage.content).toContain("You are Helm");
-      expect(resumeConfig.availableTools).toEqual(["bridge_overview", "task_list"]);
-      expect(resumeConfig.tools.map((tool: { name: string }) => tool.name)).not.toContain("staging_deploy");
-      expect(resumeConfig.mcpServers).toEqual({});
-      expect(resumeConfig.disabledMcpServers).toEqual(["github-mcp-server"]);
-      // Resume keeps trusting the session's persisted model.
+      const [helmConfig] = backend.createSession.mock.calls[0]!;
+      const [, resumeConfig] = backend.resumeSession.mock.calls.find(([sessionId]) => sessionId === helmId)!;
+      expect(helmConfig.model).toBe("gpt-5.6-luna");
+      // Resume keeps trusting the session's persisted model, and is Helm again.
       expect(resumeConfig.model).toBeUndefined();
+      for (const config of [helmConfig, resumeConfig]) {
+        expect(config.clientName).toBe("Copilot Bridge Helm");
+        expect(config.systemMessage.mode).toBe("customize");
+        expect(config.systemMessage.sections.preamble.content).toMatch(/\n\nIn this chat you are Helm\.$/);
+        // The Assistant profile, whatever the chat's stored one: no coding rules.
+        expect(config.systemMessage.sections.code_change_rules).toEqual({ action: "remove" });
+        expect(config.systemMessage.content).toMatch(/<helm>Helm's guidance<\/helm>$/);
+        expect(config.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["staging_deploy", "task_list", "bridge_overview"]));
+        expect(config.availableTools).toBeUndefined();
+        expect(config.excludedTools).toContain("ask_user");
+        expect(Object.keys(config.mcpServers)).toContain("custom");
+        expect(config.skillDirectories.length).toBeGreaterThan(0);
+      }
+
+      const plainConfig = backend.createSession.mock.calls[1]![0];
+      expect(plainConfig.clientName).toBeUndefined();
+      expect(plainConfig.systemMessage.sections.preamble.content).not.toContain("you are Helm");
+      expect(plainConfig.systemMessage.content).not.toContain("<helm>");
+      expect(plainConfig.tools.map((tool: { name: string }) => tool.name)).not.toContain("bridge_overview");
+      expect(plainConfig.excludedTools).not.toContain("ask_user");
     } finally {
       await manager.gracefulShutdown();
       db.close();
     }
   });
 
-  it("does not inherit capabilities ordinary sessions gain, such as the Computer Use plugin", async () => {
-    const helmId = crypto.randomUUID();
+  it("builds and resumes a look as Helm only, without capabilities ordinary sessions gain", async () => {
+    const lookId = crypto.randomUUID();
     const plainId = crypto.randomUUID();
-    const { manager, backend, db } = createManager(new Set([helmId]), { computerUsePluginDirectory: "/plugins/computer-use" });
+    const { manager, backend, db } = createManager(new Set(), { computerUsePluginDirectory: "/plugins/computer-use", lookSessionIds: new Set([lookId]) });
     try {
       await manager.initialize();
       await manager.createSession({ expectedSessionId: plainId });
-      await manager.createSession({ expectedSessionId: helmId });
+      await manager.createSession({ expectedSessionId: lookId });
       await manager.evictAllCachedSessions();
-      await manager.warmSession(helmId);
+      await manager.warmSession(lookId);
 
       // The setting is on, and an ordinary session really does get mouse and keyboard control...
       expect(backend.createSession.mock.calls[0]![0].pluginDirectories).toEqual(["/plugins/computer-use"]);
-      // ...but Helm gets it neither when it is created nor when it is resumed.
-      expect(backend.createSession.mock.calls[1]![0].sessionId).toBe(helmId);
-      expect(backend.createSession.mock.calls[1]![0].pluginDirectories).toBeUndefined();
-      const [resumedId, resumeConfig] = backend.resumeSession.mock.calls.find(([sessionId]) => sessionId === helmId)!;
-      expect(resumedId).toBe(helmId);
-      expect(resumeConfig.pluginDirectories).toBeUndefined();
-      expect(resumeConfig.systemMessage.content).toContain("You are Helm");
+      const [, resumeConfig] = backend.resumeSession.mock.calls.find(([sessionId]) => sessionId === lookId)!;
+      // ...but a look gets it neither when it is created nor when it is resumed.
+      for (const config of [backend.createSession.mock.calls[1]![0], resumeConfig]) {
+        expect(config.pluginDirectories).toBeUndefined();
+        expect(config.systemMessage).toEqual({ mode: "replace", content: "You are Helm's look." });
+        expect(config.availableTools).toEqual(["bridge_overview", "task_list"]);
+        expect(config.tools.map((tool: { name: string }) => tool.name)).not.toContain("staging_deploy");
+        expect(config.mcpServers).toEqual({});
+        // A look can use none of GitHub's tools, and connecting them holds its first reply back.
+        expect(config.disabledMcpServers).toEqual(["github-mcp-server"]);
+        expect(config.memory).toEqual({ enabled: false });
+      }
     } finally {
       await manager.gracefulShutdown();
       db.close();

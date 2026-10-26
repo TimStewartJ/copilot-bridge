@@ -10,6 +10,8 @@ import type { AppContext } from "../../app-context.js";
 import { createTestBus, makeTestDir, setupTestDb } from "../../__tests__/helpers.js";
 import { HELM_POLICY, HelmError, HelmService } from "../helm-service.js";
 import { createHelmStore } from "../helm-store.js";
+import { applyHelmSessionProfile } from "../helm-session-profile.js";
+import { defineBridgeTool } from "../../agent-tools-mcp/adapter.js";
 import type { HelmBridgeFacade } from "../helm-tools.js";
 
 const HOUR = 60 * 60_000;
@@ -296,8 +298,8 @@ describe("HelmService conversations", () => {
 });
 
 describe("HelmService retention", () => {
-  it("expires idle conversations but spares kept, current and in-use ones", async () => {
-    const { helm, advance, deleted, busy, store } = createHarness();
+  it("expires idle conversations but spares kept, current, in-use and waiting ones", async () => {
+    const { helm, advance, deleted, busy, store, ctx } = createHarness();
     const old = await helm.createConversation();
     helm.recordTurn(old.sessionId);
     const keeper = await helm.createConversation();
@@ -306,13 +308,26 @@ describe("HelmService retention", () => {
     const working = await helm.createConversation();
     helm.recordTurn(working.sessionId);
     busy.add(working.sessionId);
+    // Deleting a conversation cancels its deferred work and drops a result still on its way.
+    const deferring = await helm.createConversation();
+    helm.recordTurn(deferring.sessionId);
+    const awaitingResult = await helm.createConversation();
+    helm.recordTurn(awaitingResult.sessionId);
+    Object.assign(ctx, {
+      deferredPromptStore: {
+        listForSession: (sessionId: string) => (sessionId === deferring.sessionId ? [{ status: "pending" }] : []),
+        listDeliveriesForSession: (sessionId: string) => (sessionId === awaitingResult.sessionId ? [{ status: "pending" }] : []),
+      },
+      deferLoopStore: { listForSession: () => [] },
+    });
     const current = await helm.createConversation();
     helm.recordTurn(current.sessionId);
 
     advance(HELM_POLICY.retainMs + DAY);
     expect(await helm.prune()).toBe(1);
     expect(deleted).toEqual([old.sessionId]);
-    expect(store.list().map((record) => record.sessionId).sort()).toEqual([keeper.sessionId, working.sessionId, current.sessionId].sort());
+    expect(store.list().map((record) => record.sessionId).sort())
+      .toEqual([keeper.sessionId, working.sessionId, deferring.sessionId, awaitingResult.sessionId, current.sessionId].sort());
     expect((await helm.getConversation(keeper.sessionId))?.expiresAt).toBeUndefined();
     expect((await helm.getConversation(working.sessionId))?.expiresAt).toEqual(expect.any(String));
   });
@@ -342,20 +357,71 @@ describe("HelmService retention", () => {
   });
 });
 
-describe("Helm session profile", () => {
-  it("replaces what the session is while keeping the manager's lifecycle fields", async () => {
+describe("Helm session profiles", () => {
+  it("makes Helm's chat an ordinary Assistant chat with Helm's own tools and guidance added", async () => {
     const { helm } = createHarness();
     const profile = helm.getSessionProfile();
-    expect(profile.toolNames).toContain("bridge_overview");
-    expect(profile.toolNames).toContain("hands_free");
-    const onPermissionRequest = () => undefined;
+    expect(profile.configOptions?.()).toMatchObject({
+      promptProfile: "assistant",
+      promptRole: expect.stringContaining("you are Helm"),
+      extraGuidance: expect.stringContaining("(claude-opus-5)"),
+    });
+    const expected = profile.expectedToolNames(["task_list", "session_start"]);
+    expect(expected).toEqual(expect.arrayContaining(["task_list", "session_start", "bridge_overview", "hands_free"]));
     const applied = profile.apply({
+      sessionId: "abc",
+      tools: [{ name: "task_list" }, { name: "bridge_overview" }],
+      excludedTools: ["report_intent"],
+      mcpServers: { github: {} },
+      skillDirectories: ["/skills"],
+      systemMessage: { mode: "customize", content: "ordinary guidance" },
+    }) as Record<string, any>;
+    const names = applied.tools.map((tool: { name: string }) => tool.name);
+    // Helm's own bridge_overview replaces a same-named one, and the chat keeps every other tool.
+    expect(names.filter((name: string) => name === "bridge_overview")).toHaveLength(1);
+    expect(names).toEqual(expect.arrayContaining(["task_list", "send_to_session", "helm_brief", "read_bridge"]));
+    // Its reused, size-capped wrappers of Bridge tools are for the looks; the chat has the originals.
+    expect(names.filter((name: string) => name === "task_list")).toHaveLength(1);
+    expect(new Set(names).size).toBe(names.length);
+    expect(applied.excludedTools).toEqual(["report_intent", "ask_user"]);
+    expect(applied.mcpServers).toEqual({ github: {} });
+    expect(applied.skillDirectories).toEqual(["/skills"]);
+    expect(applied.availableTools).toBeUndefined();
+    expect(applied.systemMessage).toEqual({ mode: "customize", content: "ordinary guidance" });
+  });
+
+  it("moves conversations pinned to the old Helm folder to the Bridge workspace", async () => {
+    const { helm, ctx } = createHarness();
+    const legacy = await helm.createConversation();
+    helm.recordTurn(legacy.sessionId);
+    const elsewhere = await helm.createConversation();
+    const workspaceDir = makeTestDir("helm-workspace");
+    const pins = new Map<string, string>([
+      [legacy.sessionId, join(ctx.runtimePaths!.dataDir, "helm")],
+      [elsewhere.sessionId, "/projects/site"],
+    ]);
+    Object.assign(ctx.runtimePaths!, { workspaceDir });
+    Object.assign(ctx, {
+      sessionWorkspaceStore: {
+        getWorkspace: (sessionId: string) => (pins.has(sessionId) ? { cwd: pins.get(sessionId)!, updatedAt: "" } : undefined),
+        setWorkspace: (sessionId: string, cwd: string) => pins.set(sessionId, cwd),
+      },
+    });
+    expect(helm.moveLegacyWorkspaces()).toBe(1);
+    expect(pins.get(legacy.sessionId)).toBe(workspaceDir);
+    expect(pins.get(elsewhere.sessionId)).toBe("/projects/site");
+  });
+
+  it("keeps a look locked to Helm's own tools and instructions", () => {
+    const onPermissionRequest = () => undefined;
+    const tools = [defineBridgeTool("bridge_overview", { description: "Overview", handler: async () => "ok" })];
+    const applied = applyHelmSessionProfile({
       sessionId: "abc",
       model: "gpt-5.6-luna",
       streaming: true,
       memory: { enabled: false },
       onPermissionRequest,
-      // Capabilities ordinary sessions have, or may gain later. None of them are Helm's.
+      // Capabilities ordinary sessions have, or may gain later. None of them are a look's.
       pluginDirectories: ["/plugins/computer-use"],
       someFutureCapability: { enabled: true },
       tools: [{ name: "powershell" }],
@@ -366,23 +432,20 @@ describe("Helm session profile", () => {
       customAgents: [{ name: "reviewer" }],
       agent: "reviewer",
       systemMessage: { mode: "customize", content: "coding agent" },
-    }) as Record<string, any>;
+    }, { tools, workingDirectory: "/data/helm/thinker", systemPrompt: "You are Helm's look." }) as Record<string, any>;
     expect(applied).toMatchObject({ sessionId: "abc", model: "gpt-5.6-luna", streaming: true, memory: { enabled: false } });
     expect(applied.onPermissionRequest).toBe(onPermissionRequest);
     // An allowlist, not a denylist: a field nobody has heard of yet is dropped too.
     expect(applied.pluginDirectories).toBeUndefined();
     expect(applied.someFutureCapability).toBeUndefined();
-    expect(applied.githubMcpToolConfig).toBeUndefined();
-    expect(applied.availableTools).toEqual(profile.toolNames);
-    expect(applied.tools.map((tool: { name: string }) => tool.name)).toEqual(profile.toolNames);
+    expect(applied.availableTools).toEqual(["bridge_overview"]);
+    expect(applied.tools.map((tool: { name: string }) => tool.name)).toEqual(["bridge_overview"]);
     expect(applied.mcpServers).toEqual({});
     expect(applied.enableConfigDiscovery).toBe(false);
     expect(applied.skillDirectories).toEqual([]);
     expect(applied.customAgents).toBeUndefined();
     expect(applied.agent).toBeUndefined();
-    expect(applied.systemMessage.mode).toBe("replace");
-    expect(applied.systemMessage.content).toContain("You are Helm");
-    expect(applied.systemMessage.content).toContain("claude-opus-5");
-    expect(String(applied.workingDirectory)).toContain("helm");
+    expect(applied.systemMessage).toEqual({ mode: "replace", content: "You are Helm's look." });
+    expect(applied.workingDirectory).toBe("/data/helm/thinker");
   });
 });

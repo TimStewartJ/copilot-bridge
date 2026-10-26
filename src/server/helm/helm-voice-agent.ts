@@ -70,6 +70,11 @@ interface ActiveTurn {
 }
 
 const DEFAULT_BUSY_WAIT_MS = 4_000;
+
+/** Turns the user authored, as opposed to Bridge updates and the greeting. */
+function isUserTurn(kind: AgentTurnInput["kind"]): boolean {
+  return kind !== "event" && kind !== "greeting";
+}
 const DEFAULT_POLL_MS = 50;
 const ABORT_SETTLE_TIMEOUT_MS = 8_000;
 
@@ -194,7 +199,9 @@ export class HelmVoiceAgent implements VoiceAgentApi {
 
   /**
    * A voice turn is the newest thing the user said, so it wins: wait briefly for the session
-   * to settle (a just-interrupted reply, a warmup), then stop whatever is still running.
+   * to settle (a just-interrupted reply, a warmup), then stop whatever is still running. A turn
+   * the user did not author (an announcement, the greeting) never stops anything: the session may
+   * be waiting on a question shown on screen.
    */
   private async waitUntilIdle(turn: ActiveTurn): Promise<boolean> {
     const { sessionManager } = this.options;
@@ -209,7 +216,7 @@ export class HelmVoiceAgent implements VoiceAgentApi {
     try {
       await waitFor(this.options.busyWaitMs ?? DEFAULT_BUSY_WAIT_MS);
       if (turn.aborting || this.detached) return false;
-      if (sessionManager.isSessionBusy(this.sessionId)) {
+      if (sessionManager.isSessionBusy(this.sessionId) && isUserTurn(turn.input.kind)) {
         await sessionManager.abortSession(this.sessionId).catch(() => false);
         await waitFor(ABORT_SETTLE_TIMEOUT_MS);
       }
@@ -237,13 +244,16 @@ export class HelmVoiceAgent implements VoiceAgentApi {
       return;
     }
     if (!idle) {
-      this.finishTurn(turn, { aborted: false, error: "Helm is still busy with another message. Try again in a moment." });
+      // An announcement that finds Helm busy is dropped; what it was about is in the chat.
+      this.finishTurn(turn, isUserTurn(turn.input.kind)
+        ? { aborted: false, error: "Helm is still busy with another message. Try again in a moment." }
+        : { aborted: false });
       return;
     }
 
     this.active = turn;
     try {
-      const fromUser = turn.input.kind !== "event" && turn.input.kind !== "greeting";
+      const fromUser = isUserTurn(turn.input.kind);
       const reasoningEffort = this.options.resolveReasoningEffort?.(fromUser ? turn.input.text : undefined);
       this.options.sessionManager.startWork(this.sessionId, composed.prompt, undefined, {
         ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -304,6 +314,20 @@ export class HelmVoiceAgent implements VoiceAgentApi {
         if (toolCallId && turn.toolNames.has(toolCallId) && !turn.aborting) {
           turn.listener.onToolEnd({ toolCallId, name: turn.toolNames.get(toolCallId)!, success: event.success !== false });
         }
+        break;
+      }
+      case "user_input_requested":
+      case "elicitation_requested": {
+        // A form (an MCP server's prompt) can't be spoken or answered out loud. Say it is on screen
+        // and end the spoken turn; speaking again stops the waiting run, like any busy session.
+        const asked = event.type === "user_input_requested" ? event.question : event.message;
+        if (!turn.aborting) {
+          const line = `${turn.reply.trim() ? " " : ""}There's a question for you on screen in Helm${typeof asked === "string" && asked.trim() ? `: ${asked.trim().slice(0, 200)}` : "."}`;
+          turn.reply += line;
+          turn.listener.onDelta(line);
+          turn.listener.onMessageEnd?.();
+        }
+        this.finishTurn(turn, { aborted: turn.aborting });
         break;
       }
       case "done":
