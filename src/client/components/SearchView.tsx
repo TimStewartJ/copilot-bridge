@@ -244,12 +244,6 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
       ? offset + sessionVisibleMatchCount < sessionMatchCount
       : [visibleResponse.chats.total, visibleResponse.tasks.total, visibleResponse.docs.total].some((sectionTotal) => offset + PAGE_SIZE < sectionTotal)
     : false;
-  const historyUrl = useMemo(() => {
-    const historyParams = new URLSearchParams();
-    if (query.trim()) historyParams.set("historyQuery", query.trim());
-    return `/dashboard/focus?${historyParams.toString()}#focus-history`;
-  }, [query]);
-
   const updateParams = (updates: Record<string, string | null>) => {
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
@@ -451,10 +445,6 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
             <span className="mt-1.5 block break-words leading-6 text-text-secondary line-clamp-3"><Highlight text={formatSearchExcerpt(hit.snippet, query)} query={query} /></span>
           </button></div>)}</div>
         </section>}
-
-        {query.trim() && <button type="button" data-search-result="" onClick={() => navigate(historyUrl)} className={cx(DS.row.stacked, "text-accent")}>
-          Search Focus History for “{query.trim()}”
-        </button>}
 
         {visibleResponse && total > 0 && <nav aria-label="Search result pages" className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
           <button type="button" disabled={offset === 0} onClick={() => updateParams({ offset: offset > PAGE_SIZE ? String(offset - PAGE_SIZE) : null })} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "disabled:opacity-40")}>Previous</button>

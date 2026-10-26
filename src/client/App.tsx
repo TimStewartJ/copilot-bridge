@@ -106,7 +106,6 @@ import NewSessionLaunchPanel from "./components/NewSessionLaunchPanel";
 import SessionModelSummary from "./components/SessionModelSummary";
 import SessionModelDialog from "./components/SessionModelDialog";
 import Dashboard from "./components/Dashboard";
-import DashboardArchive from "./components/DashboardArchive";
 import FocusDashboardRedirect from "./components/FocusDashboardRedirect";
 import SettingsView from "./components/SettingsView";
 import DocsView from "./components/docs/DocsView";
@@ -2029,7 +2028,7 @@ function AppShell() {
               }
             />
             <Route path="dashboard/focus" element={<FocusDashboardRedirect />} />
-            <Route path="dashboard/archive" element={<DashboardArchive />} />
+            <Route path="dashboard/archive" element={<FocusDashboardRedirect />} />
             <Route
               path="dashboard/checklist"
               element={<FocusDashboardRedirect />}

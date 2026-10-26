@@ -17,7 +17,6 @@ import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import type { ReadStateStore } from "./read-state-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
-import type { DashboardArchiveStore } from "./dashboard-archive.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { SearchIndex } from "./search-index.js";
@@ -72,7 +71,6 @@ export interface AppContext {
   cliSessionCatalog?: CopilotCliSessionCatalog;
   readStateStore: ReadStateStore;
   checklistStore: ChecklistStore;
-  dashboardArchive: DashboardArchiveStore;
   stopPushEventNotifications?: PushEventNotificationDisposer;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;

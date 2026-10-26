@@ -1,69 +1,101 @@
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../db.js";
 import { prepareDashboardRetirement } from "../dashboard-retirement.js";
-import { createDashboardArchiveStore } from "../dashboard-archive.js";
 import { createTaskStore } from "../task-store.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createGlobalBus } from "../global-bus.js";
 import { makeTestDir } from "./helpers.js";
 
 const oldSchema = readFileSync(new URL("./fixtures/dashboard-retirement.sql", import.meta.url), "utf8");
-describe("off-thread dashboard retirement", () => {
+// What version 1 of the retirement left behind: an immutable archive and a manifest naming old records and a backup.
+const versionOneArchive = `
+  CREATE TABLE dashboard_legacy_rows (tableName TEXT NOT NULL, rowKey TEXT NOT NULL, rowJson TEXT NOT NULL, PRIMARY KEY(tableName,rowKey));
+  CREATE TABLE dashboard_legacy_objects (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL, rawJson TEXT NOT NULL);
+  CREATE TRIGGER dashboard_archive_rows_no_delete BEFORE DELETE ON dashboard_legacy_rows BEGIN SELECT RAISE(ABORT,'Dashboard archive is immutable'); END;
+  CREATE TRIGGER dashboard_archive_objects_no_delete BEFORE DELETE ON dashboard_legacy_objects BEGIN SELECT RAISE(ABORT,'Dashboard archive is immutable'); END;
+  INSERT INTO dashboard_legacy_rows VALUES('alerts','["a"]','{"id":"a"}');
+  INSERT INTO dashboard_legacy_objects VALUES('a','alert','Old alert','{}');
+  INSERT INTO dashboard_retirement VALUES(1,'2026-01-01T00:00:00Z','{"producerReferences":[{"title":"Old schedule"}]}','/backups/before-v1.db');
+`;
+const leftovers = (db: DatabaseSync) => db.prepare(`SELECT name FROM sqlite_master WHERE (type='table' AND (name LIKE 'focus\\_%' ESCAPE '\\'
+  OR name IN ('decisions','alerts','feed_cards','feed_card_checklist_promotions','dashboard_legacy_rows','dashboard_legacy_objects')))
+  OR (type='trigger' AND (name LIKE 'focus\\_%' ESCAPE '\\' OR name LIKE 'dashboard\\_archive\\_%' ESCAPE '\\'))`).all().map(row => row.name);
+
+describe("off-thread dashboard removal", () => {
   let db: DatabaseSync | undefined;
   afterEach(() => { db?.close(); db = undefined; });
-  it("freezes old writes, archives exact records, and preserves native task/checklist state and retry keys", async () => {
-    const directory = makeTestDir("dashboard-retirement");
+
+  it("drops every old dashboard table and keeps tasks, schedules and checklist retry keys", async () => {
+    const directory = makeTestDir("dashboard-removal");
     db = openDatabase(directory);
     const bus = createGlobalBus(), tasks = createTaskStore(db, bus), checklist = createChecklistStore(db, bus);
     const task = tasks.createTask("Keep this task", undefined, "ongoing");
     tasks.updateTask(task.id, { notes: "Original notes", nextAction: "Original next action", waitingOn: "Original wait" });
-    tasks.linkSession(task.id, "original-session");
-    const item = checklist.createChecklistItem(task.id, "Existing accepted action", "2030-01-01");
-    db.prepare("DELETE FROM checklist_item_details WHERE itemId=?").run(item.id);
+    const withoutDetails = checklist.createChecklistItem(task.id, "Accepted before details existed", "2030-01-01");
+    const withDetails = checklist.createChecklistItem(task.id, "Accepted with an empty details row");
+    const keyOwner = checklist.createChecklistItem(task.id, "Accepted later under the same key", undefined, { key: "key-taken" });
+    const collides = checklist.createChecklistItem(task.id, "Legacy key now owned by another item");
+    db.prepare("DELETE FROM checklist_item_details WHERE itemId=?").run(withoutDetails.id);
     db.exec(oldSchema);
     const id = "ba5e1000-0000-4000-8000-000000000001", at = "2026-01-01T00:00:00Z";
     db.prepare("INSERT INTO focus_object_identities(id,objectType,dedupeKey) VALUES(?,?,?)").run(id, "alert", "historical-alert");
-    db.prepare("INSERT INTO alerts(id,title,taskId,status,activationId,createdAt,updatedAt,statusChangedAt) VALUES(?,?,?,?,?,?,?,?)").run(id, "Unresolved historical condition", task.id, "active", "episode", at, at, at);
-    db.prepare("INSERT INTO focus_object_details(objectId,lifecycle,lastMeaningfulChangeAt,interventionBy) VALUES(?,?,?,?)").run(id, "active", at, at);
-    db.prepare("INSERT INTO focus_action_details(actionId,stableKey,sourceUrl) VALUES(?,?,?)").run(item.id, "accepted-key", "https://example.com/source");
-    db.prepare("INSERT INTO focus_action_links(sourceType,sourceId,activationId,actionId,createdAt) VALUES(?,?,?,?,?)").run("alert", id, "episode", item.id, at);
+    db.prepare("INSERT INTO alerts(id,title,taskId,status,activationId,createdAt,updatedAt,statusChangedAt) VALUES(?,?,?,?,?,?,?,?)").run(id, "Old alert", task.id, "active", "episode", at, at, at);
+    db.prepare("INSERT INTO focus_action_details(actionId,stableKey,sourceUrl) VALUES(?,?,?)").run(withoutDetails.id, "key-one", "https://example.com/one");
+    db.prepare("INSERT INTO focus_action_details(actionId,stableKey,sourceUrl) VALUES(?,?,?)").run(withDetails.id, "key-two", "https://example.com/two");
+    db.prepare("INSERT INTO focus_action_details(actionId,stableKey,sourceUrl) VALUES(?,?,?)").run(collides.id, "key-taken", "https://example.com/taken");
+    const backups = join(directory, "backups", "dashboard-retirement");
+    mkdirSync(backups, { recursive: true });
+    writeFileSync(join(backups, "before-v1.db"), "old records");
+    db.prepare("INSERT INTO schedules(id,taskId,name,prompt,type,cron,enabled,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("monitor", task.id, "Real monitor", "Do the research then call event_save.", "cron", "0 8 * * *", 1, at, at);
     const before = tasks.getTask(task.id);
     db.close(); db = undefined;
+
     await prepareDashboardRetirement(directory);
+
     db = openDatabase(directory);
-    const newTasks = createTaskStore(db, bus), newChecklist = createChecklistStore(db, bus), archive = createDashboardArchiveStore(db);
+    const newTasks = createTaskStore(db, bus), newChecklist = createChecklistStore(db, bus);
+    expect(leftovers(db)).toEqual([]);
     expect(newTasks.getTask(task.id)).toEqual(before);
-    expect(newChecklist.getChecklistItem(item.id)).toMatchObject({ text: "Existing accepted action", deadline: "2030-01-01", stableKey: "accepted-key", sources: [{ sourceId: id, title: "Unresolved historical condition" }] });
-    expect(newChecklist.createChecklistItem(task.id, "Retry must not create another item", undefined, { key: "accepted-key" }).id).toBe(item.id);
-    expect(archive.get(id)).toMatchObject({ title: "Unresolved historical condition", lifecycle: "active", taskTitle: "Keep this task" });
-    expect(archive.list(0, "", true).openConcerns).toBe(1);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM dashboard_legacy_rows WHERE tableName='tasks'").get()?.n).toBe(0);
-    const count = Number(db.prepare("SELECT COUNT(*) AS n FROM dashboard_legacy_rows").get()?.n);
-    expect(() => db!.exec("DELETE FROM dashboard_legacy_rows")).toThrow("immutable");
-    const backup = db.prepare("SELECT backupPath FROM dashboard_retirement").get()?.backupPath;
-    expect(typeof backup === "string" && existsSync(backup)).toBe(true);
-    newChecklist.updateChecklistItem(item.id, { done: true });
-    newTasks.deleteTask(task.id);
-    expect(archive.get(id)?.taskTitle).toBe("Keep this task");
-    expect(Number(db.prepare("SELECT COUNT(*) AS n FROM dashboard_legacy_rows").get()?.n)).toBe(count);
-    db.close(); db = undefined;
-    await prepareDashboardRetirement(directory);
-    db = openDatabase(directory);
-    expect(Number(db.prepare("SELECT COUNT(*) AS n FROM dashboard_legacy_rows").get()?.n)).toBe(count);
-  });
-  it("does not change schedule enablement or task instructions when recording retired-tool references", async () => {
-    const directory = makeTestDir("dashboard-retirement-producers");
-    db = openDatabase(directory); db.exec(oldSchema);
-    const task = createTaskStore(db, createGlobalBus()).createTask("Keep real monitoring");
-    db.prepare("INSERT INTO schedules(id,taskId,name,prompt,type,cron,enabled,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?,?,?)")
-      .run("monitor", task.id, "Real monitor", "Do the research then call event_save.", "cron", "0 8 * * *", 1, "2026-01-01", "2026-01-01");
-    db.close(); db = undefined;
-    await prepareDashboardRetirement(directory);
-    db = openDatabase(directory);
+    expect(newChecklist.getChecklistItem(withoutDetails.id)).toMatchObject({ deadline: "2030-01-01", stableKey: "key-one", sourceUrl: "https://example.com/one", originalTaskId: task.id });
+    expect(newChecklist.getChecklistItem(withDetails.id)).toMatchObject({ stableKey: "key-two", sourceUrl: "https://example.com/two" });
+    expect(newChecklist.createChecklistItem(task.id, "Retry must not add another item", undefined, { key: "key-one" }).id).toBe(withoutDetails.id);
+    expect(newChecklist.getChecklistItem(keyOwner.id)).toMatchObject({ stableKey: "key-taken" });
+    expect(newChecklist.getChecklistItem(collides.id)).toMatchObject({ sourceUrl: "https://example.com/taken" });
+    expect(newChecklist.getChecklistItem(collides.id)?.stableKey).toBeUndefined();
+    expect(existsSync(backups)).toBe(false);
     expect(db.prepare("SELECT enabled,prompt FROM schedules WHERE id='monitor'").get()).toMatchObject({ enabled: 1, prompt: "Do the research then call event_save." });
-    expect(createDashboardArchiveStore(db).readiness().manifest).toMatchObject({ producerReferences: [{ id: "monitor", enabled: true, tools: ["event_save"] }] });
+    expect(JSON.parse(String(db.prepare("SELECT manifestJson FROM dashboard_retirement WHERE version=2").get()?.manifestJson)))
+      .toMatchObject({ droppedTables: { alerts: 1, focus_action_details: 3, focus_object_identities: 1 }, skippedKeys: 1 });
+  });
+
+  it("removes the version 1 archive, clears its manifest, and removes tables an older release recreates", async () => {
+    const directory = makeTestDir("dashboard-removal-v1");
+    db = openDatabase(directory);
+    db.exec(versionOneArchive);
+    db.close(); db = undefined;
+
+    await prepareDashboardRetirement(directory);
+    db = openDatabase(directory);
+    expect(leftovers(db)).toEqual([]);
+    expect(db.prepare("SELECT manifestJson,backupPath FROM dashboard_retirement WHERE version=1").get())
+      .toMatchObject({ manifestJson: expect.not.stringContaining("Old schedule"), backupPath: null });
+    const removedAt = db.prepare("SELECT completedAt FROM dashboard_retirement WHERE version=2").get()?.completedAt;
+    db.close(); db = undefined;
+
+    await prepareDashboardRetirement(directory);
+    db = openDatabase(directory);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM dashboard_retirement").get()?.n).toBe(2);
+
+    // A rollback to a release that still creates the archive, then this release again.
+    db.exec(versionOneArchive.replace(/INSERT INTO dashboard_retirement[^;]*;/, ""));
+    db.close(); db = undefined;
+    await prepareDashboardRetirement(directory);
+    db = openDatabase(directory);
+    expect(leftovers(db)).toEqual([]);
+    expect(db.prepare("SELECT completedAt FROM dashboard_retirement WHERE version=2").get()?.completedAt).toBe(removedAt);
   });
 });

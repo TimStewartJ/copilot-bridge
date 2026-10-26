@@ -40,9 +40,7 @@ const MIME_TO_EXT: Record<string, string> = {
 const ARTIFACT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_VISUAL_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
-export type VisualArtifactOwner =
-  | { type: "session"; id: string }
-  | { type: "feed-card"; id: string };
+export type VisualArtifactOwner = { type: "session"; id: string };
 
 interface VisualOwnerInput {
   owner?: VisualArtifactOwner;
@@ -62,24 +60,15 @@ export function sessionVisualOwner(sessionId: string): VisualArtifactOwner {
   return { type: "session", id: sessionId };
 }
 
-export function feedCardVisualOwner(cardId: string): VisualArtifactOwner {
-  return { type: "feed-card", id: cardId };
-}
-
 function normalizeOwner(input: VisualOwnerInput): Result<VisualArtifactOwner> {
   const owner = input.owner ?? (input.sessionId ? sessionVisualOwner(input.sessionId) : undefined);
   if (!owner) return err("sessionId is invalid");
-  if (owner.type === "session") {
-    return isCanonicalSessionId(owner.id) ? ok(owner) : err("sessionId is invalid");
-  }
-  return isCanonicalArtifactId(owner.id) ? ok(owner) : err("feed card id is invalid");
+  return isCanonicalSessionId(owner.id) ? ok(owner) : err("sessionId is invalid");
 }
 
 export function getVisualsDir(copilotHome: string, ownerOrSessionId: VisualArtifactOwner | string): string {
   const owner = typeof ownerOrSessionId === "string" ? sessionVisualOwner(ownerOrSessionId) : ownerOrSessionId;
-  return owner.type === "session"
-    ? join(copilotHome, "session-state", owner.id, "files", "visuals")
-    : join(copilotHome, "feed-cards", owner.id, "visuals");
+  return join(copilotHome, "session-state", owner.id, "files", "visuals");
 }
 
 function artifactFilePath(visualsDir: string, artifactId: string, ext: string): string {
@@ -164,10 +153,7 @@ function normalizeApiBase(apiBasePath: string | undefined): string {
 }
 
 function buildVisualUrl(apiBase: string, owner: VisualArtifactOwner, artifactId: string, suffix: string): string {
-  if (owner.type === "session") {
-    return `${apiBase}/sessions/${encodeURIComponent(owner.id)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
-  }
-  return `${apiBase}/feed/${encodeURIComponent(owner.id)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
+  return `${apiBase}/sessions/${encodeURIComponent(owner.id)}/visuals/${encodeURIComponent(artifactId)}${suffix}`;
 }
 
 export function publishVisualArtifact(input: PublishVisualInput): Result<PublishedVisualArtifact> {

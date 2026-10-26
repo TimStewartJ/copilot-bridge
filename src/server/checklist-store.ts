@@ -4,7 +4,6 @@ import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
 import { isRecord } from "../shared/is-record.js";
 import { runImmediateTransaction, runTransaction } from "./db-transaction.js";
-import type { ArchivedChecklistSource } from "../shared/checklist-origin.js";
 type ChecklistActor = "user" | "agent" | "system";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -20,7 +19,6 @@ export interface ChecklistItem {
   deadline?: string; // YYYY-MM-DD date string
   stableKey?: string;
   sourceUrl?: string;
-  sources?: ArchivedChecklistSource[];
   originalTaskId?: string;
   originalTaskTitle?: string;
   orphanedAt?: string;
@@ -131,7 +129,6 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
       createdAt: row.createdAt,
       completedAt: row.completedAt ?? undefined,
       deadline: row.deadline ?? undefined,
-      sources: details ? JSON.parse(String(details.archivedSourcesJson)) as ArchivedChecklistSource[] : [],
       ...(typeof details?.stableKey === "string" ? { stableKey: details.stableKey } : {}),
       ...(typeof details?.sourceUrl === "string" ? { sourceUrl: details.sourceUrl } : {}),
       ...(typeof details?.originalTaskId === "string" ? { originalTaskId: details.originalTaskId } : {}),

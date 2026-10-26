@@ -17,7 +17,6 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
-import { createDashboardArchiveStore } from "./dashboard-archive.js";
 import { createChecklistStore } from "./checklist-store.js";
 import { createDocsStore } from "./docs-store.js";
 import { createDocsIndex } from "./docs-index.js";
@@ -177,7 +176,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     cliSessionCatalog,
     readStateStore,
     checklistStore,
-    dashboardArchive: createDashboardArchiveStore(db),
     docsStore,
     docsIndex,
     docsSnapshotStore,

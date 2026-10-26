@@ -1,4 +1,3 @@
-import { registerDashboardArchiveRoutes } from "./dashboard-archive.js";
 // API route handlers — extracted from index.ts for modularity
 
 import express from "express";
@@ -72,7 +71,6 @@ import {
   resolveNeutralAwareCwd,
 } from "./neutral-workspace.js";
 import {
-  feedCardVisualOwner,
   HTML_MIME_TYPE,
   HTML_SANDBOX_CSP,
   isCanonicalArtifactId,
@@ -3804,47 +3802,8 @@ export function createApiRouter(
     }
   });
 
-  registerDashboardArchiveRoutes(router, ctx.dashboardArchive);
-
-  function getFeedVisualOwner(req: express.Request, res: express.Response): VisualArtifactOwner | undefined {
-    const cardId = String(req.params.id ?? "").trim();
-    const artifactId = String(req.params.artifactId ?? "").trim();
-    if (!isCanonicalArtifactId(cardId)) {
-      res.status(400).json({ error: "Feed card id must be a valid UUID" });
-      return undefined;
-    }
-    if (!isCanonicalArtifactId(artifactId)) {
-      res.status(400).json({ error: "artifactId must be a valid UUID" });
-      return undefined;
-    }
-    const visual = ctx.dashboardArchive.visual(cardId);
-    if (visual?.artifactId !== artifactId) {
-      res.status(404).json({ error: "Feed visual artifact not found" });
-      return undefined;
-    }
-    return feedCardVisualOwner(cardId);
-  }
-
-  router.get("/feed/:id/visuals/:artifactId", (req, res) => {
-    const owner = getFeedVisualOwner(req, res);
-    if (!owner) return;
-    return sendVisualArtifact(owner, req.params.artifactId, res, "inline");
-  });
-
-  router.get("/feed/:id/visuals/:artifactId/download", (req, res) => {
-    const owner = getFeedVisualOwner(req, res);
-    if (!owner) return;
-    return sendVisualArtifact(owner, req.params.artifactId, res, "download");
-  });
-
-  router.get("/feed/:id/visuals/:artifactId/meta", (req, res) => {
-    const owner = getFeedVisualOwner(req, res);
-    if (!owner) return;
-    return sendVisualMeta(owner, req.params.artifactId, res);
-  });
-
   router.use(["/focus", "/feed", "/dashboard/attention"], (_req, res) => {
-    res.status(410).json({ error: "The dashboard-only system is retired. Use native Tasks, conversations and checklists. Historical records are read-only.", archive: "/dashboard/archive" });
+    res.status(410).json({ error: "The dashboard-only system is retired. Use native Tasks, conversations and checklists." });
   });
 
   // ── Read State routes ─────────────────────────────────────────────

@@ -1,4 +1,3 @@
-import { createDashboardArchiveStore } from "../dashboard-archive.js";
 // Heavy integration fixture — fully wired Express app + AppContext.
 //
 // Split out of ./helpers.ts on purpose: API services and routing pull a large
@@ -118,7 +117,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     cliSessionCatalog: createCopilotCliSessionCatalog({ copilotHome: runtimePaths.copilotHome }),
     readStateStore: createReadStateStore(db),
     checklistStore,
-    dashboardArchive: createDashboardArchiveStore(db),
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
     copilotModelPriceStore: createCopilotModelPriceStore(db),
