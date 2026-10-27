@@ -139,6 +139,7 @@ export default function SessionContextPanel({
                 )}
                 {pressure === "compacting" && (
                   <span className={DS.tone.warning}>
+                    {/* copy-ok: when the session will pause */}
                     Past {formatPercent(compactionPercent)}: older turns are being summarised in the background.
                     The session pauses at {formatPercent(blockingPercent)} if that has not finished.
                   </span>
@@ -236,7 +237,7 @@ export default function SessionContextPanel({
               }}
           />
           <p className={cx(DS.usage.prose, "mt-2")}>
-            Input counts every token sent to the model, including cached reads; this is not what the window holds now.
+            Input includes cached reads; it is not what the window holds now.
           </p>
         </Details>
       )}

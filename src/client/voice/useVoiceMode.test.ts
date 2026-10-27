@@ -106,7 +106,7 @@ describe("useVoiceMode", () => {
     audio.start.mockRejectedValueOnce(Object.assign(new Error("The object can not be found here."), { name: "NotFoundError" }));
     await harness.act(() => controller.start(HELM_SESSION_ID));
 
-    expect(controller.error).toBe("No microphone was found. Check your browser and OS audio input settings, then try again.");
+    expect(controller.error).toBe("No microphone found. Check your browser and system audio input.");
     expect(controller).toMatchObject({ phase: "error", active: false, sessionId: null });
     // Audio comes first, so a machine without a microphone never creates a voice conversation.
     expect(voiceApi.createVoiceConversation).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe("useVoiceMode", () => {
   it("explains a blocked microphone", async () => {
     audio.start.mockRejectedValueOnce(Object.assign(new Error("Permission denied"), { name: "NotAllowedError" }));
     await harness.act(() => controller.start(HELM_SESSION_ID));
-    expect(controller.error).toBe("Microphone access was denied. Allow microphone access in your browser settings and try again.");
+    expect(controller.error).toBe("Microphone access was denied. Allow it in browser settings, then retry.");
   });
 
   it("reports server and connection failures in their own words", async () => {

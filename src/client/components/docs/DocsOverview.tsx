@@ -46,9 +46,6 @@ export function DocsHome() {
                 <Library size={22} aria-hidden="true" />
               </div>
               <h1 className="mt-5 text-xl font-semibold tracking-tight text-text-primary">Your knowledge base is empty</h1>
-              <p className="mt-2 text-sm leading-6 text-text-muted">
-                Docs is where plans, runbooks and research live. Write a page yourself, or ask an agent to document what it learns; its pages show up here.
-              </p>
               <DocsButton size="md" variant="primary" icon={FilePlus} onClick={() => openNewPage()} className="mt-6">Write the first page</DocsButton>
             </div>
           ) : (
@@ -204,7 +201,7 @@ export function DocsNotFound({ path, canCreate }: { path: string; canCreate: boo
           </div>
           <h1 className="mt-5 text-xl font-semibold tracking-tight text-text-primary">There is no page here</h1>
           <p className="mt-2 text-sm leading-6 text-text-muted">
-            Nothing exists at <span className="break-all font-mono text-[13px] text-text-secondary">{path}</span>. It may have been moved, renamed or deleted.
+            Nothing exists at <span className="break-all font-mono text-[13px] text-text-secondary">{path}</span>.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-2">
             <DocsButton size="md" onClick={goHome}>Back to Docs</DocsButton>

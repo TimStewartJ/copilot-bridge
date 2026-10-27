@@ -74,7 +74,7 @@ export function BridgeRuntimeSection({ refreshSignal = 0 }: { refreshSignal?: nu
 
   const handleSelfUpdate = useCallback(async () => {
     const confirmed = window.confirm(
-      "Queue a Bridge self-update job?\n\nThe launcher will pull the latest source, validate it, and restart the Bridge if the update succeeds.",
+      "Queue a self-update?\n\nThe Bridge pulls, validates and restarts if it succeeds.",
     );
     if (!confirmed) return;
 
@@ -104,7 +104,7 @@ export function BridgeRuntimeSection({ refreshSignal = 0 }: { refreshSignal?: nu
       setActionMessage(
         now
           ? `Restarting now. ${result.resumingRuns ?? 0} running session${result.resumingRuns === 1 ? "" : "s"} will resume afterwards.`
-          : "Restart requested. It happens once the Bridge is idle and blocks nothing until then.",
+          : "Restart requested. It happens once the Bridge is idle.",
       );
       void runtimeQuery.refetch();
       void restartStatusQuery.refetch();
@@ -121,7 +121,7 @@ export function BridgeRuntimeSection({ refreshSignal = 0 }: { refreshSignal?: nu
   const handleEvictIdleCache = useCallback(async () => {
     const confirmed = window.confirm(
       `Evict ${idleCachedSessions} idle cached session${idleCachedSessions === 1 ? "" : "s"}?\n\n`
-      + "Active sessions and sessions with running agents are protected. Evicted sessions will resume from disk when used again.",
+      + "They resume from disk when used again.",
     );
     if (!confirmed) return;
 
@@ -183,9 +183,7 @@ export function BridgeRuntimeSection({ refreshSignal = 0 }: { refreshSignal?: nu
         <SettingList>
           <SettingRow
             label="Restart Bridge"
-            hint={restartDisabledReason ?? (restartPending
-              ? "A restart is pending. It happens once every session and job is idle, and blocks nothing until then."
-              : "Restart when idle waits for every session and job, and blocks nothing. Restart now stops running sessions and resumes them afterwards.")}
+            hint={restartDisabledReason ?? (restartPending ? "Restart pending." : undefined)}
             control={(
               <>
                 <button
@@ -211,7 +209,7 @@ export function BridgeRuntimeSection({ refreshSignal = 0 }: { refreshSignal?: nu
           />
           <SettingRow
             label="Self-update"
-            hint={selfUpdateDisabledReason ?? "Pull the latest source, validate it and restart, rolling back if activation fails."}
+            hint={selfUpdateDisabledReason ?? undefined}
             control={(
               <button
                 type="button"
@@ -311,6 +309,7 @@ function CapacityRow({ status, loading }: { status: RuntimeStatusWithAgentBacken
     >
       {capacity.cleanup.failed > 0 && (
         <Notice tone="danger" icon={<AlertTriangle size={14} />}>
+          {/* copy-ok: new work is blocked */}
           New work is blocked while {capacity.cleanup.failed} failed cleanup{capacity.cleanup.failed === 1 ? "" : "s"} remain. Bridge retries these automatically; restart if the count does not clear.
         </Notice>
       )}
@@ -372,11 +371,9 @@ function RuntimeDetails({ status }: { status: RuntimeStatusWithAgentBackend }) {
               <CapacityBar label="Context pressure" used={capacity.contexts.used} retained={capacity.contexts.retained} limit={capacity.contexts.limit} />
               <CapacityBar label="Weighted pressure" used={capacity.weightedUnits.used} retained={capacity.weightedUnits.retained} limit={capacity.weightedUnits.limit} />
             </div>
+            {/* copy-ok: data readout */}
             <p className={DS.text.meta}>
               Parent cache {capacity.cache.readyParents}/{capacity.cache.limit}, {capacity.cache.protectedParents} protected · Cleanup {capacity.cleanup.pending} pending, {capacity.cleanup.failed} failed, limit {capacity.cleanup.limit} · Local MCP weight +{formatCapacityValue(capacity.localMcpWeight)} per context · Capacity wait {formatCapacityValue(capacity.waitTimeoutSeconds)}s
-            </p>
-            <p className={DS.field.help}>
-              Admission uses a hard live-context limit and an MCP-weighted unit budget. Idle cached parents can be evicted and do not count as used.
             </p>
           </div>
         )}
@@ -440,5 +437,6 @@ function getRestartDisabledReason({
 
 function buildRestartNowConfirmation(runtime: RuntimeStatusWithAgentBackend | undefined): string {
   const active = runtime?.sessions.active ?? 0;
+  // copy-ok: confirms a destructive action
   return `Restart Bridge now?\n\n${active} running session${active === 1 ? "" : "s"} will stop and pick up where ${active === 1 ? "it" : "they"} left off once the Bridge is back.`;
 }

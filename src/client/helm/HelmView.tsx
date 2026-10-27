@@ -169,6 +169,7 @@ function HistoryPanel({
           ))}
         </div>
         <div className="shrink-0 border-t border-border px-3 py-2 text-[11px] leading-relaxed text-text-faint">
+          {/* copy-ok: when conversations expire */}
           Helm opens fresh after {describeDuration(state.policy.freshAfterMs)} idle. Conversations stay resumable for {describeDuration(state.policy.retainMs)}, then expire unless kept.
         </div>
       </div>
@@ -201,9 +202,6 @@ function HelmWelcome({
           <h1 className="text-xl font-semibold tracking-tight">Helm</h1>
           <Link to="/helm/memory" className={cx(DS.text.meta, DS.focus, "ml-auto rounded hover:text-text-primary")}>What Helm knows</Link>
         </div>
-        <p className="mt-2 text-sm leading-relaxed text-text-muted">
-          Steer Bridge from one place. Ask what needs you, hear what finished, hand work to sessions, and keep tasks tidy. Type like any chat, or go hands-free and just talk. It's the same conversation either way.
-        </p>
         {resumable && (
           <button
             type="button"

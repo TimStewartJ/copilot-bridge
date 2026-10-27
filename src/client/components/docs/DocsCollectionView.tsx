@@ -302,7 +302,6 @@ export default function DocsCollectionView({ folder, onMissing }: DocsCollection
               <div className={cx(DS.text.empty, "px-6 py-14 text-center")}>
                 <Database size={22} className="mx-auto text-text-faint" aria-hidden="true" />
                 <p className="mt-3 text-sm font-medium text-text-primary">No entries yet</p>
-                <p className="mt-1 text-[13px] text-text-muted">Add the first one, or ask an agent to fill this collection in.</p>
                 <DocsButton variant="primary" icon={Plus} onClick={() => openNewEntry(folder)} className="mt-4">New entry</DocsButton>
               </div>
             ) : visibleEntries.length === 0 ? (

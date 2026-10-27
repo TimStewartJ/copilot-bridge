@@ -311,7 +311,7 @@ describe("ElicitationCard", () => {
     );
 
     expect(harness.dom.container.textContent).toContain(
-      "The run may have ended before your response was accepted.",
+      "This question is no longer active; the run may have ended.",
     );
   });
 

@@ -21,7 +21,7 @@ export function HelmSettingsSection() {
     setError("");
     try { await patchThinkerSettings(patch); await invalidate(); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
-  return <SettingsSection title="How Helm thinks" description="When Helm looks over all your Bridges to write the brief on Home, and what it may do by itself."
+  return <SettingsSection title="How Helm thinks"
     action={<Link to="/helm/memory" className="text-xs text-accent hover:underline">What Helm knows</Link>}>
     {error && <Notice tone="danger" title="Not saved" className="mb-3">{error}</Notice>}
     {brief.error && <Notice tone="warning" title="Helm's settings couldn't load">{brief.error instanceof Error ? brief.error.message : String(brief.error)}</Notice>}
@@ -55,7 +55,7 @@ function HelmSettingsForm({ settings, preview, nextRunAt, onSave }: { settings: 
       <div className="space-y-1">
         <p className="text-[13px] text-text-primary">Model</p>
         <p className={DS.text.meta}>{helmModel ?? helm?.warning ?? "Loading…"}</p>
-        <p className={DS.text.meta}>For Helm's chat and its looks. Set under Helm in <Link to="/settings?group=chat" className="text-accent hover:underline">Settings › Models</Link>, with the tiers everything else uses.</p>
+        <p className={DS.text.meta}>Change it in <Link to="/settings?group=chat" className="text-accent hover:underline">Settings › Models</Link>.</p>
       </div>
       <label className="block space-y-1"><span className="text-[13px] text-text-primary">What Helm may do by itself</span>
         <Select value={settings.autonomy} onChange={(event) => void onSave({ autonomy: event.target.value as "propose" | "routine" })}>
@@ -67,7 +67,7 @@ function HelmSettingsForm({ settings, preview, nextRunAt, onSave }: { settings: 
           <Button size="sm" onClick={() => void onSave({ label })}>Save</Button></div></label>
       <div className="space-y-2">
         <p className="text-[13px] text-text-primary">Other Bridges Helm reads</p>
-        <p className={DS.text.meta}>Helm reads them over your network and changes nothing there unless you click. Leave out any Bridge whose work should stay separate.</p>
+        <p className={DS.text.meta}>Helm changes nothing there unless you click.</p>
         {peers.map((peer, index) => <div key={index} className="grid gap-2 sm:grid-cols-[6rem_8rem_1fr_1fr_auto]">
           <TextInput value={peer.id} placeholder="id" onChange={(event) => setPeers(peers.map((item, i) => i === index ? { ...item, id: event.target.value } : item))} />
           <TextInput value={peer.label} placeholder="Name" onChange={(event) => setPeers(peers.map((item, i) => i === index ? { ...item, label: event.target.value } : item))} />

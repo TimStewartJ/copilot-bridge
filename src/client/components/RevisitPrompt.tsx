@@ -95,7 +95,7 @@ export function RevisitLaterDialog({ task, onSaved, onClose }: {
             aria-describedby={past ? `${dateId}-past` : undefined} onChange={event => setDate(event.target.value)} />
           <Button type="submit" disabled={pending || past || !Number.isFinite(chosen)}>Set date</Button>
         </div>
-        {past && <p id={`${dateId}-past`} className={DS.text.meta}>That time has passed. Pick one ahead of now.</p>}
+        {past && <p id={`${dateId}-past`} className={DS.text.meta}>That time has passed.</p>}
       </FormRow>
       {error && <Notice tone="danger" title="The change was not saved">{error}</Notice>}
     </form>

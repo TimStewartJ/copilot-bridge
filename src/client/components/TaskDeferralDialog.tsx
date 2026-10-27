@@ -54,20 +54,18 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
 
   return <Dialog title={initial.deferred ? "Resume task" : "Defer task"} description={task.title} pending={pending} onClose={onClose}>
     <form className="space-y-4" onSubmit={event => { event.preventDefault(); void save(); }}>
-      <p className={DS.text.prose}>{initial.deferred
-        ? "Bring it back into your task list and Home."
-        : "Move it to Set aside: out of your task list and Home until you resume it. Nothing is archived or muted."}</p>
+      {!initial.deferred && <p className={DS.text.prose}>Out of your task list and Home until you resume it.</p>}
       <FormRow label="Revisit on (optional)" htmlFor={dateId}>
         <TextInput id={dateId} type="datetime-local" value={date} disabled={pending}
           aria-describedby={`${dateId}-help`}
           onChange={event => setDate(event.target.value)} />
       </FormRow>
-      <p id={`${dateId}-help`} className={DS.text.prose}>On this date it shows under Needs you on Home so you can decide. It does not resume or start anything.</p>
+      <p id={`${dateId}-help`} className={DS.text.prose}>It shows under Needs you on this date. Nothing starts by itself.</p>
       {initial.reached && !date && <p className={DS.text.prose}>Its revisit date ({formatRevisitMoment(initial.reached)}) has passed and will be cleared.</p>}
       {date && <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => setDate("")}>Clear revisit date</Button>}
-      {revisitsNow && <Notice title="Date already reached">It will show under Needs you on Home right away. Change or clear the date to review it later.</Notice>}
-      <p className={DS.text.prose}>Sessions, schedules and deferred jobs keep running. If it asks you something or a conversation stalls, it still shows under Needs you.</p>
-      {stale && <Notice title="Task changed">Reopen to review its current state. Closing discards this draft; nothing has been saved.</Notice>}
+      {revisitsNow && <Notice title="Date already reached">It will show under Needs you right away.</Notice>}
+      <p className={DS.text.prose}>Sessions, schedules and deferred jobs keep running.</p>
+      {stale && <Notice title="Task changed">Nothing was saved. Reopen to see its current state.</Notice>}
       {error && <Notice tone="danger" title="The change was not saved">{error}</Notice>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>Cancel</Button>

@@ -41,7 +41,7 @@ export function describeSessionLogSize(bytes: number | undefined): SessionLogSiz
       level: "very-large",
       size,
       label: "Very large",
-      hint: "Opening and resuming take a second or more. Continue in a new chat, or archive this one.",
+      hint: "Slow to open. Continue in a new chat, or archive this one.",
     };
   }
   if (bytes >= LARGE_SESSION_LOG_BYTES) {
@@ -49,7 +49,7 @@ export function describeSessionLogSize(bytes: number | undefined): SessionLogSiz
       level: "large",
       size,
       label: "Large",
-      hint: "Larger than most chats. It opens and resumes more slowly as it grows.",
+      hint: "Larger than most chats; opens more slowly as it grows.",
     };
   }
   return { level: "normal", size, label: null, hint: null };

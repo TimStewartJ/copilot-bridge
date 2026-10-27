@@ -17,7 +17,6 @@ function requiredProps() {
     reasoningEffortOptions: [],
     contextOptions: [],
     selectedPromptProfile: "engineer" as const,
-    defaultPromptProfile: { id: "engineer" as const, source: "automatic" as const },
     mode: "interactive" as const,
     onPresetChange: vi.fn(),
     onModelChange: vi.fn(),
@@ -96,12 +95,11 @@ describe("NewSessionLaunchPanel", () => {
     }
   });
 
-  it("offers the three profiles, explains the default, and reports a choice", async () => {
+  it("offers the three profiles and reports a choice", async () => {
     const onPromptProfileChange = vi.fn();
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
       selectedPromptProfile: "assistant",
-      defaultPromptProfile: { id: "assistant", source: "automatic" },
       onPromptProfileChange,
     }));
     const container = harness!.dom.container;
@@ -110,24 +108,11 @@ describe("NewSessionLaunchPanel", () => {
     const buttons = findAllByTag(profileGroup, "BUTTON");
     expect(buttons.map((button) => button.textContent)).toEqual(["Engineer", "Assistant", "Monitor"]);
     expect(buttons.map((button) => getReactProps(button)?.["aria-pressed"])).toEqual([false, true, false]);
-    expect(container.textContent).toContain("Picked because this chat has no project folder.");
 
     await harness!.act(() => {
       getReactProps(buttons[2])?.onClick?.();
     });
     expect(onPromptProfileChange).toHaveBeenCalledWith("monitor");
-  });
-
-  it("names an explicit profile choice without claiming it is the default", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      selectedPromptProfile: "monitor",
-      defaultPromptProfile: { id: "engineer", source: "default" },
-    }));
-    const text = harness!.dom.container.textContent ?? "";
-    expect(text).toContain("Recurring checks: compares with the last run and reports only what changed.");
-    expect(text).not.toContain("default profile");
-    expect(text).not.toContain("Picked because");
   });
 
   it("starts the three presets with GPT, Claude, and Other defaults", async () => {
@@ -279,9 +264,6 @@ describe("NewSessionLaunchPanel", () => {
 
     expect(getReactProps(findTile(harness!.dom.container, "Fast"))?.["aria-pressed"]).toBe(false);
     expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(false);
-    expect(harness!.dom.container.textContent).toContain(
-      "No concrete default model is available.",
-    );
   });
 
   it("reports preset switches and the other launch selections", async () => {
@@ -350,22 +332,6 @@ describe("NewSessionLaunchPanel", () => {
     expect(buttons.some((button) => button.textContent === "Default")).toBe(false);
     expect(getReactProps(buttons.find((button) => button.textContent === "High"))?.["aria-pressed"]).toBe(true);
     expect(getReactProps(buttons.find((button) => button.textContent === "Long context"))?.["aria-pressed"]).toBe(true);
-  });
-
-  it("explains when the SDK does not report a concrete effort default", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
-      selectedModelId: "gpt-5.6",
-      reasoningEffortOptions: [
-        { value: "low", label: "Low" },
-        { value: "high", label: "High" },
-      ],
-    }));
-
-    expect(harness!.dom.container.textContent).toContain(
-      "The SDK does not report this model's default effort.",
-    );
   });
 
   it("shows every model in each preset menu and reports the slot with a model pick", async () => {

@@ -353,7 +353,7 @@ export function describeVoiceCaptureError(error: unknown): string {
     || name === "DevicesNotFoundError"
     || normalizedMessage.includes("object can not be found here")
   ) {
-    return "No microphone was found. Check your browser and OS audio input settings, then try again.";
+    return "No microphone found. Check your browser and system audio input.";
   }
 
   if (
@@ -361,7 +361,7 @@ export function describeVoiceCaptureError(error: unknown): string {
     || name === "PermissionDeniedError"
     || name === "SecurityError"
   ) {
-    return "Microphone access was denied. Allow microphone access in your browser settings and try again.";
+    return "Microphone access was denied. Allow it in browser settings, then retry.";
   }
 
   if (
@@ -370,7 +370,7 @@ export function describeVoiceCaptureError(error: unknown): string {
     || normalizedMessage.includes("concurrent mic process limit")
     || normalizedMessage.includes("failed to allocate videosource")
   ) {
-    return "The microphone is unavailable right now. Close other apps or tabs that might be using it, then try again.";
+    return "Microphone unavailable. Close other apps or tabs using it, then retry.";
   }
 
   return message;

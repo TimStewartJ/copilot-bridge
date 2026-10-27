@@ -100,7 +100,7 @@ describe("TaskContextMenu copy task id", () => {
     try {
       await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Defer task")); });
       expect(harness.dom.container.textContent).toContain("Revisit on (optional)");
-      expect(harness.dom.container.textContent).toContain("Nothing is archived or muted");
+      expect(harness.dom.container.textContent).toContain("Out of your task list and Home until you resume it.");
       expect(harness.dom.container.textContent).toContain("Sessions, schedules and deferred jobs keep running");
       expect(update).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
@@ -180,7 +180,7 @@ describe("TaskContextMenu kind change", () => {
       await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Change kind to ongoing…")); });
 
       expect(confirm).toHaveBeenCalledExactlyOnceWith(
-        "Changing this to an ongoing task will clear its Done when definition. Continue?",
+        "Make this ongoing? Its Done when will be cleared.",
       );
       expect(update).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();

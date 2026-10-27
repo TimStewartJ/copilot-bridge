@@ -81,7 +81,7 @@ describe("TaskMomentumFields design migration", () => {
     await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: toDateTimeInputValue(nextTouchAt) } }));
     await harness!.act(async () => getReactProps(input)!.onBlur());
     expect(disclosure(container)?.textContent).toBe(getTaskContextSummary({ ...task, nextTouchAt }));
-    expect(container.textContent).toContain("Nothing resumes or starts by itself");
+    expect(container.textContent).toContain("Nothing starts by itself");
   });
 
   it("stays open after saves and same-task updates, but closes when switching tasks", async () => {
@@ -158,7 +158,7 @@ describe("TaskMomentumFields design migration", () => {
       const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Add a wait");
       await harness!.act(async () => getReactProps(add)!.onClick());
       const input = findAllByTag(container, "INPUT")[0];
-      expect(getReactProps(input)?.["aria-describedby"]).toBe("wait-help-task-1");
+      expect(getReactProps(input)?.["aria-describedby"]).toBeUndefined();
       await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: "Delivery confirmation" } }));
       await harness!.act(async () => getReactProps(input)!.onBlur());
       expect(container.textContent).toContain("The change was not saved");

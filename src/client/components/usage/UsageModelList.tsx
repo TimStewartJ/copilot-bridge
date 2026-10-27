@@ -54,7 +54,7 @@ export default function UsageModelList({ models }: { models: readonly UsageModel
                 { label: "Metered credits", value: metered ? formatUsageCredits(row.meteredAiCredits) : "Not recorded" },
               ]} />
               <p className={DS.usage.prose}>
-                {unattributed ? "metered total only; the SDK did not assign this cost to a model."
+                {unattributed ? "metered total only; the SDK assigned it to no model."
                   : metered ? `SDK-reported metering ${describeMeteredCoverage(row)}.` : "No GitHub metering recorded for this model."}
               </p>
               {pricingLabel && (

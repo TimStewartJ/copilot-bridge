@@ -253,7 +253,7 @@ function TaskMomentumEditor({
                       }
                     }}
                     placeholder={field.placeholder}
-                    aria-describedby={field.key === "nextTouchAt" ? `revisit-help-${task.id}` : field.key === "waitingOn" ? `wait-help-${task.id}` : undefined}
+                    aria-describedby={field.key === "nextTouchAt" ? `revisit-help-${task.id}` : undefined}
                   />
                 ) : isExpandable ? (
                   <button
@@ -277,8 +277,7 @@ function TaskMomentumEditor({
                     {displayValue}
                   </div>
                 )}
-                {isEditing && field.key === "waitingOn" && <p id={`wait-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>A wait need not block other work.</p>}
-                {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows under Needs you on Home when it arrives, muted or not. Nothing resumes or starts by itself.</p>}
+                {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows under Needs you when it arrives. Nothing starts by itself.</p>}
               </Field>
             );
           })}

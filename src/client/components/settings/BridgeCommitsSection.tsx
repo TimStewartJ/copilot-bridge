@@ -114,7 +114,7 @@ export function BridgeCommitsSection({ refreshSignal = 0, open = false }: { refr
                   {launcherLog.lines.join("\n")}
                 </pre>
               ) : (
-                <p className={DS.field.help}>The launcher log file exists, but no lines have been written yet.</p>
+                <p className={DS.field.help}>No lines yet.</p>
               )
             ) : (
               <p className="text-xs text-error">{launcherLog?.error ?? "Launcher log is unavailable."}</p>

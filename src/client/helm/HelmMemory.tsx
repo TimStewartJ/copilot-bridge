@@ -15,11 +15,11 @@ import {
 } from "./thinker-api";
 
 const SECTIONS: Array<{ kind: HelmMemoryKind; label: string; hint: string; addable: boolean }> = [
-  { kind: "priority", label: "Priorities", hint: "What matters now. Yours: Helm can suggest, never rewrite.", addable: true },
-  { kind: "rule", label: "Rules", hint: "How Helm judges and handles things, learned from your answers or written by you.", addable: true },
-  { kind: "thread", label: "Threads", hint: "One line per live task, rewritten only when the task changes.", addable: false },
-  { kind: "person", label: "People", hint: "Who matters, and why.", addable: true },
-  { kind: "date", label: "Dates", hint: "Dates Helm should keep in mind.", addable: true },
+  { kind: "priority", label: "Priorities", hint: "Yours: Helm can suggest, never rewrite.", addable: true },
+  { kind: "rule", label: "Rules", hint: "Learned from your answers or written by you.", addable: true },
+  { kind: "thread", label: "Threads", hint: "One line per live task.", addable: false },
+  { kind: "person", label: "People", hint: "", addable: true },
+  { kind: "date", label: "Dates", hint: "", addable: true },
 ];
 
 function wordCount(text: string): number {
@@ -48,7 +48,7 @@ export default function HelmMemory() {
           <h1 className={DS.text.pageTitle}>What Helm knows</h1>
           <Link to="/settings?group=helm" className="ml-auto text-xs text-accent hover:underline">How Helm thinks</Link>
         </div>
-        <p className={cx(DS.text.prose, "max-w-3xl")}>Helm reads this before every look, together with only what changed since its last one. It points to your tasks and conversations instead of copying them. Correct or forget anything here; what you write or keep is yours, and Helm follows it but never changes it.</p>
+        <p className={cx(DS.text.prose, "max-w-3xl")}>What you write or keep here is yours; Helm never changes it.</p>
       </header>
       {error && <Notice tone="danger" title="Not saved">{error}</Notice>}
       {memory.error && <Notice tone="warning" title="Memory unavailable">{memory.error.message}</Notice>}
@@ -59,7 +59,7 @@ export default function HelmMemory() {
             <div className="h-1.5 overflow-hidden rounded-full bg-bg-hover"><div className="h-full rounded-full bg-success" style={{ width: `${Math.min(100, (wordCount(picture.text) / HELM_PICTURE_MAX_WORDS) * 100)}%` }} /></div>
             <PictureText entry={picture} onSave={(text) => save(() => updateHelmMemory(picture.id, { text }))} />
           </>
-          : <EmptyHint>Helm writes its picture of your world on its first look.</EmptyHint>}
+          : <EmptyHint>No picture yet.</EmptyHint>}
       </Section>
 
       {SECTIONS.map((section) => <MemorySection key={section.kind} section={section}
@@ -98,7 +98,7 @@ function PictureText({ entry, onSave }: { entry: HelmMemoryEntry; onSave: (text:
   useEffect(() => { if (!editing) setText(entry.text); }, [entry.text, editing]);
   if (editing) return <div className="mt-3 space-y-2">
     <TextArea rows={14} value={text} onChange={(event) => setText(event.target.value)} />
-    <p className={DS.text.meta}>Helm rewrites the picture as things change; your corrections guide the next rewrite.</p>
+    <p className={DS.text.meta}>Your corrections guide the next rewrite.</p>
     <div className="flex gap-2"><Button size="sm" variant="primary" onClick={async () => { await onSave(text); setEditing(false); }}>Save</Button><Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button></div>
   </div>;
   return <div className="mt-3">
@@ -117,7 +117,7 @@ function MemorySection({ section, entries, onAdd, onEdit, onKeep, onForget }: {
   const now = Date.now();
   return <Section label={section.label} count={`${entries.length}/${HELM_MEMORY_LIMITS[section.kind]}`} level="page" surface
     action={section.addable && <Button size="sm" variant="ghost" onClick={() => setAdding((value) => !value)}><Plus size={13} />Add</Button>}>
-    <p className={cx(DS.text.prose, "mb-2")}>{section.hint}</p>
+    {section.hint && <p className={cx(DS.text.prose, "mb-2")}>{section.hint}</p>}
     {adding && <div className="mb-3 space-y-2">
       <TextInput value={text} placeholder={`A ${section.label.toLowerCase().replace(/s$/, "")}, in your words`} onChange={(event) => setText(event.target.value)} />
       <div className="flex gap-2"><Button size="sm" variant="primary" disabled={!text.trim()} onClick={async () => { await onAdd(text.trim()); setText(""); setAdding(false); }}>Save</Button>

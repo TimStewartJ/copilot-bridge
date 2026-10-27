@@ -303,8 +303,8 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1" role="group" aria-label={`Dismiss ${name}`}>
               <span className={cx("min-w-0", DS.text.rowDetail)}>
                 {task.status === "idle"
-                  ? `Dismiss ${name}? It ends for good and leaves this list, which frees its place among the session's live agents. What it has done stays in the transcript.`
-                  : `Dismiss ${name}? It leaves this list, which frees its place among the session's live agents. What it has done stays in the transcript.`}
+                  ? `Dismiss ${name}? It ends for good; its work stays in the transcript.`
+                  : `Dismiss ${name}? What it has done stays in the transcript.`}
               </span>
               <Button size="sm" variant={task.status === "idle" ? "danger" : "secondary"} disabled={acting} onClick={() => { void dismiss(); }}>
                 {acting ? "Dismissing…" : "Dismiss agent"}
@@ -513,7 +513,7 @@ export default function SessionAgentsBar({
     ? undefined
     : source === "lastSeen"
       ? `Last read from the session ${timeAgo(refreshedAt) || "a while ago"}; it may have changed since.`
-      : "The session is not loaded, so its agents cannot be read right now.";
+      : "The session is not loaded, so its agents can't be read.";
 
   const list = (
     <>

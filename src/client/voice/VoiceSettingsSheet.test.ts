@@ -55,7 +55,7 @@ describe("Hands-free settings sheet", () => {
     const [voice, announce, connection] = selects.map((select) => getReactProps(select)!);
     expect(findAllByTag(selects[1], "option").map((option) => getReactProps(option)!.value))
       .toEqual(["watched", "all", "off"]);
-    expect(announce["aria-describedby"]).toBe("voice-announce-help");
+    expect(announce["aria-describedby"]).toBeUndefined();
     await harness.act(() => {
       voice.onChange({ target: { value: "af_heart" } });
       announce.onChange({ target: { value: "all" } });

@@ -377,7 +377,6 @@ export default function TaskList({
       {tasks.length === 0 && (
         <EmptyState
           message="No tasks yet"
-          sub="Create one to get started"
         />
       )}
       <UnreadTaskEdgePill edge={unreadTaskEdges.below} direction="below" onJump={unreadTaskEdges.jumpToTask} />

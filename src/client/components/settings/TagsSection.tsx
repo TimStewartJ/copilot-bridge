@@ -163,9 +163,6 @@ function TagMcpServerPicker({
           <div className="text-xs font-semibold tracking-wide text-text-secondary">
             MCP Servers
           </div>
-          <p className="mt-0.5 text-[10px] leading-4 text-text-faint">
-            Select registered servers to attach when this tag is present.
-          </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           <TagMetaBadge>{selectedMcpServerIds.size} selected</TagMetaBadge>
@@ -187,7 +184,7 @@ function TagMcpServerPicker({
         </div>
       ) : availableMcpServers.length === 0 ? (
         <div className={cx(DS.layout.formGroup, DS.text.empty, "text-xs text-text-faint")}>
-          No registered MCP servers. Add definitions in MCP Servers settings first.
+          No registered MCP servers.
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -287,9 +284,6 @@ function CreateTagCard({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-text-primary">Create tag</h3>
-          <p className="mt-0.5 text-xs text-text-muted">
-            Add a reusable label for tasks, groups, and docs.
-          </p>
         </div>
         <TagPillPreview name={newName} color={newColor} />
       </div>
@@ -378,7 +372,7 @@ function EditTagCard({
         <div>
           <h3 className="text-sm font-medium text-text-primary">Edit tag</h3>
           <p className="mt-0.5 text-xs text-text-muted">
-            Basics and instructions save together. MCP server selections save immediately.
+            MCP server selections save immediately.
           </p>
         </div>
         <TagPillPreview name={editName} color={editColor} />
@@ -590,7 +584,6 @@ export function TagsSection({
     <SettingsSection
       title="All tags"
       count={tags.length}
-      description="Tags can add instructions and MCP servers to the sessions they are on."
       action={
         <Button
           size="sm"
@@ -642,7 +635,7 @@ export function TagsSection({
         )}
 
         {tags.length === 0 && !adding && (
-          <EmptyHint>No tags yet. Add one to organize tasks and docs.</EmptyHint>
+          <EmptyHint>No tags yet.</EmptyHint>
         )}
 
         {adding && (

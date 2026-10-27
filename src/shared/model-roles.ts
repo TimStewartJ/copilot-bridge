@@ -36,13 +36,13 @@ export const MODEL_ROLE_INFO: Record<ModelRole, ModelRoleInfo> = {
   },
   helm: {
     label: "Helm",
-    description: "Helm's chat, and its looks at your Bridges that write the brief on Home.",
-    automatic: "Your default chat model, or the most capable one when that is a router",
+    description: "Helm's chat, and the looks that write the brief on Home.",
+    automatic: "Your default chat model, or the strongest when that's a router",
     recommended: "preset3",
   },
   handsFree: {
     label: "Hands-free",
-    description: "Understands what you say and reads replies back. The chat keeps its own model.",
+    description: "Understands what you say and reads replies back.",
     automatic: "The Small jobs model",
     recommended: "preset1",
     effortNote: "Always low effort, even if the tier is set higher.",
@@ -76,13 +76,12 @@ export const MODEL_ROLE_INFO: Record<ModelRole, ModelRoleInfo> = {
 
 export interface ModelTierInfo {
   label: string;
-  description: string;
 }
 
 export const MODEL_TIER_INFO: Record<ModelPresetSlot, ModelTierInfo> = {
-  preset1: { label: "Fast", description: "Quick and cheap: replies in seconds." },
-  preset2: { label: "Standard", description: "Everyday work." },
-  preset3: { label: "Deep", description: "Careful thinking, when it matters." },
+  preset1: { label: "Fast" },
+  preset2: { label: "Standard" },
+  preset3: { label: "Deep" },
 };
 
 export interface ModelRoleCustom {

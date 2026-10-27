@@ -79,7 +79,7 @@ describe("native task deferral dialog", () => {
   });
   it("explains an already-arrived revisit rather than silently changing it", async () => {
     await render({ ...task, nextTouchAt: "2000-01-01T00:00:00Z" });
-    expect(harness.dom.container.textContent).toContain("show under Needs you on Home right away");
+    expect(harness.dom.container.textContent).toContain("show under Needs you right away");
     await submit();
     expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: true });
   });
@@ -102,7 +102,7 @@ describe("native task deferral dialog", () => {
     await render({ ...task, deferred: true });
     expect(getReactProps(input())!.value).toBe("2030-05-02T10:30");
     expect(harness.dom.container.textContent).toContain("Task changed");
-    expect(harness.dom.container.textContent).toContain("Closing discards this draft");
+    expect(harness.dom.container.textContent).toContain("Nothing was saved.");
     await submit();
     expect(patch).not.toHaveBeenCalled();
   });

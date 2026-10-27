@@ -30,7 +30,7 @@ describe("attention-only task rows", () => {
   });
   it("marks a bare wait for review and says how to quiet it", () => {
     expect(getTaskAttentionSignal({ ...task, waitingOn: "Reviewer" }, indicator(), NOW, { activity: createTaskActivity() }))
-      .toMatchObject({ kind: "needs-look", label: "Needs a look", detail: expect.stringContaining("Waiting for: Reviewer, with no revisit date or automatic check") });
+      .toMatchObject({ kind: "needs-look", label: "Needs a look", detail: expect.stringContaining("Waiting for: Reviewer, with no revisit date") });
   });
   it("uses one attention mark for unread work, never a working ring", () => {
     expect(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1, unreadCount: 1 }), NOW))

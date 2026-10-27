@@ -804,10 +804,9 @@ export default function TaskPanel({
               startInEditMode={instructionsSheet.notesStartEdit}
               title="Instructions"
               icon={<ScrollText size={14} className="text-text-muted" />}
-              description="Standing rules every agent session for this task follows, such as hard requirements, boundaries and how to report. They are part of the system prompt, so keep them short and stable; put changing state in notes."
+              description="Part of every session's system prompt."
               placeholder="Rules for agents working on this task, in markdown..."
               emptyMessage="No instructions yet"
-              emptySub="Add the rules every session for this task should follow"
               emptyActionLabel="Add instructions"
               onSave={async (next) => {
                 await patchTask(task.id, { instructions: next });

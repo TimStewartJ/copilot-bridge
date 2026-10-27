@@ -474,7 +474,7 @@ function QuotaDetailsCard({
           <span className="tabular-nums">{formatExhaustionRate(snapshot, period.remainingDays)}</span>
         </Field>
       </FieldList>
-      <p className={DS.usage.prose}>Quota covers this account across clients. Pace compares usage with time elapsed until the quota resets; it is not a spending forecast.</p>
+      <p className={DS.usage.prose}>Covers this account across all clients.</p>
       <MetaLine items={[identityLabel || "Signed-in account", `Updated ${formatDateTime(status.fetchedAt)}`]} />
     </div>
   );

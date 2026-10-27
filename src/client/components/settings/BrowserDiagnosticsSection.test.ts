@@ -189,7 +189,7 @@ describe("BrowserDiagnosticsSection", () => {
     const harness = await renderSection();
     const text = harness.dom.container.textContent ?? "";
     expect(text).toContain("Google Chrome 154.0.8037.97 · found on this machine · updated 12 days ago");
-    expect(text).not.toContain("Sites can tell this build");
+    expect(text).not.toContain("Sites can spot this build");
     expect(text).not.toContain("has not been updated");
     expect(text).toContain("installed · 0.38.2");
   });
@@ -205,7 +205,7 @@ describe("BrowserDiagnosticsSection", () => {
       const harness = await renderSection();
       const text = harness.dom.container.textContent ?? "";
       expect(text).toContain(`${kind === "chromium" ? "Chromium" : "Chrome for Testing"} 149.0.7000.3 · chosen by agent-browser · updated today`);
-      expect(text).toContain("Sites can tell this build from regular Chrome. Install Google Chrome for fewer blocks.");
+      expect(text).toContain("Sites can spot this build. Install Google Chrome for fewer blocks.");
       await harness.cleanup();
     }
   });
@@ -307,7 +307,7 @@ describe("BrowserDiagnosticsSection", () => {
       expect(text).toContain("Needs an update");
       expect(text).not.toContain("Not checked yet");
       expect(text).toContain("agent-browser 0.33.2 is older than the Bridge needs (0.38.0 or newer).");
-      expect(text).toContain("a sign-in popup, does not show in the view");
+      expect(text).toContain("Popups such as sign-in windows do not show.");
       expect(text).toContain("npm install -g agent-browser@latest");
     } finally {
       await harness.cleanup();
@@ -333,7 +333,7 @@ describe("BrowserDiagnosticsSection", () => {
   it("shows the public profiles and clears their browsing data", async () => {
     const harness = await renderSection();
     const text = harness.dom.container.textContent ?? "";
-    expect(text).toContain("3 profiles, 1 in use. Public profiles keep cookies between uses.");
+    expect(text).toContain("3 profiles, 1 in use. Cookies are kept between uses.");
     expect(text).toContain("C:\\Bridge\\browser-public");
     expect(apiMocks.fetchBrowserDiagnostics).toHaveBeenCalledTimes(1);
 

@@ -95,17 +95,17 @@ describe("deriveVoiceUiState", () => {
     expect(deriveVoiceUiState({
       ...baseState,
       activeVoiceJob: { status: "uploading", submitMode: "autosend", serverOwned: true },
-      persistWarning: "Recording could not be saved on this device — keep the app open until it sends.",
+      persistWarning: "Recording couldn't be saved here; keep the app open until it sends.",
     })).toMatchObject({
-      message: "Uploading… stay here. Recording could not be saved on this device — keep the app open until it sends.",
+      message: "Uploading… stay here. Recording couldn't be saved here; keep the app open until it sends.",
       tone: "accent",
     });
 
     expect(deriveVoiceUiState({
       ...baseState,
-      persistWarning: "Recording could not be saved on this device — keep the app open until it sends.",
+      persistWarning: "Recording couldn't be saved here; keep the app open until it sends.",
     })).toMatchObject({
-      message: "Recording could not be saved on this device — keep the app open until it sends.",
+      message: "Recording couldn't be saved here; keep the app open until it sends.",
       tone: "error",
     });
   });

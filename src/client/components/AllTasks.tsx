@@ -89,7 +89,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
     <div>
       {compact && onBack && <Button variant="ghost" size="sm" onClick={onBack}><ChevronLeft size={14} />Home</Button>}
       <h1 className={compact ? "text-xl font-semibold text-text-primary" : "text-2xl font-semibold tracking-tight text-text-primary"}>All tasks</h1>
-      <p className={cx(DS.text.prose, "mt-1")}>{query.data ? `${activeTotal} active${compact ? "" : ". How your work stands, grouped by what it needs."}` : "Loading…"}</p>
+      <p className={cx(DS.text.prose, "mt-1")}>{query.data ? `${activeTotal} active` : "Loading…"}</p>
     </div>
     <div className="flex flex-wrap items-center gap-2">
       <SegmentedControl ariaLabel="Group tasks" size="sm" value={grouping} onChange={setGrouping}

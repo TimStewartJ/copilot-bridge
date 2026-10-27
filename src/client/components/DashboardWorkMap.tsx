@@ -130,9 +130,6 @@ export default function DashboardWorkMap({
             Connected work
           </div>
           <h2 className={cx(DS.text.title, "mt-1")}>Work map</h2>
-          <p className={cx(DS.field.help, "mt-1")}>
-            ADO work items in their ADO hierarchy, with the pull requests and Bridge tasks linked to them.
-          </p>
         </div>
         {configured && (
           <Button
@@ -150,7 +147,7 @@ export default function DashboardWorkMap({
       {!configured ? (
         <EmptyState
           message="Azure DevOps is not configured"
-          sub="Add an ADO organization and project in Settings to enable the Work Map."
+          sub="Add an ADO organization and project in Settings."
         />
       ) : (
         <>
@@ -245,12 +242,10 @@ export default function DashboardWorkMap({
               {data.workItems.length === 0 && data.pullRequests.length === 0 ? (
                 <EmptyState
                   message="No linked ADO work yet"
-                  sub="Link an ADO work item or pull request to a Bridge task and it will appear here."
                 />
               ) : visible.workItemIds.size === 0 && visible.orphans.length === 0 ? (
                 <EmptyState
                   message="No work matches these filters"
-                  sub="Clear the search or turn off a filter to see more connected work."
                 />
               ) : (
                 <WorkMapTree

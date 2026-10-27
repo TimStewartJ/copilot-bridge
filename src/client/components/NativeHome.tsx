@@ -119,7 +119,6 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   </Section>;
   const pickUp = data && <Section label="Pick up where you left off" level="page" surface
     action={<Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/tasks")}>All tasks <ArrowRight size={14} /></Button>}>
-    {resume.length > 0 && <p className={DS.text.prose}>Tasks you touched this week, most recent first.</p>}
     {resume.map(row => {
       const badge = stateBadge(row), context = contextLine(row);
       return <div key={row.id} className="flex min-w-0 items-center gap-3 border-t border-border py-2.5 first:border-t-0">
@@ -140,7 +139,6 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   const quietTotal = quiet.total ?? 0;
   const worthALook = data && quietTotal > 0 && <Section label="Worth a look" count={`${quiet.items.length} of ${quietTotal}`} surface
     action={<Button variant="ghost" size="sm" onClick={() => setReviewing(true)}>Review all <ArrowRight size={14} /></Button>}>
-    <p className={DS.text.prose}>Tasks you haven't touched in a month. Keep, set aside or close them.</p>
     {quiet.items.map(row => {
       const context = contextLine(row);
       return <div key={row.id} className={ROW}>
@@ -162,12 +160,10 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
       ? <Button variant="ghost" size="sm" onClick={() => visit("actions")}>Full checklist <ArrowRight size={14} /></Button> : undefined}
     onSelectTask={onSelectTask} onChanged={changed} onError={setMutationError} />;
   const questions = data && <Section label="Needs your answer" surface action={more(data.inputs, "inputs")}>
-    {data.inputs.items.length > 0 && <p className={DS.text.prose}>One question per conversation.</p>}
     {questionRows}
     {!data.inputs.items.length && !data.inputErrors.length && <EmptyHint>{data.inputs.total === null ? "Question status unavailable." : "No questions on this page."}</EmptyHint>}
   </Section>;
   const replies = data && <Section label="New replies" level="page" surface action={more(data.replies, "replies")}>
-    {data.replies.items.length > 0 && <p className={DS.text.prose}>{section === "replies" ? "All unread conversations." : "Latest unread conversation per task."}</p>}
     {data.replies.items.map(reply => <div key={reply.sessionId} className={ROW}>
       <p className={cx(DS.text.content, "flex flex-wrap items-center gap-2 font-medium")}>{reply.taskTitle ?? reply.title}
         {reply.taskArchived && <Badge title="This task is archived. The reply arrived after it was closed.">Archived task</Badge>}</p>
@@ -224,7 +220,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   {openInput && <Dialog title="Answer question"
     description={`${openInput.taskTitle ?? "Standalone conversation"} · ${openInput.title}`}
     pending={pending} onClose={() => setOpenInput(undefined)}>
-    {!answerable && !inputQuery.isPending && <Notice title="Question unavailable">It may have ended, or Home couldn't refresh. Your draft is retained here; nothing was sent.
+    {!answerable && !inputQuery.isPending && <Notice title="Question unavailable">Nothing was sent; your draft is kept here.
       <Button onClick={() => onSelectSession(openInput.sessionId, openInput.taskId)}>Open conversation</Button></Notice>
     }
     {!input && inputQuery.isPending && <EmptyHint>Loading question…</EmptyHint>}

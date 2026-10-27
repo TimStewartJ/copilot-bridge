@@ -87,7 +87,7 @@ describe("Home within native Bridge", () => {
     expect(labels).toContain("Resume");
     expect(labels).not.toContain("Later…");
     await click("Resume");
-    expect(harness.dom.container.textContent).toContain("Bring it back into your task list and Home.");
+    expect(harness.dom.container.textContent).toContain("Resume task");
     expect(api.patchTask).not.toHaveBeenCalled();
   });
   it("says when a new reply or question belongs to an archived task", async () => {
@@ -165,7 +165,7 @@ describe("Home within native Bridge", () => {
     await harness.act(async () => { await harness.queryClient.refetchQueries({ queryKey: ["dashboard", "home"] }); });
     await advanceTimersByTimeAct(harness.act, 1);
     expect(getReactProps(field)?.value).toBe("Unsaved response");
-    expect(harness.dom.container.textContent).toContain("Your draft is retained");
+    expect(harness.dom.container.textContent).toContain("your draft is kept here");
     const form = findAllByTag(harness.dom.container, "FORM")[0];
     await harness.act(async () => { getReactProps(form)!.onSubmit({ preventDefault() {} }); await waitTick(); });
     expect(api.submitUserInputResponse).not.toHaveBeenCalled();

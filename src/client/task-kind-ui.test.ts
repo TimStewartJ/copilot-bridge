@@ -552,7 +552,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("Waiting for");
     expect(html).toContain("Design feedback");
     expect(html).toContain("Completion checks clear");
-    expect(html).toContain("Confirm the outcome before completing");
+    expect(html).toContain("No open checklist, session or PR checks.");
     expect(html).toMatch(/Waiting for<\/div><span[^>]*>Context<\/span>/);
   });
 
@@ -754,7 +754,7 @@ describe("TaskDashboard unique overview", () => {
 
     expect(html).toContain("Loading session usage");
     expect(html).not.toContain("0/1 tokenized");
-    expect(html).not.toContain("Model breakdown will appear after session usage is available.");
+    expect(html).not.toContain("No usage yet.");
     expect(html).not.toContain("Linked sessions do not have token summaries yet.");
   });
 });

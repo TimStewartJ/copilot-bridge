@@ -48,7 +48,7 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
         phase: "reconnecting",
         label: "Reconnecting",
         title: "Reopening the live response stream",
-        detail: "The session is already busy; reconnecting so live updates and parallel tracks stay in sync.",
+        detail: "Reconnecting to the busy session's live updates.",
         tone: "sending",
       };
     }
@@ -57,7 +57,7 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
         phase: "submitting",
         label: "Autopilot",
         title: "Starting autopilot run",
-        detail: "Copilot will continue until the task completes, errors, is stopped, or hits a limit.",
+        detail: "Continues until done, stopped, failed, or out of limits.",
         tone: "sending",
       };
     }
@@ -111,7 +111,7 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
           : "Waiting for the first response"
     ),
     detail: input.hadVisibleOutput
-      ? "The run is still active, but there is no visible text or tool activity right now."
+      ? "Still running, with nothing visible right now."
       : input.runMode === "autopilot"
         ? "Copilot is working before any text or tool activity is visible."
         : "The assistant is working before any text or tool activity is visible.",

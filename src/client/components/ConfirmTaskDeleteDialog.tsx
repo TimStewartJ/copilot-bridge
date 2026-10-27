@@ -126,6 +126,7 @@ export default function ConfirmTaskDeleteDialog({
           {deleteBlocked && (
             <p className="text-warning text-xs flex items-start gap-1.5">
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              {/* copy-ok: why delete is blocked */}
               <span>
                 {plural(busyCount, "session")} still running. Sessions can be archived now, but
                 deleting has to wait until they finish.
@@ -136,6 +137,7 @@ export default function ConfirmTaskDeleteDialog({
           {slowDelete && !deleteBlocked && (
             <p className="text-text-faint text-xs flex items-start gap-1.5">
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              {/* copy-ok: a long delete can be resumed */}
               <span>
                 Deleting this many sessions can take several minutes. You can close this and retry
                 later — it picks up where it left off.

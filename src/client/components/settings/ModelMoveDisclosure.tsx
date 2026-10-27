@@ -305,9 +305,8 @@ export function ModelMoveDisclosure() {
     >
       {!job && (
         <p className={cx(DS.field.help, "max-w-[72ch] pt-2 leading-relaxed")}>
-          Switches every chat that is not archived, one at a time, most recent first. Each keeps its reasoning effort
-          and context size where the new model has them. A chat that is busy, or too long for the new model, is left
-          as it is and listed afterwards.
+          {/* copy-ok: which chats the move skips */}
+          Busy chats and chats too long for the new model are left as they are and listed afterwards.
         </p>
       )}
       <SettingList className="pt-3">

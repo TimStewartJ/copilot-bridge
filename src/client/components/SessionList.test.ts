@@ -178,7 +178,7 @@ describe("SessionList log size", () => {
       // Only the size that costs the reader time carries the warning colour.
       expect(classes.filter((className) => className.includes("text-warning"))).toHaveLength(1);
       expect(flags.find((span) => span.textContent?.includes("Very large") && getReactProps(span)?.title)
-        ?.getAttribute("title")).toContain("a second or more");
+        ?.getAttribute("title")).toContain("Slow to open.");
     } finally {
       await cleanup();
     }

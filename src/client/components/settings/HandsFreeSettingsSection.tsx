@@ -10,7 +10,7 @@ export function HandsFreeSettingsSection() {
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
-  return <SettingsSection title="Hands-free" description="Talk to any chat and hear its replies. One set of settings for every chat, shared with Tether.">
+  return <SettingsSection title="Hands-free" description="Shared by every chat and Tether.">
     <div className="max-w-md"><HandsFreeSettingsFields controller={handsFree} /></div>
   </SettingsSection>;
 }

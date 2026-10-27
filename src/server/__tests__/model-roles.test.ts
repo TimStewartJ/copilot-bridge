@@ -114,7 +114,7 @@ describe("model roles when a tier or model goes away", () => {
     const models = MODELS.filter((model) => model.id !== "gpt-6.1-sol");
     expect(resolveModelRole(settings, "chat", models)).toMatchObject({ source: "tier", model: "gpt-6.1-sol", warning: expect.stringMatching(/may fail/) });
     // Helm checks its model when it starts, so it falls back to Automatic instead.
-    expect(resolveModelRole(settings, "helm", models)).toMatchObject({ source: "automatic", warning: "gpt-6.1-sol isn't available, so this uses your default chat model, or the most capable one when that is a router." });
+    expect(resolveModelRole(settings, "helm", models)).toMatchObject({ source: "automatic", warning: "gpt-6.1-sol isn't available, so this uses your default chat model, or the strongest when that's a router." });
   });
 });
 

@@ -65,7 +65,7 @@ export function CopilotUsageSection() {
   const isRanged = Boolean(data?.range.startAt);
   const meteredCost = data ? meteredCostUsd(data.totals) : null;
   const reasonSummary = useMemo(
-    () => (data ? formatSkipReasonSummary(data.coverage) : "Skipped session details will appear after the first successful scan."),
+    () => (data ? formatSkipReasonSummary(data.coverage) : "No scan yet."),
     [data],
   );
 
@@ -86,7 +86,7 @@ export function CopilotUsageSection() {
       )}
     >
       <p className={cx(DS.usage.prose, "mb-5")}>
-        Saved usage on this device, including retained deferred workers. Estimates and SDK-reported metering are not official billing.
+        Usage saved on this device. Estimates, not official billing.
       </p>
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -111,7 +111,7 @@ export function CopilotUsageSection() {
           <div role="status" className="text-xs leading-relaxed text-text-muted">
             <span className={DS.motion.live}>Indexing local usage in the background</span>
             <p className="mt-1 tabular-nums">
-              Checked {formatNumber(data.index.sessionsProcessed)} of {formatNumber(data.index.sessionsTotal)} sessions. Totals update as the scan progresses.
+              Checked {formatNumber(data.index.sessionsProcessed)} of {formatNumber(data.index.sessionsTotal)} sessions.
             </p>
           </div>
         )}
@@ -168,8 +168,7 @@ export function CopilotUsageSection() {
 
             {data.totals.unpricedModelCount > 0 && (
               <Notice tone="warning" icon={<AlertTriangle size={14} />} title="Unknown pricing excluded from cost totals">
-                No usable price card is available for {formatNumber(data.totals.unpricedModelCount)} observed model{data.totals.unpricedModelCount === 1 ? "" : "s"}.
-                Their tokens remain in the totals; their cost is not included in the estimate. Expand a model below for its pricing and metering.
+                No price card for {formatNumber(data.totals.unpricedModelCount)} model{data.totals.unpricedModelCount === 1 ? "" : "s"}; the estimate leaves them out.
               </Notice>
             )}
 
@@ -177,13 +176,9 @@ export function CopilotUsageSection() {
               label="Per-model totals"
               action={<span className={DS.usage.meta}>Updated {formatDateTime(data.index.completedAt ?? data.generatedAt)}</span>}
             >
-              <p className={cx(DS.usage.prose, "mb-2")}>
-                Open a model for token and pricing details. Session counts are per model and may overlap.
-              </p>
               {isEmpty ? (
                 <EmptyHint>
-                  {isRanged ? "No local usage in this window. Pick a wider range, or wait for a shutdown summary."
-                    : "No persisted local usage yet. Completed sessions with shutdown summaries appear here."}
+                  {isRanged ? "No local usage in this window." : "No local usage yet."}
                 </EmptyHint>
               ) : <UsageModelList models={data.models} />}
             </Section>
@@ -191,8 +186,7 @@ export function CopilotUsageSection() {
             <div className="space-y-2">
               <Details label="Coverage and exclusions" detail={`${formatNumber(data.coverage.sessionsSkipped)} skipped`}>
                 <p className={cx(DS.usage.prose, "mb-3")}>
-                  Included sessions come from shutdown summaries still present on disk plus retained disposable defer-worker summaries. Resumed sessions keep their earlier persisted shutdown usage, but active work after the latest shutdown is still excluded.
-                  {isRanged && " Counts are limited to sessions with recorded usage inside the selected window."}
+                  Work since a session's last shutdown is not counted.
                 </p>
                 <StatRow stats={[
                   { label: "Sessions seen", value: formatNumber(data.coverage.sessionsSeen) },
@@ -223,7 +217,7 @@ export function CopilotUsageSection() {
               {data.deferWorkers.capturedRuns > 0 && (
                 <Details label="Deferred workers" detail={`${formatNumber(data.deferWorkers.capturedRuns)} captured runs`}>
                   <p className={cx(DS.usage.prose, "mb-3")}>
-                    Captured at worker shutdown and retained for {formatNumber(data.deferWorkers.retentionDays)} days after disposable session cleanup. These readings are included in the totals above.
+                    Kept for {formatNumber(data.deferWorkers.retentionDays)} days. Included in the totals above.
                   </p>
                   <StatRow stats={[
                     { label: "Captured runs", value: formatNumber(data.deferWorkers.capturedRuns) },
@@ -234,13 +228,6 @@ export function CopilotUsageSection() {
                   ]} />
                 </Details>
               )}
-              <Details label="How this is counted">
-                <p className={DS.usage.prose}>
-                  Metered cost is SDK-reported usage saved at shutdown, not an invoice, and only covers logs that carry metering. Cost not assigned to a named model appears as Unattributed.
-                  Estimated cost uses the configured Copilot price card: uncached input, cache reads, cache writes and output are priced separately. Cache writes use 1.25x the input rate; reasoning tokens are already included in output.
-                  Active work before shutdown, unpersisted sessions and other devices are excluded.
-                </p>
-              </Details>
             </div>
           </>
         )}
@@ -285,10 +272,10 @@ function formatSkipReasonSummary(coverage: CopilotUsageCoverage): string {
     .map(({ reason, count }) => `${formatNumber(count)} ${SKIP_REASON_LABELS[reason]}`);
 
   if (reasons.length === 0) {
-    return "Skipped session buckets are empty for the latest scan. Sessions without a persisted shutdown summary still remain excluded.";
+    return "None skipped.";
   }
 
-  return `Skipped breakdown: ${reasons.join(" · ")}. Sessions without persisted shutdown summaries are excluded.`;
+  return `Skipped: ${reasons.join(" · ")}.`;
 }
 
 function formatDate(value: string): string | null {

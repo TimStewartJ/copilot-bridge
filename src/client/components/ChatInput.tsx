@@ -880,7 +880,7 @@ export default function ChatInput({
             <AutopilotIcon size={12} className="text-agent" />
             <span className="min-w-0">
               <span className="font-medium text-agent">Autopilot</span>
-              {" keeps going until the task is done. Questions still wait for you, and you can stop it anytime."}
+              {" keeps going until done. Questions still wait for you."}
             </span>
           </div>
         )}

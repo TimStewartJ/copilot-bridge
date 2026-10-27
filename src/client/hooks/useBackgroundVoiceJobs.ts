@@ -124,7 +124,7 @@ export interface UseBackgroundVoiceJobsResult {
 
 const SERVER_POLL_DELAY_MS = 1_200;
 const RESTORED_RECORDING_MESSAGE = "Unsent voice recording saved from earlier.";
-const NON_DURABLE_STORAGE_MESSAGE = "Recording could not be saved on this device — keep the app open until it sends.";
+const NON_DURABLE_STORAGE_MESSAGE = "Recording couldn't be saved here; keep the app open until it sends.";
 
 function describePersistResult(result: VoicePersistResult): string | undefined {
   if (result.durable) return undefined;

@@ -282,7 +282,7 @@ describe("CopilotUsageSection", () => {
     expect(text).toContain("Metered cost");
     expect(text).toContain("No GitHub metering in this range");
     expect(text).toContain("Unknown pricing excluded from cost totals");
-    expect(text).toContain("No usable price card is available for 1 observed model");
+    expect(text).toContain("No price card for 1 model");
     expect(text).toContain("Unpriced tokens");
     expect(text).toContain("unknown-model");
     expect(text).toContain("Price card matched");
@@ -307,8 +307,8 @@ describe("CopilotUsageSection", () => {
     })).replace(/<!-- -->/g, "");
 
     expect(html).toContain("Deferred workers");
-    expect(html).toContain("Captured at worker shutdown");
-    expect(html).toContain("retained for 90 days");
+    expect(html).toContain("Included in the totals above.");
+    expect(html).toContain("Kept for 90 days");
     expect(html).toContain("Captured runs");
     expect(html).toContain("Parent sessions");
     expect(html).toContain("12.5");
@@ -442,7 +442,6 @@ describe("CopilotUsageSection", () => {
     }));
 
     expect(html).toContain("Since ");
-    expect(html.replace(/<!-- -->/g, "")).toContain("Counts are limited to sessions with recorded usage inside the selected window.");
   });
 
   it("keeps the live account quota out of local usage settings", () => {

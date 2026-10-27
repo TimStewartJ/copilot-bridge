@@ -350,7 +350,7 @@ describe("SessionAgentsBar", () => {
     // How long it has waited is what tells a finished agent from one between follow-ups.
     expect(text(harness)).toContain("went idle 3h ago");
     await click(harness, buttonWith(harness, "Dismiss agent…"));
-    expect(text(harness)).toContain("Dismiss docs-agent? It ends for good and leaves this list");
+    expect(text(harness)).toContain("Dismiss docs-agent? It ends for good; its work stays in the transcript.");
     expect(dismissSessionAgent).not.toHaveBeenCalled();
 
     await click(harness, buttonWith(harness, "Keep it"));
@@ -379,7 +379,7 @@ describe("SessionAgentsBar", () => {
     // An ended agent cannot be stopped again; dismissing it only takes it off the list.
     expect(buttonWith(harness, "Stop agent")).toBeUndefined();
     await click(harness, buttonWith(harness, "Dismiss agent…"));
-    expect(text(harness)).toContain("Dismiss docs-agent? It leaves this list");
+    expect(text(harness)).toContain("Dismiss docs-agent? What it has done stays in the transcript.");
 
     const listReads = fetchSessionAgents.mock.calls.length;
     await click(harness, buttons(harness).find((button) => button.textContent === "Dismiss agent"));

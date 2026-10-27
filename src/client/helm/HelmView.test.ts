@@ -276,10 +276,10 @@ describe("HelmView", () => {
   it("shows why hands-free could not start, and lets the message be dismissed", async () => {
     state.helm = helmState({ current: conversation({}) });
     handsFree.phase = "error";
-    handsFree.error = "No microphone was found. Check your browser and OS audio input settings, then try again.";
+    handsFree.error = "No microphone found. Check your browser and system audio input.";
     await render();
     const alert = findAllByTag(harness.dom.container, "DIV").find((div) => getReactProps(div)?.role === "alert");
-    expect(alert?.textContent).toContain("No microphone was found.");
+    expect(alert?.textContent).toContain("No microphone found.");
     // Chat keeps working underneath: hands-free failing is not a Helm failure.
     expect(state.chatViewProps).toMatchObject({ sessionId: SESSION_A, hideVoiceInput: false, composerAccessory: null });
 

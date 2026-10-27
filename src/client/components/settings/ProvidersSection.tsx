@@ -78,10 +78,7 @@ export function ProvidersSection({
   const githubNoDefaultsBadge = stateWord("no defaults");
 
   return (
-    <SettingsSection
-      title="Providers"
-      description="Used to show linked work items and pull requests."
-    >
+    <SettingsSection title="Providers">
       <SettingList>
         {/* ADO Provider */}
         {editingProvider === "ado" ? (
@@ -159,9 +156,6 @@ export function ProvidersSection({
             }
             removeTitle="Remove"
           >
-            <p className={cx(DS.setting.hint, "mt-0.5")}>
-              <code>owner/repo#123</code> refs and URLs link without configuration; defaults fill in short refs.
-            </p>
             {providers.github && (
               <p className={cx(DS.text.literal, "mt-0.5")}>
                 {[providers.github.owner, providers.github.defaultRepo].filter(Boolean).join(" / ")}

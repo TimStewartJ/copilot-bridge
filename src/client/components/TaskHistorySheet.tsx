@@ -154,9 +154,6 @@ export default function TaskHistorySheet({
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          <p className={cx(DS.text.meta, "mb-3")}>
-            What happened in this task, newest first. Agents see the latest few entries with each message and can search the rest.
-          </p>
           <form
             className="space-y-2"
             onSubmit={(event) => {
