@@ -65,6 +65,8 @@ export interface HelmRunView {
   fromSources: string[];
   /** False once retention deleted the run's conversation. */
   transcriptAvailable: boolean;
+  /** When Tim first had this run's brief on screen; null while it is new to him. */
+  seenAt: string | null;
 }
 
 export interface HelmRunSourceStatus {

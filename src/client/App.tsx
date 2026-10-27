@@ -27,6 +27,7 @@ import {
   getSessionReadThroughActivityTime,
   isSessionActive,
   markSessionReadOnPageHide,
+  fetchReadState,
   getTaskDeletionPreview,
   ApiError,
   API_BASE,
@@ -90,13 +91,12 @@ import { getVoiceSessionIntent, projectSessionEvent, projectVoiceSessionActivity
 import { useCachedTaskArchivedSessions } from "./hooks/queries/useTaskArchivedSessions";
 import PaneResizeHandle, { usePaneWidth, useViewportWidth } from "./components/shared/PaneResizeHandle";
 import { useExternalSessionUseQuery } from "./hooks/queries/useExternalSessionUse";
-import { useOpenChecklistItemsQuery } from "./hooks/queries/useChecklistItems";
 import useTaskIndicators, {
   summarizeChatTabAttention,
   summarizeTaskTabAttention,
   type TabAttentionSummary,
 } from "./hooks/useTaskIndicators";
-import { getHomeChecklistIndicator } from "./checklist-helpers";
+import { describeHomeMark, isHelmReplyUnread } from "./lib/home-mark";
 import TaskRail from "./components/TaskRail";
 import TaskPanel, { TaskPanelRouteSkeleton } from "./components/TaskPanel";
 import TaskDashboard, { TaskDashboardRouteSkeleton } from "./components/TaskDashboard";
@@ -116,6 +116,7 @@ import { FileViewerHost } from "./components/FilePreview";
 const HelmView = lazy(() => import("./helm/HelmView"));
 const HelmMemory = lazy(() => import("./helm/HelmMemory"));
 import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
+import { helmBriefKey, helmBriefStatusKey, markHelmBriefSeen, useHelmBriefStatusQuery, useLoadedHelmBriefRunId } from "./helm/thinker-api";
 import { HandsFreeProvider, useHandsFree } from "./voice/HandsFreeProvider";
 import { HandsFreePill } from "./voice/HandsFreeDock";
 import { useChatHandsFree } from "./voice/useChatHandsFree";
@@ -174,6 +175,7 @@ function AppShell() {
     && homeSearch.get("view") !== "classic" && !homeSearch.has("section");
   // Wide screens show the Helm conversation beside the brief on Home, so the hands-free dock isn't needed there either.
   const helmTalkVisible = isHelmRoute || (isHelmBriefRoute && helmPageWide);
+  const helmBriefVisible = isHelmBriefRoute || (isHelmRoute && helmPageWide);
   const { hasAttention, hasAttentionRef } = usePageAttention();
   const pageHasAttention = hasAttention && !searchOpen;
   const searchOpenRef = useRef(searchOpen);
@@ -243,7 +245,6 @@ function AppShell() {
   const tasksQuery = useTasksQuery();
   const tasks = tasksQuery.data ?? [];
   const { data: taskGroups = [] } = useTaskGroupsQuery();
-  const { data: openChecklistItems = [] } = useOpenChecklistItemsQuery();
 
   const [railExpanded, setRailExpanded] = useState(true);
   const taskPanelPane = usePaneWidth({
@@ -585,10 +586,15 @@ function AppShell() {
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
         break;
+      case "helm:changed":
+        if (event.reason === "brief") refetch(helmBriefStatusKey, helmBriefKey);
+        else refetch(helmStateQueryKey);
+        break;
       case "status:connected":
         void refetchRestartStatus();
-        // Refresh sessions and lightweight Home urgency data on reconnect.
-        refetch(activeSessionsKey, queryKeys.dashboard, queryKeys.openChecklistItems);
+        // Events missed while disconnected: sessions, Home, Helm and what has been read.
+        refetch(activeSessionsKey, queryKeys.dashboard, helmStateQueryKey, helmBriefStatusKey);
+        fetchReadState().then((state) => applyServerStateRef.current(state)).catch(() => undefined);
         break;
     }
   }, [queryClient, bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, trackArchiveTransitions, eventQueries, refetchRestartStatus, taskChangeInvalidator]));
@@ -646,30 +652,34 @@ function AppShell() {
     previousTasksRef.current = new Map(tasks.map((task) => [task.id, task]));
   }, [tasks, buildTaskCompletionFeedback, dismissToast]);
 
-  const previousActiveSessionIdRef = useRef<string | null>(null);
+  const previousReadingSessionIdRef = useRef<string | null>(null);
   const dwelledSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeSessionId || !activeTaskId) return;
     setLastViewedSession(activeTaskId, activeSessionId);
   }, [activeSessionId, activeTaskId]);
 
+  // The chat Tim is reading: the open chat, or Helm's conversation while it is on screen beside or
+  // instead of the brief (Helm's conversations have no chat route of their own).
+  const readingSessionId = activeSessionId ?? (helmTalkVisible ? helmStateQuery.data?.current?.sessionId ?? null : null);
+
   // Background tabs should not clear unread state just because they still
   // have the session selected.
   useEffect(() => {
-    const previousSessionId = previousActiveSessionIdRef.current;
+    const previousSessionId = previousReadingSessionIdRef.current;
     if (
       pageHasAttention &&
       previousSessionId &&
-      previousSessionId !== activeSessionId &&
+      previousSessionId !== readingSessionId &&
       dwelledSessionIdRef.current === previousSessionId
     ) {
       markReadThroughRendered(previousSessionId);
     }
-    previousActiveSessionIdRef.current = activeSessionId;
-  }, [activeSessionId, pageHasAttention, markReadThroughRendered]);
+    previousReadingSessionIdRef.current = readingSessionId;
+  }, [readingSessionId, pageHasAttention, markReadThroughRendered]);
 
   useEffect(() => {
-    if (!activeSessionId || !pageHasAttention) {
+    if (!readingSessionId || !pageHasAttention) {
       dwelledSessionIdRef.current = null;
       return;
     }
@@ -677,35 +687,35 @@ function AppShell() {
     dwelledSessionIdRef.current = null;
     const timer = window.setTimeout(() => {
       if (!hasAttentionRef.current || searchOpenRef.current) return;
-      dwelledSessionIdRef.current = activeSessionId;
-      markReadThroughRendered(activeSessionId);
+      dwelledSessionIdRef.current = readingSessionId;
+      markReadThroughRendered(readingSessionId);
     }, 2000);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeSessionId, pageHasAttention, markReadThroughRendered]);
+  }, [readingSessionId, pageHasAttention, markReadThroughRendered]);
 
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!readingSessionId) return;
 
     const onPageHide = () => {
       if (!hasAttentionRef.current || searchOpenRef.current) return;
-      if (dwelledSessionIdRef.current !== activeSessionId) return;
-      const session = sessions.find((candidate) => candidate.sessionId === activeSessionId);
+      if (dwelledSessionIdRef.current !== readingSessionId) return;
+      const session = sessions.find((candidate) => candidate.sessionId === readingSessionId);
       const readThroughActivityAt = getSessionReadThroughActivityTime(
         session,
-        renderedReadThroughRef.current[activeSessionId],
+        renderedReadThroughRef.current[readingSessionId],
       );
       if (!readThroughActivityAt) return;
-      markSessionReadOnPageHide(activeSessionId, { readThroughActivityAt });
+      markSessionReadOnPageHide(readingSessionId, { readThroughActivityAt });
     };
 
     window.addEventListener("pagehide", onPageHide);
     return () => {
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [activeSessionId, sessions]);
+  }, [readingSessionId, sessions]);
 
   // Track last-active task and quick chat for tab restore
   useEffect(() => {
@@ -722,25 +732,49 @@ function AppShell() {
     if (isMobile && mobileWorkListSegment) setLastMobileWorkSegment(mobileWorkListSegment);
   }, [isMobile, mobileWorkListSegment]);
 
-  const activeRenderedReadThrough = activeSessionId ? renderedReadThroughState[activeSessionId] : undefined;
-  const activeReadThroughActivityAt = activeSessionId
+  const readingRenderedReadThrough = readingSessionId ? renderedReadThroughState[readingSessionId] : undefined;
+  const readingReadThroughActivityAt = readingSessionId
     ? getSessionReadThroughActivityTime(
-      sessions.find((candidate) => candidate.sessionId === activeSessionId),
-      activeRenderedReadThrough,
+      sessions.find((candidate) => candidate.sessionId === readingSessionId),
+      readingRenderedReadThrough,
     )
     : undefined;
 
   useEffect(() => {
     if (
       !pageHasAttention ||
-      !activeSessionId ||
-      !activeReadThroughActivityAt ||
-      dwelledSessionIdRef.current !== activeSessionId
+      !readingSessionId ||
+      !readingReadThroughActivityAt ||
+      dwelledSessionIdRef.current !== readingSessionId
     ) {
       return;
     }
-    markReadThroughRendered(activeSessionId);
-  }, [activeSessionId, activeReadThroughActivityAt, markReadThroughRendered, pageHasAttention]);
+    markReadThroughRendered(readingSessionId);
+  }, [readingSessionId, readingReadThroughActivityAt, markReadThroughRendered, pageHasAttention]);
+
+  // A new brief counts as seen once it has been on screen for a moment, as a chat counts as read.
+  const helmBriefStatus = useHelmBriefStatusQuery().data;
+  const loadedBriefRunId = useLoadedHelmBriefRunId();
+  const unseenBriefRunId = helmBriefStatus?.runId && !helmBriefStatus.seen ? helmBriefStatus.runId : null;
+  useEffect(() => {
+    if (!unseenBriefRunId || unseenBriefRunId !== loadedBriefRunId || !helmBriefVisible || !pageHasAttention) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    // The status is fetched again rather than taken from the reply, which may be older than a newer brief.
+    const attempt = (delayMs: number) => {
+      timer = window.setTimeout(() => {
+        if (!hasAttentionRef.current || searchOpenRef.current) return;
+        markHelmBriefSeen(unseenBriefRunId)
+          .then(() => queryClient.invalidateQueries({ queryKey: helmBriefStatusKey }))
+          .catch(() => { if (!cancelled) attempt(30_000); });
+      }, delayMs);
+    };
+    attempt(2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [unseenBriefRunId, loadedBriefRunId, helmBriefVisible, pageHasAttention, queryClient]);
 
   // Optimistic insert
   const addOptimisticSession = useCallback((sessionId: string, overrides: Partial<Session> = {}) => {
@@ -790,9 +824,9 @@ function AppShell() {
   const mobileChatAttention = useMemo(() => {
     return summarizeChatTabAttention(globalSessions, isUnread, activeSessionId);
   }, [globalSessions, isUnread, activeSessionId]);
-  const homeChecklistIndicator = useMemo(() => {
-    return getHomeChecklistIndicator(openChecklistItems);
-  }, [openChecklistItems]);
+  const helmReplied = isHelmReplyUnread(helmStateQuery.data?.current, readStateHydrated, isUnread);
+  const newHelmBrief = !!helmBriefStatus?.runId && !helmBriefStatus.seen;
+  const homeMark = describeHomeMark({ helmReplied, newBrief: newHelmBrief });
 
   // ── Browser tab title ────────────────────────────────────────
   // DocsView publishes its resolved page title upward; everything else is
@@ -809,7 +843,8 @@ function AppShell() {
     sessionLabel: activeSessionForTitle?.summary || activeSessionForTitle?.intentText,
     docTitle,
     docPath: mobileRouteMeta.docPath,
-    unreadCount: mobileTaskAttention.count + mobileChatAttention.count,
+    // What Home's mark stands for counts too: Helm's reply and its brief are in no chat list.
+    unreadCount: mobileTaskAttention.count + mobileChatAttention.count + Number(helmReplied) + Number(newHelmBrief),
   });
   useDocumentTitle(documentTitle);
 
@@ -1761,6 +1796,7 @@ function AppShell() {
         sessionReloadSignals={sessionReloadSignals}
         sessionBusySignals={sessionBusySignals}
         sessionHistorySignals={sessionHistorySignals}
+        onRenderedReadThrough={rememberRenderedReadThrough}
       />
     </Suspense>
   );
@@ -1815,7 +1851,7 @@ function AppShell() {
         onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
         isDocsActive={isDocsActive}
         isDashboardActive={isDashboardActive || isHelmRoute || location.pathname === "/helm/memory"}
-        homeChecklistIndicator={homeChecklistIndicator}
+        homeMark={homeMark}
         expanded={railExpanded}
         onToggleExpanded={() => setRailExpanded((v) => !v)}
         sessions={sessions}
@@ -2294,7 +2330,7 @@ function AppShell() {
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
-          homeChecklistIndicator={homeChecklistIndicator}
+          homeMark={homeMark}
           taskAttention={mobileTaskAttention}
           chatAttention={mobileChatAttention}
         />

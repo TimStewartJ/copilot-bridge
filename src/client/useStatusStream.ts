@@ -30,6 +30,7 @@ export type StatusEvent =
   | { type: "task:changed"; taskId?: string }
   | { type: "management-job:changed"; jobId?: string; jobType?: ManagementJobType; status?: ManagementJobStatus }
   | { type: "docs:changed"; docPath?: string }
+  | { type: "helm:changed"; reason?: string }
   | { type: "readstate:changed"; readState?: Record<string, string> };
 
 type StatusHandler = (event: StatusEvent) => void;

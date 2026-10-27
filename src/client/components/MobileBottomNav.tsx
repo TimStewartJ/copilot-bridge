@@ -1,6 +1,5 @@
 import { BookOpen, Layers, LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
 import { useMemo } from "react";
-import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import {
   describeTabAttention,
   type TabAttentionSummary,
@@ -12,7 +11,8 @@ import { CountBadge, StatusIcon } from "../design/primitives";
 interface MobileBottomNavProps {
   activeTab: MobileNavTab;
   onSelectTab: (tab: MobileNavTab) => void;
-  homeChecklistIndicator?: HomeChecklistIndicator;
+  /** What Helm has new for Tim, shown as a mark on Home; null when nothing. */
+  homeMark?: string | null;
   taskAttention?: TabAttentionSummary;
   chatAttention?: TabAttentionSummary;
   showDocs?: boolean;
@@ -23,7 +23,7 @@ const NO_ATTENTION: TabAttentionSummary = { count: 0, needsUserInputCount: 0 };
 export function MobileBottomNav({
   activeTab,
   onSelectTab,
-  homeChecklistIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
+  homeMark = null,
   taskAttention = NO_ATTENTION,
   chatAttention = NO_ATTENTION,
   showDocs = true,
@@ -44,8 +44,6 @@ export function MobileBottomNav({
     describeTabAttention(taskAttention, "task", "tasks"),
     describeTabAttention(chatAttention, "chat", "chats"),
   ].filter((part): part is string => part !== null).join(". ") || null;
-  const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
-  const homeIndicatorStatus = homeChecklistIndicator.state === "overdue" ? "danger" : "warning";
 
   return (
     <nav
@@ -58,7 +56,7 @@ export function MobileBottomNav({
           const active = activeTab === id;
           const attention = id === "work" ? workAttention : NO_ATTENTION;
           const description = id === "home"
-            ? homeIndicatorDescription
+            ? homeMark
             : id === "work"
               ? workAttentionDescription
               : null;
@@ -81,9 +79,9 @@ export function MobileBottomNav({
                       className="absolute -right-3.5 -top-1.5 ring-2 ring-bg-secondary"
                     />
                   )}
-                  {id === "home" && homeChecklistIndicator.state !== "none" && (
+                  {id === "home" && homeMark && (
                     <span className={DS.status.corner}>
-                      <StatusIcon kind={homeIndicatorStatus} decorative />
+                      <StatusIcon kind="unread" decorative />
                     </span>
                   )}
                 </span>

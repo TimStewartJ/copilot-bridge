@@ -60,6 +60,8 @@ export interface HelmConversationView {
   kept: boolean;
   busy: boolean;
   handsFree: boolean;
+  /** Visible activity time of Helm's latest finished reply, for read state; null before any reply. */
+  lastReplyAt: string | null;
   /** When retention will delete it; absent for kept conversations. */
   expiresAt?: string;
 }
@@ -116,6 +118,12 @@ export class HelmService implements HelmToolRuntime {
       if (!event.sessionId || !this.store.isHelmSession(event.sessionId)) return;
       if (event.type === "session:idle") {
         this.store.touch(event.sessionId, new Date(this.now()).toISOString());
+        // Only a turn that ended in a reply counts, timed like the chat's own read state so viewing it clears it.
+        const repliedAt = event.assistantPreview ? this.ctx.sessionMetaStore.getMeta(event.sessionId)?.lastVisibleActivityAt : undefined;
+        if (repliedAt && this.store.recordReply(event.sessionId, repliedAt)) this.announce();
+      } else if (event.type === "session:history-truncated") {
+        const latest = this.ctx.sessionMetaStore.getMeta(event.sessionId)?.lastVisibleActivityAt;
+        if (this.store.clampReply(event.sessionId, latest)) this.announce();
       } else if (event.type === "session:title" && typeof event.title === "string") {
         this.titles.set(event.sessionId, event.title.trim() || null);
       }
@@ -156,6 +164,11 @@ export class HelmService implements HelmToolRuntime {
     this.unsubscribeBus();
     if (this.pruneTimer) clearInterval(this.pruneTimer);
     this.pruneTimer = undefined;
+  }
+
+  /** Tells every client that Helm's conversations changed, so another device refreshes too. */
+  private announce(): void {
+    this.ctx.globalBus.emit({ type: "helm:changed", reason: "conversation" });
   }
 
   isHelmSession(sessionId: string | undefined | null): boolean {
@@ -245,6 +258,7 @@ export class HelmService implements HelmToolRuntime {
   /** Marks a Helm conversation as having hands-free on, so it isn't retired or deleted meanwhile. Returns an unbind function. */
   bindHandsFree(helmSessionId: string): () => void {
     this.handsFree.set(helmSessionId, (this.handsFree.get(helmSessionId) ?? 0) + 1);
+    this.announce();
     let bound = true;
     return () => {
       if (!bound) return;
@@ -252,6 +266,7 @@ export class HelmService implements HelmToolRuntime {
       const count = (this.handsFree.get(helmSessionId) ?? 1) - 1;
       if (count > 0) this.handsFree.set(helmSessionId, count);
       else this.handsFree.delete(helmSessionId);
+      this.announce();
     };
   }
 
@@ -299,6 +314,7 @@ export class HelmService implements HelmToolRuntime {
       kept: record.kept,
       busy: this.ctx.sessionManager.isSessionBusy(record.sessionId),
       handsFree: this.handsFree.has(record.sessionId),
+      lastReplyAt: record.lastReplyAt,
       ...(expiresAt ? { expiresAt } : {}),
     };
   }
@@ -378,6 +394,7 @@ export class HelmService implements HelmToolRuntime {
     if (previous && previous.turnCount === 0 && !this.isInUse(previous.sessionId)) {
       void this.removeConversation(previous.sessionId).catch(() => undefined);
     }
+    this.announce();
     return this.view(this.store.get(sessionId)!);
   }
 
@@ -388,6 +405,7 @@ export class HelmService implements HelmToolRuntime {
     if (current && current.turnCount === 0 && !this.isInUse(current.sessionId)) {
       void this.removeConversation(current.sessionId).catch(() => undefined);
     }
+    this.announce();
     return this.getState();
   }
 
@@ -396,6 +414,7 @@ export class HelmService implements HelmToolRuntime {
     if (!record) throw new HelmError("Helm conversation not found", 404);
     this.store.setCurrent(sessionId);
     this.store.touch(sessionId, new Date(this.now()).toISOString());
+    this.announce();
     return this.view(this.store.get(sessionId)!);
   }
 
@@ -425,6 +444,7 @@ export class HelmService implements HelmToolRuntime {
       this.store.remove(sessionId);
       this.watched.delete(sessionId);
       this.titles.delete(sessionId);
+      this.announce();
     }
   }
 

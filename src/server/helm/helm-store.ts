@@ -12,6 +12,8 @@ export interface HelmConversationRecord {
   isCurrent: boolean;
   /** Kept conversations are exempt from retention. */
   kept: boolean;
+  /** The visible activity time of Helm's latest finished reply; null until it has replied. */
+  lastReplyAt: string | null;
 }
 
 interface HelmConversationRow {
@@ -21,6 +23,7 @@ interface HelmConversationRow {
   turnCount: number;
   isCurrent: number;
   kept: number;
+  lastReplyAt: string | null;
 }
 
 function hydrate(row: HelmConversationRow): HelmConversationRecord {
@@ -31,6 +34,7 @@ function hydrate(row: HelmConversationRow): HelmConversationRecord {
     turnCount: Number(row.turnCount) || 0,
     isCurrent: Number(row.isCurrent) === 1,
     kept: Number(row.kept) === 1,
+    lastReplyAt: row.lastReplyAt ?? null,
   };
 }
 
@@ -102,6 +106,22 @@ export function createHelmStore(db: DatabaseSync) {
     db.prepare("UPDATE helm_conversations SET lastActiveAt = ? WHERE sessionId = ? AND lastActiveAt < ?").run(now, sessionId, now);
   }
 
+  /** Returns false when the time is not newer than the one recorded. */
+  function recordReply(sessionId: string, at: string): boolean {
+    const result = db.prepare(
+      "UPDATE helm_conversations SET lastReplyAt = ? WHERE sessionId = ? AND (lastReplyAt IS NULL OR lastReplyAt < ?)",
+    ).run(at, sessionId, at) as { changes?: number | bigint };
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  /** After an undo: a reply later than what is left of the transcript was removed with it. */
+  function clampReply(sessionId: string, latestActivityAt: string | undefined): boolean {
+    const result = latestActivityAt
+      ? db.prepare("UPDATE helm_conversations SET lastReplyAt = ? WHERE sessionId = ? AND lastReplyAt > ?").run(latestActivityAt, sessionId, latestActivityAt)
+      : db.prepare("UPDATE helm_conversations SET lastReplyAt = NULL WHERE sessionId = ? AND lastReplyAt IS NOT NULL").run(sessionId);
+    return Number((result as { changes?: number | bigint }).changes ?? 0) > 0;
+  }
+
   function setKept(sessionId: string, kept: boolean): HelmConversationRecord | undefined {
     db.prepare("UPDATE helm_conversations SET kept = ? WHERE sessionId = ?").run(kept ? 1 : 0, sessionId);
     return get(sessionId);
@@ -113,7 +133,7 @@ export function createHelmStore(db: DatabaseSync) {
     return Number(result.changes ?? 0) > 0;
   }
 
-  return { isHelmSession, get, list, getCurrent, setCurrent, create, recordTurn, touch, setKept, remove };
+  return { isHelmSession, get, list, getCurrent, setCurrent, create, recordTurn, touch, recordReply, clampReply, setKept, remove };
 }
 
 export type HelmStore = ReturnType<typeof createHelmStore>;
