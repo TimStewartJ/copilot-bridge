@@ -79,6 +79,16 @@ export interface PacketBridge {
   sessionIds: Set<string>;
 }
 
+/** An outside source the run may read through read_source, as the model sees it. */
+export interface PacketSource {
+  name: string;
+  ok: boolean;
+  error?: string;
+  /** When a look that published last read it; null when none has. */
+  lastReadAt: string | null;
+  tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+}
+
 export interface ThinkerPacket {
   now: string;
   timezone: string;
@@ -89,6 +99,7 @@ export interface ThinkerPacket {
   memory: HelmMemoryEntry[];
   feedback: HelmFeedbackRecord[];
   previousItems: Array<{ title: string; status: string; outcome: string | null }>;
+  outsideSources: PacketSource[];
 }
 
 const MAX_TASKS_PER_BRIDGE = 250;
@@ -269,6 +280,7 @@ export async function buildThinkerPacket(input: {
   memory: HelmMemoryEntry[];
   feedback: HelmFeedbackRecord[];
   previousItems: ThinkerPacket["previousItems"];
+  outsideSources?: PacketSource[];
 }): Promise<ThinkerPacket> {
   const threads = new Map(input.memory.filter((entry) => entry.kind === "thread" && entry.key && entry.status === "active").map((entry) => [entry.key!, entry.text]));
   const bridges = await Promise.all(input.sources.map(async (source): Promise<PacketBridge> => {
@@ -291,6 +303,7 @@ export async function buildThinkerPacket(input: {
     memory: input.memory,
     feedback: input.feedback,
     previousItems: input.previousItems,
+    outsideSources: input.outsideSources ?? [],
   };
 }
 
@@ -320,6 +333,11 @@ export function renderThinkerPacket(packet: ThinkerPacket): string {
     memory: memory.filter((entry) => entry.kind !== "thread"),
     feedbackSinceLastBrief: packet.feedback.map((feedback) => ({ item: feedback.itemTitle, kind: feedback.kind, ...(feedback.note ? { note: feedback.note } : {}), at: feedback.at })),
     lastBriefItems: packet.previousItems,
+    ...(packet.outsideSources.length ? {
+      outsideSources: packet.outsideSources.map((source) => source.ok
+        ? { source: source.name, lastReadAt: source.lastReadAt, tools: source.tools, ...(source.error ? { note: source.error } : {}) }
+        : { source: source.name, unavailable: source.error ?? "unavailable" }),
+    } : {}),
     bridges: packet.bridges.map((bridge) => bridge.ok
       ? {
         bridge: bridge.id, label: bridge.label,

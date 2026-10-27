@@ -26,13 +26,13 @@ function bridge(overrides: Partial<PacketBridge> = {}): PacketBridge {
 }
 
 function packet(bridges: PacketBridge[] = [bridge()]): ThinkerPacket {
-  return { now: "2026-10-25T18:00:00.000Z", timezone: "UTC", trigger: "manual", rebuild: false, lastRunAt: null, bridges, memory: [], feedback: [], previousItems: [] };
+  return { now: "2026-10-25T18:00:00.000Z", timezone: "UTC", trigger: "manual", rebuild: false, lastRunAt: null, bridges, memory: [], feedback: [], previousItems: [], outsideSources: [] };
 }
 
 function memory(overrides: Partial<HelmMemoryEntry>): HelmMemoryEntry {
   return {
     id: "m1", kind: "rule", key: null, text: "A rule", source: null, author: "helm", status: "active",
-    createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z", confirmedAt: "2026-10-01T00:00:00.000Z", uses: 0, ...overrides,
+    createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z", confirmedAt: "2026-10-01T00:00:00.000Z", uses: 0, fromSources: [], ...overrides,
   };
 }
 

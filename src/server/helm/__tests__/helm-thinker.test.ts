@@ -4,6 +4,7 @@ import { createReadStateStore } from "../../read-state-store.js";
 import { createHelmThinkerStore } from "../thinker/store.js";
 import { HelmThinker } from "../thinker/thinker.js";
 import type { PacketBridge, ThinkerPacket } from "../thinker/context.js";
+import { RunSources } from "../thinker/outside-sources.js";
 
 function packetBridge(): PacketBridge {
   return {
@@ -31,6 +32,11 @@ function setup(options: { staging?: boolean } = {}) {
     globalBus: { subscribe: () => () => undefined, emit: () => undefined },
     sessionManager: { hydratePendingInteractions, submitUserInputResponse, listModels: async () => [] },
     taskStore: { listTasks: () => [], getTask: () => undefined },
+    mcpServerStore: {
+      getMcpServer: (id: string) => id === "mail-id"
+        ? { id, name: "Mail", enabledByDefault: false, createdAt: "", updatedAt: "", config: { type: "local", command: "mail-mcp", args: [] } }
+        : undefined,
+    },
   };
   const emitReadStateChanged = vi.fn();
   const thinker = new HelmThinker({
@@ -46,8 +52,8 @@ function setup(options: { staging?: boolean } = {}) {
 
 function activate(thinker: HelmThinker, store: ReturnType<typeof createHelmThinkerStore>, runSession = "run-session") {
   const run = store.createRun({ sessionId: runSession, trigger: "manual", rebuild: false, model: null, effort: null });
-  const packet: ThinkerPacket = { now: new Date().toISOString(), timezone: "UTC", trigger: "manual", rebuild: false, lastRunAt: null, bridges: [packetBridge()], memory: [], feedback: [], previousItems: [] };
-  (thinker as any).active = { runId: run.id, sessionId: run.sessionId, packet };
+  const packet: ThinkerPacket = { now: new Date().toISOString(), timezone: "UTC", trigger: "manual", rebuild: false, lastRunAt: null, bridges: [packetBridge()], memory: [], feedback: [], previousItems: [], outsideSources: [] };
+  (thinker as any).active = { runId: run.id, sessionId: run.sessionId, packet, controller: new AbortController(), carriedSources: [] };
   const publish = (thinker as any).getTools().find((tool: any) => tool.name === "helm_publish");
   return { run, publish: (args: unknown, sessionId = runSession) => publish.handler(args, { sessionId, toolCallId: "c", toolName: "helm_publish" }) };
 }
@@ -85,6 +91,46 @@ describe("Helm thinker", () => {
     expect(view.brief?.items[0]?.title).toBe("Install?");
     expect(view.handled).toHaveLength(1);
     expect(view.proposed).toHaveLength(1);
+  });
+
+  it("lets a look read its own sources and marks what it writes with every source that may have shaped it", async () => {
+    const { store, thinker } = setup();
+    await expect(thinker.patchSettings({ sources: [{ serverId: "nope", tools: ["x"] }] })).rejects.toThrow(/does not exist/);
+    await thinker.patchSettings({ sources: [{ serverId: "mail-id", tools: ["search_mail"] }] });
+
+    const { run, publish } = activate(thinker, store);
+    const active = (thinker as any).active;
+    active.sources = await RunSources.open({
+      selections: thinker.getSettings().sources,
+      servers: new Map([["mail-id", (thinker as any).ctx.mcpServerStore.getMcpServer("mail-id")]]),
+      connect: async () => ({ tools: [{ name: "search_mail", readOnly: true }], call: async () => ({ text: "Landlord: rent is due Friday", isError: false }), close: async () => undefined }),
+    });
+    active.packet.outsideSources = [{ name: "mail", ok: true, lastReadAt: null, tools: [{ name: "search_mail" }] }];
+    // A rule an earlier look wrote from a calendar source reaches this run through memory.
+    active.carriedSources = ["calendar-id"];
+    const readSource = (thinker as any).getTools().find((tool: any) => tool.name === "read_source");
+    const read = (sessionId: string) => readSource.handler({ source: "mail", tool: "search_mail", arguments: { query: "is:unread" } }, { sessionId, toolCallId: "c", toolName: "read_source" });
+
+    expect(text(await read("some-other-session"))).toMatch(/only works inside the look/);
+    expect(text(await read(run.sessionId))).toMatch(/OUTSIDE_SOURCE source=\\"mail\\".*rent is due Friday/);
+
+    expect(text(await publish({ ...BRIEF, items: [{ kind: "due", bridge: "local", source: "mail", title: "Rent", recommendation: "Pay it." }], memory: { ...BRIEF.memory, dates: [{ key: "rent", text: "Rent due Friday", source: "mail: landlord" }] } }))).toMatch(/"success":true/);
+    const written = store.listMemory().filter((entry) => entry.author === "helm");
+    expect(written.length).toBeGreaterThan(1);
+    expect(written.every((entry) => entry.fromSources.join() === "calendar-id,mail-id")).toBe(true);
+    expect(store.getRun(run.id)).toMatchObject({ fromSources: ["calendar-id", "mail-id"], sources: [{ serverId: "mail-id", name: "mail", ok: true, used: true }] });
+    expect(store.getSourceCoverage()).toEqual({ "mail-id": run.startedAt });
+
+    // Tim correcting an entry keeps what may have shaped it.
+    const date = written.find((entry) => entry.kind === "date")!;
+    thinker.updateMemory(date.id, { text: "Rent due Thursday" });
+    expect(store.getMemory(date.id)?.fromSources).toEqual(["calendar-id", "mail-id"]);
+
+    store.finishRun(run.id, { status: "done" });
+    (thinker as any).active = undefined;
+    const view = await thinker.getBrief();
+    expect(view.brief?.items[0]).toMatchObject({ source: "mail" });
+    expect(view.sourceNames).toMatchObject({ "mail-id": "Mail", "calendar-id": "a removed source" });
   });
 
   it("proposes only when Tim switched routine handling off", async () => {

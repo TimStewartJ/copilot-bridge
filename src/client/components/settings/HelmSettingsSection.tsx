@@ -4,13 +4,13 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { fetchModelRoles } from "../../api";
+import { fetchMcpServers, fetchModelRoles, type McpServer } from "../../api";
 import { MODEL_TIER_INFO } from "../../../shared/model-roles";
-import type { HelmPeer, HelmThinkerSettings } from "../../../shared/helm-thinker";
-import { Button, Notice, Select, Switch, TextInput } from "../../design/primitives";
+import { HELM_MAX_SOURCE_TOOLS, type HelmPeer, type HelmSourceSelection, type HelmThinkerSettings } from "../../../shared/helm-thinker";
+import { Badge, Button, Notice, Select, SettingList, SettingRow, Switch, TextInput } from "../../design/primitives";
 import { DS } from "../../design/tokens";
 import { useModelsQuery } from "../../hooks/queries/useModels";
-import { formatClock, patchThinkerSettings, useHelmBrief, useInvalidateHelm } from "../../helm/thinker-api";
+import { fetchSourceTools, formatClock, patchThinkerSettings, useHelmBrief, useInvalidateHelm, type HelmSourceTool } from "../../helm/thinker-api";
 import { SettingsSection } from "./SettingsSection";
 
 export function HelmSettingsSection() {
@@ -80,5 +80,78 @@ function HelmSettingsForm({ settings, preview, nextRunAt, onSave }: { settings: 
           <Button size="sm" onClick={() => void onSave({ peers })}>Save Bridges</Button>
         </div>
       </div>
+      <HelmSources selected={settings.sources} onSave={(sources) => onSave({ sources })} />
   </div>;
+}
+
+/** Which tools of this Bridge's MCP servers Helm's looks may read, such as a mail reader. */
+function HelmSources({ selected, onSave }: { selected: HelmSourceSelection[]; onSave: (sources: HelmSourceSelection[]) => Promise<void> }) {
+  const servers = useQuery({ queryKey: ["mcp-servers"], queryFn: () => fetchMcpServers() });
+  const local = (servers.data ?? []).filter((server) => server.config.type !== "http" && server.config.type !== "sse");
+  const missing = selected.filter((source) => servers.data && !servers.data.some((server) => server.id === source.serverId));
+  return <div className="space-y-2">
+    <p className="text-[13px] text-text-primary">Sources Helm may read</p>
+    <p className={DS.text.meta}>Tools of this Bridge's MCP servers that Helm's looks may call, such as a mail reader. Only tools that say they only read can be chosen; the server itself has to make sure of it. What they return is treated as written by other people.</p>
+    {servers.error && <Notice tone="warning" title="MCP servers couldn't load">{servers.error instanceof Error ? servers.error.message : String(servers.error)}</Notice>}
+    {missing.length > 0 && <Notice tone="warning" title="A chosen server no longer exists">
+      <Button size="sm" variant="ghost" onClick={() => void onSave(selected.filter((source) => !missing.includes(source)))}>Remove it from Helm's sources</Button>
+    </Notice>}
+    {servers.data && local.length === 0 && <p className={DS.text.meta}>No local MCP servers are set up. Add one under MCP servers.</p>}
+    <SettingList>
+      {local.map((server) => <SourceServerRow key={server.id} server={server} selected={selected.find((source) => source.serverId === server.id)}
+        onSave={(tools) => onSave(withSourceTools(selected, server.id, tools))} />)}
+    </SettingList>
+  </div>;
+}
+
+/** The sources with one server's tools replaced, in the same order; no tools removes the server. */
+function withSourceTools(selected: HelmSourceSelection[], serverId: string, tools: string[]): HelmSourceSelection[] {
+  if (!selected.some((source) => source.serverId === serverId)) return tools.length ? [...selected, { serverId, tools }] : selected;
+  return selected.flatMap((source) => source.serverId !== serverId ? [source] : tools.length ? [{ serverId, tools }] : []);
+}
+
+function SourceServerRow({ server, selected, onSave }: { server: McpServer; selected?: HelmSourceSelection; onSave: (tools: string[]) => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [tools, setTools] = useState<HelmSourceTool[] | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [draft, setDraft] = useState<string[]>(selected?.tools ?? []);
+  const [dirty, setDirty] = useState(false);
+  const saved = (selected?.tools ?? []).join("\n");
+  // A refetch of the settings brings this row's saved tools back; it never overwrites edits not saved yet.
+  useEffect(() => { if (!dirty) setDraft(saved ? saved.split("\n") : []); }, [saved, dirty]);
+  const toggle = (name: string, on: boolean) => {
+    setDirty(true);
+    setDraft(on ? [...draft, name].slice(0, HELM_MAX_SOURCE_TOOLS) : draft.filter((item) => item !== name));
+  };
+  const save = async (next: string[]) => { await onSave(next); setDirty(false); };
+  async function load() {
+    setOpen(true); setLoading(true); setError("");
+    try { setTools((await fetchSourceTools(server.id)).tools); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setLoading(false); }
+  }
+  const chosen = selected?.tools ?? [];
+  const changed = draft.length !== chosen.length || draft.some((name) => !chosen.includes(name));
+  // A chosen tool the server no longer offers stays listed, so it can be unticked.
+  const rows: HelmSourceTool[] = tools ? [...tools, ...draft.filter((name) => !tools.some((tool) => tool.name === name)).map((name) => ({ name, readOnly: false, gone: true }))] : [];
+  return <SettingRow label={server.name}
+    hint={chosen.length ? `Helm reads: ${chosen.join(", ")}` : "Not read by Helm"}
+    control={<div className="flex gap-1">
+      {chosen.length > 0 && <Button size="sm" variant="ghost" onClick={() => void save([])}>Stop reading</Button>}
+      <Button size="sm" variant="ghost" disabled={loading} onClick={() => (open ? setOpen(false) : void load())}>{open ? "Close" : "Choose tools"}</Button>
+    </div>}>
+    {open && <div className="space-y-2">
+      {loading && <p role="status" className={DS.field.help}>Starting {server.name} to read its tools…</p>}
+      {error && <Notice tone="warning" title={`${server.name} couldn't be read`}>{error}</Notice>}
+      {tools && tools.length === 0 && <p className={DS.text.meta}>{server.name} offers no tools.</p>}
+      {rows.length > 0 && <SettingList>
+        {rows.map((tool) => <SettingRow key={tool.name} label={<span className={DS.text.literal}>{tool.name}</span>}
+          hint={<>{tool.gone
+            ? <Badge tone="warning" className="mr-1.5 align-[1px]">No longer offered</Badge>
+            : !tool.readOnly && <Badge tone="warning" className="mr-1.5 align-[1px]">Not marked read-only</Badge>}{tool.description}</>}
+          control={<Switch aria-label={`Let Helm use ${tool.name}`} disabled={!tool.readOnly && !draft.includes(tool.name)}
+            checked={draft.includes(tool.name)} onChange={(event) => toggle(tool.name, event.target.checked)} />} />)}
+      </SettingList>}
+      {tools && <Button size="sm" disabled={!changed} onClick={() => void save(draft)}>Save</Button>}
+    </div>}
+  </SettingRow>;
 }

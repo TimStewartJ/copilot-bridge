@@ -158,8 +158,13 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
         reply = { bridge: bridge.id, sessionId, ...(question ? { requestId: question.requestId } : {}) };
       }
     }
+    let source: string | undefined;
+    if (rawItem.source !== undefined) {
+      if (typeof rawItem.source === "string" && packet.outsideSources.some((candidate) => candidate.ok && candidate.name === rawItem.source)) source = rawItem.source;
+      else errors.push(`${where}: source must be the name of a source listed under outsideSources, or left out`);
+    }
     items.push({
-      id: `i${index + 1}`, kind, bridge: bridge.id, title, recommendation, ...(why ? { why } : {}),
+      id: `i${index + 1}`, kind, bridge: bridge.id, title, recommendation, ...(why ? { why } : {}), ...(source ? { source } : {}),
       evidence: parseEvidence(rawItem.evidence, bridge, where),
       actions: parseActions(rawItem.actions, bridge, where),
       ...(reply ? { reply } : {}),

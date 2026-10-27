@@ -20,6 +20,11 @@ export interface HelmMemoryEntry {
   /** When Helm last saw it was still true. */
   confirmedAt: string;
   uses: number;
+  /**
+   * Ids of the outside sources (MCP servers) whose content may have shaped this entry: read by the
+   * run that wrote it, or carried in through earlier memory or the last brief. Empty when none.
+   */
+  fromSources: string[];
 }
 
 /** Most active entries of each kind; publication beyond these is refused so memory stays small. */
@@ -54,8 +59,21 @@ export interface HelmRunView {
   /** How many changed tasks and conversations the run was given to look at. */
   changeCount: number | null;
   bridges: HelmBridgeStatus[];
+  /** The outside sources the run could read, and whether it did. */
+  sources: HelmRunSourceStatus[];
+  /** Ids of the outside sources whose content may have shaped this run's brief (read now or carried in). */
+  fromSources: string[];
   /** False once retention deleted the run's conversation. */
   transcriptAvailable: boolean;
+}
+
+export interface HelmRunSourceStatus {
+  serverId: string;
+  name: string;
+  ok: boolean;
+  error?: string;
+  /** The run read something from it. */
+  used: boolean;
 }
 
 export interface HelmBridgeStatus {
@@ -109,6 +127,8 @@ export interface HelmBriefItem {
   reply?: { bridge: string; sessionId: string; requestId?: string };
   /** Link to open, resolved by the server. */
   url?: string;
+  /** The outside source the item rests on (its name in the run), when it came from one. */
+  source?: string;
 }
 
 export interface HelmProposal {
@@ -175,6 +195,8 @@ export interface HelmBriefResponse {
   settings: HelmThinkerSettings;
   /** True in a staged preview: no scheduled runs, no changes to peer Bridges. */
   preview: boolean;
+  /** Current names of the outside sources mentioned anywhere in this response, by server id. */
+  sourceNames: Record<string, string>;
 }
 
 export type HelmAutonomy = "propose" | "routine";
@@ -188,6 +210,12 @@ export interface HelmPeer {
   webUrl: string;
 }
 
+/** An MCP server Helm's looks may read, and which of its tools. */
+export interface HelmSourceSelection {
+  serverId: string;
+  tools: string[];
+}
+
 export interface HelmThinkerSettings {
   enabled: boolean;
   /** Local times, "HH:MM". */
@@ -198,6 +226,8 @@ export interface HelmThinkerSettings {
   rebuildWeekday: number;
   /** This Bridge's name in briefs. */
   label: string;
+  /** Outside sources the looks may read (tools of MCP servers configured here, read-only ones only). */
+  sources: HelmSourceSelection[];
 }
 
 export const HELM_THINKER_DEFAULTS: HelmThinkerSettings = {
@@ -207,7 +237,11 @@ export const HELM_THINKER_DEFAULTS: HelmThinkerSettings = {
   peers: [],
   rebuildWeekday: 0,
   label: "This Bridge",
+  sources: [],
 };
+
+export const HELM_MAX_SOURCES = 6;
+export const HELM_MAX_SOURCE_TOOLS = 20;
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const PEER_ID_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
@@ -271,6 +305,24 @@ export function validateHelmThinkerSettingsPatch(input: unknown): Partial<HelmTh
       seen.add(id);
       const label = typeof value.label === "string" && value.label.trim() ? value.label.trim().slice(0, 40) : id;
       return { id, label, apiUrl: validUrl(value.apiUrl, `Peer ${id} API URL`), webUrl: validUrl(value.webUrl ?? value.apiUrl, `Peer ${id} web URL`) };
+    });
+  }
+  if (raw.sources !== undefined) {
+    if (!Array.isArray(raw.sources) || raw.sources.length > HELM_MAX_SOURCES) fail(`sources must be a list of up to ${HELM_MAX_SOURCES} servers`);
+    const seen = new Set<string>();
+    patch.sources = raw.sources.flatMap((source, index) => {
+      if (!source || typeof source !== "object") fail(`Source ${index + 1} must be an object`);
+      const value = source as Record<string, unknown>;
+      const serverId = typeof value.serverId === "string" ? value.serverId.trim() : "";
+      if (!serverId || serverId.length > 100) fail(`Source ${index + 1} needs a serverId`);
+      if (seen.has(serverId)) fail(`Source ${serverId} is listed twice`);
+      seen.add(serverId);
+      if (!Array.isArray(value.tools) || value.tools.length > HELM_MAX_SOURCE_TOOLS) fail(`Source ${index + 1} needs a list of up to ${HELM_MAX_SOURCE_TOOLS} tools`);
+      const tools = [...new Set(value.tools.map((tool) => {
+        if (typeof tool !== "string" || !tool.trim() || tool.length > 128) fail(`Source ${index + 1} has a tool name that is not valid`);
+        return tool.trim();
+      }))];
+      return tools.length ? [{ serverId, tools }] : [];
     });
   }
   return patch;

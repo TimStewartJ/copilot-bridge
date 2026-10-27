@@ -579,7 +579,8 @@ function initSchema(db: DatabaseSync): void {
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL,
       confirmedAt TEXT NOT NULL,
-      uses INTEGER NOT NULL DEFAULT 0
+      uses INTEGER NOT NULL DEFAULT 0,
+      fromSources TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_helm_memory_key ON helm_memory(kind, key) WHERE key IS NOT NULL AND status != 'forgotten';
     CREATE TABLE IF NOT EXISTS helm_runs (
@@ -599,7 +600,9 @@ function initSchema(db: DatabaseSync): void {
       contextJson TEXT,
       briefJson TEXT,
       changesJson TEXT,
-      sessionDeleted INTEGER NOT NULL DEFAULT 0
+      sessionDeleted INTEGER NOT NULL DEFAULT 0,
+      sourcesJson TEXT,
+      fromSourcesJson TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_helm_runs_startedAt ON helm_runs(startedAt);
     CREATE TABLE IF NOT EXISTS helm_item_state (
@@ -1037,6 +1040,17 @@ function initSchema(db: DatabaseSync): void {
       db.exec("ALTER TABLE interrupted_run_markers ADD COLUMN retryScheduled INTEGER NOT NULL DEFAULT 0");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+
+  // Helm's outside sources: which ones a run read, and what may have shaped each memory entry.
+  for (const [table, column] of [["helm_memory", "fromSources"], ["helm_runs", "sourcesJson"], ["helm_runs", "fromSourcesJson"]] as const) {
+    const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((entry) => entry.name));
+    if (columns.has(column)) continue;
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+    } catch (error) {
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }

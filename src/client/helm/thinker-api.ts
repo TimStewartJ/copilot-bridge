@@ -31,13 +31,17 @@ export const actOnItem = (runId: string, itemId: string, input: { actionId?: str
 export const itemFeedback = (runId: string, itemId: string, kind: "not_for_helm" | "dismiss" | "done" | "reopen", note?: string) =>
   request<{ ok: true }>(`/brief/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/feedback`, { method: "POST", body: JSON.stringify({ kind, ...(note ? { note } : {}) }) });
 export const undoHandled = (id: string) => request<HelmHandledView>(`/handled/${encodeURIComponent(id)}/undo`, { method: "POST" });
-export const fetchHelmMemory = (signal?: AbortSignal) => request<{ entries: HelmMemoryEntry[] }>("/memory", { signal });
+export const fetchHelmMemory = (signal?: AbortSignal) => request<{ entries: HelmMemoryEntry[]; sourceNames?: Record<string, string> }>("/memory", { signal });
 export const addHelmMemory = (kind: string, text: string) => request<HelmMemoryEntry>("/memory", { method: "POST", body: JSON.stringify({ kind, text }) });
 export const updateHelmMemory = (id: string, patch: { text?: string; status?: "active" | "forgotten" }) =>
   request<HelmMemoryEntry>(`/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
 export const fetchHelmRuns = (signal?: AbortSignal) => request<{ runs: HelmRunView[] }>("/runs", { signal });
 export const patchThinkerSettings = (patch: Partial<HelmThinkerSettings>) =>
   request<HelmThinkerSettings>("/thinker/settings", { method: "PATCH", body: JSON.stringify(patch) });
+export interface HelmSourceTool { name: string; description?: string; readOnly: boolean; /** Chosen earlier, no longer offered. */ gone?: boolean }
+/** Starts the MCP server on the Bridge to read its tools. */
+export const fetchSourceTools = (serverId: string) =>
+  request<{ serverId: string; name: string; tools: HelmSourceTool[] }>("/sources/tools", { method: "POST", body: JSON.stringify({ serverId }) });
 
 export function useHelmBrief() {
   return useQuery({

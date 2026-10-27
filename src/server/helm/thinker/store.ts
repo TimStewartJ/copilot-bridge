@@ -15,6 +15,7 @@ import {
   type HelmMemoryEntry,
   type HelmMemoryKind,
   type HelmMemoryStatus,
+  type HelmRunSourceStatus,
   type HelmRunStatus,
   type HelmRunTrigger,
   type HelmRunView,
@@ -49,11 +50,25 @@ function parseJson<T>(value: unknown, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
+function stringList(value: unknown): string[] {
+  const parsed = parseJson<unknown>(value, []);
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** Sorted, without duplicates: how provenance is stored. */
+export function mergeSourceIds(...lists: ReadonlyArray<readonly string[]>): string[] {
+  return [...new Set(lists.flat())].sort();
+}
+
+function sourceIdsJson(ids: readonly string[]): string | null {
+  return ids.length ? JSON.stringify(mergeSourceIds(ids)) : null;
+}
+
 function hydrateMemory(row: any): HelmMemoryEntry {
   return {
     id: row.id, kind: row.kind, key: row.key ?? null, text: row.text, source: row.source ?? null,
     author: row.author, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
-    confirmedAt: row.confirmedAt, uses: Number(row.uses) || 0,
+    confirmedAt: row.confirmedAt, uses: Number(row.uses) || 0, fromSources: stringList(row.fromSources),
   };
 }
 
@@ -65,6 +80,8 @@ function hydrateRun(row: any): HelmRunRecord {
     credits: typeof row.credits === "number" ? row.credits : null,
     changeCount: typeof row.changeCount === "number" ? row.changeCount : null,
     bridges: parseJson<HelmBridgeStatus[]>(row.bridgesJson, []),
+    sources: parseJson<HelmRunSourceStatus[]>(row.sourcesJson, []),
+    fromSources: stringList(row.fromSourcesJson),
     contextJson: row.contextJson ?? null, briefJson: row.briefJson ?? null, changesJson: row.changesJson ?? null,
     sessionDeleted: Number(row.sessionDeleted) === 1,
   };
@@ -130,22 +147,23 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
     return Number(row.n) || 0;
   }
 
-  function addMemory(entry: { kind: HelmMemoryKind; key?: string | null; text: string; source?: string | null; author: HelmMemoryAuthor; status: HelmMemoryStatus }): HelmMemoryEntry {
+  function addMemory(entry: { kind: HelmMemoryKind; key?: string | null; text: string; source?: string | null; author: HelmMemoryAuthor; status: HelmMemoryStatus; fromSources?: readonly string[] }): HelmMemoryEntry {
     const at = iso();
     const id = randomUUID();
     db.prepare(
-      `INSERT INTO helm_memory (id, kind, key, text, source, author, status, createdAt, updatedAt, confirmedAt, uses)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-    ).run(id, entry.kind, entry.key ?? null, entry.text, entry.source ?? null, entry.author, entry.status, at, at, at);
+      `INSERT INTO helm_memory (id, kind, key, text, source, author, status, createdAt, updatedAt, confirmedAt, uses, fromSources)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    ).run(id, entry.kind, entry.key ?? null, entry.text, entry.source ?? null, entry.author, entry.status, at, at, at, sourceIdsJson(entry.fromSources ?? []));
     return getMemory(id)!;
   }
 
-  function updateMemory(id: string, patch: { text?: string; source?: string | null; status?: HelmMemoryStatus; author?: HelmMemoryAuthor; confirm?: boolean }): HelmMemoryEntry | undefined {
+  /** Provenance only grows here: an edit, even Tim's, keeps what may have shaped the entry. */
+  function updateMemory(id: string, patch: { text?: string; source?: string | null; status?: HelmMemoryStatus; author?: HelmMemoryAuthor; confirm?: boolean; addFromSources?: readonly string[] }): HelmMemoryEntry | undefined {
     const current = getMemory(id);
     if (!current) return undefined;
     const at = iso();
     db.prepare(
-      `UPDATE helm_memory SET text = ?, source = ?, status = ?, author = ?, updatedAt = ?, confirmedAt = ? WHERE id = ?`,
+      `UPDATE helm_memory SET text = ?, source = ?, status = ?, author = ?, updatedAt = ?, confirmedAt = ?, fromSources = ? WHERE id = ?`,
     ).run(
       patch.text ?? current.text,
       patch.source === undefined ? current.source : patch.source,
@@ -153,6 +171,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
       patch.author ?? current.author,
       patch.text !== undefined || patch.status !== undefined ? at : current.updatedAt,
       patch.confirm || patch.text !== undefined || patch.author === "user" ? at : current.confirmedAt,
+      sourceIdsJson(mergeSourceIds(current.fromSources, patch.addFromSources ?? [])),
       id,
     );
     return getMemory(id);
@@ -203,6 +222,29 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   function setRunContext(id: string, context: { contextJson: string; changeCount: number; bridges: HelmBridgeStatus[] }): void {
     db.prepare("UPDATE helm_runs SET contextJson = ?, changeCount = ?, bridgesJson = ? WHERE id = ? AND status = 'running'")
       .run(context.contextJson, context.changeCount, JSON.stringify(context.bridges), id);
+  }
+
+  /** What the run's sources looked like, and every source that may have shaped what it wrote. */
+  function setRunSources(id: string, sources: HelmRunSourceStatus[], fromSources: readonly string[]): void {
+    db.prepare("UPDATE helm_runs SET sourcesJson = ?, fromSourcesJson = ? WHERE id = ?")
+      .run(sources.length ? JSON.stringify(sources) : null, sourceIdsJson(fromSources), id);
+  }
+
+  /** When each source was last read by a look that published: the start of that look. */
+  function getSourceCoverage(): Record<string, string> {
+    const row = db.prepare("SELECT value FROM helm_kv WHERE key = 'sourceCoverage'").get() as { value: string } | undefined;
+    const parsed = parseJson<Record<string, unknown>>(row?.value, {});
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  }
+
+  function setSourceCoverage(serverIds: readonly string[], at: string): void {
+    if (serverIds.length === 0) return;
+    const next = { ...getSourceCoverage() };
+    for (const serverId of serverIds) {
+      if (!next[serverId] || Date.parse(next[serverId]) < Date.parse(at)) next[serverId] = at;
+    }
+    db.prepare("INSERT INTO helm_kv (key, value) VALUES ('sourceCoverage', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(JSON.stringify(next));
   }
 
   /** Records a publication. Only a running, not yet published run accepts one. */
@@ -321,7 +363,8 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   return {
     getSettings, updateSettings,
     listMemory, getMemory, findByKey, countActive, addMemory, updateMemory, noteUse,
-    createRun, getRun, getRunBySession, isRunSession, listRuns, latestRun, setRunContext, publishRun, finishRun,
+    createRun, getRun, getRunBySession, isRunSession, listRuns, latestRun, setRunContext, setRunSources, publishRun, finishRun,
+    getSourceCoverage, setSourceCoverage,
     setRunCredits, failInterruptedRuns, markSessionDeleted, pruneRuns,
     setItemState, claimItem, getItemStates, addFeedback, pendingFeedback, consumeFeedback,
     addHandled, getHandled, listHandled, markHandledUndone,

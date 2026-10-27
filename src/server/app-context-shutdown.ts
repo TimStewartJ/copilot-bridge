@@ -35,13 +35,19 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.helm?.dispose();
-    ctx.helmThinker?.dispose();
+    // A running look's outside sources are child processes: they end with it.
+    const helmThinkerShutdown = Promise.resolve(ctx.helmThinker?.dispose()).catch((error) => {
+      console.error("[web] Helm shutdown failed:", error);
+    });
     shutdownBrowserLive(ctx);
     const handsFreeOutcome = await settleByDeadline(async () => {
       await ctx.voiceGateway?.shutdown();
     }, deadline);
     if (handsFreeOutcome.status !== "fulfilled") {
       console.error(`[web] Hands-free shutdown ${handsFreeOutcome.status}`);
+    }
+    if ((await settleByDeadline(() => helmThinkerShutdown, deadline)).status !== "fulfilled") {
+      console.error("[web] Helm's sources did not close in time");
     }
     // Indexing stops at this call whatever is left of the budget; only the wait is bounded.
     const searchShutdown = Promise.resolve(ctx.searchIndex?.shutdown()).catch((error) => {

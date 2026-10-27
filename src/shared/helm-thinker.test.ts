@@ -7,10 +7,13 @@ describe("Helm thinker settings", () => {
       times: ["18:00", "08:00", "08:00"],
       autonomy: "propose",
       peers: [{ id: "PC", label: "timmiepc", apiUrl: "http://100.64.0.2:3333/", webUrl: "https://timmiepc.example.ts.net" }],
+      sources: [{ serverId: "srv-1", tools: ["search", "read", "search"] }, { serverId: "srv-2", tools: [] }],
     });
     expect(patch.times).toEqual(["08:00", "18:00"]);
     expect(patch.autonomy).toBe("propose");
     expect(patch.peers).toEqual([{ id: "pc", label: "timmiepc", apiUrl: "http://100.64.0.2:3333", webUrl: "https://timmiepc.example.ts.net" }]);
+    // A server with no tools chosen is simply not a source.
+    expect(patch.sources).toEqual([{ serverId: "srv-1", tools: ["search", "read"] }]);
   });
 
   it("refuses unknown fields, bad times, credentials in URLs and a peer named local", () => {
@@ -19,6 +22,8 @@ describe("Helm thinker settings", () => {
     expect(() => validateHelmThinkerSettingsPatch({ peers: [{ id: "pc", apiUrl: "http://user:pass@host:3333" }] })).toThrow(/credentials/);
     expect(() => validateHelmThinkerSettingsPatch({ peers: [{ id: "pc", apiUrl: "file:///etc/passwd" }] })).toThrow(/http/);
     expect(() => validateHelmThinkerSettingsPatch({ peers: [{ id: "local", apiUrl: "http://host" }] })).toThrow(/used twice/);
+    expect(() => validateHelmThinkerSettingsPatch({ sources: [{ serverId: "a", tools: ["x"] }, { serverId: "a", tools: ["y"] }] })).toThrow(/twice/);
+    expect(() => validateHelmThinkerSettingsPatch({ sources: [{ serverId: "a", tools: [42] }] })).toThrow(/tool name/);
   });
 
   it("finds the next and previous scheduled slots in local time", () => {
