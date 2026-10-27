@@ -10,11 +10,13 @@ interface ContextMenuProps {
   position: ContextMenuPosition;
   onClose: () => void;
   children: React.ReactNode;
+  /** "above" opens upward from the point (for controls at the bottom of the screen, where a phone keyboard may cover what lies below). */
+  placement?: "below" | "above";
 }
 
 const VIEWPORT_PADDING = 8;
 
-export default function ContextMenu({ position, onClose, children }: ContextMenuProps) {
+export default function ContextMenu({ position, onClose, children, placement = "below" }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [adjusted, setAdjusted] = useState<{ top: number; left: number } | null>(null);
 
@@ -31,8 +33,10 @@ export default function ContextMenu({ position, onClose, children }: ContextMenu
     let top = position.y;
     let left = position.x;
 
-    // Flip up if overflowing bottom
-    if (top + rect.height > vh - VIEWPORT_PADDING) {
+    if (placement === "above") {
+      top = Math.max(VIEWPORT_PADDING, position.y - rect.height);
+    } else if (top + rect.height > vh - VIEWPORT_PADDING) {
+      // Flip up if overflowing bottom
       top = Math.max(VIEWPORT_PADDING, position.y - rect.height);
     }
     // Flip left if overflowing right
@@ -41,7 +45,7 @@ export default function ContextMenu({ position, onClose, children }: ContextMenu
     }
 
     setAdjusted({ top, left });
-  }, [position.x, position.y]);
+  }, [position.x, position.y, placement]);
 
   useEffect(() => {
     const dismiss = (e: MouseEvent | TouchEvent) => {

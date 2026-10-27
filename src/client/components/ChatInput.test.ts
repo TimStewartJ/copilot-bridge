@@ -72,6 +72,7 @@ function voiceInputState(overrides: Record<string, unknown> = {}) {
 describe("ChatInput voice retry", () => {
   let harness: ReactDomHarness | null = null;
   let pointerFineMatches = true;
+  let mobileMatches = false;
 
   function getHarness() {
     if (!harness) throw new Error("ChatInput harness has not been initialized");
@@ -86,8 +87,9 @@ describe("ChatInput voice retry", () => {
     });
     harness = await createReactDomHarness();
     pointerFineMatches = true;
+    mobileMatches = false;
     (globalThis.window as any).matchMedia = vi.fn((query: string) => ({
-      matches: query === "(pointer: fine)" ? pointerFineMatches : false,
+      matches: query === "(pointer: fine)" ? pointerFineMatches : query === "(max-width: 767px)" ? mobileMatches : false,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     }));
@@ -207,6 +209,36 @@ describe("ChatInput voice retry", () => {
 
     expect(getHarness().dom.container.textContent).toContain("Auto-send failed after upload.");
     expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.textContent === "Try again")).toBe(false);
+  });
+
+  it("folds the tools into one menu on a phone once there is text, but not while recording", async () => {
+    mobileMatches = true;
+    const onHandsFree = vi.fn();
+    const extraTool = { label: "Hands-free", title: "Hands-free", icon: null, onSelect: onHandsFree };
+    await renderChatInput({ extraTool });
+    const root = getHarness().dom.container;
+    expect(queryButtonByAriaLabel(root, "Attach file")).toBeDefined();
+    expect(queryButtonByAriaLabel(root, "More tools")).toBeUndefined();
+
+    await renderChatInput({ extraTool, draft: { text: "hello", attachments: [] } });
+    expect(queryButtonByAriaLabel(root, "Attach file")).toBeUndefined();
+    expect(queryButtonByAriaLabel(root, "Hands-free")).toBeUndefined();
+    expect(queryButtonByAriaLabel(root, "Record voice input")).toBeUndefined();
+    const more = findButtonByAriaLabel(root, "More tools");
+    await getHarness().act(() => {
+      getReactProps(more)?.onClick({ currentTarget: { getBoundingClientRect: () => ({ left: 10, top: 500 }) } });
+    });
+    expect(findButtonByText(root, "Attach file")).toBeDefined();
+    expect(findButtonByText(root, "Voice message")).toBeDefined();
+    await getHarness().act(() => {
+      getReactProps(findButtonByText(root, "Hands-free"))?.onClick();
+    });
+    expect(onHandsFree).toHaveBeenCalledOnce();
+
+    useVoiceInputMock.mockReturnValue(voiceInputState({ phase: "recording", isRecording: true }));
+    await renderChatInput({ extraTool, draft: { text: "hello", attachments: [] } });
+    expect(findButtonByAriaLabel(root, "Stop recording and transcribe")).toBeDefined();
+    expect(queryButtonByAriaLabel(root, "More tools")).toBeUndefined();
   });
 
   it("names composer icon buttons and reveals attachment removal on keyboard focus", async () => {

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { ArrowUp, Square, Paperclip, Loader2, Mic } from "lucide-react";
+import { ArrowUp, Square, Paperclip, Loader2, Mic, MoreHorizontal } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import {
@@ -29,11 +29,12 @@ import {
 import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
-import ContextMenu, { CtxDivider, CtxItem } from "./ContextMenu";
+import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
 import { DS, cx } from "../design/tokens";
 import { AutopilotIcon, Button } from "../design/primitives";
 import { haptic } from "../lib/haptics";
+import { useIsMobile } from "../useIsMobile";
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 const COMPOSER_RAIL_CLASS = "mx-auto w-full max-w-4xl px-3 pb-3 pt-1 sm:px-4 md:px-6 md:pb-4 lg:px-8";
@@ -112,12 +113,24 @@ interface ChatInputProps {
   defaultSendMode?: SendMode;
   /** Hides the record button while something else owns the microphone (hands-free voice). */
   hideVoiceInput?: boolean;
-  /** A button shown beside the record button (the chat's hands-free switch). */
-  extraTool?: ReactNode;
+  /** A tool shown beside the record button (the chat's hands-free switch). */
+  extraTool?: ComposerTool;
   placeholder?: string;
   /** Incremented to request focus (desktop only, so touch devices do not raise the keyboard). */
   focusRequest?: number;
 }
+
+/** A composer tool: a round button beside the record button, or a row in the phone's tools menu. */
+export interface ComposerTool {
+  label: string;
+  title: string;
+  icon: ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}
+
+const COMPOSER_TOOL_BUTTON_CLASS = "flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors";
 
 export default function ChatInput({
   onSend,
@@ -179,6 +192,8 @@ export default function ChatInput({
     closeMenu: closeSendModeMenu,
     isTarget: isSendModeMenuTarget,
   } = useLongPressMenu<"send-mode">();
+  const isMobile = useIsMobile();
+  const [toolsMenu, setToolsMenu] = useState<ContextMenuPosition | null>(null);
 
   useEffect(() => {
     inputRef.current = input;
@@ -703,6 +718,28 @@ export default function ChatInput({
     maxRecordingSeconds: voice.status?.maxDurationSeconds,
     uploadPercent: voiceJob?.uploadPercent,
   });
+  const showVoiceButton = voiceUi.showButton && !hideVoiceInput;
+  // On a phone, typed text gets the room: the tools fold into one menu, unless a recording is under way.
+  const collapseTools = isMobile && input.trim().length > 0 && (!showVoiceButton || voiceUi.buttonState === "mic");
+  const toggleVoiceRecording = () => {
+    if (voice.phase === "recording") {
+      stopVoiceRecordingRef.current();
+      return;
+    }
+    setRecordingCancelled(false);
+    onClearVoiceJobError?.(composerKey);
+    updateRecordingStartMode(resolveVoiceSubmitMode({
+      text: inputRef.current,
+      attachmentCount: attachmentsRef.current.length,
+      sendBlocked: sendBlockedRef.current,
+      uploadingCount: uploadingRef.current,
+    }));
+    pendingCaptureSubmitModeRef.current = null;
+    void voice.startRecording();
+  };
+  useEffect(() => {
+    if (!collapseTools) setToolsMenu(null);
+  }, [collapseTools]);
   const voiceMessageClassName = voiceUi.tone === "error"
     ? "text-error"
     : voiceUi.tone === "success"
@@ -866,52 +903,77 @@ export default function ChatInput({
             onRemove={removeAttachment}
           />
           <div className="flex items-end gap-0.5">
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="ml-1 flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:text-text-primary"
-            title="Attach file"
-            aria-label="Attach file"
-            type="button"
-          >
-            <Paperclip size={18} />
-          </button>
-          {extraTool}
-          {voiceUi.showButton && !hideVoiceInput && (
+          {collapseTools ? (
             <button
-              onClick={() => {
-                if (voice.phase === "recording") {
-                  stopVoiceRecordingRef.current();
-                } else {
-                  setRecordingCancelled(false);
-                  onClearVoiceJobError?.(composerKey);
-                  updateRecordingStartMode(resolveVoiceSubmitMode({
-                    text: inputRef.current,
-                    attachmentCount: attachmentsRef.current.length,
-                    sendBlocked: sendBlockedRef.current,
-                    uploadingCount: uploadingRef.current,
-                  }));
-                  pendingCaptureSubmitModeRef.current = null;
-                  void voice.startRecording();
-                }
-              }}
-              disabled={voiceUi.buttonDisabled}
-              className={`flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors ${
-                voice.phase === "recording"
-                  ? "text-error hover:text-error-hover"
-                  : "text-text-muted hover:text-text-primary disabled:text-text-faint/60"
-              }`}
-              title={voiceUi.buttonTitle}
-              aria-label={voiceUi.buttonTitle}
               type="button"
-            >
-              {voiceUi.buttonState === "spinner" ? (
-                <Loader2 size={18} className="animate-spin" />
-              ) : voiceUi.buttonState === "stop" ? (
-                <Square size={16} fill="currentColor" />
-              ) : (
-                <Mic size={18} />
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setToolsMenu((open) => (open ? null : { x: rect.left, y: rect.top - 4 }));
+              }}
+              className={cx(
+                "ml-1",
+                COMPOSER_TOOL_BUTTON_CLASS,
+                extraTool?.active ? "text-accent hover:text-accent-hover" : "text-text-muted hover:text-text-primary",
               )}
+              title="More tools"
+              aria-label="More tools"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(toolsMenu)}
+            >
+              <MoreHorizontal size={18} />
             </button>
+          ) : (
+            <>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className={cx("ml-1", COMPOSER_TOOL_BUTTON_CLASS, "text-text-muted hover:text-text-primary")}
+                title="Attach file"
+                aria-label="Attach file"
+                type="button"
+              >
+                <Paperclip size={18} />
+              </button>
+              {extraTool && (
+                <button
+                  type="button"
+                  onClick={extraTool.onSelect}
+                  disabled={extraTool.disabled}
+                  aria-pressed={extraTool.active}
+                  title={extraTool.title}
+                  aria-label={extraTool.label}
+                  className={cx(
+                    COMPOSER_TOOL_BUTTON_CLASS,
+                    extraTool.active ? "text-accent hover:text-accent-hover" : "text-text-muted hover:text-text-primary disabled:text-text-faint/60",
+                  )}
+                >
+                  {extraTool.icon}
+                </button>
+              )}
+              {showVoiceButton && (
+                <button
+                  onClick={toggleVoiceRecording}
+                  disabled={voiceUi.buttonDisabled}
+                  className={cx(
+                    COMPOSER_TOOL_BUTTON_CLASS,
+                    voice.phase === "recording"
+                      ? "text-error hover:text-error-hover"
+                      : "text-text-muted hover:text-text-primary disabled:text-text-faint/60",
+                  )}
+                  title={voiceUi.buttonTitle}
+                  aria-label={voiceUi.buttonTitle}
+                  type="button"
+                >
+                  {voiceUi.buttonState === "spinner" ? (
+                    <Loader2 size={18} className="animate-spin" />
+                  ) : voiceUi.buttonState === "stop" ? (
+                    <Square size={16} fill="currentColor" />
+                  ) : (
+                    <Mic size={18} />
+                  )}
+                </button>
+              )}
+            </>
           )}
           <input
             ref={fileInputRef}
@@ -995,6 +1057,42 @@ export default function ChatInput({
           </div>
           </div>
         </div>
+        {toolsMenu && collapseTools && (
+          <ContextMenu position={toolsMenu} placement="above" onClose={() => setToolsMenu(null)}>
+            <CtxItem
+              icon={<Paperclip size={16} aria-hidden="true" />}
+              label="Attach file"
+              onClick={() => {
+                setToolsMenu(null);
+                fileInputRef.current?.click();
+              }}
+            />
+            {extraTool && (
+              <CtxItem
+                icon={<span className={cx("flex size-4 items-center justify-center [&>svg]:size-4", extraTool.active && "text-accent")} aria-hidden="true">{extraTool.icon}</span>}
+                label={extraTool.label}
+                title={extraTool.title}
+                disabled={extraTool.disabled}
+                onClick={() => {
+                  setToolsMenu(null);
+                  extraTool.onSelect();
+                }}
+              />
+            )}
+            {showVoiceButton && (
+              <CtxItem
+                icon={<Mic size={16} aria-hidden="true" />}
+                label="Voice message"
+                title={voiceUi.buttonTitle}
+                disabled={voiceUi.buttonDisabled}
+                onClick={() => {
+                  setToolsMenu(null);
+                  toggleVoiceRecording();
+                }}
+              />
+            )}
+          </ContextMenu>
+        )}
         {sendModeMenu && (
           <ContextMenu position={sendModeMenu} onClose={closeSendModeMenu}>
             <div className="px-3 py-2 text-xs text-text-muted">
