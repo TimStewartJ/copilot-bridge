@@ -312,6 +312,22 @@ describe("ChatInput voice retry", () => {
     expect(stopRecording).toHaveBeenCalledOnce();
   });
 
+  it("says when the microphone hears nothing, and why a recording it gave up on was cancelled", async () => {
+    const cancelRecording = vi.fn(() => true);
+    useVoiceInputMock.mockReturnValue(voiceInputState({ phase: "recording", isRecording: true, nothingHeard: true, cancelRecording }));
+    await renderChatInput();
+    expect(getHarness().dom.container.textContent).toContain("Can't hear you");
+
+    const [{ onNothingHeard }] = useVoiceInputMock.mock.calls.at(-1) as [{ onNothingHeard: () => void }];
+    await getHarness().act(async () => {
+      onNothingHeard();
+    });
+    expect(cancelRecording).toHaveBeenCalledOnce();
+    useVoiceInputMock.mockReturnValue(voiceInputState({ cancelRecording }));
+    await renderChatInput();
+    expect(getHarness().dom.container.textContent).toContain("Nothing heard. Recording cancelled.");
+  });
+
   it.each(["starting", "recording"])("offers cancellation during %s without sending or changing the draft", async (phase) => {
     const state = useVoiceInputMock();
     const cancelRecording = vi.fn(() => true);

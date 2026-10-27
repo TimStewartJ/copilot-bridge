@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OPUS_CLOCK_RATE } from "../../shared/ogg-opus.js";
 import { fetchTranscriptionStatus, type TranscriptionStatus } from "../api";
-import { encodeWav, SpeechResampler } from "../lib/voice-recording-audio";
+import { encodeWav, SoundPresence, SpeechResampler } from "../lib/voice-recording-audio";
 import { createOpusRecordingEncoder, type OpusRecordingEncoder } from "../lib/voice-recording-opus";
 import { holdVoiceCapture } from "../lib/voice-capture-guard";
 import type { VoiceRecorderPhase } from "../lib/voice-ui-state";
 
 const PROCESSOR_BUFFER_SIZE = 4_096;
 const LEVEL_WINDOW_SIZE = 1_024;
+/** A recording that has heard nothing says so this long after it starts, and gives up later. */
+export const NOTHING_HEARD_WARNING_MS = 4_000;
+export const NOTHING_HEARD_CANCEL_MS = 12_000;
 
 interface UseVoiceInputOptions {
   contextKey: string;
   onAudioCaptured: (capture: { audio: Blob; contextKey: string }) => Promise<void>;
   /** The recording reached the server's length limit and took no more audio. Defaults to stopping it. */
   onMaxDurationReached?: () => void;
+  /** The microphone has heard nothing since the recording started, for NOTHING_HEARD_CANCEL_MS. Defaults to cancelling it. */
+  onNothingHeard?: () => void;
 }
 
 interface VoiceInputState {
@@ -26,6 +31,8 @@ interface VoiceInputState {
   isTranscribing: boolean;
   /** Whole seconds of audio captured by the recording in progress. */
   elapsedSeconds: number;
+  /** The recording in progress has heard nothing for NOTHING_HEARD_WARNING_MS since it started. */
+  nothingHeard: boolean;
   error: string | null;
   /** Loudness (RMS, 0 to 1) the microphone hears right now; 0 when nothing is capturing. Read it per animation frame. */
   getLevel: () => number;
@@ -41,12 +48,13 @@ type WindowWithWebkitAudioContext = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
-export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReached }: UseVoiceInputOptions): VoiceInputState {
+export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReached, onNothingHeard }: UseVoiceInputOptions): VoiceInputState {
   const [status, setStatus] = useState<TranscriptionStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
   const [phase, setPhase] = useState<VoiceRecorderPhase>("idle");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [nothingHeard, setNothingHeard] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
@@ -69,6 +77,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   const releaseCaptureRef = useRef<(() => void) | null>(null);
   const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
   const maxDurationReachedRef = useRef<() => void>(() => {});
+  const nothingHeardRef = useRef<() => void>(() => {});
+  const nothingHeardTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const setRecorderPhase = useCallback((nextPhase: VoiceRecorderPhase) => {
     phaseRef.current = nextPhase;
@@ -94,7 +104,13 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     return !!getAudioContextCtor() && !!navigator.mediaDevices?.getUserMedia;
   }, []);
 
+  const clearNothingHeardTimers = useCallback(() => {
+    for (const timer of nothingHeardTimersRef.current) clearTimeout(timer);
+    nothingHeardTimersRef.current = [];
+  }, []);
+
   const cleanupRecorder = useCallback(async () => {
+    clearNothingHeardTimers();
     const processor = processorRef.current;
     if (processor) {
       processor.onaudioprocess = null;
@@ -121,7 +137,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     if (audioContext) {
       await audioContext.close().catch(() => {});
     }
-  }, []);
+  }, [clearNothingHeardTimers]);
 
   /** Lets go of the capture hold; only once the audio is stored or deliberately dropped. */
   const releaseCapture = useCallback(() => {
@@ -188,6 +204,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     setRecorderPhase("starting");
     setError(null);
     setElapsedSeconds(0);
+    setNothingHeard(false);
     try {
       const { maxDurationSeconds, opusUploads } = await ensureAvailable();
       if (!isCurrentAttempt()) return;
@@ -234,11 +251,16 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       const maxInputSamples = maxDurationSeconds * audioContext.sampleRate;
       let capturedSamples = 0;
       let capturedInputSamples = 0;
+      const presence = new SoundPresence(audioContext.sampleRate);
       processor.onaudioprocess = (event) => {
         if (!isCurrentAttempt() || phaseRef.current !== "recording") return;
         const room = maxSamples - capturedSamples;
         if (room <= 0) return;
         const input = event.inputBuffer.getChannelData(0);
+        if (!presence.heard && presence.push(input)) {
+          clearNothingHeardTimers();
+          if (mountedRef.current) setNothingHeard(false);
+        }
         const chunk = resampler.push(input);
         const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
         chunksRef.current.push(kept);
@@ -257,6 +279,16 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       processor.connect(audioContext.destination);
       releaseCaptureRef.current = holdVoiceCapture();
       setRecorderPhase("recording");
+      // Wall-clock deadlines: a microphone that delivers no audio at all must be caught too.
+      const stillSilent = () => isCurrentAttempt() && phaseRef.current === "recording" && !presence.heard;
+      nothingHeardTimersRef.current = [
+        setTimeout(() => {
+          if (stillSilent()) setNothingHeard(true);
+        }, NOTHING_HEARD_WARNING_MS),
+        setTimeout(() => {
+          if (stillSilent()) nothingHeardRef.current();
+        }, NOTHING_HEARD_CANCEL_MS),
+      ];
     } catch (err) {
       if (!isCurrentAttempt()) return;
       await cleanupRecorder();
@@ -267,7 +299,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
         setError(describeVoiceCaptureError(err));
       }
     }
-  }, [browserSupported, cleanupRecorder, ensureAvailable, releaseCapture, setRecorderPhase]);
+  }, [browserSupported, cleanupRecorder, clearNothingHeardTimers, ensureAvailable, releaseCapture, setRecorderPhase]);
 
   const cancelRecording = useCallback(() => {
     if (phaseRef.current !== "starting" && phaseRef.current !== "recording") return false;
@@ -328,7 +360,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   useEffect(() => {
     stopRecordingRef.current = stopRecording;
     maxDurationReachedRef.current = onMaxDurationReached ?? (() => void stopRecording());
-  }, [onMaxDurationReached, stopRecording]);
+    nothingHeardRef.current = onNothingHeard ?? (() => void cancelRecording());
+  }, [cancelRecording, onMaxDurationReached, onNothingHeard, stopRecording]);
 
   return {
     browserSupported,
@@ -339,6 +372,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     isRecording: phase === "recording",
     isTranscribing: phase === "finishing",
     elapsedSeconds,
+    nothingHeard: nothingHeard && phase === "recording",
     error,
     getLevel,
     startRecording,

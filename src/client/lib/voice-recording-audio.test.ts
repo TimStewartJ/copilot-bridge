@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodeWav, SpeechResampler, TRANSCRIPTION_SAMPLE_RATE } from "./voice-recording-audio";
+import { encodeWav, SoundPresence, SpeechResampler, TRANSCRIPTION_SAMPLE_RATE } from "./voice-recording-audio";
 
 function tone(frequency: number, sampleRate: number, seconds: number, amplitude = 0.5): Float32Array {
   const samples = new Float32Array(Math.round(sampleRate * seconds));
@@ -85,5 +85,30 @@ describe("encodeWav", () => {
   it("rejects empty recordings", () => {
     expect(() => encodeWav([], 16_000)).toThrow("No audio captured.");
     expect(() => encodeWav([new Float32Array(0)], 16_000)).toThrow("No audio captured.");
+  });
+});
+
+describe("SoundPresence", () => {
+  /** Two seconds of `floor`, a burst of speech-loud tone at an unaligned offset, then two more seconds. */
+  function recording(sampleRate: number, burstSeconds: number, floor = 0): Float32Array {
+    const samples = tone(150, sampleRate, 4 + burstSeconds, floor);
+    const burst = tone(220, sampleRate, burstSeconds, 0.1);
+    samples.set(burst, Math.round(sampleRate * 2.013));
+    return samples;
+  }
+
+  it.each([
+    ["digital silence", 48_000, 0, 0, false],
+    ["a quiet room", 48_000, 0, 0.002, false],
+    ["a tap on the phone", 48_000, 0.01, 0, false],
+    ["a short word at 48 kHz", 48_000, 0.12, 0, true],
+    ["a short word at 44.1 kHz", 44_100, 0.12, 0.002, true],
+    ["a short word at 16 kHz", 16_000, 0.12, 0, true],
+  ])("%s", (_name, sampleRate, burstSeconds, floor, heard) => {
+    const samples = burstSeconds > 0 ? recording(sampleRate, burstSeconds, floor) : tone(150, sampleRate, 12, floor);
+    const presence = new SoundPresence(sampleRate);
+    // Fed in the recorder's 4,096-sample buffers, so the speech straddles buffer edges.
+    for (let start = 0; start < samples.length; start += 4_096) presence.push(samples.subarray(start, start + 4_096));
+    expect(presence.heard).toBe(heard);
   });
 });

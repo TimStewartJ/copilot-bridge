@@ -124,6 +124,9 @@ describe("deriveVoiceUiState", () => {
     });
 
     // Without a known limit the clock still runs; without a clock there is nothing to show.
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 4, nothingHeard: true })).toMatchObject({
+      message: "Can't hear anything. Check your microphone.", silenceNotice: "Can't hear you", recordingClock: "0:04",
+    });
     expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", recordingSeconds: 7 }).detail).toBe("0:07");
     expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording" }).detail).toBeNull();
   });
