@@ -14,6 +14,11 @@ vi.mock("../hooks/useVoiceInput", () => ({
   useVoiceInput: (...args: unknown[]) => useVoiceInputMock(...args),
 }));
 
+// The test DOM has no canvas; the recording line is drawn by the browser alone.
+vi.mock("./VoiceRecordingWave", () => ({
+  VoiceRecordingWave: () => null,
+}));
+
 function findButtonByText(root: any, text: string): any {
   const button = findAllByTag(root, "BUTTON").find((candidate) => candidate.textContent === text);
   if (!button) throw new Error(`Button not found: ${text}`);
@@ -65,6 +70,7 @@ function voiceInputState(overrides: Record<string, unknown> = {}) {
     stopRecording: vi.fn(),
     cancelRecording: vi.fn(() => true),
     refreshStatus: vi.fn(),
+    getLevel: () => 0,
     ...overrides,
   };
 }
@@ -294,7 +300,8 @@ describe("ChatInput voice retry", () => {
     await renderChatInput();
 
     const container = getHarness().dom.container;
-    expect(container.textContent).toContain("1:23 / 5:00");
+    expect(container.textContent).toContain("1:23");
+    expect(container.textContent).not.toContain("1:23 / 5:00");
     const liveRegion = findAllByTag(container, "SPAN").find((span) => getReactProps(span)?.role === "status");
     expect(liveRegion.textContent).toBe("Recording… stop to transcribe.");
 
@@ -319,9 +326,18 @@ describe("ChatInput voice retry", () => {
         attachments: [{ type: "blob" as const, data: "", mimeType: "text/plain", displayName: "notes.txt" }],
       },
     };
+    useVoiceInputMock.mockReturnValue({ ...state, phase: "idle", cancelRecording });
     await renderChatInput(props);
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.onClick?.();
+    });
+    useVoiceInputMock.mockReturnValue({ ...state, phase, cancelRecording, elapsedSeconds: 4 });
+    await renderChatInput(props);
+    // Only the recording line, Cancel and Finish remain while the microphone is open.
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Autopilot")).toBeUndefined();
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Attach file")).toBeUndefined();
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Remove attachment notes.txt")).toBeUndefined();
+    await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording"))?.onClick?.();
     });
     expect(cancelRecording).toHaveBeenCalledOnce();
@@ -330,11 +346,11 @@ describe("ChatInput voice retry", () => {
     expect(onSubmitVoiceCapture).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
     expect(findTextarea(getHarness().dom.container).value).toBe("Keep this draft");
-    expect(findButtonByAriaLabel(getHarness().dom.container, "Remove attachment notes.txt")).toBeDefined();
-    expect(getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.["aria-pressed"]).toBe(true);
 
     useVoiceInputMock.mockReturnValue({ ...state, phase: "idle", cancelRecording });
     await renderChatInput(props);
+    expect(findButtonByAriaLabel(getHarness().dom.container, "Remove attachment notes.txt")).toBeDefined();
+    expect(getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.["aria-pressed"]).toBe(true);
     expect(getHarness().dom.container.textContent).toContain("Recording cancelled. Nothing sent.");
     expect(queryButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording")).toBeUndefined();
     await getHarness().act(async () => {
@@ -366,6 +382,28 @@ describe("ChatInput voice retry", () => {
     expect(cancelRecording).toHaveBeenCalledOnce();
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(stopPropagation).toHaveBeenCalledOnce();
+  });
+
+  it("moves keyboard focus into the recording row, onto Finish once it records, and back to the box after", async () => {
+    const state = useVoiceInputMock();
+    const render = async (phase: string) => {
+      useVoiceInputMock.mockReturnValue({ ...state, phase, isRecording: phase === "recording", elapsedSeconds: 0 });
+      await renderChatInput();
+    };
+    await render("idle");
+    const container = getHarness().dom.container;
+    findButtonByAriaLabel(container, "Record voice input").focus();
+
+    await render("starting");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Voice recording");
+    expect(getReactProps(findTextarea(container))?.className).toContain("hidden");
+
+    await render("recording");
+    expect(document.activeElement?.getAttribute("aria-label")).toMatch(/^Stop recording/);
+
+    await render("idle");
+    expect(document.activeElement).toBe(findTextarea(container));
+    expect(getReactProps(findTextarea(container))?.className).not.toContain("hidden");
   });
 
   it.each(["idle", "finishing"])("does not offer cancellation while %s", async (phase) => {
@@ -640,6 +678,7 @@ describe("ChatInput voice retry", () => {
     await getHarness().act(async () => {
       await onAudioCaptured({ audio: new Blob(["voice"]), contextKey: "session-1" });
     });
+    await renderChatInput({ onSubmitVoiceCapture });
 
     expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend", sendMode: "autopilot" }));
     expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("true");
@@ -674,6 +713,7 @@ describe("ChatInput voice retry", () => {
     }];
     // The recorder stays in "finishing" until the capture has been handed off.
     phase = "finishing";
+    await renderChatInput({ onSubmitVoiceCapture });
     await clickAutopilot();
     await clickAutopilot();
     await getHarness().act(async () => {

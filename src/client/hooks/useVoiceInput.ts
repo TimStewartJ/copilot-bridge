@@ -7,6 +7,7 @@ import { holdVoiceCapture } from "../lib/voice-capture-guard";
 import type { VoiceRecorderPhase } from "../lib/voice-ui-state";
 
 const PROCESSOR_BUFFER_SIZE = 4_096;
+const LEVEL_WINDOW_SIZE = 1_024;
 
 interface UseVoiceInputOptions {
   contextKey: string;
@@ -26,6 +27,8 @@ interface VoiceInputState {
   /** Whole seconds of audio captured by the recording in progress. */
   elapsedSeconds: number;
   error: string | null;
+  /** Loudness (RMS, 0 to 1) the microphone hears right now; 0 when nothing is capturing. Read it per animation frame. */
+  getLevel: () => number;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
   /** True only when audio was discarded before the finish-and-submit handoff. */
@@ -55,6 +58,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const levelDataRef = useRef<Float32Array<ArrayBuffer> | null>(null);
   const phaseRef = useRef<VoiceRecorderPhase>("idle");
   const captureAttemptRef = useRef(0);
   const statusRequestRef = useRef(0);
@@ -99,6 +104,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
 
     sourceRef.current?.disconnect();
     sourceRef.current = null;
+    analyserRef.current?.disconnect();
+    analyserRef.current = null;
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -209,8 +216,13 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       opusEncoderRef.current = opusEncoder;
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
+      // Sits in the capture path, passing audio through, so the browser keeps it fed.
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = LEVEL_WINDOW_SIZE;
+      analyser.smoothingTimeConstant = 0;
 
       sourceRef.current = source;
+      analyserRef.current = analyser;
       processorRef.current = processor;
       sampleRateRef.current = resampler.outputRate;
       chunksRef.current = [];
@@ -240,7 +252,8 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
         if (capturedSamples >= maxSamples) maxDurationReachedRef.current();
       };
 
-      source.connect(processor);
+      source.connect(analyser);
+      analyser.connect(processor);
       processor.connect(audioContext.destination);
       releaseCaptureRef.current = holdVoiceCapture();
       setRecorderPhase("recording");
@@ -298,6 +311,20 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     }
   }, [cleanupRecorder, onAudioCaptured, releaseCapture, setRecorderPhase]);
 
+  const getLevel = useCallback(() => {
+    const analyser = analyserRef.current;
+    if (!analyser || phaseRef.current !== "recording") return 0;
+    let data = levelDataRef.current;
+    if (!data || data.length !== analyser.fftSize) {
+      data = new Float32Array(analyser.fftSize);
+      levelDataRef.current = data;
+    }
+    analyser.getFloatTimeDomainData(data);
+    let sum = 0;
+    for (const value of data) sum += value * value;
+    return Math.sqrt(sum / data.length);
+  }, []);
+
   useEffect(() => {
     stopRecordingRef.current = stopRecording;
     maxDurationReachedRef.current = onMaxDurationReached ?? (() => void stopRecording());
@@ -313,6 +340,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
     isTranscribing: phase === "finishing",
     elapsedSeconds,
     error,
+    getLevel,
     startRecording,
     stopRecording,
     cancelRecording,

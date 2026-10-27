@@ -28,6 +28,7 @@ describe("useVoiceInput recording limit", () => {
   let harness: ReactDomHarness | null = null;
   let voice: ReturnType<typeof useVoiceInput> | null = null;
   let processor: { onaudioprocess: ((event: unknown) => void) | null; connect(): void; disconnect(): void };
+  let analyser: { fftSize: number; smoothingTimeConstant: number; samples: number; getFloatTimeDomainData(data: Float32Array): void; connect(): void; disconnect(): void };
   let getUserMedia: () => Promise<unknown>;
   let closeAudioContext: () => Promise<void>;
   let resumeAudioContext: () => Promise<void>;
@@ -36,6 +37,14 @@ describe("useVoiceInput recording limit", () => {
   async function mount(options: Partial<Parameters<typeof useVoiceInput>[0]>) {
     harness = await createReactDomHarness();
     processor = { onaudioprocess: null, connect() {}, disconnect() {} };
+    analyser = {
+      fftSize: 2_048,
+      smoothingTimeConstant: 0.8,
+      samples: 0,
+      getFloatTimeDomainData(data) { data.fill(this.samples); },
+      connect() {},
+      disconnect() {},
+    };
     Object.assign(globalThis.navigator, { mediaDevices: { getUserMedia: () => getUserMedia() } });
     Object.assign(globalThis.window, {
       AudioContext: class {
@@ -49,6 +58,7 @@ describe("useVoiceInput recording limit", () => {
         close = () => closeAudioContext();
         createMediaStreamSource = () => ({ connect() {}, disconnect() {} });
         createScriptProcessor = () => processor;
+        createAnalyser = () => analyser;
       },
     });
 
@@ -145,6 +155,19 @@ describe("useVoiceInput recording limit", () => {
     expect(onAudioCaptured).toHaveBeenCalledOnce();
     expect(onAudioCaptured.mock.calls[0]![0]).toMatchObject({ contextKey: "session-1" });
     expect(onAudioCaptured.mock.calls[0]![0].audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
+  });
+
+  it("reports how loud the microphone is while recording, and nothing once it stops", async () => {
+    await mount({});
+    expect(voice!.getLevel()).toBe(0);
+    await harness!.act(async () => {
+      await voice!.startRecording();
+    });
+    analyser.samples = 0.25;
+    expect(voice!.getLevel()).toBeCloseTo(0.25);
+
+    await harness!.act(async () => { voice!.cancelRecording(); });
+    expect(voice!.getLevel()).toBe(0);
   });
 
   it("discards recorded audio, stops capture, resets the clock, and never submits", async () => {
@@ -400,6 +423,7 @@ describe("useVoiceInput recording limit", () => {
           close = async () => {};
           createMediaStreamSource = () => ({ connect() {}, disconnect() {} });
           createScriptProcessor = () => processor;
+          createAnalyser = () => analyser;
         },
       });
       try {

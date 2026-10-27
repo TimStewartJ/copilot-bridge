@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { ArrowUp, Square, Paperclip, Loader2, Mic, MoreHorizontal } from "lucide-react";
+import { ArrowUp, Check, Square, Paperclip, Loader2, Mic, MoreHorizontal, X } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import {
@@ -31,8 +31,9 @@ import type { Draft } from "../useDrafts";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
+import { VoiceRecordingWave } from "./VoiceRecordingWave";
 import { DS, cx } from "../design/tokens";
-import { AutopilotIcon, Button } from "../design/primitives";
+import { AutopilotIcon } from "../design/primitives";
 import { haptic } from "../lib/haptics";
 import { useIsMobile } from "../useIsMobile";
 
@@ -165,6 +166,10 @@ export default function ChatInput({
   const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
+  /** The text box is hidden behind the recording line; measuring it then would collapse it to nothing. */
+  const textareaHiddenRef = useRef(false);
+  const recordingRowRef = useRef<HTMLDivElement>(null);
+  const finishRecordingRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef(input);
   const attachmentsRef = useRef<Attachment[]>(attachments);
   const uploadingRef = useRef(uploading);
@@ -213,7 +218,7 @@ export default function ChatInput({
 
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
-    if (!el) return;
+    if (!el || textareaHiddenRef.current) return;
     el.style.height = "auto";
     const next = Math.min(el.scrollHeight, 200);
     lastHeightRef.current = next;
@@ -367,6 +372,33 @@ export default function ChatInput({
     wasRecordingRef.current = recording;
     haptic(recording ? "light" : "selection");
   }, [recording]);
+
+  // While the microphone is open, the box shows only the recording line, Cancel and Finish.
+  // Finishing hands straight back to the composer, which shows the upload and transcription.
+  const recordingView = voice.phase === "starting" || voice.phase === "recording";
+  textareaHiddenRef.current = recordingView;
+  const wasRecordingViewRef = useRef(recordingView);
+  useEffect(() => {
+    if (recordingView === wasRecordingViewRef.current) return;
+    wasRecordingViewRef.current = recordingView;
+    if (recordingView) {
+      setToolsMenu(null);
+      closeSendModeMenu();
+      return;
+    }
+    adjustTextareaHeight();
+    if (focusWasDropped() && hasFinePointer()) textareaRef.current?.focus();
+  }, [adjustTextareaHeight, closeSendModeMenu, recordingView]);
+  // The button that started the recording is gone, so keyboard focus moves into the recording row:
+  // onto the row while the microphone starts, then onto Finish.
+  useEffect(() => {
+    if (!recordingView) return;
+    const row = recordingRowRef.current;
+    const dropped = focusWasDropped();
+    if (!dropped && !row?.contains(document.activeElement)) return;
+    if (voice.phase === "recording") finishRecordingRef.current?.focus({ preventScroll: true });
+    else if (dropped) row?.focus({ preventScroll: true });
+  }, [recordingView, voice.phase]);
 
   // A voice error that appears is felt too; one that was already there when you open a chat is not.
   const voiceFailed = Boolean(voiceJobError || voice.error);
@@ -779,7 +811,11 @@ export default function ChatInput({
 
         {voiceMessage && (
           <div
-            className={`mb-2 flex flex-wrap items-center gap-x-1 text-xs ${voiceMessageClassName}`}
+            className={cx(
+              "mb-2 flex flex-wrap items-center gap-x-1 text-xs",
+              voiceMessageClassName,
+              recordingView && voiceUi.tone !== "error" && "sr-only",
+            )}
           >
             <span
               role="status"
@@ -788,18 +824,7 @@ export default function ChatInput({
             >
               {voiceMessage}
             </span>
-            {voiceUi.detail && <span className="tabular-nums">{voiceUi.detail}</span>}
-            {canCancelRecording && (
-              <Button
-                variant="ghost"
-                onClick={cancelVoiceRecording}
-                aria-label="Cancel voice recording"
-                title="Discard this recording without sending (Esc)"
-                className="ml-auto"
-              >
-                Cancel
-              </Button>
-            )}
+            {voiceUi.detail && !recordingView && <span className="tabular-nums">{voiceUi.detail}</span>}
             {canRetryVoiceJobUpload && (
               <button
                 type="button"
@@ -823,7 +848,7 @@ export default function ChatInput({
           </div>
         )}
 
-        {slashCommandsSupported && (slashSuggestions.length > 0 || exactSlashCommand) && (
+        {slashCommandsSupported && !recordingView && (slashSuggestions.length > 0 || exactSlashCommand) && (
           <div
             className={`mb-2 overflow-hidden p-1 ${DS.surface.floating}`}
             role="listbox"
@@ -900,10 +925,27 @@ export default function ChatInput({
           <ComposerAttachmentTray
             attachments={attachments}
             uploadingCount={uploading}
-            onRemove={removeAttachment}
+            onRemove={recordingView ? undefined : removeAttachment}
           />
-          <div className="flex items-end gap-0.5">
-          {collapseTools ? (
+          <div
+            ref={recordingRowRef}
+            role={recordingView ? "group" : undefined}
+            aria-label={recordingView ? "Voice recording" : undefined}
+            tabIndex={recordingView ? -1 : undefined}
+            className={cx("flex gap-0.5 focus:outline-none", recordingView ? "items-center" : "items-end")}
+          >
+          {recordingView ? (
+            <button
+              type="button"
+              onClick={cancelVoiceRecording}
+              disabled={!canCancelRecording}
+              className={cx("ml-1", COMPOSER_TOOL_BUTTON_CLASS, DS.focus, "text-text-muted hover:text-text-primary disabled:text-text-faint/60")}
+              title="Discard this recording without sending (Esc)"
+              aria-label="Cancel voice recording"
+            >
+              <X size={18} />
+            </button>
+          ) : collapseTools ? (
             <button
               type="button"
               onMouseDown={(event) => event.preventDefault()}
@@ -997,8 +1039,50 @@ export default function ChatInput({
             enterKeyHint="enter"
             placeholder={placeholder}
             rows={1}
-            className="min-h-[48px] max-h-[200px] flex-1 resize-none bg-transparent py-3 pl-1 pr-2 text-base leading-6 text-text-primary placeholder:text-text-faint focus:outline-none md:text-sm"
+            className={cx(
+              "min-h-[48px] max-h-[200px] flex-1 resize-none bg-transparent py-3 pl-1 pr-2 text-base leading-6 text-text-primary placeholder:text-text-faint focus:outline-none md:text-sm",
+              recordingView && "hidden",
+            )}
           />
+          {recordingView && (
+            <div className={cx("flex h-12 min-w-0 flex-1 items-center gap-2 pl-1 pr-2", DS.motion.reveal)}>
+              <div className="h-8 min-w-0 flex-1">
+                <VoiceRecordingWave getLevel={voice.getLevel} live={voice.phase === "recording"} />
+              </div>
+              {voiceUi.limitNotice && (
+                <span className="shrink-0 text-xs font-medium text-accent" aria-hidden="true">{voiceUi.limitNotice}</span>
+              )}
+              {voiceUi.recordingClock && (
+                <span className="shrink-0 text-xs tabular-nums text-text-muted" aria-hidden="true">{voiceUi.recordingClock}</span>
+              )}
+            </div>
+          )}
+          {recordingView ? (
+            <div className="mr-1 flex-shrink-0 md:mr-2">
+              <button
+                ref={finishRecordingRef}
+                type="button"
+                onClick={() => stopVoiceRecordingRef.current()}
+                disabled={voice.phase !== "recording"}
+                className={cx(
+                  "flex h-10 w-10 items-center justify-center rounded-full transition-colors md:h-8 md:w-8",
+                  DS.focus,
+                  voice.phase === "recording" ? DS.button.variant.primary : "cursor-not-allowed bg-bg-hover text-text-faint",
+                )}
+                title={voiceUi.buttonTitle}
+                aria-label={voiceUi.buttonTitle}
+              >
+                {voice.phase !== "recording" ? (
+                  <Loader2 size={16} className="animate-spin motion-reduce:animate-none" />
+                ) : canAutoSendStoppedRecording ? (
+                  <ArrowUp size={17} strokeWidth={2.25} />
+                ) : (
+                  <Check size={17} strokeWidth={2.5} />
+                )}
+              </button>
+            </div>
+          ) : (
+          <>
           {showAutopilotToggle && (
             <button
               type="button"
@@ -1055,9 +1139,11 @@ export default function ChatInput({
               )}
             </button>
           </div>
+          </>
+          )}
           </div>
         </div>
-        {toolsMenu && collapseTools && (
+        {toolsMenu && collapseTools && !recordingView && (
           <ContextMenu position={toolsMenu} placement="above" onClose={() => setToolsMenu(null)}>
             <CtxItem
               icon={<Paperclip size={16} aria-hidden="true" />}
@@ -1111,4 +1197,10 @@ export default function ChatInput({
       </div>
     </div>
   );
+}
+
+/** True when the focused control has been removed, leaving keyboard focus nowhere useful. */
+function focusWasDropped(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || !active.isConnected;
 }

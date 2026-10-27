@@ -42,6 +42,10 @@ export interface VoiceUiState {
   /** A fast-changing figure (recording clock, upload percent) shown beside the message, outside its live region. */
   detail: string | null;
   tone: VoiceUiTone;
+  /** Time recorded so far ("0:12"), for the recording bar; null when not recording. */
+  recordingClock: string | null;
+  /** What the recorder does at its limit ("Sends at 5:00"), once the limit is close; null otherwise. */
+  limitNotice: string | null;
 }
 
 /** The recorder says what will happen at the limit once this little time is left. */
@@ -105,6 +109,8 @@ export function deriveVoiceUiState({
   let message: string | null = null;
   let detail: string | null = null;
   let tone: VoiceUiTone = "muted";
+  let recordingClock: string | null = null;
+  let limitNotice: string | null = null;
 
   if (voiceJobError) {
     message = voiceJobError;
@@ -145,12 +151,14 @@ export function deriveVoiceUiState({
     const secondsLeft = maxRecordingSeconds === undefined ? Infinity : maxRecordingSeconds - (recordingSeconds ?? 0);
     if (secondsLeft <= LIMIT_NOTICE_SECONDS) {
       message = `Recording… stops and ${canAutoSendStoppedRecording ? "sends" : "transcribes"} at ${limit}.`;
+      limitNotice = `${canAutoSendStoppedRecording ? "Sends" : "Transcribes"} at ${limit}`;
     } else {
       message = canAutoSendStoppedRecording
         ? "Recording… stop to send."
         : "Recording… stop to transcribe.";
     }
     if (recordingSeconds !== undefined) {
+      recordingClock = formatClock(recordingSeconds);
       detail = limit ? `${formatClock(recordingSeconds)} / ${limit}` : formatClock(recordingSeconds);
     }
     tone = "accent";
@@ -202,5 +210,7 @@ export function deriveVoiceUiState({
     message,
     detail,
     tone,
+    recordingClock,
+    limitNotice,
   };
 }
