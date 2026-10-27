@@ -25,6 +25,14 @@ export function createHelmThinkerRouter(thinker: HelmThinker): express.Router {
     try { res.json(await thinker.getBrief()); } catch (error) { sendError(res, error); }
   });
 
+  router.get("/brief/status", (_req, res) => {
+    try { res.json(thinker.getBriefStatus()); } catch (error) { sendError(res, error); }
+  });
+
+  router.post("/brief/:runId/seen", (req, res) => {
+    try { res.json(thinker.markBriefSeen(req.params.runId)); } catch (error) { sendError(res, error); }
+  });
+
   router.post("/think", async (req, res) => {
     const rebuild = body(req).rebuild;
     if (rebuild !== undefined && typeof rebuild !== "boolean") {

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchOpenChecklistItems, fetchChecklistItems, createChecklistItem, type ChecklistItem } from "../../api";
+import { fetchChecklistItems, createChecklistItem, type ChecklistItem } from "../../api";
 import { queryKeys } from "../../queryClient";
 
 export function useTaskChecklistItemsQuery(taskId: string | undefined) {
@@ -7,14 +7,6 @@ export function useTaskChecklistItemsQuery(taskId: string | undefined) {
     queryKey: queryKeys.taskChecklistItems(taskId!),
     queryFn: () => fetchChecklistItems(taskId!),
     enabled: !!taskId,
-  });
-}
-
-export function useOpenChecklistItemsQuery() {
-  return useQuery({
-    queryKey: queryKeys.openChecklistItems,
-    queryFn: fetchOpenChecklistItems,
-    refetchOnWindowFocus: true,
   });
 }
 

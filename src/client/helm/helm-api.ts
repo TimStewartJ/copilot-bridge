@@ -11,6 +11,8 @@ export interface HelmConversation {
   kept: boolean;
   busy: boolean;
   handsFree: boolean;
+  /** Visible activity time of Helm's latest finished reply; null before any reply. */
+  lastReplyAt: string | null;
   /** When retention deletes it; absent for kept conversations. */
   expiresAt?: string;
 }

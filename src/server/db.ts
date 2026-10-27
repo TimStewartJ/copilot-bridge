@@ -1045,11 +1045,17 @@ function initSchema(db: DatabaseSync): void {
   }
 
   // Helm's outside sources: which ones a run read, and what may have shaped each memory entry.
-  for (const [table, column] of [["helm_memory", "fromSources"], ["helm_runs", "sourcesJson"], ["helm_runs", "fromSourcesJson"]] as const) {
+  // Also when Helm last replied in a conversation, and when Tim opened each brief.
+  for (const [table, column] of [
+    ["helm_memory", "fromSources"], ["helm_runs", "sourcesJson"], ["helm_runs", "fromSourcesJson"],
+    ["helm_conversations", "lastReplyAt"], ["helm_runs", "seenAt"],
+  ] as const) {
     const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((entry) => entry.name));
     if (columns.has(column)) continue;
     try {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+      // Briefs written before Bridge tracked this count as seen, so the update does not light Home.
+      if (column === "seenAt") db.exec("UPDATE helm_runs SET seenAt = COALESCE(finishedAt, startedAt) WHERE seenAt IS NULL");
     } catch (error) {
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }

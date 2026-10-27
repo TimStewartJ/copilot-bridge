@@ -23,6 +23,7 @@ function createHarness() {
   const copilotHome = join(dataDir, ".copilot");
   const busy = new Set<string>();
   const globalBus = createTestBus();
+  const visibleActivity = new Map<string, string>();
   const sessionManager = {
     isSessionBusy: vi.fn((sessionId: string) => busy.has(sessionId)),
     listModels: vi.fn(async () => [
@@ -40,6 +41,7 @@ function createHarness() {
     eventBusRegistry: { getBus: () => undefined },
     runtimePaths: { dataDir, docsDir: join(dataDir, "docs"), env: {} },
     copilotHome,
+    sessionMetaStore: { getMeta: (sessionId: string) => ({ lastVisibleActivityAt: visibleActivity.get(sessionId) }) },
   } as unknown as AppContext;
   const facade: HelmBridgeFacade = {
     listSessions: async () => [],
@@ -68,6 +70,7 @@ function createHarness() {
     deleted,
     busy,
     copilotHome,
+    visibleActivity,
     advance: (ms: number) => {
       now += ms;
     },
@@ -246,6 +249,33 @@ describe("HelmService conversations", () => {
     advance(HOUR);
     globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
     expect(store.get(conversation.sessionId)?.lastActiveAt).toBe("2026-09-18T10:00:00.000Z");
+  });
+
+  it("records when Helm replied, timed by the chat's visible activity, and tells clients", async () => {
+    const { helm, globalBus, store, visibleActivity } = createHarness();
+    const conversation = await helm.createConversation();
+    const announced: unknown[] = [];
+    globalBus.subscribe((event) => { if (event.type === "helm:changed") announced.push(event); });
+
+    // A turn that ended without a reply (aborted, or only Tim's own message) is not a reply.
+    visibleActivity.set(conversation.sessionId, "2026-09-18T09:05:00.000Z");
+    globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
+    expect((await helm.getConversation(conversation.sessionId))?.lastReplyAt).toBeNull();
+
+    visibleActivity.set(conversation.sessionId, "2026-09-18T09:10:00.000Z");
+    globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId, assistantPreview: "Done." });
+    expect((await helm.getConversation(conversation.sessionId))?.lastReplyAt).toBe("2026-09-18T09:10:00.000Z");
+    expect(announced).toEqual([{ type: "helm:changed", reason: "conversation" }]);
+
+    // An older time never moves it back.
+    store.recordReply(conversation.sessionId, "2026-09-18T09:00:00.000Z");
+    expect(store.get(conversation.sessionId)?.lastReplyAt).toBe("2026-09-18T09:10:00.000Z");
+
+    // Undoing the turn takes the reply with it.
+    visibleActivity.set(conversation.sessionId, "2026-09-18T09:05:00.000Z");
+    globalBus.emit({ type: "session:history-truncated", sessionId: conversation.sessionId });
+    expect(store.get(conversation.sessionId)?.lastReplyAt).toBe("2026-09-18T09:05:00.000Z");
+    expect(announced).toHaveLength(2);
   });
 
   it("reads the session's own name and follows renames", async () => {

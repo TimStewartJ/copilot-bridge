@@ -626,6 +626,7 @@ export class HelmThinker {
       if (published) this.store.consumeFeedback(feedbackIds, run.id);
       console.warn(`[helm-thinker] Run ${run.id.slice(0, 8)} ${published ? "published but then" : ""} failed: ${message}`);
     } finally {
+      this.announce();
       if (active?.sources) {
         if (!this.store.getRun(run.id)?.briefJson) this.store.setRunSources(run.id, this.runSourceStatuses(active.sources), active.carriedSources);
         active.controller.abort();
@@ -794,6 +795,22 @@ export class HelmThinker {
         ...(done?.fromSources ?? []), ...(done?.sources ?? []).map((source) => source.serverId), ...settings.sources.map((source) => source.serverId),
       ]),
     };
+  }
+
+  /** The latest brief and whether Tim has seen it: cheap enough for the Home icon to ask often. */
+  getBriefStatus(): { runId: string | null; seen: boolean } {
+    const done = this.store.latestRun("done");
+    return { runId: done?.id ?? null, seen: !done || done.seenAt !== null };
+  }
+
+  /** Only the latest brief can be marked seen; an older one is already behind it. */
+  markBriefSeen(runId: string): { runId: string | null; seen: boolean } {
+    if (this.store.latestRun("done")?.id === runId && this.store.markRunSeen(runId)) this.announce();
+    return this.getBriefStatus();
+  }
+
+  private announce(): void {
+    this.ctx.globalBus.emit({ type: "helm:changed", reason: "brief" });
   }
 
   listRuns(): HelmRunView[] {

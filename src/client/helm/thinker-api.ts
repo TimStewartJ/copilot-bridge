@@ -23,8 +23,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const helmBriefKey = ["helm", "brief"] as const;
 export const helmMemoryKey = ["helm", "memory"] as const;
 export const helmRunsKey = ["helm", "runs"] as const;
+export const helmBriefStatusKey = ["helm", "brief-status"] as const;
+
+export interface HelmBriefStatus { runId: string | null; seen: boolean }
 
 export const fetchHelmBrief = (signal?: AbortSignal) => request<HelmBriefResponse>("/brief", { signal });
+export const fetchHelmBriefStatus = (signal?: AbortSignal) => request<HelmBriefStatus>("/brief/status", { signal });
+export const markHelmBriefSeen = (runId: string) => request<HelmBriefStatus>(`/brief/${encodeURIComponent(runId)}/seen`, { method: "POST", body: "{}" });
 export const thinkNow = () => request<HelmRunView>("/think", { method: "POST", body: "{}" });
 export const actOnItem = (runId: string, itemId: string, input: { actionId?: string; text?: string }) =>
   request<{ ok: true; outcome: string }>(`/brief/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/act`, { method: "POST", body: JSON.stringify(input) });
@@ -52,6 +57,16 @@ export function useHelmBrief() {
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
+}
+
+/** Whether the latest brief is new to Tim, for the Home icon. Refreshed by `helm:changed` events. */
+export function useHelmBriefStatusQuery() {
+  return useQuery({ queryKey: helmBriefStatusKey, queryFn: ({ signal }) => fetchHelmBriefStatus(signal), refetchOnWindowFocus: true });
+}
+
+/** The run of the brief the page has loaded, read from the cache without fetching it. */
+export function useLoadedHelmBriefRunId(): string | null {
+  return useQuery({ queryKey: helmBriefKey, queryFn: ({ signal }) => fetchHelmBrief(signal), enabled: false, select: (data) => data.run?.id ?? null }).data ?? null;
 }
 
 export function useHelmMemory() {

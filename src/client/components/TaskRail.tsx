@@ -3,7 +3,6 @@ import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api"
 import { GROUP_COLORS } from "../group-colors";
 import { IDENTITY_FILL, identityColor } from "../design/identity";
 import { timeAgo } from "../time";
-import { describeHomeChecklistIndicator, type HomeChecklistIndicator } from "../checklist-helpers";
 import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel, Layers, EyeOff } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
@@ -54,7 +53,8 @@ interface TaskRailProps {
   onOpenSearch?: () => void;
   isDocsActive: boolean;
   isDashboardActive: boolean;
-  homeChecklistIndicator?: HomeChecklistIndicator;
+  /** What Helm has new for Tim, shown as a mark on Home; null when nothing. */
+  homeMark?: string | null;
   expanded: boolean;
   onToggleExpanded: () => void;
   sessions?: Session[];
@@ -134,7 +134,7 @@ export default function TaskRail({
   onOpenSearch,
   isDocsActive,
   isDashboardActive,
-  homeChecklistIndicator = { state: "none", dueTodayCount: 0, overdueCount: 0, urgentCount: 0 },
+  homeMark = null,
   expanded,
   onToggleExpanded,
   sessions = [],
@@ -175,8 +175,6 @@ export default function TaskRail({
 }: TaskRailProps) {
   const navBtn = (active: boolean) =>
     active ? DS.row.selected : "text-text-muted hover:bg-bg-hover/60 hover:text-text-primary";
-  const homeIndicatorDescription = describeHomeChecklistIndicator(homeChecklistIndicator);
-  const homeIndicatorStatus = homeChecklistIndicator.state === "overdue" ? "danger" : "warning";
 
   const sessionMap = useMemo(() => {
     const map = new Map<string, Session>();
@@ -499,14 +497,14 @@ export default function TaskRail({
           <button
             type="button"
             onClick={onGoHome}
-            title={homeIndicatorDescription ? `Home • ${homeIndicatorDescription}` : "Home"}
-            aria-label={homeIndicatorDescription ? `Home, ${homeIndicatorDescription}` : "Home"}
+            title={homeMark ? `Home • ${homeMark}` : "Home"}
+            aria-label={homeMark ? `Home, ${homeMark}` : "Home"}
             className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
           >
             <LayoutDashboard size={18} />
-            {homeChecklistIndicator.state !== "none" && (
+            {homeMark && (
               <span className={DS.status.corner}>
-                <StatusIcon kind={homeIndicatorStatus} decorative />
+                <StatusIcon kind="unread" decorative />
               </span>
             )}
           </button>
@@ -964,14 +962,14 @@ export default function TaskRail({
       <div className="px-2 pb-1">
         <button
           onClick={onGoHome}
-          title={homeIndicatorDescription ? `Home • ${homeIndicatorDescription}` : "Home"}
-          aria-label={homeIndicatorDescription ? `Home, ${homeIndicatorDescription}` : "Home"}
+          title={homeMark ? `Home • ${homeMark}` : "Home"}
+          aria-label={homeMark ? `Home, ${homeMark}` : "Home"}
           className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isDashboardActive)}`}
         >
           <LayoutDashboard size={14} />
           Home
-          {homeChecklistIndicator.state !== "none" && (
-            <StatusIcon kind={homeIndicatorStatus} decorative size="md" className="ml-auto" />
+          {homeMark && (
+            <StatusIcon kind="unread" decorative size="md" className="ml-auto" />
           )}
         </button>
       </div>

@@ -3104,11 +3104,6 @@ export async function fetchChecklistItems(taskId: string): Promise<ChecklistItem
   return data.actions;
 }
 
-export async function fetchOpenChecklistItems(): Promise<ChecklistItem[]> {
-  const data = await apiFetch<{ actions: ChecklistItem[] }>("/api/actions/open");
-  return data.actions;
-}
-
 export async function createChecklistItem(taskId: string, text: string, deadline?: string): Promise<ChecklistItem> {
   const data = await apiFetch<{ action: ChecklistItem }>("/api/actions", { taskId, text, deadline });
   return data.action;

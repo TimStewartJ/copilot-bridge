@@ -70,6 +70,8 @@ export interface HelmViewProps {
   sessionReloadSignals: Record<string, number>;
   sessionBusySignals: Record<string, number>;
   sessionHistorySignals: Record<string, number>;
+  /** How far the conversation shown has been rendered, so having it on screen marks Helm's reply read. */
+  onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 }
 
 function conversationLabel(conversation: Pick<HelmConversation, "title">): string {
@@ -258,6 +260,7 @@ export default function HelmView({
   sessionReloadSignals,
   sessionBusySignals,
   sessionHistorySignals,
+  onRenderedReadThrough,
 }: HelmViewProps) {
   const queryClient = useQueryClient();
   const helmQuery = useHelmStateQuery();
@@ -523,6 +526,7 @@ export default function HelmView({
           />
         ) : undefined}
         onMessageSent={handleMessageSent}
+        onRenderedReadThrough={onRenderedReadThrough}
         draft={draft}
         onDraftChange={handleDraftChange}
         onDraftClear={handleDraftClear}

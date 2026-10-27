@@ -84,6 +84,7 @@ function hydrateRun(row: any): HelmRunRecord {
     fromSources: stringList(row.fromSourcesJson),
     contextJson: row.contextJson ?? null, briefJson: row.briefJson ?? null, changesJson: row.changesJson ?? null,
     sessionDeleted: Number(row.sessionDeleted) === 1,
+    seenAt: row.seenAt ?? null,
   };
 }
 
@@ -260,6 +261,12 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
       .run(outcome.status, outcome.error ?? null, outcome.credits ?? null, iso(), id);
   }
 
+  /** Returns false when the run does not exist or was already seen. */
+  function markRunSeen(id: string): boolean {
+    const result = db.prepare("UPDATE helm_runs SET seenAt = ? WHERE id = ? AND seenAt IS NULL").run(iso(), id);
+    return Number(result.changes) === 1;
+  }
+
   function setRunCredits(id: string, credits: number): void {
     db.prepare("UPDATE helm_runs SET credits = ? WHERE id = ?").run(credits, id);
   }
@@ -363,7 +370,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   return {
     getSettings, updateSettings,
     listMemory, getMemory, findByKey, countActive, addMemory, updateMemory, noteUse,
-    createRun, getRun, getRunBySession, isRunSession, listRuns, latestRun, setRunContext, setRunSources, publishRun, finishRun,
+    createRun, getRun, getRunBySession, isRunSession, listRuns, latestRun, setRunContext, setRunSources, publishRun, finishRun, markRunSeen,
     getSourceCoverage, setSourceCoverage,
     setRunCredits, failInterruptedRuns, markSessionDeleted, pruneRuns,
     setItemState, claimItem, getItemStates, addFeedback, pendingFeedback, consumeFeedback,
