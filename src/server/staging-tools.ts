@@ -1960,7 +1960,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
   defineBridgeTool("staging_init", {
     description:
       "Create a fresh staging worktree for making code changes to the bridge. " +
-      "Returns the staging directory path where you should make all edits. Dependencies are isolated per worktree; " +
+      "Returns the staging directory path where you should make all edits; read its AGENTS.md before editing. The repository is public on GitHub. Dependencies are isolated per worktree; " +
       `run ${STAGING_INSTALL_COMMAND} in the worktree before direct checks. Preview and deploy also install them locally when needed. ` +
       "Use npm run check:fast plus the focused check lane that matches your edit while iterating. " +
       "Final validation is enforced by staging_preview by default, or by staging_deploy when preview validation was skipped or invalidated.",
@@ -2031,6 +2031,8 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
           `Staging worktree created at ${stagingDir}. ` +
           `Dependencies are isolated per worktree; run ${STAGING_INSTALL_COMMAND} before direct checks. ` +
           `Preview and deploy also install them locally when needed. ` +
+          `Read AGENTS.md there before editing: it holds this repository's rules, and the repository is public on GitHub, ` +
+          `so a deploy publishes everything you write. ` +
           `Make your changes there, run quality checks, then call staging_deploy when ready.`,
       };
     },

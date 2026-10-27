@@ -3,6 +3,7 @@ import { describeTabAttention, type TabAttentionSummary } from "../hooks/useTask
 import type { MobileWorkSegment } from "../lib/mobile-route-meta";
 import { DS, cx } from "../design/tokens";
 import { CountBadge } from "../design/primitives";
+import { haptic } from "../lib/haptics";
 
 interface MobileWorkSegmentsProps {
   activeSegment: MobileWorkSegment;
@@ -38,7 +39,10 @@ export function MobileWorkSegments({
             role="tab"
             aria-selected={selected}
             aria-label={attentionDescription ? `${label}, ${attentionDescription}` : label}
-            onClick={() => onSelectSegment(id)}
+            onClick={() => {
+              if (!selected) haptic("selection");
+              onSelectSegment(id);
+            }}
             className={cx(
               DS.segmented.option,
               DS.segmented.optionSize.md,

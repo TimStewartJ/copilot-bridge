@@ -6,7 +6,10 @@ import {
   getReactProps,
   type ReactDomHarness,
 } from "../test-react-harness";
+import { haptic } from "../lib/haptics";
 import { MobileWorkSegments } from "./MobileWorkSegments";
+
+vi.mock("../lib/haptics", () => ({ haptic: vi.fn() }));
 
 function findTabByLabel(root: any, label: string): any {
   const tab = findAllByTag(root, "BUTTON").find(
@@ -28,6 +31,7 @@ describe("MobileWorkSegments", () => {
   afterEach(async () => {
     await harness?.cleanup();
     harness = null;
+    vi.mocked(haptic).mockClear();
   });
 
   it("marks the list that is showing and switches to the other one", async () => {
@@ -47,6 +51,15 @@ describe("MobileWorkSegments", () => {
 
     await harness.act(() => getReactProps(chats)!.onClick());
     expect(onSelectSegment).toHaveBeenCalledWith("chats");
+    expect(haptic).toHaveBeenCalledWith("selection");
+  });
+
+  it("ticks only when the tap changes the list", async () => {
+    harness = await createReactDomHarness();
+    await harness.render(createElement(MobileWorkSegments, { activeSegment: "tasks", onSelectSegment: vi.fn() }));
+
+    await harness.act(() => getReactProps(findTabByLabel(harness!.dom.container, "Tasks"))!.onClick());
+    expect(haptic).not.toHaveBeenCalled();
   });
 
   it("keeps a separate attention badge on each list", async () => {

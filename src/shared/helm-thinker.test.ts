@@ -6,11 +6,11 @@ describe("Helm thinker settings", () => {
     const patch = validateHelmThinkerSettingsPatch({
       times: ["18:00", "08:00", "08:00"],
       autonomy: "propose",
-      peers: [{ id: "PC", label: "devbox", apiUrl: "http://100.64.0.7:3333/", webUrl: "https://devbox.example.ts.net" }],
+      peers: [{ id: "PC", label: "devbox", apiUrl: "http://100.64.0.2:3333/", webUrl: "https://devbox.example.ts.net" }],
     });
     expect(patch.times).toEqual(["08:00", "18:00"]);
     expect(patch.autonomy).toBe("propose");
-    expect(patch.peers).toEqual([{ id: "pc", label: "devbox", apiUrl: "http://100.64.0.7:3333", webUrl: "https://devbox.example.ts.net" }]);
+    expect(patch.peers).toEqual([{ id: "pc", label: "devbox", apiUrl: "http://100.64.0.2:3333", webUrl: "https://devbox.example.ts.net" }]);
   });
 
   it("refuses unknown fields, bad times, credentials in URLs and a peer named local", () => {
