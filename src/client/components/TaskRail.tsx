@@ -796,7 +796,6 @@ export default function TaskRail({
               {sortedTasks.length === 0 && (
                 <EmptyState
                   message="No tasks yet"
-                  sub="Create a task to organize your work"
                 />
               )}
               {setAsideTasks.length > 0 && (

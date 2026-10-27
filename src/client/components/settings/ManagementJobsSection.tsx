@@ -164,7 +164,7 @@ export function ManagementJobsSection({ refreshSignal = 0, open = false }: { ref
         {actionMessage && <p role="status" className={DS.field.help}>{actionMessage}</p>}
         {staleCount > 0 && (
           <Notice tone="warning" icon={<AlertTriangle size={14} />} title={`${plural(staleCount, "running job")} look stale`}>
-            No heartbeat for over {list?.staleAfterMs ? formatDurationMs(list.staleAfterMs) : "the stale limit"}. Runner health is inferred from job heartbeats.
+            No heartbeat for over {list?.staleAfterMs ? formatDurationMs(list.staleAfterMs) : "the stale limit"}.
           </Notice>
         )}
 

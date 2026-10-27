@@ -184,9 +184,9 @@ export function NotificationsSection() {
           {message && <p role="status" className={cx(DS.field.help, "mt-2")}>{message}</p>}
         </SettingRow>
       </SettingList>
-      <Details label="How notifications work" className="mt-3">
+      <Details label="Details" className="mt-3">
         <div className="space-y-2 pt-2 text-xs leading-relaxed text-text-secondary">
-          <p>Session notifications are for conversations requesting your input. Routine completions stay in their task and do not interrupt you. Home does not grant additional notification authority.</p>
+          {/* copy-ok: a setup step iPhone needs */}
           <p>On iPhone, install Bridge to the Home Screen from the stable HTTPS origin first.</p>
           <FieldList>
             <Field label="Permission" mono>{state?.permission ?? "checking"}</Field>

@@ -11,6 +11,7 @@ export function formatModelSwitchCompactionMessage({
   currentTokens,
   targetLimit,
 }: SessionModelSwitchConfirmation): string {
+  // copy-ok: the decision needs the numbers
   return `Your conversation is using ~${currentTokens.toLocaleString()} tokens, which exceeds ${targetModelDisplayName}'s prompt limit of ${targetLimit.toLocaleString()} tokens. Compact the conversation before switching?`;
 }
 

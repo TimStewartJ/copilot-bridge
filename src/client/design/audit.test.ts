@@ -9,6 +9,7 @@ import {
   formatDesignAuditResult,
 } from "./audit";
 import { DESIGN_AUDIT_PENDING } from "./audit-pending";
+import { findLongCopy } from "./copy-audit";
 
 function ruleIds(source: string): string[] {
   return findDesignViolations("screen.tsx", source).map((violation) => violation.ruleId);
@@ -97,6 +98,35 @@ describe("design rules", () => {
   });
 });
 
+describe("copy rule", () => {
+  const long = "This sentence explains the control at length so that nobody could ever miss it.";
+  const lines = (source: string, file = "screen.tsx") => findLongCopy(file, source).map((violation) => violation.lineNumber);
+
+  it("flags long prose as the reader sees it", () => {
+    expect(lines(`const a = <p>${long}</p>;`)).toEqual([1]);
+    expect(lines(`const a = <p>Open the <code>settings</code> page and then <Link to="/x">choose</Link> the model you want to use here.</p>;`)).toEqual([1]);
+    expect(lines(`const a = <FormRow help="${long}" />;`)).toEqual([1]);
+    expect(lines(`const a = "This explains the control " + "at length so that nobody could ever miss it.";`)).toEqual([1]);
+    expect(lines(`const a = <Notice title="${long}" />;`)).toEqual([1]);
+  });
+
+  it("leaves short text, tooltips, labels for assistive tech, recipes, markup and errors alone", () => {
+    expect(lines(`const a = <p>Nothing needs you right now.</p>;`)).toEqual([]);
+    expect(lines(`const a = <p>{count} of {total} chats indexed in the {source} source for {name} and {other}</p>;`)).toEqual([]);
+    expect(lines(`const a = <Button title="${long}" aria-label="${long}" placeholder="${long}" />;`)).toEqual([]);
+    expect(lines(`const a = "relative flex max-h-[85vh] w-full flex-col rounded-t-2xl border border-surface-edge bg-surface-overlay shadow-2xl md:mb-16";`)).toEqual([]);
+    expect(lines(`const a = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">';`)).toEqual([]);
+    expect(lines(`throw new Error("${long}");\nconsole.warn("${long}");`)).toEqual([]);
+  });
+
+  it("accepts long copy only with a reason of its own", () => {
+    expect(lines(`// copy-ok: confirms a destructive action\nconst a = "${long}";`)).toEqual([]);
+    expect(lines(`const a = <p>\n  {/* copy-ok: safety warning */}\n  ${long}\n</p>;`)).toEqual([]);
+    expect(lines(`// copy-ok:\nconst a = "${long}";`)).toEqual([2]);
+    expect(lines(`// design-audit-ignore-next-line: content\nconst a = "${long}";`)).toEqual([2]);
+  });
+});
+
 describe("design audit", () => {
   let rootDir: string;
   let componentsDir: string;
@@ -135,6 +165,18 @@ describe("design audit", () => {
     writeFileSync(join(sibling, "Bad.tsx"), dirty);
     const result = auditDesignSystem(rootDir, []);
     expect(result.violations.map((violation) => violation.file)).toEqual(["src/client/design-legacy/Bad.tsx"]);
+  });
+
+  it("holds the system's own primitives and shared UI text to the copy rule", () => {
+    const long = "This sentence explains the control at length so that nobody could ever miss it.";
+    writeFileSync(join(rootDir, "src", "client", "design", "primitives.tsx"), `export const a = <p>${long}</p>;\n`);
+    mkdirSync(join(rootDir, "src", "shared"), { recursive: true });
+    writeFileSync(join(rootDir, "src", "shared", "model-roles.ts"), `export const a = { description: "${long}" };\n`);
+    const result = auditDesignSystem(rootDir, []);
+    expect(result.violations.map((violation) => `${violation.ruleId} ${violation.file}`)).toEqual([
+      "long-copy src/client/design/primitives.tsx",
+      "long-copy src/shared/model-roles.ts",
+    ]);
   });
 
   it("fails until a file that came clean, or is gone, leaves the pending list", () => {

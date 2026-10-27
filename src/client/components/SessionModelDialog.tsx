@@ -31,7 +31,6 @@ import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
 import ModelSwitchCompactionPrompt, { MODEL_SWITCH_COMPACTION_TITLE } from "./ModelSwitchCompactionPrompt";
 import {
-  getPromptProfileInfo,
   PROMPT_PROFILES,
   type PromptProfileId,
 } from "../../shared/prompt-profiles.js";
@@ -550,11 +549,8 @@ export default function SessionModelDialog({
               }}
               disabled={modelSwitchSaving || !currentPromptProfile}
             />
-            {promptProfileDraft && (
-              <p className={DS.field.help}>
-                {getPromptProfileInfo(promptProfileDraft).description}
-                {profileDirty ? " The next message starts with this profile's instructions." : ""}
-              </p>
+            {profileDirty && (
+              <p className={DS.field.help}>The next message starts with this profile's instructions.</p>
             )}
           </div>
         </div>

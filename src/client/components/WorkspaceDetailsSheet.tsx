@@ -455,9 +455,6 @@ export default function WorkspaceDetailsSheet({
                 {copyError}
               </div>
             )}
-            <div className="mt-2 text-[11px] text-text-muted">
-              Use a discovered worktree above, or enter a custom path for a one-off session override.
-            </div>
           </div>
 
           {error && (

@@ -124,12 +124,12 @@ export function QuietReviewDialog({ rows, pending, onOutcome, onSetAside, onOpen
         <dt className={DS.text.meta}>Last touched</dt><dd className="text-text-primary">{describeTouch(row)}</dd>
         <dt className={DS.text.meta}>{row.nextAction ? "Next step" : row.waitingOn ? "Waiting for" : "Next step"}</dt>
         <dd className={context?.empty ? "text-text-secondary" : "text-text-primary"}>{row.nextAction ?? row.waitingOn ?? "None recorded"}</dd>
-        <dt className={DS.text.meta}>Kind</dt><dd className="text-text-primary">{row.kind === "ongoing" ? "Ongoing, no fixed finish line" : "Task"}</dd>
+        <dt className={DS.text.meta}>Kind</dt><dd className="text-text-primary">{row.kind === "ongoing" ? "Ongoing" : "Task"}</dd>
       </dl>
       {later ? <div className="space-y-3">
         <label htmlFor={dateId} className={DS.field.label}>Revisit on (optional)</label>
         <TextInput id={dateId} type="date" value={date} onChange={event => setDate(event.target.value)} />
-        <p className={DS.text.meta}>Set aside from Home and your task list's main view. A date brings it back for review; no work starts.</p>
+        <p className={DS.text.meta}>A date brings it back for review.</p>
         {dateError && <p className={DS.tone.danger}>{dateError}</p>}
         <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setLater(false)}>Back</Button>
           <Button variant="primary" disabled={pending} icon={<CalendarDays size={14} aria-hidden="true" />} onClick={() => void confirmLater()}>Set aside</Button></div>
@@ -146,8 +146,7 @@ export function QuietReviewDialog({ rows, pending, onOutcome, onSetAside, onOpen
         </button>)}
       </div>}
       {!later && <div className="flex items-center justify-between gap-2">
-        <span className={DS.text.meta}>Any choice removes it from Worth a look.</span>
-        <div className="flex gap-1"><Button variant="ghost" onClick={() => onOpenTask(row)}>Open task</Button><Button variant="ghost" onClick={() => advance(false)}>Skip</Button></div>
+        <div className="ml-auto flex gap-1"><Button variant="ghost" onClick={() => onOpenTask(row)}>Open task</Button><Button variant="ghost" onClick={() => advance(false)}>Skip</Button></div>
       </div>}
     </div>}
   </Dialog>;

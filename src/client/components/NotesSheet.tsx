@@ -36,7 +36,7 @@ export default function NotesSheet({
   description,
   placeholder = "Write notes in markdown...",
   emptyMessage = "No notes yet",
-  emptySub = "Add notes to capture context and decisions",
+  emptySub,
   emptyActionLabel = "Add notes",
 }: NotesSheetProps) {
   const [editing, setEditing] = useState(startInEditMode);

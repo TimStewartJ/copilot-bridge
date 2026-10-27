@@ -107,7 +107,6 @@ function SearchResults({
     return (
       <div className="px-4 py-10 text-center">
         <p className="text-sm text-text-muted">{searching ? "Searching…" : <>No pages match “{query.trim()}”</>}</p>
-        {!searching && <p className="mt-1.5 text-xs text-text-faint">Search looks at titles, tags and the full text of every page.</p>}
       </div>
     );
   }
@@ -471,7 +470,6 @@ export default function DocsSidebar({
         ) : rows.length === 0 ? (
           <div className="px-4 py-10 text-center">
             <p className="text-sm font-medium text-text-primary">No pages yet</p>
-            <p className="mt-1.5 text-xs leading-5 text-text-muted">Write the first one, or ask an agent to document something for you.</p>
             <DocsButton variant="primary" icon={FilePlus} onClick={() => openNewPage()} className="mt-4">New page</DocsButton>
           </div>
         ) : (

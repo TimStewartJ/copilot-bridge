@@ -878,7 +878,7 @@ export function arePageDraftsEqual(a: PageDraftFields, b: PageDraftFields): bool
 export function validatePageDraft(draft: PageDraftFields): string | null {
   if (!draft.title.trim()) return "Give the page a title.";
   if (draft.tags.length > 0 && !draft.description.trim()) {
-    return "Tagged pages need a description, so agents can tell when the page is relevant.";
+    return "Tagged pages need a description so agents can judge relevance.";
   }
   return null;
 }

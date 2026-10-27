@@ -135,7 +135,7 @@ export function HandsFreeDock({ controller, onEnd }: { controller: VoiceModeCont
           <div className="mt-0.5 line-clamp-2 min-h-[1.25rem] text-sm leading-snug text-text-primary">
             {caption
               ? <span className={caption.speaker === "user" ? "text-accent" : undefined}>{caption.speaker === "user" ? `“${caption.text}”` : caption.text}</span>
-              : <span className="text-text-faint">Just talk. Pause mid-thought and it waits; talk over it to interrupt.</span>}
+              : <span className="text-text-faint">Just talk.</span>}
           </div>
         </div>
         <HandsFreeControls controller={controller} onEnd={onEnd} />
@@ -246,7 +246,7 @@ export function HandsFreeSetupPanel({ controller, onClose }: { controller: Voice
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold text-text-primary">Set up hands-free voice</div>
             <p className="mt-1 text-xs leading-relaxed text-text-muted">
-              Speech recognition, turn detection and voices all run on the computer hosting Bridge. Nothing you say leaves it except the text sent to your Copilot model. The same one-time setup also powers the chat mic.
+              Runs on the computer hosting Bridge. Audio never leaves it.
             </p>
             {!install ? (
               <div className="mt-3 flex items-center gap-2 text-xs text-text-muted"><Loader2 size={13} className="animate-spin" /> Checking the speech engine…</div>

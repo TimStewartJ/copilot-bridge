@@ -177,7 +177,7 @@ export default function TaskContextMenu({
           onClick={() => {
             if (
               kindChangeClearsDefinition
-              && !window.confirm("Changing this to an ongoing task will clear its Done when definition. Continue?")
+              && !window.confirm("Make this ongoing? Its Done when will be cleared.")
             ) return;
             onUpdateTask?.(task.id, kindUpdate);
             closeMenu();

@@ -3,6 +3,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { DESIGN_AUDIT_PENDING } from "./audit-pending";
+import { findLongCopy } from "./copy-audit";
 
 /**
  * Keeps screens on the design system. README.md in this folder holds the rules; this file turns the
@@ -11,6 +12,9 @@ import { DESIGN_AUDIT_PENDING } from "./audit-pending";
  * Every client source file is checked unless it is listed in audit-pending.ts, which names the
  * screens that have not been migrated yet. That list only shrinks: a new file is never added to it,
  * and a file that comes out clean has to be taken off it.
+ *
+ * The copy rule (copy-audit.ts) also reads this folder's primitives and the shared UI text listed in
+ * COPY_ONLY_FILES, and no pending entry or design-audit-ignore comment exempts from it.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +22,10 @@ const REPO_ROOT = join(__dirname, "..", "..", "..");
 const CLIENT_ROOT = join("src", "client");
 /** The system itself spells the recipes out, so the rules do not apply inside it. */
 const DESIGN_DIR = join("src", "client", "design");
+/** The audit's own sources hold rule messages, not screen text. */
+const COPY_EXEMPT_FILES = new Set(["src/client/design/audit.ts", "src/client/design/copy-audit.ts", "src/client/design/audit-pending.ts"]);
+/** Shared modules whose strings are shown in the app as they are. */
+const COPY_ONLY_FILES = ["src/shared/model-roles.ts"];
 const SOURCE_FILE_RE = /\.(ts|tsx)$/;
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx)$/;
 const IGNORE_NEXT_LINE_RE = /design-audit-ignore-next-line:\s*\S/;
@@ -220,16 +228,23 @@ export function auditDesignSystem(
   let scannedFiles = 0;
 
   for (const filePath of files) {
+    const file = toPosix(relative(resolvedRoot, filePath));
+    const content = readFileSync(filePath, "utf-8");
+    if (!COPY_EXEMPT_FILES.has(file)) violations.push(...findLongCopy(file, content));
     if (filePath.startsWith(`${designDir}${sep}`)) continue;
     scannedFiles += 1;
-    const file = toPosix(relative(resolvedRoot, filePath));
-    const found = findDesignViolations(file, readFileSync(filePath, "utf-8"));
+    const found = findDesignViolations(file, content);
     if (found.length === 0) continue;
     if (pendingSet.has(file)) {
       pendingWithViolations.add(file);
     } else {
       violations.push(...found);
     }
+  }
+
+  for (const file of COPY_ONLY_FILES) {
+    const filePath = join(resolvedRoot, file);
+    if (existsSync(filePath)) violations.push(...findLongCopy(file, readFileSync(filePath, "utf-8")));
   }
 
   return {
@@ -286,7 +301,8 @@ if (isDirectExecution()) {
     const targetArg = process.argv[explainIndex + 1];
     if (!targetArg || targetArg.startsWith("--")) throw new Error("Expected a source file after --explain.");
     const target = toPosix(relative(REPO_ROOT, resolve(REPO_ROOT, targetArg)));
-    const found = findDesignViolations(target, readFileSync(join(REPO_ROOT, target), "utf-8"));
+    const content = readFileSync(join(REPO_ROOT, target), "utf-8");
+    const found = [...findDesignViolations(target, content), ...findLongCopy(target, content)];
     process.stdout.write(found.length === 0
       ? `${target} follows the design system.\n`
       : `${found.map((violation) => `${target}:${violation.lineNumber} [${violation.ruleId}] ${violation.message}\n  ${violation.snippet}`).join("\n")}\n`);

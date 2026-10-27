@@ -340,7 +340,6 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
           </section>
           : <div className="py-5">
             <p className={DS.text.sectionTitle}>{!listsUnreadChats ? "Find something you saved" : scope === "task" ? "No unread chats in this task" : "No unread chats"}</p>
-            <p className={cx(DS.text.prose, "mt-1")}>Search a phrase, task name, or topic. Choose a source above to narrow the results.</p>
           </div>
         )}
         {loading && <p role="status" className={DS.text.prose}>Searching saved Bridge content…</p>}
@@ -359,11 +358,10 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
             <ul className="mt-2 list-disc pl-5">{visibleResponse.coverage.errors.map((coverageError) => <li key={coverageError}>{coverageError}</li>)}</ul>
           </div>}
           <p className={DS.text.prose} aria-live="polite">{total === 0
-            ? "No matches in the searched coverage."
+            ? "No matches."
             : scope === "session"
               ? `${sessionMatchCount} matching message${sessionMatchCount === 1 ? "" : "s"} in this chat.`
               : `${total} result${total === 1 ? "" : "s"}.`}</p>
-          {total === 0 && <p className={DS.text.prose}>Try fewer words, a different phrase, or another source.</p>}
         </div>}
 
         {visibleResponse && visibleResponse.chats.items.length > 0 && <section aria-labelledby="search-chats">
@@ -421,7 +419,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
                 </div>;
               })}
             </div>
-            {hit.matches.length < hit.matchCount && scope !== "session" && <p className="mt-3 text-xs text-warning">Showing {hit.matches.length} of {hit.matchCount} matching messages. Additional matches are not loaded in this result page.</p>}
+            {hit.matches.length < hit.matchCount && scope !== "session" && <p className="mt-3 text-xs text-warning">Showing {hit.matches.length} of {hit.matchCount} matching messages; the rest are not loaded here.</p>}
           </article>;
           })}
           </div>
@@ -458,8 +456,8 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
         <details className={DS.details.root}>
           <summary className={cx(DS.details.summary, DS.row.touch, "text-xs text-text-secondary")}>Search tips and coverage</summary>
           <div className="space-y-1 pb-2 text-xs leading-relaxed text-text-secondary">
-            <p>Use type:chat, type:task, type:doc, task: or chat: to filter. Use arrows and Enter to choose a suggestion or open a result.</p>
-            <p>Searchable chat content includes visible user and assistant text. Tool logs, attachments, OCR, hidden instructions, and external pages are not searched. Search retrieves saved text only; it does not ask AI.</p>
+            <p>Filters: type:chat, type:task, type:doc, task:, chat:</p>
+            <p>Tool logs, attachments and external pages are not searched.</p>
           </div>
         </details>
       </footer>

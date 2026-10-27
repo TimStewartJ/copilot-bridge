@@ -116,7 +116,7 @@ describe("SpeechEngineSection", () => {
       apiMocks.fetchTranscriptionStatus.mockResolvedValue(availableMic);
       await advanceTimersByTimeAct(harness.act, 1_000);
       await waitUntilAct(harness.act, () => text(harness).includes("Installed"));
-      expect(text(harness)).toContain("Ready. Recordings up to 2 minutes are transcribed on this computer.");
+      expect(text(harness)).toContain("Ready. Up to 2 minutes per recording.");
       expect(findAllByTag(harness.dom.container, "A").map((link) => link.textContent)).toContain("Open Helm");
       expect(findAllByTag(harness.dom.container, "BUTTON").some((button) => button.textContent?.includes("Download and set up"))).toBe(false);
     } finally {
@@ -130,7 +130,7 @@ describe("SpeechEngineSection", () => {
     const harness = await renderSection();
     try {
       await waitUntilAct(harness.act, () => text(harness).includes("Unsupported"));
-      expect(text(harness)).toContain("isn't available for this host (win32-arm64)");
+      expect(text(harness)).toContain("Not available for this host (win32-arm64).");
       expect(findAllByTag(harness.dom.container, "BUTTON").some((button) => button.textContent?.includes("Download and set up"))).toBe(false);
     } finally {
       await harness.cleanup();
@@ -153,7 +153,7 @@ describe("SpeechEngineSection", () => {
 
 describe("speech engine status copy", () => {
   it("describes the engine lifecycle", () => {
-    expect(describeEngineState({ state: "stopped" })).toContain("starts when you use the chat mic or Helm's hands-free mode");
+    expect(describeEngineState({ state: "stopped" })).toBe("Not running. Starts when needed and stops after 10 idle minutes.");
     expect(describeEngineState({ state: "starting", detail: "Loading speech recognition" })).toBe("Loading speech recognition…");
     expect(describeEngineState({ state: "ready", loaded: ["asr"] })).toBe("Running with speech recognition loaded.");
     expect(describeEngineState({ state: "ready", loaded: ["asr", "turn", "tts"] })).toBe("Running with speech recognition, turn detection and voice loaded.");

@@ -97,10 +97,10 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
       </header>
 
       {data?.running && <Notice tone="info" icon={<Loader2 size={15} className="animate-spin" />} title="Helm is thinking">
-        Started {formatAgo(data.running.startedAt)} on {data.running.model ?? "its model"}. This usually takes a few minutes; the brief updates by itself.
+        Started {formatAgo(data.running.startedAt)} on {data.running.model ?? "its model"}.
       </Notice>}
       {data?.lastFailure && !data.running && <Notice tone="warning" title="Helm's last look didn't finish">{data.lastFailure.error ?? "Unknown error"} ({formatAgo(data.lastFailure.startedAt)})</Notice>}
-      {data?.preview && <Notice tone="neutral" title="Staged preview">Helm doesn't think on a schedule here, and nothing on other Bridges can be changed from this page.</Notice>}
+      {data?.preview && <Notice tone="neutral" title="Staged preview">Previews don't think on a schedule or change other Bridges.</Notice>}
       {(error || query.error) && <Notice tone="danger" title="Something went wrong">{error || query.error?.message}</Notice>}
       <OutcomeNotice receipt={outcomes.receipt} error={outcomes.error} pending={outcomes.pending} onUndo={() => void outcomes.undoLast()} onDismiss={outcomes.dismiss} />
       {data && (data.since.questions > 0 || data.since.replies > 0) && <div className={cx(DS.surface.inset, "flex flex-wrap items-center gap-2 px-3 py-2 text-[13px] text-text-secondary")}>
@@ -111,7 +111,7 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
 
       {!data ? <EmptyHint>{query.error ? "Helm's brief is unavailable." : "Loading Helm's brief…"}</EmptyHint>
         : !brief ? <Section label="Helm hasn't written a brief yet" level="page" surface>
-          <p className={DS.text.prose}>Helm reads your tasks and conversations{data.settings.peers.length ? ` here and on ${data.settings.peers.map((peer) => peer.label).join(", ")}` : ""}, decides what really needs you, and writes it here with what it recommends. It takes a few minutes and runs on {data.settings.times.join(" and ")} by itself.</p>
+          {data.settings.enabled && data.settings.times.length > 0 && <p className={DS.text.prose}>Runs at {data.settings.times.join(" and ")} by itself.</p>}
           <div className="mt-3 flex gap-2"><Button variant="primary" disabled={!!data.running || starting} onClick={() => void think()}><Brain size={15} />Think now</Button>
             <Button variant="ghost" onClick={() => navigate("/dashboard/home?view=classic")}>Use the classic Home</Button></div>
         </Section>
@@ -268,7 +268,7 @@ function SideColumn({ data, labels, onOpen, onChanged, onError, onCloseTasks }: 
   const proposals = brief.proposals.filter((proposal) => (data.itemStates[proposal.id]?.status ?? "open") === "open");
   return <>
     <Section label={`Handled since ${formatClock(run.startedAt)}`} count={handled.filter((entry) => !entry.undoneAt).length || undefined} level="page" surface>
-      {handled.length === 0 && <EmptyHint>{data.settings.autonomy === "routine" ? "Nothing needed handling." : "Helm only proposes; it doesn't handle anything for you."}</EmptyHint>}
+      {handled.length === 0 && <EmptyHint>{data.settings.autonomy === "routine" ? "Nothing needed handling." : "Helm only proposes."}</EmptyHint>}
       {handled.map((entry) => <div key={entry.id} className="flex items-start gap-2 border-t border-border py-2.5 first:border-t-0 first:pt-0">
         {entry.undoneAt ? <RotateCcw size={14} className="mt-0.5 shrink-0 text-text-faint" /> : <Check size={14} className="mt-0.5 shrink-0 text-success" />}
         <div className="min-w-0 flex-1">

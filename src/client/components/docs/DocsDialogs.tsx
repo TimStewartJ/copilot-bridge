@@ -88,7 +88,7 @@ export function NewPageDialog({ initialFolder, initialSlug = "", onClose }: { in
           />
         </DocsField>
         <div className="grid gap-4 sm:grid-cols-2">
-          <DocsField label="Folder" htmlFor={folderId} hint="Leave empty for the top level. A new folder name creates it.">
+          <DocsField label="Folder" htmlFor={folderId} hint="A new name creates the folder.">
             <DocsInput
               id={folderId}
               list={folderListId}
@@ -102,7 +102,7 @@ export function NewPageDialog({ initialFolder, initialSlug = "", onClose }: { in
               {folders.map((option) => <option key={option} value={option} />)}
             </datalist>
           </DocsField>
-          <DocsField label="Address" htmlFor={slugId} hint="The page's name in links and URLs.">
+          <DocsField label="Address" htmlFor={slugId}>
             <DocsInput
               id={slugId}
               value={effectiveSlug}
@@ -183,7 +183,7 @@ function NewEntryForm({ folder, schema, onClose }: { folder: string; schema: DbS
           disabled={createEntry.isPending}
           onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))}
         />
-        <DocsField label="Notes" htmlFor={bodyId} hint="Optional. Markdown; you can keep writing on the entry's page afterwards.">
+        <DocsField label="Notes" htmlFor={bodyId}>
           <DocsTextarea id={bodyId} rows={4} value={body} onChange={(event) => setBody(event.target.value)} className="resize-y" />
         </DocsField>
       </form>
@@ -243,11 +243,12 @@ export function DeletePageDialog({ target, onClose, onDeleted }: { target: Delet
     >
       <div className="space-y-3">
         {error && <DocsBanner tone="error">{error}</DocsBanner>}
+        {/* copy-ok: delete consequence */}
         <p className="text-sm leading-6 text-text-secondary">
           <span className="font-medium text-text-primary">{target.title}</span> will be removed from your docs. Links to it from other pages will stop working.
         </p>
         <p className="text-[13px] leading-5 text-text-muted">
-          Bridge keeps snapshots of your docs, so an agent can usually restore a deleted {noun} if you change your mind.
+          An agent can usually restore it from a snapshot.
         </p>
       </div>
     </DocsDialog>

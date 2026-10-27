@@ -184,7 +184,7 @@ export function McpServersSection() {
         {loadingServers && <p role="status" className={DS.field.help}>Loading MCP servers…</p>}
 
         {!loadingServers && servers.length === 0 && !addingServer && (
-          <EmptyHint>No MCP servers yet. Add one to give sessions tools.</EmptyHint>
+          <EmptyHint>No MCP servers yet.</EmptyHint>
         )}
 
         {addingServer && (

@@ -629,7 +629,7 @@ describe("ChatView exact-message history", () => {
       expect(reconnectMock).not.toHaveBeenCalled();
       expect(ensureConnectedMock).not.toHaveBeenCalled();
       expect(chatInputMock).not.toHaveBeenCalled();
-      expect(dom.container.textContent).toContain("latest saved history for this conversation");
+      expect(dom.container.textContent).toContain("Viewing saved history.");
       expect(dom.container.textContent).not.toContain("Copy link");
     } finally {
       await cleanup();
@@ -672,7 +672,7 @@ describe("ChatView exact-message history", () => {
       expect(ensureConnectedMock).not.toHaveBeenCalled();
       expect(fetchSessionContextMock).not.toHaveBeenCalled();
       expect(chatInputMock).not.toHaveBeenCalled();
-      expect(dom.container.textContent).toContain("does not resume the chat");
+      expect(dom.container.textContent).toContain("The chat is not resumed.");
       expect(dom.container.textContent).toContain("Back to results");
       expect(dom.container.textContent).toContain("Previous match");
       expect(dom.container.textContent).toContain("Next match");
@@ -932,8 +932,7 @@ describe("ChatView external session use", () => {
     });
 
     try {
-      expect(dom.container.textContent).toContain("This session is open in another Copilot client.");
-      expect(dom.container.textContent).toContain("Sending here is still allowed.");
+      expect(dom.container.textContent).toContain("Open in another Copilot client.");
     } finally {
       await cleanup();
     }
@@ -3916,7 +3915,7 @@ describe("ChatView sub-agents", () => {
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Retrying in 5 seconds") ?? false);
       expect(dom.container.textContent).toContain("Partial answer");
-      expect(dom.container.textContent).toContain("One automatic retry.");
+      expect(dom.container.textContent).toContain("retrying once");
       await advanceTimersByTimeAct(act, 4_000);
       expect(dom.container.textContent).toContain("Retrying in 1 second");
       await advanceTimersByTimeAct(act, 1_000);

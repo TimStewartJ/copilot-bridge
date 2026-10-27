@@ -1,6 +1,5 @@
 import type { AppSettings } from "../../api";
 import { SettingsSection } from "./SettingsSection";
-import { DS } from "../../design/tokens";
 import { SettingList, SettingRow, Switch } from "../../design/primitives";
 import { DEFAULT_IMAGE_CEILINGS_MB } from "../../../shared/image-budget.js";
 
@@ -27,13 +26,7 @@ export function ImageBudgetSection({ draft, setDraft }: { draft: AppSettings; se
               }}
             />
           )}
-        >
-          <p className={DS.field.help}>
-            Some providers reject a request over a size limit far below the model's context window, and the chat then
-            stops with "400 Bad Request". For the models listed, Bridge pauses the turn at two thirds of the limit,
-            summarizes the images, and continues. Other models are not affected.
-          </p>
-        </SettingRow>
+        />
       </SettingList>
     </SettingsSection>
   );

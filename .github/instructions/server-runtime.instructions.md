@@ -19,3 +19,7 @@ The server's main thread serves HTTP, health probes, and session event acknowled
 - `src/server/__tests__/main-thread-boundary.test.ts` walks the import graph from the server entry points. It fails on a process-creating import outside `src/packages/spawn-offthread/src/worker.ts`, and on a synchronous tree delete or copy or a SQLite open outside a short list of exceptions, each with its reason. The SQLite list is `db.ts` (the Bridge's own database), the session-store worker, and the staging backend manager's preview seeding. It does not check other files that external programs write.
 - Test suites run the inline process host because they mock `node:child_process` on their own thread. The native project sets `BRIDGE_PROCESS_HOST=worker` to run the production path. `BRIDGE_PROCESS_HOST=inline` in `.env` is an operational fallback.
 - Test mocks must deliver a child's events after the caller subscribes, never from a microtask queued inside `spawn`.
+
+## Text the app shows
+
+- A status reason or error message that the client shows as it is follows the client's copy rule ("Copy" in `src/client/design/README.md`): one short sentence that says what happened and the one thing to do.

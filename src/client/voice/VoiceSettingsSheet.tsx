@@ -36,7 +36,7 @@ function GlossaryField() {
           void patchHelmSettings({ glossary: draft }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
         }}
       />
-      <div id="hands-free-glossary-help" className="mt-1 text-[11px] text-text-faint">Machines, projects and apps you mention by name, and how they sound. Hands-free uses it to fix what speech recognition mishears, and Helm gets it too.</div>
+      <div id="hands-free-glossary-help" className="mt-1 text-[11px] text-text-faint">Names you say, and how they sound.</div>
       {error && <div role="alert" className="text-[11px] text-error">{error}</div>}
     </div>
   );
@@ -88,20 +88,17 @@ export function HandsFreeSettingsFields({ controller }: { controller: VoiceModeC
           <div>
             <label htmlFor="voice-setting-announce" className={label}>Announce Bridge updates</label>
             <div className="relative mt-1">
-              <select id="voice-setting-announce" aria-describedby="voice-announce-help" className={field} value={settings.announce} onChange={(event) => update({ announce: event.target.value as VoiceSettings["announce"] })}>
+              <select id="voice-setting-announce" className={field} value={settings.announce} onChange={(event) => update({ announce: event.target.value as VoiceSettings["announce"] })}>
                 <option value="watched">Chats Helm started or messaged</option>
                 <option value="all">All chats</option>
                 <option value="off">Off</option>
               </select>
               {selectArrow}
             </div>
-            <div id="voice-announce-help" className={help}>
-              {settings.announce === "watched" ? "Speaks up when a chat Helm handed work to finishes or needs you." : settings.announce === "all" ? "Speaks up when any other chat finishes or needs you." : "Announcements are off."}
-            </div>
           </div>
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-1" checked={controller.echoSafe} onChange={(event) => controller.setEchoSafe(event.target.checked)} />
-            <span>Echo-safe playback<span className="block text-[11px] text-text-faint">Browser playback only. Lets it hear you over its own voice without headphones. Applies the next time hands-free starts.</span></span>
+            <span>Echo-safe playback<span className="block text-[11px] text-text-faint">Browser only. Applies the next time hands-free starts.</span></span>
           </label>
           <div>
             <label htmlFor="voice-setting-connection" className={label}>Connection</label>
@@ -113,7 +110,7 @@ export function HandsFreeSettingsFields({ controller }: { controller: VoiceModeC
               </select>
               {selectArrow}
             </div>
-            <div id="voice-connection-help" className={help}>Browser connection only; Tether uses its native relay. Automatic tries WebSocket, then HTTP. Use HTTP streaming for strict proxies.</div>
+            <div id="voice-connection-help" className={help}>Browser only. Use HTTP streaming for strict proxies.</div>
           </div>
         </>
       ) : (
@@ -121,7 +118,7 @@ export function HandsFreeSettingsFields({ controller }: { controller: VoiceModeC
       )}
       <GlossaryField />
       <p className={help.replace("mt-1 ", "")}>
-        What hands-free runs on (it decides what you meant and reads replies back) is the Hands-free row in <Link to="/settings?group=chat" className="text-accent hover:underline">Settings › Models</Link>. The chat you talk to keeps its own model.
+        Model: Hands-free row in <Link to="/settings?group=chat" className="text-accent hover:underline">Settings › Models</Link>.
       </p>
     </div>
   );
@@ -153,7 +150,7 @@ export function VoiceSettingsSheet({ controller, onClose }: { controller: VoiceM
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
-          <p className="mb-5 text-xs text-text-muted">One set for every chat, saved on this Bridge and shared with Tether.</p>
+          <p className="mb-5 text-xs text-text-muted">Shared by every chat and Tether.</p>
           <HandsFreeSettingsFields controller={controller} />
         </div>
       </div>

@@ -67,8 +67,8 @@ function describeSecondOpinion(presets: NonNullable<AppSettings["modelPresets"]>
     const name = models.find((model) => model.id === pick.model)?.name ?? pick.model;
     return [`${MODEL_TIER_INFO[pick.slot].label} (${name}) in ${getModelFamilyLabel(family)} chats`];
   });
-  if (!parts.length) return "Rubber-duck, the second opinion, runs on Copilot's own pick from another model family.";
-  return `Rubber-duck, the second opinion, uses your strongest tier from the other model family: ${parts.join(", ")}. Other chats get Copilot's own pick.`;
+  if (!parts.length) return "Rubber-duck runs on Copilot's pick from another model family.";
+  return `Rubber-duck uses your strongest tier from the other family: ${parts.join(", ")}. Otherwise Copilot's pick.`;
 }
 
 type RoleValue = ModelPresetSlot | "automatic" | "custom";
@@ -235,11 +235,10 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
     setDraft({ ...draft, modelRoles: nextRoles });
   };
 
-  return <SettingsSection title="Models" description="Three tiers, and which one each kind of work runs on. Change a tier once and everything on it follows.">
+  return <SettingsSection title="Models">
     <div className="space-y-6">
       <div>
-        <h3 className={cx(DS.text.sectionLabel, "mb-1")}>Tiers</h3>
-        <p className={cx(DS.field.help, "mb-3")}>These are also the composer's quick switches. Pick one to change it.</p>
+        <h3 className={cx(DS.text.sectionLabel, "mb-2")}>Tiers</h3>
         <div role="group" aria-label="Tiers" className="grid grid-cols-3 gap-2">
           {MODEL_PRESET_SLOTS.map((slot) => {
             const preset = presets[slot];
@@ -254,10 +253,7 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
           })}
         </div>
         <div className={cx(DS.surface.inset, "mt-2 space-y-3 p-3")}>
-          <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-            <h4 className="text-[13px] font-semibold text-text-primary">{MODEL_TIER_INFO[editing].label} tier</h4>
-            <span className={DS.text.meta}>{MODEL_TIER_INFO[editing].description}</span>
-          </div>
+          <h4 className="text-[13px] font-semibold text-text-primary">{MODEL_TIER_INFO[editing].label} tier</h4>
           <ModelChoiceFields key={editing} idPrefix={`tier-${editing}`} name={`${MODEL_TIER_INFO[editing].label} tier`} models={available}
             value={{ model: presets[editing]?.model ?? "", reasoningEffort: presets[editing]?.reasoningEffort, contextTier: presets[editing]?.contextTier }}
             onChange={(choice) => setPreset(editing, choice)} />
@@ -281,7 +277,7 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
         {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
         {!!roles.data?.scheduleOverrides && (
           <p className={cx(DS.field.help, "mt-3")}>
-            {`${roles.data.scheduleOverrides} schedule${roles.data.scheduleOverrides === 1 ? " chooses its" : "s choose their"} own model; edit those in each schedule.`}
+            {`${roles.data.scheduleOverrides} schedule${roles.data.scheduleOverrides === 1 ? " chooses its" : "s choose their"} own model.`}
           </p>
         )}
       </div>
@@ -343,7 +339,6 @@ function RoleRow({ role, draft, view, models, available, onRole, onCustom }: {
         <div className={cx(DS.surface.inset, "mt-3 space-y-2 p-3")}>
           <ModelChoiceFields idPrefix={`role-${role}`} name={info.label} models={available} value={custom} onChange={onCustom}
             emptyLabel={emptyLabel} showEffort={role !== "helper"} />
-          <p className={DS.text.meta}>{role === "helper" ? "Changes here affect only small jobs, which run at the lowest effort the model allows." : `Changes here affect only ${info.label === "New chats" ? "new chats" : info.label}.`}</p>
         </div>
       )}
     </div>
@@ -381,7 +376,7 @@ function ModelListFooter() {
       <h3 className={DS.text.sectionLabel}>Model list</h3>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className={DS.field.help}>
-          {loadedAt ? `Loaded ${timeAgo(loadedAt)}. ` : ""}Refreshing picks up newly available models; it waits until no chats are running.
+          {loadedAt ? `Loaded ${timeAgo(loadedAt)}` : ""}
         </p>
         <Button size="sm" variant="ghost" onClick={() => void refresh()} disabled={refreshing}
           icon={<RotateCw size={13} className={refreshing ? "animate-spin" : undefined} />}>

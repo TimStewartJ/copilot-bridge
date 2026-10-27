@@ -61,8 +61,8 @@ export function getTaskAttentionSignal(
         `${standing ? `${standing} · ` : ""}${ready ? "ready to revisit" : "revisit today"}`);
     }
     case "review": return signal("needs-look", "Needs a look", "Review", "faint", "review", task.waitingOn?.trim()
-      ? `Waiting for: ${task.waitingOn.trim()}, with no revisit date or automatic check. Add one so the task comes back to you.`
-      : "No running work or planned continuation is known. Review the task or decide its next step.");
+      ? `Waiting for: ${task.waitingOn.trim()}, with no revisit date. Add one so it comes back.`
+      : "Nothing running or planned. Review it or decide its next step.");
     case "unavailable": return signal("status-unknown", "Status unavailable", "Unknown", "faint", "unknown",
       options.activity?.unavailable?.reason ?? (indicator?.readStateKnown === false ? "Read status is unavailable." : "Task activity could not be classified reliably."));
     default: return null;

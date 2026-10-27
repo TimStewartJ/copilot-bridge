@@ -111,8 +111,6 @@ describe("ProvidersSection GitHub defaults badge", () => {
     expect(text).not.toContain("defaults set");
     // Only the ADO and Linear cards use the configured/not-configured badge.
     expect(text.match(/not configured/g)?.length).toBe(2);
-    expect(text).toContain("owner/repo#123");
-    expect(text).toContain("link without configuration");
   });
 
   it("says defaults are set once an owner is configured", async () => {
@@ -124,7 +122,6 @@ describe("ProvidersSection GitHub defaults badge", () => {
     expect(text).not.toContain("no defaults");
     expect(text).toContain("microsoft");
     expect(text).toContain("vscode");
-    expect(text).toContain("link without configuration");
   });
 
   it("allows saving with no defaults but rejects a repository without its owner", async () => {

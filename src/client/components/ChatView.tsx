@@ -2216,7 +2216,7 @@ export default function ChatView({
         <div key="provider-retry" className={CHAT_RAIL_CLASS}>
           <LiveStatusLine
             label={providerRetryLabel}
-            detail="The model provider had an internal server error. One automatic retry."
+            detail="Provider error, retrying once"
             description="Stop cancels the retry. Completed actions are not automatically replayed."
             autopilot={runMode === "autopilot"}
           />
@@ -2230,7 +2230,7 @@ export default function ChatView({
             <LiveStatusLine
               label={waitingOnAgents.label}
               detail={waitingOnAgents.detail}
-              description="The main agent has stopped and is waiting for these agents to report back."
+              description="The main agent is waiting for these agents to report back."
               autopilot={runMode === "autopilot"}
             />
           ) : (
@@ -2413,7 +2413,9 @@ export default function ChatView({
   const handleUndoFromHere = useCallback(async (message: ChatMessage) => {
     if (!sessionId || !message.undoEventId) return;
     const confirmed = window.confirm(
+      // copy-ok: what undo cannot reverse
       "Undo this turn and every later turn?\n\n"
+      // copy-ok: what undo cannot reverse
       + "This removes chat history from this point. It does not reverse files, commands, tasks, docs, browser actions, or other external side effects.",
     );
     if (!confirmed) return;
@@ -2770,7 +2772,7 @@ export default function ChatView({
         <div className="shrink-0 border-b border-border px-3 py-1.5 sm:px-4">
           <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-2 gap-y-1 text-xs">
             {returnToSearch && <Button variant="ghost" className="-ml-2" icon={<ArrowLeft size={14} />} onClick={() => navigate(returnToSearch)}>Back to results</Button>}
-            <span className="min-w-0 text-text-muted">{targetSourceEventId ? "Viewing saved history around an exact message." : "Viewing the latest saved history for this conversation."} This does not resume the chat.{historicalHasNewer ? " Newer messages are available." : ""}</span>
+            <span className="min-w-0 text-text-muted">Viewing saved history. The chat is not resumed.{historicalHasNewer ? " Newer messages are available." : ""}</span>
             <div className="ml-auto flex flex-wrap items-center gap-1">
               {navigableMatchTotal > 1 && <>
                 <Button variant="ghost" disabled={searchMatchPageLoading || navigableMatchOffset + historicalMatchIndex <= 0} onClick={() => { void moveHistoricalMatch(-1); }}>Previous match</Button>
@@ -2793,7 +2795,7 @@ export default function ChatView({
             {activeSearchMatchPage.coverage.errors.length > 0 ? ` ${activeSearchMatchPage.coverage.errors.join(" ")}` : ""}
           </p>}
           {!activeSearchMatchPage && searchQuery && !searchMatchPageLoading && !searchMatchPageError && <p role="status" className="mx-auto mt-1 w-full max-w-4xl text-xs text-warning">
-            Full-chat match paging is unavailable for this message; Previous and Next cover only the loaded history window.
+            Previous and Next cover only the loaded history.
           </p>}
         </div>
       )}
@@ -2841,7 +2843,7 @@ export default function ChatView({
       {externallyInUse && (
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
           <Terminal size={12} className="shrink-0 text-info" aria-hidden="true" />
-          <span>This session is open in another Copilot client. Sending here is still allowed.</span>
+          <span>Open in another Copilot client.</span>
         </div>
       )}
       {loading && displayEntries.length === 0 ? (
@@ -2867,13 +2869,11 @@ export default function ChatView({
       ) : historicalUnavailable ? (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <p className="text-base font-medium text-text-primary">This saved message is unavailable.</p>
-          <p className="max-w-lg text-sm text-text-muted">It may have been removed or the readable history window could not be retrieved. Bridge did not substitute the latest messages.</p>
           {returnToSearch && <Button onClick={() => navigate(returnToSearch)}>Back to results</Button>}
         </div>
       ) : historicalLoadError ? (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <p className="text-base font-medium text-error">{historicalLoadError}</p>
-          <p className="max-w-lg text-sm text-text-muted">Bridge did not resume the session or substitute another history window.</p>
           <div className="flex flex-wrap justify-center gap-2">
             <Button onClick={() => historyRef.current.load()}>Retry</Button>
             {returnToSearch && <Button variant="ghost" onClick={() => navigate(returnToSearch)}>Back to results</Button>}

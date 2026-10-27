@@ -85,7 +85,7 @@ interface ReadinessSignal {
 
 interface ReadinessInsight {
   title: string;
-  description: string;
+  description?: string;
   tone: SignalTone;
   signals: ReadinessSignal[];
 }
@@ -418,9 +418,6 @@ export default function TaskDashboard({
                 </div>
               </form>
             )}
-            <p className={cx(DS.text.prose, "max-w-3xl")}>
-              Task context, completion checks and activity.
-            </p>
           </header>
 
           <StatRow stats={contextStats} />
@@ -528,7 +525,7 @@ export default function TaskDashboard({
               <div className="space-y-7">
                 {copilotUsage?.index.state === "scanning" && (
                   <Notice tone="info" icon={<Info size={14} />}>
-                    Usage is still indexing in the background. These task totals update as linked sessions are cached.
+                    Usage is still indexing; these totals may rise.
                   </Notice>
                 )}
                 <StatRow
@@ -564,9 +561,6 @@ export default function TaskDashboard({
                     ? <span className={DS.usage.meta}>Updated {timeAgo(sessionUsage.latestUsageAt)}</span>
                     : undefined}
                 >
-                  <p className={cx(DS.text.empty, "mb-3")}>
-                    Based on completed assistant turns and shutdown summaries linked to this task.
-                  </p>
                   {sessionUsage.dayBuckets.length > 0 ? (
                     <div className="space-y-2">
                       {sessionUsage.dayBuckets.map((bucket) => (
@@ -589,7 +583,7 @@ export default function TaskDashboard({
                     </div>
                   ) : (
                     <EmptyHint>
-                      No token totals yet. Tokens appear here after linked sessions complete assistant turns or write usage summaries.
+                      No token totals yet.
                     </EmptyHint>
                   )}
                 </Section>
@@ -643,7 +637,7 @@ export default function TaskDashboard({
 
                   <Section label="Models used">
                     {sessionUsage.modelRows.length > 0 ? <UsageModelList models={sessionUsage.modelRows} /> : (
-                      <EmptyHint>Model breakdown will appear after session usage is available.</EmptyHint>
+                      <EmptyHint>No usage yet.</EmptyHint>
                     )}
                   </Section>
                 </div>
@@ -653,7 +647,6 @@ export default function TaskDashboard({
                     {sessionUsage.sessionsWithoutUsage > 0 && (
                       <Notice tone="info" icon={<Info size={14} />}>
                         {sessionUsage.sessionsWithoutUsage} linked {sessionUsage.sessionsWithoutUsage === 1 ? "session has" : "sessions have"} no token total yet.
-                        Running or recently active sessions usually post usage after assistant turns complete or after shutdown.
                       </Notice>
                     )}
                     {sessionUsage.cost.unpricedModelNames.length > 0 && (
@@ -746,7 +739,6 @@ function buildReadinessInsight({
     });
     return {
       title: "Archived",
-      description: "Reopen from the task list to continue.",
       tone: "muted",
       signals,
     };
@@ -758,16 +750,8 @@ function buildReadinessInsight({
       detail: "No fixed finish line.",
       tone: "info",
     });
-    signals.push({
-      label: "Where things stand",
-      detail: task.nextAction || task.waitingOn || task.nextTouchAt
-        ? "See next steps and waits in the task brief."
-        : "No next step needed until there is work to do.",
-      tone: "muted",
-    });
     return {
       title: "Ongoing work",
-      description: "Keep the context; add next steps as needed.",
       tone: "info",
       signals,
     };
@@ -824,7 +808,7 @@ function buildReadinessInsight({
     });
     return {
       title: "Completion checks clear",
-      description: "No open checklist, session or PR checks. Confirm the outcome before completing.",
+      description: "No open checklist, session or PR checks.",
       tone: "success",
       signals,
     };

@@ -41,7 +41,7 @@ export function describeEngineState(engine: VoiceStatus["engine"]): string {
     case "failed":
       return `Stopped unexpectedly${engine.detail ? ` (${engine.detail})` : ""}. It restarts the next time it's needed.`;
     default:
-      return "Not running. It starts when you use the chat mic or Helm's hands-free mode, loads only the models that feature needs, and exits after 10 idle minutes.";
+      return "Not running. Starts when needed and stops after 10 idle minutes.";
   }
 }
 
@@ -99,7 +99,7 @@ export function SpeechEngineSection() {
   return (
     <SettingsSection
       title="Speech engine"
-      description="Runs on this computer. Audio never leaves it; only text reaches your model."
+      description="Runs on this computer. Audio never leaves it."
       action={(
         <Button size="sm" variant="ghost" onClick={() => void refresh()}
           icon={loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}>
@@ -110,12 +110,11 @@ export function SpeechEngineSection() {
       <SettingList>
         <SettingRow
           label="Parakeet v3 · Smart Turn · Kokoro"
-          hint="Speech detection, end of turn, recognition and voices, on the CPU."
           control={<span className={cx("text-xs font-medium", badge.text === "Setup failed" ? "text-error" : "text-text-secondary")}>{badge.text}</span>}
         >
           {installStatus && !installStatus.supported && (
             <p className={DS.field.help}>
-              The speech engine isn&apos;t available for this host ({installStatus.target}). It supports Windows x64, Linux x64 and Arm64, and Apple Silicon Macs.
+              Not available for this host ({installStatus.target}).
             </p>
           )}
           {progress && (
@@ -145,12 +144,12 @@ export function SpeechEngineSection() {
             <SettingRow
               label={<span className="inline-flex items-center gap-1.5"><Mic size={13} className="text-text-secondary" />Chat mic</span>}
               hint={micStatus?.available
-                ? `Ready. Recordings up to ${describeRecordingLimit(micStatus.maxDurationSeconds)} are transcribed on this computer.`
+                ? `Ready. Up to ${describeRecordingLimit(micStatus.maxDurationSeconds)} per recording.`
                 : micStatus?.reason ?? "Unavailable."}
             />
             <SettingRow
               label={<span className="inline-flex items-center gap-1.5"><AudioLines size={13} className="text-text-secondary" />Hands-free (Helm)</span>}
-              hint={installStatus?.installed ? "Ready for hands-free conversations." : "Available once the speech engine is installed."}
+              hint={installStatus?.installed ? "Ready." : "Needs the speech engine."}
               control={installStatus?.installed ? (
                 <Link to="/helm" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}>Open Helm</Link>
               ) : undefined}

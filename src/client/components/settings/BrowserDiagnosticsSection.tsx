@@ -340,7 +340,7 @@ export function BrowserDiagnosticsSection({
             <div className="space-y-2">
               {browserIsAutomationBuild && (
                 <Notice tone="warning" icon={warningIcon}>
-                  Sites can tell this build from regular Chrome. Install Google Chrome for fewer blocks.
+                  Sites can spot this build. Install Google Chrome for fewer blocks.
                 </Notice>
               )}
               {browserStaleDays !== undefined && (
@@ -353,7 +353,6 @@ export function BrowserDiagnosticsSection({
         </SettingRow>
         <SettingRow
           label="Live view"
-          hint="Watch a browser an agent is using, and take over when a site needs you. Checking the public browser tests it."
           control={config ? (
             <Badge tone={liveViewFails || agentBrowserOutdated ? "warning" : "neutral"}>
               {liveViewFails
@@ -364,16 +363,16 @@ export function BrowserDiagnosticsSection({
         >
           {liveViewFails && (
             <Notice tone="warning" icon={warningIcon}>
-              {config.liveView?.message ?? "The browser could not be shown."} If agent-browser was updated recently, the
-              update may have changed how it shows a browser; otherwise update it:
+              {config.liveView?.message ?? "The browser could not be shown."} Update agent-browser:
               <code className={cx(DS.text.literal, "mt-1 block")}>npm install -g agent-browser@latest</code>
             </Notice>
           )}
           {agentBrowserOutdated && !liveViewFails && (
             // An old agent-browser shows a page and passes the check, so nothing else says this.
             <Notice tone="warning" icon={warningIcon}>
+              {/* copy-ok: needs the version and the command */}
               agent-browser {config?.agentBrowserVersion} is older than the Bridge needs ({MIN_AGENT_BROWSER_VERSION} or
-              newer). With it, a window that a page opens, such as a sign-in popup, does not show in the view. Update it:
+              newer). Popups such as sign-in windows do not show. Update it:
               <code className={cx(DS.text.literal, "mt-1 block")}>npm install -g agent-browser@latest</code>
             </Notice>
           )}
@@ -381,8 +380,8 @@ export function BrowserDiagnosticsSection({
         <SettingRow
           label={<span className="inline-flex items-center gap-1.5"><Globe2 size={13} className="text-text-secondary" />Public browser</span>}
           hint={publicContext
-            ? `Not signed in, for search and fetches · ${publicContext.state} · probe ${publicContext.functionalProbe.state}`
-            : "Not signed in. Used by search and ordinary browser fetches."}
+            ? `Not signed in · ${publicContext.state} · probe ${publicContext.functionalProbe.state}`
+            : "Not signed in."}
           control={(
             <Button size="sm" variant="ghost" onClick={() => void probeContext("public")} disabled={probing !== null}
               icon={busyButton(probing === "public") ?? <RotateCw size={11} />}>
@@ -393,8 +392,8 @@ export function BrowserDiagnosticsSection({
         <SettingRow
           label="Public browsing data"
           hint={publicContext
-            ? `${count(publicContext.profiles, "profile")}, ${publicContext.profilesInUse} in use. Public profiles keep cookies between uses.`
-            : "Public profiles keep cookies between uses."}
+            ? `${count(publicContext.profiles, "profile")}, ${publicContext.profilesInUse} in use. Cookies are kept between uses.`
+            : "Cookies are kept between uses."}
           control={(
             <Button size="sm" variant="ghost" onClick={() => void clearPublicData()} disabled={clearingPublic}
               icon={busyButton(clearingPublic) ?? <Trash2 size={11} />}>
@@ -406,7 +405,7 @@ export function BrowserDiagnosticsSection({
           label={<span className="inline-flex items-center gap-1.5"><ShieldCheck size={13} className="text-text-secondary" />Authenticated browser</span>}
           hint={authContext
             ? `Signed-in profile · ${authContext.state} · probe ${authContext.functionalProbe.state} · ADO: ${adoState}`
-            : "Dedicated signed-in profile. Authenticated operations are explicit and serialized."}
+            : "Signed-in profile."}
           control={(
             <>
               <Button size="sm" variant="ghost" onClick={() => void probeContext("authenticated")} disabled={probing !== null}
@@ -423,12 +422,12 @@ export function BrowserDiagnosticsSection({
         <SettingRow
           label="Run browsers with a window"
           htmlFor="browser-headed"
-          hint="Applies to public and signed-in browsers. Sites can tell a browser without a window; a window needs a display (on a Linux server, Xvfb)."
+          hint="Needs a display (Xvfb on a Linux server)."
           control={<Switch id="browser-headed" checked={headedValue} onChange={(event) => updateBrowserHeaded(event.target.checked)} />}
         />
         <SettingRow
           label="Sign in to sites"
-          hint="Open the signed-in browser here, from any device, to sign in or pass a check by hand. Agents wait for it while you have it open."
+          hint="Agents wait while you have it open."
           control={(
             <Button size="sm" onClick={() => setSignedInBrowserOpen(true)} disabled={launching || closing}
               icon={<Globe2 size={12} />}>
@@ -439,8 +438,8 @@ export function BrowserDiagnosticsSection({
         <SettingRow
           label="Saved logins"
           hint={logins.length > 0
-            ? "Agents use these to sign in again when a site has signed them out. They never see the password."
-            : "None yet. When you sign in to a site in a browser view, it offers to keep the login for agents."}
+            ? "Agents never see the password."
+            : "None yet."}
         >
           {logins.length > 0 && (
             <ul className={DS.surface.divided}>
@@ -449,7 +448,7 @@ export function BrowserDiagnosticsSection({
                   <div className="min-w-0 flex-1">
                     <div className={cx(DS.setting.label, "truncate")}>{login.host}</div>
                     <div className={cx(DS.setting.hint, "truncate")}>
-                      {login.failed ? `${login.username} · not accepted last time; sign in by hand to save it again` : login.username}
+                      {login.failed ? `${login.username} · refused last time; sign in by hand to save again` : login.username}
                     </div>
                   </div>
                   <Button size="sm" variant="ghost" disabled={removingLogin !== null} onClick={() => void removeLogin(login)}
@@ -463,7 +462,6 @@ export function BrowserDiagnosticsSection({
         </SettingRow>
         <SettingRow
           label="Signed-in browser on the server"
-          hint="For someone at the machine the Bridge runs on: open its window there, or close the browser."
           control={(
             <>
               <Button size="sm" variant="ghost" onClick={() => void launchHeaded()} disabled={launching || closing}
@@ -483,7 +481,7 @@ export function BrowserDiagnosticsSection({
         <BrowserLiveDialog
           browserSessionId="signed-in-browser"
           title="Signed-in browser"
-          reason="Sign in to the sites agents should reach. A login is kept for agents only if you save it."
+          reason="Sign in where agents need access. Only saved logins are kept."
           requestTicket={requestSignedInBrowserLiveTicket}
           onClose={() => {
             setSignedInBrowserOpen(false);
@@ -517,7 +515,7 @@ export function BrowserDiagnosticsSection({
                 ))}
               </div>
             ) : (
-              <p className={DS.field.help}>No recent browser challenge, recovery, or readiness failure telemetry was observed.</p>
+              <p className={DS.field.help}>No recent problems.</p>
             )}
             {diagnostics && <p className={cx(DS.text.meta, "mt-1")}>Checked {formatTimestamp(diagnostics.checkedAt)}</p>}
           </div>
@@ -536,7 +534,7 @@ export function BrowserDiagnosticsSection({
                 ))}
               </ul>
             ) : (
-              config && <p className={DS.field.help}>The browser starts with no extra arguments.</p>
+              config && <p className={DS.field.help}>No extra arguments.</p>
             )}
           </div>
         </Details>

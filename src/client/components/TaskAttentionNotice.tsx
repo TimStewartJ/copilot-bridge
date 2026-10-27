@@ -24,7 +24,6 @@ export default function TaskAttentionNotice({ health, collapsed = false, compact
           Showing the last reading{health.updatedAt ? ` from ${new Date(health.updatedAt).toLocaleString()}` : ""}.
         </p>}
         {health.messages.map(message => <p key={message} className={cx(DS.text.meta, "break-words")}>{message}</p>)}
-        <p className={DS.text.meta}>Missing information does not create a Needs a look suggestion.</p>
         {health.affectedTasks.length > 0 && <ul className="mt-2 space-y-1">
           {health.affectedTasks.map(task => <li key={task.id} className={cx(DS.text.meta, "break-words")}>
             <span className="text-text-secondary">{task.title}</span>

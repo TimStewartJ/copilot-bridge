@@ -52,6 +52,35 @@ quiet, dense with information, and calm until something needs attention.
     and rows would show in the gap between the band and the edge.
 12. **Touch targets are 40px on a phone** (`DS.button.size.md`, `DS.field.inputSize.md`), and a text
     field is 16px there so iOS does not zoom the page.
+13. **Copy is short, and most of it is labels.** See "Copy" below.
+
+## Copy
+
+People skim past explanatory text, so every extra sentence makes the ones that matter easier to miss.
+A label, a value and a control should explain themselves.
+
+- **Do not write:** a subtitle or intro that says what a screen or section is; a help line that
+  explains how a control works or what its default is; a note on how a number is computed; a second
+  line under an empty state ("Create one to get started"); an onboarding paragraph.
+- **Write a sentence only when** the reader would otherwise get something wrong: what a destructive
+  or irreversible action does, a safety or privacy limit, a scope or timing they cannot see ("Applies
+  to new chats"), something that happens automatically, data that is incomplete. Errors say what
+  happened and the one thing to do. An interaction hint is fine only when the UI cannot work without it.
+- **Keep it to one short sentence,** in plain words. Put a definition in a tooltip (`title`) or
+  behind a `Details` rather than on the screen.
+- An empty state is one quiet line (`EmptyHint`, `EmptyState` without `sub`).
+- Text the server sends to the screen as it is (status reasons, error messages) follows the same rule.
+
+The `long-copy` audit rule fails on text over 12 words: JSX prose (counted across inline markup such
+as `<code>` and links), string and template literals, and `+` chains. Values (`{name}`, `${count}`)
+do not count as words. Tooltips on plain elements and on components that pass `title` through,
+`aria-*` labels, placeholders, class recipes, markup, and `Error`/`console` messages are not copy.
+`title` on `Notice`, `Dialog`, `DocsDialog` and `SettingsSection` is a heading and is checked. Text
+built at run time, and short tutorial lines, are left to review against the list above.
+
+Long copy that passes the test above takes `// copy-ok: <why>` on the line above, or
+`{/* copy-ok: <why> */}` inside or above the element. The reason names the category ("confirms a
+destructive action", "safety warning"). `design-audit-ignore-next-line` does not exempt copy.
 
 Colours are theme variables from `index.css`, used by role, never by value. Scrollbars and native
 controls follow the theme globally.
@@ -192,7 +221,8 @@ pieces (`"bg-" + tone`) is never generated.
 ## How it is enforced
 
 `npm run test:design-audit` runs in `check:fast`, `check:client` and `check:pr`. It reads every
-client source file outside this folder and fails on the retired patterns: accent fills and outlines,
+client source file outside this folder and fails on long copy (see "Copy"; this rule also reads
+this folder and `src/shared/model-roles.ts`) and on the retired patterns: accent fills and outlines,
 white-on-colour fills, tinted boxes, `rounded-full` state pills, bare state- or identity-coloured
 dots, raw Tailwind palette colours, dashed empty boxes, shadows on in-page surfaces, uppercase labels, imports of the legacy `shared/design-system` tokens, and nested
 `Panel` components. It parses literals and JSX, so multiline recipes and aliased panels are checked,

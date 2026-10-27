@@ -86,7 +86,7 @@ function loginText(login: BrowserLiveLogin): string {
   const account = `${login.username ?? "This login"} on ${login.host ?? "this site"}`;
   if (login.state === "saved") return `Agents can now sign in as ${account} when it signs them out.`;
   if (login.state === "fill") {
-    return login.failed ? "It could not be filled in. Sign in by hand; you can save what you type." : `${account}.`;
+    return login.failed ? "Couldn't fill it in. Sign in by hand; you can save it." : `${account}.`;
   }
   return login.failed ? "It could not be saved. Try again." : `${account}. Agents can then sign in again without asking you.`;
 }

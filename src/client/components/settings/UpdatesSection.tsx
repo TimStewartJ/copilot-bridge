@@ -37,11 +37,11 @@ const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; descriptio
   },
   staging: {
     label: "Extracting package",
-    description: "Windows extraction is the quietest step and can take a while for many small files.",
+    description: "This can take a while.",
   },
   staged: {
     label: "Restart queued",
-    description: "The update candidate is staged and waiting for the launcher to activate it safely.",
+    description: "Waiting for the launcher to activate it.",
   },
   succeeded: {
     label: "Update complete",
@@ -49,7 +49,7 @@ const INSTALL_PHASE_COPY: Record<UpdateInstallPhase, { label: string; descriptio
   },
   failed: {
     label: "Update failed",
-    description: "Bridge kept the previous active release and did not activate the staged candidate.",
+    description: "The previous release is still active.",
   },
 };
 
@@ -253,7 +253,7 @@ export function UpdatesSection({ refreshSignal = 0 }: { refreshSignal?: number }
 function describeStatus(status: UpdateCheckResponse | null): string {
   if (!status) return "Update status has not been checked yet.";
   if (status.status === "disabled") return "Update checks are available only in packaged release mode.";
-  if (status.status === "not_configured") return "Signed release updates aren't configured here. A source checkout updates with Self-update.";
+  if (status.status === "not_configured") return "Signed release updates aren't configured here.";
   if (status.status === "up_to_date") return `No newer ${status.channel} update was found.`;
   if (status.status === "update_available") return "A newer signed update manifest is available.";
   return "The update check failed.";

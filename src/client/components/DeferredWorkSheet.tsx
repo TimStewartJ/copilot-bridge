@@ -419,7 +419,7 @@ export default function DeferredWorkSheet({
               Loading deferred work
             </div>
           ) : defers.length === 0 && runs.length === 0 && deliveries.length === 0 ? (
-            <EmptyHint>No deferred work. Defers created by this session will appear here.</EmptyHint>
+            <EmptyHint>No deferred work.</EmptyHint>
           ) : (
             <>
               <Section label="Active" count={active.length}>
@@ -457,9 +457,6 @@ export default function DeferredWorkSheet({
               )}
 
               <Section label="Recent checks" count={runs.length}>
-                <p className={cx(DS.usage.prose, "mb-2")}>
-                  Tokens and SDK-reported metered AI credits are captured at worker shutdown. Estimates use the local Copilot price card.
-                </p>
                 {runs.length > 0 ? (
                   <div className={DS.surface.divided}>
                     {runs.map((run) => (

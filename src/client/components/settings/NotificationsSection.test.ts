@@ -96,9 +96,7 @@ describe("NotificationsSection", () => {
   it("describes native question notifications without retaining dashboard policy", async () => {
     await render();
 
-    expect(harness!.dom.container.textContent).toContain("Routine completions stay in their task and do not interrupt you.");
-    expect(harness!.dom.container.textContent).toContain("Session notifications are for conversations requesting your input.");
-    expect(harness!.dom.container.textContent).toContain("Home does not grant additional notification authority.");
+    expect(harness!.dom.container.textContent).toContain("Only conversations waiting for your input notify you.");
     expect(harness!.dom.container.textContent).not.toContain("Focus");
   });
 

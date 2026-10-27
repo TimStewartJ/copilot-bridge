@@ -95,7 +95,6 @@ export default function PlanSheet({
           {!loading && !error && !content && (
             <EmptyState
               message="No plan yet"
-              sub="The agent creates a plan during complex tasks"
             />
           )}
           {!loading && !error && content && (

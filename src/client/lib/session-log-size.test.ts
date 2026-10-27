@@ -40,6 +40,6 @@ describe("describeSessionLogSize", () => {
     expect(describeSessionLogSize(VERY_LARGE_SESSION_LOG_BYTES - 1)).toMatchObject({ level: "large" });
     const veryLarge = describeSessionLogSize(VERY_LARGE_SESSION_LOG_BYTES);
     expect(veryLarge).toMatchObject({ level: "very-large", label: "Very large", size: "150 MB" });
-    expect(veryLarge?.hint).toContain("a second or more");
+    expect(veryLarge?.hint).toContain("Slow to open.");
   });
 });

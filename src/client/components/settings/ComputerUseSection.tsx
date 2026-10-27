@@ -62,6 +62,7 @@ export function ComputerUseSection({
             />
           )}
         >
+          {/* copy-ok: safety warning */}
           <p className={DS.field.help}>
             Bridge approves tool requests automatically, so a session can click and type in any app here without asking. Use it only on a Bridge that you alone can reach.
           </p>

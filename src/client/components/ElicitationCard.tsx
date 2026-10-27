@@ -34,7 +34,7 @@ function getSubmitError(error: unknown): string {
     && "status" in error
     && error.status === 404
   ) {
-    return "This question is no longer active. The run may have ended before your response was accepted.";
+    return "This question is no longer active; the run may have ended.";
   }
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error.trim()) return error;
@@ -323,6 +323,7 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
           </div>
           <div className="mt-2"><SourceLabel source={request.elicitationSource} /></div>
           <p className="mt-3 text-xs leading-relaxed text-text-secondary">
+            {/* copy-ok: the handoff cannot work without it */}
             Open the browser, do what is asked there, then say how it went.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -363,6 +364,7 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
           {request.elicitationSource && (
             <p className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-text-secondary">
               <ShieldAlert size={13} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+              {/* copy-ok: safety warning */}
               <span>Do not enter passwords, API keys, access tokens, or payment details into this form.</span>
             </p>
           )}

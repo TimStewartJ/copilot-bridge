@@ -287,6 +287,7 @@ export default function DocsEditor({ page, schema, onClose }: DocsEditorProps) {
               {error && <DocsBanner tone="error">{error}</DocsBanner>}
               {changedElsewhere && (
                 <DocsBanner tone="warning">
+                  {/* copy-ok: an edit conflict */}
                   This page was changed {formatRelativeTime(page.modified)} while you were editing. Saving will ask before replacing that version.
                 </DocsBanner>
               )}
@@ -328,7 +329,7 @@ export default function DocsEditor({ page, schema, onClose }: DocsEditorProps) {
               />
             ) : (
               <>
-                <DocsField label="Description" htmlFor={descriptionId} hint="One or two sentences. Shown under the title, in search, and to agents deciding whether to read the page.">
+                <DocsField label="Description" htmlFor={descriptionId} hint="Shown under the title and to agents.">
                   <DocsTextarea
                     id={descriptionId}
                     rows={2}
@@ -385,7 +386,7 @@ export default function DocsEditor({ page, schema, onClose }: DocsEditorProps) {
           </div>
 
           <p className="mt-3 text-xs text-text-faint">
-            Markdown with GitHub extras: tables, task lists and <code className="font-mono">[[page name]]</code> links to other docs. Unsaved work is kept on this device.
+            Markdown, with <code className="font-mono">[[page name]]</code> links. Unsaved work is kept on this device.
           </p>
         </div>
       </div>
@@ -421,9 +422,9 @@ export default function DocsEditor({ page, schema, onClose }: DocsEditorProps) {
           )}
         >
           <p className="text-sm leading-6 text-text-secondary">
+            {/* copy-ok: replacing overwrites someone's changes */}
             Someone else, most likely an agent, saved a newer version
             {conflict.currentModified ? ` ${formatRelativeTime(conflict.currentModified)}` : ""}. Replacing it overwrites their changes with yours.
-            To merge by hand instead, keep editing, copy your text, and reopen the page.
           </p>
         </DocsDialog>
       )}

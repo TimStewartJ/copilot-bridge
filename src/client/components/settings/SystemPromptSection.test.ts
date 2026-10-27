@@ -56,7 +56,7 @@ describe("SystemPromptSection", () => {
     expect(radios.map((radio) => getReactProps(radio)?.value)).toEqual(["adaptive", "concise", "detailed"]);
     expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false]);
     expect(container.textContent).toContain("Response quality (always on)");
-    expect(container.textContent).toContain("new chats and fresh session resumes");
+    expect(container.textContent).toContain("Applies to new and resumed chats.");
     expect(getReactProps(buttonWithText(container, "Reset to default"))?.disabled).toBe(true);
   });
 
@@ -67,7 +67,6 @@ describe("SystemPromptSection", () => {
     for (const textarea of textareas) {
       const props = getReactProps(textarea);
       expect(labels.some((label) => getReactProps(label)?.htmlFor === props?.id)).toBe(true);
-      expect(props?.["aria-describedby"]).toBeTruthy();
     }
     const radios = findAllByTag(container, "INPUT");
     expect(new Set(radios.map((radio) => getReactProps(radio)?.name)).size).toBe(2);
@@ -139,7 +138,6 @@ describe("SystemPromptSection", () => {
     if (!next) throw new Error("No updated settings draft");
     await render(next);
     expect(getReactProps(styleTextarea(container))?.value).toBe("");
-    expect(container.textContent).toContain("Leave blank to use the default guidance");
     expect(container.textContent).not.toContain("Not saved yet");
   });
 

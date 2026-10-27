@@ -48,7 +48,7 @@ export function SystemPromptSection({
     <>
       <SettingsSection
         title="Profiles"
-        description="A profile sets what a chat is for: its role, how it communicates, and how it approaches the work. New chats start with the default below, and each chat can change its own profile from the chat header. Existing chats keep theirs."
+        description="Default for new chats. Existing chats keep theirs."
       >
         <fieldset aria-describedby={`${id}-profile-help`} className="min-w-0">
           <legend className="sr-only">Default profile for new chats</legend>
@@ -71,7 +71,7 @@ export function SystemPromptSection({
             ))}
           </div>
           <p id={`${id}-profile-help`} className={cx(DS.field.help, "mt-2")}>
-            Profiles change instructions only. Tools and permissions are the same in every profile.
+            Tools and permissions are the same in every profile.
           </p>
           {failedKeys.has("promptProfile") && writeError?.message && (
             <p role="alert" className="mt-1 text-xs text-error">{writeError.message}</p>
@@ -81,7 +81,7 @@ export function SystemPromptSection({
 
       <SettingsSection
         title="Response style"
-        description="Applies to new chats and fresh session resumes; chats in progress are not interrupted."
+        description="Applies to new and resumed chats."
         action={(
           <Button size="sm" variant="ghost" disabled={isDefaultStyle} onClick={() => commit({ responseStyle: resolveResponseStyle() })}>
             Reset to default
@@ -124,7 +124,6 @@ export function SystemPromptSection({
                 rows={6}
                 value={style.guidance}
                 maxLength={MAX_RESPONSE_STYLE_GUIDANCE_LENGTH}
-                help="Leave blank to use the default guidance."
                 footer={(text) => <span>{text.length.toLocaleString()} / {MAX_RESPONSE_STYLE_GUIDANCE_LENGTH.toLocaleString()}</span>}
                 error={responseStyleError}
                 pending={pendingKeys.has("responseStyle")}
@@ -134,7 +133,7 @@ export function SystemPromptSection({
           </Details>
           <Details label="Response quality (always on)">
             <p className="pt-2 text-xs leading-relaxed text-text-secondary">
-              Bridge always asks for supported claims, clear uncertainty, independent judgment, and honest reports of research, changes and tests. Style preferences do not remove these.
+              Supported claims, clear uncertainty, independent judgment and honest reports, whatever the style.
             </p>
           </Details>
         </div>
@@ -150,7 +149,6 @@ export function SystemPromptSection({
                 multiline
                 value={draft.identity ?? ""}
                 placeholder={DEFAULT_IDENTITY}
-                help="Who the agent is. Replaces the default identity."
                 error={failedKeys.has("identity") ? writeError?.message : null}
                 pending={pendingKeys.has("identity")}
                 onCommit={(identity) => commit({ identity })}
@@ -165,7 +163,6 @@ export function SystemPromptSection({
                 multiline
                 value={customInstructions}
                 placeholder="e.g. Prefer TypeScript over JavaScript. Use the terminology from my project."
-                help="Domain context, preferences or rules. Presentation belongs in Response style."
                 error={failedKeys.has("customInstructions") ? writeError?.message : null}
                 pending={pendingKeys.has("customInstructions")}
                 onCommit={(text) => commit({ customInstructions: text })}

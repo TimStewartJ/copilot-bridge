@@ -377,7 +377,6 @@ function ViewMode({
           {sessions.length === 0 ? (
             <EmptyState
               message="No runs yet"
-              sub="Trigger or wait for the schedule to run"
             />
           ) : (
             <div className="space-y-1">
@@ -744,13 +743,9 @@ function EditMode({
                   <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
                 ))}
               </select>
-              <div className="text-[10px] text-text-faint mt-1">
-                {modelsLoading
-                  ? "Loading available models..."
-                  : modelsError
-                    ? "Available models could not be loaded. The current selection can still be saved."
-                    : "Overrides the global Bridge model for sessions created by this schedule."}
-              </div>
+              {(modelsLoading || modelsError) && <div className="text-[10px] text-text-faint mt-1">
+                {modelsLoading ? "Loading available models..." : "Available models could not be loaded."}
+              </div>}
             </div>
 
             <div>
@@ -815,12 +810,9 @@ function EditMode({
                   <option key={profile.id} value={profile.id}>{profile.label}</option>
                 ))}
               </select>
-              <div className="text-[10px] text-text-faint mt-1">
-                {promptProfile
-                  ? getPromptProfileInfo(promptProfile).description
-                  : "Uses the default profile from Settings for each run."}
-                {promptProfile === "monitor" ? " Each run receives the previous run's report." : ""}
-              </div>
+              {promptProfile === "monitor" && <div className="text-[10px] text-text-faint mt-1">
+                Each run receives the previous run's report.
+              </div>}
             </div>
 
             {/* Max runs */}
@@ -848,6 +840,7 @@ function EditMode({
               />
             </div>
             <div className="col-span-2 text-[10px] text-text-faint leading-relaxed">
+              {/* copy-ok: what gets archived automatically */}
               When set, old run sessions are archived after the latest N. Busy sessions and sessions with active defers are skipped.
             </div>
           </div>

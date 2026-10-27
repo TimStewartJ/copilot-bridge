@@ -110,8 +110,8 @@ export function DeviceManagementSection() {
     const label = (DELAY_LABELS[delayMinutes] ?? `In ${delayMinutes} minutes`).toLowerCase();
     const confirmed = window.confirm(
       delayMinutes > 0
-        ? `Schedule hibernation ${label}?\n\nCopilot Bridge and other apps will pause until the device wakes.`
-        : "Hibernate this device now?\n\nCopilot Bridge and other apps will pause until the device wakes.",
+        ? `Schedule hibernation ${label}?\n\nEverything pauses until the device wakes.`
+        : "Hibernate this device now?\n\nEverything pauses until it wakes.",
     );
     if (!confirmed) return;
 
@@ -133,7 +133,7 @@ export function DeviceManagementSection() {
     const nextEnabled = !onIdleArmed;
     if (nextEnabled) {
       const confirmed = window.confirm(
-        `Hibernate this device once every session has been idle for ${HIBERNATE_IDLE_GRACE_MINUTES} minutes?\n\nCopilot Bridge and other apps will pause until the device wakes.`,
+        `Hibernate after ${HIBERNATE_IDLE_GRACE_MINUTES} idle minutes?\n\nEverything pauses until the device wakes.`,
       );
       if (!confirmed) return;
     }
@@ -180,7 +180,7 @@ export function DeviceManagementSection() {
   const quietButton = cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5");
 
   return (
-    <SettingsSection title="This computer" description="The machine running Bridge. Bridge resumes when it wakes.">
+    <SettingsSection title="This computer">
       <SettingList>
         <SettingRow
           label="Hibernate"

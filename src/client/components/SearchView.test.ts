@@ -173,7 +173,7 @@ describe("SearchView", () => {
     expect(rendered.dom.container.textContent).toContain("Assistant");
     expect(rendered.dom.container.textContent).toContain("Showing 1 of 7 matching messages");
     expect(rendered.dom.container.textContent).toContain("Showing 3 results");
-    expect(rendered.dom.container.textContent).toContain("Tool logs, attachments, OCR");
+    expect(rendered.dom.container.textContent).toContain("Tool logs, attachments and external pages are not searched.");
     expect(rendered.dom.container.textContent).toContain("<img src=x onerror=alert(1)>");
     expect(findAllByTag(rendered.dom.container, "IMG")).toHaveLength(0);
     expect(findAllByTag(rendered.dom.container, "MARK").length).toBeGreaterThan(0);
@@ -263,7 +263,6 @@ describe("SearchView", () => {
 
     const caughtUp = await render("/search", { ...library, isUnread: () => false });
     expect(caughtUp.dom.container.textContent).toContain("No unread chats");
-    expect(caughtUp.dom.container.textContent).toContain("Search a phrase, task name, or topic.");
     expect(resultRows(caughtUp.dom.container)).toHaveLength(0);
   });
 
@@ -522,7 +521,7 @@ describe("SearchView", () => {
 
     expect(rendered.dom.container.textContent).toContain("2 of 5 chats indexed");
     expect(rendered.dom.container.textContent).toContain("Docs index unavailable");
-    expect(rendered.dom.container.textContent).toContain("No matches in the searched coverage");
+    expect(rendered.dom.container.textContent).toContain("No matches.");
   });
 
   it("shows request failures as errors instead of empty results", async () => {
@@ -531,7 +530,7 @@ describe("SearchView", () => {
     await waitUntilAct(rendered.act, () => rendered.dom.container.textContent?.includes("search service failed") ?? false);
 
     expect(findAllByTag(rendered.dom.container, "DIV").some((node) => getReactProps(node)?.role === "alert")).toBe(true);
-    expect(rendered.dom.container.textContent).not.toContain("No matches in the searched coverage");
+    expect(rendered.dom.container.textContent).not.toContain("No matches.");
   });
 
   it("refreshes indexing coverage at low frequency while preserving results and stops when ready", async () => {

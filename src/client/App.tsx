@@ -1528,7 +1528,7 @@ function AppShell() {
         id: toastId,
         tone: "info",
         title: accepted.reused ? "Fork already in progress" : "Creating fork in background",
-        description: "Large sessions can take a while. You can keep using the app while the copy finishes.",
+        description: "Large sessions take a while; you can keep working meanwhile.",
         loading: true,
         durationMs: 0,
       });
@@ -1782,6 +1782,7 @@ function AppShell() {
           restartingNow={restartNow.isPending}
           error={restartNow.error instanceof Error ? `Restart failed: ${restartNow.error.message}` : null}
           onRestartNow={() => {
+            // copy-ok: confirms a destructive action
             if (window.confirm("Restart now?\n\nRunning sessions stop and pick up where they left off once the Bridge is back.")) {
               restartNow.mutate({ force: true, resume: true });
             }
@@ -2978,7 +2979,6 @@ function SessionRoute({
       contextOptions={launchState.contextOptions}
       selectedContextTier={launchState.selectedContextTier}
       selectedPromptProfile={selectedLaunchPromptProfile}
-      defaultPromptProfile={launchPromptProfileDefault}
       mode={launchMode}
       agentDefinitions={taskId ? taskAgentDefinitionsQuery.data ?? [] : undefined}
       agentDefinitionsLoading={taskId ? taskAgentDefinitionsQuery.isLoading : undefined}

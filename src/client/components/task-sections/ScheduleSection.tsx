@@ -188,7 +188,6 @@ export default function ScheduleSection({
       ) : (
         <EmptyState
           message={emptyMessage}
-          sub="Add one to automate recurring work"
         />
       )}
     </div>

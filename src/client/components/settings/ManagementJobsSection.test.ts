@@ -309,7 +309,7 @@ describe("System page runtime and management jobs", () => {
       await waitUntilAct(harness.act, () => (harness.dom.container.textContent ?? "").includes("recent log line"));
       const text = harness.dom.container.textContent ?? "";
 
-      expect(text).toContain("Runner health is inferred");
+      expect(text).toContain("look stale");
       expect(text).toContain("Stale");
       expect(text).toContain("Cancel unavailable");
       expect(text).toContain("Sanitized recent log tail");
@@ -398,7 +398,7 @@ describe("System page runtime and management jobs", () => {
       );
 
       await clickButton(harness, "Queue self-update");
-      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Queue a Bridge self-update job?"));
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Queue a self-update?"));
       expect(enqueueMutateAsync).toHaveBeenCalledWith({ type: "self_update" });
       await waitUntilAct(harness.act, () =>
         (harness.dom.container.textContent ?? "").includes("Self-update queued as self-updat"),
@@ -409,7 +409,7 @@ describe("System page runtime and management jobs", () => {
       expect(confirm).toHaveBeenCalledTimes(confirmationsBeforeRestart);
       expect(restartMutateAsync).toHaveBeenCalledOnce();
       await waitUntilAct(harness.act, () =>
-        (harness.dom.container.textContent ?? "").includes("Restart requested. It happens once the Bridge is idle and blocks nothing until then."),
+        (harness.dom.container.textContent ?? "").includes("Restart requested. It happens once the Bridge is idle."),
       );
     } finally {
       await harness.cleanup();

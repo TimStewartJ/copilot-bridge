@@ -127,7 +127,7 @@ function TextPreview({ file, kind, viewer = false, onError }: FilePreviewBodyPro
     <div className={viewer ? cx("mx-auto w-full p-4 sm:p-6", kind === "markdown" && "max-w-4xl") : "px-4 py-3"}>
       {content}
       {viewer && cut && (
-        <p className="not-prose mt-4 text-xs text-text-faint">Only the start of this file is shown here. Download it for the rest.</p>
+        <p className="not-prose mt-4 text-xs text-text-faint">Only the start is shown. Download it for the rest.</p>
       )}
     </div>
   );

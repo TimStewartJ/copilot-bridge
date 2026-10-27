@@ -8,10 +8,8 @@ import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
 import {
-  getPromptProfileInfo,
   PROMPT_PROFILES,
   type PromptProfileId,
-  type ResolvedPromptProfile,
 } from "../../shared/prompt-profiles.js";
 import { DS, cx } from "../design/tokens";
 import { FormRow, Select } from "../design/primitives";
@@ -29,8 +27,6 @@ interface NewSessionLaunchPanelProps {
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
   selectedContextTier?: CopilotContextTier;
   selectedPromptProfile: PromptProfileId;
-  /** What the chat gets without a choice, for the help text. */
-  defaultPromptProfile: ResolvedPromptProfile;
   mode: SendMode;
   agentDefinitions?: readonly TaskAgentDefinitionSummary[];
   agentDefinitionsLoading?: boolean;
@@ -53,18 +49,6 @@ const PROFILE_OPTIONS: LaunchOption<PromptProfileId>[] = PROMPT_PROFILES.map((pr
   label: profile.label,
 }));
 
-export function describeLaunchPromptProfile(
-  selected: PromptProfileId,
-  defaultProfile: ResolvedPromptProfile,
-): string {
-  const description = getPromptProfileInfo(selected).description;
-  if (selected !== defaultProfile.id) return description;
-  if (defaultProfile.source !== "automatic") return `${description} This is your default profile.`;
-  return selected === "engineer"
-    ? `${description} Picked because this chat has a project folder.`
-    : `${description} Picked because this chat has no project folder.`;
-}
-
 const MODE_OPTIONS: LaunchOption<SendMode>[] = [
   { value: "interactive", label: "Interactive" },
   { value: "autopilot", label: "Autopilot" },
@@ -83,7 +67,6 @@ export default function NewSessionLaunchPanel({
   contextOptions,
   selectedContextTier,
   selectedPromptProfile,
-  defaultPromptProfile,
   mode,
   agentDefinitions,
   agentDefinitionsLoading,
@@ -99,18 +82,12 @@ export default function NewSessionLaunchPanel({
   tierChange,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
-  const hasResolvedModelSelection = Boolean(
-    selectedModelId && availableModels.some((model) => model.id === selectedModelId),
-  );
 
   return (
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-4 md:items-center md:py-8">
       <div className="w-full max-w-xl px-1 py-5">
         <div className="mb-6">
           <h2 className={DS.text.title}>Start a new chat</h2>
-          <p className={`mt-1 ${DS.text.prose}`}>
-            These choices apply when the chat starts.
-          </p>
         </div>
 
         <div className="space-y-4">
@@ -119,11 +96,6 @@ export default function NewSessionLaunchPanel({
               label="Agent"
               htmlFor="new-session-agent"
               hideLabel
-              help={agentDefinitionsLoading
-                ? "Loading attached agents..."
-                : agentDefinitions.length === 0
-                  ? "No agent definitions are attached to this task."
-                  : "Blank starts with the default agent. Selecting one makes the new chat run as that specialist."}
             >
               <Select
                 id="new-session-agent"
@@ -165,12 +137,7 @@ export default function NewSessionLaunchPanel({
             )}
             {modelsError && (
               <p className="text-xs text-error" role="alert">
-                Models could not be loaded. The server will resolve the launch model when this chat starts.
-              </p>
-            )}
-            {!modelsLoading && !modelsError && !hasResolvedModelSelection && (
-              <p className={DS.field.help}>
-                No concrete default model is available. Choose one to override the server selection.
+                Models could not be loaded.
               </p>
             )}
           </FormRow>
@@ -185,11 +152,6 @@ export default function NewSessionLaunchPanel({
                   if (value) onReasoningEffortChange(value);
                 }}
               />
-              {!selectedReasoningEffort && (
-                <p className={DS.field.help}>
-                  The SDK does not report this model&apos;s default effort. Choose a level to override it.
-                </p>
-              )}
             </FormRow>
           )}
 
@@ -223,9 +185,6 @@ export default function NewSessionLaunchPanel({
                 if (value) onPromptProfileChange(value);
               }}
             />
-            <p className={DS.field.help}>
-              {describeLaunchPromptProfile(selectedPromptProfile, defaultPromptProfile)}
-            </p>
           </FormRow>
 
           <FormRow label="Mode" hideLabel>

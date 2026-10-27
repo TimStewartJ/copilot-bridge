@@ -115,7 +115,7 @@ export function SkillsSection() {
 
   const removeSkill = async (skill: Skill) => {
     const confirmed = window.confirm(
-      `Delete skill "${skill.name}"? This permanently removes its folder from the Copilot home skills directory.`,
+      `Delete skill "${skill.name}"? Its folder is removed for good.`,
     );
     if (!confirmed) return;
     setRemovingId(skill.id);
@@ -136,7 +136,7 @@ export function SkillsSection() {
   return (
     <SettingsSection
       title="Skills"
-      description="Changes apply to new sessions. Bundled skills are read-only."
+      description="Changes apply to new sessions."
     >
       <SettingList>
         {error && <Notice tone="danger" className="mb-2">{error}</Notice>}
@@ -153,7 +153,7 @@ export function SkillsSection() {
         {loading && <p role="status" className={DS.field.help}>Loading skills…</p>}
 
         {!loading && skills.length === 0 && (
-          <EmptyHint>No skills. Add a SKILL.md under ~/.copilot/skills to define one.</EmptyHint>
+          <EmptyHint>No skills.</EmptyHint>
         )}
       </SettingList>
     </SettingsSection>
