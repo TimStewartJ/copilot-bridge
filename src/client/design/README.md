@@ -115,7 +115,7 @@ buzz. Everywhere else it does nothing. Follow iOS: feedback marks something happ
 
 | Kind | For |
 | --- | --- |
-| `selection` | A held value changes: `Switch`, `SegmentedControl`, a `ChoiceButton` with `selected`, the Autopilot toggle, unchecking an item, the microphone stopping |
+| `selection` | A held value changes: `Switch`, `SegmentedControl`, a `ChoiceButton` with `selected`, the Autopilot toggle, unchecking an item, the microphone stopping, the phone's Tasks/Chats switch, and a tap on the Home or Work tab that flips Brief/Talk or Tasks/Chats |
 | `light` | Something leaves or lands: Send, checking an item off, a copy, the microphone starting, declining a form |
 | `medium` | A gesture reaches its trigger: pull-to-refresh armed, a long press opening its menu, Stop |
 | `success` | An outcome you asked for: a question answered, a run you are watching finishing, a success toast, a task finished or set aside |

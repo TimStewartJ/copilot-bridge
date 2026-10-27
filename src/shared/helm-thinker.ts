@@ -182,9 +182,9 @@ export type HelmAutonomy = "propose" | "routine";
 export interface HelmPeer {
   id: string;
   label: string;
-  /** Base URL of the peer Bridge's API, e.g. http://100.127.79.59:3333 */
+  /** Base URL of the peer Bridge's API, e.g. http://100.x.y.z:3333 */
   apiUrl: string;
-  /** Where links to the peer open, e.g. https://timmiepc.tail14d53d.ts.net */
+  /** Where links to the peer open, e.g. https://pc.example.ts.net */
   webUrl: string;
 }
 

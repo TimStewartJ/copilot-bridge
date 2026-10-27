@@ -17,6 +17,7 @@ Add a rule here only if it applies across the repository and no check enforces i
 - Server code lives in `src/server/`, client code in `src/client/`, launcher code in `src/launcher.ts`.
 - `src/packages/` holds code that is published to npm by itself and that the Bridge imports by relative path. It must not import anything from the rest of the repository.
 - Use existing stores, platform helpers, test helpers, and API/client patterns before adding new abstractions.
+- This repository is public on GitHub, and a deploy pushes it there. Examples, tests, comments and docs use made-up values (`100.64.0.x`, `<host>.example.ts.net`, `bridge.example.devtunnels.ms`, `user@example.com`), never the owner's real addresses, machine names, accounts, people or data copied from their Bridge.
 
 ## Editing and validation
 

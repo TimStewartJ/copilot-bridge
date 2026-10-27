@@ -143,7 +143,7 @@ export const STAGING_INSTRUCTIONS = `
 <staging_workflow>
 When modifying code in this repository (the Copilot Bridge):
 1. Use the staging init tool (canonical label: staging_init) to create a fresh, isolated worktree
-2. Make ALL code edits in the returned staging directory — never in the production directory
+2. Make ALL code edits in the returned staging directory — never in the production directory. Follow its AGENTS.md; the repository is public on GitHub, so examples, tests, comments and docs use made-up values, never the owner's real addresses, machine names, accounts or data
 3. Run quality checks in the staging directory:
    - Use npm run check:fast during ordinary implementation loops when you need a quick branch-health check.
    - Use the focused npm run check:client, npm run check:server, npm run check:launcher, or npm run check:staging lane that matches the files you changed.
