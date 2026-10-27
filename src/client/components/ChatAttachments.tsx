@@ -392,7 +392,8 @@ export function MessageAttachments({
 interface ComposerAttachmentTrayProps {
   attachments: Attachment[];
   uploadingCount: number;
-  onRemove: (index: number) => void;
+  /** Omitted while the attachments cannot be changed, such as during a voice recording. */
+  onRemove?: (index: number) => void;
 }
 
 /** What is about to be sent, inside the composer: thumbnails for images, cards for files. */
@@ -403,7 +404,7 @@ export function ComposerAttachmentTray({ attachments, uploadingCount, onRemove }
       {attachments.map((att, index) => {
         const name = attachmentName(att);
         const src = attachmentImageSrc(att);
-        const removeButton = (
+        const removeButton = onRemove && (
           <button
             type="button"
             onClick={() => onRemove(index)}

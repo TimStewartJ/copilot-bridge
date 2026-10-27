@@ -114,13 +114,13 @@ describe("deriveVoiceUiState", () => {
     const recording = { ...baseState, recorderPhase: "recording" as const, maxRecordingSeconds: 300 };
 
     expect(deriveVoiceUiState({ ...recording, recordingSeconds: 83, canAutoSendStoppedRecording: true })).toMatchObject({
-      message: "Recording… stop to send.", detail: "1:23 / 5:00",
+      message: "Recording… stop to send.", detail: "1:23 / 5:00", recordingClock: "1:23", limitNotice: null,
     });
     expect(deriveVoiceUiState({ ...recording, recordingSeconds: 270, canAutoSendStoppedRecording: true })).toMatchObject({
-      message: "Recording… stops and sends at 5:00.", detail: "4:30 / 5:00",
+      message: "Recording… stops and sends at 5:00.", detail: "4:30 / 5:00", recordingClock: "4:30", limitNotice: "Sends at 5:00",
     });
     expect(deriveVoiceUiState({ ...recording, recordingSeconds: 299 })).toMatchObject({
-      message: "Recording… stops and transcribes at 5:00.", detail: "4:59 / 5:00",
+      message: "Recording… stops and transcribes at 5:00.", detail: "4:59 / 5:00", limitNotice: "Transcribes at 5:00",
     });
 
     // Without a known limit the clock still runs; without a clock there is nothing to show.
