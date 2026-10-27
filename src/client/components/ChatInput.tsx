@@ -174,6 +174,7 @@ export default function ChatInput({
   const attachmentsRef = useRef<Attachment[]>(attachments);
   const uploadingRef = useRef(uploading);
   const sendBlockedRef = useRef(Boolean(disabled || onAbort));
+  const agentBusyRef = useRef(Boolean(onAbort));
   /** The send mode an auto-sent transcript uses, so dictating with Autopilot on starts an Autopilot run. */
   const nextSendModeRef = useRef<SendMode>(defaultSendMode);
   const pendingCaptureSendModeRef = useRef<{ mode: SendMode; choice: number } | null>(null);
@@ -214,6 +215,7 @@ export default function ChatInput({
 
   useEffect(() => {
     sendBlockedRef.current = Boolean(disabled || onAbort);
+    agentBusyRef.current = Boolean(onAbort);
   }, [disabled, onAbort]);
 
   const adjustTextareaHeight = useCallback(() => {
@@ -760,10 +762,11 @@ export default function ChatInput({
     }
     setRecordingCancelled(false);
     onClearVoiceJobError?.(composerKey);
+    // A composer that is only loading or reconnecting may still send; stopping checks it again.
     updateRecordingStartMode(resolveVoiceSubmitMode({
       text: inputRef.current,
       attachmentCount: attachmentsRef.current.length,
-      sendBlocked: sendBlockedRef.current,
+      sendBlocked: agentBusyRef.current,
       uploadingCount: uploadingRef.current,
     }));
     pendingCaptureSubmitModeRef.current = null;
