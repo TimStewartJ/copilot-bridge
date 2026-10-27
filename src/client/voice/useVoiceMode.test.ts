@@ -40,7 +40,22 @@ vi.mock("./voice-audio", () => ({
     earcon = audio.earcon;
   },
 }));
-vi.mock("./voice-transport", () => ({ connectVoiceTransport: vi.fn(async () => ({ kind: "websocket", ...transport })) }));
+type Handlers = { onEvent(event: Record<string, unknown>): void; onClose(reason?: string): void };
+const connections = vi.hoisted(() => ({
+  list: [] as Array<{ handlers: Handlers; close: ReturnType<typeof vi.fn> }>,
+  /** When set, the next connection waits for this before it is ready. */
+  gate: undefined as Promise<void> | undefined,
+}));
+vi.mock("./voice-transport", () => ({
+  connectVoiceTransport: vi.fn(async (_ticket: unknown, handlers: Handlers) => {
+    const close = vi.fn();
+    const gate = connections.gate;
+    connections.gate = undefined;
+    if (gate) await gate;
+    connections.list.push({ handlers, close });
+    return { kind: "websocket", ...transport, close };
+  }),
+}));
 vi.mock("./voice-api", async () => {
   const actual = await vi.importActual<typeof import("./voice-api")>("./voice-api");
   return { ...actual, ...voiceApi };
@@ -92,7 +107,7 @@ describe("useVoiceMode", () => {
     await harness.act(() => controller.start(HELM_SESSION_ID));
 
     expect(controller.error).toBe("No microphone was found. Check your browser and OS audio input settings, then try again.");
-    expect(controller).toMatchObject({ phase: "error", active: false, helmSessionId: null });
+    expect(controller).toMatchObject({ phase: "error", active: false, sessionId: null });
     // Audio comes first, so a machine without a microphone never creates a voice conversation.
     expect(voiceApi.createVoiceConversation).not.toHaveBeenCalled();
     expect(audio.close).toHaveBeenCalled();
@@ -121,13 +136,48 @@ describe("useVoiceMode", () => {
     expect(order).toEqual(["audio", "target", "conversation"]);
     expect(voiceApi.createVoiceConversation).toHaveBeenCalledWith(HELM_SESSION_ID, expect.objectContaining(DEFAULTS));
     expect(transport.sendControl).toHaveBeenCalledWith({ type: "start", greet: true });
-    expect(controller).toMatchObject({ active: true, helmSessionId: HELM_SESSION_ID, error: null });
+    expect(controller).toMatchObject({ active: true, sessionId: HELM_SESSION_ID, error: null });
     expect(controller.echoSafe).toBe(true);
     expect(controller.transportPreference).toBe("auto");
 
     await harness.act(() => controller.stop());
     expect(transport.sendControl).toHaveBeenCalledWith({ type: "control", action: "end" });
-    expect(controller).toMatchObject({ phase: "ended", active: false, helmSessionId: null });
+    expect(controller).toMatchObject({ phase: "ended", active: false, sessionId: null });
+  });
+
+  it("moves to another chat without the last one's cleanup closing it", async () => {
+    const list = connections.list;
+    list.length = 0;
+    await harness.act(() => controller.start(HELM_SESSION_ID));
+    await waitUntilAct(harness.act, () => controller.phase === "active");
+    // The server ends the first conversation (it was replaced), and hands-free starts in another chat at once.
+    await harness.act(() => list[0]!.handlers.onEvent({ type: "ended", reason: "hands-free started somewhere else" }));
+    await harness.act(() => controller.start("22222222-3333-4444-8555-666666666666"));
+    await waitUntilAct(harness.act, () => controller.phase === "active");
+    await harness.act(() => new Promise((resolve) => setTimeout(resolve, 600)));
+    expect(list).toHaveLength(2);
+    expect(list[1]!.close).not.toHaveBeenCalled();
+    expect(controller).toMatchObject({ active: true, sessionId: "22222222-3333-4444-8555-666666666666" });
+  });
+
+  it("closes a reconnect for the last chat that finishes after hands-free moved on", async () => {
+    const list = connections.list;
+    list.length = 0;
+    await harness.act(() => controller.start(HELM_SESSION_ID));
+    await waitUntilAct(harness.act, () => controller.phase === "active");
+    let open!: () => void;
+    connections.gate = new Promise((resolve) => { open = resolve; });
+    // The connection drops; the reconnect is still on its way when hands-free starts in another chat.
+    await harness.act(() => list[0]!.handlers.onClose("network"));
+    await harness.act(() => new Promise((resolve) => setTimeout(resolve, 600)));
+    await harness.act(() => controller.start("22222222-3333-4444-8555-666666666666"));
+    await waitUntilAct(harness.act, () => controller.phase === "active");
+    await harness.act(async () => { open(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(list).toHaveLength(3);
+    // The late reconnect (pushed last) is closed; the new chat's connection is left alone.
+    expect(list[2]!.close).toHaveBeenCalled();
+    expect(list[1]!.close).not.toHaveBeenCalled();
+    expect(controller).toMatchObject({ phase: "active", sessionId: "22222222-3333-4444-8555-666666666666" });
   });
 
   it("persists voice and playback settings on the server, applying live config only after success", async () => {

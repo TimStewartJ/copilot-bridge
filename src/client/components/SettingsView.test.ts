@@ -61,10 +61,8 @@ vi.mock("./settings", () => {
     ImageBudgetSection: EmptySection,
     CopilotUsageSection: EmptySection,
     DeviceManagementSection: EmptySection,
-    DeferWorkerSection: EmptySection,
     ManagementJobsSection: EmptySection,
     BridgeRuntimeSection: EmptySection,
-    ModelSection: EmptySection,
     ModelMoveDisclosure: EmptySection,
     ModelsSection: EmptySection,
     NotificationsSection: EmptySection,
@@ -84,7 +82,6 @@ vi.mock("./settings", () => {
       },
       "Change settings",
     ),
-    ReasoningEffortSection: EmptySection,
     SettingsCategoryNav: (props: {
       activeCategory: string;
       onSelectCategory: (category: string) => void;
@@ -96,6 +93,8 @@ vi.mock("./settings", () => {
     TagsSection: EmptySection,
     UpdatesSection: EmptySection,
     SpeechEngineSection: EmptySection,
+    HandsFreeSettingsSection: () => null,
+    HelmSettingsSection: () => null,
   };
 });
 

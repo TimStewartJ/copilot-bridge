@@ -151,10 +151,10 @@ export class HelmThinker {
     return settings;
   }
 
-  /** The Helm role's model (Settings › Models), at its tier's effort or high. */
+  /** The Helm role's model (Settings › Models), at that choice's effort, else the user's default, else high. */
   private async chooseModel(): Promise<{ model?: string; effort?: string; contextTier?: "default" | "long_context" }> {
     const models = await this.ctx.sessionManager.listModels().catch(() => [] as AgentModelInfo[]);
-    const choice = chooseHelmModel(this.ctx.settingsStore.getSettings(), usableModels(models), { effort: DEFAULT_LOOK_EFFORT, tierEffort: true });
+    const choice = chooseHelmModel(this.ctx.settingsStore.getSettings(), usableModels(models), { fallbackEffort: DEFAULT_LOOK_EFFORT });
     return {
       ...(choice.model ? { model: choice.model } : {}),
       ...(choice.reasoningEffort ? { effort: choice.reasoningEffort } : {}),

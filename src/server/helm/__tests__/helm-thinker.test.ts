@@ -36,7 +36,7 @@ function setup(options: { staging?: boolean } = {}) {
   const thinker = new HelmThinker({
     ctx, store,
     facade: { listSessions: async () => [], markRead: () => undefined, setArchived: () => undefined, sendMessage: async () => "started", createSession: async () => ({ sessionId: "x" }) },
-    runtime: { watchSession: () => undefined, getHandsFreeHooks: () => undefined },
+    runtime: { watchSession: () => undefined },
     readSessions: async () => [],
     deleteSession: async () => undefined,
     emitReadStateChanged,

@@ -12,8 +12,12 @@ import type { HelmBridgeFacade } from "../../helm/helm-tools.js";
 import { buildResumeNote, decodePcmBody, encodeAudioFrame, VoiceGateway, type HttpEventSink, type VoiceGatewayHelm } from "../voice-gateway.js";
 import type { VoiceInstaller } from "../voice-installer.js";
 import { createVoiceRouter } from "../voice-router.js";
+import { sendChatMessage } from "../../chat-message-delivery.js";
+
+vi.mock("../../chat-message-delivery.js", () => ({ sendChatMessage: vi.fn(async () => ({ delivery: "started" })) }));
 
 const HELM_SESSION_ID = "11111111-2222-4333-8444-555555555555";
+const CHAT_SESSION_ID = "22222222-3333-4444-8555-666666666666";
 
 function createFakeEngine() {
   const pushed: number[] = [];
@@ -33,7 +37,7 @@ function createFakeEngine() {
   return { engine: engine as unknown as VoiceEngine, pushed };
 }
 
-function createGateway(options: { installed?: boolean; turnCount?: number } = {}) {
+function createGateway(options: { installed?: boolean } = {}) {
   const dataDir = makeTestDir("voice-gateway");
   const paths = resolveVoicePaths({ dataDir, env: {} });
   const { engine, pushed } = createFakeEngine();
@@ -48,6 +52,10 @@ function createGateway(options: { installed?: boolean; turnCount?: number } = {}
     abortSession: vi.fn(async () => true),
     isSessionBusy: vi.fn(() => false),
     warmSession: vi.fn(async () => undefined),
+    // The chats that exist: one ordinary chat. Helm's conversation is known to Helm.
+    readSessionsFromDisk: vi.fn(async (ids: string[]) => ids.filter((id) => id === CHAT_SESSION_ID).map((id) => ({ sessionId: id, summary: "Car task" }))),
+    listModels: vi.fn(async () => []),
+    createHelperSession: vi.fn(async () => { throw new Error("no helper in tests"); }),
   };
   const ctx = {
     sessionManager,
@@ -59,7 +67,7 @@ function createGateway(options: { installed?: boolean; turnCount?: number } = {}
       },
       emit: (event: unknown) => listeners.forEach((listener) => listener(event)),
     },
-    taskStore: { getTask: () => undefined, listTasks: () => [] },
+    taskStore: { getTask: () => undefined, listTasks: () => [], recordUserMessage: vi.fn() },
     eventBusRegistry: {
       getBus: () => undefined,
       getOrCreateBus: () => ({
@@ -77,16 +85,14 @@ function createGateway(options: { installed?: boolean; turnCount?: number } = {}
     sendMessage: async () => "started",
     createSession: async () => ({ sessionId: "s" }),
   };
-  const bound = new Map<string, { requestHandsFree(action: "sleep" | "end"): void }>();
+  const bound = new Set<string>();
   const helm = {
     isHelmSession: (sessionId) => sessionId === HELM_SESSION_ID,
-    bindHandsFree: vi.fn((sessionId, hooks) => {
-      bound.set(sessionId, hooks);
-      return () => bound.delete(sessionId);
+    bindHandsFree: vi.fn((sessionId: string) => {
+      bound.add(sessionId);
+      return () => { bound.delete(sessionId); };
     }),
     isWatched: () => false,
-    getTurnCount: vi.fn(() => options.turnCount ?? 0),
-    getTurnReasoningEffort: vi.fn((mode) => (mode === "spoken" ? "xhigh" : "max")),
   } satisfies VoiceGatewayHelm;
   const gateway = new VoiceGateway({ ctx, facade, helm, runtime: { paths, engine, installer } });
   const emitBus = (event: { type: string; [key: string]: unknown }) => [...busListeners].forEach((listener) => listener(event));
@@ -131,7 +137,7 @@ describe("VoiceGateway HTTP transport", () => {
     ctx.settingsStore.getSettings = () => ({ mcpServers: {}, helm: saved });
     expect(gateway.getStatus().defaults).toEqual(saved);
     for (const [overrides, expected] of [[undefined, saved], [{ patience: 0.8 }, { ...saved, patience: 0.8 }]] as const) {
-      const { conversationId, token } = gateway.createConversation(HELM_SESSION_ID, overrides);
+      const { conversationId, token } = await gateway.createConversation(HELM_SESSION_ID, overrides);
       const sink = new CollectingSink();
       gateway.attachHttpEvents(conversationId, token, sink);
       expect(sink.events[0]).toMatchObject({ type: "hello", settings: expected });
@@ -141,12 +147,13 @@ describe("VoiceGateway HTTP transport", () => {
 
   it("creates a conversation, starts it and streams audio in order", async () => {
     const { gateway, engine, pushed } = createGateway();
-    const { conversationId, token } = gateway.createConversation(HELM_SESSION_ID, { voice: "bm_george" });
+    const { conversationId, token } = await gateway.createConversation(HELM_SESSION_ID, { voice: "bm_george" });
     const sink = new CollectingSink();
     expect(gateway.attachHttpEvents(conversationId, "wrong-token", sink)).toBeUndefined();
     const detach = gateway.attachHttpEvents(conversationId, token, sink);
     expect(detach).toBeDefined();
-    expect(sink.events[0]).toMatchObject({ type: "hello", conversationId, helmSessionId: HELM_SESSION_ID, transport: "http", settings: { voice: "bm_george" } });
+    // Tether reads `helmSessionId`; it names the same chat as `sessionId`.
+    expect(sink.events[0]).toMatchObject({ type: "hello", conversationId, sessionId: HELM_SESSION_ID, helmSessionId: HELM_SESSION_ID, transport: "http", settings: { voice: "bm_george" } });
 
     expect(gateway.acceptHttpControl(conversationId, token, { type: "start", greet: false })).toBe(true);
     await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "state", state: "listening" }));
@@ -180,87 +187,58 @@ describe("VoiceGateway HTTP transport", () => {
     await request(app).post("/voice/install").set("sec-fetch-site", "cross-site").expect(403);
     await request(app).post("/voice/install").set("sec-fetch-site", "same-origin").expect(202);
     expect(installer.install).toHaveBeenCalled();
-    await request(app).post("/voice/conversations").send({ helmSessionId: HELM_SESSION_ID }).expect(409);
+    await request(app).post("/voice/conversations").send({ sessionId: HELM_SESSION_ID }).expect(409);
     await request(app).post("/voice/conversations/unknown/audio?seq=0").set("content-type", "application/octet-stream").send(Buffer.alloc(4)).expect(404);
     await gateway.shutdown();
   });
 });
 
-describe("VoiceGateway and Helm", () => {
-  async function startConversation(options: { turnCount?: number } = {}) {
-    const harness = createGateway(options);
-    const { conversationId, token } = harness.gateway.createConversation(HELM_SESSION_ID, {});
+describe("VoiceGateway and chats", () => {
+  async function startConversation(sessionId = CHAT_SESSION_ID) {
+    const harness = createGateway();
+    const { conversationId, token } = await harness.gateway.createConversation(sessionId, {});
     const sink = new CollectingSink();
     harness.gateway.attachHttpEvents(conversationId, token, sink);
+    harness.gateway.acceptHttpControl(conversationId, token, { type: "start", greet: true });
+    await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "state", state: "listening" }));
     return { ...harness, conversationId, token, sink };
   }
 
-  it("refuses sessions that are not Helm conversations", async () => {
+  it("starts for any chat that exists, named as sessionId or Tether's helmSessionId", async () => {
     const { gateway } = createGateway();
-    expect(() => gateway.createConversation("00000000-0000-4000-8000-000000000000", {})).toThrow("Helm conversation not found");
+    await expect(gateway.createConversation("00000000-0000-4000-8000-000000000000", {})).rejects.toThrow("Chat not found");
     const app = express();
     app.use(express.json());
     app.use("/voice", createVoiceRouter(gateway));
-    await request(app).post("/voice/conversations").send({ helmSessionId: "nope" }).expect(404);
-    await request(app).post("/voice/conversations").send({}).expect(404);
-    const created = await request(app).post("/voice/conversations").send({ helmSessionId: HELM_SESSION_ID }).expect(200);
-    expect(created.body.conversationId).toEqual(expect.any(String));
+    await request(app).post("/voice/conversations").send({ sessionId: "00000000-0000-4000-8000-000000000000" }).expect(404);
+    await request(app).post("/voice/conversations").send({}).expect(400);
+    await request(app).post("/voice/conversations").send({ sessionId: CHAT_SESSION_ID }).expect(200);
+    const legacy = await request(app).post("/voice/conversations").send({ helmSessionId: HELM_SESSION_ID }).expect(200);
+    expect(legacy.body.conversationId).toEqual(expect.any(String));
     await gateway.shutdown();
   });
 
-  it("greets a fresh conversation through the Helm session without showing a user message", async () => {
-    const { gateway, conversationId, token, sink, sessionManager } = await startConversation();
-    gateway.acceptHttpControl(conversationId, token, { type: "start", greet: true });
-    await vi.waitFor(() => expect(sessionManager.startWork).toHaveBeenCalledTimes(1));
-    const [sessionId, prompt, , options] = sessionManager.startWork.mock.calls[0]!;
-    expect(sessionId).toBe(HELM_SESSION_ID);
-    expect(prompt).toContain("[hands-free]");
-    expect(prompt).toContain("Greet the user");
-    expect(options).toEqual({ reasoningEffort: "xhigh", promptSource: "system" });
-    expect(sink.events).toContainEqual({ type: "state", state: "thinking" });
-    await gateway.shutdown();
-  });
-
-  it("resumes a conversation with history quietly", async () => {
-    const { gateway, conversationId, token, sink, sessionManager } = await startConversation({ turnCount: 3 });
-    gateway.acceptHttpControl(conversationId, token, { type: "start", greet: true });
-    await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "state", state: "listening" }));
+  it("greets locally without a message to the chat", async () => {
+    const { gateway, sink, sessionManager } = await startConversation();
+    await vi.waitFor(() => expect(sink.events).toContainEqual(expect.objectContaining({ type: "assistant_done", text: expect.stringMatching(/^Listening\./) })));
     expect(sessionManager.startWork).not.toHaveBeenCalled();
+    expect(sendChatMessage).not.toHaveBeenCalled();
     await gateway.shutdown();
   });
 
-  it("answers typed chat messages out loud while hands-free is on", async () => {
-    const { gateway, conversationId, token, sink, sessionManager, emitBus } = await startConversation({ turnCount: 1 });
-    // Before hands-free has started there is nothing to route through: the chat path handles it.
-    expect(gateway.submitTypedText(HELM_SESSION_ID, "what's new?", "client-1")).toBeUndefined();
-    gateway.acceptHttpControl(conversationId, token, { type: "start", greet: false });
-    await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "state", state: "listening" }));
-
-    expect(gateway.submitTypedText("00000000-0000-4000-8000-000000000000", "hello")).toBeUndefined();
-    // Resolves only once the message has reached the session, which is what lets /chat keep its
-    // promise that a 202 means the run exists.
-    await expect(gateway.submitTypedText(HELM_SESSION_ID, "what's new?", "client-1")).resolves.toEqual({ delivered: true });
-    expect(sessionManager.startWork).toHaveBeenCalledTimes(1);
-    const [, prompt, , options] = sessionManager.startWork.mock.calls[0]!;
-    expect(prompt).toContain("[hands-free]");
-    expect(prompt.endsWith("what's new?")).toBe(true);
-    // Typed while hands-free is on, but answered out loud: it thinks like a spoken turn.
-    expect(options).toEqual({ reasoningEffort: "xhigh", displayPrompt: "what's new?", clientMessageId: "client-1" });
-
-    emitBus({ type: "delta", content: "Two replies are waiting." });
-    emitBus({ type: "done" });
-    await vi.waitFor(() => expect(sink.events).toContainEqual(expect.objectContaining({ type: "assistant_done", text: "Two replies are waiting." })));
+  it("sends a typed message to the chat like its composer, keeping its identity", async () => {
+    vi.mocked(sendChatMessage).mockClear();
+    const { gateway, conversationId, token, sink, ctx } = await startConversation();
+    gateway.acceptHttpControl(conversationId, token, { type: "text", text: "what's new?" });
+    await vi.waitFor(() => expect(sendChatMessage).toHaveBeenCalledWith(ctx, CHAT_SESSION_ID, "what's new?", {}));
+    expect(ctx.taskStore.recordUserMessage).toHaveBeenCalledWith(CHAT_SESSION_ID);
+    expect(sink.events).toContainEqual(expect.objectContaining({ type: "user", text: "what's new?" }));
     await gateway.shutdown();
   });
 
-  it("leaves a reply running in the chat when hands-free ends", async () => {
-    const { gateway, conversationId, token, sink, sessionManager, bound } = await startConversation({ turnCount: 1 });
-    gateway.acceptHttpControl(conversationId, token, { type: "start", greet: false });
-    await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "state", state: "listening" }));
+  it("leaves the chat's work running when hands-free ends, and marks Helm's conversation in use meanwhile", async () => {
+    const { gateway, conversationId, token, sink, sessionManager, bound } = await startConversation(HELM_SESSION_ID);
     expect(bound.has(HELM_SESSION_ID)).toBe(true);
-    await gateway.submitTypedText(HELM_SESSION_ID, "summarize everything");
-    expect(sessionManager.startWork).toHaveBeenCalledTimes(1);
-
     gateway.acceptHttpControl(conversationId, token, { type: "control", action: "end" });
     await vi.waitFor(() => expect(sink.closed).toBe(true));
     expect(sessionManager.abortSession).not.toHaveBeenCalled();
@@ -268,25 +246,14 @@ describe("VoiceGateway and Helm", () => {
     await gateway.shutdown();
   });
 
-  it("reports a typed message that could not reach the session", async () => {
-    const { gateway, conversationId, token, sink, sessionManager } = await startConversation({ turnCount: 1 });
-    gateway.acceptHttpControl(conversationId, token, { type: "start", greet: false });
-    await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "state", state: "listening" }));
-    sessionManager.startWork.mockImplementationOnce(() => {
-      throw new Error("Bridge is restarting");
-    });
-    await expect(gateway.submitTypedText(HELM_SESSION_ID, "hello")).resolves.toEqual({
-      delivered: false,
-      error: "Couldn't reach Copilot: Bridge is restarting",
-    });
-    await gateway.shutdown();
-  });
-
-  it("lets only one hands-free conversation speak for a Helm conversation", async () => {
+  it("lets only one hands-free conversation speak for a chat, leaving other chats alone", async () => {
     const { gateway, sink } = await startConversation();
-    gateway.createConversation(HELM_SESSION_ID, {});
+    const other = await gateway.createConversation(HELM_SESSION_ID, {});
+    expect(sink.closed).toBe(false);
+    await gateway.createConversation(CHAT_SESSION_ID, {});
     await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "ended", reason: "hands-free started somewhere else" }));
-    expect(gateway.getStatus().activeConversations).toBe(1);
+    expect(gateway.getStatus().activeConversations).toBe(2);
+    expect(other.conversationId).toEqual(expect.any(String));
     await gateway.shutdown();
   });
 });
@@ -300,7 +267,7 @@ describe("VoiceGateway WebSocket transport", () => {
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
-    const { conversationId, token } = gateway.createConversation(HELM_SESSION_ID, {});
+    const { conversationId, token } = await gateway.createConversation(HELM_SESSION_ID, {});
 
     const rejected = new WebSocket(`ws://127.0.0.1:${port}/api/voice/ws?conversationId=${conversationId}&token=nope`);
     await new Promise<void>((resolve) => rejected.once("error", () => resolve()));
@@ -322,11 +289,10 @@ describe("VoiceGateway WebSocket transport", () => {
 });
 
 describe("buildResumeNote", () => {
-  it("tells Helm how long ago hands-free ended and what it last said", () => {
-    expect(buildResumeNote(8_000, { text: "The probe  only said DONE.", finished: false }))
-      .toBe('Hands-free just reconnected, 8 seconds after the previous connection ended (often a dropped phone connection). Your last reply was cut off before it finished playing: "The probe only said DONE.". If the user asks what you said or seems to have missed it, say it again briefly.');
+  it("tells the layer how long ago hands-free ended and whether the last thing said was cut off", () => {
+    expect(buildResumeNote(8_000, { text: "The probe only said DONE.", finished: false }))
+      .toBe("Hands-free just reconnected, 8 seconds after the previous connection ended (often a dropped phone connection). The last thing said aloud was cut off before it finished playing; asking what was said means repeat.");
     expect(buildResumeNote(180_000, { text: "Done.", finished: true })).toContain("3 minutes after");
-    expect(buildResumeNote(180_000, { text: "Done.", finished: true })).toContain('Your last reply was: "Done."');
-    expect(buildResumeNote(2_000, undefined)).toContain("offer to repeat it");
+    expect(buildResumeNote(180_000, { text: "Done.", finished: true })).toContain("heard to the end");
   });
 });

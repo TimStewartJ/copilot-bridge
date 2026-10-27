@@ -1,8 +1,10 @@
 // What hands-free looks like now that it lives inside the app instead of taking it over: a
-// dock above the Helm composer, and a small pill everywhere else. The transcript is the chat.
+// dock above the composer of the chat it is on, and a small pill everywhere else. The
+// transcript is the chat.
 import { useState } from "react";
-import { AlertTriangle, AudioLines, Download, Loader2, Mic, MicOff, Moon, PhoneOff, ShipWheel, Sun, VolumeX } from "lucide-react";
+import { AlertTriangle, AudioLines, Download, Loader2, Mic, MicOff, Moon, PhoneOff, Send, Settings2, Sun, VolumeX, X } from "lucide-react";
 import type { VoiceModeController } from "./useVoiceMode";
+import { VoiceSettingsSheet } from "./VoiceSettingsSheet";
 import { VoiceOrb } from "./VoiceOrb";
 import { formatBytes, VOICE_STATE_LABELS, type VoiceTurnMetrics } from "./voice-view-model";
 import { DS, cx, type DsStatusKind } from "../design/tokens";
@@ -21,7 +23,8 @@ export function describeHandsFreeState(controller: VoiceModeController): string 
   if (phase === "connecting") return view.engine.state === "starting" ? "Loading speech models…" : "Connecting…";
   const activity = view.activity.at(-1)?.label;
   if (activity && view.voiceState === "thinking") return `${activity}…`;
-  return VOICE_STATE_LABELS[resolveOrbState(controller)];
+  const label = VOICE_STATE_LABELS[resolveOrbState(controller)];
+  return view.run && (view.voiceState === "listening" || view.voiceState === "asleep") ? `${label} · the chat is working` : label;
 }
 
 function CountPill({ label, value, kind }: { label: string; value: number; kind: DsStatusKind }) {
@@ -60,8 +63,15 @@ const NEUTRAL_BUTTON = cx(ROUND_BUTTON, "border-border bg-bg-surface text-text-s
 function HandsFreeControls({ controller, onEnd, compact = false }: { controller: VoiceModeController; onEnd(): void; compact?: boolean }) {
   const { view } = controller;
   const asleep = view.voiceState === "asleep";
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return (
     <div className="flex shrink-0 items-center gap-1.5">
+      {settingsOpen && <VoiceSettingsSheet controller={controller} onClose={() => setSettingsOpen(false)} />}
+      {!compact && (
+        <button type="button" onClick={() => setSettingsOpen(true)} aria-label="Hands-free settings" title="Hands-free settings" className={NEUTRAL_BUTTON}>
+          <Settings2 size={14} />
+        </button>
+      )}
       <button
         type="button"
         onClick={controller.toggleMic}
@@ -96,7 +106,7 @@ function HandsFreeControls({ controller, onEnd, compact = false }: { controller:
   );
 }
 
-/** The full dock, shown above the Helm composer while hands-free is on. */
+/** The full dock, shown above the composer of the chat hands-free is on. */
 export function HandsFreeDock({ controller, onEnd }: { controller: VoiceModeController; onEnd(): void }) {
   const { view } = controller;
   const [showMetrics, setShowMetrics] = useState(false);
@@ -130,6 +140,22 @@ export function HandsFreeDock({ controller, onEnd }: { controller: VoiceModeCont
         </div>
         <HandsFreeControls controller={controller} onEnd={onEnd} />
       </div>
+      {view.notSent.length > 0 && (
+        <div className="mx-auto mt-1.5 flex w-full max-w-4xl flex-col gap-1" aria-label="Heard but not sent">
+          {view.notSent.map((entry) => (
+            <div key={entry.turnId} className="flex min-w-0 items-center gap-1.5 text-xs text-text-muted">
+              <span className="shrink-0 text-text-faint">Not sent:</span>
+              <span className="min-w-0 flex-1 truncate">“{entry.text}”</span>
+              <button type="button" onClick={() => controller.sendNotSent(entry.turnId, entry.text)} className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1")}>
+                <Send size={12} aria-hidden="true" />Send
+              </button>
+              <button type="button" onClick={() => controller.dismissNotSent(entry.turnId)} aria-label="Dismiss" className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}>
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="mx-auto mt-1.5 flex w-full max-w-4xl flex-wrap items-center gap-1.5">
         {view.counts && (
           <>
@@ -163,9 +189,10 @@ export function HandsFreeDock({ controller, onEnd }: { controller: VoiceModeCont
 }
 
 /** Shown on every other page while hands-free is on, so you can keep talking as you browse. */
-export function HandsFreePill({ controller, onOpenHelm, onEnd, bottomOffset }: {
+export function HandsFreePill({ controller, onOpen, onEnd, bottomOffset }: {
   controller: VoiceModeController;
-  onOpenHelm(): void;
+  /** Goes back to the chat hands-free is on. */
+  onOpen(): void;
   onEnd(): void;
   /** Distance from the viewport bottom, clearing the mobile navigation bar when it is shown. */
   bottomOffset: string;
@@ -181,8 +208,8 @@ export function HandsFreePill({ controller, onOpenHelm, onEnd, bottomOffset }: {
       <div className={cx(DS.surface.floating, "pointer-events-auto flex max-w-full items-center gap-2 py-1.5 pl-1.5 pr-2 backdrop-blur")}>
         <button
           type="button"
-          onClick={onOpenHelm}
-          title="Back to Helm"
+          onClick={onOpen}
+          title="Back to the chat"
           className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "min-w-0 gap-2 pr-1 text-left hover:opacity-90")}
         >
           <span className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[radial-gradient(circle_at_35%_35%,#1a2147_0%,#06070d_75%)]">
@@ -195,7 +222,7 @@ export function HandsFreePill({ controller, onOpenHelm, onEnd, bottomOffset }: {
           </span>
           <span className="min-w-0">
             <span className="flex items-center gap-1 text-[11px] font-medium text-text-secondary">
-              <ShipWheel size={11} aria-hidden="true" />
+              <AudioLines size={11} aria-hidden="true" />
               {describeHandsFreeState(controller)}
             </span>
             {caption && <span className="block max-w-[38vw] truncate text-xs text-text-primary sm:max-w-xs">{caption.text}</span>}

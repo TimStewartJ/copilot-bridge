@@ -186,10 +186,12 @@ interface ChatViewProps {
   backgroundAgents?: BackgroundAgentsSummary;
   onForkSession?: (sessionId: string, opts?: { toEventId?: string }) => Promise<void> | void;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void; newWorkDisabled?: boolean; newWorkDisabledHint?: string;
-  /** Rendered between the transcript and the composer (Helm's hands-free dock). */
+  /** Rendered between the transcript and the composer (the hands-free dock). */
   composerAccessory?: ReactNode;
   /** Hides the composer's record button while something else owns the microphone. */
   hideVoiceInput?: boolean;
+  /** A button for the composer's toolbar, beside the record button. */
+  composerTool?: ReactNode;
   composerPlaceholder?: string;
   /** Incremented to move focus into the composer (desktop only). */
   composerFocusRequest?: number;
@@ -562,6 +564,7 @@ export default function ChatView({
   onRenderedReadThrough, newWorkDisabled = false, newWorkDisabledHint,
   composerAccessory,
   hideVoiceInput,
+  composerTool,
   composerPlaceholder,
   composerFocusRequest,
 }: ChatViewProps) {
@@ -3003,6 +3006,7 @@ export default function ChatView({
         slashCommandsSupported={slashCommandsSupported}
         defaultSendMode={defaultSendMode}
         hideVoiceInput={hideVoiceInput}
+        extraTool={composerTool}
         placeholder={composerPlaceholder}
         focusRequest={composerFocusRequest}
       />}

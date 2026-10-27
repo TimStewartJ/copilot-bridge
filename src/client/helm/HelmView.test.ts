@@ -26,7 +26,6 @@ const POLICY = { freshAfterMs: 6 * 3_600_000, retainMs: 14 * 86_400_000, maxConv
 const state = vi.hoisted(() => ({
   helm: null as unknown,
   chatViewProps: null as Record<string, any> | null,
-  settingsSheetProps: null as Record<string, any> | null,
 }));
 
 const settings = vi.hoisted(() => ({
@@ -47,7 +46,7 @@ const api = vi.hoisted(() => ({
 
 const handsFree = vi.hoisted(() => ({
   active: false,
-  helmSessionId: null as string | null,
+  sessionId: null as string | null,
   phase: "ready",
   error: null as string | null,
   status: { install: { installed: true } } as { install: { installed: boolean } } | null,
@@ -56,12 +55,12 @@ const handsFree = vi.hoisted(() => ({
     handsFree.error = null;
   }),
   start: vi.fn(async (target: string | (() => Promise<string>)) => {
-    handsFree.helmSessionId = typeof target === "string" ? target : await target();
+    handsFree.sessionId = typeof target === "string" ? target : await target();
     handsFree.active = true;
   }),
   stop: vi.fn(async () => {
     handsFree.active = false;
-    handsFree.helmSessionId = null;
+    handsFree.sessionId = null;
   }),
 }));
 
@@ -79,10 +78,6 @@ vi.mock("../hooks/queries/useModels", () => ({ useModelsQuery: () => ({ data: []
 vi.mock("../hooks/queries/useSessionModel", () => ({
   useSessionModelQuery: () => ({ data: { model: "gpt-5.6-luna" }, isLoading: false, isFetching: false, error: null, refetch: settings.refetchSessionModel }),
 }));
-vi.mock("./helm-settings", () => ({
-  useHelmPreferences: () => ({ data: { settings: { typedReasoningEffort: "max", spokenReasoningEffort: "xhigh", glossary: "" } }, error: null }),
-  patchHelmSettings: settings.mutate,
-}));
 vi.mock("../components/SessionModelSummary", () => ({ default: () => null }));
 vi.mock("../components/ChatView", () => ({
   default: (props: Record<string, any>) => {
@@ -95,26 +90,19 @@ vi.mock("../voice/HandsFreeDock", () => ({
   HandsFreeDock: () => createElement("div", { "data-dock": "true" }),
   HandsFreeSetupPanel: () => createElement("div", { "data-setup": "true" }),
 }));
-vi.mock("../voice/VoiceSettingsSheet", () => ({
-  VoiceSettingsSheet: (props: Record<string, any>) => {
-    state.settingsSheetProps = props;
-    return createElement("div", { "data-settings": "true" });
-  },
-}));
 vi.mock("./helm-api", async () => {
   const actual = await vi.importActual<typeof import("./helm-api")>("./helm-api");
   return {
     ...actual,
     ...api,
     useHelmStateQuery: () => ({ data: state.helm, isLoading: false, error: null }),
-    useHelmModelPreference: () => ["", vi.fn()],
   };
 });
 
 const { default: HelmView, HELM_DRAFT_COMPOSER_KEY } = await import("./HelmView");
 
 function helmState(overrides: Partial<HelmState>): HelmState {
-  return { current: null, resumable: null, recent: [], policy: POLICY, reasoningEfforts: { typed: "max", spoken: "xhigh" }, ...overrides };
+  return { current: null, resumable: null, recent: [], policy: POLICY, ...overrides };
 }
 
 function createProps() {
@@ -153,9 +141,8 @@ describe("HelmView", () => {
     vi.clearAllMocks();
     settings.mutate.mockResolvedValue({});
     state.chatViewProps = null;
-    state.settingsSheetProps = null;
     handsFree.active = false;
-    handsFree.helmSessionId = null;
+    handsFree.sessionId = null;
     handsFree.phase = "ready";
     handsFree.error = null;
     handsFree.status = { install: { installed: true } };
@@ -231,7 +218,7 @@ describe("HelmView", () => {
 
     await render();
     expect(state.chatViewProps!.hideVoiceInput).toBe(true);
-    expect(state.chatViewProps!.composerPlaceholder).toContain("answer out loud");
+    expect(state.chatViewProps!.composerPlaceholder).toContain("read back");
     expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.["data-dock"])).toBe(true);
     // Same session before and after: entering hands-free changed the mode, not the context.
     expect(state.chatViewProps!.sessionId).toBe(SESSION_A);
@@ -252,7 +239,7 @@ describe("HelmView", () => {
     // A function, not an id: audio starts inside the tap, then the conversation is created.
     expect(typeof handsFree.start.mock.calls[0]![0]).toBe("function");
     expect(api.createHelmConversation).toHaveBeenCalledOnce();
-    expect(handsFree.helmSessionId).toBe(SESSION_B);
+    expect(handsFree.sessionId).toBe(SESSION_B);
   });
 
   it("offers speech engine setup instead of starting when it is not installed", async () => {
@@ -269,14 +256,14 @@ describe("HelmView", () => {
     const current = conversation({});
     state.helm = helmState({ current });
     handsFree.active = true;
-    handsFree.helmSessionId = SESSION_A;
+    handsFree.sessionId = SESSION_A;
     api.startFreshHelm.mockResolvedValue(helmState({ resumable: current, recent: [current] }));
     api.createHelmConversation.mockResolvedValue(conversation({ sessionId: SESSION_B, turnCount: 0, title: null }));
     await render();
 
     const reset = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-label"] === "New conversation");
     await harness.act(() => reset.onClick());
-    await waitUntilAct(harness.act, () => handsFree.helmSessionId === SESSION_B);
+    await waitUntilAct(harness.act, () => handsFree.sessionId === SESSION_B);
 
     expect(handsFree.stop).toHaveBeenCalledOnce();
     expect(api.startFreshHelm).toHaveBeenCalledOnce();
@@ -301,35 +288,6 @@ describe("HelmView", () => {
     expect(handsFree.clearError).toHaveBeenCalledOnce();
     await render();
     expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.role === "alert")).toBe(false);
-  });
-
-  it("lets each mode think at its own effort, keeping the other mode's setting", async () => {
-    state.helm = helmState({ current: conversation({}) });
-    await render();
-    const open = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-label"] === "Helm settings");
-    await harness.act(() => open.onClick());
-    expect(state.settingsSheetProps!.helmEfforts).toMatchObject({ typed: "max", spoken: "xhigh", modelId: "gpt-5.6-luna", error: null });
-
-    settings.mutate.mockRejectedValueOnce(new Error("helm.typedReasoningEffort must be a reasoning effort name"));
-    await harness.act(() => state.settingsSheetProps!.helmEfforts.onChange("typed", "high"));
-    // Shown at once, and saved next to the spoken setting rather than over it.
-    expect(settings.mutate).toHaveBeenCalledWith(
-      { typedReasoningEffort: "high" },
-    );
-
-    // A rejected save puts the picker back and says why.
-    expect((state.helm as HelmState).reasoningEfforts).toEqual({ typed: "max", spoken: "xhigh" });
-    await render();
-    expect(state.settingsSheetProps!.helmEfforts.error).toBe("helm.typedReasoningEffort must be a reasoning effort name");
-  });
-
-  it("re-reads the model summary after each turn, since the effort changes with the mode", async () => {
-    state.helm = helmState({ current: conversation({ lastActiveAt: "2026-09-18T09:00:00.000Z" }) });
-    await render();
-    const before = settings.refetchSessionModel.mock.calls.length;
-    state.helm = helmState({ current: conversation({ lastActiveAt: "2026-09-18T09:05:00.000Z" }) });
-    await render();
-    expect(settings.refetchSessionModel.mock.calls.length).toBe(before + 1);
   });
 
   it("sends a suggestion straight to Helm", async () => {

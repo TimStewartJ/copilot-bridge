@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { ArrowUp, Square, Paperclip, Loader2, Mic } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
@@ -112,6 +112,8 @@ interface ChatInputProps {
   defaultSendMode?: SendMode;
   /** Hides the record button while something else owns the microphone (hands-free voice). */
   hideVoiceInput?: boolean;
+  /** A button shown beside the record button (the chat's hands-free switch). */
+  extraTool?: ReactNode;
   placeholder?: string;
   /** Incremented to request focus (desktop only, so touch devices do not raise the keyboard). */
   focusRequest?: number;
@@ -137,6 +139,7 @@ export default function ChatInput({
   slashCommandsSupported = false,
   defaultSendMode = DEFAULT_SEND_MODE,
   hideVoiceInput = false,
+  extraTool,
   placeholder = "Type a message...",
   focusRequest = 0,
 }: ChatInputProps) {
@@ -872,6 +875,7 @@ export default function ChatInput({
           >
             <Paperclip size={18} />
           </button>
+          {extraTool}
           {voiceUi.showButton && !hideVoiceInput && (
             <button
               onClick={() => {

@@ -2571,22 +2571,6 @@ export function createApiRouter(
     const attachCount = Array.isArray(attachments) ? attachments.length : 0;
     console.log(`[web] [${sessionId.slice(0, 8)}] "${prompt.slice(0, 80)}"${attachCount ? ` (+${attachCount} attachment${attachCount > 1 ? "s" : ""})` : ""}`);
 
-    // While hands-free is on, a message typed into the Helm chat is a turn of the same spoken
-    // conversation: it is framed for voice and answered out loud. Anything voice can't carry
-    // (attachments, slash commands) takes the ordinary path below.
-    if (ctx.helm?.isHelmSession(sessionId) && attachCount === 0 && !parseSlashCommandPrompt(prompt)) {
-      const delivery = await ctx.voiceGateway?.submitTypedText(sessionId, prompt, clientMessageId);
-      if (delivery?.delivered) {
-        noteUserMessage(sessionId);
-        res.status(202).json({ status: "accepted", mode: "hands-free" });
-        return;
-      }
-      if (delivery?.error) {
-        return res.status(409).json({ error: delivery.error });
-      }
-      // Hands-free is off, or it ended before the message got through: deliver it as plain chat.
-    }
-
     try {
       const { delivery } = await sendChatMessage(ctx, sessionId, prompt, {
         attachments, mode, waitForDelivery, clientMessageId,

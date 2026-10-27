@@ -1,7 +1,7 @@
 // Hands-free gateway: owns voice conversations and bridges browser transports (WebSocket, or
 // HTTP POST + SSE through proxies that block upgrades) to the shared speech engine. Each
-// conversation speaks for one Helm conversation; the Helm session holds all the context.
-import { resolveModelRole } from "../model-roles.js";
+// conversation speaks for one chat (any chat, Helm's included) through the hands-free layer; the
+// chat holds all the context.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -9,9 +9,10 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { AppContext } from "../app-context.js";
 import type { StatusEvent } from "../global-bus.js";
 import type { HelmService } from "../helm/helm-service.js";
-import { buildBridgeSnapshotLine, countBridgeSessions, type HelmBridgeFacade } from "../helm/helm-tools.js";
-import { HelmVoiceAgent } from "../helm/helm-voice-agent.js";
-import { HelmTalker } from "../helm/helm-talker.js";
+import { countBridgeSessions, type HelmBridgeFacade } from "../helm/helm-tools.js";
+import { sendChatMessage } from "../chat-message-delivery.js";
+import { HandsFreeLayer, type ReadbackPreference } from "./hands-free-layer.js";
+import { HandsFreeModel } from "./hands-free-model.js";
 import {
   DEFAULT_VOICE_SETTINGS,
   KOKORO_VOICES,
@@ -40,7 +41,9 @@ const ANNOUNCE_DEBOUNCE_MS = 1_500;
 
 export type VoiceGatewayEvent =
   | VoiceServerEvent
-  | { type: "hello"; conversationId: string; helmSessionId: string; transport: "websocket" | "http"; settings: VoiceSettings; state: string; resendsAudio?: boolean }
+  // `helmSessionId` is the same chat as `sessionId`, kept for Tether.
+  | { type: "hello"; conversationId: string; sessionId: string; helmSessionId: string; transport: "websocket" | "http"; settings: VoiceSettings; state: string; resendsAudio?: boolean }
+  | { type: "run"; working: boolean; startedAt?: number }
   | { type: "engine"; state: VoiceEngineStatus["state"]; detail?: string }
   | { type: "bridge_counts"; unread: number; running: number; waiting: number }
   | { type: "pong"; t: number }
@@ -124,31 +127,51 @@ class ConversationSession implements VoiceClientSink {
   private unbindHandsFree?: () => void;
   private readonly announceTimers = new Map<string, NodeJS.Timeout>();
   private countsTimer?: NodeJS.Timeout;
-  private readonly agent: HelmVoiceAgent;
+  private readonly agent: HandsFreeLayer;
   readonly conversation: VoiceConversation;
   readonly log: VoiceLog;
   disposed = false;
 
   constructor(
     private readonly gateway: VoiceGateway,
-    readonly helmSessionId: string,
+    readonly sessionId: string,
     private settings: VoiceSettings,
   ) {
     this.log = new VoiceLog(gateway.paths.logsDir, this.id);
-    this.agent = new HelmVoiceAgent({
-      sessionId: helmSessionId,
-      sessionManager: gateway.ctx.sessionManager,
-      getBus: (sessionId) => gateway.ctx.eventBusRegistry.getOrCreateBus(sessionId),
-      snapshot: async () => buildBridgeSnapshotLine(await gateway.facade.listSessions()),
-      // Everything hands-free answers is spoken, including a message typed while it is on.
-      resolveReasoningEffort: (userText) => gateway.helm.getTurnReasoningEffort("spoken", userText),
-      talker: new HelmTalker({
-        listModels: () => gateway.ctx.sessionManager.listModels(),
-        resolveHelperRole: (models) => resolveModelRole(gateway.ctx.settingsStore.getSettings(), "helper", models),
-        createHelperSession: (config) => gateway.ctx.sessionManager.createHelperSession(config), logger: console }),
-      glossary: () => gateway.ctx.settingsStore.getSettings().helm?.glossary,
-      logger: console,
-      onTiming: (timing) => this.log.write("agent_timing", { ...timing }),
+    const ctx = gateway.ctx;
+    this.agent = new HandsFreeLayer({
+      sessionId,
+      chat: {
+        isBusy: () => ctx.sessionManager.isSessionBusy(sessionId),
+        getBus: () => ctx.eventBusRegistry.getBus(sessionId),
+        deliver: async (text, clientMessageId) => {
+          const { delivery } = await sendChatMessage(ctx, sessionId, text, clientMessageId ? { clientMessageId } : {});
+          try { ctx.taskStore.recordUserMessage(sessionId); } catch { /* bookkeeping only */ }
+          return delivery === "accepted" ? "started" : delivery;
+        },
+        abort: () => ctx.sessionManager.abortSession(sessionId),
+        title: async () => {
+          const [session] = await ctx.sessionManager.readSessionsFromDisk([sessionId], { includeArchived: true });
+          const title = typeof session?.summary === "string" ? session.summary.trim() : "";
+          return title || undefined;
+        },
+        warm: () => ctx.sessionManager.warmSession(sessionId),
+      },
+      model: new HandsFreeModel({
+        listModels: () => ctx.sessionManager.listModels(),
+        getSettings: () => ctx.settingsStore.getSettings(),
+        createHelperSession: (config) => ctx.sessionManager.createHelperSession(config),
+        logger: console,
+        onTiming: (timing) => this.log.write("layer_model", { ...timing }),
+      }),
+      subscribeStatus: (listener) => ctx.globalBus.subscribe(listener),
+      glossary: () => ctx.settingsStore.getSettings().helm?.glossary,
+      preference: {
+        get: () => gateway.readbackPreferences.get(sessionId),
+        set: (value) => gateway.readbackPreferences.set(sessionId, value),
+      },
+      onRunState: (state) => this.sendJson({ type: "run", working: state.working, ...(state.startedAt ? { startedAt: state.startedAt } : {}) }),
+      log: (event, details) => this.log.write(`layer_${event}`, details),
     });
     this.conversation = new VoiceConversation({
       streamId: this.streamId,
@@ -158,7 +181,12 @@ class ConversationSession implements VoiceClientSink {
       settings,
       log: (event, details) => this.log.write(event, details),
     });
-    this.log.write("created", { settings, helmSessionId });
+    this.log.write("created", { settings, sessionId });
+  }
+
+  /** What the last connection for this chat said, so "say that again" works after a reconnect. */
+  restoreLastSaid(text: string): void {
+    this.agent.restoreLastSaid(text);
   }
 
   send(event: VoiceServerEvent): void {
@@ -193,7 +221,8 @@ class ConversationSession implements VoiceClientSink {
     transport.sendJson({
       type: "hello",
       conversationId: this.id,
-      helmSessionId: this.helmSessionId,
+      sessionId: this.sessionId,
+      helmSessionId: this.sessionId,
       transport: transport.kind,
       settings: this.settings,
       state: this.conversation.state,
@@ -260,8 +289,8 @@ class ConversationSession implements VoiceClientSink {
   }
 
   /**
-   * A message typed into the Helm chat while hands-free is on: answered out loud like a spoken
-   * one. Resolves once the message has reached the session (or is known not to have).
+   * A message typed while hands-free is on (Tether's text box): sent to the chat as it is, and its
+   * reply read back. Resolves once the message has reached the chat (or is known not to have).
    */
   submitTypedText(text: string, clientMessageId?: string): Promise<TypedTextDelivery> | undefined {
     if (!this.started || this.disposed) return undefined;
@@ -313,15 +342,11 @@ class ConversationSession implements VoiceClientSink {
       await warm;
       if (this.disposed) return;
       this.started = true;
-      this.unbindHandsFree = this.gateway.helm.bindHandsFree(this.helmSessionId, {
-        requestHandsFree: (action) => setTimeout(() => this.onControl(action), 1_500).unref(),
-      });
+      if (this.gateway.helm.isHelmSession(this.sessionId)) this.unbindHandsFree = this.gateway.helm.bindHandsFree(this.sessionId);
       this.subscribeToBridge();
-      // A conversation with history just picks up where it left off; only a fresh one is greeted.
-      const greetNow = greet && this.gateway.helm.getTurnCount(this.helmSessionId) === 0;
-      this.conversation.start({ greet: greetNow });
+      this.conversation.start({ greet });
       void this.pushCounts();
-      this.log.write("started", { greet: greetNow, engine: this.gateway.engine.status.info });
+      this.log.write("started", { greet, engine: this.gateway.engine.status.info });
     })().finally(() => {
       this.starting = undefined;
     });
@@ -338,9 +363,9 @@ class ConversationSession implements VoiceClientSink {
       || event.type === "readstate:changed" || event.type === "session:user-input") {
       this.scheduleCounts();
     }
-    if (!event.sessionId || event.sessionId === this.helmSessionId || this.settings.announce === "off") return;
+    if (!event.sessionId || event.sessionId === this.sessionId || this.settings.announce === "off") return;
     if (this.gateway.helm.isHelmSession(event.sessionId)) return;
-    const watched = this.settings.announce === "all" || this.gateway.helm.isWatched(this.helmSessionId, event.sessionId);
+    const watched = this.settings.announce === "all" || this.gateway.helm.isWatched(this.sessionId, event.sessionId);
     if (!watched) return;
     if (event.type === "session:idle") {
       this.scheduleAnnouncement(event.sessionId, "finished", event.assistantPreview);
@@ -366,11 +391,8 @@ class ConversationSession implements VoiceClientSink {
     const session = sessions.find((candidate) => candidate.sessionId === sessionId);
     if (!session) return;
     if (kind === "finished" && (session.needsUserInput || session.runState !== "idle")) return;
-    const text = kind === "waiting"
-      ? `Session "${session.title}" is waiting on the user with a question.`
-      : `Session "${session.title}" finished${preview ? `. Its reply starts: "${preview.slice(0, 280)}"` : "."}`;
     this.log.write("announce", { sessionId, kind });
-    this.conversation.enqueueEvent(text);
+    await this.agent.announce(session.title, kind, preview);
   }
 
   private scheduleCounts(): void {
@@ -400,7 +422,7 @@ class ConversationSession implements VoiceClientSink {
     this.unsubscribeBus?.();
     this.unsubscribeEngine?.();
     this.unbindHandsFree?.();
-    this.gateway.noteEnded(this.helmSessionId, reason, this.conversation.lastReply());
+    this.gateway.noteEnded(this.sessionId, reason, this.conversation.lastReply());
     // Leaving hands-free must not cut off a reply: detach first so the session keeps writing it into the chat.
     this.agent.detach();
     this.conversation.dispose();
@@ -518,7 +540,7 @@ class HttpTransport implements VoiceTransport {
   }
 }
 
-export type VoiceGatewayHelm = Pick<HelmService, "isHelmSession" | "bindHandsFree" | "isWatched" | "getTurnCount" | "getTurnReasoningEffort">;
+export type VoiceGatewayHelm = Pick<HelmService, "isHelmSession" | "bindHandsFree" | "isWatched">;
 
 export interface VoiceGatewayOptions {
   ctx: AppContext;
@@ -531,20 +553,26 @@ export interface VoiceGatewayOptions {
 const RESUME_NOTE_WINDOW_MS = 5 * 60_000;
 
 /**
- * What the model is told when hands-free comes back right after it ended, most often because a phone's
- * connection dropped mid-reply (24 Sep 2026: "What's the most recent message you heard from me?",
- * "I missed it, can you say it again?").
+ * What the hands-free layer is told when hands-free comes back right after it ended, most often
+ * because a phone's connection dropped mid-reply (24 Sep 2026: "What's the most recent message you
+ * heard from me?", "I missed it, can you say it again?"), so it can tell such a question is "repeat".
  */
 export function buildResumeNote(sinceMs: number, reply: { text: string; finished: boolean } | undefined): string {
   const seconds = Math.max(1, Math.round(sinceMs / 1000));
   const gap = seconds < 90 ? `${seconds} seconds` : `${Math.round(seconds / 60)} minutes`;
   const lead = `Hands-free just reconnected, ${gap} after the previous connection ended (often a dropped phone connection).`;
-  if (!reply) return `${lead} If the user seems to have missed something, offer to repeat it.`;
-  const excerpt = reply.text.replace(/\s+/g, " ").trim().slice(0, 300);
+  if (!reply) return lead;
   return reply.finished
-    ? `${lead} Your last reply was: "${excerpt}". If the user asks what you said or seems to have missed it, say it again briefly.`
-    : `${lead} Your last reply was cut off before it finished playing: "${excerpt}". If the user asks what you said or seems to have missed it, say it again briefly.`;
+    ? `${lead} The last thing said aloud was heard to the end.`
+    : `${lead} The last thing said aloud was cut off before it finished playing; asking what was said means repeat.`;
 }
+
+export class VoiceConversationNotFoundError extends Error {
+  constructor() {
+    super("Chat not found");
+  }
+}
+
 export class VoiceGateway {
   readonly ctx: AppContext;
   readonly facade: HelmBridgeFacade;
@@ -553,7 +581,9 @@ export class VoiceGateway {
   readonly engine: VoiceEngine;
   readonly installer: VoiceInstaller;
   private readonly conversations = new Map<string, ConversationSession>();
-  /** When each Helm conversation's last hands-free connection ended, for the next one's resume note. */
+  /** Whether each chat's long replies are read in full or summarized, as the user last said. */
+  readonly readbackPreferences = new Map<string, ReadbackPreference>();
+  /** When each chat's last hands-free connection ended, for the next one's resume note. */
   private readonly recentEnds = new Map<string, { at: number; reply?: { text: string; finished: boolean } }>();
   private readonly httpTransports = new WeakMap<ConversationSession, HttpTransport>();
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: MAX_AUDIO_FRAME_BYTES, perMessageDeflate: false });
@@ -578,39 +608,38 @@ export class VoiceGateway {
     };
   }
 
-  /** Starts hands-free for a Helm conversation. One voice conversation speaks for it at a time. */
-  createConversation(helmSessionId: string, settings: unknown): { conversationId: string; token: string } {
-    if (!this.helm.isHelmSession(helmSessionId)) throw new Error("Helm conversation not found");
+  /**
+   * Starts hands-free for a chat. One voice conversation speaks for a chat at a time: starting
+   * another for the same chat takes over from the first. Conversations for other chats are left alone.
+   */
+  async createConversation(sessionId: string, settings: unknown): Promise<{ conversationId: string; token: string }> {
+    const [session] = await this.ctx.sessionManager.readSessionsFromDisk([sessionId], { includeArchived: true });
+    if (!session && !this.helm.isHelmSession(sessionId)) throw new VoiceConversationNotFoundError();
     for (const existing of this.conversations.values()) {
-      if (existing.helmSessionId === helmSessionId) void existing.end("hands-free started somewhere else");
+      if (existing.sessionId === sessionId) void existing.end("hands-free started somewhere else");
     }
     const defaults = normalizeVoiceSettings(this.ctx.settingsStore.getSettings().helm, DEFAULT_VOICE_SETTINGS);
-    const session = new ConversationSession(this, helmSessionId, normalizeVoiceSettings(settings, defaults));
-    const ended = this.recentEnds.get(helmSessionId);
-    this.recentEnds.delete(helmSessionId);
+    const conversation = new ConversationSession(this, sessionId, normalizeVoiceSettings(settings, defaults));
+    const ended = this.recentEnds.get(sessionId);
+    this.recentEnds.delete(sessionId);
     if (ended && Date.now() - ended.at <= RESUME_NOTE_WINDOW_MS) {
-      session.conversation.setResumeNote(buildResumeNote(Date.now() - ended.at, ended.reply));
+      conversation.conversation.setResumeNote(buildResumeNote(Date.now() - ended.at, ended.reply));
+      if (ended.reply?.text.trim()) conversation.restoreLastSaid(ended.reply.text);
     }
-    this.conversations.set(session.id, session);
-    session.armGraceTimer();
-    return { conversationId: session.id, token: session.token };
+    this.conversations.set(conversation.id, conversation);
+    conversation.armGraceTimer();
+    return { conversationId: conversation.id, token: conversation.token };
   }
 
   /** Records that a hands-free connection ended; a takeover is not a drop and leaves no note. */
-  noteEnded(helmSessionId: string, reason: string, reply: { text: string; finished: boolean } | undefined): void {
+  noteEnded(sessionId: string, reason: string, reply: { text: string; finished: boolean } | undefined): void {
     if (reason === "hands-free started somewhere else") return;
-    this.recentEnds.set(helmSessionId, { at: Date.now(), ...(reply ? { reply } : {}) });
+    this.recentEnds.set(sessionId, { at: Date.now(), ...(reply ? { reply } : {}) });
   }
 
-  /**
-   * Routes a message typed in the Helm chat through the live hands-free conversation, so it is
-   * framed and answered out loud like a spoken turn. Undefined when hands-free isn't active for it.
-   */
-  submitTypedText(helmSessionId: string, text: string, clientMessageId?: string): Promise<TypedTextDelivery> | undefined {
-    for (const session of this.conversations.values()) {
-      if (session.helmSessionId === helmSessionId && !session.disposed) return session.submitTypedText(text, clientMessageId);
-    }
-    return undefined;
+  /** The chats hands-free is on for right now. */
+  activeSessionIds(): string[] {
+    return [...new Set([...this.conversations.values()].filter((session) => !session.disposed).map((session) => session.sessionId))];
   }
 
   private find(conversationId: unknown, token: unknown): ConversationSession | undefined {

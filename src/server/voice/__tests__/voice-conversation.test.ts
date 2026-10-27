@@ -59,6 +59,11 @@ interface FakeTurn {
 
 class FakeAgent {
   turns: FakeTurn[] = [];
+  busy = false;
+
+  isBusy(): boolean {
+    return this.busy;
+  }
 
   startTurn(input: AgentTurnInput, listener: AgentTurnListener) {
     const turn: FakeTurn = { input, listener, aborted: false };
@@ -178,8 +183,8 @@ describe("VoiceConversation", () => {
   it("gives the first thing said after a reconnect the resume note, once", async () => {
     const ctx = setup();
     ctx.conversation.setResumeNote("Hands-free just reconnected.");
-    await speakTurn(ctx, "What did you say?");
-    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "What did you say?", resumeNote: "Hands-free just reconnected." });
+    await speakTurn(ctx, "Sorry, I lost you there.");
+    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "Sorry, I lost you there.", resumeNote: "Hands-free just reconnected." });
     ctx.agent.last.listener.onDelta("I said two sessions finished. ");
     ctx.agent.last.listener.onDone({ aborted: false });
     await advance(10);
@@ -247,11 +252,13 @@ describe("VoiceConversation", () => {
     expect(ctx.agent.last.input.text).toBe("So I was thinking, um");
   });
 
-  it("speaks a short lead-in while tools run and measures the real reply separately", async () => {
+  it("says a short line when the agent hasn't answered after three seconds, and measures the real reply separately", async () => {
     const ctx = setup();
     await speakTurn(ctx, "What's going on?");
-    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "bridge_overview" });
-    await advance(10);
+    // Three seconds from when the agent was asked.
+    await advance(2_900);
+    expect(ctx.engine.synthCalls).toHaveLength(0);
+    await advance(200);
     expect(ctx.engine.synthCalls[0]!.text).toBe("One sec.");
     expect(ctx.conversation.state).toBe("speaking");
     ctx.agent.last.listener.onDelta("Nothing is waiting on you. ");
@@ -263,70 +270,18 @@ describe("VoiceConversation", () => {
     expect(metrics?.metrics.speechEndToFirstAudioMs).toBeTypeOf("number");
   });
 
-  it("speaks the agent's own lead-in instead of a canned one, holding tool fillers while it is written", async () => {
-    const ctx = setup();
-    let resolveLeadIn!: (text: string | undefined) => void;
-    const leadIn = vi.fn(() => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }));
-    Object.assign(ctx.agent, { leadIn });
-    await speakTurn(ctx, "Anything from the car task?");
-    expect(leadIn).toHaveBeenCalledWith("Anything from the car task?");
-    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "read_session" });
-    await advance(10);
-    expect(ctx.engine.synthCalls).toHaveLength(0);
-    resolveLeadIn("Let me check the car task.");
-    await advance(10);
-    expect(ctx.engine.synthCalls[0]!.text).toBe("Let me check the car task.");
-  });
-
-  it("waits one more second for a lead-in that is being written before the canned one", async () => {
-    const ctx = setup();
-    let resolveLeadIn!: (text: string | undefined) => void;
-    Object.assign(ctx.agent, { leadIn: () => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }) });
-    await speakTurn(ctx, "Where is tonight's study?");
-    await advance(3_500);
-    expect(ctx.engine.synthCalls).toHaveLength(0);
-    resolveLeadIn("Let me find tonight's study.");
-    await advance(10);
-    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["Let me find tonight's study."]);
-    await advance(2_000);
-    expect(ctx.engine.synthCalls).toHaveLength(1);
-
-    // Still not written a second later: the canned one plays, and the late one is dropped.
-    const slow = setup();
-    Object.assign(slow.agent, { leadIn: () => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }) });
-    await speakTurn(slow, "Where is tonight's study?");
-    await advance(3_700);
-    expect(slow.engine.synthCalls).toHaveLength(0);
-    await advance(400);
-    expect(slow.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
-    resolveLeadIn("Let me find tonight's study.");
-    await advance(10);
-    expect(slow.engine.synthCalls).toHaveLength(1);
-
-    // The writer gives up during the extra second: the canned one plays at once.
-    const silent = setup();
-    Object.assign(silent.agent, { leadIn: () => new Promise<string | undefined>((resolve) => { resolveLeadIn = resolve; }) });
-    await speakTurn(silent, "Where is tonight's study?");
-    await advance(3_300);
-    expect(silent.engine.synthCalls).toHaveLength(0);
-    resolveLeadIn(undefined);
-    await advance(10);
-    expect(silent.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
-  });
-
   it("says it is still working when a lookup stays silent, at growing gaps, until the reply comes", async () => {
     const ctx = setup();
     await speakTurn(ctx, "Where is tonight's study?");
-    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "find" });
-    await advance(10);
+    await advance(3_000);
     expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["One sec."]);
 
-    // The lead-in is 0.1 s of audio; the first line comes 8 s after it ends.
-    await advance(8_000);
+    // "One sec." played 0.2 s ago and is 0.1 s of audio; the first line comes 8 s after it ends.
+    await advance(7_500);
     expect(ctx.engine.synthCalls).toHaveLength(1);
-    await advance(200);
+    await advance(1_000);
     expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["One sec.", "Still working on it."]);
-    await advance(11_900);
+    await advance(11_300);
     expect(ctx.engine.synthCalls).toHaveLength(2);
     await advance(400);
     expect(ctx.engine.synthCalls.at(-1)!.text).toBe("Still on it, one moment.");
@@ -344,8 +299,7 @@ describe("VoiceConversation", () => {
   it("does not say it is still working over the user's own speech or after the reply is spoken", async () => {
     const ctx = setup();
     await speakTurn(ctx, "Where is tonight's study?");
-    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "find" });
-    await advance(10);
+    await advance(3_000);
     // The user starts talking over the wait: a possible interruption is being checked.
     ctx.engine.transcripts.push("");
     ctx.conversation.onVad(true, ctx.audio(100));
@@ -366,7 +320,6 @@ describe("VoiceConversation", () => {
   it("stays in speaking until a reply that came long after its lead-in has played", async () => {
     const ctx = setup();
     await speakTurn(ctx, "What's going on?");
-    ctx.agent.last.listener.onToolStart({ toolCallId: "t1", name: "bridge_overview" });
     await advance(5_000);
     ctx.agent.last.listener.onDelta("Nothing is waiting on you. ");
     ctx.agent.last.listener.onDone({ aborted: false });
@@ -527,10 +480,91 @@ describe("VoiceConversation", () => {
     expect(ctx.engine.synthCalls[0]).toMatchObject({ sid: 26, lang: "en" });
   });
 
-  it("announces queued Bridge updates when idle", async () => {
+  it("says what the agent asks once the user isn't talking, newest per key, and drops what is no longer valid", async () => {
     const ctx = setup();
-    ctx.conversation.enqueueEvent("Session Tellus finished.");
-    expect(ctx.agent.last.input).toEqual({ kind: "event", text: "Session Tellus finished." });
+    ctx.conversation.onVad(true, ctx.audio(200));
+    ctx.conversation.say({ key: "progress:r1", text: "It's reading the logs.", kind: "progress", valid: () => false });
+    ctx.conversation.say({ key: "end:r1", text: "Done, the tests pass.", kind: "readback" });
+    ctx.conversation.say({ key: "end:r1", text: "Done, all twelve tests pass.", kind: "readback" });
+    await advance(10);
+    expect(ctx.engine.synthCalls).toHaveLength(0);
+
+    ctx.engine.transcripts.push("Huh?");
+    ctx.conversation.onVad(false, ctx.audio(400));
+    await advance(1_000);
+    expect(ctx.engine.synthCalls.map((call) => call.text)).toEqual(["Done, all twelve tests pass."]);
+    expect(ctx.agent.turns).toHaveLength(0);
+  });
+
+  it("puts the agent's speech back when the user starts talking before it is heard", async () => {
+    const ctx = setup();
+    const onSpoken = vi.fn();
+    ctx.conversation.say({ key: "end:r1", text: "Done, the tests pass.", kind: "readback", onSpoken });
+    // Talking before its audio arrives holds it; a real request replaces it, so it waits for the next gap.
+    ctx.conversation.onVad(true, ctx.audio(100));
+    ctx.engine.transcripts.push("also check the deploy");
+    ctx.conversation.onVad(false, ctx.audio(900));
+    await advance(10);
+    expect(ctx.agent.last.input.text).toBe("also check the deploy");
+    expect(onSpoken).not.toHaveBeenCalled();
+    ctx.agent.last.listener.onDelta("On it. ");
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await advance(10);
+    ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
+    await advance(10);
+    expect(ctx.engine.synthCalls.at(-1)!.text).toBe("Done, the tests pass.");
+    expect(onSpoken).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the agent's speech when asked to stop, and evicts announcements before a reply", async () => {
+    const ctx = setup();
+    ctx.engine.synthesize = (request) => {
+      ctx.engine.synthCalls.push(request);
+      return { done: new Promise(() => undefined), cancel: () => undefined };
+    };
+    ctx.conversation.say({ key: "end:r1", text: "Done, the tests pass.", kind: "readback" });
+    expect(ctx.engine.synthCalls).toHaveLength(1);
+    ctx.conversation.stopSpeaking();
+    await advance(10);
+    expect(ctx.engine.synthCalls).toHaveLength(1);
+
+    ctx.conversation.onVad(true, ctx.audio(100));
+    ctx.conversation.say({ key: "end:r2", text: "Second reply.", kind: "readback" });
+    for (let i = 0; i < 9; i++) ctx.conversation.say({ key: `announce:${i}`, text: `Chat ${i} finished.`, kind: "announce" });
+    ctx.engine.transcripts.push("Huh?");
+    ctx.conversation.onVad(false, ctx.audio(400));
+    await advance(1_000);
+    expect(ctx.engine.synthCalls.at(-1)!.text).toBe("Second reply.");
+  });
+
+  it("stays awake while the agent has work in hand", async () => {
+    const ctx = setup();
+    ctx.agent.busy = true;
+    await advance(125_000);
+    expect(ctx.conversation.state).toBe("listening");
+    ctx.agent.busy = false;
+    await advance(125_000);
+    expect(ctx.conversation.state).toBe("asleep");
+  });
+
+  it("handles stop itself and passes the chat commands to the agent", async () => {
+    const ctx = setup();
+    await speakTurn(ctx, "Stop.");
+    // "Cancel that" with nothing running is just "be quiet".
+    await speakTurn(ctx, "Cancel that.");
+    expect(ctx.agent.turns).toHaveLength(0);
+
+    ctx.agent.busy = true;
+    await speakTurn(ctx, "Cancel that.");
+    expect(ctx.agent.last.input).toMatchObject({ kind: "command", command: "cancel" });
+    ctx.agent.last.listener.onDone({ aborted: false });
+    await speakTurn(ctx, "How's it going?");
+    expect(ctx.agent.last.input).toMatchObject({ kind: "command", command: "progress" });
+    ctx.agent.last.listener.onDone({ aborted: false });
+
+    await speakTurn(ctx, "No, put it over there.");
+    ctx.agent.last.listener.onDone({ aborted: false, handled: "not_sent" });
+    expect(ctx.sink.events).toContainEqual(expect.objectContaining({ type: "user", text: "No, put it over there.", handled: "not_sent" }));
   });
 
   it("speaks only what comes before the on-screen divider", async () => {
@@ -591,13 +625,13 @@ describe("VoiceConversation", () => {
   it("always sends typed messages to the agent, carrying their identity", async () => {
     const ctx = setup();
     ctx.conversation.submitText("stop", { clientMessageId: "client-1" });
-    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "stop", clientMessageId: "client-1" });
+    expect(ctx.agent.last.input).toEqual({ kind: "typed", text: "stop", clientMessageId: "client-1" });
     expect(ctx.conversation.state).toBe("thinking");
     expect(ctx.sink.events).toContainEqual({ type: "user", turnId: expect.any(Number), text: "stop" });
 
     ctx.conversation.sleep({ announce: false });
     ctx.conversation.submitText("um");
-    expect(ctx.agent.last.input).toEqual({ kind: "user", text: "um" });
+    expect(ctx.agent.last.input).toEqual({ kind: "typed", text: "um" });
     ctx.agent.last.listener.onDelta("Yes? ");
     ctx.agent.last.listener.onDone({ aborted: false });
     await advance(10);

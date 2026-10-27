@@ -1,7 +1,7 @@
 // REST routes for the local speech engine and Helm's hands-free voice (mounted under /api/voice).
 import express from "express";
 import { openSseConnection } from "../sse-response.js";
-import type { VoiceGateway } from "./voice-gateway.js";
+import { VoiceConversationNotFoundError, type VoiceGateway } from "./voice-gateway.js";
 
 function readToken(req: express.Request): unknown {
   return req.get("x-voice-token") ?? req.query.token;
@@ -34,17 +34,24 @@ export function createVoiceRouter(gateway: VoiceGateway): express.Router {
     res.status(202).json(gateway.installer.getStatus());
   });
 
-  router.post("/conversations", (req, res) => {
+  router.post("/conversations", async (req, res) => {
     if (rejectCrossSite(req, res)) return;
     if (!gateway.installer.getStatus().installed) {
       return res.status(409).json({ error: "Hands-free voice isn't installed yet." });
     }
     const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
-    const helmSessionId = typeof body.helmSessionId === "string" ? body.helmSessionId.trim() : "";
-    if (!helmSessionId || !gateway.helm.isHelmSession(helmSessionId)) {
-      return res.status(404).json({ error: "Helm conversation not found. Start or resume one first." });
+    // Tether names the chat `helmSessionId`; any chat can go hands-free.
+    const raw = typeof body.sessionId === "string" ? body.sessionId : typeof body.helmSessionId === "string" ? body.helmSessionId : "";
+    const sessionId = raw.trim();
+    if (!sessionId || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      return res.status(400).json({ error: "Name the chat to go hands-free in." });
     }
-    res.json(gateway.createConversation(helmSessionId, body.settings));
+    try {
+      res.json(await gateway.createConversation(sessionId, body.settings));
+    } catch (error) {
+      if (error instanceof VoiceConversationNotFoundError) return res.status(404).json({ error: "Chat not found." });
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   router.get("/conversations/:id/events", (req, res) => {

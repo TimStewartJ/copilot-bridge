@@ -16,31 +16,29 @@ const PRESETS = {
 };
 
 describe("chooseHelmModel", () => {
-  it("runs on the Helm tier, with its context, and its effort only for the brief's looks", () => {
-    const settings = { model: "gpt-6-luna", modelPresets: PRESETS, modelRoles: { helm: { tier: "preset3" as const } } } as any;
-    expect(chooseHelmModel(settings, MODELS, { effort: "max" })).toEqual({ model: "claude-opus-5.5", reasoningEffort: "max", contextTier: "long_context" });
-    expect(chooseHelmModel(settings, MODELS, { effort: "high", tierEffort: true })).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high", contextTier: "long_context" });
+  it("runs on the Helm role with that choice's effort and context, for chat and looks alike", () => {
+    const tier = { model: "gpt-6-luna", modelPresets: PRESETS, modelRoles: { helm: { tier: "preset3" as const } } } as any;
+    expect(chooseHelmModel(tier, MODELS, { fallbackEffort: "low" })).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high", contextTier: "long_context" });
+    const own = { model: "gpt-6-luna", modelRoles: { helm: { model: "gpt-6.1-sol", reasoningEffort: "max" } } } as any;
+    // The model has no max: it uses the nearest level below.
+    expect(chooseHelmModel(own, MODELS, { fallbackEffort: "low" })).toEqual({ model: "gpt-6.1-sol", reasoningEffort: "xhigh" });
   });
 
-  it("uses Helm's own model when it has one", () => {
-    expect(chooseHelmModel({ model: "gpt-6-luna", helm: { model: "gpt-6.1-sol" } } as any, MODELS, { effort: "max" })).toEqual({ model: "gpt-6.1-sol", reasoningEffort: "xhigh" });
-  });
-
-  it("is Automatic when the tier's model can't be used: the default model, unless that is a router", () => {
-    const gone = { model: "gpt-6-luna", modelPresets: { preset3: { model: "old-model" } }, modelRoles: { helm: { tier: "preset3" as const } } } as any;
-    expect(chooseHelmModel(gone, MODELS, { effort: "high" })).toEqual({ model: "gpt-6-luna", reasoningEffort: "high" });
+  it("is Automatic when the role's model can't be used: the default model at its effort, unless that is a router", () => {
+    const gone = { model: "gpt-6-luna", reasoningEffort: "max", modelPresets: { preset3: { model: "old-model" } }, modelRoles: { helm: { tier: "preset3" as const } } } as any;
+    expect(chooseHelmModel(gone, MODELS, { fallbackEffort: "high" })).toEqual({ model: "gpt-6-luna", reasoningEffort: "max" });
     // A router picks per request; Automatic takes the most capable ordinary model instead (never a premium one).
-    expect(chooseHelmModel({ model: "auto" } as any, MODELS, { effort: "high" })).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high" });
+    expect(chooseHelmModel({ model: "auto" } as any, MODELS, { fallbackEffort: "high" })).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high" });
   });
 
   it("starts a conversation on a requested model when it can be used", () => {
     const settings = { model: "gpt-6-luna", modelPresets: PRESETS, modelRoles: { helm: { tier: "preset3" as const } } } as any;
-    expect(chooseHelmModel(settings, MODELS, { requested: "gpt-6.1-sol", effort: "high" })).toEqual({ model: "gpt-6.1-sol", reasoningEffort: "high" });
-    expect(chooseHelmModel(settings, MODELS, { requested: "old-model", effort: "high" })).toMatchObject({ model: "claude-opus-5.5" });
+    expect(chooseHelmModel(settings, MODELS, { requested: "gpt-6.1-sol", fallbackEffort: "high" })).toEqual({ model: "gpt-6.1-sol", reasoningEffort: "high" });
+    expect(chooseHelmModel(settings, MODELS, { requested: "old-model", fallbackEffort: "high" })).toMatchObject({ model: "claude-opus-5.5" });
   });
 
-  it("names the configured model when the model list isn't available yet", () => {
-    expect(chooseHelmModel({ helm: { model: "gpt-6.1-sol" } } as any, [], { effort: "high" })).toEqual({ model: "gpt-6.1-sol" });
+  it("names the role's model when the model list isn't available yet", () => {
+    expect(chooseHelmModel({ modelRoles: { helm: { model: "gpt-6.1-sol", reasoningEffort: "high" } } } as any, [], {})).toEqual({ model: "gpt-6.1-sol", reasoningEffort: "high" });
     expect(chooseHelmModel({} as any, [], {})).toEqual({});
   });
 });

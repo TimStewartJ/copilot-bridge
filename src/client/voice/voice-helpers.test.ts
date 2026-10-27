@@ -145,11 +145,19 @@ describe("voice view model", () => {
     state = reduceVoiceEvent(state, { type: "tool", genId: 1, toolCallId: "t1", name: "bridge_overview", status: "done" });
     expect(state.activity.map((entry) => entry.label)).toEqual(["Reading a reply"]);
 
-    // The words themselves live in the Helm chat, not here: deltas change nothing.
+    // The words themselves live in the chat, not here: deltas change nothing.
     expect(reduceVoiceEvent(state, { type: "assistant_delta", genId: 1, text: "Two sessions " })).toBe(state);
     state = reduceVoiceEvent(state, { type: "assistant_chunk", genId: 1, chunkId: 1, text: "Two sessions finished." });
     state = reduceVoiceEvent(state, { type: "user", turnId: 2, text: "um", handled: "ignored" });
     expect(state.caption).toEqual({ speaker: "assistant", text: "Two sessions finished." });
+    // Heard but not meant for the chat: listed so it can still be sent, without replacing the caption.
+    state = reduceVoiceEvent(state, { type: "user", turnId: 3, text: "put it over there", handled: "not_sent" });
+    expect(state.notSent).toEqual([{ turnId: 3, text: "put it over there" }]);
+    expect(state.caption).toEqual({ speaker: "assistant", text: "Two sessions finished." });
+    state = reduceVoiceEvent(state, { type: "run", working: true, startedAt: 5 });
+    expect(state.run).toEqual({ startedAt: 5 });
+    state = reduceVoiceEvent(state, { type: "run", working: false });
+    expect(state.run).toBeNull();
 
     state = reduceVoiceEvent(state, { type: "bridge_counts", unread: 2, running: 1, waiting: 0 });
     state = reduceVoiceEvent(state, { type: "state", state: "listening" });
@@ -161,7 +169,6 @@ describe("voice view model", () => {
 
   it("formats labels and sizes", () => {
     expect(describeVoiceTool("send_to_session")).toBe("Sending to a session");
-    expect(describeVoiceTool("hands_free")).toBe("Adjusting hands-free");
     expect(describeVoiceTool("some_new_tool")).toBe("some new tool");
     expect(formatBytes(891 * 1024 * 1024)).toBe("891 MB");
     expect(formatBytes(1.5 * 1024 ** 3)).toBe("1.5 GB");

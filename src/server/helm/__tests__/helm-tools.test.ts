@@ -92,13 +92,9 @@ function createFacade(): HelmBridgeFacade & { sent: Array<[string, string]>; mar
 
 const HELM_SESSION_ID = "99999999-9999-4000-8000-000000000009";
 
-function createRuntime(handsFreeActive = false) {
-  const requestHandsFree = vi.fn();
-  const runtime = {
-    watchSession: vi.fn(),
-    getHandsFreeHooks: vi.fn(() => (handsFreeActive ? { requestHandsFree } : undefined)),
-  } satisfies HelmToolRuntime;
-  return { runtime, requestHandsFree };
+function createRuntime() {
+  const runtime = { watchSession: vi.fn() } satisfies HelmToolRuntime;
+  return { runtime };
 }
 
 function tool(ctx: AppContext, facade: HelmBridgeFacade, name: string, runtime: HelmToolRuntime = createRuntime().runtime) {
@@ -319,17 +315,6 @@ describe("Helm tools", () => {
     expect(running.resultType).toBe("failure");
     const restored = await tool(ctx, facade, "archive_sessions").run({ sessions: ["old archived"], archived: false });
     expect(restored).toMatchObject({ success: true, archived: false });
-  });
-
-  it("controls hands-free only while it is active", async () => {
-    const { ctx } = createContext();
-    const inactive = await tool(ctx, createFacade(), "hands_free").run({ action: "sleep" });
-    expect(inactive.resultType).toBe("failure");
-    const { runtime, requestHandsFree } = createRuntime(true);
-    const active = await tool(ctx, createFacade(), "hands_free", runtime).run({ action: "end" });
-    expect(active).toEqual({ success: true });
-    expect(runtime.getHandsFreeHooks).toHaveBeenCalledWith(HELM_SESSION_ID);
-    expect(requestHandsFree).toHaveBeenCalledWith("end");
   });
 
   it("reuses Bridge management tools but nothing that does real work", () => {

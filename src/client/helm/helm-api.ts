@@ -1,7 +1,6 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "../api";
-import { patchHelmSettings, useHelmPreferences } from "./helm-settings";
 
 export interface HelmConversation {
   sessionId: string;
@@ -16,8 +15,6 @@ export interface HelmConversation {
   expiresAt?: string;
 }
 
-export type HelmTurnMode = "typed" | "spoken";
-
 export interface HelmState {
   settingsSchemaVersion?: 1;
   current: HelmConversation | null;
@@ -25,8 +22,6 @@ export interface HelmState {
   resumable: HelmConversation | null;
   recent: HelmConversation[];
   policy: { freshAfterMs: number; retainMs: number; maxConversations: number };
-  /** Effort each mode asks for right now (settings, else defaults). */
-  reasoningEfforts: Record<HelmTurnMode, string>;
 }
 
 async function helmRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -66,14 +61,6 @@ export function useHelmStateQuery() {
 export function useInvalidateHelmState() {
   const queryClient = useQueryClient();
   return useCallback(() => queryClient.invalidateQueries({ queryKey: helmStateQueryKey }), [queryClient]);
-}
-
-/** Model for new Helm conversations, saved on this Bridge; empty means let the server pick a fast one. */
-export function useHelmModelPreference(): [string, (model: string) => void, string | null] {
-  const preferences = useHelmPreferences();
-  // Save failures reach the caller through preferences.error.
-  const update = useCallback((next: string) => void patchHelmSettings({ model: next }).catch(() => undefined), []);
-  return [preferences.data?.settings.model ?? "", update, preferences.error];
 }
 
 /** "in 13d", "today": how long until retention removes a conversation. */

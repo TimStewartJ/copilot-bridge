@@ -11,16 +11,22 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "../app-context.js";
-import { HELM_SETTINGS_DEFAULTS, validateHelmSettingsPatch, type HelmSettingsResponse, type UnifiedHelmSettings } from "../../shared/helm-settings.js";
+import {
+  HELM_SETTINGS_DEFAULTS,
+  isHelmLegacySettingKey,
+  validateHelmSettingsPatch,
+  type HelmLegacySettings,
+  type HelmSettingsResponse,
+  type UnifiedHelmSettings,
+} from "../../shared/helm-settings.js";
 import { KOKORO_VOICES } from "../voice/voice-catalog.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import type { SessionConfigProfile } from "../session-manager.js";
 import { parseWorkspaceYamlSessionName } from "../session-workspace-yaml.js";
-import { REASONING_EFFORT_LEVELS } from "../../shared/reasoning-effort.js";
 import { ensureNeutralWorkspaceDir } from "../neutral-workspace.js";
 import { pathsEqual } from "../path-utils.js";
 import { hasActiveDeferredWork } from "../schedule-session-retention.js";
-import { buildHelmChatGuidance, HELM_CHAT_ROLE, isActionRequest } from "./helm-prompt.js";
+import { buildHelmChatGuidance, HELM_CHAT_ROLE } from "./helm-prompt.js";
 import { applyHelmChatProfile, HELM_CHAT_EXCLUDED_TOOLS } from "./helm-session-profile.js";
 import { chooseHelmModel } from "./helm-model.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
@@ -28,7 +34,6 @@ import {
   createHelmToolDefinitions,
   HELM_TOOL_NAMES,
   type HelmBridgeFacade,
-  type HelmHandsFreeHooks,
   type HelmToolRuntime,
 } from "./helm-tools.js";
 
@@ -43,22 +48,8 @@ export const HELM_POLICY = {
   pruneIntervalMs: 60 * 60_000,
 } as const;
 
-/** How a Helm turn is answered: in the chat, or out loud in hands-free. */
-export type HelmTurnMode = "typed" | "spoken";
-
-/**
- * Reasoning effort per mode, used when Settings don't say otherwise. Typed turns can afford to
- * think; spoken turns keep someone waiting in silence, so they think less. At xhigh the wait from
- * the end of speech to the first spoken word was 5.3 s at the median and up to 19 s (24 Sep 2026).
- * Replays on 28 Sep 2026 (gpt-6-luna): about 1.4 s per model step at none, 3.1 s at medium, but
- * below medium Helm acted on an ambiguous task name instead of asking which one. So spoken
- * questions think at none and spoken requests to change something at least at medium.
- */
-export const HELM_DEFAULT_REASONING_EFFORTS: Record<HelmTurnMode, string> = {
-  typed: HELM_SETTINGS_DEFAULTS.typedReasoningEffort,
-  spoken: HELM_SETTINGS_DEFAULTS.spokenReasoningEffort,
-};
-export const HELM_ACTION_REASONING_EFFORT = "medium";
+/** Effort for a Helm conversation or look when neither the Helm role nor the user's default says. */
+export const HELM_FALLBACK_REASONING_EFFORT = "high";
 
 export interface HelmConversationView {
   sessionId: string;
@@ -81,8 +72,6 @@ export interface HelmStateView {
   resumable: HelmConversationView | null;
   recent: HelmConversationView[];
   policy: { freshAfterMs: number; retainMs: number; maxConversations: number };
-  /** Effort each mode asks for right now (settings, else defaults). Models clamp to what they support. */
-  reasoningEfforts: Record<HelmTurnMode, string>;
 }
 
 export class HelmError extends Error {
@@ -108,7 +97,8 @@ export class HelmService implements HelmToolRuntime {
   private readonly now: () => number;
   private tools?: BridgeToolDefinition[];
   private profile?: SessionConfigProfile;
-  private readonly handsFree = new Map<string, HelmHandsFreeHooks>();
+  /** Conversations hands-free is speaking for, with how many connections. */
+  private readonly handsFree = new Map<string, number>();
   private readonly watched = new Map<string, Set<string>>();
   /** Session names, fed by title events; null means the session is known to be unnamed. */
   private readonly titles = new Map<string, string | null>();
@@ -174,14 +164,19 @@ export class HelmService implements HelmToolRuntime {
 
   async getSettings(): Promise<HelmSettingsResponse> {
     const [models, modelsError] = await this.listHelmModels();
+    const { legacy, ...stored } = this.ctx.settingsStore.getSettings().helm ?? {};
     return {
       schemaVersion: 1,
-      settings: { ...HELM_SETTINGS_DEFAULTS, ...this.ctx.settingsStore.getSettings().helm },
+      settings: { ...HELM_SETTINGS_DEFAULTS, ...stored, ...legacy },
       voices: KOKORO_VOICES.map(({ id, name }) => ({ id, name })),
       ...(models ? { models } : { modelsError }),
     };
   }
 
+  /**
+   * Saves hands-free settings and the names list. The retired model and effort keys (sent by Tether)
+   * are kept as written and returned by reads, so its check that a write took passes; nothing reads them.
+   */
   async patchSettings(input: unknown): Promise<HelmSettingsResponse> {
     let patch: Partial<UnifiedHelmSettings>;
     try {
@@ -191,12 +186,15 @@ export class HelmService implements HelmToolRuntime {
     }
     if (patch.voice !== undefined && !KOKORO_VOICES.some(({ id }) => id === patch.voice)) throw new HelmError("Unknown Helm voice", 400);
     const stored = this.ctx.settingsStore.getSettings().helm;
-    if (patch.model && patch.model !== stored?.model) {
-      const [models] = await this.listHelmModels();
-      if (!models) throw new HelmError("Cannot validate a new Helm model while model choices are unavailable", 503);
-      if (!models.some(({ id }) => id === patch.model)) throw new HelmError("Unknown or disabled Helm model", 400);
+    const legacy: HelmLegacySettings = { ...stored?.legacy };
+    const current: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (isHelmLegacySettingKey(key)) Object.assign(legacy, { [key]: value });
+      else current[key] = value;
     }
-    this.ctx.settingsStore.updateSettings({ helm: { ...stored, ...patch } });
+    this.ctx.settingsStore.updateSettings({
+      helm: { ...stored, ...current, ...(Object.keys(legacy).length ? { legacy } : {}) },
+    });
     return this.getSettings();
   }
 
@@ -237,38 +235,24 @@ export class HelmService implements HelmToolRuntime {
           };
         },
         apply: (config) => applyHelmChatProfile(config, { tools }),
-        // Anything that isn't a hands-free turn (chat, a transcribed recording) is answered in the chat.
-        defaultTurnReasoningEffort: () => this.getTurnReasoningEffort("typed"),
       };
     }
     return this.profile;
   }
 
-  /**
-   * The effort a turn in this mode asks for. Read per turn, so a settings change applies to the next
-   * message. A spoken request to change something thinks at least at HELM_ACTION_REASONING_EFFORT.
-   */
-  getTurnReasoningEffort(mode: HelmTurnMode, userText?: string): string {
-    const settings = this.ctx.settingsStore.getSettings().helm;
-    const configured = (mode === "spoken" ? settings?.spokenReasoningEffort : settings?.typedReasoningEffort) ?? HELM_DEFAULT_REASONING_EFFORTS[mode];
-    const rank = (level: string) => (REASONING_EFFORT_LEVELS as readonly string[]).indexOf(level);
-    return mode === "spoken" && userText && isActionRequest(userText) && rank(configured) < rank(HELM_ACTION_REASONING_EFFORT)
-      ? HELM_ACTION_REASONING_EFFORT
-      : configured;
-  }
-
   // ── Hands-free binding and watched sessions (HelmToolRuntime) ──
 
-  /** Registers the live voice conversation of a Helm session. Returns an unbind function. */
-  bindHandsFree(helmSessionId: string, hooks: HelmHandsFreeHooks): () => void {
-    this.handsFree.set(helmSessionId, hooks);
+  /** Marks a Helm conversation as having hands-free on, so it isn't retired or deleted meanwhile. Returns an unbind function. */
+  bindHandsFree(helmSessionId: string): () => void {
+    this.handsFree.set(helmSessionId, (this.handsFree.get(helmSessionId) ?? 0) + 1);
+    let bound = true;
     return () => {
-      if (this.handsFree.get(helmSessionId) === hooks) this.handsFree.delete(helmSessionId);
+      if (!bound) return;
+      bound = false;
+      const count = (this.handsFree.get(helmSessionId) ?? 1) - 1;
+      if (count > 0) this.handsFree.set(helmSessionId, count);
+      else this.handsFree.delete(helmSessionId);
     };
-  }
-
-  getHandsFreeHooks(helmSessionId: string | undefined): HelmHandsFreeHooks | undefined {
-    return helmSessionId ? this.handsFree.get(helmSessionId) : undefined;
   }
 
   watchSession(helmSessionId: string | undefined, sessionId: string): void {
@@ -355,7 +339,6 @@ export class HelmService implements HelmToolRuntime {
         retainMs: HELM_POLICY.retainMs,
         maxConversations: HELM_POLICY.maxConversations,
       },
-      reasoningEfforts: { typed: this.getTurnReasoningEffort("typed"), spoken: this.getTurnReasoningEffort("spoken") },
     };
   }
 
@@ -375,7 +358,7 @@ export class HelmService implements HelmToolRuntime {
     const models = await this.ctx.sessionManager.listModels().catch(() => []);
     const selection = chooseHelmModel(this.ctx.settingsStore.getSettings(), models, {
       ...(options.model?.trim() ? { requested: options.model.trim() } : {}),
-      effort: this.getTurnReasoningEffort("typed"),
+      fallbackEffort: HELM_FALLBACK_REASONING_EFFORT,
     });
     const sessionId = randomUUID();
     // Registered before creation so the session is built with the Helm profile from its first config.

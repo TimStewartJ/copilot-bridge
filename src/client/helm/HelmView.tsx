@@ -1,7 +1,7 @@
 // Helm: Bridge's orchestration manager. One conversation you can type to like any chat or
-// talk to hands-free, inside the normal app layout. The chat view, composer, drafts, chat mic
-// and model switcher are the same ones every session uses; Helm adds the header, the
-// conversation lifecycle (new, resume, keep, delete) and the hands-free dock.
+// talk to hands-free, inside the normal app layout. The chat view, composer, drafts, chat mic,
+// model switcher and hands-free dock are the same ones every chat uses; Helm adds the header and
+// the conversation lifecycle (new, resume, keep, delete).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -25,14 +25,12 @@ import SessionModelSummary from "../components/SessionModelSummary";
 import { sendMaterializedFirstPrompt } from "../first-send-session-cleanup";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
-import { patchHelmSettings, useHelmPreferences } from "./helm-settings";
 import type { UseBackgroundVoiceJobsResult, VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import type { VoiceCaptureSubmission } from "../lib/voice-submit-mode";
 import { timeAgo } from "../time";
 import type { Draft } from "../useDrafts";
 import { useHandsFree } from "../voice/HandsFreeProvider";
-import { HandsFreeDock, HandsFreeSetupPanel } from "../voice/HandsFreeDock";
-import { VoiceSettingsSheet } from "../voice/VoiceSettingsSheet";
+import { useChatHandsFree } from "../voice/useChatHandsFree";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import {
   createHelmConversation,
@@ -43,11 +41,9 @@ import {
   resumeHelmConversation,
   setHelmConversationKept,
   startFreshHelm,
-  useHelmModelPreference,
   useHelmStateQuery,
   type HelmConversation,
   type HelmState,
-  type HelmTurnMode,
 } from "./helm-api";
 import { DS, cx } from "../design/tokens";
 
@@ -268,10 +264,7 @@ export default function HelmView({
   const queryClient = useQueryClient();
   const helmQuery = useHelmStateQuery();
   const handsFree = useHandsFree();
-  const [helmModel, setHelmModel, modelError] = useHelmModelPreference();
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [setupOpen, setSetupOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -281,26 +274,9 @@ export default function HelmView({
   const current = state?.current ?? null;
   const sessionId = current?.sessionId ?? null;
   const composerKey = sessionId ?? HELM_DRAFT_COMPOSER_KEY;
-  const handsFreeHere = handsFree.active && (handsFree.helmSessionId === null || handsFree.helmSessionId === sessionId);
 
   const modelsQuery = useModelsQuery({ enabled: Boolean(sessionId) });
   const sessionModelQuery = useSessionModelQuery(sessionId);
-  const settingsQuery = useHelmPreferences();
-  const [effortError, setEffortError] = useState<string | null>(null);
-
-  // Typed and spoken turns think at different efforts, so the model summary goes stale with
-  // every mode change. A finished turn moves lastActiveAt; re-read the summary then.
-  const refetchSessionModel = sessionModelQuery.refetch;
-  const lastActiveAt = current?.lastActiveAt;
-  useEffect(() => {
-    if (sessionId && lastActiveAt) void refetchSessionModel();
-  }, [lastActiveAt, refetchSessionModel, sessionId]);
-
-  // Know whether the speech engine is installed before the first tap, so the tap can start audio at once.
-  const { refreshStatus } = handsFree;
-  useEffect(() => {
-    void refreshStatus();
-  }, [refreshStatus]);
 
   const setHelmState = useCallback((update: (previous: HelmState) => HelmState) => {
     queryClient.setQueryData<HelmState>(helmStateQueryKey, (previous) => (previous ? update(previous) : previous));
@@ -334,46 +310,10 @@ export default function HelmView({
 
   const reportError = (error: unknown) => setActionError(error instanceof Error ? error.message : String(error));
 
-  const handleEffortChange = useCallback((mode: HelmTurnMode, effort: string) => {
-    setEffortError(null);
-    const previous = state?.reasoningEfforts;
-    setHelmState((helm) => ({ ...helm, reasoningEfforts: { ...helm.reasoningEfforts, [mode]: effort } }));
-    void patchHelmSettings(
-      { [mode === "typed" ? "typedReasoningEffort" : "spokenReasoningEffort"]: effort },
-    ).then(() => void refreshHelm()).catch((error: unknown) => {
-          if (previous) setHelmState((helm) => ({ ...helm, reasoningEfforts: previous }));
-          setEffortError(error instanceof Error ? error.message : String(error));
-    });
-  }, [refreshHelm, setHelmState, state?.reasoningEfforts]);
-
-  const [glossaryError, setGlossaryError] = useState<string | null>(null);
-  const handleGlossarySave = useCallback((glossary: string) => {
-    setGlossaryError(null);
-    void patchHelmSettings({ glossary }).catch((error: unknown) => setGlossaryError(error instanceof Error ? error.message : String(error)));
-  }, []);
-
-  // ── Hands-free ─────────────────────────────────────────────────
-
-  const startHandsFree = useCallback(async () => {
-    setActionError(null);
-    const status = handsFree.status ?? await handsFree.refreshStatus();
-    if (!status?.install.installed) {
-      setSetupOpen(true);
-      return;
-    }
-    setSetupOpen(false);
-    await handsFree.start(sessionId ?? ensureConversation);
-    void refreshHelm();
-  }, [ensureConversation, handsFree, refreshHelm, sessionId]);
-
-  const endHandsFree = useCallback(async () => {
-    await handsFree.stop();
-    void refreshHelm();
-  }, [handsFree, refreshHelm]);
-
-  useEffect(() => {
-    if (setupOpen && handsFree.status?.install.installed) setSetupOpen(false);
-  }, [handsFree.status?.install.installed, setupOpen]);
+  const chatHandsFree = useChatHandsFree(sessionId, { ensureSessionId: ensureConversation, onChange: () => void refreshHelm() });
+  const handsFreeHere = chatHandsFree.here;
+  const startHandsFree = chatHandsFree.start;
+  const endHandsFree = chatHandsFree.stop;
 
   /** Hands-free speaks for one conversation; moving to another takes it along. */
   const switchConversation = useCallback(async (move: () => Promise<string | null>) => {
@@ -494,12 +434,6 @@ export default function HelmView({
     />
   ), [handleResume, handleSuggestion, handsFree.phase, pendingId, showResumable, startHandsFree, state?.recent, state?.resumable, switching]);
 
-  const composerAccessory = setupOpen
-    ? <HandsFreeSetupPanel controller={handsFree} onClose={() => setSetupOpen(false)} />
-    : handsFreeHere
-      ? <HandsFreeDock controller={handsFree} onEnd={() => void endHandsFree()} />
-      : null;
-
   const subtitle = current
     ? current.turnCount > 0 ? `${conversationLabel(current)} · ${describeConversation(current)}` : "New conversation"
     : helmQuery.isLoading ? "Loading…" : "New conversation";
@@ -550,11 +484,11 @@ export default function HelmView({
             <Pin size={15} />
           </button>
         )}
-        <button type="button" onClick={() => setSettingsOpen(true)} aria-label="Helm settings" title="Helm settings" className={HEADER_BUTTON}>
+        <Link to="/settings?group=helm" aria-label="Helm settings" title="Helm settings" className={HEADER_BUTTON}>
           <Settings2 size={15} />
-        </button>
+        </Link>
       </header>
-      {(actionError || helmQuery.error || (handsFree.error && !handsFreeHere && !setupOpen)) && (
+      {(actionError || helmQuery.error || (handsFree.error && !handsFreeHere)) && (
         <div role="alert" className={cx(DS.notice.surface, "flex shrink-0 items-start gap-2 border-b px-4 py-2 text-xs text-error")}>
           <span className="min-w-0 flex-1 break-words">
             {actionError ?? (helmQuery.error instanceof Error ? helmQuery.error.message : null) ?? handsFree.error}
@@ -608,9 +542,9 @@ export default function HelmView({
         historySignal={sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0}
         newWorkDisabled={switching || helmQuery.isLoading}
         newWorkDisabledHint={switching ? "Switching conversations…" : undefined}
-        composerAccessory={composerAccessory}
+        composerAccessory={chatHandsFree.accessory}
         hideVoiceInput={handsFree.active}
-        composerPlaceholder={handsFreeHere ? "Type to Helm. It will answer out loud…" : "Ask Helm…"}
+        composerPlaceholder={handsFreeHere ? "Type to Helm. Replies are read back…" : "Ask Helm…"}
       />
       {historyOpen && state && (
         <HistoryPanel
@@ -620,25 +554,6 @@ export default function HelmView({
           onKeep={(conversation, kept) => void handleKeep(conversation, kept)}
           onDelete={(conversation) => void handleDelete(conversation)}
           onClose={() => setHistoryOpen(false)}
-        />
-      )}
-      {settingsOpen && (
-        <VoiceSettingsSheet
-          controller={handsFree}
-          helmModel={{ value: helmModel, onChange: setHelmModel, error: modelError ?? settingsQuery.error ?? settingsQuery.data?.modelsError }}
-          helmEfforts={state ? {
-            typed: settingsQuery.data?.settings.typedReasoningEffort ?? state.reasoningEfforts.typed,
-            spoken: settingsQuery.data?.settings.spokenReasoningEffort ?? state.reasoningEfforts.spoken,
-            modelId: sessionModelQuery.data?.model ?? (helmModel || undefined),
-            error: effortError,
-            onChange: handleEffortChange,
-          } : undefined}
-          helmGlossary={settingsQuery.data ? {
-            value: settingsQuery.data.settings.glossary,
-            onSave: handleGlossarySave,
-            error: glossaryError,
-          } : undefined}
-          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>

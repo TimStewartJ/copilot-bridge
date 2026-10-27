@@ -1,78 +1,50 @@
+// Hands-free settings: the voice, how it listens, announcements, and the names list. One set for
+// every chat, saved on this Bridge (and shared with Tether). Voice changes apply at once, even
+// mid-conversation. Shown in Settings › Voice and in a sheet from the hands-free dock.
 import { Link } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
-import { useModelsQuery } from "../hooks/queries/useModels";
-import { REASONING_EFFORT_LEVELS, resolveSupportedReasoningEffort, sortReasoningEfforts } from "../../shared/reasoning-effort";
 import type { VoiceModeController } from "./useVoiceMode";
 import type { VoiceSettings } from "./voice-api";
+import { patchHelmSettings, useHelmPreferences } from "../helm/helm-settings";
 import { DS, cx } from "../design/tokens";
 
-export interface HelmModelPreference {
-  value: string;
-  onChange(model: string): void;
-  error?: string | null;
-}
-
-export interface HelmEffortPreference {
-  /** What each mode asks for now (settings, else Helm's defaults). */
-  typed: string;
-  spoken: string;
-  /** Model the efforts apply to, when one is known: the open conversation's, else the chosen Helm model. */
-  modelId?: string;
-  error?: string | null;
-  onChange(mode: "typed" | "spoken", effort: string): void;
-}
-
-export interface HelmGlossaryPreference {
-  value: string;
-  /** Saves when the field loses focus with a changed value. */
-  onSave(value: string): void;
-  error?: string | null;
-}
-
-/** Hands-free and Helm settings. Voice changes apply immediately, even mid-conversation. */
-export function VoiceSettingsSheet({
-  controller,
-  helmModel,
-  helmEfforts,
-  helmGlossary,
-  onClose,
-}: {
-  controller: VoiceModeController;
-  helmModel?: HelmModelPreference;
-  helmEfforts?: HelmEffortPreference;
-  helmGlossary?: HelmGlossaryPreference;
-  onClose(): void;
-}) {
-  const { settings, status } = controller;
-  const [glossaryDraft, setGlossaryDraft] = useState(helmGlossary?.value ?? "");
-  useEffect(() => setGlossaryDraft(helmGlossary?.value ?? ""), [helmGlossary?.value]);
-  const modelsQuery = useModelsQuery({ enabled: Boolean(helmModel || helmEfforts) });
-  const models = useMemo(
-    () => (modelsQuery.data ?? []).filter((model) => !model.policy || model.policy.state === "enabled"),
-    [modelsQuery.data],
+/** The names list: words speech recognition mishears, given to the hands-free layer and to Helm. */
+function GlossaryField() {
+  const preferences = useHelmPreferences();
+  const saved = preferences.data?.settings.glossary ?? "";
+  const [draft, setDraft] = useState(saved);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setDraft(saved), [saved]);
+  const label = cx(DS.text.sectionLabel, "font-medium text-text-muted");
+  if (!preferences.data) return null;
+  return (
+    <div>
+      <label htmlFor="hands-free-setting-glossary" className={label}>Names to know</label>
+      <textarea
+        id="hands-free-setting-glossary"
+        aria-describedby="hands-free-glossary-help"
+        rows={3}
+        maxLength={2000}
+        className={cx(DS.field.input, DS.field.textarea, "mt-1 resize-y text-sm")}
+        placeholder="timmiepc = my PC (sounds like Timmy PC); Tether = my iPhone app"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          if (draft.trim() === saved.trim()) return;
+          setError(null);
+          void patchHelmSettings({ glossary: draft }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
+        }}
+      />
+      <div id="hands-free-glossary-help" className="mt-1 text-[11px] text-text-faint">Machines, projects and apps you mention by name, and how they sound. Hands-free uses it to fix what speech recognition mishears, and Helm gets it too.</div>
+      {error && <div role="alert" className="text-[11px] text-error">{error}</div>}
+    </div>
   );
+}
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const effortModel = helmEfforts?.modelId ? models.find((model) => model.id === helmEfforts.modelId) : undefined;
-  const supportedEfforts = effortModel?.supportedReasoningEfforts;
-  const effortOptions = (current: string) => {
-    const levels = supportedEfforts?.length ? sortReasoningEfforts(supportedEfforts) : [...REASONING_EFFORT_LEVELS];
-    // The saved level always shows, even when this model lacks it, so the picker never lies about the setting.
-    return levels.includes(current) ? levels : [...levels, current];
-  };
-  const describeEffort = (current: string) => {
-    const used = resolveSupportedReasoningEffort(current, supportedEfforts);
-    return used && used !== current ? ` ${effortModel?.name ?? "This model"} doesn't have ${current}, so it uses ${used}.` : "";
-  };
-
+/** Every hands-free setting, for a sheet or a settings page. */
+export function HandsFreeSettingsFields({ controller }: { controller: VoiceModeController }) {
+  const { settings, status } = controller;
   const update = (patch: Partial<VoiceSettings>) => controller.updateSettings(patch);
   const voicesByAccent = ["American", "British"].map((accent) => ({
     accent,
@@ -82,144 +54,107 @@ export function VoiceSettingsSheet({
   const help = "mt-1 text-[11px] text-text-faint";
   const field = cx(DS.field.input, DS.field.inputSize.md, "min-w-0 appearance-none truncate pl-2.5 pr-9 sm:text-sm");
   const selectArrow = <ChevronDown size={16} aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-text-muted" />;
+  return (
+    <div className="space-y-5">
+      {controller.error && <div role="alert" className="text-xs text-error">{controller.error}</div>}
+      {settings && status ? (
+        <>
+          <div>
+            <label htmlFor="voice-setting-voice" className={label}>Voice</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-voice" className={field} value={settings.voice} onChange={(event) => update({ voice: event.target.value })}>
+                {voicesByAccent.map(({ accent, voices }) => (
+                  <optgroup key={accent} label={accent}>
+                    {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              {selectArrow}
+            </div>
+          </div>
+          <div>
+            <div className={label}>Speaking speed · {settings.speed.toFixed(2)}×</div>
+            <input aria-label="Speaking speed" className="mt-2 w-full" type="range" min={0.75} max={1.4} step={0.05} value={settings.speed} onChange={(event) => update({ speed: Number(event.target.value) })} />
+          </div>
+          <div>
+            <div className={label}>Patience</div>
+            <input aria-label="Patience" className="mt-2 w-full" type="range" min={0} max={1} step={0.05} value={settings.patience} onChange={(event) => update({ patience: Number(event.target.value) })} />
+            <div className="flex justify-between text-[11px] text-text-faint"><span>Answers quickly</span><span>Waits while you think</span></div>
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={settings.bargeIn} onChange={(event) => update({ bargeIn: event.target.checked })} />
+            <span>Interrupt by talking<span className="block text-[11px] text-text-faint">Short reactions like “yeah” won't cut it off.</span></span>
+          </label>
+          <div>
+            <label htmlFor="voice-setting-announce" className={label}>Announce Bridge updates</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-announce" aria-describedby="voice-announce-help" className={field} value={settings.announce} onChange={(event) => update({ announce: event.target.value as VoiceSettings["announce"] })}>
+                <option value="watched">Chats Helm started or messaged</option>
+                <option value="all">All chats</option>
+                <option value="off">Off</option>
+              </select>
+              {selectArrow}
+            </div>
+            <div id="voice-announce-help" className={help}>
+              {settings.announce === "watched" ? "Speaks up when a chat Helm handed work to finishes or needs you." : settings.announce === "all" ? "Speaks up when any other chat finishes or needs you." : "Announcements are off."}
+            </div>
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={controller.echoSafe} onChange={(event) => controller.setEchoSafe(event.target.checked)} />
+            <span>Echo-safe playback<span className="block text-[11px] text-text-faint">Browser playback only. Lets it hear you over its own voice without headphones. Applies the next time hands-free starts.</span></span>
+          </label>
+          <div>
+            <label htmlFor="voice-setting-connection" className={label}>Connection</label>
+            <div className="relative mt-1">
+              <select id="voice-setting-connection" aria-describedby="voice-connection-help" className={field} value={controller.transportPreference} onChange={(event) => controller.setTransportPreference(event.target.value as "auto" | "websocket" | "http")}>
+                <option value="auto">Automatic</option>
+                <option value="websocket">WebSocket only</option>
+                <option value="http">HTTP streaming</option>
+              </select>
+              {selectArrow}
+            </div>
+            <div id="voice-connection-help" className={help}>Browser connection only; Tether uses its native relay. Automatic tries WebSocket, then HTTP. Use HTTP streaming for strict proxies.</div>
+          </div>
+        </>
+      ) : (
+        <div className="text-xs text-text-muted">Voice settings appear once the speech engine status has loaded.</div>
+      )}
+      <GlossaryField />
+      <p className={help.replace("mt-1 ", "")}>
+        What hands-free runs on (it decides what you meant and reads replies back) is the Hands-free row in <Link to="/settings?group=chat" className="text-accent hover:underline">Settings › Models</Link>. The chat you talk to keeps its own model.
+      </p>
+    </div>
+  );
+}
+
+/** Hands-free settings in a side sheet, opened from the dock. */
+export function VoiceSettingsSheet({ controller, onClose }: { controller: VoiceModeController; onClose(): void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
     <div className="fixed inset-0 z-[70] flex justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Helm settings"
+        aria-label="Hands-free settings"
         className="flex h-full min-w-0 w-full flex-col overflow-hidden bg-bg-secondary text-text-primary sm:max-w-sm sm:border-l sm:border-border"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between px-5 pt-5" style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
-          <div className="text-sm font-semibold">Helm settings</div>
+          <div className="text-sm font-semibold">Hands-free settings</div>
           <button type="button" onClick={onClose} aria-label="Close settings" className={cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost)}>
             <X size={16} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
-          <p className="text-xs text-text-muted">Saved on this Bridge, for Helm on the web and in Tether.</p>
-          {(controller.error || helmModel?.error) && <div role="alert" className="text-xs text-error">{controller.error || helmModel?.error}</div>}
-          {helmModel && (
-            <div>
-              <div className={label}>Helm model</div>
-              <div className="mt-1 text-sm text-text-primary">
-                {helmModel.value ? models.find((model) => model.id === helmModel.value)?.name ?? helmModel.value : "Automatic (your default chat model)"}
-              </div>
-              <div className={help}>
-                Set in <Link to="/settings?group=chat" onClick={onClose} className="text-accent hover:underline">Settings › Models</Link>, with the tiers everything else uses. Spoken replies on a larger model take a few seconds longer.
-              </div>
-            </div>
-          )}
-          {helmGlossary && (
-            <div>
-              <label htmlFor="helm-setting-glossary" className={label}>Names Helm should know</label>
-              <textarea
-                id="helm-setting-glossary"
-                aria-describedby="helm-glossary-help"
-                rows={3}
-                maxLength={2000}
-                className={cx(DS.field.input, DS.field.textarea, "mt-1 resize-y text-sm")}
-                placeholder="timmiepc = my PC (sounds like Timmy PC); Tether = my iPhone app"
-                value={glossaryDraft}
-                onChange={(event) => setGlossaryDraft(event.target.value)}
-                onBlur={() => { if (glossaryDraft.trim() !== helmGlossary.value.trim()) helmGlossary.onSave(glossaryDraft); }}
-              />
-              <div id="helm-glossary-help" className={help}>Machines, projects and apps you mention by name, and how they sound. Helm gets this with every hands-free turn and in new conversations.</div>
-              {helmGlossary.error && <div role="alert" className="text-[11px] text-error">{helmGlossary.error}</div>}
-            </div>
-          )}
-          {helmEfforts && (
-            <>
-              <div className="border-t border-border pt-4 text-xs font-semibold text-text-secondary">Thinking effort</div>
-              <div>
-                <label htmlFor="helm-setting-typed-effort" className={label}>When you type</label>
-                <div className="relative mt-1">
-                  <select id="helm-setting-typed-effort" aria-describedby="helm-typed-effort-help" className={field} value={helmEfforts.typed} onChange={(event) => helmEfforts.onChange("typed", event.target.value)}>
-                    {effortOptions(helmEfforts.typed).map((level) => <option key={level} value={level}>{level}</option>)}
-                  </select>
-                  {selectArrow}
-                </div>
-                <div id="helm-typed-effort-help" className={help}>Replies you read in the chat, where a few more seconds buy a better answer.{describeEffort(helmEfforts.typed)}</div>
-              </div>
-              <div>
-                <label htmlFor="helm-setting-spoken-effort" className={label}>Hands-free</label>
-                <div className="relative mt-1">
-                  <select id="helm-setting-spoken-effort" aria-describedby="helm-spoken-effort-help" className={field} value={helmEfforts.spoken} onChange={(event) => helmEfforts.onChange("spoken", event.target.value)}>
-                    {effortOptions(helmEfforts.spoken).map((level) => <option key={level} value={level}>{level}</option>)}
-                  </select>
-                  {selectArrow}
-                </div>
-                <div id="helm-spoken-effort-help" className={help}>Questions answered aloud, including anything you type while hands-free is on. Requests to start, send or change something think at medium or above. Lower keeps the silence short.{describeEffort(helmEfforts.spoken)}</div>
-              </div>
-              <div className={help.replace("mt-1 ", "")}>Helm sets the effort at the start of each turn, so a change applies to your next message in the same conversation.</div>
-              {helmEfforts.error && <div role="alert" className="text-[11px] text-error">{helmEfforts.error}</div>}
-            </>
-          )}
-          {settings && status ? (
-            <>
-              <div className="border-t border-border pt-4 text-xs font-semibold text-text-secondary">Hands-free voice</div>
-              <div>
-                <label htmlFor="voice-setting-voice" className={label}>Voice</label>
-                <div className="relative mt-1">
-                  <select id="voice-setting-voice" className={field} value={settings.voice} onChange={(event) => update({ voice: event.target.value })}>
-                    {voicesByAccent.map(({ accent, voices }) => (
-                      <optgroup key={accent} label={accent}>
-                        {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name} · {voice.gender}</option>)}
-                      </optgroup>
-                    ))}
-                  </select>
-                  {selectArrow}
-                </div>
-              </div>
-              <div>
-                <div className={label}>Speaking speed · {settings.speed.toFixed(2)}×</div>
-                <input aria-label="Speaking speed" className="mt-2 w-full" type="range" min={0.75} max={1.4} step={0.05} value={settings.speed} onChange={(event) => update({ speed: Number(event.target.value) })} />
-              </div>
-              <div>
-                <div className={label}>Patience</div>
-                <input aria-label="Patience" className="mt-2 w-full" type="range" min={0} max={1} step={0.05} value={settings.patience} onChange={(event) => update({ patience: Number(event.target.value) })} />
-                <div className="flex justify-between text-[11px] text-text-faint"><span>Answers quickly</span><span>Waits while you think</span></div>
-              </div>
-              <label className="flex items-start gap-2 text-sm">
-                <input type="checkbox" className="mt-1" checked={settings.bargeIn} onChange={(event) => update({ bargeIn: event.target.checked })} />
-                <span>Interrupt by talking<span className="block text-[11px] text-text-faint">Short reactions like “yeah” won't cut it off.</span></span>
-              </label>
-              <div>
-                <label htmlFor="voice-setting-announce" className={label}>Announce Bridge updates</label>
-                <div className="relative mt-1">
-                  <select id="voice-setting-announce" aria-describedby="voice-announce-help" className={field} value={settings.announce} onChange={(event) => update({ announce: event.target.value as VoiceSettings["announce"] })}>
-                    <option value="watched">Sessions Helm started or messaged</option>
-                    <option value="all">All sessions</option>
-                    <option value="off">Off</option>
-                  </select>
-                  {selectArrow}
-                </div>
-                <div id="voice-announce-help" className={help}>
-                  {settings.announce === "watched" ? "Speaks up when a session this conversation dispatched finishes or needs you." : settings.announce === "all" ? "Speaks up when any session finishes or needs you." : "Session announcements are off."}
-                </div>
-              </div>
-              <label className="flex items-start gap-2 text-sm">
-                <input type="checkbox" className="mt-1" checked={controller.echoSafe} onChange={(event) => controller.setEchoSafe(event.target.checked)} />
-                <span>Echo-safe playback<span className="block text-[11px] text-text-faint">Helm browser playback only. Lets it hear you over its own voice without headphones. Applies the next time hands-free starts.</span></span>
-              </label>
-              <div>
-                <label htmlFor="voice-setting-connection" className={label}>Connection</label>
-                <div className="relative mt-1">
-                  <select id="voice-setting-connection" aria-describedby="voice-connection-help" className={field} value={controller.transportPreference} onChange={(event) => controller.setTransportPreference(event.target.value as "auto" | "websocket" | "http")}>
-                    <option value="auto">Automatic</option>
-                    <option value="websocket">WebSocket only</option>
-                    <option value="http">HTTP streaming</option>
-                  </select>
-                  {selectArrow}
-                </div>
-                <div id="voice-connection-help" className={help}>Helm browser connection only; Tether uses its native relay. Automatic tries WebSocket, then HTTP. Use HTTP streaming for strict proxies.</div>
-              </div>
-            </>
-          ) : (
-            <div className="border-t border-border pt-4 text-xs text-text-muted">Hands-free voice settings appear once the speech engine status has loaded.</div>
-          )}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))", paddingLeft: "max(1.25rem, env(safe-area-inset-left))", paddingRight: "max(1.25rem, env(safe-area-inset-right))" }}>
+          <p className="mb-5 text-xs text-text-muted">One set for every chat, saved on this Bridge and shared with Tether.</p>
+          <HandsFreeSettingsFields controller={controller} />
         </div>
       </div>
     </div>

@@ -6,22 +6,16 @@ import { installSelectAwareDomShim } from "../test-dom-shim";
 import type { VoiceModeController } from "./useVoiceMode";
 
 const mocks = vi.hoisted(() => ({
-  onEffortChange: vi.fn(),
   updateSettings: vi.fn(),
   setTransportPreference: vi.fn(),
   setEchoSafe: vi.fn(),
-  onModelChange: vi.fn(),
+  patchHelmSettings: vi.fn(async () => ({})),
   onClose: vi.fn(),
 }));
 
-vi.mock("../hooks/queries/useModels", () => ({
-  useModelsQuery: () => ({
-    data: [
-      { id: "test-model", name: "A very long assistant model name" },
-      { id: "luna", name: "Luna", supportedReasoningEfforts: ["max", "none", "xhigh", "low", "medium", "high"] },
-      { id: "haiku", name: "Haiku", supportedReasoningEfforts: ["low", "medium", "high"] },
-    ],
-  }),
+vi.mock("../helm/helm-settings", () => ({
+  useHelmPreferences: () => ({ data: { settings: { glossary: "timmiepc = Timmy PC" } }, error: null }),
+  patchHelmSettings: mocks.patchHelmSettings,
 }));
 
 const { VoiceSettingsSheet: Sheet } = await import("./VoiceSettingsSheet");
@@ -38,17 +32,13 @@ const controller = {
   setEchoSafe: mocks.setEchoSafe,
 } as unknown as VoiceModeController;
 
-describe("Helm settings sheet", () => {
+describe("Hands-free settings sheet", () => {
   let harness: ReactDomHarness;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
-    await harness.render(createElement(VoiceSettingsSheet, {
-      controller,
-      helmModel: { value: "", onChange: mocks.onModelChange },
-      onClose: mocks.onClose,
-    }));
+    await harness.render(createElement(VoiceSettingsSheet, { controller, onClose: mocks.onClose }));
   });
 
   it("names every select and preserves setting values and handlers", async () => {
@@ -93,77 +83,23 @@ describe("Helm settings sheet", () => {
     expect(mocks.onClose).toHaveBeenCalledOnce();
   });
 
-  it("shows Helm's model, set in Settings › Models, before the speech engine status is known", async () => {
+  it("waits for the speech engine status before showing voice choices, and points to the model setting", async () => {
     await harness.render(createElement(VoiceSettingsSheet, {
       controller: { ...controller, status: null, settings: null } as unknown as VoiceModeController,
-      helmModel: { value: "test-model", onChange: mocks.onModelChange },
       onClose: mocks.onClose,
     }));
     expect(findAllByTag(harness.dom.container, "select")).toHaveLength(0);
-    expect(harness.dom.container.textContent).toContain("A very long assistant model name");
     expect(harness.dom.container.textContent).toContain("Settings › Models");
   });
 
-  it("edits Helm's names list and saves it only when it changed and the field loses focus", async () => {
-    const onSave = vi.fn();
-    await harness.render(createElement(VoiceSettingsSheet, {
-      controller,
-      helmGlossary: { value: "timmiepc = Timmy PC", onSave, error: null },
-      onClose: mocks.onClose,
-    }));
+  it("edits the names list and saves it only when it changed and the field loses focus", async () => {
     const [field] = findAllByTag(harness.dom.container, "textarea");
     expect(getReactProps(field)!.value).toBe("timmiepc = Timmy PC");
-    expect(findAllByTag(harness.dom.container, "label").some((label) => getReactProps(label)?.htmlFor === "helm-setting-glossary")).toBe(true);
+    expect(findAllByTag(harness.dom.container, "label").some((label) => getReactProps(label)?.htmlFor === "hands-free-setting-glossary")).toBe(true);
     await harness.act(() => getReactProps(field)!.onBlur());
-    expect(onSave).not.toHaveBeenCalled();
+    expect(mocks.patchHelmSettings).not.toHaveBeenCalled();
     await harness.act(() => getReactProps(field)!.onChange({ target: { value: "timmiepc = Timmy PC; Tether = my iPhone app" } }));
     await harness.act(() => getReactProps(findAllByTag(harness.dom.container, "textarea")[0])!.onBlur());
-    expect(onSave).toHaveBeenCalledWith("timmiepc = Timmy PC; Tether = my iPhone app");
-  });
-  describe("thinking effort", () => {
-    async function renderEfforts(helmEfforts: Record<string, unknown>) {
-      await harness.render(createElement(VoiceSettingsSheet, {
-        controller,
-        helmEfforts: { typed: "max", spoken: "xhigh", onChange: mocks.onEffortChange, ...helmEfforts },
-        onClose: mocks.onClose,
-      }));
-      const find = (id: string) => findAllByTag(harness.dom.container, "select").find((select) => getReactProps(select)?.id === id)!;
-      const help = (id: string) => findAllByTag(harness.dom.container, "div").find((div) => getReactProps(div)?.id === id)?.textContent ?? "";
-      return { typed: find("helm-setting-typed-effort"), spoken: find("helm-setting-spoken-effort"), help };
-    }
-    const values = (select: unknown) => findAllByTag(select, "option").map((option) => getReactProps(option)!.value);
-
-    it("offers the model's own levels in order and reports each mode separately", async () => {
-      const { typed, spoken, help } = await renderEfforts({ modelId: "luna" });
-      expect(values(typed)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
-      expect(getReactProps(typed)!.value).toBe("max");
-      expect(getReactProps(spoken)!.value).toBe("xhigh");
-      expect(help("helm-typed-effort-help")).not.toContain("doesn't have");
-      const labels = findAllByTag(harness.dom.container, "label");
-      for (const select of [typed, spoken]) {
-        expect(labels.some((label) => getReactProps(label)?.htmlFor === getReactProps(select)!.id)).toBe(true);
-      }
-
-      await harness.act(() => {
-        getReactProps(typed)!.onChange({ target: { value: "high" } });
-        getReactProps(spoken)!.onChange({ target: { value: "low" } });
-      });
-      expect(mocks.onEffortChange.mock.calls).toEqual([["typed", "high"], ["spoken", "low"]]);
-    });
-
-    it("keeps showing a saved level the model lacks, and says what it will use instead", async () => {
-      const { typed, spoken, help } = await renderEfforts({ modelId: "haiku" });
-      expect(values(typed)).toEqual(["low", "medium", "high", "max"]);
-      expect(values(spoken)).toEqual(["low", "medium", "high", "xhigh"]);
-      expect(help("helm-typed-effort-help")).toContain("Haiku doesn't have max, so it uses high.");
-      expect(help("helm-spoken-effort-help")).toContain("Haiku doesn't have xhigh, so it uses high.");
-    });
-
-    it("lists every level when the model isn't known yet, and shows a save error", async () => {
-      const { typed } = await renderEfforts({ error: "Could not save" });
-      expect(values(typed)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
-      const alert = findAllByTag(harness.dom.container, "div").find((div) => getReactProps(div)?.role === "alert");
-      expect(alert?.textContent).toBe("Could not save");
-    });
+    expect(mocks.patchHelmSettings).toHaveBeenCalledWith({ glossary: "timmiepc = Timmy PC; Tether = my iPhone app" });
   });
 });
