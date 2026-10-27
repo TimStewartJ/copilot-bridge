@@ -91,7 +91,7 @@ function HelmSources({ selected, onSave }: { selected: HelmSourceSelection[]; on
   const missing = selected.filter((source) => servers.data && !servers.data.some((server) => server.id === source.serverId));
   return <div className="space-y-2">
     <p className="text-[13px] text-text-primary">Sources Helm may read</p>
-    <p className={DS.text.meta}>Tools of this Bridge's MCP servers that Helm's looks may call, such as a mail reader. Only tools that say they only read can be chosen; the server itself has to make sure of it. What they return is treated as written by other people.</p>
+    <p className={DS.text.meta}>Only tools marked read-only can be chosen.</p>
     {servers.error && <Notice tone="warning" title="MCP servers couldn't load">{servers.error instanceof Error ? servers.error.message : String(servers.error)}</Notice>}
     {missing.length > 0 && <Notice tone="warning" title="A chosen server no longer exists">
       <Button size="sm" variant="ghost" onClick={() => void onSave(selected.filter((source) => !missing.includes(source)))}>Remove it from Helm's sources</Button>
