@@ -88,12 +88,14 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
         <div className={cx(DS.text.meta, "flex flex-wrap items-center gap-x-3 gap-y-1")}>
           {run && <span>Helm thought at {formatClock(run.startedAt)}{run.finishedAt ? ` · ${formatDuration(run)}` : ""}</span>}
           {run?.changeCount != null && <span>read {run.changeCount} changes{bridgeNames ? ` on ${bridgeNames}` : ""}</span>}
+          {run && run.sources.some((source) => source.used) && <span>also read {run.sources.filter((source) => source.used).map((source) => source.name).join(", ")}</span>}
           {run?.credits != null && <span>{formatCredits(run.credits)}</span>}
           {data?.nextRunAt && <span>next look {formatClock(data.nextRunAt)}</span>}
           {run?.transcriptAvailable && <button type="button" className={cx(DS.focus, "hover:text-text-primary hover:underline")} onClick={() => onSelectSession(run.sessionId)}>How Helm got here</button>}
           {data && !data.running && <Button variant="ghost" size="sm" disabled={starting} onClick={() => void think()}><RefreshCw size={13} />Think again</Button>}
         </div>
         {run?.bridges.filter((bridge) => !bridge.ok).map((bridge) => <Notice key={bridge.id} tone="warning" title={`${bridge.label} couldn't be read`}>{bridge.error}</Notice>)}
+        {run?.sources.filter((source) => !source.ok).map((source) => <Notice key={source.serverId} tone="warning" title={`${source.name} couldn't be read`}>{source.error}</Notice>)}
       </header>
 
       {data?.running && <Notice tone="info" icon={<Loader2 size={15} className="animate-spin" />} title="Helm is thinking">
@@ -229,7 +231,7 @@ function ItemCard({ runId, item, bridgeLabel, preview, onOpen, onChanged, onErro
   }
   return <article className="border-t border-border py-4 first:border-t-0 first:pt-1">
     <div className={cx(DS.text.meta, "flex flex-wrap items-center gap-2")}>
-      <Badge tone={KIND_TONE[item.kind]}>{KIND_LABEL[item.kind]}</Badge><span>{bridgeLabel}</span>
+      <Badge tone={KIND_TONE[item.kind]}>{KIND_LABEL[item.kind]}</Badge><span>{item.source ? `From ${item.source}` : bridgeLabel}</span>
     </div>
     <h3 className={cx(DS.text.objectTitle, "mt-2")}>{item.title}</h3>
     <p className={cx(DS.text.content, "mt-1")}><span className="font-semibold">Helm:</span> {item.recommendation}</p>

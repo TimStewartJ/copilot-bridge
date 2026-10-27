@@ -50,7 +50,10 @@ export function createHelmThinkerRouter(thinker: HelmThinker): express.Router {
   });
 
   router.get("/memory", (_req, res) => {
-    try { res.json({ entries: thinker.listMemory() }); } catch (error) { sendError(res, error); }
+    try {
+      const entries = thinker.listMemory();
+      res.json({ entries, sourceNames: thinker.sourceNames(entries.flatMap((entry) => entry.fromSources)) });
+    } catch (error) { sendError(res, error); }
   });
 
   router.post("/memory", (req, res) => {
@@ -71,6 +74,11 @@ export function createHelmThinkerRouter(thinker: HelmThinker): express.Router {
 
   router.patch("/thinker/settings", async (req, res) => {
     try { res.json(await thinker.patchSettings(req.body)); } catch (error) { sendError(res, error); }
+  });
+
+  // Starts the MCP server to read its tools, so it is a POST although it changes nothing.
+  router.post("/sources/tools", async (req, res) => {
+    try { res.json(await thinker.listSourceTools(body(req).serverId)); } catch (error) { sendError(res, error); }
   });
 
   return router;

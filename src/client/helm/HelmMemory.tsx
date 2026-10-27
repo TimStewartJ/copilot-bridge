@@ -64,6 +64,7 @@ export default function HelmMemory() {
 
       {SECTIONS.map((section) => <MemorySection key={section.kind} section={section}
         entries={entries.filter((entry) => entry.kind === section.kind)}
+        sourceNames={memory.data?.sourceNames ?? {}}
         onAdd={(text) => save(() => addHelmMemory(section.kind, text))}
         onEdit={(id, text) => save(() => updateHelmMemory(id, { text }))}
         onKeep={(id) => save(() => updateHelmMemory(id, { status: "active" }))}
@@ -107,8 +108,8 @@ function PictureText({ entry, onSave }: { entry: HelmMemoryEntry; onSave: (text:
   </div>;
 }
 
-function MemorySection({ section, entries, onAdd, onEdit, onKeep, onForget }: {
-  section: (typeof SECTIONS)[number]; entries: HelmMemoryEntry[];
+function MemorySection({ section, entries, sourceNames, onAdd, onEdit, onKeep, onForget }: {
+  section: (typeof SECTIONS)[number]; entries: HelmMemoryEntry[]; sourceNames: Record<string, string>;
   onAdd: (text: string) => Promise<void>; onEdit: (id: string, text: string) => Promise<void>;
   onKeep: (id: string) => Promise<void>; onForget: (id: string) => Promise<void>;
 }) {
@@ -124,12 +125,12 @@ function MemorySection({ section, entries, onAdd, onEdit, onKeep, onForget }: {
         <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>Cancel</Button></div>
     </div>}
     {entries.length === 0 && !adding && <EmptyHint>Nothing yet.</EmptyHint>}
-    {entries.map((entry) => <MemoryRow key={entry.id} entry={entry} stale={now - Date.parse(entry.confirmedAt) > HELM_STALE_AFTER_DAYS * 86_400_000}
+    {entries.map((entry) => <MemoryRow key={entry.id} entry={entry} sourceNames={sourceNames} stale={now - Date.parse(entry.confirmedAt) > HELM_STALE_AFTER_DAYS * 86_400_000}
       onEdit={(value) => onEdit(entry.id, value)} onKeep={() => onKeep(entry.id)} onForget={() => onForget(entry.id)} />)}
   </Section>;
 }
 
-function MemoryRow({ entry, stale, onEdit, onKeep, onForget }: { entry: HelmMemoryEntry; stale: boolean; onEdit: (text: string) => Promise<void>; onKeep: () => Promise<void>; onForget: () => Promise<void> }) {
+function MemoryRow({ entry, sourceNames, stale, onEdit, onKeep, onForget }: { entry: HelmMemoryEntry; sourceNames: Record<string, string>; stale: boolean; onEdit: (text: string) => Promise<void>; onKeep: () => Promise<void>; onForget: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(entry.text);
   return <div className="border-t border-border py-2.5 first:border-t-0">
@@ -143,7 +144,7 @@ function MemoryRow({ entry, stale, onEdit, onKeep, onForget }: { entry: HelmMemo
             {entry.status === "proposed" && <Badge tone="warning" className="mr-1.5 align-[1px]">Suggested</Badge>}
             {entry.text}
           </p>
-          <p className={cx(DS.text.meta, "mt-0.5")}>{[entry.source, `confirmed ${formatAgo(entry.confirmedAt)}`, entry.uses ? `used ${entry.uses}×` : "", stale ? "will be re-checked" : ""].filter(Boolean).join(" · ")}</p>
+          <p className={cx(DS.text.meta, "mt-0.5")}>{[entry.source, entry.fromSources.length ? `may draw on ${entry.fromSources.map((id) => sourceNames[id] ?? "an outside source").join(", ")}` : "", `confirmed ${formatAgo(entry.confirmedAt)}`, entry.uses ? `used ${entry.uses}×` : "", stale ? "will be re-checked" : ""].filter(Boolean).join(" · ")}</p>
         </div>
         <div className="flex shrink-0 gap-1">
           {entry.status === "proposed" && <Button size="sm" onClick={() => void onKeep()}>Keep</Button>}
