@@ -31,6 +31,8 @@ export interface VoiceUiStateContext {
   maxRecordingSeconds?: number;
   /** Whole percent of the recording uploaded so far. */
   uploadPercent?: number;
+  /** The recording in progress has heard nothing yet, for a few seconds. */
+  nothingHeard?: boolean;
 }
 
 export interface VoiceUiState {
@@ -46,6 +48,8 @@ export interface VoiceUiState {
   recordingClock: string | null;
   /** What the recorder does at its limit ("Sends at 5:00"), once the limit is close; null otherwise. */
   limitNotice: string | null;
+  /** Said in the recording bar while the microphone has heard nothing; null otherwise. */
+  silenceNotice: string | null;
 }
 
 /** The recorder says what will happen at the limit once this little time is left. */
@@ -77,6 +81,7 @@ export function deriveVoiceUiState({
   recordingSeconds,
   maxRecordingSeconds,
   uploadPercent,
+  nothingHeard = false,
 }: VoiceUiStateContext): VoiceUiState {
   const isStarting = recorderPhase === "starting";
   const isRecording = recorderPhase === "recording";
@@ -111,6 +116,7 @@ export function deriveVoiceUiState({
   let tone: VoiceUiTone = "muted";
   let recordingClock: string | null = null;
   let limitNotice: string | null = null;
+  let silenceNotice: string | null = null;
 
   if (voiceJobError) {
     message = voiceJobError;
@@ -149,7 +155,10 @@ export function deriveVoiceUiState({
   } else if (isRecording) {
     const limit = maxRecordingSeconds === undefined ? null : formatClock(maxRecordingSeconds);
     const secondsLeft = maxRecordingSeconds === undefined ? Infinity : maxRecordingSeconds - (recordingSeconds ?? 0);
-    if (secondsLeft <= LIMIT_NOTICE_SECONDS) {
+    if (nothingHeard) {
+      message = "Can't hear anything. Check your microphone.";
+      silenceNotice = "Can't hear you";
+    } else if (secondsLeft <= LIMIT_NOTICE_SECONDS) {
       message = `Recording… stops and ${canAutoSendStoppedRecording ? "sends" : "transcribes"} at ${limit}.`;
       limitNotice = `${canAutoSendStoppedRecording ? "Sends" : "Transcribes"} at ${limit}`;
     } else {
@@ -212,5 +221,6 @@ export function deriveVoiceUiState({
     tone,
     recordingClock,
     limitNotice,
+    silenceNotice,
   };
 }

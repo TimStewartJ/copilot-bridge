@@ -86,6 +86,46 @@ function writeAscii(view: DataView, offset: number, value: string): void {
   }
 }
 
+const PRESENCE_WINDOW_SECONDS = 0.02;
+/** -50 dBFS: a quiet room under the browser's noise suppression stays below it; a voice does not. */
+const PRESENCE_LEVEL_RMS = 10 ** (-50 / 20);
+/** Loud time needed in total: a tap on the phone is a few milliseconds, a short word about a hundred. */
+const PRESENCE_HEARD_SECONDS = 0.1;
+
+/**
+ * Tells whether a microphone hears anything like a voice yet, from loudness alone.
+ * It cannot tell speech from a loud fan; it is for spotting a dead, muted or wrong microphone.
+ */
+export class SoundPresence {
+  private readonly windowSize: number;
+  private readonly windowsNeeded: number;
+  private loudWindows = 0;
+  private sum = 0;
+  private filled = 0;
+
+  constructor(sampleRate: number) {
+    this.windowSize = Math.max(1, Math.round(sampleRate * PRESENCE_WINDOW_SECONDS));
+    this.windowsNeeded = Math.ceil(PRESENCE_HEARD_SECONDS / PRESENCE_WINDOW_SECONDS);
+  }
+
+  get heard(): boolean {
+    return this.loudWindows >= this.windowsNeeded;
+  }
+
+  /** Takes the next input samples; true once enough of them were loud. */
+  push(input: Float32Array): boolean {
+    if (this.heard) return true;
+    for (const sample of input) {
+      this.sum += sample * sample;
+      if (++this.filled < this.windowSize) continue;
+      if (Math.sqrt(this.sum / this.filled) >= PRESENCE_LEVEL_RMS && ++this.loudWindows >= this.windowsNeeded) return true;
+      this.sum = 0;
+      this.filled = 0;
+    }
+    return false;
+  }
+}
+
 /** Packages mono float chunks as a 16-bit PCM WAV. */
 export function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
   if (!sampleRate || chunks.length === 0) {

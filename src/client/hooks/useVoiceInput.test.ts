@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createReactDomHarness, waitUntilAct, type ReactDomHarness } from "../test-react-harness";
-import { describeVoiceCaptureError, useVoiceInput } from "./useVoiceInput";
+import { advanceTimersByTimeAct, createReactDomHarness, waitUntilAct, type ReactDomHarness } from "../test-react-harness";
+import { describeVoiceCaptureError, NOTHING_HEARD_CANCEL_MS, NOTHING_HEARD_WARNING_MS, useVoiceInput } from "./useVoiceInput";
 
 const fetchTranscriptionStatusMock = vi.hoisted(() => vi.fn());
 const releaseCaptureMock = vi.hoisted(() => vi.fn());
@@ -196,6 +196,55 @@ describe("useVoiceInput recording limit", () => {
     expect(onAudioCaptured).not.toHaveBeenCalled();
     expect(onMaxDurationReached).not.toHaveBeenCalled();
     expect(releaseCaptureMock).toHaveBeenCalledOnce();
+  });
+
+  it("warns, then discards a recording whose microphone delivers nothing, and never submits it", async () => {
+    vi.useFakeTimers();
+    const stopTrack = vi.fn();
+    getUserMedia = async () => ({ getTracks: () => [{ stop: stopTrack }] });
+    const onAudioCaptured = vi.fn();
+    await startRecording({ onAudioCaptured });
+    const queuedAudioProcess = processor.onaudioprocess;
+
+    await advanceTimersByTimeAct(harness!.act, NOTHING_HEARD_WARNING_MS - 1);
+    expect(voice!.nothingHeard).toBe(false);
+    await advanceTimersByTimeAct(harness!.act, 1);
+    expect(voice!.nothingHeard).toBe(true);
+    expect(voice!.phase).toBe("recording");
+
+    await advanceTimersByTimeAct(harness!.act, NOTHING_HEARD_CANCEL_MS - NOTHING_HEARD_WARNING_MS);
+    expect(voice!.phase).toBe("idle");
+    expect(voice!.nothingHeard).toBe(false);
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(releaseCaptureMock).toHaveBeenCalledOnce();
+
+    await harness!.act(async () => {
+      queuedAudioProcess?.({ inputBuffer: { getChannelData: () => new Float32Array(SAMPLE_RATE).fill(0.25) } });
+      await voice!.stopRecording();
+    });
+    await harness!.cleanup();
+    expect(onAudioCaptured).not.toHaveBeenCalled();
+  });
+
+  it("drops the warning once it hears something, and then never gives up on the recording", async () => {
+    vi.useFakeTimers();
+    const onAudioCaptured = vi.fn(async (_capture: { audio: Blob; contextKey: string }) => {});
+    const onNothingHeard = vi.fn();
+    await startRecording({ onAudioCaptured, onNothingHeard });
+    await harness!.act(async () => {
+      processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array(SAMPLE_RATE) } });
+    });
+    await advanceTimersByTimeAct(harness!.act, NOTHING_HEARD_WARNING_MS);
+    expect(voice!.nothingHeard).toBe(true);
+
+    await hear(0.5);
+    expect(voice!.nothingHeard).toBe(false);
+    await advanceTimersByTimeAct(harness!.act, 10 * NOTHING_HEARD_CANCEL_MS);
+    expect(onNothingHeard).not.toHaveBeenCalled();
+    expect(voice!.phase).toBe("recording");
+
+    await harness!.act(async () => { await voice!.stopRecording(); });
+    expect(onAudioCaptured).toHaveBeenCalledOnce();
   });
 
   it.each(["resolve", "reject"])("ignores a cancelled microphone opening that later %ss after a restart", async (outcome) => {

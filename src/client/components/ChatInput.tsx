@@ -190,7 +190,7 @@ export default function ChatInput({
   const previousVoiceJobRef = useRef<ActiveVoiceBackgroundJob | null>(null);
   const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
-  const [recordingCancelled, setRecordingCancelled] = useState(false);
+  const [recordingCancelled, setRecordingCancelled] = useState<"user" | "nothing-heard" | null>(null);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
   const {
     bind: bindSendModeMenu,
@@ -287,6 +287,7 @@ export default function ChatInput({
   const canDiscardVoiceRecording = hasPendingVoiceRecording && !!onDiscardVoiceRecording;
 
   const stopVoiceRecordingRef = useRef<() => void>(() => {});
+  const nothingHeardRef = useRef<() => void>(() => {});
   const voice = useVoiceInput({
     contextKey: composerKey,
     onAudioCaptured: async ({ audio, contextKey }) => {
@@ -314,15 +315,23 @@ export default function ChatInput({
       }
     },
     onMaxDurationReached: () => stopVoiceRecordingRef.current(),
+    onNothingHeard: () => nothingHeardRef.current(),
   });
   const canCancelRecording = voice.phase === "starting" || voice.phase === "recording";
-  const cancelVoiceRecording = useCallback(() => {
-    if (!canCancelRecording || !voice.cancelRecording()) return;
+  const discardVoiceRecording = useCallback((reason: "user" | "nothing-heard") => {
+    if (!canCancelRecording || !voice.cancelRecording()) return false;
     pendingCaptureSubmitModeRef.current = null;
     pendingCaptureSendModeRef.current = null;
     updateRecordingStartMode(null);
-    setRecordingCancelled(true);
+    setRecordingCancelled(reason);
+    return true;
   }, [canCancelRecording, updateRecordingStartMode, voice.cancelRecording]);
+  const cancelVoiceRecording = useCallback(() => {
+    discardVoiceRecording("user");
+  }, [discardVoiceRecording]);
+  nothingHeardRef.current = () => {
+    if (discardVoiceRecording("nothing-heard")) haptic("warning");
+  };
   const handleRecordingEscape = useCallback((event: React.KeyboardEvent) => {
     if (
       event.key !== "Escape"
@@ -337,7 +346,7 @@ export default function ChatInput({
   }, [canCancelRecording, cancelVoiceRecording]);
 
   useEffect(() => {
-    setRecordingCancelled(false);
+    setRecordingCancelled(null);
   }, [composerKey]);
   // Pressing stop and running into the length limit end a recording the same way.
   stopVoiceRecordingRef.current = () => {
@@ -401,6 +410,12 @@ export default function ChatInput({
     if (voice.phase === "recording") finishRecordingRef.current?.focus({ preventScroll: true });
     else if (dropped) row?.focus({ preventScroll: true });
   }, [recordingView, voice.phase]);
+
+  // A microphone that hears nothing is felt as soon as the recording row says so.
+  const nothingHeard = voice.nothingHeard;
+  useEffect(() => {
+    if (nothingHeard) haptic("warning");
+  }, [nothingHeard]);
 
   // A voice error that appears is felt too; one that was already there when you open a chat is not.
   const voiceFailed = Boolean(voiceJobError || voice.error);
@@ -669,7 +684,7 @@ export default function ChatInput({
     const selectedMode = onAbort ? undefined : mode;
 
     onClearVoiceJobError?.(composerKey);
-    setRecordingCancelled(false);
+    setRecordingCancelled(null);
     haptic("light");
     if (selectedMode) {
       onSend(text || "(attachment)", cleanAttachmentsOrUndefined, selectedMode);
@@ -751,6 +766,7 @@ export default function ChatInput({
     recordingSeconds: voice.elapsedSeconds,
     maxRecordingSeconds: voice.status?.maxDurationSeconds,
     uploadPercent: voiceJob?.uploadPercent,
+    nothingHeard: voice.nothingHeard,
   });
   const showVoiceButton = voiceUi.showButton && !hideVoiceInput;
   // On a phone, typed text gets the room: the tools fold into one menu, unless a recording is under way.
@@ -760,7 +776,7 @@ export default function ChatInput({
       stopVoiceRecordingRef.current();
       return;
     }
-    setRecordingCancelled(false);
+    setRecordingCancelled(null);
     onClearVoiceJobError?.(composerKey);
     // A composer that is only loading or reconnecting may still send; stopping checks it again.
     updateRecordingStartMode(resolveVoiceSubmitMode({
@@ -784,7 +800,7 @@ export default function ChatInput({
         : "text-text-faint";
   const voiceMessage = voiceUi.message ?? (
     recordingCancelled && voice.phase === "idle" && !activeVoiceJob
-      ? "Recording cancelled. Nothing sent."
+      ? (recordingCancelled === "nothing-heard" ? "Nothing heard. Recording cancelled." : "Recording cancelled. Nothing sent.")
       : null
   );
   const showAbortControl = Boolean(onAbort && !hasContent);
@@ -1052,6 +1068,9 @@ export default function ChatInput({
               <div className="h-8 min-w-0 flex-1">
                 <VoiceRecordingWave getLevel={voice.getLevel} live={voice.phase === "recording"} />
               </div>
+              {voiceUi.silenceNotice && (
+                <span className={cx("shrink-0 text-xs font-medium", DS.tone.warning)} aria-hidden="true">{voiceUi.silenceNotice}</span>
+              )}
               {voiceUi.limitNotice && (
                 <span className="shrink-0 text-xs font-medium text-accent" aria-hidden="true">{voiceUi.limitNotice}</span>
               )}
