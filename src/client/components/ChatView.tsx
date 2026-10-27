@@ -115,7 +115,7 @@ import { useNow } from "../hooks/useNow";
 import AutopilotRunLine from "./chat/AutopilotRunLine";
 import { DS, cx } from "../design/tokens";
 import { AutopilotIcon, Button, Notice } from "../design/primitives";
-import ChatInput from "./ChatInput";
+import ChatInput, { type ComposerTool } from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import SessionAgentsBar from "./SessionAgentsBar";
@@ -191,7 +191,7 @@ interface ChatViewProps {
   /** Hides the composer's record button while something else owns the microphone. */
   hideVoiceInput?: boolean;
   /** A button for the composer's toolbar, beside the record button. */
-  composerTool?: ReactNode;
+  composerTool?: ComposerTool;
   composerPlaceholder?: string;
   /** Incremented to move focus into the composer (desktop only). */
   composerFocusRequest?: number;

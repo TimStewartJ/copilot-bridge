@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AudioLines, Loader2 } from "lucide-react";
 import { useHandsFree } from "./HandsFreeProvider";
 import { HandsFreeDock, HandsFreeSetupPanel } from "./HandsFreeDock";
-import { cx } from "../design/tokens";
+import type { ComposerTool } from "../components/ChatInput";
 
 export interface ChatHandsFree {
   /** Hands-free is on for this chat. */
@@ -18,8 +18,8 @@ export interface ChatHandsFree {
   toggle(): Promise<void>;
   /** The setup panel or the dock, for the composer's accessory slot. */
   accessory: ReactNode;
-  /** A round composer button that turns hands-free on and off. */
-  composerButton: ReactNode;
+  /** The composer tool that turns hands-free on and off. */
+  composerTool: ComposerTool | null;
 }
 
 export function useChatHandsFree(sessionId: string | null, options: { ensureSessionId?: () => Promise<string>; onChange?: () => void } = {}): ChatHandsFree {
@@ -73,22 +73,16 @@ export function useChatHandsFree(sessionId: string | null, options: { ensureSess
       : null;
 
   const canStart = !!sessionId || !!ensureSessionId;
-  const composerButton = canStart ? (
-    <button
-      type="button"
-      onClick={() => void toggle()}
-      disabled={connecting}
-      aria-pressed={here}
-      title={here ? "End hands-free" : "Hands-free: talk to this chat and hear its replies"}
-      aria-label={here ? "End hands-free" : "Hands-free"}
-      className={cx(
-        "flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors",
-        here ? "text-accent hover:text-accent-hover" : "text-text-muted hover:text-text-primary disabled:text-text-faint/60",
-      )}
-    >
-      {connecting ? <Loader2 size={18} className="animate-spin" /> : <AudioLines size={18} />}
-    </button>
-  ) : null;
+  const composerTool: ComposerTool | null = canStart
+    ? {
+        label: here ? "End hands-free" : "Hands-free",
+        title: here ? "End hands-free" : "Hands-free: talk to this chat and hear its replies",
+        icon: connecting ? <Loader2 size={18} className="animate-spin" /> : <AudioLines size={18} />,
+        active: here,
+        disabled: connecting,
+        onSelect: () => void toggle(),
+      }
+    : null;
 
-  return { here, micInUse: handsFree.active, connecting, start, stop, toggle, accessory, composerButton };
+  return { here, micInUse: handsFree.active, connecting, start, stop, toggle, accessory, composerTool };
 }

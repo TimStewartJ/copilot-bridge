@@ -3053,7 +3053,7 @@ function SessionRoute({
         newWorkDisabledHint={launchConfigurationLoading ? "Loading model defaults…" : undefined}
         composerFocusRequest={composerFocusRequest}
         composerAccessory={chatHandsFree.accessory}
-        composerTool={chatHandsFree.composerButton}
+        composerTool={chatHandsFree.composerTool ?? undefined}
         hideVoiceInput={chatHandsFree.micInUse}
       />
     </>
