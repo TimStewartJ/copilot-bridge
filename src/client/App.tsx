@@ -118,6 +118,7 @@ const HelmMemory = lazy(() => import("./helm/HelmMemory"));
 import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
 import { HandsFreeProvider, useHandsFree } from "./voice/HandsFreeProvider";
 import { HandsFreePill } from "./voice/HandsFreeDock";
+import { useChatHandsFree } from "./voice/useChatHandsFree";
 import { BridgeReferenceContext } from "./components/BridgeReference";
 import { useSearchBackground } from "./hooks/useSearchBackground";
 import SessionList from "./components/SessionList";
@@ -878,6 +879,18 @@ function AppShell() {
   const handleOpenSettings = () => {
     navigate("/settings");
   };
+
+  // The chat hands-free is on shows its dock; everywhere else gets the pill.
+  const handsFreeSessionId = handsFree.sessionId;
+  // Helm's pane shows its current conversation, which may not be the one hands-free is on.
+  const helmCurrentSessionId = helmStateQuery.data?.current?.sessionId ?? null;
+  const handsFreeChatVisible = handsFreeSessionId === null
+    ? helmTalkVisible
+    : (helmTalkVisible && helmCurrentSessionId === handsFreeSessionId) || activeSessionId === handsFreeSessionId;
+  const handleOpenHandsFreeChat = useCallback(() => {
+    // A Helm conversation's own address resumes it in Helm.
+    navigate(handsFreeSessionId ? `/sessions/${handsFreeSessionId}` : "/helm");
+  }, [handsFreeSessionId, navigate]);
 
   const handleOpenHelm = useCallback(() => {
     navigate("/helm");
@@ -2294,10 +2307,10 @@ function AppShell() {
       activeSessionId={activeSessionId}
       onClose={closeSearch}
     />}
-    {handsFree.active && !helmTalkVisible && !searchOpen && (
+    {handsFree.active && !handsFreeChatVisible && !searchOpen && (
       <HandsFreePill
         controller={handsFree}
-        onOpenHelm={handleOpenHelm}
+        onOpen={handleOpenHandsFreeChat}
         onEnd={() => void handsFree.stop()}
         bottomOffset={isMobile && mobileRouteMeta.showBottomNav
           ? "calc(4.25rem + env(safe-area-inset-bottom))"
@@ -2579,6 +2592,7 @@ function SessionRoute({
   const sessionId = isDraftRoute ? validMappedDraftSessionId : (rawSessionId ?? null);
   const composerKey = sessionId ?? draftRouteKey;
   const isDraft = sessionId === null;
+  const chatHandsFree = useChatHandsFree(sessionId);
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
   const taskAgentDefinitionsQuery = useTaskAgentDefinitionsQuery(taskId);
   const tasksQuery = useTasksQuery();
@@ -3038,6 +3052,9 @@ function SessionRoute({
         newWorkDisabled={launchConfigurationLoading}
         newWorkDisabledHint={launchConfigurationLoading ? "Loading model defaults…" : undefined}
         composerFocusRequest={composerFocusRequest}
+        composerAccessory={chatHandsFree.accessory}
+        composerTool={chatHandsFree.composerButton}
+        hideVoiceInput={chatHandsFree.micInUse}
       />
     </>
   );

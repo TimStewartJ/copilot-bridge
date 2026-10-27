@@ -32,15 +32,9 @@ export interface HelmBridgeFacade {
   createSession(options: { taskId?: string; model?: string; reasoningEffort?: string }): Promise<{ sessionId: string }>;
 }
 
-/** Hands-free controls for the Helm conversation that is calling a tool, when voice is attached. */
-export interface HelmHandsFreeHooks {
-  requestHandsFree(action: "sleep" | "end"): void;
-}
-
 export interface HelmToolRuntime {
   /** Remembers a session the conversation dispatched work to, so hands-free can announce it. */
   watchSession(helmSessionId: string | undefined, sessionId: string): void;
-  getHandsFreeHooks(helmSessionId: string | undefined): HelmHandsFreeHooks | undefined;
 }
 
 export const HELM_TOOL_NAMES = [
@@ -60,7 +54,6 @@ export const HELM_TOOL_NAMES = [
   "read_bridge",
   "read_conversation",
   "refresh_brief",
-  "hands_free",
 ] as const;
 
 /**
@@ -796,21 +789,6 @@ export function createHelmToolDefinitions(
         } catch (error) {
           return toolFailure(error instanceof Error ? error.message : String(error));
         }
-      },
-    }),
-    defineBridgeTool("hands_free", {
-      description: "Control hands-free voice when the user asks out loud: sleep (stop listening until 'hey Bridge') or end (leave hands-free and return to chat). Only works while hands-free is active.",
-      parameters: {
-        type: "object",
-        properties: { action: { type: "string", enum: ["sleep", "end"] } },
-        required: ["action"],
-      },
-      handler: async (args: any, invocation: BridgeToolInvocation) => {
-        if (args.action !== "sleep" && args.action !== "end") return toolFailure("action must be sleep or end");
-        const hooks = runtime.getHandsFreeHooks(invocation.sessionId);
-        if (!hooks) return toolFailure("Hands-free isn't active. The user can start it with the Hands-free button in Helm.");
-        hooks.requestHandsFree(args.action);
-        return { success: true };
       },
     }),
   ];

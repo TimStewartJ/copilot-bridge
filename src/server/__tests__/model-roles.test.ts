@@ -38,11 +38,10 @@ describe("model roles in settings", () => {
 
   it("writes a tier into the older fields, and follows the tier when it is edited", () => {
     const store = storeWith({ model: "gpt-6.1-sol", reasoningEffort: "xhigh", modelPresets: PRESETS });
-    store.updateSettings({ modelRoles: { chat: { tier: "preset2" }, background: { tier: "preset1" }, helm: { tier: "preset1" } } });
+    store.updateSettings({ modelRoles: { chat: { tier: "preset2" }, background: { tier: "preset1" } } });
     let settings = store.getSettings();
     expect(settings).toMatchObject({ model: "gpt-6.1-sol", reasoningEffort: "max", contextTier: "long_context" });
     expect(settings.deferWorker).toEqual(PRESETS.preset1);
-    expect(settings.helm?.model).toBe("gpt-6-luna");
 
     store.updateSettings({ modelPresets: { ...PRESETS, preset2: { model: "claude-opus-5.5", reasoningEffort: "high" } } });
     settings = store.getSettings();
@@ -71,13 +70,33 @@ describe("model roles in settings", () => {
     const store = storeWith({ modelPresets: PRESETS });
     expect(() => store.updateSettings({ modelRoles: { chat: { model: "x" } } } as never)).toThrow(/takes a tier/);
     expect(() => store.updateSettings({ modelRoles: { nope: { tier: "preset1" } } } as never)).toThrow(/not a known role/);
-    expect(() => store.updateSettings({ modelRoles: { helm: { model: "x" } } } as never)).toThrow(/takes a tier/);
     expect(() => store.updateSettings({ modelRoles: { reviewers: { model: "x" } } } as never)).toThrow(/takes a tier/);
     // Helm's own look at all Bridges was once a role of its own; it is Helm now.
     expect(() => store.updateSettings({ modelRoles: { thinker: { tier: "preset3" } } } as never)).toThrow(/not a known role/);
     expect(() => store.updateSettings({ modelRoles: { subagents: { tier: "preset9" } } } as never)).toThrow(/preset1/);
-    store.updateSettings({ modelRoles: { subagents: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" } } });
-    expect(store.getSettings().modelRoles?.subagents).toEqual({ model: "gpt-6.1-sol", reasoningEffort: "xhigh" });
+    store.updateSettings({ modelRoles: { subagents: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" }, helm: { model: "claude-opus-5.5", reasoningEffort: "high" } } });
+    expect(store.getSettings().modelRoles).toEqual({
+      subagents: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" },
+      helm: { model: "claude-opus-5.5", reasoningEffort: "high" },
+    });
+  });
+});
+
+describe("Helm's model from before it was a role of its own", () => {
+  it("becomes a custom Helm role with the typed effort, and the efforts are kept only for Tether", () => {
+    const store = storeWith({ model: "gpt-6-luna", helm: { model: "gpt-6.1-sol", typedReasoningEffort: "max", spokenReasoningEffort: "none", voice: "af_heart" } });
+    const settings = store.getSettings();
+    expect(settings.modelRoles).toEqual({ helm: { model: "gpt-6.1-sol", reasoningEffort: "max" } });
+    expect(settings.helm).toEqual({ voice: "af_heart", legacy: { typedReasoningEffort: "max", spokenReasoningEffort: "none" } });
+    // Choosing Automatic later sticks: nothing brings the old model back.
+    store.updateSettings({ modelRoles: {}, helm: settings.helm });
+    expect(store.getSettings().modelRoles).toEqual({});
+  });
+
+  it("leaves a Helm role that is already set alone", () => {
+    const store = storeWith({ modelPresets: PRESETS, modelRoles: { helm: { tier: "preset3" } }, helm: { model: "claude-opus-5.5" } });
+    expect(store.getSettings().modelRoles).toEqual({ helm: { tier: "preset3" } });
+    expect(store.getSettings().helm).toBeUndefined();
   });
 });
 
@@ -88,7 +107,6 @@ describe("model roles when a tier or model goes away", () => {
     const updated = store.updateSettings({ modelPresets: { preset1 } });
     expect(updated.modelRoles).toEqual({});
     expect(updated.model).toBe("gpt-6.1-sol");
-    expect(updated.helm?.model).toBe("claude-opus-5.5");
   });
 
   it("says honestly that work on an older setting may fail when its tier's model is unavailable", () => {
@@ -96,22 +114,33 @@ describe("model roles when a tier or model goes away", () => {
     const models = MODELS.filter((model) => model.id !== "gpt-6.1-sol");
     expect(resolveModelRole(settings, "chat", models)).toMatchObject({ source: "tier", model: "gpt-6.1-sol", warning: expect.stringMatching(/may fail/) });
     // Helm checks its model when it starts, so it falls back to Automatic instead.
-    expect(resolveModelRole(settings, "helm", models)).toMatchObject({ source: "automatic", warning: expect.stringMatching(/uses Automatic/) });
+    expect(resolveModelRole(settings, "helm", models)).toMatchObject({ source: "automatic", warning: "gpt-6.1-sol isn't available, so this uses your default chat model, or the most capable one when that is a router." });
   });
 });
 
 describe("resolveModelRole", () => {
-  const settings = { modelPresets: PRESETS, modelRoles: { helm: { tier: "preset3" as const }, helper: { tier: "preset1" as const }, subagents: { model: "old-model" } } };
+  const settings = { modelPresets: PRESETS, modelRoles: { helm: { tier: "preset3" as const }, helper: { tier: "preset1" as const }, handsFree: { tier: "preset1" as const }, subagents: { model: "old-model" } } };
 
-  it("resolves a tier with an effort the model supports, and small jobs at the lowest effort", () => {
+  it("resolves a tier with an effort the model supports, small jobs at the lowest effort and hands-free at low", () => {
     expect(resolveModelRole(settings, "helm", MODELS)).toEqual({ role: "helm", source: "tier", tier: "preset3", model: "claude-opus-5.5", reasoningEffort: "high", contextTier: "long_context" });
     expect(resolveModelRole(settings, "helper", MODELS)).toMatchObject({ model: "gpt-6-luna", reasoningEffort: "none" });
+    // The tier says max; hands-free has to answer in about a second.
+    expect(resolveModelRole(settings, "handsFree", MODELS)).toMatchObject({ model: "gpt-6-luna", reasoningEffort: "low" });
   });
 
   it("falls back to Automatic, with a warning, when the model can't be used or the tier is empty", () => {
     expect(resolveModelRole(settings, "subagents", MODELS)).toMatchObject({ source: "automatic", warning: expect.stringMatching(/isn't available/) });
     expect(resolveModelRole({ modelRoles: { helm: { tier: "preset2" } } }, "helm", MODELS)).toMatchObject({ source: "automatic", warning: expect.stringMatching(/no model yet/) });
     expect(resolveModelRole(settings, "background", MODELS)).toEqual({ role: "background", source: "automatic" });
+  });
+
+  it("runs a role nobody set on its default tier, and says what it uses while that tier is empty", () => {
+    expect(resolveModelRole({ modelPresets: PRESETS }, "helm", MODELS)).toMatchObject({ source: "tier", tier: "preset3", isDefault: true, model: "claude-opus-5.5" });
+    expect(resolveModelRole({ modelPresets: PRESETS }, "subagents", MODELS)).toMatchObject({ tier: "preset1", isDefault: true, model: "gpt-6-luna" });
+    expect(resolveModelRole({}, "handsFree", MODELS)).toMatchObject({ source: "automatic", isDefault: true, warning: "The Fast tier has no model yet, so this uses the Small jobs model." });
+    // Reviewers stay on the chat's own model, and the field-backed roles on their older setting.
+    expect(resolveModelRole({ modelPresets: PRESETS }, "reviewers", MODELS)).toEqual({ role: "reviewers", source: "automatic" });
+    expect(resolveModelRole({ modelPresets: PRESETS }, "chat", MODELS)).toEqual({ role: "chat", source: "automatic" });
   });
 });
 

@@ -13,6 +13,7 @@ import {
   takeSpeechChunks,
   toSpeakableText,
 } from "./voice-text.js";
+import type { LocalVoiceCommand } from "./voice-text.js";
 import { resolveKokoroVoice, type VoiceSettings } from "./voice-catalog.js";
 
 export const VOICE_SAMPLE_RATE = 16_000;
@@ -36,16 +37,11 @@ export const VOICE_TIMING = {
   unfinishedExtensionMs: 1_500,
   unfinishedProbability: 0.15,
   /**
-   * Speak a short lead-in if nothing has been said this long after the user finished. A tool call that
-   * takes time speaks one sooner. At 2 s nearly every turn opened with "One sec." (21 of 24 on 24 Sep 2026).
+   * Speak a short "One sec." if the agent has said nothing this long after it was asked. The
+   * hands-free layer normally acknowledges within about two seconds (26 Oct 2026, in the Bridge),
+   * so this covers a slow one.
    */
   fillerDelayMs: 3_000,
-  /**
-   * How much longer the canned lead-in waits when one is being written for this turn. A written
-   * lead-in is asked for only once the turn is settled, one to two seconds after the user stopped
-   * talking, so at 3 s it often had under 1.5 s (6 Oct 2026: asked at 1.3 s, "One sec." at 3.4 s).
-   */
-  leadInGraceMs: 1_000,
   /**
    * While a reply is still being worked out, say so again when this long has passed in silence since
    * the last thing said: first gap, second gap, and so on, the last one repeating. On 6 Oct 2026 a
@@ -92,11 +88,16 @@ export interface VoiceEngineApi {
   synthesize(request: SpeechSynthesisRequest, onChunk: (pcm: Int16Array, sampleRate: number) => void): SpeechSynthesisHandle;
 }
 
-export type AgentTurnKind = "user" | "continuation" | "interrupted" | "event" | "greeting";
+/**
+ * user/continuation/interrupted: something the user said, for the agent to decide about. typed: a
+ * message typed while hands-free is on, sent as it is. command: a short command caught locally.
+ */
+export type AgentTurnKind = "user" | "continuation" | "interrupted" | "event" | "greeting" | "typed" | "command";
 
 export interface AgentTurnInput {
   kind: AgentTurnKind;
   text: string;
+  command?: LocalVoiceCommand;
   /** What the assistant had already said when it was interrupted. */
   interruptedSpeech?: string;
   /** Identity of a typed message, so the chat can reconcile its optimistic copy. */
@@ -106,25 +107,53 @@ export interface AgentTurnInput {
 }
 
 export interface AgentTurnListener {
-  /** The turn was handed to the model session; from here on it shows up in the transcript. */
+  /** The message reached the chat; from here on it shows up in the transcript. */
   onStarted?(): void;
   onDelta(text: string): void;
-  /** One assistant message within the turn ended; the next one starts a fresh spoken part. */
+  /** One spoken part ended; the next one starts fresh. */
   onMessageEnd?(): void;
-  onToolStart(info: { toolCallId: string; name: string }): void;
-  onToolEnd(info: { toolCallId: string; name: string; success: boolean }): void;
-  onDone(result: { aborted: boolean; error?: string }): void;
+  /**
+   * `handled` says what became of what the user said: "sent" to the chat, "not_sent" (heard but not
+   * meant for it), "end" (leave hands-free), or a command the agent answered itself.
+   */
+  onDone(result: { aborted: boolean; error?: string; handled?: string }): void;
 }
 
 export interface AgentTurnHandle {
+  /** Stops the turn's speech and anything not yet sent. Never stops the chat's own work. */
   abort(): Promise<void>;
+}
+
+/** Something the agent wants to say on its own: a reply read back, progress, a notice. */
+export interface AgentSpeech {
+  /** Speech with the same key replaces what is still waiting to be said. */
+  key: string;
+  text: string;
+  kind: "readback" | "notice" | "progress" | "announce";
+  /** Checked again just before speaking; false drops it. */
+  valid?(): boolean;
+  /** It ended with an offer to read the whole reply. */
+  offer?: boolean;
+  /** Called once it starts playing. */
+  onSpoken?(): void;
+}
+
+export interface VoiceAgentOutput {
+  say(item: AgentSpeech): void;
+  drop(predicate: (item: AgentSpeech) => boolean): void;
 }
 
 export interface VoiceAgentApi {
   startTurn(input: AgentTurnInput, listener: AgentTurnListener): AgentTurnHandle;
-  /** A short spoken lead-in for a user turn while it runs, or undefined to say nothing. */
-  leadIn?(text: string): Promise<string | undefined>;
+  /** Gives the agent a way to speak on its own. */
+  bindOutput?(output: VoiceAgentOutput): void;
+  /** True while the agent has work in hand (the chat is working, a reply is being prepared): no auto-sleep. */
+  isBusy?(): boolean;
 }
+
+const SPEECH_PRIORITY: Record<AgentSpeech["kind"], number> = { readback: 0, notice: 1, progress: 2, announce: 3 };
+/** Cancellations that mean "the user is saying something else", after which unheard agent speech waits its turn. */
+const REQUEUE_REASONS: ReadonlySet<string> = new Set(["user kept talking", "typed message"]);
 
 export type VoiceServerEvent =
   | { type: "state"; state: VoiceState }
@@ -132,7 +161,7 @@ export type VoiceServerEvent =
   | { type: "duck"; on: boolean }
   | { type: "earcon"; kind: "commit" | "wake" | "sleep" | "error" }
   | { type: "smart_turn"; probability: number }
-  | { type: "user"; turnId: number; text: string; handled?: "sleep" | "stop" | "end" | "ignored" }
+  | { type: "user"; turnId: number; text: string; handled?: string }
   | { type: "assistant_delta"; genId: number; text: string }
   | { type: "assistant_chunk"; genId: number; chunkId: number; text: string }
   | { type: "assistant_done"; genId: number; text: string; interrupted: boolean }
@@ -211,6 +240,10 @@ interface GenerationState {
   id: number;
   turnId: number;
   kind: AgentTurnKind | "local";
+  /** What the user said, for turns they authored. */
+  userText?: string;
+  /** Speech the agent asked for on its own; put back in the queue if it is dropped unheard. */
+  agentSpeech?: AgentSpeech;
   handle?: AgentTurnHandle;
   text: string;
   pending: string;
@@ -221,8 +254,6 @@ interface GenerationState {
   chunkCount: number;
   textChunkCount: number;
   fillerChunkId?: number;
-  /** A lead-in is being written; tool starts don't speak a canned filler meanwhile. */
-  leadInPending?: boolean;
   /** The "still working" lines said during a long silent wait; they are not part of the reply. */
   progressChunkIds: Set<number>;
   firstSpeechAudioSent: boolean;
@@ -270,7 +301,7 @@ export interface VoiceConversationOptions {
   timers?: VoiceTimers;
 }
 
-export class VoiceConversation {
+export class VoiceConversation implements VoiceAgentOutput {
   private readonly streamId: string;
   private readonly engine: VoiceEngineApi;
   private readonly agent: VoiceAgentApi;
@@ -295,7 +326,7 @@ export class VoiceConversation {
   private progressSeq = 0;
   private lastSpeechAt: number;
   private autoSleepTimer?: unknown;
-  private readonly pendingEvents: string[] = [];
+  private pendingSpeech: AgentSpeech[] = [];
   private disposed = false;
 
   constructor(options: VoiceConversationOptions) {
@@ -307,6 +338,7 @@ export class VoiceConversation {
     this.log = options.log ?? (() => {});
     this.timers = options.timers ?? defaultTimers;
     this.lastSpeechAt = this.timers.now();
+    this.agent.bindOutput?.(this);
   }
 
   get state(): VoiceState {
@@ -399,8 +431,8 @@ export class VoiceConversation {
   }
 
   /**
-   * A typed message from the chat composer while hands-free is active. It is always sent to
-   * the agent (never treated as filler or a local command) and the reply is spoken.
+   * A message typed while hands-free is active (Tether sends these). It always goes to the chat
+   * as it is (never treated as filler or a command); the reply is read back like any other.
    */
   submitText(text: string, options: { clientMessageId?: string; onDelivery?: (delivery: TypedTextDelivery) => void } = {}): void {
     const trimmed = text.trim();
@@ -420,18 +452,35 @@ export class VoiceConversation {
     this.sink.send({ type: "user", turnId: metrics.turnId, text: trimmed });
     this.setState("thinking");
     this.startGeneration(
-      { kind: "user", text: trimmed, ...(options.clientMessageId ? { clientMessageId: options.clientMessageId } : {}) },
+      { kind: "typed", text: trimmed, ...(options.clientMessageId ? { clientMessageId: options.clientMessageId } : {}) },
       metrics,
       this.timers.now(),
       options.onDelivery,
     );
   }
 
-  /** Queues a Bridge update for the agent to mention the next time the conversation is idle. */
-  enqueueEvent(text: string): void {
-    if (this.pendingEvents.length >= 5) this.pendingEvents.shift();
-    this.pendingEvents.push(text);
-    this.flushPendingEvents();
+  /** Queues something the agent wants to say; it is spoken once the user isn't talking. */
+  say(item: AgentSpeech): void {
+    if (this.disposed) return;
+    this.pendingSpeech = this.pendingSpeech.filter((pending) => pending.key !== item.key);
+    this.pendingSpeech.push(item);
+    // Too much waiting: the least important (oldest first) goes, so announcements never push out a reply.
+    while (this.pendingSpeech.length > 8) {
+      const worst = this.pendingSpeech.reduce((least, candidate) => (SPEECH_PRIORITY[candidate.kind] > SPEECH_PRIORITY[least.kind] ? candidate : least));
+      this.pendingSpeech = this.pendingSpeech.filter((pending) => pending !== worst);
+    }
+    this.flushAgentSpeech();
+  }
+
+  drop(predicate: (item: AgentSpeech) => boolean): void {
+    this.pendingSpeech = this.pendingSpeech.filter((item) => !predicate(item));
+    const gen = this.gen;
+    // Not started playing yet (or held while the user talks): it can still be taken back.
+    if (gen?.agentSpeech && predicate(gen.agentSpeech) && gen.firstAudioAt === undefined) {
+      gen.agentSpeech = undefined;
+      this.cancelGeneration("no longer relevant");
+      if (this.stateValue === "thinking") this.setState("listening");
+    }
   }
 
   sleep(options: { announce: boolean }): void {
@@ -456,7 +505,7 @@ export class VoiceConversation {
       void this.handleUserText(remainder, { turnId: ++this.turnSeq, reason: "wake", smartTurn: [] }, this.timers.now(), false);
     } else {
       this.setState("listening");
-      this.flushPendingEvents();
+      this.flushAgentSpeech();
     }
   }
 
@@ -481,7 +530,7 @@ export class VoiceConversation {
     this.stateValue = state;
     this.sink.send({ type: "state", state });
     this.log("state", { state });
-    if (state === "listening") this.flushPendingEvents();
+    if (state === "listening") this.flushAgentSpeech();
   }
 
   private msToSamples(ms: number): number {
@@ -492,7 +541,9 @@ export class VoiceConversation {
     if (this.autoSleepTimer) this.timers.clearTimeout(this.autoSleepTimer);
     this.autoSleepTimer = this.timers.setTimeout(() => {
       this.autoSleepTimer = undefined;
-      if (this.stateValue === "listening" && this.timers.now() - this.lastSpeechAt >= VOICE_TIMING.autoSleepMs - 50) {
+      // While the chat is working, its reply is still to come: stay awake for it.
+      if (this.stateValue === "listening" && this.timers.now() - this.lastSpeechAt >= VOICE_TIMING.autoSleepMs - 50
+        && !this.agent.isBusy?.() && this.pendingSpeech.length === 0) {
         this.sink.send({ type: "notice", level: "info", message: "Quiet for two minutes, so I'm going to sleep. Say “Hey Bridge” to wake me." });
         this.sleep({ announce: false });
       } else if (this.stateValue !== "asleep" && this.stateValue !== "ended") {
@@ -628,8 +679,10 @@ export class VoiceConversation {
       return;
     }
 
-    const command = detectLocalCommand(text);
-    if (command) {
+    let command = detectLocalCommand(text);
+    // "Cancel that" with nothing running is just "be quiet".
+    if (command === "cancel" && !this.agent.isBusy?.()) command = "stop";
+    if (command === "end" || command === "sleep" || command === "stop") {
       this.sink.send({ type: "user", turnId: metrics.turnId, text, handled: command });
       this.log("local_command", { command, text });
       if (command === "end") {
@@ -642,8 +695,18 @@ export class VoiceConversation {
         this.speakLocal("Okay, going quiet.", { sleepAfter: true });
         return;
       }
+      // Stops speech only; the chat's work carries on.
       this.cancelGeneration("stop command");
       this.setState("listening");
+      return;
+    }
+    if (command) {
+      this.sink.send({ type: "user", turnId: metrics.turnId, text, handled: command });
+      this.log("local_command", { command, text });
+      if (heldGen) this.cancelGeneration("user kept talking");
+      this.interruptedSpeech = undefined;
+      this.setState("thinking");
+      this.startGeneration({ kind: "command", command, text }, metrics, speechEndAt);
       return;
     }
 
@@ -782,6 +845,7 @@ export class VoiceConversation {
       this.resumeNote = undefined;
     }
     const gen = this.createGeneration(input.kind, metrics, speechEndAt);
+    if (input.kind !== "event" && input.kind !== "greeting") gen.userText = input.text;
     this.gen = gen;
     let deliveryReported = false;
     const reportDelivery = (delivery: TypedTextDelivery) => {
@@ -789,52 +853,24 @@ export class VoiceConversation {
       deliveryReported = true;
       onDelivery?.(delivery);
     };
-    if (input.kind === "user" || input.kind === "continuation" || input.kind === "interrupted") {
-      const delay = Math.max(0, VOICE_TIMING.fillerDelayMs - (this.timers.now() - speechEndAt));
-      // Set once the canned lead-in is due but is waiting a little for a written one.
-      let cannedDue = false;
-      const speakCanned = () => {
-        if (gen.fillerTimer) this.timers.clearTimeout(gen.fillerTimer);
-        gen.fillerTimer = undefined;
-        cannedDue = false;
-        if (this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen, "slow reply");
-      };
+    if (input.kind === "user" || input.kind === "continuation" || input.kind === "interrupted" || input.kind === "command") {
+      // The agent normally answers within a second or two; this covers a slow one. Counted from now,
+      // not from the end of speech: transcribing a long request can take a second by itself.
+      const delay = VOICE_TIMING.fillerDelayMs;
       gen.fillerTimer = this.timers.setTimeout(() => {
-        if (!gen.leadInPending) return speakCanned();
-        cannedDue = true;
-        gen.fillerTimer = this.timers.setTimeout(speakCanned, VOICE_TIMING.leadInGraceMs);
+        gen.fillerTimer = undefined;
+        if (this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen);
       }, delay);
-      if (this.agent.leadIn) {
-        gen.leadInPending = true;
-        const startedAt = this.timers.now();
-        this.agent.leadIn(input.text).then((text) => {
-          gen.leadInPending = false;
-          this.log("lead_in", { genId: gen.id, text: text ?? null, ms: Math.round(this.timers.now() - startedAt) });
-          if (text && this.gen === gen && !gen.cancelled) this.maybeSpeakFiller(gen, "lead-in", text);
-          else if (cannedDue) speakCanned();
-        }, () => {
-          gen.leadInPending = false;
-          if (cannedDue) speakCanned();
-        });
-      }
     }
     try {
       gen.handle = this.agent.startTurn(input, {
         onStarted: () => reportDelivery({ delivered: true }),
         onDelta: (delta) => this.onAgentDelta(gen, delta),
         onMessageEnd: () => this.onAgentMessageEnd(gen),
-        onToolStart: ({ toolCallId, name }) => {
-          if (this.gen === gen && !gen.cancelled) {
-            this.sink.send({ type: "tool", genId: gen.id, toolCallId, name, status: "running" });
-            if (!gen.leadInPending) this.maybeSpeakFiller(gen, name);
-          }
-        },
-        onToolEnd: ({ toolCallId, name, success }) => {
-          if (this.gen === gen && !gen.cancelled) this.sink.send({ type: "tool", genId: gen.id, toolCallId, name, status: success ? "done" : "failed" });
-        },
-        onDone: ({ aborted, error }) => {
+        onDone: ({ aborted, error, handled }) => {
           // Reaching the end without having started means the message never got to the session.
           reportDelivery({ delivered: false, ...(error ? { error } : {}) });
+          this.onAgentHandled(gen, handled);
           this.onAgentDone(gen, aborted, error);
         },
       });
@@ -908,11 +944,21 @@ export class VoiceConversation {
     if (!gen.messageSpoke && gen.speech.withheld) this.enqueueChunk(gen, ON_SCREEN_PHRASE);
   }
 
-  private maybeSpeakFiller(gen: GenerationState, toolName: string, text?: string): void {
+  /** What became of what the user said: shown on screen; leaving ends hands-free. */
+  private onAgentHandled(gen: GenerationState, handled: string | undefined): void {
+    if (!handled || gen.userText === undefined) return;
+    if (handled === "end") {
+      this.cancelGeneration("end hands-free");
+      this.sink.send({ type: "end_voice_mode" });
+      return;
+    }
+    if (handled === "not_sent") this.sink.send({ type: "user", turnId: gen.turnId, text: gen.userText, handled });
+  }
+
+  private maybeSpeakFiller(gen: GenerationState): void {
     if (gen.held || gen.fillerChunkId !== undefined || gen.chunkCount > 0 || gen.text.trim()) return;
-    if (gen.kind !== "user" && gen.kind !== "continuation" && gen.kind !== "interrupted") return;
-    if (INSTANT_TOOLS.has(toolName)) return;
-    text ??= FILLER_PHRASES[this.fillerSeq++ % FILLER_PHRASES.length]!;
+    if (gen.kind !== "user" && gen.kind !== "continuation" && gen.kind !== "interrupted" && gen.kind !== "command") return;
+    const text = FILLER_PHRASES[this.fillerSeq++ % FILLER_PHRASES.length]!;
     gen.fillerChunkId = gen.chunkCount + 1;
     this.enqueueChunk(gen, text, { filler: true });
   }
@@ -961,7 +1007,7 @@ export class VoiceConversation {
     if (error) {
       this.log("agent_error", { genId: gen.id, error });
       this.sink.send({ type: "notice", level: "error", message: error });
-      if (!gen.text.trim()) this.enqueueChunk(gen, "Sorry, I couldn't reach Copilot just now.");
+      if (!gen.text.trim()) this.enqueueChunk(gen, "Sorry, that didn't go through.");
     }
     this.flushPendingSpeech(gen);
     if (gen.kind !== "local") this.lastReplyState = { genId: gen.id, text: gen.text, finished: false };
@@ -1061,6 +1107,7 @@ export class VoiceConversation {
   private emitAudio(gen: GenerationState, chunk: VoiceAudioChunk): void {
     if (gen.firstAudioAt === undefined) {
       gen.firstAudioAt = this.timers.now();
+      gen.agentSpeech?.onSpoken?.();
       if (gen.sleepAfter) {
         this.log("goodbye_audio", { genId: gen.id });
       } else if (this.stateValue === "thinking") {
@@ -1097,6 +1144,13 @@ export class VoiceConversation {
   }
 
   private releaseHeld(gen: GenerationState): void {
+    // The agent's own speech may have stopped being worth saying while the user talked.
+    if (gen.agentSpeech?.valid && !gen.agentSpeech.valid()) {
+      gen.agentSpeech = undefined;
+      this.cancelGeneration("no longer relevant");
+      this.setState("listening");
+      return;
+    }
     gen.held = false;
     this.log("release_hold", { genId: gen.id, chunks: gen.heldAudio.length });
     const held = gen.heldAudio.splice(0);
@@ -1154,6 +1208,12 @@ export class VoiceConversation {
     if (!gen || gen.cancelled) return;
     gen.cancelled = true;
     this.gen = undefined;
+    // The agent's own speech that nobody heard because the user started talking first waits for the
+    // next gap. Asked to be quiet, it is dropped.
+    if (REQUEUE_REASONS.has(reason) && gen.agentSpeech && gen.firstAudioAt === undefined
+      && !this.pendingSpeech.some((item) => item.key === gen.agentSpeech!.key)) {
+      this.pendingSpeech.unshift(gen.agentSpeech);
+    }
     gen.queue.length = 0;
     gen.heldAudio.length = 0;
     gen.synthesis?.cancel();
@@ -1173,11 +1233,29 @@ export class VoiceConversation {
     this.log("cancel_generation", { genId: gen.id, reason });
   }
 
-  private flushPendingEvents(): void {
-    if (this.stateValue !== "listening" || this.gen || this.turn || this.pendingEvents.length === 0) return;
-    const text = this.pendingEvents.splice(0).join("\n");
+  private flushAgentSpeech(): void {
+    if (this.stateValue !== "listening" || this.gen || this.turn) return;
+    let next: AgentSpeech | undefined;
+    while (!next && this.pendingSpeech.length > 0) {
+      const ordered = [...this.pendingSpeech].sort((a, b) => SPEECH_PRIORITY[a.kind] - SPEECH_PRIORITY[b.kind]);
+      const candidate = ordered[0]!;
+      this.pendingSpeech = this.pendingSpeech.filter((item) => item !== candidate);
+      if (!candidate.valid || candidate.valid()) next = candidate;
+    }
+    if (!next) return;
+    this.speakAgentSpeech(next);
+  }
+
+  /** Speaks something the agent asked for on its own. Like a reply, it waits for and yields to the user. */
+  private speakAgentSpeech(item: AgentSpeech): void {
+    const gen = this.createGeneration("event", { turnId: ++this.turnSeq, reason: "event", smartTurn: [] }, this.timers.now());
+    gen.agentSpeech = item;
+    this.gen = gen;
     this.setState("thinking");
-    this.startGeneration({ kind: "event", text }, { turnId: ++this.turnSeq, reason: "event", smartTurn: [] }, this.timers.now());
+    this.log("agent_speech", { genId: gen.id, kind: item.kind, key: item.key });
+    this.onAgentDelta(gen, item.text);
+    this.onAgentMessageEnd(gen);
+    this.onAgentDone(gen, false);
   }
 }
 
@@ -1185,10 +1263,9 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-const FILLER_PHRASES = ["One sec.", "Let me check.", "Checking now.", "Give me a second.", "On it."];
+const FILLER_PHRASES = ["One sec.", "Just a sec.", "Give me a second."];
 /** Said during a long wait. They claim nothing about the answer and differ from the lead-ins. */
 const PROGRESS_PHRASES = ["Still working on it.", "Still on it, one moment.", "This is taking a little longer.", "Still here, still working."];
-const INSTANT_TOOLS = new Set(["hands_free"]);
 
 function words(text: string): string[] {
   return text.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);

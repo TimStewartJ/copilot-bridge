@@ -1,21 +1,16 @@
 // What Helm knows: the memory Helm's chat and its looks start from, Tim's to read, correct and
-// forget, plus when Helm looks over everything, and its recent looks.
+// forget, and its recent looks. When and how Helm looks is in Settings › Helm.
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { fetchModelRoles } from "../api";
-import { useSettingsQuery } from "../hooks/queries/useSettings";
-import { MODEL_TIER_INFO } from "../../shared/model-roles";
 import { ArrowLeft, Pencil, Plus } from "lucide-react";
 import {
   HELM_MEMORY_LIMITS, HELM_PICTURE_MAX_WORDS, HELM_STALE_AFTER_DAYS,
-  type HelmMemoryEntry, type HelmMemoryKind, type HelmPeer, type HelmThinkerSettings,
+  type HelmMemoryEntry, type HelmMemoryKind,
 } from "../../shared/helm-thinker";
-import { Badge, Button, EmptyHint, Notice, Section, Select, Switch, TextArea, TextInput } from "../design/primitives";
+import { Badge, Button, EmptyHint, Notice, Section, TextArea, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
-import { useModelsQuery } from "../hooks/queries/useModels";
 import {
-  addHelmMemory, formatAgo, formatCredits, formatClock, formatDuration, patchThinkerSettings, updateHelmMemory,
+  addHelmMemory, formatAgo, formatCredits, formatClock, formatDuration, updateHelmMemory,
   useHelmBrief, useHelmMemory, useHelmRuns, useInvalidateHelm,
 } from "./thinker-api";
 
@@ -49,7 +44,10 @@ export default function HelmMemory() {
     <div className={cx(DS.layout.pageColumn, "max-w-4xl space-y-6")}>
       <header className="space-y-2">
         <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home")}><ArrowLeft size={14} />Home</Button>
-        <h1 className={DS.text.pageTitle}>What Helm knows</h1>
+        <div className="flex items-center gap-3">
+          <h1 className={DS.text.pageTitle}>What Helm knows</h1>
+          <Link to="/settings?group=helm" className="ml-auto text-xs text-accent hover:underline">How Helm thinks</Link>
+        </div>
         <p className={cx(DS.text.prose, "max-w-3xl")}>Helm reads this before every look, together with only what changed since its last one. It points to your tasks and conversations instead of copying them. Correct or forget anything here; what you write or keep is yours, and Helm follows it but never changes it.</p>
       </header>
       {error && <Notice tone="danger" title="Not saved">{error}</Notice>}
@@ -71,7 +69,6 @@ export default function HelmMemory() {
         onKeep={(id) => save(() => updateHelmMemory(id, { status: "active" }))}
         onForget={(id) => save(() => updateHelmMemory(id, { status: "forgotten" }))} />)}
 
-      {brief.data && <SettingsSection settings={brief.data.settings} preview={brief.data.preview} nextRunAt={brief.data.nextRunAt} onSave={(patch) => save(() => patchThinkerSettings(patch))} />}
 
       <Section label="Recent looks" level="page" surface>
         {(runs.data?.runs ?? []).length === 0 && <EmptyHint>No runs yet.</EmptyHint>}
@@ -157,60 +154,3 @@ function MemoryRow({ entry, stale, onEdit, onKeep, onForget }: { entry: HelmMemo
   </div>;
 }
 
-function SettingsSection({ settings, preview, nextRunAt, onSave }: { settings: HelmThinkerSettings; preview: boolean; nextRunAt: string | null; onSave: (patch: Partial<HelmThinkerSettings>) => Promise<void> }) {
-  const models = useModelsQuery({ enabled: true });
-  const roles = useQuery({ queryKey: ["models", "roles"], queryFn: ({ signal }) => fetchModelRoles(signal) });
-  const settingsQuery = useSettingsQuery();
-  const resolved = roles.data?.roles.find((role) => role.role === "helm");
-  // "Own" keeps its model in Helm's settings rather than in the role.
-  const ownModel = !settingsQuery.data?.modelRoles?.helm ? settingsQuery.data?.helm?.model : undefined;
-  const helm = resolved?.model ? resolved : ownModel ? { ...resolved, model: ownModel } : resolved;
-  const helmModel = helm?.model
-    ? [((models.data ?? []) as Array<{ id: string; name?: string }>).find((model) => model.id === helm.model)?.name ?? helm.model, helm.reasoningEffort && `${helm.reasoningEffort} effort`, helm.tier && `${MODEL_TIER_INFO[helm.tier].label} tier`].filter(Boolean).join(" · ")
-    : undefined;
-  const [times, setTimes] = useState(settings.times.join(", "));
-  const [label, setLabel] = useState(settings.label);
-  const [peers, setPeers] = useState<HelmPeer[]>(settings.peers);
-  useEffect(() => { setTimes(settings.times.join(", ")); setLabel(settings.label); setPeers(settings.peers); }, [settings]);
-  return <Section label="How Helm thinks" level="page" surface>
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div><p className="text-[13px] text-text-primary">Think on a schedule</p><p className={DS.text.meta}>{preview ? "Off in staged previews" : settings.enabled && nextRunAt ? `Next look ${formatClock(nextRunAt)}` : "Only when asked"}</p></div>
-        <Switch checked={settings.enabled} onChange={(event) => void onSave({ enabled: event.target.checked })} aria-label="Think on a schedule" />
-      </div>
-      <label className="block space-y-1"><span className="text-[13px] text-text-primary">Times</span>
-        <div className="flex gap-2"><TextInput value={times} onChange={(event) => setTimes(event.target.value)} placeholder="08:00, 18:00" />
-          <Button size="sm" onClick={() => void onSave({ times: times.split(/[,\s]+/).filter(Boolean) })}>Save</Button></div>
-        <span className={DS.text.meta}>The last look on Sunday re-reads everything from scratch.</span>
-      </label>
-      <div className="space-y-1">
-        <p className="text-[13px] text-text-primary">Model</p>
-        <p className={DS.text.meta}>{helmModel ?? "Automatic: your default chat model, or the most capable one when that is a router"}</p>
-        <p className={DS.text.meta}>Set under Helm in <Link to="/settings?group=chat" className="text-accent hover:underline">Settings › Models</Link>, with the tiers everything else uses.</p>
-      </div>
-      <label className="block space-y-1"><span className="text-[13px] text-text-primary">What Helm may do by itself</span>
-        <Select value={settings.autonomy} onChange={(event) => void onSave({ autonomy: event.target.value as "propose" | "routine" })}>
-          <option value="routine">Mark replies that need nothing from me as read (with undo)</option>
-          <option value="propose">Nothing: only propose</option>
-        </Select></label>
-      <label className="block space-y-1"><span className="text-[13px] text-text-primary">This Bridge's name in briefs</span>
-        <div className="flex gap-2"><TextInput value={label} onChange={(event) => setLabel(event.target.value)} />
-          <Button size="sm" onClick={() => void onSave({ label })}>Save</Button></div></label>
-      <div className="space-y-2">
-        <p className="text-[13px] text-text-primary">Other Bridges Helm reads</p>
-        <p className={DS.text.meta}>Helm reads them over your network and changes nothing there unless you click. Leave out any Bridge whose work should stay separate.</p>
-        {peers.map((peer, index) => <div key={index} className="grid gap-2 sm:grid-cols-[6rem_8rem_1fr_1fr_auto]">
-          <TextInput value={peer.id} placeholder="id" onChange={(event) => setPeers(peers.map((item, i) => i === index ? { ...item, id: event.target.value } : item))} />
-          <TextInput value={peer.label} placeholder="Name" onChange={(event) => setPeers(peers.map((item, i) => i === index ? { ...item, label: event.target.value } : item))} />
-          <TextInput value={peer.apiUrl} placeholder="API URL" onChange={(event) => setPeers(peers.map((item, i) => i === index ? { ...item, apiUrl: event.target.value } : item))} />
-          <TextInput value={peer.webUrl} placeholder="Web URL" onChange={(event) => setPeers(peers.map((item, i) => i === index ? { ...item, webUrl: event.target.value } : item))} />
-          <Button size="sm" variant="ghost" onClick={() => setPeers(peers.filter((_, i) => i !== index))}>Remove</Button>
-        </div>)}
-        <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={() => setPeers([...peers, { id: "", label: "", apiUrl: "", webUrl: "" }])}><Plus size={13} />Add a Bridge</Button>
-          <Button size="sm" onClick={() => void onSave({ peers })}>Save Bridges</Button>
-        </div>
-      </div>
-    </div>
-  </Section>;
-}

@@ -78,12 +78,12 @@ export async function startVoiceInstall(): Promise<VoiceInstallStatus> {
   return res.json() as Promise<VoiceInstallStatus>;
 }
 
-/** Starts hands-free for a Helm conversation; the voice side holds no context of its own. */
-export async function createVoiceConversation(helmSessionId: string, settings: VoiceSettings): Promise<VoiceConversationTicket> {
+/** Starts hands-free for a chat; the voice side holds no context of its own. */
+export async function createVoiceConversation(sessionId: string, settings: VoiceSettings): Promise<VoiceConversationTicket> {
   const res = await fetch(`${API_BASE}/api/voice/conversations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ helmSessionId, settings }),
+    body: JSON.stringify({ sessionId, settings }),
   });
   if (!res.ok) throw new Error(await readError(res));
   return res.json() as Promise<VoiceConversationTicket>;

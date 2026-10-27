@@ -1,6 +1,6 @@
 // Which model Helm runs on, for its chat and for the looks that write the brief on Home: the
-// "Helm" row in Settings › Models (a tier, or a model of its own kept in helm.model), checked
-// against the models that can be used right now; otherwise Automatic.
+// "Helm" row in Settings › Models (a tier, or a model of its own), checked against the models that
+// can be used right now; otherwise Automatic.
 import type { AgentModelInfo } from "../agent-backend/types.js";
 import type { AppSettings } from "../settings-store.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
@@ -33,36 +33,38 @@ function thinks(model: AgentModelInfo | undefined): model is AgentModelInfo {
 }
 
 /**
- * Helm's model. `requested` (a conversation started on a named model) wins when it can be used,
- * then the Helm role, then Automatic: the user's default chat model when it is a real model that
- * reasons, else the most capable ordinary model. `effort` is the effort wanted; with
- * `tierEffort` the role's own effort wins when it has one (the brief's looks use that).
+ * Helm's model, for its chat and for the brief's looks. `requested` (a conversation started on a
+ * named model) wins when it can be used, then the Helm role (a tier, or a model of its own, with that
+ * choice's effort and context), then Automatic: the user's default chat model when it is a real model
+ * that reasons, else the most capable ordinary model. Effort is the role's, else the user's default
+ * effort for that model, else `fallbackEffort`, always clamped to what the model supports.
  */
 export function chooseHelmModel(
   settings: AppSettings,
   allModels: readonly AgentModelInfo[],
-  options: { requested?: string; effort?: string; tierEffort?: boolean } = {},
+  options: { requested?: string; fallbackEffort?: string } = {},
 ): HelmModelChoice {
   const models = usableModels(allModels);
   const find = (id: string | undefined) => (id ? models.find((model) => model.id === id) : undefined);
   const role = resolveModelRole(settings, "helm", models);
-  const roleModel = role.source === "tier" ? find(role.model) : undefined;
-  const ownModel = settings.modelRoles?.helm ? undefined : find(settings.helm?.model?.trim() || undefined);
+  const roleModel = role.source !== "automatic" ? find(role.model) : undefined;
   const userDefault = find(settings.model);
-  const chosen = find(options.requested)
+  const requested = find(options.requested);
+  const chosen = requested
     ?? roleModel
-    ?? ownModel
     ?? (thinks(userDefault) ? userDefault : undefined)
     ?? [...models].filter((model) => thinks(model) && price(model)! <= HELM_MAX_AUTOMATIC_PRICE).sort((a, b) => price(b)! - price(a)!)[0]
     ?? userDefault
     ?? models[0];
   // No model list (the runtime is starting): name what was asked for and let the runtime decide the rest.
   if (!chosen) {
-    const fallback = options.requested ?? (role.source === "tier" ? role.model : undefined) ?? (settings.helm?.model?.trim() || undefined);
-    return fallback ? { model: fallback } : {};
+    const fallback = options.requested ?? (role.source !== "automatic" ? role.model : undefined);
+    return fallback ? { model: fallback, ...(role.reasoningEffort && !options.requested ? { reasoningEffort: role.reasoningEffort } : {}) } : {};
   }
-  const onRole = chosen === roleModel && !find(options.requested);
-  const wanted = options.tierEffort && onRole && role.reasoningEffort ? role.reasoningEffort : options.effort;
+  const onRole = chosen === roleModel && !requested;
+  const wanted = (onRole ? role.reasoningEffort : undefined)
+    ?? (chosen.id === settings.model ? settings.reasoningEffort : undefined)
+    ?? options.fallbackEffort;
   const reasoningEffort = resolveSupportedReasoningEffort(wanted, chosen.supportedReasoningEfforts);
   return {
     model: chosen.id,

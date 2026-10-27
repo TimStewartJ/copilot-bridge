@@ -41,19 +41,13 @@ describe("Helm routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ current: null, resumable: null, recent: [] });
     expect(res.body.policy).toEqual({ freshAfterMs: 6 * 3_600_000, retainMs: 14 * 86_400_000, maxConversations: 25 });
-    expect(res.body.reasoningEfforts).toEqual({ typed: "max", spoken: "none" });
   });
 
-  it("lets Settings change how hard each mode thinks, effective for the next turn", async () => {
-    const patched = await request(app).patch("/api/settings").send({ helm: { spokenReasoningEffort: "high" } });
+  it("takes a model and effort of Helm's own in the Helm role", async () => {
+    const patched = await request(app).patch("/api/settings").send({ modelRoles: { helm: { model: "claude-opus-5", reasoningEffort: "high" } } });
     expect(patched.status).toBe(200);
-    expect(patched.body.helm).toEqual({ spokenReasoningEffort: "high" });
-    expect((await request(app).get("/api/helm")).body.reasoningEfforts).toEqual({ typed: "max", spoken: "high" });
-    expect(ctx.helm!.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("max");
-
-    await request(app).patch("/api/settings").send({ helm: { typedReasoningEffort: 7 } }).expect(400);
-    await request(app).patch("/api/settings").send({ helm: null }).expect(200);
-    expect((await request(app).get("/api/helm")).body.reasoningEfforts).toEqual({ typed: "max", spoken: "none" });
+    expect(patched.body.modelRoles.helm).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
+    await request(app).patch("/api/settings").send({ modelRoles: { reviewers: { model: "claude-opus-5" } } }).expect(400);
   });
 
   it("creates, resets, resumes, keeps and deletes conversations", async () => {
@@ -133,7 +127,7 @@ describe("Helm routes", () => {
     expect(sessionManager.startWork).toHaveBeenCalledWith(body.sessionId, "what needs me?", undefined, { clientMessageId: "client-1" });
   });
 
-  it("only starts hands-free for a Helm conversation", async () => {
+  it("starts hands-free only once the speech engine is installed", async () => {
     const res = await request(app).post("/api/voice/conversations").send({ helmSessionId: "11111111-2222-4333-8444-555555555555" });
     // The speech engine is not installed in tests, which is reported before anything else.
     expect([404, 409]).toContain(res.status);

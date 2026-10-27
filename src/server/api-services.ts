@@ -17,7 +17,7 @@ import type { CopilotUsageReader } from "./copilot-usage.js";
 import { createCopilotModelPriceLoader } from "./copilot-model-price-loader.js";
 import { createCopilotQuotaReader, type CopilotQuotaReader } from "./copilot-quota.js";
 import { HelmThinker } from "./helm/thinker/thinker.js";
-import { HelmService, HELM_DEFAULT_REASONING_EFFORTS } from "./helm/helm-service.js";
+import { HelmService } from "./helm/helm-service.js";
 import type { HelmBridgeFacade, HelmSessionSummary } from "./helm/helm-tools.js";
 import { VoiceGateway, type VoiceGatewayHelm } from "./voice/voice-gateway.js";
 import { createVoiceRuntime, type VoiceRuntime } from "./voice/voice-runtime.js";
@@ -29,8 +29,6 @@ const HELM_UNAVAILABLE: VoiceGatewayHelm = {
   isHelmSession: () => false,
   bindHandsFree: () => () => undefined,
   isWatched: () => false,
-  getTurnCount: () => 0,
-  getTurnReasoningEffort: (mode) => HELM_DEFAULT_REASONING_EFFORTS[mode],
 };
 
 export interface ApiServiceOptions {

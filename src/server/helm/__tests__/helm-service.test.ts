@@ -88,9 +88,9 @@ describe("HelmService conversations", () => {
     expect(read.body.modelsError).toContain("unavailable");
     const saved = await request(app).patch("/api/helm/settings").send({ ...read.body.settings, patience: 0.7 }).expect(200);
     expect(saved.body.settings.patience).toBe(0.7);
-    await request(app).patch("/api/helm/settings").send({ model: "gpt-6-luna" }).expect(503);
-    expect((await helm.getSettings()).settings.model).toBe("claude-opus-5");
-    await request(app).patch("/api/helm/settings").send({ model: "" }).expect(200);
+    // The retired model is kept as written, so it needs no model list to check against.
+    await request(app).patch("/api/helm/settings").send({ model: "gpt-6-luna" }).expect(200);
+    expect((await helm.getSettings()).settings.model).toBe("gpt-6-luna");
     helm.dispose();
   });
 
@@ -120,7 +120,8 @@ describe("HelmService conversations", () => {
     expect(() => ctx.settingsStore.updateSettings({ helm: { speed: 9 } })).toThrow(SettingsValidationError);
     await helm.createConversation();
     expect(sessionManager.createSession).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-opus-5", reasoningEffort: "high" }));
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("low");
+    // The retired model and efforts are kept for Tether; nothing reads them.
+    expect(ctx.settingsStore.getSettings().modelRoles?.helm).toBeUndefined();
     // The hub sends exactly these eleven fields, including an empty model, and reads them back unchanged.
     const hubFixture = {
       model: "", typedReasoningEffort: "high", spokenReasoningEffort: "low",
@@ -142,7 +143,7 @@ describe("HelmService conversations", () => {
       [], { settings: {} }, { unknown: true }, { schemaVersion: 1 }, { configured: true },
       { speed: 0.74 }, { speed: 1.41 }, { patience: -0.1 }, { patience: 1.01 },
       { echoSafe: "false" }, { bargeIn: 1 }, { announce: "none" }, { transport: "udp" },
-      { voice: "missing_voice" }, { model: "missing-model" }, { glossary: "x".repeat(2001) },
+      { voice: "missing_voice" }, { glossary: "x".repeat(2001) },
       { typedReasoningEffort: "" }, { spokenReasoningEffort: null }, { voice: "bm_george", speed: "1" },
     ];
     for (const patch of invalid) {
@@ -151,30 +152,6 @@ describe("HelmService conversations", () => {
       expect(ctx.settingsStore.getSettings().helm).toBeUndefined();
     }
     helm.dispose();
-  });
-
-  it("asks for max effort when typing and none when speaking, until settings say otherwise", async () => {
-    const { helm, ctx } = createHarness();
-    expect(helm.getTurnReasoningEffort("typed")).toBe("max");
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("none");
-    expect((await helm.getState()).reasoningEfforts).toEqual({ typed: "max", spoken: "none" });
-    // Anything that isn't a hands-free turn is answered in the chat.
-    expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("max");
-
-    (ctx.settingsStore as { getSettings(): unknown }).getSettings = () => ({ model: "claude-opus-5", helm: { typedReasoningEffort: "high" } });
-    expect(helm.getTurnReasoningEffort("typed")).toBe("high");
-    expect(helm.getTurnReasoningEffort("spoken")).toBe("none");
-    // Read per turn: the profile built earlier follows the change.
-    expect(helm.getSessionProfile().defaultTurnReasoningEffort?.()).toBe("high");
-  });
-
-  it("thinks at least at medium when a spoken turn asks to change something", () => {
-    const { helm, ctx } = createHarness();
-    expect(helm.getTurnReasoningEffort("spoken", "anything from the car task?")).toBe("none");
-    expect(helm.getTurnReasoningEffort("spoken", "start a session in the Tether task")).toBe("medium");
-    expect(helm.getTurnReasoningEffort("typed", "start a session in the Tether task")).toBe("max");
-    (ctx.settingsStore as { getSettings(): unknown }).getSettings = () => ({ helm: { spokenReasoningEffort: "high" } });
-    expect(helm.getTurnReasoningEffort("spoken", "archive the finished ones")).toBe("high");
   });
 
   it("creates a conversation on Helm's model with the Helm profile registered first", async () => {
@@ -249,7 +226,7 @@ describe("HelmService conversations", () => {
     expect((await helm.getState()).current?.sessionId).toBe(conversation.sessionId);
     busy.clear();
 
-    const unbind = helm.bindHandsFree(conversation.sessionId, { requestHandsFree: () => undefined });
+    const unbind = helm.bindHandsFree(conversation.sessionId);
     expect((await helm.getState()).current).toMatchObject({ sessionId: conversation.sessionId, handsFree: true });
     unbind();
 
@@ -285,7 +262,7 @@ describe("HelmService conversations", () => {
   it("refuses to delete a conversation that is in use", async () => {
     const { helm, busy, deleted } = createHarness();
     const conversation = await helm.createConversation();
-    const unbind = helm.bindHandsFree(conversation.sessionId, { requestHandsFree: () => undefined });
+    const unbind = helm.bindHandsFree(conversation.sessionId);
     await expect(helm.deleteConversation(conversation.sessionId)).rejects.toMatchObject({ status: 409 });
     unbind();
     busy.add(conversation.sessionId);
@@ -367,7 +344,7 @@ describe("Helm session profiles", () => {
       extraGuidance: expect.stringContaining("(claude-opus-5)"),
     });
     const expected = profile.expectedToolNames(["task_list", "session_start"]);
-    expect(expected).toEqual(expect.arrayContaining(["task_list", "session_start", "bridge_overview", "hands_free"]));
+    expect(expected).toEqual(expect.arrayContaining(["task_list", "session_start", "bridge_overview", "read_bridge"]));
     const applied = profile.apply({
       sessionId: "abc",
       tools: [{ name: "task_list" }, { name: "bridge_overview" }],

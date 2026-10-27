@@ -1,3 +1,12 @@
+/**
+ * Helm and hands-free settings as `/api/helm/settings` reads and writes them. Tether (the iPhone app)
+ * sends all of these keys and checks that a read returns what it wrote.
+ *
+ * `model`, `typedReasoningEffort` and `spokenReasoningEffort` are retired: Helm's model and effort come
+ * from the Helm row in Settings › Models, and hands-free turns run on the chat's own effort. They stay
+ * in the contract only so Tether keeps working; the Bridge stores what was written and returns it, and
+ * nothing reads them.
+ */
 export interface UnifiedHelmSettings {
   model: string;
   typedReasoningEffort: string;
@@ -10,6 +19,14 @@ export interface UnifiedHelmSettings {
   announce: "watched" | "all" | "off";
   echoSafe: boolean;
   transport: "auto" | "websocket" | "http";
+}
+
+export const HELM_LEGACY_SETTING_KEYS = ["model", "typedReasoningEffort", "spokenReasoningEffort"] as const;
+export type HelmLegacySettingKey = typeof HELM_LEGACY_SETTING_KEYS[number];
+export type HelmLegacySettings = Partial<Pick<UnifiedHelmSettings, HelmLegacySettingKey>>;
+
+export function isHelmLegacySettingKey(key: string): key is HelmLegacySettingKey {
+  return (HELM_LEGACY_SETTING_KEYS as readonly string[]).includes(key);
 }
 
 export const HELM_SETTINGS_DEFAULTS: UnifiedHelmSettings = {

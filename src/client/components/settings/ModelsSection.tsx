@@ -1,20 +1,28 @@
 // Settings › Models: the three tiers (Fast, Standard, Deep) and what each kind of work runs on.
-// Tiers are the composer's three presets; this is the only place they are edited.
+// Tiers are the composer's three presets; this is the only place they are edited. Every role picks
+// a tier or a model of its own ("Custom"), edited in the same place for every role.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchModelRoles, type AppSettings, type ModelInfo } from "../../api";
+import { AlertTriangle, RotateCw } from "lucide-react";
+import { fetchModelRoles, refreshModels, type AppSettings, type ModelInfo } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
-import { formatReasoningEffortLabel, getModelReasoningEfforts } from "../../reasoning-effort";
-import { modelSupportsLongContext } from "../../../shared/copilot-context.js";
+import { useModelClientInfoQuery } from "../../hooks/queries/useModelClientInfo";
+import { queryKeys } from "../../queryClient";
+import { timeAgo } from "../../time";
+import { formatReasoningEffortLabel } from "../../reasoning-effort";
 import { buildContextTierOptions, buildReasoningEffortOptions } from "../../lib/new-session-launch";
-import { resolveModelPresetState } from "../../lib/model-presets";
-import ModelPresetPicker from "../shared/ModelPresetPicker";
+import {
+  getContextTierLabel,
+  modelSupportsLongContext,
+  modelUsesDynamicSelection,
+  type CopilotContextTier,
+} from "../../../shared/copilot-context.js";
 import { LaunchModelSelect, LaunchOptionRow } from "../shared/LaunchOptionControls";
 import { MODEL_PRESET_SLOTS, type ModelPresetSlot } from "../../../shared/model-presets.js";
 import {
+  defaultRoleTier,
   isTierChoice,
   MODEL_ROLE_INFO,
-  MODEL_ROLES,
   MODEL_TIER_INFO,
   type ModelRole,
   type ModelRoleCustom,
@@ -23,18 +31,30 @@ import {
 } from "../../../shared/model-roles.js";
 import { pickSecondOpinion } from "../../../shared/subagent-settings.js";
 import { getModelFamilyLabel, type ModelFamily } from "../../../shared/model-families.js";
-import { Badge, Button, FormRow, Notice, SegmentedControl, SettingList, SettingRow } from "../../design/primitives";
+import { Button, ChoiceButton, Details, FormRow, Notice, SegmentedControl, SettingList } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
 import { SettingsSection } from "./SettingsSection";
+import { ModelMoveDisclosure } from "./ModelMoveDisclosure";
 
 const ROLES_KEY = ["models", "roles"] as const;
-/** Roles whose own model is kept in an older setting shown further down this page. */
-const OWN_MODEL_BELOW: Partial<Record<ModelRole, string>> = {
-  chat: "Its own model (set below)",
-  background: "Its own model (set below)",
+
+/** The roles, in the order and groups the page shows them. */
+const ROLE_GROUPS: ReadonlyArray<{ label: string; roles: readonly ModelRole[] }> = [
+  { label: "Chats", roles: ["chat", "helm", "handsFree"] },
+  { label: "Agent work", roles: ["background", "subagents", "reviewers", "helper"] },
+];
+
+/** New chats and Background checks keep a model of their own in their older settings; empty means this. */
+const EMPTY_CUSTOM_LABEL: Partial<Record<ModelRole, string>> = {
+  chat: "Copilot's default",
+  background: "Cheapest available",
 };
-/** Roles that offer no model of their own; Helpers keep "Own" only while one is already saved. */
-const NO_OWN_MODEL: ReadonlySet<ModelRole> = new Set(["subagents", "reviewers"]);
+
+interface ModelChoice {
+  model: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}
 
 /** Says which tier rubber-duck uses in Claude and in GPT chats: the strongest from the other family. */
 function describeSecondOpinion(presets: NonNullable<AppSettings["modelPresets"]>, models: readonly ModelInfo[]): string {
@@ -58,160 +78,318 @@ function roleValue(draft: AppSettings, role: ModelRole): RoleValue {
   if (isTierChoice(choice)) return choice.tier;
   if (choice) return "custom";
   if (role === "chat" || role === "background") return "custom";
-  if (role === "helm") return draft.helm?.model ? "custom" : "automatic";
-  return "automatic";
+  // Nobody chose: it runs on its default tier. Only Reviewers has a choice of its own ("Same as chat").
+  return defaultRoleTier(role) ?? "automatic";
 }
 
-function describeResolved(resolved: ResolvedModelRole | undefined, models: readonly ModelInfo[] | undefined): string | undefined {
-  if (!resolved?.model) return undefined;
-  const name = models?.find((model) => model.id === resolved.model)?.name ?? resolved.model;
-  const effort = formatReasoningEffortLabel(resolved.reasoningEffort);
-  return [name, effort && `${effort} effort`, resolved.contextTier === "long_context" ? "long context" : undefined].filter(Boolean).join(" · ");
+/** The model, effort and context a custom role is set to, wherever that role keeps them. */
+function customChoice(draft: AppSettings, role: ModelRole): ModelChoice {
+  if (role === "chat") return { model: draft.model ?? "", reasoningEffort: draft.reasoningEffort, contextTier: draft.contextTier };
+  if (role === "background") return { model: draft.deferWorker?.model ?? "", reasoningEffort: draft.deferWorker?.reasoningEffort, contextTier: draft.deferWorker?.contextTier };
+  const choice = draft.modelRoles?.[role];
+  return choice && !isTierChoice(choice) ? { ...choice } : { model: "" };
 }
 
-function ModelSelect({ id, label, value, models, onChange }: { id: string; label: string; value: string; models: readonly ModelInfo[]; onChange: (model: string) => void }) {
-  return <LaunchModelSelect id={id} ariaLabel={label} models={models} value={value} placeholderLabel="Choose a model" placeholderDisabled
-    unlistedModelId={value && !models.some((model) => model.id === value) ? value : undefined} onChange={onChange} />;
+function modelName(models: readonly ModelInfo[] | undefined, id: string): string {
+  return models?.find((model) => model.id === id)?.name ?? id;
 }
 
-/** Effort as the new-chat screen shows it: one segment per level the model offers. */
-function EffortRow({ label, models, model, value, onChange }: { label: string; models: readonly ModelInfo[]; model: string; value: string | undefined; onChange: (effort: string) => void }) {
-  const options = buildReasoningEffortOptions(models.find((entry) => entry.id === model)?.supportedReasoningEfforts);
-  return <LaunchOptionRow ariaLabel={label} options={options} selectedValue={value} onChange={(effort) => { if (effort) onChange(effort); }} />;
+/** "Claude Opus 5.5 · High · long context" */
+function describeChoice(choice: Partial<ModelChoice> | undefined, models: readonly ModelInfo[] | undefined): string | undefined {
+  if (!choice?.model) return undefined;
+  return [
+    modelName(models, choice.model),
+    formatReasoningEffortLabel(choice.reasoningEffort),
+    choice.contextTier === "long_context" ? "long context" : undefined,
+  ].filter(Boolean).join(" · ");
+}
+
+/** "High · 1M": a tier's effort and context in a few characters, for its tile. */
+function shortSetup(choice: Partial<ModelChoice>, model: ModelInfo | undefined): string {
+  const context = choice.contextTier === "long_context" ? getContextTierLabel(model, "long_context") : getContextTierLabel(model, "default");
+  const size = context?.match(/\(([^)]+)\)/)?.[1];
+  return [formatReasoningEffortLabel(choice.reasoningEffort) ?? "Model default", size].filter(Boolean).join(" · ");
+}
+
+/**
+ * Model, effort and context: a tier's, or a role's own. Effort and context are button rows, one
+ * button per level the model offers. A new model keeps the effort and context only when it
+ * offers them. `emptyLabel` names what no model means; without it a model is required.
+ */
+function ModelChoiceFields({ idPrefix, name, models, value, onChange, emptyLabel, showEffort = true }: {
+  idPrefix: string;
+  name: string;
+  models: readonly ModelInfo[];
+  value: ModelChoice;
+  onChange: (next: ModelChoice) => void;
+  emptyLabel?: string;
+  showEffort?: boolean;
+}) {
+  const model = models.find((entry) => entry.id === value.model);
+  const dynamic = modelUsesDynamicSelection(model);
+  const effortOptions = buildReasoningEffortOptions(model?.supportedReasoningEfforts);
+  // A saved level the model lacks stays visible, so the picker never hides the setting.
+  if (value.reasoningEffort && !effortOptions.some((option) => option.value === value.reasoningEffort)) {
+    effortOptions.push({ value: value.reasoningEffort, label: formatReasoningEffortLabel(value.reasoningEffort) ?? value.reasoningEffort });
+  }
+  const contextOptions = buildContextTierOptions(model);
+  const setModel = (id: string) => {
+    const next = models.find((entry) => entry.id === id);
+    const supported = next?.supportedReasoningEfforts ?? [];
+    onChange({
+      model: id,
+      ...(value.reasoningEffort && supported.includes(value.reasoningEffort) ? { reasoningEffort: value.reasoningEffort } : {}),
+      ...(value.contextTier === "long_context" && modelSupportsLongContext(next) ? { contextTier: "long_context" as const } : {}),
+    });
+  };
+  return (
+    <div className="space-y-2">
+      <FormRow label="Model" htmlFor={`${idPrefix}-model`}>
+        <LaunchModelSelect id={`${idPrefix}-model`} ariaLabel={`${name} model`} models={models} value={value.model}
+          placeholderLabel={emptyLabel ?? "Choose a model"} placeholderDisabled={!emptyLabel}
+          unlistedModelId={value.model && !model ? value.model : undefined} onChange={setModel} />
+      </FormRow>
+      {showEffort && (
+        <FormRow label="Effort">
+          {dynamic
+            ? <p className={cx(DS.text.meta, "pt-2")}>Chosen per request by this model.</p>
+            : <LaunchOptionRow ariaLabel={`${name} effort`} options={effortOptions} selectedValue={value.reasoningEffort}
+              onChange={(effort) => { if (effort) onChange({ ...value, reasoningEffort: effort }); }} />}
+        </FormRow>
+      )}
+      {contextOptions.length > 0 && (
+        <FormRow label="Context">
+          <LaunchOptionRow<CopilotContextTier> ariaLabel={`${name} context`} options={contextOptions}
+            selectedValue={value.contextTier ?? "default"}
+            onChange={(tier) => { if (tier) onChange({ ...value, contextTier: tier }); }} />
+        </FormRow>
+      )}
+    </div>
+  );
 }
 
 export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraft: (draft: AppSettings) => void }) {
   const { data: models } = useModelsQuery();
   const available = useMemo(() => (models ?? []).filter((model) => model.policy?.state !== "disabled"), [models]);
-  const [editing, setEditing] = useState<ModelPresetSlot>(draft.lastModelPreset ?? "preset2");
   const queryClient = useQueryClient();
   const roles = useQuery({ queryKey: ROLES_KEY, queryFn: ({ signal }) => fetchModelRoles(signal) });
   const resolved = new Map((roles.data?.roles ?? []).map((role) => [role.role, role]));
-  const savedKey = JSON.stringify([draft.modelPresets, draft.modelRoles, draft.model, draft.reasoningEffort, draft.contextTier, draft.deferWorker, draft.helm?.model]);
+  const savedKey = JSON.stringify([draft.modelPresets, draft.modelRoles, draft.model, draft.reasoningEffort, draft.contextTier, draft.deferWorker]);
   useEffect(() => { void queryClient.invalidateQueries({ queryKey: ROLES_KEY }); }, [savedKey, queryClient]);
 
   const presets = draft.modelPresets ?? {};
-  // A tier with no model yet shows (and is saved with) the model the composer would offer for it.
-  const tiles = resolveModelPresetState({ models: available, selectedModelId: "", globalDefaultModelId: draft.model, presets }).tiles;
-  const editingPreset = presets[editing];
-  const editingModelId = editingPreset?.model || tiles.find((tile) => tile.slot === editing)?.model?.id || "";
-  const editingModel = available.find((entry) => entry.id === editingModelId);
-  const contextOptions = editingModel ? buildContextTierOptions(editingModel) : [];
-  const setPreset = (slot: ModelPresetSlot, change: Partial<ModelRoleCustom>) => {
-    const current = presets[slot];
-    const model = change.model ?? current?.model ?? "";
-    const known = available.find((entry) => entry.id === model);
-    const next = { ...current, ...change, model };
-    if (change.model !== undefined && change.model !== current?.model) {
-      // A new model keeps the tier's effort and context only when it offers them.
-      if (next.reasoningEffort && !getModelReasoningEfforts(models, model).includes(next.reasoningEffort)) delete next.reasoningEffort;
-      if (next.contextTier === "long_context" && !modelSupportsLongContext(known)) delete next.contextTier;
-    }
+  const [editing, setEditing] = useState<ModelPresetSlot>(draft.lastModelPreset ?? "preset2");
+  const setPreset = (slot: ModelPresetSlot, choice: ModelChoice) => {
     const nextPresets = { ...presets };
-    if (model) nextPresets[slot] = next; else delete nextPresets[slot];
+    if (choice.model) nextPresets[slot] = { ...choice }; else delete nextPresets[slot];
     setDraft({ ...draft, modelPresets: nextPresets });
   };
 
   const setRole = (role: ModelRole, value: RoleValue) => {
     const nextRoles: ModelRoles = { ...draft.modelRoles };
-    let next: AppSettings = { ...draft, modelRoles: nextRoles };
     if (value === "preset1" || value === "preset2" || value === "preset3") {
       nextRoles[role] = { tier: value };
     } else {
       delete nextRoles[role];
-      if (role === "helm") next = { ...next, helm: { ...draft.helm, model: value === "automatic" ? "" : draft.helm?.model || available[0]?.id || "" } };
-      if (value === "custom" && (role === "helper" || role === "subagents")) {
+      // Custom starts from what the role runs on now. New chats and Background checks already
+      // hold it in their own settings, which a tier keeps up to date.
+      if (value === "custom" && role !== "chat" && role !== "background") {
         const from = resolved.get(role);
-        nextRoles[role] = { model: from?.model ?? available[0]?.id ?? "", ...(from?.reasoningEffort ? { reasoningEffort: from.reasoningEffort } : {}) };
+        const tier = from?.tier ? presets[from.tier] : undefined;
+        nextRoles[role] = {
+          model: from?.model ?? available[0]?.id ?? "",
+          ...(from?.reasoningEffort ? { reasoningEffort: from.reasoningEffort } : {}),
+          ...(tier?.contextTier ?? from?.contextTier ? { contextTier: tier?.contextTier ?? from?.contextTier } : {}),
+        };
       }
     }
-    setDraft(next);
+    setDraft({ ...draft, modelRoles: nextRoles });
   };
 
-  const setCustom = (role: ModelRole, change: Partial<ModelRoleCustom>) => {
-    const current = draft.modelRoles?.[role];
-    const base = current && !isTierChoice(current) ? current : { model: "" };
-    const model = change.model ?? base.model;
-    const next: ModelRoleCustom = { ...base, ...change, model };
-    if (change.model !== undefined && next.reasoningEffort && !getModelReasoningEfforts(models, model).includes(next.reasoningEffort)) delete next.reasoningEffort;
+  const setCustom = (role: ModelRole, choice: ModelChoice) => {
+    if (role === "chat") {
+      setDraft({ ...draft, model: choice.model || undefined, reasoningEffort: choice.reasoningEffort, contextTier: choice.contextTier });
+      return;
+    }
+    if (role === "background") {
+      setDraft({ ...draft, deferWorker: { ...choice, model: choice.model || undefined } });
+      return;
+    }
+    const next: ModelRoleCustom = {
+      model: choice.model,
+      ...(choice.reasoningEffort ? { reasoningEffort: choice.reasoningEffort } : {}),
+      ...(choice.contextTier === "long_context" ? { contextTier: choice.contextTier } : {}),
+    };
     setDraft({ ...draft, modelRoles: { ...draft.modelRoles, [role]: next } });
   };
 
   const allTiersSet = MODEL_PRESET_SLOTS.every((slot) => presets[slot]?.model);
   const recommended = () => {
     const nextRoles: ModelRoles = {};
-    for (const role of MODEL_ROLES) {
-      const tier = MODEL_ROLE_INFO[role].recommended;
-      if (tier) nextRoles[role] = { tier };
+    for (const group of ROLE_GROUPS) {
+      for (const role of group.roles) {
+        const tier = MODEL_ROLE_INFO[role].recommended;
+        if (tier) nextRoles[role] = { tier };
+      }
     }
     setDraft({ ...draft, modelRoles: nextRoles });
   };
 
-  return <SettingsSection title="Models" description="Three tiers, and which one each kind of work runs on. Change a tier once and everything using it follows.">
-    <h3 className={cx(DS.text.sectionLabel, "mb-2")}>Tiers</h3>
-    <div className="space-y-4">
-      <FormRow label="Tier" hideLabel help={<><span className="font-medium text-text-secondary">{MODEL_TIER_INFO[editing].label}:</span> {MODEL_TIER_INFO[editing].description} Pick a tier to edit it; tap it again, or its arrow, to change its model.</>}>
-        <ModelPresetPicker idPrefix="settings-tier" showSlotLabels models={available} presets={presets}
-          selectedPresetSlot={editing} selectedModelId={editingModelId} globalDefaultModelId={draft.model}
-          onSelectPreset={setEditing}
-          onSelectModel={(slot, modelId) => { setEditing(slot); setPreset(slot, { model: modelId }); }} />
-      </FormRow>
-      {editingModelId && <FormRow label="Effort" hideLabel help={editingPreset?.reasoningEffort ? undefined : "Uses the model's own default effort until you pick one."}>
-        <EffortRow label={`${MODEL_TIER_INFO[editing].label} effort`} models={available} model={editingModelId} value={editingPreset?.reasoningEffort}
-          onChange={(effort) => setPreset(editing, { model: editingModelId, reasoningEffort: effort })} />
-      </FormRow>}
-      {contextOptions.length > 0 && <FormRow label="Context" hideLabel>
-        <LaunchOptionRow ariaLabel={`${MODEL_TIER_INFO[editing].label} context`} options={contextOptions} selectedValue={editingPreset?.contextTier ?? "default"}
-          onChange={(tier) => { if (tier) setPreset(editing, { model: editingModelId, contextTier: tier }); }} />
-      </FormRow>}
-    </div>
+  return <SettingsSection title="Models" description="Three tiers, and which one each kind of work runs on. Change a tier once and everything on it follows.">
+    <div className="space-y-6">
+      <div>
+        <h3 className={cx(DS.text.sectionLabel, "mb-1")}>Tiers</h3>
+        <p className={cx(DS.field.help, "mb-3")}>These are also the composer's quick switches. Pick one to change it.</p>
+        <div role="group" aria-label="Tiers" className="grid grid-cols-3 gap-2">
+          {MODEL_PRESET_SLOTS.map((slot) => {
+            const preset = presets[slot];
+            const model = available.find((entry) => entry.id === preset?.model);
+            return <ChoiceButton key={slot} selected={editing === slot} onClick={() => setEditing(slot)}
+              aria-label={`${MODEL_TIER_INFO[slot].label}: ${preset?.model ? modelName(models, preset.model) : "no model yet"}`}
+              className="min-w-0 flex-col items-start gap-0 py-2">
+              <span className={DS.text.meta}>{MODEL_TIER_INFO[slot].label}</span>
+              <span className="w-full truncate font-semibold text-text-primary">{preset?.model ? modelName(models, preset.model) : "Choose a model"}</span>
+              {preset?.model && <span className={cx(DS.text.meta, "w-full truncate")}>{shortSetup(preset, model)}</span>}
+            </ChoiceButton>;
+          })}
+        </div>
+        <div className={cx(DS.surface.inset, "mt-2 space-y-3 p-3")}>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+            <h4 className="text-[13px] font-semibold text-text-primary">{MODEL_TIER_INFO[editing].label} tier</h4>
+            <span className={DS.text.meta}>{MODEL_TIER_INFO[editing].description}</span>
+          </div>
+          <ModelChoiceFields key={editing} idPrefix={`tier-${editing}`} name={`${MODEL_TIER_INFO[editing].label} tier`} models={available}
+            value={{ model: presets[editing]?.model ?? "", reasoningEffort: presets[editing]?.reasoningEffort, contextTier: presets[editing]?.contextTier }}
+            onChange={(choice) => setPreset(editing, choice)} />
+        </div>
+      </div>
 
-    <div className="mt-5 flex items-center justify-between gap-2">
-      <h3 className={DS.text.sectionLabel}>What runs on which tier</h3>
-      <Button size="sm" variant="ghost" disabled={!allTiersSet} title={allTiersSet ? undefined : "Set all three tiers first"} onClick={recommended}>Use recommended</Button>
-    </div>
-    <SettingList>
-      {MODEL_ROLES.map((role) => {
-        const info = MODEL_ROLE_INFO[role];
-        const value = roleValue(draft, role);
-        const view = resolved.get(role);
-        const custom = draft.modelRoles?.[role];
-        const ownBelow = OWN_MODEL_BELOW[role];
-        // Helm chat takes its effort from its typed and spoken settings, not the tier.
-        const shown = role === "helm" && view ? { ...view, reasoningEffort: undefined } : view;
-        const runsOn = describeResolved(shown, models)
-          ?? (role === "chat" && value === "custom" ? describeResolved({ role, source: "custom", model: draft.model, reasoningEffort: draft.reasoningEffort, contextTier: draft.contextTier }, models) : undefined)
-          ?? (role === "helm" && value === "custom" ? describeResolved({ role, source: "custom", model: draft.helm?.model }, models) : undefined);
-        const options = [
-          ...MODEL_PRESET_SLOTS.map((slot) => ({ value: slot as RoleValue, label: MODEL_TIER_INFO[slot].label, disabled: !presets[slot]?.model, title: presets[slot]?.model ? undefined : "Set this tier first" })),
-          ...(ownBelow ? [] : [{ value: "automatic" as RoleValue, label: info.automaticLabel ?? "Auto", title: info.automaticLabel ? info.automatic : `Automatic: ${info.automatic}` }]),
-          ...(NO_OWN_MODEL.has(role) && value !== "custom" ? [] : [{ value: "custom" as RoleValue, label: "Own", title: "Its own model" }]),
-        ];
-        return <SettingRow key={role} label={info.label} hint={info.description}>
-          <SegmentedControl<RoleValue> ariaLabel={`${info.label} runs on`} options={options} value={value} fullWidth onChange={(next) => { if (next !== value) setRole(role, next); }} />
-          <p className={cx(DS.text.meta, "mt-2 flex flex-wrap items-center gap-1.5")}>
-            {value === "automatic" ? <>{info.automaticLabel ? info.automatic : `Automatic: ${info.automatic}`}</> : runsOn ? <>Runs on {runsOn}</> : value === "custom" && ownBelow ? <>Its own model is set below.</> : null}
-            {info.effortNote && value !== "automatic" && <span>· {info.effortNote}</span>}
-            {view?.source === "tier" && <Badge>{MODEL_TIER_INFO[view.tier!].label}</Badge>}
+      <div>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <h3 className={DS.text.sectionLabel}>What runs on which tier</h3>
+          <Button size="sm" variant="ghost" disabled={!allTiersSet} title={allTiersSet ? undefined : "Set all three tiers first"} onClick={recommended}>Use recommended</Button>
+        </div>
+        <div className="space-y-5">
+          {ROLE_GROUPS.map((group) => <section key={group.label} aria-labelledby={`role-group-${group.label}`}>
+            <h4 id={`role-group-${group.label}`} className="mb-1 text-xs font-medium text-text-secondary">{group.label}</h4>
+            <SettingList>
+              {group.roles.map((role) => <RoleRow key={role} role={role} draft={draft} view={resolved.get(role)} models={models} available={available}
+                onRole={(value) => setRole(role, value)} onCustom={(choice) => setCustom(role, choice)} />)}
+            </SettingList>
+          </section>)}
+        </div>
+        {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
+        {!!roles.data?.scheduleOverrides && (
+          <p className={cx(DS.field.help, "mt-3")}>
+            {`${roles.data.scheduleOverrides} schedule${roles.data.scheduleOverrides === 1 ? " chooses its" : "s choose their"} own model; edit those in each schedule.`}
           </p>
-          {role === "reviewers" && <p className={cx(DS.text.meta, "mt-1")}>{describeSecondOpinion(presets, available)}</p>}
-          {view?.warning && <p className="mt-1 text-xs text-warning">{view.warning}</p>}
-          {value === "custom" && role === "helm" && (
-            <div className="mt-2 sm:max-w-sm"><ModelSelect id="role-helm-model" label="Helm chat model" value={draft.helm?.model ?? ""} models={available} onChange={(model) => setDraft({ ...draft, modelRoles: { ...draft.modelRoles }, helm: { ...draft.helm, model } })} /></div>
-          )}
-          {value === "custom" && !ownBelow && role !== "helm" && custom && !isTierChoice(custom) && (
-            <div className="mt-2 space-y-2">
-              <div className="sm:max-w-sm"><ModelSelect id={`role-${role}-model`} label={`${info.label} model`} value={custom.model} models={available} onChange={(model) => setCustom(role, { model })} /></div>
-              {role !== "helper" && <EffortRow label={`${info.label} effort`} models={available} model={custom.model} value={custom.reasoningEffort} onChange={(effort) => setCustom(role, { reasoningEffort: effort })} />}
-            </div>
-          )}
-        </SettingRow>;
-      })}
-    </SettingList>
-    {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
-    <p className={cx(DS.field.help, "mt-3")}>
-      {roles.data?.scheduleOverrides ? `${roles.data.scheduleOverrides} schedule${roles.data.scheduleOverrides === 1 ? " chooses its" : "s choose their"} own model; edit those in each schedule. ` : ""}
-      Staged previews always run on GPT-6 Luna. The composer's quick switches are these three tiers.
-    </p>
+        )}
+      </div>
+
+      <ModelListFooter />
+    </div>
   </SettingsSection>;
+}
+
+function RoleRow({ role, draft, view, models, available, onRole, onCustom }: {
+  role: ModelRole;
+  draft: AppSettings;
+  view: ResolvedModelRole | undefined;
+  models: readonly ModelInfo[] | undefined;
+  available: readonly ModelInfo[];
+  onRole: (value: RoleValue) => void;
+  onCustom: (choice: ModelChoice) => void;
+}) {
+  const info = MODEL_ROLE_INFO[role];
+  const value = roleValue(draft, role);
+  const presets = draft.modelPresets ?? {};
+  const custom = value === "custom" ? customChoice(draft, role) : undefined;
+  const emptyLabel = EMPTY_CUSTOM_LABEL[role];
+  const options = [
+    ...MODEL_PRESET_SLOTS.map((slot) => ({ value: slot as RoleValue, label: MODEL_TIER_INFO[slot].label, disabled: !presets[slot]?.model, title: presets[slot]?.model ? undefined : "Set this tier first" })),
+    ...(info.automaticLabel ? [{ value: "automatic" as RoleValue, label: info.automaticLabel, title: info.automatic }] : []),
+    ...(role === "reviewers" ? [] : [{ value: "custom" as RoleValue, label: "Custom", title: "A model of its own" }]),
+  ];
+  const runsOn = value === "automatic"
+    ? info.automatic
+    : custom
+      ? describeChoice(custom, models) ?? (emptyLabel ? `${emptyLabel}` : undefined)
+      : describeChoice(view, models);
+  // On a tier and no warning: whether anybody chose it is the only thing worth adding.
+  const note = value !== "custom" && view?.source !== "automatic" && info.effortNote;
+  return (
+    <div className="@container/role min-w-0 py-3 first:pt-1 last:pb-0">
+      <div className="flex min-w-0 flex-col gap-2 @[42rem]/role:flex-row @[42rem]/role:items-start @[42rem]/role:justify-between @[42rem]/role:gap-6">
+        <div className="min-w-0">
+          <div className={DS.setting.label}>{info.label}</div>
+          <div className={DS.setting.hint}>{info.description}</div>
+        </div>
+        <div className="w-full shrink-0 @[42rem]/role:w-[22rem]">
+          <SegmentedControl<RoleValue> ariaLabel={`${info.label} runs on`} options={options} value={value} fullWidth
+            onChange={(next) => { if (next !== value) onRole(next); }} />
+        </div>
+      </div>
+      {view?.warning
+        ? <p className="mt-2 flex items-start gap-1.5 text-xs text-warning"><AlertTriangle size={13} aria-hidden="true" className="mt-px shrink-0" />{view.warning}</p>
+        : runsOn && <p className={cx(DS.text.meta, "mt-2")}>
+          {value === "automatic" ? runsOn : `Runs on ${runsOn}`}{view?.isDefault && value !== "custom" ? " · default" : ""}{note ? `. ${note}` : ""}
+        </p>}
+      {role === "reviewers" && (
+        <Details label="Second opinion" className="mt-1">
+          <p className={cx(DS.text.meta, "pt-1")}>{describeSecondOpinion(presets, available)}</p>
+        </Details>
+      )}
+      {custom && (
+        <div className={cx(DS.surface.inset, "mt-3 space-y-2 p-3")}>
+          <ModelChoiceFields idPrefix={`role-${role}`} name={info.label} models={available} value={custom} onChange={onCustom}
+            emptyLabel={emptyLabel} showEffort={role !== "helper"} />
+          <p className={DS.text.meta}>{role === "helper" ? "Changes here affect only small jobs, which run at the lowest effort the model allows." : `Changes here affect only ${info.label === "New chats" ? "new chats" : info.label}.`}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Refreshing the model list, and moving chats off a model. */
+function ModelListFooter() {
+  const { data: clientInfo } = useModelClientInfoQuery();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [, setTick] = useState(0);
+  const loadedAt = clientInfo?.createdAt && Number.isFinite(Date.parse(clientInfo.createdAt)) ? clientInfo.createdAt : null;
+  useEffect(() => {
+    if (!loadedAt) return;
+    const interval = setInterval(() => setTick((tick) => tick + 1), 30_000);
+    return () => clearInterval(interval);
+  }, [loadedAt]);
+  const refresh = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      queryClient.setQueryData(queryKeys.models, await refreshModels());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRefreshing(false);
+      // The client may have rotated even if listing models afterward failed.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.modelClientInfo });
+    }
+  };
+  return (
+    <div className="space-y-2">
+      <h3 className={DS.text.sectionLabel}>Model list</h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className={DS.field.help}>
+          {loadedAt ? `Loaded ${timeAgo(loadedAt)}. ` : ""}Refreshing picks up newly available models; it waits until no chats are running.
+        </p>
+        <Button size="sm" variant="ghost" onClick={() => void refresh()} disabled={refreshing}
+          icon={<RotateCw size={13} className={refreshing ? "animate-spin" : undefined} />}>
+          {refreshing ? "Refreshing" : "Refresh models"}
+        </Button>
+      </div>
+      {error && <p role="alert" className="text-xs text-error">{error}</p>}
+      <ModelMoveDisclosure />
+    </div>
+  );
 }

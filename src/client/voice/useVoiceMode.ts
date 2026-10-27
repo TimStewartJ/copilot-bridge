@@ -17,24 +17,25 @@ import { HELM_SETTINGS_DEFAULTS, type HelmSettingsResponse, type UnifiedHelmSett
 
 export type VoiceSessionPhase = "loading" | "setup" | "ready" | "connecting" | "active" | "reconnecting" | "ended" | "error";
 
-type ViewAction = { type: "event"; event: Record<string, any> } | { type: "reset" };
+type ViewAction = { type: "event"; event: Record<string, any> } | { type: "reset" } | { type: "dismiss_not_sent"; turnId: number };
 
 function viewReducer(state: VoiceViewState, action: ViewAction): VoiceViewState {
   if (action.type === "reset") return initialVoiceViewState;
+  if (action.type === "dismiss_not_sent") return { ...state, notSent: state.notSent.filter((entry) => entry.turnId !== action.turnId) };
   return reduceVoiceEvent(state, action.event);
 }
 
 const RECONNECT_DELAYS_MS = [500, 1_500, 3_000, 6_000, 10_000, 15_000];
 
 /**
- * Controller for hands-free voice. It attaches to one Helm conversation at a time and holds
+ * Controller for hands-free voice. It attaches to one chat at a time and holds
  * no conversation context itself, so starting and stopping it never loses anything.
  */
 export function useVoiceMode() {
   const preferences = useHelmPreferences();
   const [status, setStatus] = useState<VoiceStatus | null>(null);
   const [phase, setPhase] = useState<VoiceSessionPhase>("loading");
-  const [helmSessionId, setHelmSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const [transportPreference, setTransportPreferenceState] = useState<VoiceTransportPreference>(HELM_SETTINGS_DEFAULTS.transport);
@@ -50,6 +51,10 @@ export function useVoiceMode() {
   const endedRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
+  /** The delayed cleanup after the server ends a conversation; a newer start cancels it so it can't close its successor. */
+  const endedTeardownRef = useRef<number | undefined>(undefined);
+  /** Bumped on every start and stop: a connection that finishes for an older one is closed and ignored. */
+  const connectionGenRef = useRef(0);
   const wakeLockRef = useRef<{ release(): Promise<void> } | null>(null);
   const settingsRef = useRef<VoiceSettings | null>(null);
   const handlersRef = useRef<VoiceTransportHandlers | null>(null);
@@ -130,7 +135,7 @@ export function useVoiceMode() {
     wakeLockRef.current = null;
   }, []);
 
-  const connect = useCallback(async (ticket: VoiceConversationTicket) => {
+  const connect = useCallback(async (ticket: VoiceConversationTicket, generation: number) => {
     transportRef.current?.close();
     transportRef.current = null;
     let transport: VoiceTransport | null = null;
@@ -143,6 +148,13 @@ export function useVoiceMode() {
       },
     };
     transport = await connectVoiceTransport(ticket, scoped, playbackPreferences.current.transport);
+    if (generation !== connectionGenRef.current) {
+      // Hands-free stopped or moved to another chat while this was connecting.
+      const stale = transport;
+      transport = null;
+      stale.close();
+      throw new Error("Superseded connection");
+    }
     transportRef.current = transport;
     reconnectAttemptRef.current = 0;
     return transport;
@@ -154,18 +166,19 @@ export function useVoiceMode() {
     if (attempt >= RECONNECT_DELAYS_MS.length) {
       setPhase("error");
       setError("Lost the connection to Bridge.");
-      setHelmSessionId(null);
+      setSessionId(null);
       ticketRef.current = null;
       void teardown();
       return;
     }
     setPhase("reconnecting");
+    const generation = connectionGenRef.current;
     reconnectTimerRef.current = window.setTimeout(() => {
       const ticket = ticketRef.current;
-      if (!ticket || endedRef.current) return;
-      void connect(ticket).then(
+      if (!ticket || endedRef.current || generation !== connectionGenRef.current) return;
+      void connect(ticket, generation).then(
         () => setPhase("active"),
-        () => scheduleReconnect(),
+        () => { if (generation === connectionGenRef.current) scheduleReconnect(); },
       );
     }, RECONNECT_DELAYS_MS[attempt]);
   }, [connect, teardown]);
@@ -188,9 +201,13 @@ export function useVoiceMode() {
           endedRef.current = true;
           audio?.earcon("end");
           setPhase("ended");
-          setHelmSessionId(null);
+          setSessionId(null);
           ticketRef.current = null;
-          window.setTimeout(() => void teardown(), 400);
+          window.clearTimeout(endedTeardownRef.current);
+          endedTeardownRef.current = window.setTimeout(() => {
+            endedTeardownRef.current = undefined;
+            void teardown();
+          }, 400);
           break;
       }
     },
@@ -204,7 +221,7 @@ export function useVoiceMode() {
   };
 
   /**
-   * Starts hands-free for a Helm conversation. The id may be a promise-returning function so the
+   * Starts hands-free for a chat. The id may be a promise-returning function so the
    * caller can create the conversation on demand: audio has to start inside the tap that asked
    * for it (iOS will not resume an AudioContext after a network wait), so that happens first.
    */
@@ -212,11 +229,19 @@ export function useVoiceMode() {
     if (!settingsRef.current) await refreshStatus();
     const currentSettings = settingsRef.current;
     if (!currentSettings) return;
+    const generation = ++connectionGenRef.current;
+    window.clearTimeout(reconnectTimerRef.current);
+    // The last conversation's cleanup is either done or would now close this one.
+    if (endedTeardownRef.current !== undefined) {
+      window.clearTimeout(endedTeardownRef.current);
+      endedTeardownRef.current = undefined;
+      await teardown();
+    }
     setError(null);
     setEchoWarning(null);
     endedRef.current = false;
     dispatch({ type: "reset" });
-    setHelmSessionId(typeof target === "string" ? target : null);
+    setSessionId(typeof target === "string" ? target : null);
     setPhase("connecting");
     const startEchoSafe = playbackPreferences.current.echoSafe;
     const audio = new VoiceAudio({
@@ -242,37 +267,51 @@ export function useVoiceMode() {
         setEchoWarning(`Echo-safe playback isn't available (${result.echoSafeError ?? "unsupported"}). Headphones will work best.`);
       }
       audio.earcon("start");
-      const targetHelmSessionId = typeof target === "string" ? target : await target();
-      setHelmSessionId(targetHelmSessionId);
-      const ticket = await createVoiceConversation(targetHelmSessionId, currentSettings);
+      const targetSessionId = typeof target === "string" ? target : await target();
+      setSessionId(targetSessionId);
+      const ticket = await createVoiceConversation(targetSessionId, currentSettings);
       ticketRef.current = ticket;
-      const transport = await connect(ticket);
-      // The server greets only a conversation with no history; otherwise it just starts listening.
+      const transport = await connect(ticket, generation);
+      // The server says "Listening." so you know it is ready.
       transport.sendControl({ type: "start", greet: true });
       setPhase("active");
       void acquireWakeLock();
     } catch (err) {
+      // A newer start or a stop took over; what it set up is not this attempt's to tear down.
+      if (generation !== connectionGenRef.current) {
+        if (audioRef.current !== audio) void audio.close();
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
-      setHelmSessionId(null);
+      setSessionId(null);
       await teardown();
     }
   }, [acquireWakeLock, connect, echoSafe, refreshStatus, teardown]);
 
   const stop = useCallback(async () => {
+    connectionGenRef.current++;
     endedRef.current = true;
     transportRef.current?.sendControl({ type: "control", action: "end" });
     audioRef.current?.earcon("end");
     await new Promise((resolve) => window.setTimeout(resolve, 250));
     await teardown();
     ticketRef.current = null;
-    setHelmSessionId(null);
+    setSessionId(null);
     setPhase("ended");
   }, [teardown]);
 
   const control = useCallback((action: "sleep" | "wake" | "stop_speaking") => {
     transportRef.current?.sendControl({ type: "control", action });
   }, []);
+
+  /** Sends something hands-free heard but didn't send; the reply is read back like any other. */
+  const sendNotSent = useCallback((turnId: number, text: string) => {
+    transportRef.current?.sendControl({ type: "text", text });
+    dispatch({ type: "dismiss_not_sent", turnId });
+  }, []);
+
+  const dismissNotSent = useCallback((turnId: number) => dispatch({ type: "dismiss_not_sent", turnId }), []);
 
   const savePreferences = useCallback(async (patch: Partial<UnifiedHelmSettings>, live = false) => {
     try {
@@ -327,8 +366,8 @@ export function useVoiceMode() {
     phase,
     /** True from the moment hands-free starts connecting until it ends. */
     active,
-    /** The Helm conversation hands-free is speaking for. */
-    helmSessionId,
+    /** The chat hands-free is speaking for. */
+    sessionId,
     error: error ?? preferences.error,
     settings,
     view,
@@ -344,6 +383,8 @@ export function useVoiceMode() {
     start,
     stop,
     control,
+    sendNotSent,
+    dismissNotSent,
     updateSettings,
     setTransportPreference,
     setEchoSafe,

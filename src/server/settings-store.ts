@@ -1,7 +1,7 @@
 // Settings store — SQLite persistence
 
 import type { DatabaseSync } from "./db.js";
-import { validateHelmSettingsPatch, type UnifiedHelmSettings } from "../shared/helm-settings.js";
+import { validateHelmSettingsPatch, type HelmLegacySettings, type HelmLegacySettingKey, type UnifiedHelmSettings } from "../shared/helm-settings.js";
 
 import type { ProvidersConfig } from "./providers/types.js";
 import type { McpServerConfig } from "./mcp-config.js";
@@ -55,16 +55,15 @@ export interface ComputerUseSettings {
   enabled?: boolean;
 }
 
-export interface HelmSettings extends Partial<UnifiedHelmSettings> {
-  /** Reasoning effort for Helm turns answered in the chat. */
-  typedReasoningEffort?: ReasoningEffort;
-  /** Reasoning effort for Helm turns answered out loud in hands-free. */
-  spokenReasoningEffort?: ReasoningEffort;
+/** Hands-free voice settings and Helm's names list. Helm's model and effort are its role in `modelRoles`. */
+export interface HelmSettings extends Partial<Omit<UnifiedHelmSettings, HelmLegacySettingKey>> {
   /**
    * Names the user says that speech recognition mishears or Helm can't know (machine, project and app
-   * names), given to Helm with its instructions and with hands-free turns.
+   * names), given to Helm with its instructions and to the hands-free layer.
    */
   glossary?: string;
+  /** What Tether last wrote for the retired model and effort settings, returned as written. Nothing reads them. */
+  legacy?: HelmLegacySettings;
 }
 
 export const HELM_GLOSSARY_MAX_LENGTH = 2_000;
@@ -314,34 +313,38 @@ function normalizeImageBudgetSettings(value: unknown): ImageBudgetSettings | und
 function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) validationError("helm must be an object");
-  const { model, voice, speed, patience, bargeIn, announce, echoSafe, transport } = value;
+  const { voice, speed, patience, bargeIn, announce, echoSafe, transport } = value;
   let extra: Partial<UnifiedHelmSettings>;
   try {
-    extra = validateHelmSettingsPatch(Object.fromEntries(Object.entries({ model, voice, speed, patience, bargeIn, announce, echoSafe, transport })
+    extra = validateHelmSettingsPatch(Object.fromEntries(Object.entries({ voice, speed, patience, bargeIn, announce, echoSafe, transport })
       .filter(([, item]) => item !== undefined)));
   } catch (error) {
     validationError(error instanceof Error ? error.message : String(error));
   }
-  const readEffort = (key: keyof HelmSettings): string | undefined => {
-    const raw = value[key];
-    if (raw === undefined || raw === null) return undefined;
-    if (typeof raw !== "string" || raw.length > 32) validationError(`helm.${key} must be a reasoning effort name`);
-    return raw.trim() || undefined;
-  };
-  const typedReasoningEffort = readEffort("typedReasoningEffort");
-  const spokenReasoningEffort = readEffort("spokenReasoningEffort");
   const rawGlossary = value.glossary;
   if (rawGlossary !== undefined && rawGlossary !== null
     && (typeof rawGlossary !== "string" || rawGlossary.length > HELM_GLOSSARY_MAX_LENGTH)) {
     validationError(`helm.glossary must be text of at most ${HELM_GLOSSARY_MAX_LENGTH} characters`);
   }
   const glossary = typeof rawGlossary === "string" ? rawGlossary.trim() || undefined : undefined;
-  if (!typedReasoningEffort && !spokenReasoningEffort && !glossary && !Object.keys(extra).length) return undefined;
+  // Settings saved before these were retired kept the efforts at the top level.
+  const legacySource = isRecord(value.legacy) ? value.legacy : {
+    ...(value.typedReasoningEffort !== undefined ? { typedReasoningEffort: value.typedReasoningEffort } : {}),
+    ...(value.spokenReasoningEffort !== undefined ? { spokenReasoningEffort: value.spokenReasoningEffort } : {}),
+  };
+  const legacy: HelmLegacySettings = {};
+  for (const key of ["model", "typedReasoningEffort", "spokenReasoningEffort"] as const) {
+    const raw = legacySource[key];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" || raw.length > (key === "model" ? 200 : 32)) validationError(`helm.legacy.${key} must be text`);
+    legacy[key] = raw.trim();
+  }
+  const hasLegacy = Object.keys(legacy).length > 0;
+  if (!glossary && !hasLegacy && !Object.keys(extra).length) return undefined;
   return {
     ...extra,
-    ...(typedReasoningEffort ? { typedReasoningEffort } : {}),
-    ...(spokenReasoningEffort ? { spokenReasoningEffort } : {}),
     ...(glossary ? { glossary } : {}),
+    ...(hasLegacy ? { legacy } : {}),
   };
 }
 
@@ -498,8 +501,8 @@ function normalizeModelRoles(value: unknown): ModelRoles | undefined {
   for (const [role, choice] of Object.entries(value)) {
     if (!isModelRole(role)) validationError(`modelRoles key "${role}" is not a known role`);
     const normalized = normalizeModelRoleChoice(choice, role);
-    // New chats, Helm chat and background checks keep a custom model in their older fields.
-    if (normalized && !isTierChoice(normalized) && (role === "chat" || role === "background" || role === "helm")) {
+    // New chats and background checks keep a custom model in their older fields.
+    if (normalized && !isTierChoice(normalized) && (role === "chat" || role === "background")) {
       validationError(`modelRoles.${role} takes a tier; its own model is set with the matching setting`);
     }
     if (normalized && !isTierChoice(normalized) && role === "reviewers") {
@@ -518,7 +521,7 @@ function sameChoice(a: { model?: string; reasoningEffort?: string; contextTier?:
 
 /**
  * Keeps the role map and the older per-feature fields in step:
- * - a direct change to a role's older field (model/effort/context, deferWorker, helm.model) in this
+ * - a direct change to a role's older field (model/effort/context, deferWorker) in this
  *   update, without a change to that role, makes the role follow the field again ("custom");
  * - a role on a tier writes the tier into its older field, so existing readers use it;
  * - settings from before roles get them inferred once, only where the current setup already
@@ -549,10 +552,8 @@ function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: 
     chat: base !== DEFAULT_SETTINGS && ("model" in value || "reasoningEffort" in value || "contextTier" in value)
       && triple(normalized) !== triple(base),
     background: base !== DEFAULT_SETTINGS && "deferWorker" in value && triple(normalized.deferWorker) !== triple(base.deferWorker),
-    helm: base !== DEFAULT_SETTINGS && "helm" in value && isRecord(value.helm) && "model" in value.helm
-      && (normalized.helm?.model ?? "") !== (base.helm?.model ?? ""),
   };
-  for (const role of ["chat", "background", "helm"] as const) {
+  for (const role of ["chat", "background"] as const) {
     if (fieldChanged[role] && !roleTouched(role)) delete roles[role];
   }
   // A role can't stay on a tier that has no model: it keeps what it last ran on (its older field) or goes back to Automatic.
@@ -561,7 +562,7 @@ function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: 
     if (isTierChoice(choice) && !presets[choice.tier]?.model) delete roles[role];
   }
   normalized.modelRoles = roles;
-  const tierOf = (role: "chat" | "background" | "helm") => {
+  const tierOf = (role: "chat" | "background") => {
     const choice = roles[role];
     return isTierChoice(choice) ? presets[choice.tier] : undefined;
   };
@@ -573,8 +574,18 @@ function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: 
   }
   const background = tierOf("background");
   if (background) normalized.deferWorker = { ...background };
-  const helm = tierOf("helm");
-  if (helm) normalized.helm = { ...normalized.helm, model: helm.model };
+}
+
+/**
+ * Helm's model used to be kept in `helm.model` (with `helm.typedReasoningEffort` for its chat). A Helm
+ * role that was Automatic but had a model there becomes a custom role with that model and effort.
+ */
+function migrateHelmModel(normalized: AppSettings, value: Record<string, unknown>): void {
+  const helm = isRecord(value.helm) ? value.helm : undefined;
+  const model = typeof helm?.model === "string" ? helm.model.trim() : "";
+  if (!model || normalized.modelRoles?.helm) return;
+  const effort = typeof helm?.typedReasoningEffort === "string" ? helm.typedReasoningEffort.trim() : "";
+  normalized.modelRoles = { ...normalized.modelRoles, helm: { model, ...(effort ? { reasoningEffort: effort } : {}) } };
 }
 
 function normalizeContextTier(value: unknown): CopilotContextTier | undefined {
@@ -668,6 +679,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   // Like every other settings object, a write sends the whole role map; a missing role is Automatic.
   if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
   reconcileModelRoles(base, normalized, value);
+  migrateHelmModel(normalized, value);
   return normalized;
 }
 

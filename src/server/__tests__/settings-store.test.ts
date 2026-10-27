@@ -206,22 +206,12 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({ helm: { glossary: "x".repeat(2_001) } })).toThrow("helm.glossary must be text of at most 2000 characters");
   });
 
-  it("persists and validates Helm's per-mode reasoning efforts", () => {
-    expect(store.getSettings().helm).toBeUndefined();
-
-    const updated = store.updateSettings({ helm: { typedReasoningEffort: " max ", spokenReasoningEffort: "xhigh" } });
-    expect(updated.helm).toEqual({ typedReasoningEffort: "max", spokenReasoningEffort: "xhigh" });
-    expect(store.getSettings().helm).toEqual(updated.helm);
-
-    // One mode can be set on its own; clearing both removes the block so defaults apply again.
-    expect(store.updateSettings({ helm: { spokenReasoningEffort: "high" } }).helm).toEqual({ spokenReasoningEffort: "high" });
-    expect(store.updateSettings({ helm: { typedReasoningEffort: "", spokenReasoningEffort: null as any } }).helm).toBeUndefined();
-
+  it("keeps Tether's retired Helm model and effort values as written, and validates them", () => {
+    const legacy = { model: "", typedReasoningEffort: "high", spokenReasoningEffort: "low" };
+    expect(store.updateSettings({ helm: { voice: "af_heart", legacy } }).helm).toEqual({ voice: "af_heart", legacy });
+    expect(store.getSettings().helm?.legacy).toEqual(legacy);
     expect(() => store.updateSettings({ helm: "max" as any })).toThrow("helm must be an object");
-    expect(() => store.updateSettings({ helm: { typedReasoningEffort: 5 as any } }))
-      .toThrow("helm.typedReasoningEffort must be a reasoning effort name");
-    expect(() => store.updateSettings({ helm: { spokenReasoningEffort: "x".repeat(40) } }))
-      .toThrow("helm.spokenReasoningEffort must be a reasoning effort name");
+    expect(() => store.updateSettings({ helm: { legacy: { typedReasoningEffort: 5 as any } } })).toThrow("helm.legacy.typedReasoningEffort must be text");
   });
 
   it("rejects non-boolean browser headed settings", () => {

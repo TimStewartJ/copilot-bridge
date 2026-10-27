@@ -1,6 +1,7 @@
 export type CategoryId =
   | "chat"
   | "responses"
+  | "helm"
   | "appearance"
   | "device"
   | "integrations"
@@ -19,6 +20,7 @@ export interface CategoryMeta {
 export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   { id: "chat", label: "Chat", group: "preferences" },
   { id: "responses", label: "Responses", group: "preferences" },
+  { id: "helm", label: "Helm", group: "preferences" },
   { id: "appearance", label: "Appearance", group: "preferences" },
   { id: "device", label: "Notifications & device", group: "preferences" },
   { id: "integrations", label: "Integrations", group: "connections" },

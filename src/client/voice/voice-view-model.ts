@@ -1,6 +1,6 @@
-// Live state of a hands-free conversation. The words themselves are not kept here: voice
-// turns run through the Helm session, so the chat transcript is the single record of what
-// was said. This tracks only what the dock shows while you talk.
+// Live state of a hands-free conversation. The words themselves are not kept here: what you say
+// goes to the chat as ordinary messages, so the chat transcript is the single record. This
+// tracks only what the dock shows while you talk.
 import type { VoiceState } from "./voice-api";
 
 export interface VoiceTurnMetrics {
@@ -29,6 +29,10 @@ export interface VoiceViewState {
   activity: Array<{ toolCallId: string; label: string }>;
   notice: VoiceNotice | null;
   counts: { unread: number; running: number; waiting: number } | null;
+  /** The chat is working on something; since when (epoch ms). */
+  run: { startedAt?: number } | null;
+  /** Things you said that hands-free judged not meant for the chat, newest last. */
+  notSent: Array<{ turnId: number; text: string }>;
   metrics?: VoiceTurnMetrics;
   turnProbability: number;
   userSpeaking: boolean;
@@ -42,6 +46,8 @@ export const initialVoiceViewState: VoiceViewState = {
   activity: [],
   notice: null,
   counts: null,
+  run: null,
+  notSent: [],
   turnProbability: 0,
   userSpeaking: false,
 };
@@ -57,7 +63,6 @@ const TOOL_LABELS: Record<string, string> = {
   mark_sessions_read: "Marking replies read",
   archive_sessions: "Tidying sessions",
   list_models: "Checking models",
-  hands_free: "Adjusting hands-free",
   session_rename: "Renaming a session",
   task_list: "Checking tasks",
   task_get_info: "Reading a task",
@@ -101,7 +106,13 @@ export function reduceVoiceEvent(state: VoiceViewState, event: Record<string, an
       return { ...state, turnProbability: Number(event.probability) || 0 };
     case "user":
       if (event.handled === "ignored") return state;
+      if (event.handled === "not_sent") {
+        const notSent = [...state.notSent.filter((entry) => entry.turnId !== event.turnId), { turnId: Number(event.turnId), text: String(event.text) }];
+        return { ...state, notSent: notSent.slice(-3) };
+      }
       return { ...state, caption: { speaker: "user", text: event.text }, notice: null, activity: [] };
+    case "run":
+      return { ...state, run: event.working ? { ...(typeof event.startedAt === "number" ? { startedAt: event.startedAt } : {}) } : null };
     case "assistant_chunk":
       return { ...state, caption: { speaker: "assistant", text: event.text } };
     case "tool": {

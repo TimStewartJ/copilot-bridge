@@ -32,17 +32,29 @@ describe("Bridge wake phrase", () => {
 });
 
 describe("Bridge local commands", () => {
-  it("detects them as whole utterances", () => {
-    expect(detectLocalCommand("Okay, go to sleep.")).toBe("sleep");
-    expect(detectLocalCommand("Good night!")).toBe("sleep");
-    expect(detectLocalCommand("Stop.")).toBe("stop");
-    expect(detectLocalCommand("never mind")).toBe("stop");
-    expect(detectLocalCommand("End voice mode")).toBe("end");
-    expect(detectLocalCommand("Okay, leave hands-free.")).toBeUndefined();
-    expect(detectLocalCommand("Leave hands-free")).toBe("end");
-    expect(detectLocalCommand("exit hands free mode")).toBe("end");
-    expect(detectLocalCommand("Stop the Tellus session")).toBeUndefined();
-    expect(detectLocalCommand("")).toBeUndefined();
+  it.each([
+    ["Okay, go to sleep.", "sleep"],
+    ["Good night!", "sleep"],
+    ["Stop.", "stop"],
+    ["Be quiet", "stop"],
+    // Stopping the chat's work is its own command, never a bare "stop".
+    ["never mind", "cancel"],
+    ["Cancel that.", "cancel"],
+    ["Stop working on it", "cancel"],
+    ["How\u2019s it going?", "progress"],
+    ["Okay, is it done yet?", "progress"],
+    ["What's it doing?", "progress"],
+    ["Say that again?", "repeat"],
+    ["Read me the whole thing.", "full"],
+    ["End voice mode", "end"],
+    ["Leave hands-free", "end"],
+    ["exit hands free mode", "end"],
+    ["Okay, leave hands-free.", undefined],
+    ["Stop the Tellus session", undefined],
+    ["How's the car task going?", undefined],
+    ["", undefined],
+  ])("%j is %s", (text, command) => {
+    expect(detectLocalCommand(text)).toBe(command);
   });
 });
 
