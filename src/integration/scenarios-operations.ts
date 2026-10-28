@@ -167,14 +167,13 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-15", title: "validates and stores model-specific schedule launch options",
+    id: "OPS-15", title: "stores a schedule's model tier",
     async run(world) {
       const task = await world.createTask("Model schedule");
       world.initializeScheduler();
-      vi.spyOn(world.ctx.sessionManager, "listModels").mockResolvedValue([{ id: "gpt-test", name: "GPT Test", supportedReasoningEfforts: ["high"], billing: { tokenPrices: { contextMax: 100_000, longContext: { contextMax: 500_000 } } } }] as any);
-      const schedule = await world.createSchedule(task.id, "Model-aware", { model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" });
-      expect(schedule).toMatchObject({ model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" });
-      expect(world.ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" });
+      const schedule = await world.createSchedule(task.id, "Model-aware", { modelTier: "preset2" });
+      expect(schedule).toMatchObject({ modelTier: "preset2" });
+      expect(world.ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ modelTier: "preset2" });
     },
   },
   {

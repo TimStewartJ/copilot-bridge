@@ -9,7 +9,8 @@ export interface RoleModelInfo {
 }
 import type { AppSettings } from "./settings-store.js";
 import { defaultRoleTier, isTierChoice, MODEL_ROLE_INFO, MODEL_TIER_INFO, type ModelRole, type ModelRolesView, type ResolvedModelRole } from "../shared/model-roles.js";
-import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
+import { MODEL_PRESET_SLOTS, type ModelPresetSlot } from "../shared/model-presets.js";
+import type { CopilotContextTier } from "../shared/copilot-context.js";
 import { REASONING_EFFORT_LEVELS, resolveSupportedReasoningEffort } from "../shared/reasoning-effort.js";
 
 // New chats and background checks run on their older setting, which holds the tier's model, so they
@@ -72,13 +73,41 @@ export function resolveModelRole(settings: Pick<AppSettings, "modelRoles" | "mod
   };
 }
 
-export function describeModelRoles(settings: AppSettings, models: readonly RoleModelInfo[] | undefined, scheduleOverrides: number, roles: readonly ModelRole[]): ModelRolesView {
+export type ResolvedModelTier =
+  | { model: string; reasoningEffort?: string; contextTier?: CopilotContextTier }
+  | { model?: undefined; warning: string };
+
+/** A tier's current model for work that follows it (schedules), or why it can't be used. */
+export function resolveModelTier(settings: Pick<AppSettings, "modelPresets"> | undefined, tier: ModelPresetSlot, models?: readonly RoleModelInfo[]): ResolvedModelTier {
+  const label = MODEL_TIER_INFO[tier].label;
+  const target = settings?.modelPresets?.[tier];
+  if (!target?.model) return { warning: `The ${label} tier has no model yet.` };
+  const known = models && models.length > 0 ? models.find((model) => model.id === target.model) : undefined;
+  if (models && models.length > 0 && (!known || !enabled(known))) {
+    return { warning: `The ${label} tier's model ${target.model} isn't available.` };
+  }
+  const reasoningEffort = known ? resolveSupportedReasoningEffort(target.reasoningEffort, known.supportedReasoningEfforts) : target.reasoningEffort;
+  return {
+    model: target.model,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(target.contextTier ? { contextTier: target.contextTier } : {}),
+  };
+}
+
+/** Whether a model can start a session, judged by the live list (unknown when the list is missing). */
+export function isModelUsable(modelId: string, models?: readonly RoleModelInfo[]): boolean {
+  if (!models || models.length === 0) return true;
+  const known = models.find((model) => model.id === modelId);
+  return !!known && enabled(known);
+}
+
+export function describeModelRoles(settings: AppSettings, models: readonly RoleModelInfo[] | undefined, roles: readonly ModelRole[]): ModelRolesView {
   const tiers: ModelRolesView["tiers"] = {};
   for (const slot of MODEL_PRESET_SLOTS) {
     const preset = settings.modelPresets?.[slot];
     if (preset) tiers[slot] = { ...preset };
   }
-  return { tiers, roles: roles.map((role) => resolveModelRole(settings, role, models)), scheduleOverrides };
+  return { tiers, roles: roles.map((role) => resolveModelRole(settings, role, models)) };
 }
 
 function lowerFirst(text: string): string {

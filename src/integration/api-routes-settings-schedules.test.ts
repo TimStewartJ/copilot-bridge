@@ -504,17 +504,6 @@ describe("Schedule routes", () => {
   });
 
   it("POST /api/schedules creates a fresh-session schedule", async () => {
-    vi.spyOn(ctx.sessionManager, "listModels").mockResolvedValue([{
-      id: "claude-sonnet-5",
-      name: "Claude Sonnet 5",
-      supportedReasoningEfforts: ["low", "high"],
-      billing: {
-        tokenPrices: {
-          contextMax: 200_000,
-          longContext: { contextMax: 1_000_000 },
-        },
-      },
-    }] as any);
     const res = await request(app)
       .post("/api/schedules")
       .send({
@@ -523,9 +512,7 @@ describe("Schedule routes", () => {
         prompt: "Continue the conversation",
         type: "cron",
         cron: "0 0 * * *",
-        model: "  claude-sonnet-5  ",
-        reasoningEffort: " high ",
-        contextTier: "long_context",
+        modelTier: "preset2",
       });
 
     expect(res.status).toBe(201);
@@ -533,15 +520,9 @@ describe("Schedule routes", () => {
       taskId,
       name: "Fresh schedule",
       type: "cron",
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
+      modelTier: "preset2",
     });
-    expect(ctx.scheduleStore.getSchedule(res.body.id)).toMatchObject({
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
+    expect(ctx.scheduleStore.getSchedule(res.body.id)).toMatchObject({ modelTier: "preset2" });
   });
 
   it("POST /api/schedules accepts a zero-seconds six-field cron", async () => {
@@ -559,60 +540,6 @@ describe("Schedule routes", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.cron).toBe(cron);
-  });
-
-  it("POST /api/schedules validates model overrides", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Bad model",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
-        model: 42,
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/model/);
-  });
-
-  it("POST /api/schedules requires a schedule model for launch option overrides", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Missing model",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
-        reasoningEffort: "high",
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/schedule model/);
-  });
-
-  it("POST /api/schedules rejects launch options unsupported by the schedule model", async () => {
-    vi.spyOn(ctx.sessionManager, "listModels").mockResolvedValue([{
-      id: "gpt-5.6-sol",
-      name: "GPT-5.6 Sol",
-      supportedReasoningEfforts: ["high"],
-    }] as any);
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Unsupported effort",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
-        model: "gpt-5.6-sol",
-        reasoningEffort: "xhigh",
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/reasoningEffort/);
   });
 
   it("POST /api/schedules rejects unknown fields", async () => {
@@ -671,49 +598,26 @@ describe("Schedule routes", () => {
     });
   });
 
-  it("PATCH /api/schedules changes model launch overrides and drops them when the model switches", async () => {
+  it("PATCH /api/schedules sets and clears a model tier, and refuses a pinned model", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId,
-      name: "Model patch",
+      name: "Tier patch",
       prompt: "Continue the conversation",
       type: "cron",
       cron: "0 0 * * *",
     });
-    vi.spyOn(ctx.sessionManager, "listModels").mockResolvedValue([{
-      id: "gpt-5.6-sol",
-      name: "GPT-5.6 Sol",
-      supportedReasoningEfforts: ["high"],
-      billing: {
-        tokenPrices: {
-          contextMax: 200_000,
-          longContext: { contextMax: 1_000_000 },
-        },
-      },
-    }] as any);
+    const patch = (body: Record<string, unknown>) => request(app).patch(`/api/schedules/${schedule.id}`).send(body);
 
-    const updated = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({
-        model: "  gpt-5.6-sol  ",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      });
-    expect(updated.status).toBe(200);
-    expect(updated.body).toMatchObject({
-      model: "gpt-5.6-sol",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
+    const tiered = await patch({ modelTier: "preset1" });
+    expect(tiered.status).toBe(200);
+    expect(tiered.body.modelTier).toBe("preset1");
+    expect((await patch({ modelTier: "fast" })).status).toBe(400);
+    expect((await patch({ model: "gpt-5.6-sol" })).body.error).toContain("model");
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.modelTier).toBe("preset1");
 
-    const switched = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ model: "claude-sonnet-5" });
-    expect(switched.status).toBe(200);
-    expect(switched.body.model).toBe("claude-sonnet-5");
-    expect(switched.body.reasoningEffort).toBeUndefined();
-    expect(switched.body.contextTier).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ model: "claude-sonnet-5" });
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.reasoningEffort).toBeUndefined();
+    const cleared = await patch({ modelTier: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.modelTier).toBeUndefined();
   });
 
   it("PATCH /api/schedules rejects unsupported non-zero seconds crons", async () => {

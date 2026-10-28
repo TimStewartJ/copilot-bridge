@@ -47,7 +47,7 @@ import {
   findUnknownFields,
   formatUnknownFieldsError,
   normalizeScheduleAutoArchiveKeep,
-  validateScheduleLaunchOptionUpdates,
+  validateScheduleLaunchOptions,
 } from "./schedule-validation.js";
 import {
   enrichWorkItems,
@@ -608,9 +608,7 @@ const SCHEDULE_CREATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
-  "model",
-  "reasoningEffort",
-  "contextTier",
+  "modelTier",
   "promptProfile",
   "maxRuns",
   "expiresAt",
@@ -622,9 +620,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
-  "model",
-  "reasoningEffort",
-  "contextTier",
+  "modelTier",
   "promptProfile",
   "enabled",
   "maxRuns",
@@ -3952,12 +3948,9 @@ export function createApiRouter(
       if (timezone && !schedulerModule().isValidTimezone(timezone)) {
         return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
       }
-      const launchOptions = await validateScheduleLaunchOptionUpdates({
-        input: req.body,
-        listModels: () => ctx.sessionManager.listModels(),
-      });
+      const launchOptions = validateScheduleLaunchOptions(req.body);
       if (!launchOptions.ok) {
-        return res.status(launchOptions.status).json({ error: launchOptions.error });
+        return res.status(400).json({ error: launchOptions.error });
       }
 
       const schedule = ctx.scheduleStore.createSchedule({
@@ -3968,9 +3961,7 @@ export function createApiRouter(
         cron: cronExpr,
         runAt,
         timezone,
-        model: launchOptions.updates.model ?? undefined,
-        reasoningEffort: launchOptions.updates.reasoningEffort ?? undefined,
-        contextTier: launchOptions.updates.contextTier ?? undefined,
+        modelTier: launchOptions.updates.modelTier ?? undefined,
         promptProfile: launchOptions.updates.promptProfile ?? undefined,
         maxRuns,
         expiresAt,
@@ -4013,13 +4004,9 @@ export function createApiRouter(
         if (cronError) return res.status(400).json({ error: cronError });
       }
 
-      const launchOptions = await validateScheduleLaunchOptionUpdates({
-        input: req.body,
-        existing,
-        listModels: () => ctx.sessionManager.listModels(),
-      });
+      const launchOptions = validateScheduleLaunchOptions(req.body);
       if (!launchOptions.ok) {
-        return res.status(launchOptions.status).json({ error: launchOptions.error });
+        return res.status(400).json({ error: launchOptions.error });
       }
       const updates = { ...req.body, ...launchOptions.updates };
       const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
@@ -4731,8 +4718,7 @@ export function createApiRouter(
     try {
       const settings = ctx.settingsStore.getSettings();
       const models = await ctx.sessionManager.listModels().catch(() => undefined);
-      const scheduleOverrides = ctx.scheduleStore.listSchedules().filter((schedule) => schedule.enabled && !!schedule.model).length;
-      res.json(describeModelRoles(settings, models, scheduleOverrides, MODEL_ROLES));
+      res.json(describeModelRoles(settings, models, MODEL_ROLES));
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

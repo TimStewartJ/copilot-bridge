@@ -128,6 +128,4 @@ export interface ResolvedModelRole {
 export interface ModelRolesView {
   tiers: Partial<Record<ModelPresetSlot, ModelRoleCustom>>;
   roles: ResolvedModelRole[];
-  /** Enabled schedules that choose their own model instead of following New chats. */
-  scheduleOverrides: number;
 }

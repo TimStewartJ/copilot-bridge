@@ -587,12 +587,34 @@ describe("session-config-builder", () => {
     });
   });
 
-  it("lets a scheduled session override global model launch options", () => {
+  it.each([
+    {
+      label: "a usable tier runs on its own model, effort and context, never New chats' values",
+      fast: { model: "gpt-5.5" },
+      newChats: { model: "global-model", reasoningEffort: "high", contextTier: "long_context" },
+      expected: { model: "gpt-5.5", reasoningEffort: undefined, contextTier: "default" },
+    },
+    {
+      label: "a usable tier narrows its effort to what the model supports",
+      fast: { model: "gpt-5.5", reasoningEffort: "max", contextTier: "long_context" },
+      newChats: { model: "global-model" },
+      expected: { model: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context" },
+    },
+    {
+      label: "an empty tier follows New chats",
+      fast: undefined,
+      newChats: { model: "gpt-5.5", reasoningEffort: "high", contextTier: "long_context" },
+      expected: { model: "gpt-5.5", reasoningEffort: "high", contextTier: "long_context" },
+    },
+    {
+      label: "a tier and New chats on the same retired model leave the pick to the SDK",
+      fast: { model: "retired-model", reasoningEffort: "high" },
+      newChats: { model: "retired-model", reasoningEffort: "high", contextTier: "long_context" },
+      expected: { model: undefined, reasoningEffort: undefined, contextTier: undefined },
+    },
+  ])("resolves a schedule's model tier when the session is created: $label", ({ fast, newChats, expected }) => {
     const settingsStore = {
-      getSettings: () => ({
-        model: "global-model",
-        reasoningEffort: "high",
-      }),
+      getSettings: () => ({ ...newChats, modelPresets: fast ? { preset1: fast } : {} }),
       updateSettings: vi.fn(),
       getMcpServers: () => ({}),
     } as unknown as SettingsStore;
@@ -600,76 +622,16 @@ describe("session-config-builder", () => {
     const cfg = buildSessionConfig({
       deps: createDeps({ settingsStore }),
       options: {
-        scheduleContext: {
-          name: "Daily review",
-          type: "cron",
-          runCount: 2,
-          model: "gpt-5.5",
-          reasoningEffort: "xhigh",
-          contextTier: "long_context",
-        },
-        modelMetadata: [{
-          ...GPT_55_TIERED_MODEL,
-          supportedReasoningEfforts: ["high", "xhigh"],
-        }],
+        scheduleContext: { name: "Daily review", type: "cron", runCount: 2, modelTier: "preset1" },
+        modelMetadata: [
+          { ...GPT_55_TIERED_MODEL, supportedReasoningEfforts: ["high", "xhigh"] },
+          { id: "global-model", supportedReasoningEfforts: ["high"] },
+        ],
       },
       callbacks: createCallbacks(),
     });
 
-    expect(cfg.model).toBe("gpt-5.5");
-    expect(cfg.reasoningEffort).toBe("xhigh");
-    expect(cfg.contextTier).toBe("long_context");
-    expect(cfg.modelCapabilities).toBeUndefined();
-  });
-
-  it("omits stored schedule launch options that the model no longer supports", () => {
-    const settingsStore = {
-      getSettings: () => ({ model: "global-model", reasoningEffort: "high", contextTier: "long_context" }),
-      updateSettings: vi.fn(),
-      getMcpServers: () => ({}),
-    } as unknown as SettingsStore;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ settingsStore }),
-      options: {
-        scheduleContext: {
-          name: "Daily review",
-          type: "cron",
-          runCount: 2,
-          model: "schedule-model",
-          reasoningEffort: "xhigh",
-          contextTier: "long_context",
-        },
-        modelMetadata: [{
-          id: "schedule-model",
-          supportedReasoningEfforts: ["low"],
-        }],
-      },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.model).toBe("schedule-model");
-    expect(cfg.reasoningEffort).toBeUndefined();
-    expect(cfg.modelCapabilities).toBeUndefined();
-  });
-
-  it("keeps a validated schedule effort when model metadata is temporarily unavailable", () => {
-    const cfg = buildSessionConfig({
-      deps: createDeps(),
-      options: {
-        scheduleContext: {
-          name: "Daily review",
-          type: "cron",
-          runCount: 2,
-          model: "schedule-model",
-          reasoningEffort: "xhigh",
-        },
-      },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.model).toBe("schedule-model");
-    expect(cfg.reasoningEffort).toBe("xhigh");
+    expect({ model: cfg.model, reasoningEffort: cfg.reasoningEffort, contextTier: cfg.contextTier }).toEqual(expected);
   });
 
   it("leaves adaptive thinking to the CLI for models with explicit effort", () => {
@@ -693,15 +655,8 @@ describe("session-config-builder", () => {
     expect(cfg.modelCapabilities).toBeUndefined();
   });
 
-  it("does not apply a global reasoning effort unsupported by the active model (scheduled or launch)", () => {
+  it("does not apply a global reasoning effort unsupported by the launch model", () => {
     for (const { label, options } of [
-      {
-        label: "scheduled model",
-        options: {
-          scheduleContext: { name: "Daily review", type: "cron" as const, runCount: 2, model: "schedule-model" },
-          modelMetadata: [{ id: "schedule-model", supportedReasoningEfforts: [] }],
-        },
-      },
       {
         label: "launch model",
         options: {

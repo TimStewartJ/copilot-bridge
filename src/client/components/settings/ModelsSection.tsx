@@ -275,11 +275,6 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
           </section>)}
         </div>
         {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
-        {!!roles.data?.scheduleOverrides && (
-          <p className={cx(DS.field.help, "mt-3")}>
-            {`${roles.data.scheduleOverrides} schedule${roles.data.scheduleOverrides === 1 ? " chooses its" : "s choose their"} own model.`}
-          </p>
-        )}
       </div>
 
       <ModelListFooter />

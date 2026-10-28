@@ -175,9 +175,7 @@ describe("scheduler restart gating", () => {
       prompt: "run now",
       type: "cron",
       cron: "0 0 * * *",
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
+      modelTier: "preset2",
     });
 
     const result = await scheduler.triggerSchedule(schedule.id);
@@ -186,9 +184,7 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.createTaskSession.mock.calls[0][5]).toMatchObject({
       name: "Restart gated schedule",
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
+      modelTier: "preset2",
     });
     expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
   });
