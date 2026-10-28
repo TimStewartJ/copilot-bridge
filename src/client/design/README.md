@@ -207,6 +207,7 @@ hover/selected rows and constrained panes.
 | Copilot amounts, tokens, and metering coverage | `lib/usage-presentation.ts`, `components/usage/UsageModelList`, `TokenBreakdown` |
 | A user's tag | `TagPill` (`DS.tag`) |
 | A row in a list, a menu, a dialog, a sheet | `DS.row`, `DS.surface.floating`, `.dialog` + `.scrim`, `.sheet` |
+| A short menu or list opened from a button (a sheet from the bottom on a phone) | `Sheet` (`design/Sheet.tsx`), rows from `DS.menu.item` |
 
 When a selector's choices already explain its purpose, `FormRow hideLabel` keeps the label available
 to assistive technology without displaying it or reserving a label column. Single fields still use

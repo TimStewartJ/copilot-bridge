@@ -13,6 +13,7 @@ import PullToRefresh, { type PullToRefreshScrollRestoration } from "../component
 import { OutcomeNotice } from "../components/QuietTasks";
 import { useTaskOutcomes } from "../hooks/useTaskOutcomes";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
+import { useIsMobile } from "../useIsMobile";
 import {
   actOnItem, formatAgo, formatCredits, formatClock, formatDuration, itemFeedback, thinkNow, undoHandled, updateHelmMemory, useHelmBrief, useInvalidateHelm,
 } from "./thinker-api";
@@ -32,11 +33,15 @@ interface Props {
   scrollRestoration?: PullToRefreshScrollRestoration;
   /** "column" when the brief shares the page with the Helm conversation: one narrow column. */
   layout?: "full" | "column";
+  /** Home's link row above the brief already offers Everything (the classic Home). */
+  everythingInNav?: boolean;
 }
 
-export default function HelmHome({ onSelectTask, onSelectSession, scrollRestoration, layout = "full" }: Props) {
+export default function HelmHome({ onSelectTask, onSelectSession, scrollRestoration, layout = "full", everythingInNav = false }: Props) {
   const column = layout === "column";
   const navigate = useNavigate();
+  // On a phone, What Helm knows opens from the Helm tab's menu, so the day's title keeps the line.
+  const phone = useIsMobile();
   const query = useHelmBrief();
   const invalidate = useInvalidateHelm();
   const data = query.data;
@@ -79,10 +84,10 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
       <header className="space-y-2">
         <div className="flex items-start justify-between gap-3">
           <h1 className={DS.text.pageTitle}>{partOfDay()}</h1>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button variant="ghost" size="sm" onClick={() => navigate("/helm/memory")}><Brain size={14} />What Helm knows</Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home?view=classic")}>Everything<ArrowRight size={14} /></Button>
-          </div>
+          {(!phone || !everythingInNav) && <div className="flex shrink-0 items-center gap-1">
+            {!phone && <Button variant="ghost" size="sm" onClick={() => navigate("/helm/memory")}><Brain size={14} />What Helm knows</Button>}
+            {!everythingInNav && <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home?view=classic")}>Everything<ArrowRight size={14} /></Button>}
+          </div>}
         </div>
         {brief && <p className="max-w-3xl text-[15px] leading-relaxed text-text-primary">{brief.summary}</p>}
         <div className={cx(DS.text.meta, "flex flex-wrap items-center gap-x-3 gap-y-1")}>

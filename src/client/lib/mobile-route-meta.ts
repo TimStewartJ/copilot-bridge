@@ -1,5 +1,5 @@
 import { matchPath } from "react-router-dom";
-import { getExplicitDashboardTabFromPathname, getRememberedDashboardPath, isAllTasksPath, isDashboardRoutePath } from "./dashboard-routes";
+import { isAllTasksPath, isDashboardRoutePath } from "./dashboard-routes";
 
 export type MobileNavTab = "home" | "work" | "helm" | "docs" | "settings";
 
@@ -68,27 +68,6 @@ export function resolveMobileWorkTabTarget(
     return { segment: current.workSegment === "tasks" ? "chats" : "tasks", replace: true };
   }
   return { segment: current.workSegment ?? lastSegment, replace: false };
-}
-
-export interface MobileHomeTabTarget {
-  to: string;
-  /** True when the tap only flips between Helm's brief and its conversation, which should not add a history entry. */
-  replace: boolean;
-}
-
-/**
- * Where a tap on the Home tab leads. On Helm's brief the tap opens the Helm conversation and on the
- * conversation it returns to the brief, as the Brief/Talk switch at the top does. From anywhere else it
- * opens the brief.
- */
-export function resolveMobileHomeTabTarget(pathname: string, search = ""): MobileHomeTabTarget {
-  const normalizedPath = normalizePathname(pathname);
-  if (normalizedPath === "/helm") return { to: getRememberedDashboardPath(), replace: true };
-  const params = new URLSearchParams(search);
-  const showsBrief = getExplicitDashboardTabFromPathname(normalizedPath) === "focus"
-    && params.get("view") !== "classic" && !params.has("section");
-  if (showsBrief) return { to: "/helm", replace: true };
-  return { to: getRememberedDashboardPath(), replace: false };
 }
 
 function normalizePathname(pathname: string): string {
@@ -161,11 +140,11 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
     });
   }
 
-  // Helm shares Home's page (its Talk side) and What Helm knows draws its own header.
+  // Helm's conversation has its own tab on a phone; What Helm knows opens from it and draws its own header.
   if (normalizedPath === "/helm" || normalizedPath === "/helm/memory") {
     return buildMeta({
       route: "helm",
-      activeTab: "home",
+      activeTab: "helm",
       showBottomNav: true,
       isRoot: true,
       isDetail: false,

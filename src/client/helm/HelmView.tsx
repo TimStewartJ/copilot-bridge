@@ -1,15 +1,17 @@
 // Helm: Bridge's orchestration manager. One conversation you can type to like any chat or
 // talk to hands-free, inside the normal app layout. The chat view, composer, drafts, chat mic,
-// model switcher and hands-free dock are the same ones every chat uses; Helm adds the header and
-// the conversation lifecycle (new, resume, keep, delete).
+// model switcher and hands-free switch are the same ones every chat uses; Helm adds the header and
+// the conversation lifecycle (new, resume, keep, delete). On a phone the header is one line, and
+// the conversation's controls, its status line and Helm's links open from its menu.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
-  AudioLines,
+  Brain,
   History,
   Loader2,
   MessageSquarePlus,
+  MoreHorizontal,
   Pin,
   PinOff,
   RotateCcw,
@@ -31,6 +33,7 @@ import { timeAgo } from "../time";
 import type { Draft } from "../useDrafts";
 import { useHandsFree } from "../voice/HandsFreeProvider";
 import { useChatHandsFree } from "../voice/useChatHandsFree";
+import { useIsMobile } from "../useIsMobile";
 import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import {
   createHelmConversation,
@@ -46,6 +49,8 @@ import {
   type HelmState,
 } from "./helm-api";
 import { DS, cx } from "../design/tokens";
+import { IconButton, StatusIcon } from "../design/primitives";
+import Sheet from "../design/Sheet";
 
 export const HELM_DRAFT_COMPOSER_KEY = "draft:helm";
 
@@ -182,19 +187,15 @@ function HistoryPanel({
 function HelmWelcome({
   resumable,
   resuming,
-  handsFreeBusy,
   disabled,
   onResume,
   onSuggestion,
-  onHandsFree,
 }: {
   resumable: HelmConversation | null;
   resuming: boolean;
-  handsFreeBusy: boolean;
   disabled: boolean;
   onResume(conversation: HelmConversation): void;
   onSuggestion(prompt: string): void;
-  onHandsFree(): void;
 }) {
   return (
     <div className="flex flex-1 items-center justify-center overflow-y-auto px-4 py-8">
@@ -232,15 +233,6 @@ function HelmWelcome({
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={onHandsFree}
-          disabled={disabled || handsFreeBusy}
-          className={cx(DS.button.base, DS.button.size.md, DS.button.variant.secondary, "mt-5 gap-2 disabled:opacity-60")}
-        >
-          {handsFreeBusy ? <Loader2 size={15} className="animate-spin" /> : <AudioLines size={15} aria-hidden="true" />}
-          Go hands-free
-        </button>
       </div>
     </div>
   );
@@ -270,6 +262,11 @@ export default function HelmView({
   const [switching, setSwitching] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const creatingRef = useRef<Promise<HelmConversation> | null>(null);
+  const phone = useIsMobile();
+  const [menuOpen, setMenuOpen] = useState(false);
+  // While the phone menu is open, the chat's status line (model, tools, context) is drawn inside it.
+  const [statusLineTarget, setStatusLineTarget] = useState<HTMLElement | null>(null);
+  const [statusLineProblem, setStatusLineProblem] = useState(false);
 
   const state = helmQuery.data;
   const current = state?.current ?? null;
@@ -313,8 +310,6 @@ export default function HelmView({
 
   const chatHandsFree = useChatHandsFree(sessionId, { ensureSessionId: ensureConversation, onChange: () => void refreshHelm() });
   const handsFreeHere = chatHandsFree.here;
-  const startHandsFree = chatHandsFree.start;
-  const endHandsFree = chatHandsFree.stop;
 
   /** Hands-free speaks for one conversation; moving to another takes it along. */
   const switchConversation = useCallback(async (move: () => Promise<string | null>) => {
@@ -427,68 +422,79 @@ export default function HelmView({
     <HelmWelcome
       resumable={showResumable ? state?.resumable ?? state?.recent.find((entry) => entry.turnCount > 0) ?? null : null}
       resuming={pendingId !== null || switching}
-      handsFreeBusy={handsFree.phase === "connecting"}
       disabled={switching}
       onResume={handleResume}
       onSuggestion={(prompt) => void handleSuggestion(prompt)}
-      onHandsFree={() => void startHandsFree()}
     />
-  ), [handleResume, handleSuggestion, handsFree.phase, pendingId, showResumable, startHandsFree, state?.recent, state?.resumable, switching]);
+  ), [handleResume, handleSuggestion, pendingId, showResumable, state?.recent, state?.resumable, switching]);
 
   const subtitle = current
     ? current.turnCount > 0 ? `${conversationLabel(current)} · ${describeConversation(current)}` : "New conversation"
     : helmQuery.isLoading ? "Loading…" : "New conversation";
+  const conversationTitle = current && current.turnCount > 0 ? conversationLabel(current) : !current && helmQuery.isLoading ? "Loading…" : "New conversation";
+  const conversationMeta = current && current.turnCount > 0
+    ? `${current.turnCount} turn${current.turnCount === 1 ? "" : "s"} · ${timeAgo(current.lastActiveAt)}`
+    : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-helm-view={handsFreeHere ? "hands-free" : "chat"}>
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 py-1.5 sm:px-4">
-        <ShipWheel size={18} aria-hidden="true" className="shrink-0 text-accent" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold leading-tight text-text-primary">Helm</div>
-          <div className="truncate text-[11px] leading-tight text-text-muted">{subtitle}</div>
-        </div>
-        <button
-          type="button"
-          onClick={() => void (handsFreeHere ? endHandsFree() : startHandsFree())}
-          disabled={switching || handsFree.phase === "connecting"}
-          aria-pressed={handsFreeHere}
-          aria-label={handsFreeHere ? "Hands-free on" : "Hands-free"}
-          className={cx(HEADER_BUTTON, handsFreeHere && DS.row.selected)}
-        >
-          {handsFree.phase === "connecting" ? <Loader2 size={14} className="animate-spin" /> : <AudioLines size={14} aria-hidden="true" />}
-          <span>{handsFreeHere ? "Hands-free on" : "Hands-free"}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleNewConversation()}
-          disabled={switching || !current || current.turnCount === 0}
-          title="Start a new conversation. This one stays in history."
-          aria-label="New conversation"
-          className={HEADER_BUTTON}
-        >
-          {switching ? <Loader2 size={15} className="animate-spin" /> : <MessageSquarePlus size={15} />}
-          <span className="hidden lg:inline">New</span>
-        </button>
-        <button type="button" onClick={() => setHistoryOpen(true)} aria-label="Recent conversations" title="Recent conversations" className={HEADER_BUTTON}>
-          <History size={15} />
-          {state && state.recent.length > 0 && <span className="tabular-nums text-text-faint">{state.recent.length}</span>}
-        </button>
-        {current && current.turnCount > 0 && (
+      {phone ? (
+        <header className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-bg-secondary py-1 pl-4 pr-1.5">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-text-primary">{conversationTitle}</div>
+            {conversationMeta && <div className="truncate text-xs tabular-nums text-text-muted">{conversationMeta}</div>}
+          </div>
+          <IconButton
+            label={statusLineProblem ? "Helm menu, something needs a look" : "Helm menu"}
+            aria-haspopup="dialog"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(true)}
+          >
+            <span className="relative flex">
+              <MoreHorizontal size={18} aria-hidden="true" />
+              {statusLineProblem && <span className={DS.status.corner}><StatusIcon kind="warning" decorative /></span>}
+            </span>
+          </IconButton>
+        </header>
+      ) : (
+        <header className="flex shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 py-1.5 sm:px-4">
+          <ShipWheel size={18} aria-hidden="true" className="shrink-0 text-accent" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold leading-tight text-text-primary">Helm</div>
+            <div className="truncate text-[11px] leading-tight text-text-muted">{subtitle}</div>
+          </div>
           <button
             type="button"
-            onClick={() => void handleKeep(current, !current.kept)}
-            aria-pressed={current.kept}
-            aria-label={current.kept ? "Stop keeping this conversation" : "Keep this conversation"}
-            title={current.kept ? "Kept: never expires. Click to let it expire normally." : "Keep this conversation so it never expires"}
-            className={cx(HEADER_BUTTON, current.kept ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, DS.segmented.selected) : "")}
+            onClick={() => void handleNewConversation()}
+            disabled={switching || !current || current.turnCount === 0}
+            title="Start a new conversation. This one stays in history."
+            aria-label="New conversation"
+            className={HEADER_BUTTON}
           >
-            <Pin size={15} />
+            {switching ? <Loader2 size={15} className="animate-spin" /> : <MessageSquarePlus size={15} />}
+            <span className="hidden lg:inline">New</span>
           </button>
-        )}
-        <Link to="/settings?group=helm" aria-label="Helm settings" title="Helm settings" className={HEADER_BUTTON}>
-          <Settings2 size={15} />
-        </Link>
-      </header>
+          <button type="button" onClick={() => setHistoryOpen(true)} aria-label="Recent conversations" title="Recent conversations" className={HEADER_BUTTON}>
+            <History size={15} />
+            {state && state.recent.length > 0 && <span className="tabular-nums text-text-faint">{state.recent.length}</span>}
+          </button>
+          {current && current.turnCount > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleKeep(current, !current.kept)}
+              aria-pressed={current.kept}
+              aria-label={current.kept ? "Stop keeping this conversation" : "Keep this conversation"}
+              title={current.kept ? "Kept: never expires. Click to let it expire normally." : "Keep this conversation so it never expires"}
+              className={cx(HEADER_BUTTON, current.kept ? cx(DS.button.base, DS.button.size.sm, DS.segmented.option, DS.segmented.selected) : "")}
+            >
+              <Pin size={15} />
+            </button>
+          )}
+          <Link to="/settings?group=helm" aria-label="Helm settings" title="Helm settings" className={HEADER_BUTTON}>
+            <Settings2 size={15} />
+          </Link>
+        </header>
+      )}
       {(actionError || helmQuery.error || (handsFree.error && !handsFreeHere)) && (
         <div role="alert" className={cx(DS.notice.surface, "flex shrink-0 items-start gap-2 border-b px-4 py-2 text-xs text-error")}>
           <span className="min-w-0 flex-1 break-words">
@@ -545,9 +551,59 @@ export default function HelmView({
         newWorkDisabled={switching || helmQuery.isLoading}
         newWorkDisabledHint={switching ? "Switching conversations…" : undefined}
         composerAccessory={chatHandsFree.accessory}
+        composerTool={chatHandsFree.composerTool ?? undefined}
         hideVoiceInput={handsFree.active}
         composerPlaceholder={handsFreeHere ? "Type to Helm. Replies are read back…" : "Ask Helm…"}
+        statusLineTarget={phone ? statusLineTarget : undefined}
+        onStatusLineProblemChange={phone ? setStatusLineProblem : undefined}
       />
+      {phone && menuOpen && (
+        <Sheet
+          title={conversationTitle}
+          detail={current && current.turnCount > 0 ? describeConversation(current) : undefined}
+          closeLabel="Close Helm menu"
+          onClose={() => setMenuOpen(false)}
+          bodyClassName="px-2 pt-1"
+        >
+          <button
+            type="button"
+            className={DS.menu.item}
+            disabled={switching || !current || current.turnCount === 0}
+            onClick={() => {
+              setMenuOpen(false);
+              void handleNewConversation();
+            }}
+          >
+            <MessageSquarePlus size={16} aria-hidden="true" />New conversation
+          </button>
+          <button
+            type="button"
+            className={DS.menu.item}
+            onClick={() => {
+              setMenuOpen(false);
+              setHistoryOpen(true);
+            }}
+          >
+            <History size={16} aria-hidden="true" />
+            <span className="flex-1">Recent conversations</span>
+            {state && state.recent.length > 0 && <span className={DS.row.trailing}>{state.recent.length}</span>}
+          </button>
+          {current && current.turnCount > 0 && (
+            <button type="button" className={DS.menu.item} aria-pressed={current.kept} onClick={() => void handleKeep(current, !current.kept)}>
+              <Pin size={16} aria-hidden="true" />
+              <span className="flex-1">Keep this conversation</span>
+              <span className={DS.row.trailing}>{current.kept ? "On" : "Off"}</span>
+            </button>
+          )}
+          <div ref={setStatusLineTarget} className="-mx-2 my-1 border-t border-border" />
+          <Link to="/helm/memory" className={DS.menu.item} onClick={() => setMenuOpen(false)}>
+            <Brain size={16} aria-hidden="true" />What Helm knows
+          </Link>
+          <Link to="/settings?group=helm" className={DS.menu.item} onClick={() => setMenuOpen(false)}>
+            <Settings2 size={16} aria-hidden="true" />Helm settings
+          </Link>
+        </Sheet>
+      )}
       {historyOpen && state && (
         <HistoryPanel
           state={state}
