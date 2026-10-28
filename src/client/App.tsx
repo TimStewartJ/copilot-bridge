@@ -55,7 +55,7 @@ import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-
 import { looksUntouched } from "./lib/untouched-task";
 import { ALL_TASKS_PATH, getRememberedDashboardPath, isAllTasksPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { haptic } from "./lib/haptics";
-import { getMobileRouteMeta, resolveMobileHomeTabTarget, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
+import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
 import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/session-path";
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
@@ -827,6 +827,9 @@ function AppShell() {
   const helmReplied = isHelmReplyUnread(helmStateQuery.data?.current, readStateHydrated, isUnread);
   const newHelmBrief = !!helmBriefStatus?.runId && !helmBriefStatus.seen;
   const homeMark = describeHomeMark({ helmReplied, newBrief: newHelmBrief });
+  // A phone has a tab for each: the brief's mark goes on Home, the reply's on Helm.
+  const mobileHomeMark = describeHomeMark({ helmReplied: false, newBrief: newHelmBrief });
+  const mobileHelmMark = describeHomeMark({ helmReplied, newBrief: false });
 
   // ── Browser tab title ────────────────────────────────────────
   // DocsView publishes its resolved page title upward; everything else is
@@ -978,13 +981,7 @@ function AppShell() {
   const handleMobileTab = useCallback((tab: MobileNavTab) => {
     switch (tab) {
       case "helm": handleOpenHelm(); break;
-      case "home": {
-        const target = resolveMobileHomeTabTarget(location.pathname, location.search);
-        // A replacing target is the tap flipping between the brief and Helm, which ticks like the switch at the top.
-        if (target.replace) haptic("selection");
-        navigate(target.to, { replace: target.replace });
-        break;
-      }
+      case "home": handleOpenDashboard(); break;
       case "work": {
         const target = resolveMobileWorkTabTarget(
           { isRoot: mobileRouteMeta.isRoot, workSegment: mobileRouteMeta.workSegment },
@@ -997,7 +994,7 @@ function AppShell() {
       case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, location.pathname, location.search, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment, navigate]);
+  }, [handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
 
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;
@@ -2330,7 +2327,8 @@ function AppShell() {
         <MobileBottomNav
           activeTab={mobileActiveTab}
           onSelectTab={handleMobileTab}
-          homeMark={homeMark}
+          homeMark={mobileHomeMark}
+          helmMark={mobileHelmMark}
           taskAttention={mobileTaskAttention}
           chatAttention={mobileChatAttention}
         />

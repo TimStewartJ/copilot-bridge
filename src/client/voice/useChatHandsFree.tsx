@@ -1,5 +1,5 @@
 // Hands-free for one chat: the button that starts it, the one-time setup panel, and the dock that
-// shows while it is on. Any chat can use it; Helm adds its own header button on top. One chat
+// shows while it is on. Every chat, Helm included, starts it from this composer button. One chat
 // listens at a time, so starting it here moves it from wherever it was.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AudioLines, Loader2 } from "lucide-react";

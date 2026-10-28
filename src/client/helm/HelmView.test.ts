@@ -29,6 +29,8 @@ const state = vi.hoisted(() => ({
   chatViewProps: null as Record<string, any> | null,
 }));
 
+const device = vi.hoisted(() => ({ phone: false }));
+
 const settings = vi.hoisted(() => ({
   data: { helm: { spokenReasoningEffort: "xhigh" } } as { helm?: Record<string, string> },
   mutate: vi.fn(),
@@ -87,6 +89,7 @@ vi.mock("../components/ChatView", () => ({
   },
 }));
 vi.mock("../voice/HandsFreeProvider", () => ({ useHandsFree: () => handsFree }));
+vi.mock("../useIsMobile", () => ({ useIsMobile: () => device.phone }));
 vi.mock("../voice/HandsFreeDock", () => ({
   HandsFreeDock: () => createElement("div", { "data-dock": "true" }),
   HandsFreeSetupPanel: () => createElement("div", { "data-setup": "true" }),
@@ -142,6 +145,7 @@ describe("HelmView", () => {
     vi.clearAllMocks();
     settings.mutate.mockResolvedValue({});
     state.chatViewProps = null;
+    device.phone = false;
     handsFree.active = false;
     handsFree.sessionId = null;
     handsFree.phase = "ready";
@@ -210,11 +214,11 @@ describe("HelmView", () => {
     expect((state.helm as HelmState).recent).toEqual([]);
   });
 
-  it("enters hands-free on the same conversation and docks it above the composer", async () => {
+  it("enters hands-free from the composer on the same conversation and docks it above the composer", async () => {
     state.helm = helmState({ current: conversation({}) });
     await render();
-    const toggle = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === false && buttonProps["aria-label"] === "Hands-free");
-    await harness.act(() => toggle.onClick());
+    expect(state.chatViewProps!.composerTool).toMatchObject({ label: "Hands-free", active: false });
+    await harness.act(() => state.chatViewProps!.composerTool.onSelect());
     expect(handsFree.start).toHaveBeenCalledWith(SESSION_A);
 
     await render();
@@ -224,8 +228,8 @@ describe("HelmView", () => {
     // Same session before and after: entering hands-free changed the mode, not the context.
     expect(state.chatViewProps!.sessionId).toBe(SESSION_A);
 
-    const end = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === true);
-    await harness.act(() => end.onClick());
+    expect(state.chatViewProps!.composerTool).toMatchObject({ label: "End hands-free", active: true });
+    await harness.act(() => state.chatViewProps!.composerTool.onSelect());
     expect(handsFree.stop).toHaveBeenCalledOnce();
     await render();
     expect(state.chatViewProps).toMatchObject({ sessionId: SESSION_A, hideVoiceInput: false, composerAccessory: null });
@@ -235,8 +239,7 @@ describe("HelmView", () => {
     state.helm = helmState({});
     api.createHelmConversation.mockResolvedValue(conversation({ sessionId: SESSION_B, turnCount: 0 }));
     await render();
-    const goHandsFree = findButton(harness.dom.container, (_props, text) => text.includes("Go hands-free"));
-    await harness.act(() => goHandsFree.onClick());
+    await harness.act(() => state.chatViewProps!.composerTool.onSelect());
     // A function, not an id: audio starts inside the tap, then the conversation is created.
     expect(typeof handsFree.start.mock.calls[0]![0]).toBe("function");
     expect(api.createHelmConversation).toHaveBeenCalledOnce();
@@ -247,8 +250,7 @@ describe("HelmView", () => {
     state.helm = helmState({ current: conversation({}) });
     handsFree.status = { install: { installed: false } };
     await render();
-    const toggle = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-pressed"] === false && buttonProps["aria-label"] === "Hands-free");
-    await harness.act(() => toggle.onClick());
+    await harness.act(() => state.chatViewProps!.composerTool.onSelect());
     expect(handsFree.start).not.toHaveBeenCalled();
     expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.["data-setup"])).toBe(true);
   });
@@ -299,5 +301,32 @@ describe("HelmView", () => {
     await harness.act(() => suggestion.onClick());
     expect(api.sendChatMessage).toHaveBeenCalledWith(SESSION_A, "What needs me right now?", undefined, undefined, { waitForDelivery: true });
     expect(props.onMessageSent).toHaveBeenCalledOnce();
+  });
+
+  it("on a phone, names the conversation in one line and moves its controls and status line into the menu", async () => {
+    device.phone = true;
+    const current = conversation({});
+    state.helm = helmState({ current, recent: [conversation({ sessionId: SESSION_B })] });
+    api.setHelmConversationKept.mockResolvedValue({ ...current, kept: true });
+    await render();
+
+    const header = findAllByTag(harness.dom.container, "HEADER")[0];
+    expect(header?.textContent).toContain("Morning triage");
+    expect(header?.textContent).toContain("4 turns");
+    // Off screen until the menu opens; the menu's opener is marked when the line reports a problem.
+    expect(state.chatViewProps!.statusLineTarget).toBeNull();
+    await harness.act(() => state.chatViewProps!.onStatusLineProblemChange(true));
+    const menu = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-label"] === "Helm menu, something needs a look");
+
+    await harness.act(() => menu.onClick());
+    expect(state.chatViewProps!.statusLineTarget).not.toBeNull();
+    const keep = findButton(harness.dom.container, (buttonProps, text) => buttonProps["aria-pressed"] === false && text.startsWith("Keep this conversation"));
+    await harness.act(() => keep.onClick());
+    expect(api.setHelmConversationKept).toHaveBeenCalledWith(SESSION_A, true);
+
+    const recent = findButton(harness.dom.container, (_props, text) => text.startsWith("Recent conversations"));
+    await harness.act(() => recent.onClick());
+    expect(state.chatViewProps!.statusLineTarget).toBeNull();
+    expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.["aria-label"] === "Helm conversations")).toBe(true);
   });
 });

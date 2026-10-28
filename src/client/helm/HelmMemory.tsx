@@ -9,6 +9,7 @@ import {
 } from "../../shared/helm-thinker";
 import { Badge, Button, EmptyHint, Notice, Section, TextArea, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
+import { useIsMobile } from "../useIsMobile";
 import {
   addHelmMemory, formatAgo, formatCredits, formatClock, formatDuration, updateHelmMemory,
   useHelmBrief, useHelmMemory, useHelmRuns, useInvalidateHelm,
@@ -28,6 +29,8 @@ function wordCount(text: string): number {
 
 export default function HelmMemory() {
   const navigate = useNavigate();
+  // A phone opens this from the Helm tab's menu, so the way back is to Helm's conversation.
+  const phone = useIsMobile();
   const memory = useHelmMemory();
   const brief = useHelmBrief();
   const runs = useHelmRuns();
@@ -43,7 +46,7 @@ export default function HelmMemory() {
   return <div className="flex-1 min-h-0 overflow-y-auto">
     <div className={cx(DS.layout.pageColumn, "max-w-4xl space-y-6")}>
       <header className="space-y-2">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home")}><ArrowLeft size={14} />Home</Button>
+        <Button variant="ghost" size="sm" onClick={() => navigate(phone ? "/helm" : "/dashboard/home")}><ArrowLeft size={14} />{phone ? "Helm" : "Home"}</Button>
         <div className="flex items-center gap-3">
           <h1 className={DS.text.pageTitle}>What Helm knows</h1>
           <Link to="/settings?group=helm" className="ml-auto text-xs text-accent hover:underline">How Helm thinks</Link>

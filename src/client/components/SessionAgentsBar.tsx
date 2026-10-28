@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { Bot, ChevronRight, RefreshCw, X } from "lucide-react";
+import { Bot, ChevronRight, RefreshCw } from "lucide-react";
 import {
   cancelSessionAgent,
   dismissSessionAgent,
@@ -25,9 +25,9 @@ import { timeAgo } from "../time";
 import { useIsMobile } from "../useIsMobile";
 import ToolResultModal from "./ToolResultModal";
 import { AGENT_PROSE } from "./shared/prose-classes";
-import { useModalDialog } from "./shared/useModalDialog";
 import { DS, cx } from "../design/tokens";
-import { Button, Details, EmptyHint, IconButton, MetaLine, Notice, StatusIcon } from "../design/primitives";
+import { Button, Details, EmptyHint, MetaLine, Notice, StatusIcon } from "../design/primitives";
+import Sheet from "../design/Sheet";
 
 interface SessionAgentsBarProps {
   sessionId: string | null;
@@ -340,53 +340,7 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
 
 /** The list on a phone: a sheet from the bottom, so the transcript keeps the screen. */
 function AgentsSheet({ summary, onClose, children }: { summary: string; onClose: () => void; children: ReactNode }) {
-  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeButtonRef.current?.focus();
-    return () => {
-      if (previous?.isConnected) previous.focus();
-    };
-  }, []);
-
-  const keepFocusInside = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Tab") return;
-    const focusable = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], summary, [tabindex]:not([tabindex="-1"])') ?? [],
-    );
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!first || !last) {
-      event.preventDefault();
-    } else if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-start md:justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div {...dialogProps} ref={dialogRef} onKeyDown={keepFocusInside} className={DS.surface.compactSheet}>
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border py-2 pl-5 pr-3">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-base font-semibold text-text-primary">Agents</h2>
-            <p className="truncate text-xs tabular-nums text-text-muted">{summary}</p>
-          </div>
-          <IconButton ref={closeButtonRef} label="Close agents" size="md" onClick={onClose}>
-            <X size={16} />
-          </IconButton>
-        </div>
-        <div className="flex-1 overflow-y-auto overscroll-contain px-5 pb-4 pt-2">{children}</div>
-      </div>
-    </div>
-  );
+  return <Sheet title="Agents" detail={summary} closeLabel="Close agents" onClose={onClose}>{children}</Sheet>;
 }
 
 /**

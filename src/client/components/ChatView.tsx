@@ -11,6 +11,7 @@ import {
   type ReactNode,
   type TouchEvent as ReactTouchEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -118,6 +119,7 @@ import { AutopilotIcon, Button, Notice } from "../design/primitives";
 import ChatInput, { type ComposerTool } from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
+import { recentToolFailures, statusLineHasProblem } from "./mcp-status-display";
 import SessionAgentsBar from "./SessionAgentsBar";
 import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
@@ -195,6 +197,13 @@ interface ChatViewProps {
   composerPlaceholder?: string;
   /** Incremented to move focus into the composer (desktop only). */
   composerFocusRequest?: number;
+  /**
+   * Where the status line (model, tools, context) goes when the host shows it elsewhere, such as
+   * Helm's phone menu: rendered into this element, or not at all while it is null.
+   */
+  statusLineTarget?: HTMLElement | null;
+  /** Told whether the status line reports a problem, so a host that folds it away can mark its opener. */
+  onStatusLineProblemChange?: (problem: boolean) => void;
 }
 
 function useThrottledText(value: string, intervalMs: number): string {
@@ -567,6 +576,8 @@ export default function ChatView({
   composerTool,
   composerPlaceholder,
   composerFocusRequest,
+  statusLineTarget,
+  onStatusLineProblemChange,
 }: ChatViewProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1942,6 +1953,21 @@ export default function ChatView({
     ),
     [agentAttachmentCache, agentDirectory, committedEntries, liveEntries],
   );
+  const mcpStatusState: "loading" | "ready" | "error" | "stale" = !sessionId
+    ? "ready"
+    : mcpStatusQuery.error
+      ? mcpStatusQuery.data === undefined ? "error" : "stale"
+      : mcpStatusQuery.data === undefined ? "loading" : "ready";
+  const statusLineProblem = useMemo(() => Boolean(onStatusLineProblemChange) && statusLineHasProblem({
+    servers: mcpStatusQuery.data?.servers ?? [],
+    statusState: mcpStatusState,
+    toolReadiness: mcpStatusQuery.data?.toolReadiness ?? undefined,
+    toolFailureCount: recentToolFailures(displayEntries).length,
+  }), [displayEntries, mcpStatusQuery.data, mcpStatusState, onStatusLineProblemChange]);
+  useEffect(() => {
+    onStatusLineProblemChange?.(statusLineProblem);
+  }, [onStatusLineProblemChange, statusLineProblem]);
+  const placeStatusLine = (line: ReactNode) => (statusLineTarget ? createPortal(line, statusLineTarget) : line);
   const messageAnchorKeys = useMemo(() => {
     const keys = new WeakMap<object, string>();
     displayEntries.forEach((entry, index) => {
@@ -2800,7 +2826,7 @@ export default function ChatView({
         </div>
       )}
       {/* One line of chrome: what this session is, what it runs on, and how it is doing. */}
-      {!historicalMode && <McpStatusBar
+      {!historicalMode && statusLineTarget !== null && placeStatusLine(<McpStatusBar
         leading={sessionModelSummary}
         actions={hasPlan ? planButton : undefined}
         chatEntries={displayEntries}
@@ -2817,17 +2843,13 @@ export default function ChatView({
           : sessionUsageMetricsQuery.error ? String(sessionUsageMetricsQuery.error) : undefined}
         servers={mcpStatusQuery.data?.servers ?? []}
         toolReadiness={mcpStatusQuery.data?.toolReadiness ?? undefined}
-        statusState={!sessionId
-          ? "ready"
-          : mcpStatusQuery.error
-            ? mcpStatusQuery.data === undefined ? "error" : "stale"
-            : mcpStatusQuery.data === undefined ? "loading" : "ready"}
+        statusState={mcpStatusState}
         statusError={mcpStatusQuery.error instanceof Error
           ? mcpStatusQuery.error.message
           : mcpStatusQuery.error ? String(mcpStatusQuery.error) : undefined}
         onAuthenticate={sessionId ? handleMcpAuthenticate : undefined}
         onRefresh={sessionId ? refreshMcpStatus : undefined}
-      />}
+      />)}
       {!historicalMode && (
         <SessionAgentsBar
           sessionId={sessionId}

@@ -1,4 +1,4 @@
-import { BookOpen, Layers, LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, Layers, LayoutDashboard, Settings, ShipWheel, type LucideIcon } from "lucide-react";
 import { useMemo } from "react";
 import {
   describeTabAttention,
@@ -11,8 +11,10 @@ import { CountBadge, StatusIcon } from "../design/primitives";
 interface MobileBottomNavProps {
   activeTab: MobileNavTab;
   onSelectTab: (tab: MobileNavTab) => void;
-  /** What Helm has new for Tim, shown as a mark on Home; null when nothing. */
+  /** What Helm's brief has new for Tim, shown as a mark on Home; null when nothing. */
   homeMark?: string | null;
+  /** What Helm's conversation has new (a reply), shown as a mark on Helm; null when nothing. */
+  helmMark?: string | null;
   taskAttention?: TabAttentionSummary;
   chatAttention?: TabAttentionSummary;
   showDocs?: boolean;
@@ -24,12 +26,15 @@ export function MobileBottomNav({
   activeTab,
   onSelectTab,
   homeMark = null,
+  helmMark = null,
   taskAttention = NO_ATTENTION,
   chatAttention = NO_ATTENTION,
   showDocs = true,
 }: MobileBottomNavProps) {
+  // Helm's brief and its conversation are separate tabs so switching between them stays within thumb reach.
   const tabs: { id: MobileNavTab; label: string; icon: LucideIcon }[] = useMemo(() => [
     { id: "home", label: "Home", icon: LayoutDashboard },
+    { id: "helm", label: "Helm", icon: ShipWheel },
     { id: "work", label: "Work", icon: Layers },
     ...(showDocs ? [{ id: "docs" as MobileNavTab, label: "Docs", icon: BookOpen }] : []),
     { id: "settings", label: "Settings", icon: Settings },
@@ -55,11 +60,8 @@ export function MobileBottomNav({
         {tabs.map(({ id, label, icon: Icon }) => {
           const active = activeTab === id;
           const attention = id === "work" ? workAttention : NO_ATTENTION;
-          const description = id === "home"
-            ? homeMark
-            : id === "work"
-              ? workAttentionDescription
-              : null;
+          const mark = id === "home" ? homeMark : id === "helm" ? helmMark : null;
+          const description = id === "work" ? workAttentionDescription : mark;
           return (
             <button
               key={id}
@@ -79,7 +81,7 @@ export function MobileBottomNav({
                       className="absolute -right-3.5 -top-1.5 ring-2 ring-bg-secondary"
                     />
                   )}
-                  {id === "home" && homeMark && (
+                  {mark && (
                     <span className={DS.status.corner}>
                       <StatusIcon kind="unread" decorative />
                     </span>

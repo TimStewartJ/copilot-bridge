@@ -37,11 +37,11 @@ describe("MobileBottomNav", () => {
     harness = null;
   });
 
-  it("keeps the bar to four destinations, with tasks and chats under Work, Helm inside Home and no quota slot", async () => {
+  it("has five destinations, with Helm's conversation beside Home, tasks and chats under Work, and no quota slot", async () => {
     harness = await createReactDomHarness();
     await harness.render(createElement(MobileBottomNav, { activeTab: "home", onSelectTab: vi.fn() }));
 
-    expect(navLabels(harness.dom.container)).toEqual(["Home", "Work", "Docs", "Settings"]);
+    expect(navLabels(harness.dom.container)).toEqual(["Home", "Helm", "Work", "Docs", "Settings"]);
 
     const nav = findAllByTag(harness.dom.container, "NAV")[0];
     expect(getReactProps(nav)?.style).toEqual({
@@ -85,9 +85,17 @@ describe("MobileBottomNav", () => {
     expect(getReactProps(attentionBadge(needsAnswer))?.className).toContain("bg-accent");
   });
 
-  it("has no separate Helm tab: Helm's conversation lives on Home", async () => {
+  it("marks a new brief on Home and a new reply on Helm, each with its own label", async () => {
     harness = await createReactDomHarness();
-    await harness.render(createElement(MobileBottomNav, { activeTab: "home", onSelectTab: vi.fn() }));
-    expect(navLabels(harness.dom.container)).not.toContain("Helm");
+    await harness.render(createElement(MobileBottomNav, {
+      activeTab: "work",
+      onSelectTab: vi.fn(),
+      homeMark: "New brief from Helm",
+      helmMark: "Helm replied",
+    }));
+
+    expect(navLabels(harness.dom.container)).toEqual(["Home, New brief from Helm", "Helm, Helm replied", "Work", "Docs", "Settings"]);
+    expect(findAllByTag(findButtonByLabel(harness.dom.container, "Helm, Helm replied"), "SPAN")
+      .some((span) => getReactProps(span)?.["data-status"] === "unread")).toBe(true);
   });
 });

@@ -39,9 +39,12 @@ export default function Dashboard(props: DashboardProps) {
   const isMobile = useIsMobile();
   const [mapFilters, changeMapFilters] = useWorkMapFilters();
   const map = useWorkMapQuery(mapActive && !!settings?.providers?.ado, mapFilters.includeArchived, mapFilters.assignedToMeOnly);
+  // Home's views (brief, Everything, All tasks, Work map). A phone's Helm tab shows only the conversation.
+  const homeLinks = !!settings?.providers?.ado;
   return <div className="flex flex-1 min-h-0 flex-col">
-    {settings?.providers?.ado && <nav aria-label="Home and work map" className={cx(DS.surface.pane, "flex shrink-0 gap-2 border-b border-border px-4 py-2")}>
-      <Button variant="ghost" size="sm" aria-current={!mapActive && !tasksActive && !talkActive ? "page" : undefined} onClick={() => navigate("/dashboard/home")}>Home</Button>
+    {homeLinks && !(isMobile && talkActive) && <nav aria-label="Home and work map" className={cx(DS.surface.pane, "flex shrink-0 gap-2 border-b border-border px-4 py-2")}>
+      <Button variant="ghost" size="sm" aria-current={!mapActive && !tasksActive && !talkActive && !classicHome ? "page" : undefined} onClick={() => navigate("/dashboard/home")}>Home</Button>
+      <Button variant="ghost" size="sm" aria-current={classicHome && !mapActive && !tasksActive ? "page" : undefined} onClick={() => navigate("/dashboard/home?view=classic")}>Everything</Button>
       <Button variant="ghost" size="sm" aria-current={tasksActive ? "page" : undefined} onClick={() => navigate(ALL_TASKS_PATH)}>All tasks</Button>
       <Button id="dashboard-work-map-tab" aria-controls="dashboard-work-map-panel" variant="ghost" size="sm" aria-current={mapActive ? "page" : undefined} onClick={() => navigate("/dashboard/work-map")}>Work map</Button>
     </nav>}
@@ -52,7 +55,7 @@ export default function Dashboard(props: DashboardProps) {
       ? <NativeHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />
       : props.helmTalk
         ? <HelmPage pane={talkActive ? "talk" : "brief"} talk={props.helmTalk}
-          brief={(layout) => <HelmHome layout={layout} onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />} />
-        : <HelmHome onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
+          brief={(layout) => <HelmHome layout={layout} everythingInNav={homeLinks} onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />} />
+        : <HelmHome everythingInNav={homeLinks} onSelectTask={props.onSelectTask} onSelectSession={props.onSelectSession} scrollRestoration={props.scrollRestoration} />}
   </div>;
 }
