@@ -1,11 +1,8 @@
 // Schedule store — SQLite persistence
 
 import type { DatabaseSync } from "./db.js";
-import {
-  normalizeCopilotContextTier,
-  type CopilotContextTier,
-} from "../shared/copilot-context.js";
 import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isModelPresetSlot, type ModelPresetSlot } from "../shared/model-presets.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -59,9 +56,11 @@ export interface Schedule {
   cron?: string;
   runAt?: string;
   timezone?: string;
-  model?: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
+  /**
+   * Runs on this tier's current model, effort and context (Settings › Models); unset follows New chats.
+   * The table's older model, reasoningEffort and contextTier columns are no longer read.
+   */
+  modelTier?: ModelPresetSlot;
   /** Profile for sessions this schedule starts; unset follows the settings default. */
   promptProfile?: PromptProfileId;
 
@@ -84,16 +83,14 @@ export interface Schedule {
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
   Partial<Pick<Schedule,
-    "cron" | "runAt" | "timezone" | "model" | "reasoningEffort" | "contextTier" | "promptProfile"
+    "cron" | "runAt" | "timezone" | "modelTier" | "promptProfile"
     | "maxRuns" | "expiresAt" | "autoArchiveKeep"
   >>;
 
 export type ScheduleUpdate = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
-  model?: string | null;
-  reasoningEffort?: string | null;
-  contextTier?: CopilotContextTier | null;
+  modelTier?: ModelPresetSlot | null;
   promptProfile?: PromptProfileId | null;
   autoArchiveKeep?: number | null;
 };
@@ -140,9 +137,7 @@ export function createScheduleStore(db: DatabaseSync) {
       cron: row.cron ?? undefined,
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
-      model: row.model ?? undefined,
-      reasoningEffort: row.reasoningEffort ?? undefined,
-      contextTier: normalizeCopilotContextTier(row.contextTier),
+      modelTier: isModelPresetSlot(row.modelTier) ? row.modelTier : undefined,
       promptProfile: isPromptProfileId(row.promptProfile) ? row.promptProfile : undefined,
       enabled: row.enabled === 1,
       lastSessionId: row.lastSessionId ?? undefined,
@@ -174,13 +169,13 @@ export function createScheduleStore(db: DatabaseSync) {
     const now = new Date().toISOString();
 
     db.prepare(`
-      INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone, model,
-        reasoningEffort, contextTier, promptProfile, enabled, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?)
+      INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone, modelTier,
+        promptProfile, enabled, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
-      input.model ?? null, input.reasoningEffort ?? null, input.contextTier ?? null,
+      input.modelTier ?? null,
       input.promptProfile ?? null,
       now, now,
       input.maxRuns ?? null, input.expiresAt ?? null, input.autoArchiveKeep ?? null,
@@ -201,9 +196,7 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.cron !== undefined) { fields.push("cron = ?"); values.push(updates.cron); }
     if (updates.runAt !== undefined) { fields.push("runAt = ?"); values.push(updates.runAt); }
     if (updates.timezone !== undefined) { fields.push("timezone = ?"); values.push(updates.timezone); }
-    if (updates.model !== undefined) { fields.push("model = ?"); values.push(updates.model); }
-    if (updates.reasoningEffort !== undefined) { fields.push("reasoningEffort = ?"); values.push(updates.reasoningEffort); }
-    if (updates.contextTier !== undefined) { fields.push("contextTier = ?"); values.push(updates.contextTier); }
+    if (updates.modelTier !== undefined) { fields.push("modelTier = ?"); values.push(updates.modelTier); }
     if (updates.promptProfile !== undefined) { fields.push("promptProfile = ?"); values.push(updates.promptProfile); }
     if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }

@@ -7,7 +7,8 @@ import type { ChecklistStore } from "./checklist-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import { buildSubagentPlan } from "../shared/subagent-settings.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
-import { resolveModelRole } from "./model-roles.js";
+import { isModelUsable, resolveModelRole, resolveModelTier } from "./model-roles.js";
+import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { TagStore } from "./tag-store.js";
 import type { DocsIndex } from "./docs-index.js";
 import type { DocsStore } from "./docs-store.js";
@@ -75,9 +76,8 @@ export interface ScheduleContext {
   type: "cron" | "once";
   runCount: number;
   lastRunAt?: string;
-  model?: string;
-  reasoningEffort?: string;
-  contextTier?: CopilotContextTier;
+  /** Resolved against Settings › Models when the session is created; unset follows New chats. */
+  modelTier?: ModelPresetSlot;
   promptProfile?: PromptProfileId;
   /** The session of the schedule's previous run. */
   previousSessionId?: string;
@@ -296,18 +296,34 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   if (!forResume) {
     if (sessionId) cfg.sessionId = sessionId;
 
-    // Explicit launch override > schedule override > settings store > deps.config > SDK default
-    const explicitModelOverride = modelOverride ?? scheduleContext?.model;
-    const model = explicitModelOverride ?? settings?.model ?? deps.config.model;
+    const modelMetadata = params.options?.modelMetadata;
+    // A schedule's tier gives its model, effort and context as one choice, never New chats' values.
+    // When the tier can't be used, the run follows New chats.
+    const scheduleTier = scheduleContext?.modelTier && !modelOverride
+      ? resolveModelTier(settings, scheduleContext.modelTier, modelMetadata)
+      : undefined;
+    if (scheduleTier && "warning" in scheduleTier) {
+      console.warn(`[schedule] "${scheduleContext?.name}": ${scheduleTier.warning} Running on the New chats model instead.`);
+    }
+    const tierChoice = scheduleTier?.model ? scheduleTier : undefined;
+
+    // Explicit launch override > schedule tier > settings store > deps.config > SDK default
+    const explicitModelOverride = modelOverride ?? tierChoice?.model;
+    let model = explicitModelOverride ?? settings?.model ?? deps.config.model;
+    // New chats may follow the same unusable tier; then the SDK picks rather than failing the run.
+    const fallbackUnusable = !!scheduleTier && !scheduleTier.model && !!model && !isModelUsable(model, modelMetadata);
+    if (fallbackUnusable) model = undefined;
     if (model) cfg.model = model;
+    // Effort and context come from the tier alone, or from the SDK when it picks the model.
+    const scheduleOwnsOptions = !!tierChoice || fallbackUnusable;
 
     const selectedModelMetadata = model
-      ? params.options?.modelMetadata?.find((candidate) => candidate.id === model)
+      ? modelMetadata?.find((candidate) => candidate.id === model)
       : undefined;
 
     // An explicit model override must not inherit an unsupported effort from
     // the global model. Unknown override models use their SDK default.
-    const scheduleReasoningEffort = scheduleContext?.reasoningEffort;
+    const scheduleReasoningEffort = tierChoice?.reasoningEffort;
     if (reasoningEffortOverride) {
       cfg.reasoningEffort = reasoningEffortOverride;
     } else if (
@@ -318,7 +334,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       )
     ) {
       cfg.reasoningEffort = scheduleReasoningEffort;
-    } else {
+    } else if (!scheduleOwnsOptions) {
       const reasoningEffort = settings?.reasoningEffort;
       const overrideModelSupportsGlobalEffort = !explicitModelOverride
         || selectedModelMetadata?.supportedReasoningEfforts?.includes(reasoningEffort ?? "") === true;
@@ -328,8 +344,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
 
     const requestedContextTier = contextTierOverride
-      ?? scheduleContext?.contextTier
-      ?? normalizeCopilotContextTier(settings?.contextTier);
+      ?? tierChoice?.contextTier
+      ?? (scheduleOwnsOptions ? undefined : normalizeCopilotContextTier(settings?.contextTier));
     const contextTier = selectedModelMetadata
       ? resolveContextTierForModel(selectedModelMetadata, requestedContextTier)
       : requestedContextTier;

@@ -1,17 +1,13 @@
 import { useState, useEffect } from "react";
 import type { ModelInfo, Schedule, ScheduleCreateInput, ScheduleRun } from "../api";
 import { createSchedule, patchSchedule, fetchServerTimezone, getSessionRunState } from "../api";
-import { formatReasoningEffortLabel } from "../reasoning-effort";
-import { useModelsQuery } from "../hooks/queries/useModels";
+import { useModelRolesQuery, useModelsQuery } from "../hooks/queries/useModels";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
-import {
-  getContextTierLabel,
-  modelSupportsLongContext,
-  type CopilotContextTier,
-} from "../../shared/copilot-context.js";
 import { getPromptProfileInfo, PROMPT_PROFILES, type PromptProfileId } from "../../shared/prompt-profiles.js";
+import { MODEL_PRESET_SLOTS, isModelPresetSlot, type ModelPresetSlot } from "../../shared/model-presets.js";
+import { MODEL_TIER_INFO, type ModelRolesView } from "../../shared/model-roles.js";
 import {
   X,
   Clock,
@@ -44,6 +40,29 @@ const CRON_PRESETS = [
   { label: "Custom", cron: "" },
 ];
 const MAX_AUTO_ARCHIVE_KEEP = 1000;
+const SAME_AS_NEW_CHATS = "Same as new chats";
+
+type ScheduleTiers = ModelRolesView["tiers"];
+
+export interface ScheduleTierSummary {
+  /** The tier's model now; unset when the tier can't be used and runs follow New chats. */
+  model?: string;
+  label: string;
+}
+
+/** What a tier schedule runs on now. `models` is the available list; empty while it loads. */
+export function describeScheduleTier(slot: ModelPresetSlot, tiers: ScheduleTiers | undefined, models: readonly ModelInfo[]): ScheduleTierSummary {
+  const tierLabel = `${MODEL_TIER_INFO[slot].label} tier`;
+  const preset = tiers?.[slot];
+  if (!preset?.model) return { label: `${tierLabel} (no model yet)` };
+  const known = models.find((model) => model.id === preset.model);
+  if (models.length > 0 && !known) return { label: `${tierLabel} (${preset.model} unavailable)` };
+  return { model: preset.model, label: `${tierLabel} · ${known?.name ?? preset.model}` };
+}
+
+function useScheduleTiers(): ScheduleTiers | undefined {
+  return useModelRolesQuery().data?.tiers;
+}
 
 // Format a Date as a minute-precision `datetime-local` input value in local time.
 function toDatetimeLocalValue(date: Date): string {
@@ -90,11 +109,7 @@ export default function ScheduleDetailSheet({
   // schedule returns to view mode instead of closing the whole sheet.
   const dismissTarget = isEditing && !isCreating ? onSwitchToView : onClose;
   const { titleId, dialogProps } = useModalDialog({ onDismiss: dismissTarget });
-  const {
-    data: modelData,
-    isLoading: modelsLoading,
-    error: modelsError,
-  } = useModelsQuery();
+  const { data: modelData } = useModelsQuery();
   const models = (modelData ?? [])
     .filter((model) => !model.policy || model.policy.state !== "disabled")
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -113,8 +128,6 @@ export default function ScheduleDetailSheet({
             taskId={taskId}
             isCreating={isCreating}
             models={models}
-            modelsLoading={modelsLoading}
-            modelsError={modelsError}
             onClose={isCreating ? onClose : onSwitchToView}
             onSaved={onSaved}
           />
@@ -174,19 +187,11 @@ function ViewMode({
   const [showOverflow, setShowOverflow] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
-  const selectedModel = schedule.model
-    ? models.find((model) => model.id === schedule.model)
-    : undefined;
-  const modelLabel = schedule.model
-    ? selectedModel?.name ?? schedule.model
-    : "Bridge default";
-  const reasoningEffortLabel = schedule.reasoningEffort
-    ? formatReasoningEffortLabel(schedule.reasoningEffort) ?? schedule.reasoningEffort
-    : "Bridge default";
-  const contextTierLabel = schedule.contextTier
-    ? getContextTierLabel(selectedModel, schedule.contextTier)
-      ?? (schedule.contextTier === "long_context" ? "Long context" : "Standard context")
-    : "Bridge default";
+  const tiers = useScheduleTiers();
+  const tier = schedule.modelTier ? describeScheduleTier(schedule.modelTier, tiers, models) : undefined;
+  const modelLabel = tier
+    ? tier.model ? tier.label : `${tier.label}, runs as new chats`
+    : SAME_AS_NEW_CHATS;
   const promptProfileLabel = schedule.promptProfile
     ? getPromptProfileInfo(schedule.promptProfile).label
     : "Bridge default";
@@ -267,20 +272,8 @@ function ViewMode({
             </div>
             <div>
               <span className="text-text-faint block mb-0.5">AI model</span>
-              <span className="text-text-secondary" title={schedule.model}>
+              <span className="text-text-secondary" title={tier?.model}>
                 {modelLabel}
-              </span>
-            </div>
-            <div>
-              <span className="text-text-faint block mb-0.5">Reasoning effort</span>
-              <span className="text-text-secondary" title={schedule.reasoningEffort}>
-                {reasoningEffortLabel}
-              </span>
-            </div>
-            <div>
-              <span className="text-text-faint block mb-0.5">Context size</span>
-              <span className="text-text-secondary" title={schedule.contextTier}>
-                {contextTierLabel}
               </span>
             </div>
             <div>
@@ -482,8 +475,6 @@ function EditMode({
   taskId,
   isCreating,
   models,
-  modelsLoading,
-  modelsError,
   onClose,
   onSaved,
 }: {
@@ -492,8 +483,6 @@ function EditMode({
   taskId: string;
   isCreating: boolean;
   models: ModelInfo[];
-  modelsLoading: boolean;
-  modelsError: Error | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -503,9 +492,7 @@ function EditMode({
   const [cronExpr, setCronExpr] = useState(schedule?.cron ?? "0 8 * * 1-5");
   const [runAt, setRunAt] = useState(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
-  const [model, setModel] = useState(schedule?.model ?? "");
-  const [reasoningEffort, setReasoningEffort] = useState(schedule?.reasoningEffort ?? "");
-  const [contextTier, setContextTier] = useState<"" | CopilotContextTier>(schedule?.contextTier ?? "");
+  const [modelTier, setModelTier] = useState<"" | ModelPresetSlot>(schedule?.modelTier ?? "");
   const [promptProfile, setPromptProfile] = useState<"" | PromptProfileId>(schedule?.promptProfile ?? "");
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
@@ -530,20 +517,13 @@ function EditMode({
     setCronExpr(schedule?.cron ?? "0 8 * * 1-5");
     setRunAt(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
     setTimezone(schedule?.timezone ?? "");
-    setModel(schedule?.model ?? "");
-    setReasoningEffort(schedule?.reasoningEffort ?? "");
-    setContextTier(schedule?.contextTier ?? "");
+    setModelTier(schedule?.modelTier ?? "");
     setPromptProfile(schedule?.promptProfile ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
     setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");
   }, [schedule]);
 
-  const selectedModel = model ? models.find((candidate) => candidate.id === model) : undefined;
-  const reasoningEffortOptions = selectedModel?.supportedReasoningEfforts ?? [];
-  const contextTierOptions: CopilotContextTier[] = modelSupportsLongContext(selectedModel)
-    ? ["default", "long_context"]
-    : [];
-
+  const tiers = useScheduleTiers();
   const handleSave = async () => {
     if (!name.trim() || !prompt.trim()) { setError("Name and prompt are required"); return; }
     if (type === "cron" && !cronExpr.trim()) { setError("Cron expression is required"); return; }
@@ -575,35 +555,20 @@ function EditMode({
           type,
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
-          ...(model ? { model } : {}),
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-          ...(contextTier ? { contextTier } : {}),
+          ...(modelTier ? { modelTier } : {}),
           ...(promptProfile ? { promptProfile } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
           ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
         await createSchedule(input);
       } else {
-        const modelChanged = model !== (schedule?.model ?? "");
-        const reasoningEffortChanged = reasoningEffort !== (schedule?.reasoningEffort ?? "");
-        const contextTierChanged = contextTier !== (schedule?.contextTier ?? "");
         await patchSchedule(schedule!.id, {
           name: name.trim(),
           prompt: prompt.trim(),
           cron: type === "cron" ? cronExpr.trim() : undefined,
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
-          model: model || null,
-          ...(modelChanged
-            ? (reasoningEffort ? { reasoningEffort } : {})
-            : reasoningEffortChanged
-              ? { reasoningEffort: reasoningEffort || null }
-              : {}),
-          ...(modelChanged
-            ? (contextTier ? { contextTier } : {})
-            : contextTierChanged
-              ? { contextTier: contextTier || null }
-              : {}),
+          modelTier: modelTier || null,
           ...(promptProfile !== (schedule?.promptProfile ?? "") ? { promptProfile: promptProfile || null } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
           autoArchiveKeep: parsedAutoArchiveKeep,
@@ -722,75 +687,12 @@ function EditMode({
               <select
                 id="schedule-model-select"
                 className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
-                value={model}
-                onChange={(e) => {
-                  const nextModel = e.target.value;
-                  setModel(nextModel);
-                  if (nextModel === (schedule?.model ?? "")) {
-                    setReasoningEffort(schedule?.reasoningEffort ?? "");
-                    setContextTier(schedule?.contextTier ?? "");
-                  } else {
-                    setReasoningEffort("");
-                    setContextTier("");
-                  }
-                }}
+                value={modelTier}
+                onChange={(e) => setModelTier(isModelPresetSlot(e.target.value) ? e.target.value : "")}
               >
-                <option value="">Bridge default</option>
-                {model && !models.some((candidate) => candidate.id === model) && (
-                  <option value={model}>{model} (unavailable)</option>
-                )}
-                {models.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
-                ))}
-              </select>
-              {(modelsLoading || modelsError) && <div className="text-[10px] text-text-faint mt-1">
-                {modelsLoading ? "Loading available models..." : "Available models could not be loaded."}
-              </div>}
-            </div>
-
-            <div>
-              <label className="text-text-faint block mb-1" htmlFor="schedule-reasoning-effort-select">
-                Reasoning effort
-              </label>
-              <select
-                id="schedule-reasoning-effort-select"
-                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
-                value={reasoningEffort}
-                disabled={!model || (reasoningEffortOptions.length === 0 && !reasoningEffort)}
-                onChange={(e) => setReasoningEffort(e.target.value)}
-              >
-                <option value="">Bridge default</option>
-                {reasoningEffort && !reasoningEffortOptions.includes(reasoningEffort) && (
-                  <option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>
-                )}
-                {reasoningEffortOptions.map((effort) => (
-                  <option key={effort} value={effort}>
-                    {formatReasoningEffortLabel(effort) ?? effort}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-text-faint block mb-1" htmlFor="schedule-context-tier-select">
-                Context size
-              </label>
-              <select
-                id="schedule-context-tier-select"
-                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
-                value={contextTier}
-                disabled={!model || (contextTierOptions.length === 0 && !contextTier)}
-                onChange={(e) => setContextTier(e.target.value as "" | CopilotContextTier)}
-              >
-                <option value="">Bridge default</option>
-                {contextTier && !contextTierOptions.includes(contextTier) && (
-                  <option value={contextTier}>{contextTier} (unavailable)</option>
-                )}
-                {contextTierOptions.map((tier) => (
-                  <option key={tier} value={tier}>
-                    {getContextTierLabel(selectedModel, tier)
-                      ?? (tier === "long_context" ? "Long context" : "Standard context")}
-                  </option>
+                <option value="">{SAME_AS_NEW_CHATS}</option>
+                {MODEL_PRESET_SLOTS.map((slot) => (
+                  <option key={slot} value={slot}>{describeScheduleTier(slot, tiers, models).label}</option>
                 ))}
               </select>
             </div>

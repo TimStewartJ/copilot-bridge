@@ -75,7 +75,7 @@ describe("fresh database schema", () => {
       (fresh.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((row) => row.name);
     expect(columnNames("tasks")).toContain("completedAt");
     expect(columnNames("tasks")).toContain("deferred");
-    expect(columnNames("schedules")).toEqual(expect.arrayContaining(["reasoningEffort", "contextTier"]));
+    expect(columnNames("schedules")).toEqual(expect.arrayContaining(["reasoningEffort", "contextTier", "modelTier"]));
     expect(columnNames("bridge_session_state")).toEqual(
       expect.arrayContaining(["pendingAutoName", "pendingAutoNameReplaceTitle"]),
     );

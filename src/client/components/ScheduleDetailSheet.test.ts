@@ -24,6 +24,7 @@ const queryMocks = vi.hoisted(() => ({
 
 const modelQueryMocks = vi.hoisted(() => ({
   useModelsQuery: vi.fn(),
+  useModelRolesQuery: vi.fn(),
 }));
 
 vi.mock("../api", () => apiMocks);
@@ -82,13 +83,6 @@ async function setRunAt(harness: ReactDomHarness, value: string) {
 
 async function selectModel(harness: ReactDomHarness, value: string) {
   const select = findModelSelect(harness);
-  await harness.act(async () => {
-    await getReactProps(select)?.onChange?.({ target: { value } });
-  });
-}
-
-async function selectLaunchOption(harness: ReactDomHarness, id: string, value: string) {
-  const select = findSelectById(harness, id);
   await harness.act(async () => {
     await getReactProps(select)?.onChange?.({ target: { value } });
   });
@@ -255,6 +249,16 @@ beforeEach(() => {
     isLoading: false,
     error: null,
   });
+  modelQueryMocks.useModelRolesQuery.mockReset();
+  modelQueryMocks.useModelRolesQuery.mockReturnValue({
+    data: {
+      tiers: {
+        preset1: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+        preset3: { model: "retired-model" },
+      },
+      roles: [],
+    },
+  });
 });
 
 afterEach(() => {
@@ -298,9 +302,7 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
 
       const future = toDatetimeLocalValue(new Date(NOW.getTime() + 24 * 60 * 60_000));
       await setRunAt(harness, future);
-      await selectModel(harness, "claude-sonnet-5");
-      await selectLaunchOption(harness, "schedule-reasoning-effort-select", "high");
-      await selectLaunchOption(harness, "schedule-context-tier-select", "long_context");
+      await selectModel(harness, "preset3");
 
       await clickButton(harness, "Create Schedule");
 
@@ -309,9 +311,7 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
       const input = apiMocks.createSchedule.mock.calls[0][0];
       expect(input.type).toBe("once");
       expect(input.runAt).toBe(new Date(future).toISOString());
-      expect(input.model).toBe("claude-sonnet-5");
-      expect(input.reasoningEffort).toBe("high");
-      expect(input.contextTier).toBe("long_context");
+      expect(input.modelTier).toBe("preset3");
       expect(harness.dom.container.textContent ?? "").not.toContain("Run time must be in the future");
       await waitUntilAct(harness.act, () => onSaved.mock.calls.length > 0);
       expect(onSaved).toHaveBeenCalledOnce();
@@ -321,102 +321,37 @@ describe("ScheduleDetailSheet one-time run-at guard", () => {
   });
 });
 
-describe("ScheduleDetailSheet model override", () => {
-  it("shows saved model launch overrides in view mode", async () => {
-    const { harness } = await renderViewSheet({
-      ...makeRecurringSchedule(),
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-    try {
-      const text = harness.dom.container.textContent ?? "";
-      expect(text).toContain("Claude Sonnet 5");
-      expect(text).toContain("High");
-      expect(text).toContain("Long context");
-    } finally {
-      await harness.cleanup();
+describe("ScheduleDetailSheet model tier", () => {
+  it("shows what a tier schedule runs on now, and when its tier can't be used", async () => {
+    for (const [modelTier, expected] of [
+      [undefined, "Same as new chats"],
+      ["preset1", "Fast tier · GPT-5.6 Sol"],
+      ["preset2", "Standard tier (no model yet), runs as new chats"],
+      ["preset3", "Deep tier (retired-model unavailable), runs as new chats"],
+    ] as const) {
+      const { harness } = await renderViewSheet({ ...makeRecurringSchedule(), ...(modelTier ? { modelTier } : {}) });
+      try {
+        expect(harness.dom.container.textContent ?? "").toContain(expected);
+      } finally {
+        await harness.cleanup();
+      }
     }
   });
 
-  it("changes and clears the model override while editing", async () => {
-    const { harness } = await renderEditSheet({
-      ...makeRecurringSchedule(),
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
+  it("moves a schedule onto a tier and back to New chats", async () => {
+    const { harness } = await renderEditSheet(makeRecurringSchedule());
     try {
-      expect(getReactProps(findModelSelect(harness))?.value).toBe("claude-sonnet-5");
-      expect(getReactProps(findSelectById(harness, "schedule-reasoning-effort-select"))?.value).toBe("high");
-      expect(getReactProps(findSelectById(harness, "schedule-context-tier-select"))?.value).toBe("long_context");
-      await selectModel(harness, "gpt-5.6-sol");
-      expect(getReactProps(findSelectById(harness, "schedule-reasoning-effort-select"))?.value).toBe("");
-      expect(getReactProps(findSelectById(harness, "schedule-context-tier-select"))?.value).toBe("");
+      expect(getReactProps(findModelSelect(harness))?.value).toBe("");
+      await selectModel(harness, "preset1");
       await clickButton(harness, "Save Changes");
       await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
-      expect(apiMocks.patchSchedule.mock.calls[0][1].model).toBe("gpt-5.6-sol");
-      expect(apiMocks.patchSchedule.mock.calls[0][1]).not.toHaveProperty("reasoningEffort");
-      expect(apiMocks.patchSchedule.mock.calls[0][1]).not.toHaveProperty("contextTier");
+      expect(apiMocks.patchSchedule.mock.calls[0][1]).toMatchObject({ modelTier: "preset1" });
 
       apiMocks.patchSchedule.mockClear();
       await selectModel(harness, "");
       await clickButton(harness, "Save Changes");
       await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
-      expect(apiMocks.patchSchedule.mock.calls[0][1].model).toBeNull();
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("restores saved launch overrides when switching back to the original model", async () => {
-    const { harness } = await renderEditSheet({
-      ...makeRecurringSchedule(),
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-    try {
-      await selectModel(harness, "gpt-5.6-sol");
-      await selectModel(harness, "claude-sonnet-5");
-      expect(getReactProps(findSelectById(harness, "schedule-reasoning-effort-select"))?.value).toBe("high");
-      expect(getReactProps(findSelectById(harness, "schedule-context-tier-select"))?.value).toBe("long_context");
-
-      await clickButton(harness, "Save Changes");
-      await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
-      expect(apiMocks.patchSchedule.mock.calls[0][1]).not.toHaveProperty("reasoningEffort");
-      expect(apiMocks.patchSchedule.mock.calls[0][1]).not.toHaveProperty("contextTier");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("changes and clears explicit effort and context overrides", async () => {
-    const { harness } = await renderEditSheet({
-      ...makeRecurringSchedule(),
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-    try {
-      await selectLaunchOption(harness, "schedule-reasoning-effort-select", "low");
-      await selectLaunchOption(harness, "schedule-context-tier-select", "default");
-      await clickButton(harness, "Save Changes");
-      await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
-      expect(apiMocks.patchSchedule.mock.calls[0][1]).toMatchObject({
-        reasoningEffort: "low",
-        contextTier: "default",
-      });
-
-      apiMocks.patchSchedule.mockClear();
-      await selectLaunchOption(harness, "schedule-reasoning-effort-select", "");
-      await selectLaunchOption(harness, "schedule-context-tier-select", "");
-      await clickButton(harness, "Save Changes");
-      await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);
-      expect(apiMocks.patchSchedule.mock.calls[0][1]).toMatchObject({
-        reasoningEffort: null,
-        contextTier: null,
-      });
+      expect(apiMocks.patchSchedule.mock.calls[0][1]).toMatchObject({ modelTier: null });
     } finally {
       await harness.cleanup();
     }

@@ -103,9 +103,7 @@ describe("schedule tools", () => {
       prompt: "continue working",
       type: "cron",
       cron: "0 0 * * *",
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
+      modelTier: "preset3",
     });
     const tool = getTool(ctx, "schedule_list");
 
@@ -124,26 +122,13 @@ describe("schedule tools", () => {
       id: schedule.id,
       taskId: task.id,
       name: "Current metadata",
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
+      modelTier: "deep",
     });
     expect(result.schedules[0]).not.toHaveProperty("sessionMode");
   });
 
-  it("creates, updates, and clears schedule model launch overrides", async () => {
+  it("creates, changes, and clears a schedule's model tier by its Settings name", async () => {
     const sessionManager = createMockSessionManager();
-    sessionManager.listModels = async () => [{
-      id: "gpt-5.6-sol",
-      name: "GPT-5.6 Sol",
-      supportedReasoningEfforts: ["high"],
-      billing: {
-        tokenPrices: {
-          contextMax: 200_000,
-          longContext: { contextMax: 1_000_000 },
-        },
-      },
-    }] as any;
     const { ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Schedule Host");
     scheduler.initialize(sessionManager as any, {
@@ -154,36 +139,25 @@ describe("schedule tools", () => {
     });
     const createTool = getTool(ctx, "schedule_create");
     const updateTool = getTool(ctx, "schedule_update");
-    const meta = {
-      sessionId: "session-1",
-      toolCallId: "tool-model",
-      toolName: "schedule_create",
-      arguments: {},
-    };
+    const meta = { sessionId: "session-1", toolCallId: "tool-tier", toolName: "schedule_create", arguments: {} };
 
     const created = await createTool.handler({
       taskId: task.id,
-      name: "Model override",
+      name: "Tiered",
       prompt: "continue working",
       type: "cron",
       cron: "0 0 * * *",
-      model: "  gpt-5.6-sol  ",
-      reasoningEffort: " high ",
-      contextTier: "long_context",
+      modelTier: "fast",
     }, meta) as { scheduleId: string };
-    expect(ctx.scheduleStore.getSchedule(created.scheduleId)).toMatchObject({
-      model: "gpt-5.6-sol",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.modelTier).toBe("preset1");
 
-    await updateTool.handler({
-      scheduleId: created.scheduleId,
-      model: null,
-    }, { ...meta, toolName: "schedule_update" });
-    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.model).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.reasoningEffort).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.contextTier).toBeUndefined();
+    const update = (args: Record<string, unknown>) => updateTool.handler({ scheduleId: created.scheduleId, ...args }, { ...meta, toolName: "schedule_update" });
+    await update({ modelTier: "standard" });
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.modelTier).toBe("preset2");
+    expect(await update({ modelTier: "preset1" })).toMatchObject({ resultType: "failure" });
+    expect(await update({ model: "gpt-5.6-sol" })).toMatchObject({ resultType: "failure" });
+    await update({ modelTier: null });
+    expect(ctx.scheduleStore.getSchedule(created.scheduleId)?.modelTier).toBeUndefined();
   });
 
   it("filters schedules by name (case-insensitive substring)", async () => {

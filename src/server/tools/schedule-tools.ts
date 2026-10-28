@@ -4,7 +4,7 @@ import {
   findUnknownFields,
   formatUnknownFieldsError,
   normalizeScheduleAutoArchiveKeep,
-  validateScheduleLaunchOptionUpdates,
+  validateScheduleLaunchOptions,
 } from "../schedule-validation.js";
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
@@ -16,6 +16,29 @@ import {
   type BridgeToolsMcpServer,
 } from "../agent-tools-mcp/index.js";
 import { isLocalStagingModule } from "../path-utils.js";
+import type { ModelPresetSlot } from "../../shared/model-presets.js";
+
+// Agents name tiers as Settings › Models shows them; the store keeps the preset slot.
+const TOOL_MODEL_TIERS = { fast: "preset1", standard: "preset2", deep: "preset3" } as const satisfies Record<string, ModelPresetSlot>;
+type ToolModelTier = keyof typeof TOOL_MODEL_TIERS;
+
+function toolModelTierName(slot: ModelPresetSlot | undefined): ToolModelTier | undefined {
+  return (Object.keys(TOOL_MODEL_TIERS) as ToolModelTier[]).find((name) => TOOL_MODEL_TIERS[name] === slot);
+}
+
+/** Replaces `modelTier`'s name with its preset slot in the handler's own copy of the arguments. */
+function mapToolModelTier(args: Record<string, unknown>): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(args, "modelTier")) return undefined;
+  const value = args.modelTier;
+  if (value === null || value === "") return undefined;
+  if (typeof value !== "string" || !Object.prototype.hasOwnProperty.call(TOOL_MODEL_TIERS, value)) {
+    return "modelTier must be fast, standard, deep, or null";
+  }
+  args.modelTier = TOOL_MODEL_TIERS[value as ToolModelTier];
+  return undefined;
+}
+
+const MODEL_TIER_DESCRIPTION = "Model tier from Settings › Models (fast, standard or deep). Each run uses the model, reasoning effort and context size the tier has then. Omit to follow the New chats setting.";
 
 function getScheduler(ctx: AppContext): typeof schedulerModule {
   if (ctx.scheduler) return ctx.scheduler;
@@ -61,9 +84,7 @@ const SCHEDULE_CREATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
-  "model",
-  "reasoningEffort",
-  "contextTier",
+  "modelTier",
   "promptProfile",
   "maxRuns",
   "expiresAt",
@@ -76,9 +97,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "cron",
   "runAt",
   "timezone",
-  "model",
-  "reasoningEffort",
-  "contextTier",
+  "modelTier",
   "promptProfile",
   "enabled",
   "maxRuns",
@@ -109,9 +128,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: { type: "string", description: "Cron expression (e.g. '0 8 * * 1-5' for weekdays at 8am). Required for type=cron. Interpreted in the schedule's timezone (server-local by default)." },
         runAt: { type: "string", description: "ISO timestamp for one-shot runs (e.g. '2026-03-21T18:00:00Z'). Required for type=once. Always interpreted as UTC." },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/New_York'). Defaults to server-local timezone if omitted." },
-        model: { type: "string", description: "AI model ID for sessions created by this schedule. Omit to use the global Bridge default." },
-        reasoningEffort: { type: "string", description: "Reasoning effort for sessions created by this schedule. Requires model and must be supported by it." },
-        contextTier: { type: "string", enum: ["default", "long_context"], description: "Context size tier for sessions created by this schedule. Requires model; long_context must be supported by it." },
+        modelTier: { type: "string", enum: ["fast", "standard", "deep"], description: MODEL_TIER_DESCRIPTION },
         promptProfile: { type: "string", enum: ["engineer", "assistant", "monitor"], description: "System prompt profile for sessions created by this schedule. Use monitor for recurring checks that report changes. Omit to use the Bridge default." },
         maxRuns: { type: "integer", minimum: 1, description: "Auto-disable after N runs (optional)" },
         expiresAt: { type: "string", description: "ISO timestamp after which the schedule auto-disables (optional)" },
@@ -122,6 +139,9 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
     handler: async (args: any) => {
       const unknownFieldFailure = rejectUnknownFields(args, SCHEDULE_CREATE_FIELDS);
       if (unknownFieldFailure) return unknownFieldFailure;
+      args = { ...args };
+      const modelTierError = mapToolModelTier(args);
+      if (modelTierError) return toolFailure(modelTierError);
       if (args.type === "cron" && !args.cron) return toolFailure("cron expression is required for cron schedules");
       if (args.type === "once" && !args.runAt) return toolFailure("runAt is required for one-shot schedules");
       const scheduler = getScheduler(ctx);
@@ -131,10 +151,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       if (!normalizedAutoArchiveKeep.ok) return toolFailure(normalizedAutoArchiveKeep.error);
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
-      const launchOptions = await validateScheduleLaunchOptionUpdates({
-        input: args,
-        listModels: () => ctx.sessionManager.listModels(),
-      });
+      const launchOptions = validateScheduleLaunchOptions(args);
       if (!launchOptions.ok) return toolFailure(launchOptions.error);
 
       const schedule = ctx.scheduleStore.createSchedule({
@@ -145,9 +162,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: args.cron,
         runAt: args.runAt,
         timezone: args.timezone,
-        model: launchOptions.updates.model ?? undefined,
-        reasoningEffort: launchOptions.updates.reasoningEffort ?? undefined,
-        contextTier: launchOptions.updates.contextTier ?? undefined,
+        modelTier: launchOptions.updates.modelTier ?? undefined,
         promptProfile: launchOptions.updates.promptProfile ?? undefined,
         maxRuns: args.maxRuns,
         expiresAt: args.expiresAt,
@@ -178,9 +193,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
         cron: { type: "string", description: "New cron expression" },
         runAt: { type: "string", description: "New one-shot run time (ISO timestamp)" },
         timezone: { type: "string", description: "IANA timezone for cron interpretation (e.g. 'America/Los_Angeles')" },
-        model: { type: ["string", "null"], description: "AI model ID for future schedule runs. Null clears the override and restores the global Bridge default." },
-        reasoningEffort: { type: ["string", "null"], description: "Reasoning effort for future runs. Requires a schedule model and must be supported by it. Null clears the override." },
-        contextTier: { anyOf: [{ type: "string", enum: ["default", "long_context"] }, { type: "null" }], description: "Context size tier for future runs. Requires a schedule model; long_context must be supported by it. Null clears the override." },
+        modelTier: { anyOf: [{ type: "string", enum: ["fast", "standard", "deep"] }, { type: "null" }], description: `${MODEL_TIER_DESCRIPTION} Null follows New chats again.` },
         promptProfile: { anyOf: [{ type: "string", enum: ["engineer", "assistant", "monitor"] }, { type: "null" }], description: "System prompt profile for future runs. Null clears the override and restores the Bridge default." },
         enabled: { type: "boolean", description: "Enable or disable the schedule" },
         maxRuns: { type: "integer", minimum: 1, description: "Auto-disable after N runs" },
@@ -192,6 +205,9 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
     handler: async (args: any) => {
       const unknownFieldFailure = rejectUnknownFields(args, SCHEDULE_UPDATE_FIELDS);
       if (unknownFieldFailure) return unknownFieldFailure;
+      args = { ...args };
+      const modelTierError = mapToolModelTier(args);
+      if (modelTierError) return toolFailure(modelTierError);
       const { scheduleId, ...updates } = args;
       if (Object.keys(updates).length === 0) return toolFailure("No fields to update");
       const scheduler = getScheduler(ctx);
@@ -204,11 +220,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
       }
       const existing = ctx.scheduleStore.getSchedule(scheduleId);
       if (!existing) return toolFailure(`Schedule ${scheduleId} not found`);
-      const launchOptions = await validateScheduleLaunchOptionUpdates({
-        input: updates,
-        existing,
-        listModels: () => ctx.sessionManager.listModels(),
-      });
+      const launchOptions = validateScheduleLaunchOptions(updates);
       if (!launchOptions.ok) return toolFailure(launchOptions.error);
       Object.assign(updates, launchOptions.updates);
 
@@ -274,9 +286,7 @@ export function createScheduleToolDefinitions(ctx: AppContext): BridgeToolDefini
           cron: s.cron,
           runAt: s.runAt,
           timezone: s.timezone,
-          model: s.model,
-          reasoningEffort: s.reasoningEffort,
-          contextTier: s.contextTier,
+          modelTier: toolModelTierName(s.modelTier),
           promptProfile: s.promptProfile,
           enabled: s.enabled,
           lastRunAt: s.lastRunAt,

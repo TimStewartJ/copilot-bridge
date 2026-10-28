@@ -29,18 +29,14 @@ describe("schedule-store", () => {
     it("createSchedule returns a valid schedule", () => {
       const s = store.createSchedule({
         ...baseCron,
-        model: "claude-sonnet-5",
-        reasoningEffort: "high",
-        contextTier: "long_context",
+        modelTier: "preset1",
         autoArchiveKeep: 8,
       });
       expect(s.id).toBeTruthy();
       expect(s.name).toBe("Daily standup");
       expect(s.enabled).toBe(true);
       expect(s.runCount).toBe(0);
-      expect(s.model).toBe("claude-sonnet-5");
-      expect(s.reasoningEffort).toBe("high");
-      expect(s.contextTier).toBe("long_context");
+      expect(s.modelTier).toBe("preset1");
       expect(s.autoArchiveKeep).toBe(8);
     });
 
@@ -95,25 +91,11 @@ describe("schedule-store", () => {
       expect(store.updateSchedule(s.id, { autoArchiveKeep: null }).autoArchiveKeep).toBeUndefined();
     });
 
-    it("updateSchedule changes and clears launch overrides", () => {
+    it("updateSchedule changes and clears the model tier", () => {
       const s = store.createSchedule(baseCron);
-      expect(store.updateSchedule(s.id, {
-        model: "gpt-5.6-sol",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      })).toMatchObject({
-        model: "gpt-5.6-sol",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      });
-      expect(store.updateSchedule(s.id, {
-        model: null,
-        reasoningEffort: null,
-        contextTier: null,
-      })).toMatchObject({ id: s.id });
-      expect(store.getSchedule(s.id)?.model).toBeUndefined();
-      expect(store.getSchedule(s.id)?.reasoningEffort).toBeUndefined();
-      expect(store.getSchedule(s.id)?.contextTier).toBeUndefined();
+      expect(store.updateSchedule(s.id, { modelTier: "preset3" }).modelTier).toBe("preset3");
+      expect(store.updateSchedule(s.id, { name: "Renamed" }).modelTier).toBe("preset3");
+      expect(store.updateSchedule(s.id, { modelTier: null }).modelTier).toBeUndefined();
     });
 
     it("updateSchedule throws for missing id", () => {

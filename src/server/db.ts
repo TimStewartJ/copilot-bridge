@@ -491,6 +491,7 @@ function initSchema(db: DatabaseSync): void {
       cron TEXT,
       runAt TEXT,
       timezone TEXT,
+      -- No longer read (schedules follow modelTier); kept so an older release can still write them.
       model TEXT,
       reasoningEffort TEXT,
       contextTier TEXT,
@@ -504,7 +505,8 @@ function initSchema(db: DatabaseSync): void {
       maxRuns INTEGER,
       expiresAt TEXT,
       autoArchiveKeep INTEGER,
-      promptProfile TEXT
+      promptProfile TEXT,
+      modelTier TEXT
     );
 
     -- Read state
@@ -965,17 +967,19 @@ function initSchema(db: DatabaseSync): void {
       ON bridge_session_state(lastAttentionAt);
   `);
 
-  for (const table of ["bridge_session_state", "schedules"] as const) {
+  const addColumn = (table: string, column: string, definition: string) => {
     const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === "promptProfile")) {
-      try {
-        db.exec(`ALTER TABLE ${table} ADD COLUMN promptProfile TEXT`);
-      } catch (error) {
-        // The management job runner opens the same database and may have added it first.
-        if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
-      }
+    if (columns.some((existing) => existing.name === column)) return;
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    } catch (error) {
+      // The management job runner opens the same database and may have added it first.
+      if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
-  }
+  };
+  addColumn("bridge_session_state", "promptProfile", "TEXT");
+  addColumn("schedules", "promptProfile", "TEXT");
+  addColumn("schedules", "modelTier", "TEXT");
 
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {

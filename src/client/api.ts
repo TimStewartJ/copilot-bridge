@@ -3009,9 +3009,8 @@ export interface Schedule {
   cron?: string;
   runAt?: string;
   timezone?: string;
-  model?: string;
-  reasoningEffort?: ReasoningEffort;
-  contextTier?: CopilotContextTier;
+  /** Follows this tier's current model, effort and context; unset follows New chats. */
+  modelTier?: ModelPresetSlot;
   promptProfile?: PromptProfileId;
   enabled: boolean;
   lastSessionId?: string;
@@ -3027,16 +3026,14 @@ export interface Schedule {
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
   Partial<Pick<Schedule,
-    "cron" | "runAt" | "timezone" | "model" | "reasoningEffort" | "contextTier" | "promptProfile"
+    "cron" | "runAt" | "timezone" | "modelTier" | "promptProfile"
     | "maxRuns" | "expiresAt" | "autoArchiveKeep"
   >>;
 
 export type ScheduleUpdateInput = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
-  model?: string | null;
-  reasoningEffort?: ReasoningEffort | null;
-  contextTier?: CopilotContextTier | null;
+  modelTier?: ModelPresetSlot | null;
   promptProfile?: PromptProfileId | null;
   autoArchiveKeep?: number | null;
 };
