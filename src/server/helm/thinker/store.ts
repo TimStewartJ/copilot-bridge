@@ -210,13 +210,13 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function listRuns(limit = 20): HelmRunRecord[] {
-    return db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC LIMIT ?").all(limit).map(hydrateRun);
+    return db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC, rowid DESC LIMIT ?").all(limit).map(hydrateRun);
   }
 
   function latestRun(status?: HelmRunStatus): HelmRunRecord | undefined {
     const row = status
-      ? db.prepare("SELECT * FROM helm_runs WHERE status = ? ORDER BY startedAt DESC LIMIT 1").get(status)
-      : db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC LIMIT 1").get();
+      ? db.prepare("SELECT * FROM helm_runs WHERE status = ? ORDER BY startedAt DESC, rowid DESC LIMIT 1").get(status)
+      : db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC, rowid DESC LIMIT 1").get();
     return row ? hydrateRun(row) : undefined;
   }
 
