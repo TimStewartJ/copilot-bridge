@@ -82,7 +82,13 @@ export interface AgentCapabilities {
  * directly. Step 3 may replace these with backend-neutral shapes; for Step 1
  * they are aliases.
  */
-export type AgentModelInfo = ModelInfo & Pick<CopilotModelContextMetadata, "selectionMode">;
+export type AgentModelInfo = Omit<ModelInfo, "supportedReasoningEfforts" | "defaultReasoningEffort">
+  & Pick<CopilotModelContextMetadata, "selectionMode" | "reasoningEffortLabels">
+  & {
+    /** Reasoning levels, or a router's tiers (Copilot Fusion's Standard, High and Max). */
+    supportedReasoningEfforts?: string[];
+    defaultReasoningEffort?: string;
+  };
 export type AgentSectionOverride = SectionOverride;
 // Step 3: replace these Copilot-shaped aliases with backend-neutral permission types.
 export type AgentPermissionRequest = PermissionRequest;

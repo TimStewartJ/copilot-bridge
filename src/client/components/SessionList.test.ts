@@ -10,7 +10,7 @@ import {
 } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
 import { queryClient, queryKeys } from "../queryClient";
-import { formatSessionModelLabel } from "../lib/session-model";
+import { formatSessionModelLabel, formatSessionModelSummaryLabel } from "../lib/session-model";
 import { canKeepCurrentReasoningEffortForModel } from "./SessionList";
 
 const apiMocks = vi.hoisted(() => ({
@@ -391,6 +391,16 @@ describe("session model menu labels", () => {
       { model: "gpt-5.5", reasoningEffort: "high", source: "events" },
       [{ id: "gpt-5.5", name: "GPT-5.5" }],
     )).toBe("GPT-5.5 · High");
+  });
+
+  it("names Copilot Fusion's level and leaves out a context window it does not have", () => {
+    const fusion = {
+      id: "auto", name: "Copilot Fusion", selectionMode: "dynamic" as const,
+      supportedReasoningEfforts: ["balance", "hydrafusion-max"],
+      reasoningEffortLabels: { balance: "Standard", "hydrafusion-max": "Max" },
+    };
+    expect(formatSessionModelSummaryLabel({ model: "auto", reasoningEffort: "hydrafusion-max", source: "live" }, [fusion]))
+      .toBe("Copilot Fusion · Max");
   });
 
   it("falls back to the model id when model metadata is unavailable", () => {

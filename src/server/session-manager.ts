@@ -1119,6 +1119,7 @@ export class SessionManager {
       sessionContextStore: deps.sessionContextStore,
       chatMessageIdStore: deps.chatMessageIdStore,
       copilotHome: deps.copilotHome,
+      modelDisplayName: (modelId) => this.modelMetadata?.find((model) => model.id === modelId)?.name,
       isSessionBusy: (sessionId) => this.isSessionBusy(sessionId),
       hasPlan: (sessionId) => this.hasPlan(sessionId),
       getSessionStateDir: (sessionId) => this.getSessionStateDir(sessionId),
@@ -5977,11 +5978,17 @@ export class SessionManager {
           };
       const selectedModelMetadata = modelMetadata?.find((candidate) => candidate.id === model);
       const usesDynamicSelection = modelUsesDynamicSelection(selectedModelMetadata);
+      // A routed model's effort levels are its own tiers (Copilot Fusion's), so an effort carries
+      // over only between two routed or two ordinary models, and a routed model keeps only its own.
+      const sourceModel = currentBeforeSwitch?.modelId ?? fallbackState?.model;
+      const sourceIsRouted = modelUsesDynamicSelection(modelMetadata?.find((candidate) => candidate.id === sourceModel));
+      const carriedReasoningEffort = sourceModel === model || sourceIsRouted === usesDynamicSelection
+        ? currentBeforeSwitch?.reasoningEffort ?? fallbackState?.reasoningEffort
+        : undefined;
+      const requestedReasoningEffort = reasoningEffort ?? carriedReasoningEffort;
       const effectiveReasoningEffort = usesDynamicSelection
-        ? undefined
-        : reasoningEffort
-          ?? currentBeforeSwitch?.reasoningEffort
-          ?? fallbackState?.reasoningEffort;
+        ? resolveSupportedReasoningEffort(requestedReasoningEffort, selectedModelMetadata?.supportedReasoningEfforts)
+        : requestedReasoningEffort;
       const effectiveRequestedContextTier = usesDynamicSelection
         ? undefined
         : contextTier

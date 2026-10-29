@@ -5,6 +5,7 @@ import type {
 } from "../api";
 import {
   getContextTierLabel,
+  modelUsesDynamicSelection,
   type CopilotContextTier,
 } from "../../shared/copilot-context.js";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
@@ -39,7 +40,7 @@ export function formatSessionModelLabel(
   if (!state.model) return "Unknown";
   const model = models?.find((candidate) => candidate.id === state.model);
   const modelLabel = model?.name ?? state.model;
-  const effortLabel = formatReasoningEffortLabel(state.reasoningEffort);
+  const effortLabel = formatReasoningEffortLabel(state.reasoningEffort, model);
   const contextTierLabel = getContextTierLabel(model, state.contextTier)
     ?? formatContextTierFallbackLabel(state.contextTier);
   return [modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
@@ -55,10 +56,13 @@ export function formatSessionModelSummaryLabel(
   const modelLabel = model?.name
     ?? state.model
     ?? (state.source === "unknown" ? "Model unavailable" : "Default model");
-  const effortLabel = formatReasoningEffortLabel(state.reasoningEffort) ?? "Default effort";
-  const contextTierLabel = getContextTierLabel(model, state.contextTier)
-    ?? formatContextTierFallbackLabel(state.contextTier)
-    ?? "Default context";
+  const effortLabel = formatReasoningEffortLabel(state.reasoningEffort, model) ?? "Default effort";
+  // A routed model (Copilot Fusion) has no context window of its own to choose.
+  const contextTierLabel = modelUsesDynamicSelection(model)
+    ? undefined
+    : getContextTierLabel(model, state.contextTier)
+      ?? formatContextTierFallbackLabel(state.contextTier)
+      ?? "Default context";
   const profileLabel = state.promptProfile ? getPromptProfileInfo(state.promptProfile).label : undefined;
   return [profileLabel, modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
 }

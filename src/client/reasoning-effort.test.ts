@@ -21,6 +21,10 @@ describe("formatReasoningEffortLabel", () => {
     for (const [input, expected] of cases) {
       expect(formatReasoningEffortLabel(input), input).toBe(expected);
     }
+    // A model that names its levels (Copilot Fusion's tiers) is shown by those names.
+    const fusion = { reasoningEffortLabels: { "hydrafusion-max": "Max" } };
+    expect(formatReasoningEffortLabel("hydrafusion-max", fusion)).toBe("Max");
+    expect(formatReasoningEffortLabel("xhigh", fusion)).toBe("Xhigh");
   });
 });
 

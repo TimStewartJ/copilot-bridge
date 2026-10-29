@@ -29,13 +29,15 @@ function createFakeClient(session: ReturnType<typeof createFakeSession> = create
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => [] as Error[]),
     forceStop: vi.fn(async () => undefined),
-    listModels: vi.fn(async () => [{ id: "fake-model", name: "Fake" }]),
     listSessions: vi.fn(async () => [{ sessionId: "s1", title: "S1" }]),
     createSession: vi.fn(async () => session),
     resumeSession: vi.fn(async () => session),
     deleteSession: vi.fn(async () => undefined),
     getSessionMetadata: vi.fn(async () => ({ sessionId: "s1" })),
     rpc: {
+      models: {
+        list: vi.fn(async (): Promise<{ models: Array<Record<string, unknown>>; auto?: unknown }> => ({ models: [{ id: "fake-model", name: "Fake" }] })),
+      },
       sessions: {
         fork: vi.fn(async () => ({ sessionId: "fork-id" })),
         checkInUse,
@@ -103,21 +105,47 @@ describe("CopilotBackend wrap fidelity", () => {
     expect((thrown.errors[0] as Error).cause).toBe(cause);
   });
 
-  it("delegates model/session listing and adds HydraFusion to the model catalog", async () => {
+  it("offers the runtime's Auto tiers as the auto model's effort levels and keeps the catalog for the client's life", async () => {
     const client = createFakeClient();
+    const tier = (id: string, displayName: string, status: Record<string, boolean>, fusionTier?: string) =>
+      ({ id, displayName, description: "", type: fusionTier ? "fusion" : "auto", ...(fusionTier ? { fusionTier } : {}), status });
+    client.rpc.models.list.mockResolvedValueOnce({
+      models: [{ id: "fake-model", name: "Fake" }, { id: "auto", name: "Auto" }],
+      auto: {
+        defaultTier: "balance",
+        tiers: [
+          tier("balance", "Standard", { enabled: true, pickerVisible: true }, "standard"),
+          tier("hydrafusion-max", "Max", { enabled: true }, "max"),
+          tier("fast", "Fast", { enabled: true, pickerVisible: false }),
+          tier("hydrafusion", "High", { enabled: false }, "high"),
+        ],
+      },
+    });
     const backend = new CopilotBackend(client as any);
+    const limits = { max_context_window_tokens: 0 };
     await expect(backend.listModels()).resolves.toEqual([
-      { id: "fake-model", name: "Fake" },
-      expect.objectContaining({
-        id: "hydrafusion",
-        name: "HydraFusion (Research Preview)",
+      { id: "fake-model", name: "Fake", capabilities: { supports: {}, limits } },
+      {
+        id: "auto",
+        name: "Copilot Fusion",
+        capabilities: { supports: {}, limits },
         selectionMode: "dynamic",
-        supportedReasoningEfforts: [],
-      }),
+        supportedReasoningEfforts: ["balance", "hydrafusion-max"],
+        defaultReasoningEffort: "balance",
+        reasoningEffortLabels: { balance: "Standard", "hydrafusion-max": "Max" },
+      },
     ]);
+    await backend.listModels();
+    expect(client.rpc.models.list).toHaveBeenCalledOnce();
     await expect(backend.listSessions()).resolves.toEqual([{ sessionId: "s1", title: "S1" }]);
-    expect(client.listModels).toHaveBeenCalledOnce();
     expect(client.listSessions).toHaveBeenCalledOnce();
+
+    // Without tiers from the runtime, Auto stays a router with nothing to choose.
+    const plain = createFakeClient();
+    plain.rpc.models.list.mockResolvedValueOnce({ models: [{ id: "auto", name: "Auto" }] });
+    await expect(new CopilotBackend(plain as any).listModels()).resolves.toEqual([
+      { id: "auto", name: "Auto", capabilities: { supports: {}, limits }, selectionMode: "dynamic" },
+    ]);
   });
 
   it("delegates batched in-use checks and normalizes the result", async () => {
@@ -275,65 +303,66 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(config.toolSearch).toEqual({ enabled: true, deferThreshold: 1 });
   });
 
-  it("creates HydraFusion directly without fixed-model overrides or a fallback session", async () => {
-    const session = createFakeSession();
-    const client = createFakeClient(session);
+  it("starts Copilot Fusion sessions on their level as the Auto tier, and the retired preview on Fusion High", async () => {
+    const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
+    const config = { model: "auto", reasoningEffort: "hydrafusion-max", capi: { webSocket: false }, workingDirectory: "/x" };
 
-    const config = {
-      model: "hydrafusion",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-      modelCapabilities: { limits: { max_prompt_tokens: 1 } },
-      workingDirectory: "/x",
-    };
     await backend.createSession(config);
+    await backend.resumeSession("fusion-session", { model: "hydrafusion", reasoningEffort: "high" });
+    await backend.createSession({ model: "auto" });
 
-    expect(client.createSession).toHaveBeenCalledWith({
-      model: "hydrafusion",
-      toolSearch: { enabled: false },
-      enableExperimentalMode: true,
+    expect(client.createSession).toHaveBeenNthCalledWith(1, {
+      model: "auto",
+      capi: { webSocket: false, autoTier: "hydrafusion-max" },
       workingDirectory: "/x",
+      toolSearch: { enabled: false },
     });
-    expect(session.setModel).not.toHaveBeenCalled();
-    expect(config.reasoningEffort).toBe("high");
-    expect(config.contextTier).toBe("long_context");
+    expect(client.resumeSession).toHaveBeenCalledWith("fusion-session", {
+      model: "auto",
+      capi: { autoTier: "hydrafusion" },
+      toolSearch: { enabled: false },
+    });
+    expect(client.createSession).toHaveBeenNthCalledWith(2, { model: "auto", toolSearch: { enabled: false } });
+    expect(config).toEqual({ model: "auto", reasoningEffort: "hydrafusion-max", capi: { webSocket: false }, workingDirectory: "/x" });
   });
 
-  it("surfaces unavailable HydraFusion creation without creating a default-model session", async () => {
-    const client = createFakeClient();
-    client.createSession.mockRejectedValueOnce(new Error("Model unavailable"));
-    const backend = new CopilotBackend(client as any);
+  it("moves a chat that resumes on the retired HydraFusion preview to Fusion High", async () => {
+    const switchTo = vi.fn(async () => ({}));
+    const getCurrent = vi.fn(async () => ({ modelId: "hydrafusion" }));
+    const backend = new CopilotBackend(createFakeClient(createFakeSession({ model: { getCurrent, switchTo } })) as any);
 
-    await expect(backend.createSession({ model: "hydrafusion" }))
-      .rejects.toThrow("Model unavailable");
+    await backend.resumeSession("old-chat", {});
+    expect(switchTo).toHaveBeenCalledWith({ modelId: "auto", autoTier: "hydrafusion" });
 
-    expect(client.createSession).toHaveBeenCalledOnce();
-    expect(client.createSession).toHaveBeenCalledWith({
-      model: "hydrafusion",
-      toolSearch: { enabled: false },
-      enableExperimentalMode: true,
-    });
-    expect(client.session.setModel).not.toHaveBeenCalled();
-    expect(client.deleteSession).not.toHaveBeenCalled();
+    switchTo.mockClear();
+    getCurrent.mockResolvedValueOnce({ modelId: "claude-opus-5.5" });
+    await backend.resumeSession("current-chat", {});
+    expect(switchTo).not.toHaveBeenCalled();
   });
 
-  it("forwards HydraFusion resume configuration without fixed-model overrides", async () => {
-    const client = createFakeClient();
-    const backend = new CopilotBackend(client as any);
+  it("switches, reads and updates a Copilot Fusion level through the session's Auto tier", async () => {
+    const switchTo = vi.fn(async () => ({}));
+    const switchAutoTier = vi.fn(async () => ({ status: "pending" }));
+    const setReasoningEffort = vi.fn(async () => ({}));
+    const getCurrent = vi.fn(async (): Promise<Record<string, unknown>> => ({ modelId: "auto", autoTier: "balance", pendingAutoTier: "hydrafusion" }));
+    const session = createFakeSession({ model: { getCurrent, switchTo, switchAutoTier, setReasoningEffort } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});
 
-    await backend.resumeSession("hydra-session", {
-      model: "hydrafusion",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-      modelCapabilities: { limits: { max_prompt_tokens: 1 } },
-    });
+    await wrapped.setModel("auto", { reasoningEffort: "hydrafusion-max", compactionDecision: "compact" });
+    expect(switchTo).toHaveBeenLastCalledWith({ modelId: "auto", autoTier: "hydrafusion-max", compactionDecision: "compact" });
+    await wrapped.setModel("hydrafusion");
+    expect(switchTo).toHaveBeenLastCalledWith({ modelId: "auto", autoTier: "hydrafusion" });
 
-    expect(client.resumeSession).toHaveBeenCalledWith("hydra-session", {
-      model: "hydrafusion",
-      toolSearch: { enabled: false },
-      enableExperimentalMode: true,
-    });
+    // The tier waiting for the next turn is the one the chat is on.
+    await expect(wrapped.getCurrentModel!()).resolves.toEqual({ modelId: "auto", reasoningEffort: "hydrafusion" });
+    await wrapped.setReasoningEffort!("hydrafusion-max");
+    expect(switchAutoTier).toHaveBeenCalledWith({ autoTier: "hydrafusion-max" });
+    expect(setReasoningEffort).not.toHaveBeenCalled();
+
+    getCurrent.mockResolvedValue({ modelId: "gpt-6-luna", reasoningEffort: "high" });
+    await wrapped.setReasoningEffort!("max");
+    expect(setReasoningEffort).toHaveBeenCalledWith({ reasoningEffort: "max" });
   });
 
   it("advertises pending interaction events without leaving an in-process elicitation handler", async () => {

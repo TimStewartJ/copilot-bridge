@@ -126,7 +126,7 @@ describe("SessionManager.setSessionModel", () => {
     expect(result).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
   });
 
-  it("drops fixed options when switching to a dynamically selected model", async () => {
+  it("keeps only a Copilot Fusion level when switching to it, never a reasoning level or context tier", async () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.6-sol");
     session.getCurrentModel
@@ -135,24 +135,33 @@ describe("SessionManager.setSessionModel", () => {
         reasoningEffort: "xhigh",
         contextTier: "long_context",
       })
-      .mockResolvedValueOnce({ modelId: "hydrafusion" });
+      .mockResolvedValueOnce({ modelId: "auto" });
     manager.backend = {};
     manager.modelMetadata = [{
-      id: "hydrafusion",
-      name: "HydraFusion",
+      id: "auto",
+      name: "Copilot Fusion",
       selectionMode: "dynamic",
+      supportedReasoningEfforts: ["balance", "hydrafusion"],
     }];
     manager.sessionObjects.set("session-1", session);
 
-    const result = await manager.setSessionModel(
-      "session-1",
-      "hydrafusion",
-      "xhigh",
-      "long_context",
-    );
+    const result = await manager.setSessionModel("session-1", "auto", undefined, "long_context");
 
-    expect(session.setModel).toHaveBeenCalledWith("hydrafusion", undefined);
-    expect(result).toEqual({ status: "applied", model: "hydrafusion", modelId: "hydrafusion" });
+    expect(session.setModel).toHaveBeenCalledWith("auto", undefined);
+    expect(result).toEqual({ status: "applied", model: "auto", modelId: "auto" });
+
+    session.getCurrentModel
+      .mockResolvedValueOnce({ modelId: "auto" })
+      .mockResolvedValueOnce({ modelId: "auto", reasoningEffort: "hydrafusion" });
+    await manager.setSessionModel("session-1", "auto", "hydrafusion");
+    expect(session.setModel).toHaveBeenLastCalledWith("auto", { reasoningEffort: "hydrafusion" });
+
+    // Leaving Fusion, its tier is not a reasoning level for the next model.
+    session.getCurrentModel
+      .mockResolvedValueOnce({ modelId: "auto", reasoningEffort: "hydrafusion" })
+      .mockResolvedValueOnce({ modelId: "gpt-5.6-sol" });
+    await manager.setSessionModel("session-1", "gpt-5.6-sol");
+    expect(session.setModel).toHaveBeenLastCalledWith("gpt-5.6-sol", undefined);
   });
 
   it("selects the native default context tier without capability overrides", async () => {

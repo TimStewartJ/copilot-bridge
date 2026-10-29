@@ -3,7 +3,12 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 
 export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
-const HYDRAFUSION_FEATURE_FLAGS = ["HYDRAFUSION", "HYDRAFUSION_ROLLOUT"];
+/**
+ * The CLI turns Copilot Fusion on through an online experiment, which the runtime applies only to
+ * its own interactive host, so an SDK host enables the gates itself. DYNAMIC_AUTO_TIERS lists
+ * Fusion's levels and lets a session choose one; HYDRAFUSION_PLAN_V2 runs the Max level.
+ */
+const COPILOT_FUSION_FEATURE_FLAGS = ["DYNAMIC_AUTO_TIERS", "HYDRAFUSION_PLAN_V2"];
 const AGENT_BROWSER_IDLE_TIMEOUT_ENV = "AGENT_BROWSER_IDLE_TIMEOUT_MS";
 /**
  * An agent that drives agent-browser from its shell starts a daemon and a browser that outlive
@@ -52,7 +57,7 @@ export function buildCopilotClientOptions(
   const inheritedEnv = clientEnv ?? process.env;
   const enabledFlags = new Set([
     ...(inheritedEnv.COPILOT_CLI_ENABLED_FEATURE_FLAGS ?? "").split(",").map((flag) => flag.trim()).filter(Boolean),
-    ...HYDRAFUSION_FEATURE_FLAGS,
+    ...COPILOT_FUSION_FEATURE_FLAGS,
   ]);
   const env: Record<string, string | undefined> = {
     ...inheritedEnv,

@@ -131,8 +131,8 @@ GitHub work item and pull request enrichment reuses the same ambient auth: `BRID
 
 ### Copilot Runtime
 
-Bridge uses `@github/copilot-sdk` 1.0.25 and launches the pinned `@github/copilot` CLI (1.0.102 stable) through its npm
-loader, so a CLI release can be validated independently of the SDK's bundled runtime (also 1.0.102). Install optional dependencies
+Bridge uses `@github/copilot-sdk` 1.0.28 and launches the pinned `@github/copilot` CLI (1.0.105 stable) through its npm
+loader, so a CLI release can be validated independently of the SDK's bundled runtime (also 1.0.105). Install optional dependencies
 (the npm default) so the platform-specific CLI and SDK packages are present; no separate CLI runtime override or
 wrapper is needed. The SDK natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge
 tool-loading metadata.
@@ -143,10 +143,18 @@ an SDK callback. Native policy refusal or initialization failure stops delivery 
 restrictions and content exclusions remain runtime-enforced. Agent questions and Computer Use
 confirmations keep their existing flows, and cloud-backed agentic memory stays disabled.
 
-HydraFusion uses the runtime's native orchestration, with its startup feature flags enabled and experimental
-mode supplied on session creation and resume. Sessions select `hydrafusion` directly, without first creating
-a different model's session. Reasoning effort and context tier are chosen by HydraFusion rather than fixed
-in Bridge. This is a research preview; its native feature flags are tied to the pinned CLI version.
+Copilot Fusion is the runtime's `auto` model with a routing tier. The runtime lists the tiers (Standard, High,
+Max) beside its model catalog, and Bridge offers them as that model's effort levels, so the model picker shows
+"Copilot Fusion" with those levels wherever a model and effort are chosen. Bridge passes the level to the runtime
+as the session's Auto tier, not as a reasoning effort. The CLI enables Fusion for its own picker through an online
+experiment that SDK hosts do not receive, so Bridge turns on the runtime's `DYNAMIC_AUTO_TIERS` and
+`HYDRAFUSION_PLAN_V2` feature flags itself. Chats saved on the retired HydraFusion research preview move to
+Fusion High when they resume.
+
+At High and Max, Fusion runs each step out of sight and adds the turn's messages and tool calls to the chat
+only when the turn commits. Until then Bridge shows the runtime's progress reports as the run's status: which
+model is on which step and how many tools have run. The context meter keeps the runtime's budget for Fusion
+(a conservative window across the models it may use), not the window of the model doing the current step.
 
 ### Packaged Release Mode
 

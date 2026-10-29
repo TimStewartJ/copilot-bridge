@@ -770,4 +770,43 @@ describe("SessionManager tool result rendering", () => {
       sourceEventId: "assistant-message-1",
     }]);
   });
+
+  it("shows a Copilot Fusion turn's progress as the run's status until the turn commits", async () => {
+    // The phase's own messages and tool calls arrive only at the commit, so this is all there is meanwhile.
+    const phase = { fusionId: "f1", phaseId: "p1", phaseKind: "primary", role: "solver", pattern: "single", conversationScope: "root" };
+    const manager = createManager() as any;
+    manager.modelMetadata = [{ id: "claude-sonnet-5.5", name: "Claude Sonnet 5.5" }];
+    const bus = eventBusRegistry.getOrCreateBus("session-fusion");
+    const events: any[] = [];
+    bus.subscribe((event) => {
+      if (event.type !== "snapshot") events.push(event);
+    });
+    const listIntents: unknown[] = [];
+    globalBus.subscribe((event: any) => {
+      if (event.type === "session:intent") listIntents.push(event.intent);
+    });
+    manager.backend = {} as any;
+    manager.sessionObjects.set("session-fusion", createSession([
+      { type: "session.fusion_resolved", data: { fusionId: "f1", pattern: "single", primaryModel: "claude-sonnet-5.5" } },
+      { type: "assistant.fusion_phase_started", ephemeral: true, data: { ...phase, model: "claude-sonnet-5.5" } },
+      { type: "assistant.fusion_phase_activity", ephemeral: true, data: { ...phase, activity: "model_output" } },
+      { type: "assistant.fusion_phase_activity", ephemeral: true, data: { ...phase, activity: "tool_completed" } },
+      { type: "assistant.fusion_phase_started", ephemeral: true, agentId: "agent-1", data: { ...phase, phaseId: "sub", model: "gpt-6-luna" } },
+      { type: "assistant.fusion_phase_completed", data: { ...phase, model: "claude-sonnet-5.5", status: "succeeded" } },
+      { type: "session.fusion_commit_started", data: { fusionId: "f1" } },
+      { type: "assistant.turn_start", data: { turnId: "0" } },
+      { type: "assistant.message", data: { content: "Done.", fusion: { fusionId: "f1", commitId: "c1", pattern: "single", policy: "max" } } },
+      { type: "session.idle", data: {} },
+    ]));
+
+    await manager._doWork("session-fusion", "add the thread-safe cache", bus);
+
+    expect(events.filter((event) => event.type === "intent").map((event) => event.intent)).toEqual([
+      "Copilot Fusion · Claude Sonnet 5.5 working",
+      "Copilot Fusion · Claude Sonnet 5.5 working · 1 tool run",
+      "",
+    ]);
+    // The chat list shows the same status beside a busy chat.
+    expect(listIntents).toContain("Copilot Fusion · Claude Sonnet 5.5 working · 1 tool run");
+  });
 });

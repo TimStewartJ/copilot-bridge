@@ -81,7 +81,7 @@ import {
 } from "./lib/new-session-launch";
 import type { ModelPresetSelection } from "./lib/model-presets";
 import { getModelPresetSlotLabel, type ModelPresetSlot } from "../shared/model-presets.js";
-import type { CopilotContextTier } from "../shared/copilot-context.js";
+import { modelUsesDynamicSelection, type CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { resolvePromptProfile, type PromptProfileId, type PromptProfileSetting } from "../shared/prompt-profiles.js";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
@@ -3047,6 +3047,7 @@ function SessionRoute({
         composerKey={composerKey}
         sessionId={sessionId}
         hasPlan={hasPlan}
+        routedModel={modelUsesDynamicSelection(modelsQuery.data?.find((model) => model.id === sessionModelQuery.data?.model))}
         sessionModelSummary={sessionId ? (
           <SessionModelSummary
             title={activeSession?.summary || activeSession?.intentText || "Chat"}

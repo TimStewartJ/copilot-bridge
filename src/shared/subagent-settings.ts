@@ -4,6 +4,7 @@
 // family than the chat's current model, so its second opinion does not share the chat's blind
 // spots. The plan is applied to each live session through the runtime's sub-agent override,
 // which replaces (not merges with) the CLI user's own `subagents` settings.
+import { modelUsesDynamicSelection } from "./copilot-context.js";
 import { getModelFamily, type ModelFamily } from "./model-families.js";
 
 /** Use the parent session's model. Understood by the runtime. */
@@ -35,6 +36,7 @@ export interface SubagentPlan {
 export interface SubagentModelMetadata {
   readonly id: string;
   readonly supportedReasoningEfforts?: readonly string[];
+  readonly selectionMode?: "dynamic";
   readonly policy?: { readonly state?: string };
 }
 
@@ -46,14 +48,16 @@ export interface SubagentModelChoice {
 /**
  * A runtime entry for a model, or undefined when the known model list lacks it (the runtime would
  * silently run a different model). Effort is kept only when the list confirms the model supports
- * it, because the runtime fails a sub-agent whose effort its model rejects.
+ * it, because the runtime fails a sub-agent whose effort its model rejects. A routed model's levels
+ * are tiers (Copilot Fusion's), which sub-agent settings cannot carry, so its sub-agents use its default.
  */
 function entryFor(model: string, effort: string | undefined, models: readonly SubagentModelMetadata[] | undefined): (SubagentAgentSetting & { model: string }) | undefined {
   const catalog = models && models.length > 0 ? models : undefined;
   if (!catalog) return { model };
   const metadata = catalog.find((candidate) => candidate.id === model && candidate.policy?.state !== "disabled");
   if (!metadata) return undefined;
-  return { model, ...(effort && metadata.supportedReasoningEfforts?.includes(effort) ? { effortLevel: effort } : {}) };
+  const keepsEffort = effort && !modelUsesDynamicSelection(metadata) && metadata.supportedReasoningEfforts?.includes(effort);
+  return { model, ...(keepsEffort ? { effortLevel: effort } : {}) };
 }
 
 /** Only GPT and Claude are told apart; any other model (a router such as Auto included) has no known family. */

@@ -18,9 +18,12 @@ export interface CopilotTieredTokenPrices extends CopilotTokenPrices {
 export interface CopilotModelContextMetadata {
   readonly id: string;
   readonly name?: string | null;
+  /** The runtime picks the model per request (Auto, Copilot Fusion), so there is no context tier to choose. */
   readonly selectionMode?: "dynamic";
   readonly supportedReasoningEfforts?: readonly string[];
   readonly defaultReasoningEffort?: string;
+  /** Names for effort values that are not reasoning levels, such as Copilot Fusion's Standard, High and Max. */
+  readonly reasoningEffortLabels?: Readonly<Record<string, string>>;
   readonly capabilities?: {
     readonly supports?: {
       readonly [key: string]: unknown;

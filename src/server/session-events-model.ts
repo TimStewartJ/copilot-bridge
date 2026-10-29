@@ -5,14 +5,17 @@
  *   session.model_change  → data.newModel, data.reasoningEffort if present
  *   session.resume        → data.selectedModel, data.reasoningEffort
  *   session.start         → data.selectedModel, data.reasoningEffort
+ * On the `auto` model the event's Auto tier (Copilot Fusion's level) stands in for the effort.
  *
  * session.model_change events that omit reasoningEffort preserve the previous
- * reasoning effort, matching SDK event replay. Events tagged with a top-level
+ * reasoning effort, matching SDK event replay, except across a switch to or from
+ * `auto`. Events tagged with a top-level
  * agentId belong to a sub-agent and are ignored. Malformed lines are skipped.
  */
 
 import { readFileSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
+import { AUTO_MODEL_ID, autoTierFromEvent } from "./agent-backend/copilot-fusion.js";
 import { scanJsonlRecords } from "./jsonl-lines.js";
 import {
   isCopilotContextTier,
@@ -34,6 +37,14 @@ export function isSubagentScopedEvent(event: Record<string, unknown> | null | un
   return typeof event?.agentId === "string" && event.agentId.length > 0;
 }
 
+/**
+ * Whether an event that omits the effort keeps the earlier one. Never across `auto`: a Copilot
+ * Fusion tier is not a reasoning level, and a reasoning level is not a tier.
+ */
+function keepsEarlierReasoningEffort(state: DerivedModelState, next: DerivedModelState, preserve: boolean): boolean {
+  return preserve && state.reasoningEffort !== undefined && (state.model === AUTO_MODEL_ID) === (next.model === AUTO_MODEL_ID);
+}
+
 function extractFromEvent(event: unknown): ExtractedModelEvent | null {
   if (!event || typeof event !== "object") return null;
   const e = event as Record<string, unknown>;
@@ -47,7 +58,7 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
   if (type === "session.model_change") {
     const model = typeof data.newModel === "string" ? data.newModel : undefined;
     const reasoningEffort =
-      typeof data.reasoningEffort === "string" ? data.reasoningEffort : undefined;
+      typeof data.reasoningEffort === "string" ? data.reasoningEffort : autoTierFromEvent(model, data);
     const hasContextTier = "contextTier" in data;
     const contextTier = data.contextTier === null ? null : isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
     if (model !== undefined) {
@@ -62,7 +73,7 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
   } else if (type === "session.resume" || type === "session.start") {
     const model = typeof data.selectedModel === "string" ? data.selectedModel : undefined;
     const reasoningEffort =
-      typeof data.reasoningEffort === "string" ? data.reasoningEffort : undefined;
+      typeof data.reasoningEffort === "string" ? data.reasoningEffort : autoTierFromEvent(model, data);
     const contextTier = data.contextTier === null ? null : isCopilotContextTier(data.contextTier) ? data.contextTier : undefined;
     if (model !== undefined) {
       return {
@@ -93,7 +104,7 @@ export function deriveModelStateFromEventsContent(content: string): DerivedModel
         const { preserveReasoningEffort, preserveContextTier, ...nextState } = extracted;
         state = {
           ...nextState,
-          ...(preserveReasoningEffort && state.reasoningEffort !== undefined
+          ...(keepsEarlierReasoningEffort(state, nextState, preserveReasoningEffort)
             ? { reasoningEffort: state.reasoningEffort }
             : {}),
           ...(preserveContextTier && state.contextTier !== undefined
@@ -149,7 +160,7 @@ function foldModelStateLine(
     if (track) track.preservedFromEarlier = preserveReasoningEffort || preserveContextTier;
     return {
       ...nextState,
-      ...(preserveReasoningEffort && state.reasoningEffort !== undefined
+      ...(keepsEarlierReasoningEffort(state, nextState, preserveReasoningEffort)
         ? { reasoningEffort: state.reasoningEffort }
         : {}),
       ...(preserveContextTier && state.contextTier !== undefined

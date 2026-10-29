@@ -16,6 +16,7 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
 import { getVisibleEventTimestamp } from "./event-transform.js";
 import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";
+import { createFusionProgress, FUSION_PROGRESS_EVENT_TYPES } from "./fusion-progress.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
@@ -404,6 +405,8 @@ export interface SessionRunnerDeps {
   /** Records the browser message id each sent chat message was given by the runtime. */
   chatMessageIdStore?: Pick<ChatMessageIdStore, "record">;
   copilotHome?: string;
+  /** A model's display name from the known model list, for status text. */
+  modelDisplayName?(modelId: string): string | undefined;
 
   isSessionBusy(sessionId: string): boolean;
   hasPlan(sessionId: string): boolean;
@@ -1611,6 +1614,7 @@ export class SessionRunner {
       });
     };
 
+    const fusionProgress = createFusionProgress((modelId) => this.deps.modelDisplayName?.(modelId) ?? modelId);
     const handleEvent = (event: any, context: SessionEventHandlingContext) => {
       if (!acceptingSessionEvents || runController.isCompleted()) return;
       const eventAt = Date.now();
@@ -2418,6 +2422,14 @@ export class SessionRunner {
           break;
         }
         default:
+          // A sub-agent's Fusion turn is its own, and a log replay has no live status to show.
+          if (FUSION_PROGRESS_EVENT_TYPES.has(event.type) && context.origin === "live" && !getSdkAgentId(event)) {
+            const status = fusionProgress.observe(event);
+            if (status !== undefined) {
+              bus.emit({ type: "intent", intent: status });
+              this.deps.globalBus.emit({ type: "session:intent", sessionId, intent: status });
+            }
+          }
           break;
       }
     };

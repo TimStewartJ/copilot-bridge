@@ -37,10 +37,15 @@ export function getSummaryMetrics(
     & { latestSnapshotAt?: string | null }) | null | undefined,
   live?: SessionUsageMetrics["contextInfo"],
   liveUpdatedAt?: number,
+  /**
+   * The chat is on a routed model (Copilot Fusion). Each step reports the window of the model doing
+   * it, so a newer reading with another window is not a model change: the runtime's budget stays the chat's.
+   */
+  routed = false,
 ): SummaryMetrics {
   const newerSummary = live !== undefined && liveUpdatedAt !== undefined
     && summary?.latestSnapshotAt != null && Date.parse(summary.latestSnapshotAt) > liveUpdatedAt;
-  const budget = newerSummary && summary?.contextWindow != null && live?.promptTokenLimit != null
+  const budget = !routed && newerSummary && summary?.contextWindow != null && live?.promptTokenLimit != null
     && summary.contextWindow !== live.promptTokenLimit ? undefined : live;
   const used = newerSummary
     ? optionalNumber(summary?.tokensUsed) ?? optionalNumber(live?.totalTokens)
@@ -108,9 +113,10 @@ export function summarizeContext(
   error: string | null | undefined,
   live?: SessionUsageMetrics["contextInfo"],
   liveUpdatedAt?: number,
+  routed = false,
 ): string {
   if (error) return "unavailable";
-  const metrics = getSummaryMetrics(summary, live, liveUpdatedAt);
+  const metrics = getSummaryMetrics(summary, live, liveUpdatedAt, routed);
   if (metrics.percent !== undefined) return formatPercent(metrics.percent);
   if (metrics.used !== undefined) return `${formatCompactTokens(metrics.used)} tokens`;
   if (capabilities?.modelUsage === "unavailable") return "unavailable";
