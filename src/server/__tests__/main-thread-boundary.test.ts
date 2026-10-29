@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { SERVER_DIR, SRC_DIR, display, walkImportGraph } from "./runtime-import-graph.js";
 
 // Creating a process is a synchronous call on the calling thread (CreateProcessW on Windows),
 // and under machine load it has taken tens of seconds. When the server's main thread made that
@@ -16,8 +16,6 @@ import { describe, expect, it } from "vitest";
 // node:sqlite is synchronous. Reading the Copilot CLI's session store on the main thread froze
 // the live server for 12.2 s. This test walks the real import graph so no rule can erode silently.
 
-const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SRC_DIR = resolve(SERVER_DIR, "..");
 const RUNTIME_ENTRY_POINTS = ["index.ts", "staging-preview-server.ts"].map((name) => join(SERVER_DIR, name));
 const ONLY_PROCESS_CREATOR = join(SRC_DIR, "packages", "spawn-offthread", "src", "worker.ts");
 const PROCESS_CREATING_EXPORTS = new Set(["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]);
@@ -43,68 +41,6 @@ const SQLITE_OPENERS_ALLOWED: Record<string, string> = {
   "server/staging-backend-manager.ts": "reads the production database while seeding preview data, which the job runner does",
 };
 
-const IMPORT_STATEMENT = /(?:^|\n)\s*(import|export)\s+(type\s+)?([^"';]*?)\s*from\s*["']([^"']+)["']/g;
-const SIDE_EFFECT_IMPORT = /(?:^|\n)\s*import\s*["']([^"']+)["']/g;
-const DYNAMIC_IMPORT = /\bimport\(\s*["']([^"']+)["']\s*\)/g;
-const REQUIRE_CALL = /\brequire\(\s*["']([^"']+)["']\s*\)/g;
-
-interface ModuleImport {
-  specifier: string;
-  /** Names imported as values. "*" means the whole module (namespace, default, dynamic, require). */
-  valueNames: string[];
-}
-
-function valueNamesOf(clause: string): string[] {
-  const trimmed = clause.trim();
-  if (!trimmed.startsWith("{")) return ["*"];
-  return trimmed
-    .replace(/^\{|\}$/g, "")
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part && !part.startsWith("type "))
-    .map((part) => part.split(/\s+as\s+/)[0]!.trim());
-}
-
-function readImports(source: string): ModuleImport[] {
-  const imports: ModuleImport[] = [];
-  for (const match of source.matchAll(IMPORT_STATEMENT)) {
-    if (match[2]) continue; // `import type` / `export type` are erased at build time
-    const valueNames = valueNamesOf(match[3] ?? "");
-    if (valueNames.length > 0) imports.push({ specifier: match[4]!, valueNames });
-  }
-  for (const pattern of [SIDE_EFFECT_IMPORT, DYNAMIC_IMPORT, REQUIRE_CALL]) {
-    for (const match of source.matchAll(pattern)) imports.push({ specifier: match[1]!, valueNames: ["*"] });
-  }
-  return imports;
-}
-
-function resolveModule(fromFile: string, specifier: string): string | null {
-  if (!specifier.startsWith(".")) return null;
-  const base = resolve(dirname(fromFile), specifier).replace(/\.js$/, "");
-  for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, "index.ts")]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
-function walkRuntimeGraph(): Map<string, ModuleImport[]> {
-  const graph = new Map<string, ModuleImport[]>();
-  const pending = [...RUNTIME_ENTRY_POINTS];
-  while (pending.length > 0) {
-    const file = pending.pop()!;
-    if (graph.has(file)) continue;
-    const imports = readImports(readFileSync(file, "utf-8"));
-    graph.set(file, imports);
-    for (const { specifier } of imports) {
-      const target = resolveModule(file, specifier);
-      if (target && !graph.has(target)) pending.push(target);
-    }
-  }
-  return graph;
-}
-
-const display = (file: string): string => relative(SRC_DIR, file).split("\\").join("/");
-
 /** Synchronous calls in `source` that delete or copy a whole tree: cpSync, rmdirSync, and rmSync with `recursive`. */
 function syncTreeOperations(source: string): string[] {
   const found: string[] = [];
@@ -127,7 +63,7 @@ function syncTreeOperations(source: string): string[] {
 }
 
 describe("server main-thread boundary", () => {
-  const graph = walkRuntimeGraph();
+  const graph = walkImportGraph(RUNTIME_ENTRY_POINTS);
 
   it("walks the real server runtime graph", () => {
     const modules = new Set([...graph.keys()].map(display));

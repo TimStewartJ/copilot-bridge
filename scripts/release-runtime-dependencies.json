@@ -1,0 +1,16 @@
+[
+  "@github/copilot",
+  "@github/copilot-sdk",
+  "@modelcontextprotocol/sdk",
+  "compression",
+  "express",
+  "gray-matter",
+  "koffi",
+  "multer",
+  "node-cron",
+  "opus-decoder",
+  "vscode-jsonrpc",
+  "web-push",
+  "ws",
+  "yaml"
+]

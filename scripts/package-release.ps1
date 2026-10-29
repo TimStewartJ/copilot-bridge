@@ -48,18 +48,9 @@ function Read-UpdateManifestPublicKeyPem {
   return $null
 }
 
-$runtimeDependencyNames = @(
-  "@github/copilot",
-  "@github/copilot-sdk",
-  "@modelcontextprotocol/sdk",
-  "compression",
-  "express",
-  "gray-matter",
-  "multer",
-  "node-cron",
-  "web-push",
-  "yaml"
-)
+# Packages the packaged launcher and server import at runtime. release-runtime-dependencies.test.ts
+# fails when the runtime starts importing a package that this list does not install.
+$runtimeDependencyNames = @(Get-Content (Join-Path $PSScriptRoot "release-runtime-dependencies.json") -Raw | ConvertFrom-Json)
 
 $runtimePackageJson = [ordered]@{
   name = $packageJson.name
