@@ -181,5 +181,11 @@ describe("sub-agent plan", () => {
     expect(subagentSettingsForModel(gptOnly, "gpt-6.1-sol").agents).not.toHaveProperty("rubber-duck");
     expect(subagentSettingsForModel(gptOnly, "claude-opus-5.5").agents["rubber-duck"]).toEqual({ model: "gpt-6.1-sol", effortLevel: "max" });
   });
+
+  it("runs Copilot Fusion sub-agents at its default level, because sub-agent settings carry no Auto tier", () => {
+    const fusion = { id: "auto", selectionMode: "dynamic" as const, supportedReasoningEfforts: ["balance", "hydrafusion"] };
+    const agents = buildSubagentPlan({ helpers: { model: "auto", reasoningEffort: "hydrafusion" }, tiers: [] }, [...MODELS, fusion]).agents;
+    expect(agents.task).toEqual({ model: "auto" });
+  });
 });
 

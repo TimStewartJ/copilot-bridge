@@ -30,6 +30,21 @@ describe("SessionContextPanel", () => {
     expect(getSummaryMetrics({ tokensUsed: 5, contextWindow: 1000, tokensRemaining: 995, usageRatio: null }).percent).toBe(0.5);
   });
 
+  it("keeps Copilot Fusion's own budget when a step reports its model's larger window", () => {
+    const fusionBudget: SessionUsageMetrics["contextInfo"] = {
+      systemTokens: 10_000, toolDefinitionsTokens: 62_000, conversationTokens: 2_000, totalTokens: 74_000,
+      limit: 128_000, promptTokenLimit: 128_000, compactionThreshold: 102_400, bufferTokens: 6_400,
+    };
+    // A newer reading from the step's model, which has a 272K window of its own.
+    const step = summary({
+      tokensUsed: 75_000, contextWindow: 272_000, tokensRemaining: 197_000, usageRatio: 75_000 / 272_000,
+      latestSnapshotAt: "2026-10-29T16:06:12.000Z",
+    });
+    const readAt = Date.parse("2026-10-29T16:06:11.000Z");
+    expect(getSummaryMetrics(step, fusionBudget, readAt).limit).toBe(272_000);
+    expect(getSummaryMetrics(step, fusionBudget, readAt, true)).toMatchObject({ limit: 128_000, used: 75_000 });
+  });
+
   it("formats token counts compactly and names the compaction pressure", () => {
     expect([840, 8_400, 84_000, 1_240_000, 12_000_000].map(formatCompactTokens)).toEqual(["840", "8.4k", "84k", "1.24M", "12M"]);
     expect([undefined, 79, 80, 94, 95].map((percent) => getContextPressure(percent))).toEqual(["room", "room", "compacting", "compacting", "blocking"]);

@@ -161,6 +161,8 @@ interface ChatViewProps {
   sessionId: string | null;
   hasPlan?: boolean;
   sessionModelSummary?: ReactNode;
+  /** The chat is on a routed model (Copilot Fusion), whose context budget is the runtime's, not one model's. */
+  routedModel?: boolean;
   onMessageSent: () => void;
   draft?: Draft | null;
   onDraftChange?: (text: string, attachments?: Attachment[]) => void;
@@ -551,6 +553,7 @@ export default function ChatView({
   sessionId,
   hasPlan,
   sessionModelSummary,
+  routedModel = false,
   onMessageSent,
   draft,
   onDraftChange,
@@ -2838,6 +2841,7 @@ export default function ChatView({
         sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd}
         sessionUsage={sessionUsageMetricsQuery.data}
         sessionUsageUpdatedAt={sessionUsageMetricsQuery.dataUpdatedAt}
+        routedModel={routedModel}
         sessionCostError={sessionUsageMetricsQuery.error instanceof Error
           ? sessionUsageMetricsQuery.error.message
           : sessionUsageMetricsQuery.error ? String(sessionUsageMetricsQuery.error) : undefined}

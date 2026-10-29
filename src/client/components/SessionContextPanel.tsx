@@ -53,6 +53,7 @@ export default function SessionContextPanel({
   insights,
   usage,
   usageUpdatedAt,
+  routedModel = false,
   cost,
 }: {
   capabilities?: SessionContextCapabilities;
@@ -63,11 +64,13 @@ export default function SessionContextPanel({
   insights?: SessionContextInsights | null;
   usage?: SessionUsageMetrics | null;
   usageUpdatedAt?: number;
+  /** The chat is on a routed model (Copilot Fusion), so the window is the runtime's budget. */
+  routedModel?: boolean;
   cost?: SessionCostReading;
 }) {
   const now = useNow(15_000);
   const live = usage?.contextInfo;
-  const metrics = getSummaryMetrics(summary, live, usageUpdatedAt);
+  const metrics = getSummaryMetrics(summary, live, usageUpdatedAt, routedModel);
   const hasWindow = metrics.used !== undefined && metrics.limit !== undefined;
   const lastCompaction = insights?.lastCompaction ?? null;
   // A split taken before the last compaction describes a window that no longer exists.

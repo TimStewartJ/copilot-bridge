@@ -45,7 +45,7 @@ describe("SessionManager session config", () => {
         }),
         env: {
           COPILOT_HOME: copilotHome,
-          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "DYNAMIC_AUTO_TIERS,HYDRAFUSION_PLAN_V2",
           AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
         },
       }));
@@ -64,7 +64,7 @@ describe("SessionManager session config", () => {
         }),
         env: {
           COPILOT_HOME: copilotHome,
-          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "DYNAMIC_AUTO_TIERS,HYDRAFUSION_PLAN_V2",
           AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
         },
         gitHubToken: "github_pat_bridge",
@@ -88,7 +88,7 @@ describe("SessionManager session config", () => {
         }),
         env: {
           COPILOT_HOME: copilotHome,
-          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+          COPILOT_CLI_ENABLED_FEATURE_FLAGS: "DYNAMIC_AUTO_TIERS,HYDRAFUSION_PLAN_V2",
           AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
           [BRIDGE_COPILOT_GITHUB_TOKEN_ENV]: "github_pat_client",
         },
@@ -117,7 +117,7 @@ describe("SessionManager session config", () => {
 
   it("preserves other runtime flags and isolates the bundled runtime from CLI path overrides", () => {
     const clientEnv = {
-      COPILOT_HOME: makeTestDir("hydrafusion-client-options"),
+      COPILOT_HOME: makeTestDir("fusion-client-options"),
       COPILOT_CLI_PATH: "custom-cli",
       COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG, HYDRAFUSION, ,OTHER_FLAG",
       COPILOT_CLI_DISABLED_FEATURE_FLAGS: "DISABLED_FLAG",
@@ -131,7 +131,7 @@ describe("SessionManager session config", () => {
     }));
     expect(options.env).toEqual({
       COPILOT_HOME: clientEnv.COPILOT_HOME,
-      COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG,HYDRAFUSION,HYDRAFUSION_ROLLOUT",
+      COPILOT_CLI_ENABLED_FEATURE_FLAGS: "OTHER_FLAG,HYDRAFUSION,DYNAMIC_AUTO_TIERS,HYDRAFUSION_PLAN_V2",
       AGENT_BROWSER_IDLE_TIMEOUT_MS: "3600000",
       COPILOT_CLI_DISABLED_FEATURE_FLAGS: "DISABLED_FLAG",
     });

@@ -35,8 +35,10 @@ function HelmSettingsForm({ settings, preview, nextRunAt, onSave }: { settings: 
   const models = useModelsQuery({ enabled: true });
   const roles = useQuery({ queryKey: ["models", "roles"], queryFn: ({ signal }) => fetchModelRoles(signal) });
   const helm = roles.data?.roles.find((role) => role.role === "helm");
+  const helmModelInfo = helm?.model ? models.data?.find((model) => model.id === helm.model) : undefined;
+  const helmEffort = helm?.reasoningEffort && (helmModelInfo?.reasoningEffortLabels?.[helm.reasoningEffort] ?? helm.reasoningEffort);
   const helmModel = helm?.model
-    ? [((models.data ?? []) as Array<{ id: string; name?: string }>).find((model) => model.id === helm.model)?.name ?? helm.model, helm.reasoningEffort && `${helm.reasoningEffort} effort`, helm.tier && `${MODEL_TIER_INFO[helm.tier].label} tier`].filter(Boolean).join(" · ")
+    ? [helmModelInfo?.name ?? helm.model, helmEffort && `${helmEffort} effort`, helm.tier && `${MODEL_TIER_INFO[helm.tier].label} tier`].filter(Boolean).join(" · ")
     : undefined;
   const [times, setTimes] = useState(settings.times.join(", "));
   const [label, setLabel] = useState(settings.label);

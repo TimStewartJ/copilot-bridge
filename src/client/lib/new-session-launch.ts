@@ -62,13 +62,14 @@ export function buildNewSessionCreateOptions({
  */
 export function buildReasoningEffortOptions(
   supportedEfforts: readonly string[] | undefined,
+  model?: Pick<ModelInfo, "reasoningEffortLabels"> | null,
 ): LaunchOption<string>[] {
   if (!supportedEfforts || supportedEfforts.length === 0) {
     return [{ value: null, label: "Default" }];
   }
   return supportedEfforts.map((value) => ({
     value,
-    label: formatReasoningEffortLabel(value) ?? value,
+    label: formatReasoningEffortLabel(value, model) ?? value,
   }));
 }
 
@@ -155,7 +156,7 @@ export function resolveNewSessionLaunchState({
 
   const supportedEfforts = [...(effectiveModel?.supportedReasoningEfforts ?? [])];
   const reasoningEffortOptions = supportedEfforts.length > 0
-    ? buildReasoningEffortOptions(supportedEfforts)
+    ? buildReasoningEffortOptions(supportedEfforts, effectiveModel)
     : [];
   const selectedReasoningEffort =
     reasoningEffortSelection?.modelId === modelKey

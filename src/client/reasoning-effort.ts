@@ -1,13 +1,18 @@
 import type { ModelInfo } from "./api";
 
 /**
- * Humanize an SDK reasoning-effort id for display. The set of efforts is
- * entirely SDK-driven, so this formats any value generically rather than
- * matching against a fixed list (e.g. "xhigh" -> "Xhigh", "extra_high" ->
- * "Extra High"). Returns undefined for empty input.
+ * Humanize an effort id for display. A model can name its own levels (Copilot Fusion's tiers are
+ * Standard, High and Max); otherwise the set of efforts is entirely SDK-driven, so any value is
+ * formatted generically rather than matched against a fixed list (e.g. "xhigh" -> "Xhigh",
+ * "extra_high" -> "Extra High"). Returns undefined for empty input.
  */
-export function formatReasoningEffortLabel(effort?: string): string | undefined {
+export function formatReasoningEffortLabel(
+  effort?: string,
+  model?: Pick<ModelInfo, "reasoningEffortLabels"> | null,
+): string | undefined {
   if (!effort) return undefined;
+  const named = model?.reasoningEffortLabels?.[effort];
+  if (named) return named;
   return effort
     .split(/[\s_-]+/)
     .filter(Boolean)

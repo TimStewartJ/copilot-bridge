@@ -130,6 +130,7 @@ export default function SessionModelDialog({
   const supportedReasoningEfforts = selectedDialogModel?.supportedReasoningEfforts;
   const selectedDialogDisablesReasoning = supportedReasoningEfforts?.length === 0;
   const currentReasoningEffort = modelDialogQuery.data?.reasoningEffort;
+  const currentDialogModel = modelOptions?.find((model) => model.id === modelDialogQuery.data?.model);
   const currentEffortLookupReady = modelDialogQuery.isSuccess && !!modelDialogQuery.data;
   const preferredReasoningEffort = getPreferredReasoningEffort(selectedDialogModel);
   const canKeepCurrentReasoningEffort = canKeepCurrentReasoningEffortForModel({
@@ -140,9 +141,9 @@ export default function SessionModelDialog({
   // A model with no advertised efforts keeps whatever the session already has
   // (the save omits the field), so name that effort instead of "Default".
   const keepCurrentEffortLabel = supportedReasoningEfforts === undefined
-    ? formatReasoningEffortLabel(currentReasoningEffort)
+    ? formatReasoningEffortLabel(currentReasoningEffort, currentDialogModel)
     : undefined;
-  const dialogReasoningOptions = buildReasoningEffortOptions(supportedReasoningEfforts)
+  const dialogReasoningOptions = buildReasoningEffortOptions(supportedReasoningEfforts, selectedDialogModel)
     .map((option) => (option.value === null && keepCurrentEffortLabel
       ? { ...option, label: keepCurrentEffortLabel }
       : option));
@@ -517,7 +518,7 @@ export default function SessionModelDialog({
               />
               {!canKeepCurrentReasoningEffort && currentEffortLookupReady && currentReasoningEffort && (
                 <div className="text-xs text-text-faint">
-                  Current: {formatReasoningEffortLabel(currentReasoningEffort)}
+                  Current: {formatReasoningEffortLabel(currentReasoningEffort, currentDialogModel)}
                   {" (not supported by selected model)"}
                 </div>
               )}

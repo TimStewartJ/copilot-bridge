@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   isCopilotContextTier,
   modelSupportsLongContext,
-  modelUsesDynamicSelection,
   type CopilotContextTier,
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
@@ -90,7 +89,7 @@ export function resolveMoveReasoningEffort(
   target: CopilotModelContextMetadata | undefined,
 ): string | undefined {
   if (requested) return requested;
-  if (!target || modelUsesDynamicSelection(target)) return undefined;
+  if (!target) return undefined;
   return resolveSupportedReasoningEffort(current, target.supportedReasoningEfforts);
 }
 

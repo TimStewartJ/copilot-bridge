@@ -99,7 +99,7 @@ function describeChoice(choice: Partial<ModelChoice> | undefined, models: readon
   if (!choice?.model) return undefined;
   return [
     modelName(models, choice.model),
-    formatReasoningEffortLabel(choice.reasoningEffort),
+    formatReasoningEffortLabel(choice.reasoningEffort, models?.find((model) => model.id === choice.model)),
     choice.contextTier === "long_context" ? "long context" : undefined,
   ].filter(Boolean).join(" · ");
 }
@@ -108,7 +108,7 @@ function describeChoice(choice: Partial<ModelChoice> | undefined, models: readon
 function shortSetup(choice: Partial<ModelChoice>, model: ModelInfo | undefined): string {
   const context = choice.contextTier === "long_context" ? getContextTierLabel(model, "long_context") : getContextTierLabel(model, "default");
   const size = context?.match(/\(([^)]+)\)/)?.[1];
-  return [formatReasoningEffortLabel(choice.reasoningEffort) ?? "Model default", size].filter(Boolean).join(" · ");
+  return [formatReasoningEffortLabel(choice.reasoningEffort, model) ?? "Model default", size].filter(Boolean).join(" · ");
 }
 
 /**
@@ -126,11 +126,12 @@ function ModelChoiceFields({ idPrefix, name, models, value, onChange, emptyLabel
   showEffort?: boolean;
 }) {
   const model = models.find((entry) => entry.id === value.model);
-  const dynamic = modelUsesDynamicSelection(model);
-  const effortOptions = buildReasoningEffortOptions(model?.supportedReasoningEfforts);
+  // A routed model without levels of its own (plain Auto) chooses everything per request.
+  const choosesPerRequest = modelUsesDynamicSelection(model) && !model?.supportedReasoningEfforts?.length;
+  const effortOptions = buildReasoningEffortOptions(model?.supportedReasoningEfforts, model);
   // A saved level the model lacks stays visible, so the picker never hides the setting.
   if (value.reasoningEffort && !effortOptions.some((option) => option.value === value.reasoningEffort)) {
-    effortOptions.push({ value: value.reasoningEffort, label: formatReasoningEffortLabel(value.reasoningEffort) ?? value.reasoningEffort });
+    effortOptions.push({ value: value.reasoningEffort, label: formatReasoningEffortLabel(value.reasoningEffort, model) ?? value.reasoningEffort });
   }
   const contextOptions = buildContextTierOptions(model);
   const setModel = (id: string) => {
@@ -151,7 +152,7 @@ function ModelChoiceFields({ idPrefix, name, models, value, onChange, emptyLabel
       </FormRow>
       {showEffort && (
         <FormRow label="Effort">
-          {dynamic
+          {choosesPerRequest
             ? <p className={cx(DS.text.meta, "pt-2")}>Chosen per request by this model.</p>
             : <LaunchOptionRow ariaLabel={`${name} effort`} options={effortOptions} selectedValue={value.reasoningEffort}
               onChange={(effort) => { if (effort) onChange({ ...value, reasoningEffort: effort }); }} />}

@@ -122,28 +122,31 @@ describe("new-session launch state", () => {
     expect(state.selectedContextTier).toBe("default");
   });
 
-  it("does not expose fixed options for dynamically selected models", () => {
+  it("offers Copilot Fusion's levels by name but no context tier", () => {
     const state = resolveNewSessionLaunchState({
       models: [{
-        id: "hydrafusion",
-        name: "HydraFusion (Research Preview)",
+        id: "auto",
+        name: "Copilot Fusion",
         selectionMode: "dynamic",
-        supportedReasoningEfforts: [],
-        capabilities: {
-          supports: { vision: false, reasoningEffort: false },
-          limits: { max_context_window_tokens: 0 },
-        },
+        supportedReasoningEfforts: ["balance", "hydrafusion", "hydrafusion-max"],
+        defaultReasoningEffort: "balance",
+        reasoningEffortLabels: { balance: "Standard", hydrafusion: "High", "hydrafusion-max": "Max" },
+        capabilities: { supports: {}, limits: { max_context_window_tokens: 0 } },
       }],
-      selectedModelId: "hydrafusion",
+      selectedModelId: "auto",
       defaultReasoningEffort: "xhigh",
       defaultContextTier: "long_context",
     });
 
-    expect(state.reasoningEffortOptions).toEqual([]);
-    expect(state.selectedReasoningEffort).toBeUndefined();
+    expect(state.reasoningEffortOptions).toEqual([
+      { value: "balance", label: "Standard" },
+      { value: "hydrafusion", label: "High" },
+      { value: "hydrafusion-max", label: "Max" },
+    ]);
+    expect(state.selectedReasoningEffort).toBe("balance");
     expect(state.contextOptions).toEqual([]);
     expect(state.selectedContextTier).toBeUndefined();
-    expect(buildNewSessionCreateOptions(state)).toEqual({ model: "hydrafusion" });
+    expect(buildNewSessionCreateOptions(state)).toEqual({ model: "auto", reasoningEffort: "balance" });
   });
 
   it("does not invent launch options or freeze an inherited model before it is known", () => {

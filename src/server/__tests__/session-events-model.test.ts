@@ -21,6 +21,9 @@ describe("deriveModelStateFromEventsContent", () => {
       ["session.start", { selectedModel: "claude-opus-4.7", reasoningEffort: "high" }, { model: "claude-opus-4.7", reasoningEffort: "high" }],
       ["session.resume", { selectedModel: "gpt-5.5", reasoningEffort: "medium" }, { model: "gpt-5.5", reasoningEffort: "medium" }],
       ["session.model_change", { newModel: "claude-opus-4.7", reasoningEffort: "xhigh" }, { model: "claude-opus-4.7", reasoningEffort: "xhigh" }],
+      // On Copilot Fusion the Auto tier is the effort.
+      ["session.start", { selectedModel: "auto", autoTier: "hydrafusion" }, { model: "auto", reasoningEffort: "hydrafusion" }],
+      ["session.model_change", { newModel: "auto", autoTier: "hydrafusion-max" }, { model: "auto", reasoningEffort: "hydrafusion-max" }],
     ];
     for (const [type, data, expected] of cases) {
       expect(deriveModelStateFromEventsContent(JSON.stringify({ type, data })), type).toEqual(expected);
@@ -50,15 +53,18 @@ describe("deriveModelStateFromEventsContent", () => {
     });
   });
 
-  it("model_change preserves previous reasoningEffort when it omits it", () => {
-    const lines = [
-      JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-4.7", reasoningEffort: "high" } }),
-      JSON.stringify({ type: "session.model_change", data: { newModel: "gpt-5.5" } }),
-    ];
-    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
+  it("model_change preserves previous reasoningEffort when it omits it, but never across a switch to or from Auto", () => {
+    const derive = (lines: string[]) => deriveModelStateFromEventsContent(lines.join("\n"));
+    const change = (data: Record<string, unknown>) => JSON.stringify({ type: "session.model_change", data });
+    const start = JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-4.7", reasoningEffort: "high" } });
+    expect(derive([start, change({ newModel: "gpt-5.5" })])).toEqual({
       model: "gpt-5.5",
       reasoningEffort: "high",
     });
+    expect(derive([start, change({ newModel: "auto", autoTier: null })])).toEqual({ model: "auto" });
+    const onFusion = [start, change({ newModel: "auto", autoTier: "hydrafusion" })];
+    expect(derive([...onFusion, change({ newModel: "auto" })])).toEqual({ model: "auto", reasoningEffort: "hydrafusion" });
+    expect(derive([...onFusion, change({ newModel: "gpt-4.1", previousModel: "auto" })])).toEqual({ model: "gpt-4.1" });
   });
 
   it("derives and preserves contextTier across model changes", () => {

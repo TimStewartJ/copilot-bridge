@@ -18,10 +18,13 @@ import { isRecord } from "../../shared/is-record.js";
 import { subagentSettingsForModel, type SubagentPlan } from "../../shared/subagent-settings.js";
 
 import {
-  HYDRAFUSION_MODEL_ID,
-  HYDRAFUSION_MODEL_NAME,
-  isHydraFusionModel,
-} from "../../shared/hydrafusion.js";
+  AUTO_MODEL_ID,
+  fromRuntimeCurrentModel,
+  modelCatalogFromList,
+  replacementForRetiredModel,
+  toRuntimeModelSwitch,
+  toRuntimeSessionConfig,
+} from "./copilot-fusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
 import { capDeadline, createDeadline, settleByDeadline, sleepUntilDeadline, type Deadline } from "../deadline.js";
 import {
@@ -90,22 +93,6 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   nativeBridgeTools: true,
   eagerNativeTools: true,
   toolMetadataWarmup: true,
-};
-
-const HYDRAFUSION_MODEL: AgentModelInfo = {
-  id: HYDRAFUSION_MODEL_ID,
-  name: HYDRAFUSION_MODEL_NAME,
-  selectionMode: "dynamic",
-  capabilities: {
-    supports: {
-      vision: false,
-      reasoningEffort: false,
-    },
-    limits: {
-      max_context_window_tokens: 0,
-    },
-  },
-  supportedReasoningEfforts: [],
 };
 
 function normalizeString(value: unknown): string | undefined {
@@ -443,21 +430,31 @@ class CopilotAgentSession implements AgentSession {
   }
 
   async setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined> {
+    const target = toRuntimeModelSwitch(model, opts);
     // SDK session.setModel() awaits model.switchTo but discards the result, which hides the compaction preflight.
     const switchTo = this.session?.rpc?.model?.switchTo;
     if (typeof switchTo !== "function") {
-      await this.rpc("session.setModel", () => this.session.setModel(model, opts));
+      await this.rpc("session.setModel", () => this.session.setModel(target.modelId, target.options));
       return undefined;
     }
-    return this.rpc("session.setModel", () => switchTo.call(this.session.rpc.model, { ...opts, modelId: model }));
+    return this.rpc("session.setModel", () => switchTo.call(this.session.rpc.model, { ...target.options, modelId: target.modelId }));
   }
 
   async setReasoningEffort(reasoningEffort: string): Promise<void> {
-    const set = this.session?.rpc?.model?.setReasoningEffort;
+    const model = this.session?.rpc?.model;
+    // On `auto` the effort is its Auto tier, which the runtime keeps apart from reasoning effort.
+    if ((await this.getCurrentModel())?.modelId === AUTO_MODEL_ID) {
+      if (typeof model?.switchAutoTier !== "function") {
+        throw new Error("Auto tier updates are not available in this Copilot SDK build");
+      }
+      await this.rpc("session.setReasoningEffort", () => model.switchAutoTier({ autoTier: reasoningEffort }));
+      return;
+    }
+    const set = model?.setReasoningEffort;
     if (typeof set !== "function") {
       throw new Error("Reasoning effort updates are not available in this Copilot SDK build");
     }
-    await this.rpc("session.setReasoningEffort", () => set.call(this.session.rpc.model, { reasoningEffort }));
+    await this.rpc("session.setReasoningEffort", () => set.call(model, { reasoningEffort }));
   }
 
   disconnect(): Promise<AgentSessionRelease> {
@@ -585,7 +582,7 @@ class CopilotAgentSession implements AgentSession {
   async getCurrentModel(): Promise<AgentCurrentModel | undefined> {
     const get = this.session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
-    return this.rpc("session.getCurrentModel", () => get.call(this.session.rpc.model));
+    return fromRuntimeCurrentModel(await this.rpc("session.getCurrentModel", () => get.call(this.session.rpc.model)));
   }
 
   async getUsageMetrics(): Promise<AgentUsageMetrics | undefined> {
@@ -766,16 +763,11 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   const {
     pendingInteractionEvents = false,
     subagents,
-    ...sdkConfig
+    ...callerConfig
   } = config;
+  const sdkConfig = toRuntimeSessionConfig(callerConfig);
   // Apply on every create/resume, including helpers and sessions with a different model.
   sdkConfig.toolSearch = { enabled: false };
-  if (isHydraFusionModel(sdkConfig.model)) {
-    delete sdkConfig.reasoningEffort;
-    delete sdkConfig.contextTier;
-    delete sdkConfig.modelCapabilities;
-    sdkConfig.enableExperimentalMode = true;
-  }
   if (pendingInteractionEvents) {
     sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
     sdkConfig.askUserVariant = PENDING_INTERACTION_ASK_USER_VARIANT;
@@ -879,6 +871,7 @@ export class CopilotBackend implements AgentBackend {
   private unverifiedFenceIdentities: ProcessIdentity[] = [];
   private ownedChild: ChildProcess | undefined;
   private ownedTree: ProcessTreeSnapshot | null = null;
+  private modelCatalog: Promise<AgentModelInfo[]> | undefined;
   private readonly localStdioOwnership: boolean;
   private readonly startClient: () => Promise<void>;
 
@@ -1374,11 +1367,15 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async listModels(): Promise<AgentModelInfo[]> {
-    const models = await this.rpc("backend.listModels", () => this.client.listModels());
-    if (!models.some((model) => isHydraFusionModel(model.id))) {
-      return [...models, HYDRAFUSION_MODEL] as AgentModelInfo[];
+    // Cached for this client's lifetime, as the SDK's own listModels does; refreshing models rotates the client.
+    this.modelCatalog ??= this.rpc("backend.listModels", () => this.client.rpc.models.list({})).then(modelCatalogFromList);
+    const catalog = this.modelCatalog;
+    try {
+      return [...await catalog];
+    } catch (error) {
+      if (this.modelCatalog === catalog) this.modelCatalog = undefined;
+      throw error;
     }
-    return models as AgentModelInfo[];
   }
 
   async listSessions(): Promise<AgentSessionSummary[]> {
@@ -1427,7 +1424,32 @@ export class CopilotBackend implements AgentBackend {
         throw error;
       }
     }
-    return this.wrapSession(session, prepared, undefined);
+    return this.wrapSession(session, prepared, await this.leaveRetiredModel(sessionId, session));
+  }
+
+  /**
+   * A chat saved on the retired HydraFusion preview resumes on a model the runtime no longer runs, so
+   * it moves to Fusion High. Returns the session's model from the runtime, which the sub-agent plan also needs.
+   */
+  private async leaveRetiredModel(sessionId: string, session: any): Promise<string | undefined> {
+    const get = session?.rpc?.model?.getCurrent;
+    if (typeof get !== "function") return undefined;
+    let modelId: string | undefined;
+    try {
+      const current: unknown = await this.rpc("session.getCurrentModel", () => get.call(session.rpc.model));
+      modelId = isRecord(current) && typeof current.modelId === "string" ? current.modelId : undefined;
+    } catch {
+      return undefined;
+    }
+    const replacement = replacementForRetiredModel(modelId);
+    if (!replacement) return modelId;
+    try {
+      await this.rpc("session.setModel", () => session.rpc.model.switchTo(replacement));
+      return replacement.modelId;
+    } catch (error) {
+      this.logger.warn(`[copilot-backend] [${sessionId.slice(0, 8)}] Could not move this chat off the retired HydraFusion preview: ${error instanceof Error ? error.message : String(error)}`);
+      return modelId;
+    }
   }
 
   private async wrapSession(session: any, prepared: ReturnType<typeof prepareCopilotSessionConfig>, initialModel: string | undefined): Promise<AgentSession> {
