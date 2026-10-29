@@ -10,6 +10,7 @@ import {
   ModelsSection,
   ComputerUseSection,
   ImageBudgetSection,
+  ExperimentalSection,
   AppearanceSection,
   NotificationsSection,
   DeviceManagementSection,
@@ -315,6 +316,7 @@ export default function SettingsView() {
             <CategoryPanel category="chat" activeCategory={activeCategory}>
               <ModelsSection draft={draft} setDraft={setDraft} />
               <ImageBudgetSection draft={draft} setDraft={setDraft} />
+              <ExperimentalSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>
 
             <CategoryPanel category="responses" activeCategory={activeCategory}>

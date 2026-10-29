@@ -441,6 +441,48 @@ describe("SessionManager.getSessionUsageMetrics", () => {
     });
   });
 
+  it("reports when the chat's budget last changed: another model, or a handle with another Fusion limit", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const home = makeTestDir("usage-metrics-budget-change");
+      const manager = createManager(home);
+      manager.backend = {};
+      const getCurrentModel = vi.fn().mockResolvedValue({ modelId: "auto", reasoningEffort: "hydrafusion" });
+      const stub = () => makeAgentSessionStub({
+        setModel: vi.fn().mockResolvedValue(undefined),
+        getCurrentModel,
+        getUsageMetrics: vi.fn().mockResolvedValue({ totalPremiumRequestCost: 0, totalUserRequests: 0 }),
+      });
+      const budgetChangedAt = async (current = manager) => (await current.getSessionUsageMetrics("chat")).budgetChangedAt;
+      await manager.cacheResumedSession("chat", stub(), { fusionContextTokens: undefined });
+
+      // A Fusion level leaves the budget as it was.
+      vi.setSystemTime(Date.parse("2026-10-29T12:00:00.000Z"));
+      await manager.setSessionModel("chat", "auto", "hydrafusion-max");
+      expect(await budgetChangedAt()).toBeUndefined();
+
+      // A handle that comes with a new limit changes it, whenever the chat resumes.
+      manager.sessionObjects.delete("chat");
+      vi.setSystemTime(Date.parse("2026-10-29T12:05:00.000Z"));
+      await manager.cacheResumedSession("chat", stub(), { fusionContextTokens: 600_000 });
+      expect(await budgetChangedAt()).toBe("2026-10-29T12:05:00.000Z");
+
+      // The record outlives the server process, and the same limit again changes nothing.
+      const restarted = createManager(home);
+      vi.setSystemTime(Date.parse("2026-10-29T12:07:00.000Z"));
+      await restarted.cacheResumedSession("chat", stub(), { fusionContextTokens: 600_000 });
+      expect(await budgetChangedAt(restarted)).toBe("2026-10-29T12:05:00.000Z");
+
+      // Another model changes it.
+      getCurrentModel.mockResolvedValueOnce({ modelId: "auto" }).mockResolvedValueOnce({ modelId: "claude-opus-5.5" });
+      vi.setSystemTime(Date.parse("2026-10-29T12:10:00.000Z"));
+      await manager.setSessionModel("chat", "claude-opus-5.5");
+      expect(await budgetChangedAt()).toBe("2026-10-29T12:10:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reads the native context budget without feeding a stale stored window back into the runtime", async () => {
     const manager = createManager(makeTestDir("usage-metrics-native-context"));
     const getSummary = vi.fn().mockReturnValue({ contextWindow: 72_000 });

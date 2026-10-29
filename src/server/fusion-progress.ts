@@ -1,7 +1,8 @@
-// A Copilot Fusion turn at High or Max runs its phases out of sight: the runtime adds their messages
-// and tool calls to the chat only when the turn commits, which can be minutes later. Meanwhile it
-// reports content-free progress (which model is on which phase, tools starting and finishing). This
-// turns that progress into the run's status line.
+// A Copilot Fusion turn at High or Max runs in phases (a draft, a review, a redo) that the chat only
+// partly shows: the session log keeps the turn's messages and tool calls once the turn commits, and a
+// review or a judge's verdict never appears. Throughout, the runtime reports content-free progress
+// (which model is on which phase, tools starting and finishing). This turns that progress into the
+// run's status line.
 import { isRecord } from "../shared/is-record.js";
 
 const PHASE_VERBS: Readonly<Record<string, string>> = {

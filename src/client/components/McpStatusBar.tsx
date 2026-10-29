@@ -21,7 +21,7 @@ interface McpStatusBarProps {
   /** Live SDK counters for the loaded session: messages, model calls, tokens, code changes. */
   sessionUsage?: SessionUsageMetrics | null;
   sessionUsageUpdatedAt?: number;
-  /** The chat is on a routed model (Copilot Fusion), so the meter keeps the runtime's budget. */
+  /** The chat is on a routed model (Copilot Fusion), so the meter follows the window its last step used. */
   routedModel?: boolean;
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
@@ -88,8 +88,9 @@ export default function McpStatusBar({
   const pending = servers.filter((s) => s.status === "pending").length;
   const unknown = servers.filter((s) => s.status === "unknown").length;
   const hasProblem = failed > 0 || needsAuth > 0;
-  const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError, sessionUsage?.contextInfo, sessionUsageUpdatedAt, routedModel);
-  const contextMetrics = getSummaryMetrics(summary, sessionUsage?.contextInfo, sessionUsageUpdatedAt, routedModel);
+  const budgetChangedAt = sessionUsage?.budgetChangedAt;
+  const contextSummary = summarizeContext(summary, capabilities, contextLoading, contextError, sessionUsage?.contextInfo, sessionUsageUpdatedAt, routedModel, budgetChangedAt);
+  const contextMetrics = getSummaryMetrics(summary, sessionUsage?.contextInfo, sessionUsageUpdatedAt, routedModel, budgetChangedAt);
   const contextPressure = contextError ? "room" : getContextPressure(
     contextMetrics.percent, contextMetrics.compactionPercent, contextMetrics.blockingPercent,
   );

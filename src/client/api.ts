@@ -1,6 +1,7 @@
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
+import type { ExperimentalSettings } from "../shared/experimental-settings.js";
 import type {
   SessionModelMoveJob,
   SessionModelMoveRequest,
@@ -1370,6 +1371,8 @@ export interface SessionUsageMetrics {
     compactionThreshold?: number;
     bufferTokens?: number;
   };
+  /** ISO time the chat's context budget last changed size (a model switch, the Fusion limit). */
+  budgetChangedAt?: string;
 }
 
 export async function fetchSessionUsageMetrics(
@@ -2367,6 +2370,7 @@ export interface AppSettings {
   computerUse?: ComputerUseSettings;
   helm?: HelmSettings;
   imageBudget?: ImageBudgetSettings;
+  experimental?: ExperimentalSettings;
 }
 
 export type AppSettingsUpdates = Partial<AppSettings>;

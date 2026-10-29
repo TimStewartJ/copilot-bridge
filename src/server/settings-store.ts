@@ -24,6 +24,11 @@ import {
   IMAGE_BUDGET_MODEL_PATTERN,
   type ImageBudgetSettings,
 } from "../shared/image-budget.js";
+import {
+  FUSION_CONTEXT_TOKENS_MAX,
+  FUSION_CONTEXT_TOKENS_MIN,
+  type ExperimentalSettings,
+} from "../shared/experimental-settings.js";
 
 import {
   DEFAULT_RESPONSE_STYLE_GUIDANCE,
@@ -118,6 +123,8 @@ export interface AppSettings {
   helm?: HelmSettings;
   /** Early compaction for models whose provider rejects large requests; unset uses the defaults. */
   imageBudget?: ImageBudgetSettings;
+  /** Opt-in features that may change or go away; unset is all off. */
+  experimental?: ExperimentalSettings;
 }
 
 export type AppSettingsUpdates = Partial<AppSettings>;
@@ -306,6 +313,20 @@ function normalizeImageBudgetSettings(value: unknown): ImageBudgetSettings | und
       ceilings[pattern] = mb;
     }
     result.ceilingsMb = ceilings;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizeExperimentalSettings(value: unknown): ExperimentalSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("experimental must be an object");
+  const result: ExperimentalSettings = {};
+  const tokens = value.fusionContextTokens;
+  if (tokens !== undefined && tokens !== null) {
+    if (!Number.isInteger(tokens) || (tokens as number) < FUSION_CONTEXT_TOKENS_MIN || (tokens as number) > FUSION_CONTEXT_TOKENS_MAX) {
+      validationError(`experimental.fusionContextTokens must be a whole number from ${FUSION_CONTEXT_TOKENS_MIN} to ${FUSION_CONTEXT_TOKENS_MAX}`);
+    }
+    result.fusionContextTokens = tokens as number;
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -676,6 +697,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
+  if ("experimental" in value) normalized.experimental = normalizeExperimentalSettings(value.experimental);
   // Like every other settings object, a write sends the whole role map; a missing role is Automatic.
   if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
   reconcileModelRoles(base, normalized, value);

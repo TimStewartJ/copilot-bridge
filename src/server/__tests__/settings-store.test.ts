@@ -238,6 +238,18 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({ imageBudget: [] as any })).toThrow("imageBudget must be an object");
   });
 
+  it("keeps experimental features off unless set and validates the Fusion context limit", () => {
+    expect(store.getSettings().experimental).toBeUndefined();
+    expect(store.updateSettings({ experimental: { fusionContextTokens: 600_000 } }).experimental)
+      .toEqual({ fusionContextTokens: 600_000 });
+    expect(store.updateSettings({ experimental: {} }).experimental).toBeUndefined();
+    for (const fusionContextTokens of [100_000, 1_200_000, 300_000.5, "600000"]) {
+      expect(() => store.updateSettings({ experimental: { fusionContextTokens } as any }))
+        .toThrow("experimental.fusionContextTokens must be a whole number from 128000 to 1000000");
+    }
+    expect(() => store.updateSettings({ experimental: [] as any })).toThrow("experimental must be an object");
+  });
+
   it("keeps computer use off unless it is explicitly enabled", () => {
     expect(store.getSettings().computerUse).toBeUndefined();
 

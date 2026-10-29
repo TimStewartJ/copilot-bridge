@@ -15,6 +15,8 @@ export type SummaryMetrics = {
   promptTokenLimit?: number;
   compactionPercent?: number;
   blockingPercent?: number;
+  /** The window is the one the latest step of a routed model (Copilot Fusion) ran in. */
+  windowFromStep?: boolean;
 };
 
 const NUMBER_FORMATTER = new Intl.NumberFormat();
@@ -38,24 +40,41 @@ export function getSummaryMetrics(
   live?: SessionUsageMetrics["contextInfo"],
   liveUpdatedAt?: number,
   /**
-   * The chat is on a routed model (Copilot Fusion). Each step reports the window of the model doing
-   * it, so a newer reading with another window is not a model change: the runtime's budget stays the chat's.
+   * The chat is on a routed model (Copilot Fusion). The runtime reports a conservative budget for
+   * the router, but each step runs, and compacts at the usual share, within the window of the
+   * model doing it, so the window the latest step reported is the chat's.
    */
   routed = false,
+  /**
+   * When the chat's budget last changed size, from the server (`SessionUsageMetrics.budgetChangedAt`).
+   * A step reading from before then came from another model or another context limit.
+   */
+  budgetChangedAt?: string | null,
 ): SummaryMetrics {
   const newerSummary = live !== undefined && liveUpdatedAt !== undefined
     && summary?.latestSnapshotAt != null && Date.parse(summary.latestSnapshotAt) > liveUpdatedAt;
-  const budget = !routed && newerSummary && summary?.contextWindow != null && live?.promptTokenLimit != null
-    && summary.contextWindow !== live.promptTokenLimit ? undefined : live;
+  const stepCurrent = budgetChangedAt == null
+    || (summary?.latestSnapshotAt != null && Date.parse(summary.latestSnapshotAt) > Date.parse(budgetChangedAt));
+  const stepWindow = routed && stepCurrent ? optionalNumber(summary?.contextWindow) : undefined;
+  // A routed chat's step reading from before the change says nothing about the window now.
+  const staleStep = routed && !stepCurrent;
+  const otherWindow = stepWindow !== undefined
+    ? live?.promptTokenLimit !== undefined && stepWindow !== live.promptTokenLimit
+    : newerSummary && summary?.contextWindow != null && live?.promptTokenLimit != null
+      && summary.contextWindow !== live.promptTokenLimit;
+  const budget = otherWindow ? undefined : live;
   const used = newerSummary
     ? optionalNumber(summary?.tokensUsed) ?? optionalNumber(live?.totalTokens)
     : optionalNumber(live?.totalTokens) ?? optionalNumber(summary?.tokensUsed);
   const promptTokenLimit = optionalNumber(budget?.promptTokenLimit);
-  const limit = optionalNumber(budget?.limit) ?? promptTokenLimit ?? optionalNumber(summary?.contextWindow);
-  const remaining = budget && limit !== undefined && used !== undefined
+  const limit = optionalNumber(budget?.limit) ?? promptTokenLimit
+    ?? (staleStep ? undefined : optionalNumber(summary?.contextWindow));
+  // Without the summary's own figures, the counts come from the window and the newest reading.
+  const derived = budget !== undefined || stepWindow !== undefined;
+  const remaining = derived && limit !== undefined && used !== undefined
     ? Math.max(0, limit - used)
-    : optionalNumber(summary?.tokensRemaining);
-  const ratioPercent = budget ? undefined : normalizePercent(summary?.usageRatio);
+    : staleStep ? undefined : optionalNumber(summary?.tokensRemaining);
+  const ratioPercent = derived || staleStep ? undefined : normalizePercent(summary?.usageRatio);
   const derivedPercent = used !== undefined && limit !== undefined && limit > 0
     ? Math.max(0, Math.min(100, (used / limit) * 100))
     : undefined;
@@ -71,6 +90,7 @@ export function getSummaryMetrics(
     blockingPercent: limit && budget?.limit !== undefined && budget.bufferTokens !== undefined
       ? Math.max(0, Math.min(100, (budget.limit - budget.bufferTokens) / limit * 100))
       : undefined,
+    ...(budget === undefined && stepWindow !== undefined ? { windowFromStep: true } : {}),
   };
 }
 
@@ -114,9 +134,10 @@ export function summarizeContext(
   live?: SessionUsageMetrics["contextInfo"],
   liveUpdatedAt?: number,
   routed = false,
+  budgetChangedAt?: string | null,
 ): string {
   if (error) return "unavailable";
-  const metrics = getSummaryMetrics(summary, live, liveUpdatedAt, routed);
+  const metrics = getSummaryMetrics(summary, live, liveUpdatedAt, routed, budgetChangedAt);
   if (metrics.percent !== undefined) return formatPercent(metrics.percent);
   if (metrics.used !== undefined) return `${formatCompactTokens(metrics.used)} tokens`;
   if (capabilities?.modelUsage === "unavailable") return "unavailable";

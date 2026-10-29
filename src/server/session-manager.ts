@@ -72,6 +72,7 @@ import {
 } from "./background-commands.js";
 import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
+import { readContextBudget, recordFusionContextLimit, recordModelChange } from "./session-context-budget.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { SessionToolReadiness, SESSION_TOOL_READINESS_TIMEOUT_MS, type SessionToolReadinessSnapshot } from "./session-tool-readiness.js";
 import { isRetryableRuntimeFenceError, RUNTIME_FENCE_BUDGET_MS } from "./agent-backend/runtime-fence.js";
@@ -672,6 +673,11 @@ export interface SessionUsageMetrics {
   codeChanges?: AgentUsageCodeChanges;
   /** The runtime's current split of the window, asked for alongside the counters. */
   contextInfo?: AgentContextInfo;
+  /**
+   * ISO time the chat's context budget last changed size through the Bridge: a model switch, or a
+   * new Fusion context limit. A routed chat's step readings from before then describe another window.
+   */
+  budgetChangedAt?: string;
 }
 
 export interface SessionWarmOptions {
@@ -1759,6 +1765,7 @@ export class SessionManager {
         this.sessionObjects.set(sessionId, session);
         this.sessionRunner.attachSession(sessionId, session);
         this.slashCommandListCache.delete(sessionId);
+        this.noteFusionContextLimit(sessionId, sessionConfig);
       } else {
         this.sessionObjects.delete(sessionId);
         this.sessionObjects.set(sessionId, session);
@@ -4160,6 +4167,17 @@ export class SessionManager {
     });
   }
 
+  /** A new session handle may come with a different Fusion context limit (`session-context-budget.ts`). */
+  private noteFusionContextLimit(sessionId: string, sessionConfig: PromptFingerprintConfig | undefined): void {
+    if (!sessionConfig) return;
+    const requested = (sessionConfig as { fusionContextTokens?: unknown }).fusionContextTokens;
+    try {
+      recordFusionContextLimit(this.getSessionStateDir(sessionId), typeof requested === "number" ? requested : undefined, new Date());
+    } catch (error) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not record the Fusion context limit: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async listSlashCommands(sessionId: string): Promise<{ supported: boolean; commands: AgentSlashCommandInfo[] }> {
     const cached = this.slashCommandListCache.get(sessionId);
     if (cached) return { supported: true, commands: cached };
@@ -4187,6 +4205,8 @@ export class SessionManager {
   }
 
   async getSessionUsageMetrics(sessionId: string): Promise<SessionUsageMetrics> {
+    const { changedAt } = readContextBudget(this.getSessionStateDir(sessionId));
+    const budgetChange = changedAt ? { budgetChangedAt: changedAt } : {};
     const unavailable: SessionUsageMetrics = {
       available: false,
       totalNanoAiu: null,
@@ -4194,6 +4214,7 @@ export class SessionManager {
       costUsd: null,
       totalPremiumRequestCost: null,
       totalUserRequests: null,
+      ...budgetChange,
     };
     const session = this.sessionObjects.get(sessionId);
     if (!session) return unavailable;
@@ -4227,6 +4248,7 @@ export class SessionManager {
       ...(metrics.apiDurationMs !== undefined ? { apiDurationMs: metrics.apiDurationMs } : {}),
       ...(metrics.codeChanges ? { codeChanges: metrics.codeChanges } : {}),
       ...(contextInfo ? { contextInfo } : {}),
+      ...budgetChange,
     };
   }
 
@@ -6045,6 +6067,14 @@ export class SessionManager {
         : effectiveReasoningEffort;
       const liveContextTier = normalizeCopilotContextTier(currentAfterSwitch?.contextTier)
         ?? (liveModel === model ? selectedTier : undefined);
+      // Another model runs in another window; a Fusion level or an effort leaves the budget as it was.
+      if (liveModel !== sourceModel) {
+        try {
+          recordModelChange(this.getSessionStateDir(sessionId), new Date());
+        } catch (error) {
+          console.warn(`[sdk] [${sid}] Could not record the model change for the context meter: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       this.persistSessionModelState(sessionId, {
         model: liveModel,
         ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),

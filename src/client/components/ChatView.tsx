@@ -161,7 +161,7 @@ interface ChatViewProps {
   sessionId: string | null;
   hasPlan?: boolean;
   sessionModelSummary?: ReactNode;
-  /** The chat is on a routed model (Copilot Fusion), whose context budget is the runtime's, not one model's. */
+  /** The chat is on a routed model (Copilot Fusion), whose window is the one its last step used. */
   routedModel?: boolean;
   onMessageSent: () => void;
   draft?: Draft | null;

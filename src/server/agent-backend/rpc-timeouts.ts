@@ -29,6 +29,7 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   "session.initializeTools": 5 * 60_000,
   "session.getCurrentToolMetadata": 60_000,
   "session.updateSubagentSettings": 30_000,
+  "session.updateOptions": 30_000,
   // The OAuth flow legitimately waits for the user to finish in a browser.
   "session.startMcpOauthLogin": 15 * 60_000,
   "session.getName": 60_000,

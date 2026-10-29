@@ -151,10 +151,21 @@ experiment that SDK hosts do not receive, so Bridge turns on the runtime's `DYNA
 `HYDRAFUSION_PLAN_V2` feature flags itself. Chats saved on the retired HydraFusion research preview move to
 Fusion High when they resume.
 
-At High and Max, Fusion runs each step out of sight and adds the turn's messages and tool calls to the chat
-only when the turn commits. Until then Bridge shows the runtime's progress reports as the run's status: which
-model is on which step and how many tools have run. The context meter keeps the runtime's budget for Fusion
-(a conservative window across the models it may use), not the window of the model doing the current step.
+At High and Max, Fusion can have another model review a step's answer and replace it, so the session log keeps
+a turn's messages and tool calls only once the turn commits. While a turn runs, Bridge shows the runtime's
+progress reports as its status: which model is on which step and how many tools have run.
+
+Fusion reports a conservative budget for itself (128K at High and Max), but each step runs within the window of
+the model doing it, and the runtime compacts at 80% of that window or when a switch moves the chat to a model it
+no longer fits. The context meter therefore follows the window of the model that ran the last step; after a
+model switch or a new Fusion limit (the server reports when, as `budgetChangedAt` with usage), the runtime's
+budget stands until a step reports again. Settings ›
+Experimental can raise the limit for every Fusion step through the runtime's `modelCapabilities` override. The
+runtime drops that override on resume and on a switch to another model, so the Copilot backend applies it on
+create, after a resume onto Fusion and on every switch to Fusion (`agent-backend/copilot-fusion.ts`), and saving
+a new limit evicts cached sessions so it reaches each chat with its next message. Larger prompts cost more: GPT
+models bill prompts over 272K at their long-context rate, and the runtime counts a Claude prompt about a third
+lower than Anthropic does, so Settings offers at most 600K.
 
 ### Packaged Release Mode
 
