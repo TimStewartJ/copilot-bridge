@@ -66,6 +66,9 @@ export interface HelmViewProps {
   getDraft: (composerKey: string) => Draft | null;
   setDraft: (composerKey: string, text: string, attachments?: Attachment[]) => void;
   clearDraft: (composerKey: string) => void;
+  readDraft: (composerKey: string) => Draft | null;
+  releaseDraft: (composerKey: string, sent: Draft | null) => void;
+  restoreDraft: (composerKey: string, restored: Draft) => void;
   getVoiceJob: (composerKey: string) => VoiceBackgroundJob | null;
   startBackgroundVoiceJob: UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"];
   retryVoiceJobUpload: (composerKey: string) => void;
@@ -243,6 +246,9 @@ export default function HelmView({
   getDraft,
   setDraft,
   clearDraft,
+  readDraft,
+  releaseDraft,
+  restoreDraft,
   getVoiceJob,
   startBackgroundVoiceJob,
   retryVoiceJobUpload,
@@ -395,10 +401,18 @@ export default function HelmView({
     mode?: SendMode,
     clientMessageId?: string,
   ): Promise<void> => {
+    const sentDraft = readDraft(HELM_DRAFT_COMPOSER_KEY);
     const newSessionId = await ensureConversation();
-    await sendMaterializedFirstPrompt({ sessionId: newSessionId, prompt, attachments, mode, clientMessageId });
-    clearDraft(HELM_DRAFT_COMPOSER_KEY);
-  }, [clearDraft, ensureConversation]);
+    // The conversation owns the message now. Waiting for delivery would show it in a fresh Helm
+    // started meanwhile, then wipe what was typed there.
+    releaseDraft(HELM_DRAFT_COMPOSER_KEY, sentDraft);
+    try {
+      await sendMaterializedFirstPrompt({ sessionId: newSessionId, prompt, attachments, mode, clientMessageId });
+    } catch (error) {
+      if (sentDraft) restoreDraft(HELM_DRAFT_COMPOSER_KEY, sentDraft);
+      throw error;
+    }
+  }, [ensureConversation, readDraft, releaseDraft, restoreDraft]);
 
   const handleSuggestion = useCallback(async (prompt: string) => {
     setActionError(null);

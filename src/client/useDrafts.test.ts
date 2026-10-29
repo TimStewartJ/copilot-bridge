@@ -303,4 +303,39 @@ describe("useDrafts launch persistence", () => {
     expect(drafts!.getDraft("draft:quickchat")).toBeNull();
     expect(localStorage.getItem("copilot-bridge:session-drafts")).toBe("{}");
   });
+
+  it("hands a first message off without touching what the next new chat writes", async () => {
+    await renderProbe();
+    await harness!.act(async () => {
+      drafts!.setDraftLaunchOptions("draft:quickchat", { model: "gpt-5.6" });
+      drafts!.setDraft("draft:quickchat", "first message");
+    });
+    const sent = drafts!.readDraft("draft:quickchat");
+
+    await harness!.act(async () => {
+      drafts!.releaseDraft("draft:quickchat", sent);
+    });
+    expect(drafts!.getDraft("draft:quickchat")).toBeNull();
+
+    await harness!.act(async () => {
+      drafts!.setDraftLaunchOptions("draft:quickchat", { model: "claude-sonnet-5" });
+      drafts!.setDraft("draft:quickchat", "next chat");
+      // A release that arrives after newer typing removes nothing.
+      drafts!.releaseDraft("draft:quickchat", sent);
+    });
+    expect(drafts!.getDraft("draft:quickchat")?.text).toBe("next chat");
+
+    // A refused send comes back ahead of the newer text, which keeps its own model.
+    await harness!.act(async () => {
+      drafts!.restoreDraft("draft:quickchat", sent!);
+    });
+    const restored = {
+      text: "first message\n\nnext chat",
+      launch: { model: "claude-sonnet-5" },
+    };
+    expect(drafts!.getDraft("draft:quickchat")).toEqual(restored);
+    expect(JSON.parse(localStorage.getItem("copilot-bridge:session-drafts") ?? "")).toEqual({
+      "draft:quickchat": restored,
+    });
+  });
 });

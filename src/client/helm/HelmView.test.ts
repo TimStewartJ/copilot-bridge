@@ -23,6 +23,7 @@ function conversation(overrides: Partial<HelmConversation>): HelmConversation {
 }
 
 const POLICY = { freshAfterMs: 6 * 3_600_000, retainMs: 14 * 86_400_000, maxConversations: 25 };
+const SENT_DRAFT = { text: "what needs me?" };
 
 const state = vi.hoisted(() => ({
   helm: null as unknown,
@@ -115,6 +116,9 @@ function createProps() {
     getDraft: vi.fn(() => null),
     setDraft: vi.fn(),
     clearDraft: vi.fn(),
+    readDraft: vi.fn(() => SENT_DRAFT),
+    releaseDraft: vi.fn(),
+    restoreDraft: vi.fn(),
     getVoiceJob: vi.fn(() => null),
     startBackgroundVoiceJob: vi.fn(async () => null),
     retryVoiceJobUpload: vi.fn(),
@@ -190,7 +194,18 @@ describe("HelmView", () => {
       clientMessageId: "client-1",
     });
     expect((state.helm as HelmState).current?.sessionId).toBe(SESSION_B);
-    expect(props.clearDraft).toHaveBeenCalledWith(HELM_DRAFT_COMPOSER_KEY);
+    expect(props.releaseDraft).toHaveBeenCalledWith(HELM_DRAFT_COMPOSER_KEY, SENT_DRAFT);
+    expect(props.restoreDraft).not.toHaveBeenCalled();
+  });
+
+  it("puts a refused first message back in the fresh-Helm draft", async () => {
+    state.helm = helmState({});
+    api.createHelmConversation.mockResolvedValue(conversation({ sessionId: SESSION_B, turnCount: 0, title: null }));
+    api.sendMaterializedFirstPrompt.mockRejectedValue(new Error("refused"));
+    await render();
+
+    await expect(harness.act(() => state.chatViewProps!.onCreateAndSend("what needs me?"))).rejects.toThrow("refused");
+    expect(props.restoreDraft).toHaveBeenCalledWith(HELM_DRAFT_COMPOSER_KEY, SENT_DRAFT);
   });
 
   it("keeps a recording made before any conversation exists inside Helm", async () => {

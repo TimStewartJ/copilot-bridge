@@ -48,6 +48,7 @@ import { usePageAttention } from "./usePageAttention";
 import { useBackgroundVoiceJobs, type UseBackgroundVoiceJobsResult, type VoiceBackgroundJob, type VoiceSessionActivity, type VoiceSessionSettled } from "./hooks/useBackgroundVoiceJobs";
 import {
   useDrafts,
+  type Draft,
   type DraftLaunchOptions,
 } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
@@ -421,6 +422,9 @@ function AppShell() {
     setDraftImmediate,
     setDraftLaunchOptions,
     clearDraft,
+    readDraft,
+    releaseDraft,
+    restoreDraft,
     hasDraft,
   } = useDrafts(sessions, activeComposerKey, helmDraftKeys);
   const [draftSessionMap, setDraftSessionMap] = useState<Record<string, string>>({});
@@ -1084,12 +1088,12 @@ function AppShell() {
           return;
         }
 
-        setDraftImmediate(getDraftComposerKey(taskId), prompt);
+        restoreDraft(getDraftComposerKey(taskId), { text: prompt });
         navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new");
       },
     });
     return newSessionId;
-  }, [cleanupRejectedFirstSendSession, materializeSession, navigate, setDraftImmediate]);
+  }, [cleanupRejectedFirstSendSession, materializeSession, navigate, restoreDraft]);
 
   const isSessionBusy = useCallback((sessionId: string) => {
     const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
@@ -1784,6 +1788,9 @@ function AppShell() {
         getDraft={getDraft}
         setDraft={setDraft}
         clearDraft={clearDraft}
+        readDraft={readDraft}
+        releaseDraft={releaseDraft}
+        restoreDraft={restoreDraft}
         getVoiceJob={getJobForComposer}
         startBackgroundVoiceJob={startBackgroundVoiceJob}
         retryVoiceJobUpload={retryVoiceJobUpload}
@@ -2174,6 +2181,9 @@ function AppShell() {
                   setDraft={setDraft}
                   setDraftLaunchOptions={setDraftLaunchOptions}
                   clearDraft={clearDraft}
+                  readDraft={readDraft}
+                  releaseDraft={releaseDraft}
+                  restoreDraft={restoreDraft}
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
                   materializeSession={materializeSession}
@@ -2254,6 +2264,9 @@ function AppShell() {
                   setDraft={setDraft}
                   setDraftLaunchOptions={setDraftLaunchOptions}
                   clearDraft={clearDraft}
+                  readDraft={readDraft}
+                  releaseDraft={releaseDraft}
+                  restoreDraft={restoreDraft}
                   clearDraftSession={clearDraftSession}
                   clearDraftSessionBySessionId={clearDraftSessionBySessionId}
                   materializeSession={materializeSession}
@@ -2552,6 +2565,9 @@ function SessionRoute({
   setDraft,
   setDraftLaunchOptions,
   clearDraft,
+  readDraft,
+  releaseDraft,
+  restoreDraft,
   clearDraftSession,
   clearDraftSessionBySessionId,
   materializeSession,
@@ -2586,6 +2602,9 @@ function SessionRoute({
     ),
   ) => void;
   clearDraft: (composerKey: string) => void;
+  readDraft: (composerKey: string) => Draft | null;
+  releaseDraft: (composerKey: string, sent: Draft | null) => void;
+  restoreDraft: (composerKey: string, restored: Draft) => void;
   clearDraftSession: (composerKey: string) => void;
   clearDraftSessionBySessionId: (sessionId: string) => void;
   materializeSession: (taskId?: string, options?: CreateSessionOptions) => Promise<string>;
@@ -2942,6 +2961,8 @@ function SessionRoute({
     clientMessageId?: string,
   ) => {
     const createOptions = launchCreateOptions;
+    const sentDraft = readDraft(composerKey);
+    const sentLaunchMode = launchMode;
     const newSessionId = await materializeSession(taskId, createOptions);
     const optimisticModelState = buildOptimisticSessionModelState(createOptions, defaultModelId);
     if (optimisticModelState) {
@@ -2952,6 +2973,12 @@ function SessionRoute({
       : `/sessions/${newSessionId}`;
     // Keep any unsent recording attached to the conversation it was made for.
     migrateVoiceRecording(composerKey, newSessionId);
+    // Every new chat on this route shares one composer slot and launch mode. The message belongs to
+    // its conversation from here, so hand both back now: waiting for delivery would show it in the
+    // next new chat and then wipe whatever was typed there.
+    releaseDraft(composerKey, sentDraft);
+    resetLaunchOptions();
+    const launchModeChoice = launchModeChoiceRef.current;
     const delivery = sendMaterializedFirstPrompt({
       sessionId: newSessionId,
       prompt,
@@ -2959,6 +2986,8 @@ function SessionRoute({
       mode,
       clientMessageId,
       onRejected: async () => {
+        if (sentDraft) restoreDraft(composerKey, sentDraft);
+        if (launchModeChoiceRef.current === launchModeChoice) setLaunchMode(sentLaunchMode);
         await cleanupFailedFirstSendSession(newSessionId, taskId);
         migrateVoiceRecording(newSessionId, composerKey);
         navigate(taskId ? getTaskDraftSessionPath(taskId) : "/sessions/new", { replace: true });
@@ -2966,19 +2995,21 @@ function SessionRoute({
     });
     navigate(path, { replace: true });
     await delivery;
-    clearDraft(composerKey);
-    resetLaunchOptions();
   }, [
     cleanupFailedFirstSendSession,
-    clearDraft,
     composerKey,
     defaultModelId,
     launchCreateOptions,
+    launchMode,
     materializeSession,
     migrateVoiceRecording,
     navigate,
     queryClient,
+    readDraft,
+    releaseDraft,
     resetLaunchOptions,
+    restoreDraft,
+    setLaunchMode,
     taskId,
   ]);
 
