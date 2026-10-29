@@ -6,6 +6,7 @@ export { SystemPromptSection } from "./SystemPromptSection";
 export { ModelMoveDisclosure } from "./ModelMoveDisclosure";
 export { ComputerUseSection } from "./ComputerUseSection";
 export { ImageBudgetSection } from "./ImageBudgetSection";
+export { ExperimentalSection } from "./ExperimentalSection";
 export { AppearanceSection } from "./AppearanceSection";
 export { NotificationsSection } from "./NotificationsSection";
 export { DeviceManagementSection } from "./DeviceManagementSection";

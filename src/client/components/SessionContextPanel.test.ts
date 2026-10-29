@@ -30,19 +30,38 @@ describe("SessionContextPanel", () => {
     expect(getSummaryMetrics({ tokensUsed: 5, contextWindow: 1000, tokensRemaining: 995, usageRatio: null }).percent).toBe(0.5);
   });
 
-  it("keeps Copilot Fusion's own budget when a step reports its model's larger window", () => {
+  it("measures a Copilot Fusion chat against the window its last step used, not the router's budget", () => {
     const fusionBudget: SessionUsageMetrics["contextInfo"] = {
       systemTokens: 10_000, toolDefinitionsTokens: 62_000, conversationTokens: 2_000, totalTokens: 74_000,
       limit: 128_000, promptTokenLimit: 128_000, compactionThreshold: 102_400, bufferTokens: 6_400,
     };
-    // A newer reading from the step's model, which has a 272K window of its own.
     const step = summary({
       tokensUsed: 75_000, contextWindow: 272_000, tokensRemaining: 197_000, usageRatio: 75_000 / 272_000,
       latestSnapshotAt: "2026-10-29T16:06:12.000Z",
     });
-    const readAt = Date.parse("2026-10-29T16:06:11.000Z");
-    expect(getSummaryMetrics(step, fusionBudget, readAt).limit).toBe(272_000);
-    expect(getSummaryMetrics(step, fusionBudget, readAt, true)).toMatchObject({ limit: 128_000, used: 75_000 });
+    const before = Date.parse("2026-10-29T16:06:11.000Z");
+    const after = Date.parse("2026-10-29T16:06:30.000Z");
+    // Mid-turn the step's reading is newest; after the turn the runtime's count is, on the same window.
+    expect(getSummaryMetrics(step, fusionBudget, before, true))
+      .toMatchObject({ limit: 272_000, used: 75_000, remaining: 197_000, compactionPercent: undefined });
+    expect(getSummaryMetrics(step, fusionBudget, after, true))
+      .toMatchObject({ limit: 272_000, used: 74_000, remaining: 198_000, percent: 74_000 / 272_000 * 100 });
+    // Before any step has reported, the router's budget is all there is.
+    expect(getSummaryMetrics(summary({ tokensUsed: 74_000 }), fusionBudget, after, true)).toMatchObject({ limit: 128_000 });
+    // With the experimental limit the router's budget and every step's window agree, thresholds included.
+    const raised = { ...fusionBudget, limit: 600_000, promptTokenLimit: 600_000, compactionThreshold: 480_000, bufferTokens: 30_000 };
+    expect(getSummaryMetrics({ ...step, contextWindow: 600_000 }, raised, after, true))
+      .toMatchObject({ limit: 600_000, compactionPercent: 80 });
+    // A step from before the budget changed size (the limit was just raised, or the chat just moved
+    // to Fusion) ran on another window, so the runtime's budget stands until a new step reports.
+    const changed = "2026-10-29T16:06:20.000Z";
+    expect(getSummaryMetrics(step, raised, after, true, changed))
+      .toMatchObject({ limit: 600_000, compactionPercent: 80 });
+    expect(getSummaryMetrics(step, fusionBudget, after, true, changed)).toMatchObject({ limit: 128_000 });
+    // With no budget from the runtime either (the chat is not loaded), only the count is known.
+    expect(getSummaryMetrics(step, undefined, undefined, true, changed))
+      .toEqual({ used: 75_000, limit: undefined, promptTokenLimit: undefined, remaining: undefined, percent: undefined, compactionPercent: undefined, blockingPercent: undefined });
+    expect(getSummaryMetrics(step, fusionBudget, after, true).windowFromStep).toBe(true);
   });
 
   it("formats token counts compactly and names the compaction pressure", () => {

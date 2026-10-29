@@ -4664,15 +4664,17 @@ export function createApiRouter(
       clearProviderCache();
 
       const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
+      const fusionContextChanged = prev.experimental?.fusionContextTokens !== updated.experimental?.fusionContextTokens;
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
       // Plugin changes can't be hot-swapped on a live session — evict so the next
-      // resume rebuilds with the new config. Sub-agent models (Helpers, Reviewers,
-      // tiers) reach a loaded chat the next time it is resumed.
-      if (computerUseChanged) {
-        console.log("[settings] Computer use changed — evicting cached sessions for re-resume");
+      // resume rebuilds with the new config. The Fusion context limit is applied on
+      // resume too. Sub-agent models (Helpers, Reviewers, tiers) reach a loaded chat
+      // the next time it is resumed.
+      if (computerUseChanged || fusionContextChanged) {
+        console.log(`[settings] ${computerUseChanged ? "Computer use" : "Fusion context limit"} changed — evicting cached sessions for re-resume`);
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached

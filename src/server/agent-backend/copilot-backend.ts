@@ -20,6 +20,7 @@ import { subagentSettingsForModel, type SubagentPlan } from "../../shared/subage
 import {
   AUTO_MODEL_ID,
   fromRuntimeCurrentModel,
+  fusionContextCapabilities,
   modelCatalogFromList,
   replacementForRetiredModel,
   toRuntimeModelSwitch,
@@ -278,6 +279,8 @@ class CopilotAgentSession implements AgentSession {
     private readonly useNativeToolPermissions: boolean,
     private readonly excludedTools: readonly string[],
     private readonly logger: Pick<Console, "warn">,
+    /** Experimental Fusion context limit, given again on every switch to Fusion (see copilot-fusion.ts). */
+    private readonly fusionContextTokens?: number,
   ) {}
 
   /**
@@ -430,7 +433,7 @@ class CopilotAgentSession implements AgentSession {
   }
 
   async setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined> {
-    const target = toRuntimeModelSwitch(model, opts);
+    const target = toRuntimeModelSwitch(model, opts, this.fusionContextTokens);
     // SDK session.setModel() awaits model.switchTo but discards the result, which hides the compaction preflight.
     const switchTo = this.session?.rpc?.model?.switchTo;
     if (typeof switchTo !== "function") {
@@ -759,13 +762,18 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   pendingInteractionEvents: boolean;
   useNativeToolPermissions: boolean;
   subagents: SubagentPlan | undefined;
+  fusionContextTokens: number | undefined;
 } {
   const {
     pendingInteractionEvents = false,
     subagents,
+    fusionContextTokens: requestedFusionContext,
     ...callerConfig
   } = config;
-  const sdkConfig = toRuntimeSessionConfig(callerConfig);
+  const fusionContextTokens = typeof requestedFusionContext === "number" && requestedFusionContext > 0
+    ? requestedFusionContext
+    : undefined;
+  const sdkConfig = toRuntimeSessionConfig(callerConfig, fusionContextTokens);
   // Apply on every create/resume, including helpers and sessions with a different model.
   sdkConfig.toolSearch = { enabled: false };
   if (pendingInteractionEvents) {
@@ -777,6 +785,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
     pendingInteractionEvents,
     useNativeToolPermissions: !sdkConfig.onPermissionRequest,
     subagents,
+    fusionContextTokens,
   };
 }
 
@@ -788,6 +797,7 @@ function wrapCopilotSession(
   useNativeToolPermissions: boolean,
   excludedTools: readonly string[],
   logger: Pick<Console, "warn">,
+  fusionContextTokens: number | undefined,
 ): CopilotAgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
@@ -795,7 +805,7 @@ function wrapCopilotSession(
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger);
+  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger, fusionContextTokens);
 }
 
 /** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
@@ -1424,7 +1434,31 @@ export class CopilotBackend implements AgentBackend {
         throw error;
       }
     }
-    return this.wrapSession(session, prepared, await this.leaveRetiredModel(sessionId, session));
+    const model = await this.leaveRetiredModel(sessionId, session);
+    await this.restoreFusionContext(sessionId, session, model, prepared.fusionContextTokens);
+    return this.wrapSession(session, prepared, model);
+  }
+
+  /**
+   * The runtime forgets the experimental Fusion context limit on resume, and a resume config would
+   * give it to whatever model the chat is on, so it goes back only onto a chat that is on Fusion.
+   */
+  private async restoreFusionContext(
+    sessionId: string,
+    session: any,
+    modelId: string | undefined,
+    tokens: number | undefined,
+  ): Promise<void> {
+    if (tokens === undefined || modelId !== AUTO_MODEL_ID) return;
+    const update = session?.rpc?.options?.update;
+    if (typeof update !== "function") return;
+    try {
+      await this.rpc("session.updateOptions", () => update.call(session.rpc.options, {
+        modelCapabilitiesOverrides: fusionContextCapabilities(tokens),
+      }));
+    } catch (error) {
+      this.logger.warn(`[copilot-backend] [${sessionId.slice(0, 8)}] Could not apply the Fusion context limit: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
@@ -1461,6 +1495,7 @@ export class CopilotBackend implements AgentBackend {
       prepared.useNativeToolPermissions,
       normalizeStringArray(prepared.sdkConfig.excludedTools) ?? [],
       this.logger,
+      prepared.fusionContextTokens,
     );
     if (prepared.subagents) await wrapped.startSubagentPlan(prepared.subagents, initialModel);
     return wrapped;

@@ -365,6 +365,37 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(setReasoningEffort).toHaveBeenCalledWith({ reasoningEffort: "max" });
   });
 
+  it("gives the experimental Fusion context limit only to a session on Fusion, on create, resume and switch", async () => {
+    const capabilities = { limits: { max_prompt_tokens: 600_000, max_context_window_tokens: 728_000 } };
+    const switchTo = vi.fn(async () => ({}));
+    const getCurrent = vi.fn(async (): Promise<Record<string, unknown>> => ({ modelId: "auto", autoTier: "hydrafusion" }));
+    const update = vi.fn(async () => ({ success: true }));
+    const client = createFakeClient(createFakeSession({ model: { getCurrent, switchTo }, options: { update } }));
+    const backend = new CopilotBackend(client as any);
+
+    const wrapped = await backend.createSession({ model: "auto", reasoningEffort: "hydrafusion", fusionContextTokens: 600_000 });
+    await backend.createSession({ model: "claude-opus-5.5", fusionContextTokens: 600_000 });
+    expect(client.createSession).toHaveBeenNthCalledWith(1, {
+      model: "auto", capi: { autoTier: "hydrafusion" }, modelCapabilities: capabilities, toolSearch: { enabled: false },
+    });
+    expect(client.createSession).toHaveBeenNthCalledWith(2, { model: "claude-opus-5.5", toolSearch: { enabled: false } });
+
+    // The runtime forgets it on resume, so it goes back on after the resume, and only onto Fusion.
+    await backend.resumeSession("fusion-chat", { fusionContextTokens: 600_000 });
+    expect(client.resumeSession).toHaveBeenLastCalledWith("fusion-chat", { toolSearch: { enabled: false } });
+    expect(update).toHaveBeenCalledWith({ modelCapabilitiesOverrides: capabilities });
+    update.mockClear();
+    getCurrent.mockResolvedValueOnce({ modelId: "claude-opus-5.5" });
+    await backend.resumeSession("opus-chat", { fusionContextTokens: 600_000 });
+    expect(update).not.toHaveBeenCalled();
+
+    // A switch to another model drops it in the runtime; a switch back to Fusion gives it again.
+    await wrapped.setModel("claude-opus-5.5");
+    expect(switchTo).toHaveBeenLastCalledWith({ modelId: "claude-opus-5.5" });
+    await wrapped.setModel("auto", { reasoningEffort: "hydrafusion-max" });
+    expect(switchTo).toHaveBeenLastCalledWith({ modelId: "auto", autoTier: "hydrafusion-max", modelCapabilities: capabilities });
+  });
+
   it("advertises pending interaction events without leaving an in-process elicitation handler", async () => {
     const session = createFakeSession();
     const client = createFakeClient(session);

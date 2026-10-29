@@ -277,6 +277,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       tiers: [...MODEL_PRESET_SLOTS].reverse().map((slot) => settings.modelPresets?.[slot]),
     }, models);
   }
+  // Experimental (Settings › Experimental). The Copilot backend gives it only to a session on Fusion.
+  const fusionContextTokens = settings?.experimental?.fusionContextTokens;
+  if (fusionContextTokens !== undefined) cfg.fusionContextTokens = fusionContextTokens;
 
   // Computer Use is upstream's plugin from the SDK platform package. Loading it per
   // session keeps the Bridge setting as the only gate, independent of CLI user settings.

@@ -708,6 +708,23 @@ describe("session-config-builder", () => {
     expect(cfg.modelCapabilities).toBeUndefined();
   });
 
+  it("passes the experimental Fusion context limit on create and resume for the backend to apply", () => {
+    for (const forResume of [false, true]) {
+      const settingsStore = {
+        getSettings: () => ({ model: "auto", experimental: { fusionContextTokens: 400_000 } }),
+        updateSettings: vi.fn(),
+        getMcpServers: () => ({}),
+      } as unknown as SettingsStore;
+      const cfg = buildSessionConfig({
+        deps: createDeps({ settingsStore }),
+        options: { forResume },
+        callbacks: createCallbacks(),
+      });
+      expect(cfg.fusionContextTokens, `forResume ${forResume}`).toBe(400_000);
+      expect(cfg.modelCapabilities).toBeUndefined();
+    }
+  });
+
   it("uses the backend permission policy when one is provided", () => {
     const permissionPolicy = vi.fn();
 

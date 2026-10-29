@@ -116,6 +116,12 @@ export interface AgentSessionConfig {
    * session's own model changes, because rubber-duck's model depends on it.
    */
   subagents?: SubagentPlan;
+  /**
+   * Experimental prompt-token limit for a session on Copilot Fusion (the runtime's `auto` model).
+   * The Copilot backend applies it on create, resume and every switch to Fusion; other models and
+   * backends ignore it.
+   */
+  fusionContextTokens?: number;
   [key: string]: unknown;
 }
 

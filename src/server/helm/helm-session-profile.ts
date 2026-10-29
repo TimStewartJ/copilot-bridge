@@ -35,6 +35,7 @@ const KEPT_FROM_BASE_CONFIG = [
   "coauthorEnabled",
   "onPermissionRequest",
   "subagents",
+  "fusionContextTokens",
 ] as const;
 
 /**
