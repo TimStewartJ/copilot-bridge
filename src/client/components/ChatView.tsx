@@ -1595,7 +1595,8 @@ export default function ChatView({
         ...(mode === undefined ? {} : { mode }),
         error: errorMessage,
       });
-      if (ownerSessionId === null) {
+      // Every new chat has no session id yet, so only a send this view still shows owns `creating`.
+      if (ownerSessionId === null && pendingSendsRef.current.some((send) => send.id === messageId)) {
         setCreating(false);
       }
     }

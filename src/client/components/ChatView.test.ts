@@ -2439,6 +2439,57 @@ describe("ChatView draft materialization", () => {
       await cleanup();
     }
   });
+
+  it("keeps a newer new chat from creating twice when an earlier first send fails late", async () => {
+    const firstDelivery = createDeferred<void>();
+    const secondDelivery = createDeferred<void>();
+    const onCreateAndSend = vi.fn()
+      .mockReturnValueOnce(firstDelivery.promise)
+      .mockReturnValueOnce(secondDelivery.promise);
+    const { act, cleanup, render } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend,
+      streamOverrides: {
+        isStreaming: false,
+        streamStatus: "idle",
+        pendingOrigin: null,
+      },
+    });
+    const send = (prompt: string) => (
+      chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> }
+    ).onSend(prompt);
+
+    try {
+      let firstSend!: Promise<void>;
+      await act(async () => {
+        firstSend = send("first message");
+        await waitTick();
+      });
+      // The first chat opens, then New chat is clicked before its delivery settles.
+      await render({ composerKey: "created-session", sessionId: "created-session" });
+      await render({ composerKey: "draft:quickchat", sessionId: null });
+      await act(async () => {
+        void send("second message");
+        await waitTick();
+      });
+
+      await act(async () => {
+        firstDelivery.reject(new Error("first rejected"));
+        await firstSend;
+        await waitTick();
+      });
+      await act(async () => {
+        void send("second message again");
+        await waitTick();
+      });
+
+      expect(onCreateAndSend).toHaveBeenCalledTimes(2);
+    } finally {
+      secondDelivery.resolve();
+      await cleanup();
+    }
+  });
 });
 
 describe("ChatView steering sends", () => {

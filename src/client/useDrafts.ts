@@ -292,6 +292,22 @@ function buildNextDraftState(
   };
 }
 
+/** A failed send goes back ahead of anything written since; newer launch choices win. */
+function mergeRestoredDraft(current: Draft | undefined, restored: Draft): Draft {
+  const text = !current?.text.trim()
+    ? restored.text
+    : !restored.text.trim()
+      ? current.text
+      : `${restored.text.trimEnd()}\n\n${current.text}`;
+  const attachments = [...(restored.attachments ?? []), ...(current?.attachments ?? [])];
+  const launch = current?.launch ?? restored.launch;
+  return {
+    text,
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(launch ? { launch } : {}),
+  };
+}
+
 function load(): LoadedDraftState {
   let raw: string | null;
   try {
@@ -468,6 +484,39 @@ export function useDrafts(
     });
   }, [clearDraftTimer]);
 
+  /** The draft as stored right now, for async work that must not depend on a render. */
+  const readDraft = useCallback((composerKey: string): Draft | null => (
+    stateRef.current[composerKey] ?? null
+  ), []);
+
+  /**
+   * A new chat's first message now belongs to its conversation, so the shared new-chat slot empties
+   * for the next new chat. Anything written to the slot after `sent` was read is newer and stays.
+   */
+  const releaseDraft = useCallback((composerKey: string, sent: Draft | null) => {
+    if (!sent) return;
+    setState((prev) => {
+      if (prev[composerKey] !== sent) return prev;
+      clearDraftTimer(composerKey);
+      const next = { ...prev };
+      delete next[composerKey];
+      stateRef.current = next;
+      save(next);
+      return next;
+    });
+  }, [clearDraftTimer]);
+
+  /** Puts back a message whose send failed without overwriting what was written there since. */
+  const restoreDraft = useCallback((composerKey: string, restored: Draft) => {
+    clearDraftTimer(composerKey);
+    setState((prev) => {
+      const next = { ...prev, [composerKey]: mergeRestoredDraft(prev[composerKey], restored) };
+      stateRef.current = next;
+      save(next);
+      return next;
+    });
+  }, [clearDraftTimer]);
+
   useEffect(() => {
     return () => {
       Object.values(timersRef.current).forEach((timer) => clearTimeout(timer));
@@ -495,6 +544,9 @@ export function useDrafts(
     setDraftImmediate,
     setDraftLaunchOptions,
     clearDraft,
+    readDraft,
+    releaseDraft,
+    restoreDraft,
     hasDraft,
   };
 }
