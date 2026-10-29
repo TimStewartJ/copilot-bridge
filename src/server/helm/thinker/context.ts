@@ -191,15 +191,16 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
     const thread = options.threads.get(`${source.id}:${row.id}`);
     const changed = options.rebuild || !thread || row.state === "needs_you"
       || after(row.lastEngagedAt, options.watermark) || after(taskActivity.get(row.id), options.watermark);
+    // Every task carries its dates, so the run can see what has gone stale without opening it.
+    const dates = { ...(row.nextTouchAt ? { nextTouchAt: row.nextTouchAt } : {}), ...(row.lastEngagedAt ? { lastEngagedAt: row.lastEngagedAt } : {}), idleDays: row.idleDays };
     return changed
       ? {
         taskId: row.id, title: row.title, state: row.state, ...(row.reasons.length ? { reasons: row.reasons } : {}),
         ...(row.nextAction ? { nextAction: clip(row.nextAction, 300) } : {}), ...(row.waitingOn ? { waitingOn: clip(row.waitingOn, 200) } : {}),
-        ...(row.nextTouchAt ? { nextTouchAt: row.nextTouchAt } : {}), ...(row.lastEngagedAt ? { lastEngagedAt: row.lastEngagedAt } : {}),
-        idleDays: row.idleDays, ...(row.groupName ? { group: row.groupName } : {}), ...(row.busyCount > 0 ? { agentWorking: true } : {}),
+        ...dates, ...(row.groupName ? { group: row.groupName } : {}), ...(row.busyCount > 0 ? { agentWorking: true } : {}),
         changed: true, ...(thread ? { thread } : {}),
       }
-      : { taskId: row.id, title: row.title, state: row.state, changed: false, thread };
+      : { taskId: row.id, title: row.title, state: row.state, ...dates, changed: false, thread };
   });
 
   const working = active.filter((session) => session.runState !== "idle" && !session.needsUserInput).slice(0, 15).map((session) => ({
@@ -315,7 +316,7 @@ export function countChanges(packet: ThinkerPacket): number {
   return packet.bridges.reduce((sum, bridge) => sum + bridge.tasks.filter((task) => task.changed).length + bridge.questions.length + bridge.replies.length, 0);
 }
 
-/** The packet as the model reads it. Unchanged tasks are one line; long packets lose unchanged tasks first. */
+/** The packet as the model reads it. Unchanged tasks are one line with their dates; long packets lose unchanged tasks first. */
 export function renderThinkerPacket(packet: ThinkerPacket): string {
   const nowMs = Date.parse(packet.now);
   const stale = (entry: HelmMemoryEntry) => nowMs - Date.parse(entry.confirmedAt) > HELM_STALE_AFTER_DAYS * 86_400_000;
@@ -342,7 +343,10 @@ export function renderThinkerPacket(packet: ThinkerPacket): string {
       ? {
         bridge: bridge.id, label: bridge.label,
         questions: bridge.questions, unreadReplies: bridge.replies, checklistDue: bridge.due, agentsWorking: bridge.working,
-        tasks: bridge.tasks.filter((task) => task.changed || !trimUnchanged).map((task) => task.changed ? task : { taskId: task.taskId, title: task.title, state: task.state, thread: task.thread }),
+        tasks: bridge.tasks.filter((task) => task.changed || !trimUnchanged).map((task) => task.changed ? task : {
+          taskId: task.taskId, title: task.title, state: task.state,
+          nextTouchAt: task.nextTouchAt, lastEngagedAt: task.lastEngagedAt, idleDays: task.idleDays, thread: task.thread,
+        }),
         ...(trimUnchanged ? { unchangedTasksOmitted: bridge.tasks.filter((task) => !task.changed).length } : {}),
         ...(Object.values(bridge.omitted).some((count) => count > 0) ? { notShownHere: bridge.omitted } : {}),
       }
