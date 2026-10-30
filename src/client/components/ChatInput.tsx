@@ -197,7 +197,8 @@ export default function ChatInput({
     menu: sendModeMenu,
     closeMenu: closeSendModeMenu,
     isTarget: isSendModeMenuTarget,
-  } = useLongPressMenu<"send-mode">();
+    reset: resetSendModeMenu,
+  } = useLongPressMenu<"send-mode" | "voice-finish">();
   const isMobile = useIsMobile();
   const [toolsMenu, setToolsMenu] = useState<ContextMenuPosition | null>(null);
 
@@ -286,7 +287,7 @@ export default function ChatInput({
   const canRetryVoiceJobUpload = hasPendingVoiceRecording && !!onRetryVoiceJobUpload;
   const canDiscardVoiceRecording = hasPendingVoiceRecording && !!onDiscardVoiceRecording;
 
-  const stopVoiceRecordingRef = useRef<() => void>(() => {});
+  const stopVoiceRecordingRef = useRef<(sendMode?: SendMode) => void>(() => {});
   const nothingHeardRef = useRef<() => void>(() => {});
   const voice = useVoiceInput({
     contextKey: composerKey,
@@ -342,21 +343,23 @@ export default function ChatInput({
     ) return;
     event.preventDefault();
     event.stopPropagation();
-    cancelVoiceRecording();
-  }, [canCancelRecording, cancelVoiceRecording]);
+    // Escape on Finish's menu closes the menu and keeps recording.
+    if (sendModeMenu) closeSendModeMenu();
+    else cancelVoiceRecording();
+  }, [canCancelRecording, cancelVoiceRecording, closeSendModeMenu, sendModeMenu]);
 
   useEffect(() => {
     setRecordingCancelled(null);
   }, [composerKey]);
   // Pressing stop and running into the length limit end a recording the same way.
-  stopVoiceRecordingRef.current = () => {
+  stopVoiceRecordingRef.current = (sendMode) => {
     pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
       text: inputRef.current,
       attachmentCount: attachmentsRef.current.length,
       sendBlocked: sendBlockedRef.current,
       uploadingCount: uploadingRef.current,
     });
-    pendingCaptureSendModeRef.current = { mode: nextSendModeRef.current, choice: sendModeChoiceRef.current };
+    pendingCaptureSendModeRef.current = { mode: sendMode ?? nextSendModeRef.current, choice: sendModeChoiceRef.current };
     void voice.stopRecording();
   };
 
@@ -384,22 +387,22 @@ export default function ChatInput({
     haptic(recording ? "light" : "selection");
   }, [recording]);
 
-  // While the microphone is open, the box shows only the recording line, Cancel and Finish.
-  // Finishing hands straight back to the composer, which shows the upload and transcription.
+  // While the microphone is open, the box shows only Finish (where the microphone was), the Autopilot
+  // toggle, the recording line and Cancel. Finishing hands straight back to the composer, which shows
+  // the upload and transcription.
   const recordingView = voice.phase === "starting" || voice.phase === "recording";
   textareaHiddenRef.current = recordingView;
   const wasRecordingViewRef = useRef(recordingView);
   useEffect(() => {
     if (recordingView === wasRecordingViewRef.current) return;
     wasRecordingViewRef.current = recordingView;
-    if (recordingView) {
-      setToolsMenu(null);
-      closeSendModeMenu();
-      return;
-    }
+    // The pressed button is replaced, so a menu or press left on it must not outlive it.
+    setToolsMenu(null);
+    resetSendModeMenu();
+    if (recordingView) return;
     adjustTextareaHeight();
     if (focusWasDropped() && hasFinePointer()) textareaRef.current?.focus();
-  }, [adjustTextareaHeight, closeSendModeMenu, recordingView]);
+  }, [adjustTextareaHeight, recordingView, resetSendModeMenu]);
   // The button that started the recording is gone, so keyboard focus moves into the recording row:
   // onto the row while the microphone starts, then onto Finish.
   useEffect(() => {
@@ -823,6 +826,40 @@ export default function ChatInput({
   const modeMenuEnabled = !showAbortControl;
   // Steering goes into the run already going, and a new chat picks its mode on the launch panel.
   const showAutopilotToggle = !isDraft && !onAbort;
+  const finishBindings = bindSendModeMenu("voice-finish", () => stopVoiceRecordingRef.current());
+  // Holding Finish offers what holding Send does, when Finish is going to send.
+  const finishMenuEnabled = voice.phase === "recording" && canAutoSendStoppedRecording && showAutopilotToggle;
+  const finishWithAutopilot = () => {
+    closeSendModeMenu();
+    chooseSendMode("autopilot");
+    stopVoiceRecordingRef.current("autopilot");
+  };
+  const autopilotToggle = showAutopilotToggle && (
+    <button
+      type="button"
+      onClick={() => {
+        haptic("selection");
+        chooseSendMode(autopilotNext ? "interactive" : "autopilot");
+      }}
+      aria-pressed={autopilotNext}
+      aria-label="Autopilot"
+      title={autopilotNext
+        ? "Autopilot is on for this message: Copilot keeps going until the task is done. Click to turn it off."
+        : "Turn on Autopilot for this message: Copilot keeps going on its own until the task is done"}
+      data-autopilot-toggle={autopilotNext ? "on" : "off"}
+      className={cx(
+        "flex h-10 flex-shrink-0 items-center justify-center gap-1.5 rounded-full transition-colors md:h-8",
+        !recordingView && "mb-1 md:mb-2",
+        DS.focus,
+        autopilotNext
+          ? "px-2.5 text-agent hover:bg-bg-hover/60"
+          : "w-10 text-text-muted hover:text-text-primary md:w-8",
+      )}
+    >
+      <AutopilotIcon size={17} />
+      {autopilotNext && <span className="hidden text-xs font-medium sm:inline">Autopilot</span>}
+    </button>
+  );
 
   return (
     <div className="shrink-0" onKeyDown={handleRecordingEscape}>
@@ -954,16 +991,34 @@ export default function ChatInput({
             className={cx("flex gap-0.5 focus:outline-none", recordingView ? "items-center" : "items-end")}
           >
           {recordingView ? (
-            <button
-              type="button"
-              onClick={cancelVoiceRecording}
-              disabled={!canCancelRecording}
-              className={cx("ml-1", COMPOSER_TOOL_BUTTON_CLASS, DS.focus, "text-text-muted hover:text-text-primary disabled:text-text-faint/60")}
-              title="Discard this recording without sending (Esc)"
-              aria-label="Cancel voice recording"
-            >
-              <X size={18} />
-            </button>
+            <>
+              <button
+                ref={finishRecordingRef}
+                type="button"
+                {...(finishMenuEnabled ? finishBindings : { onClick: finishBindings.onClick })}
+                disabled={voice.phase !== "recording"}
+                aria-haspopup={finishMenuEnabled ? "menu" : undefined}
+                aria-expanded={finishMenuEnabled ? sendModeMenu?.id === "voice-finish" : undefined}
+                style={{ WebkitTouchCallout: "none" } as React.CSSProperties}
+                className={cx(
+                  "ml-1 flex h-10 w-10 flex-shrink-0 select-none touch-manipulation items-center justify-center rounded-full transition-colors md:ml-2 md:h-8 md:w-8",
+                  DS.focus,
+                  voice.phase === "recording" ? DS.button.variant.primary : "cursor-not-allowed bg-bg-hover text-text-faint",
+                  isSendModeMenuTarget("voice-finish") && "scale-[0.97]",
+                )}
+                title={voiceUi.buttonTitle}
+                aria-label={voiceUi.buttonTitle}
+              >
+                {voice.phase !== "recording" ? (
+                  <Loader2 size={16} className="animate-spin motion-reduce:animate-none" />
+                ) : canAutoSendStoppedRecording ? (
+                  <ArrowUp size={17} strokeWidth={2.25} />
+                ) : (
+                  <Check size={17} strokeWidth={2.5} />
+                )}
+              </button>
+              {autopilotToggle}
+            </>
           ) : collapseTools ? (
             <button
               type="button"
@@ -1080,56 +1135,19 @@ export default function ChatInput({
             </div>
           )}
           {recordingView ? (
-            <div className="mr-1 flex-shrink-0 md:mr-2">
-              <button
-                ref={finishRecordingRef}
-                type="button"
-                onClick={() => stopVoiceRecordingRef.current()}
-                disabled={voice.phase !== "recording"}
-                className={cx(
-                  "flex h-10 w-10 items-center justify-center rounded-full transition-colors md:h-8 md:w-8",
-                  DS.focus,
-                  voice.phase === "recording" ? DS.button.variant.primary : "cursor-not-allowed bg-bg-hover text-text-faint",
-                )}
-                title={voiceUi.buttonTitle}
-                aria-label={voiceUi.buttonTitle}
-              >
-                {voice.phase !== "recording" ? (
-                  <Loader2 size={16} className="animate-spin motion-reduce:animate-none" />
-                ) : canAutoSendStoppedRecording ? (
-                  <ArrowUp size={17} strokeWidth={2.25} />
-                ) : (
-                  <Check size={17} strokeWidth={2.5} />
-                )}
-              </button>
-            </div>
-          ) : (
-          <>
-          {showAutopilotToggle && (
             <button
               type="button"
-              onClick={() => {
-                haptic("selection");
-                chooseSendMode(autopilotNext ? "interactive" : "autopilot");
-              }}
-              aria-pressed={autopilotNext}
-              aria-label="Autopilot"
-              title={autopilotNext
-                ? "Autopilot is on for this message: Copilot keeps going until the task is done. Click to turn it off."
-                : "Turn on Autopilot for this message: Copilot keeps going on its own until the task is done"}
-              data-autopilot-toggle={autopilotNext ? "on" : "off"}
-              className={cx(
-                "mb-1 flex h-10 flex-shrink-0 items-center justify-center gap-1.5 rounded-full transition-colors md:mb-2 md:h-8",
-                DS.focus,
-                autopilotNext
-                  ? "px-2.5 text-agent hover:bg-bg-hover/60"
-                  : "w-10 text-text-muted hover:text-text-primary md:w-8",
-              )}
+              onClick={cancelVoiceRecording}
+              disabled={!canCancelRecording}
+              className={cx("mr-1", COMPOSER_TOOL_BUTTON_CLASS, DS.focus, "text-text-muted hover:text-text-primary disabled:text-text-faint/60")}
+              title="Discard this recording without sending (Esc)"
+              aria-label="Cancel voice recording"
             >
-              <AutopilotIcon size={17} />
-              {autopilotNext && <span className="hidden text-xs font-medium sm:inline">Autopilot</span>}
+              <X size={18} />
             </button>
-          )}
+          ) : (
+          <>
+          {autopilotToggle}
           <div
             className={`mb-1 mr-1 flex-shrink-0 select-none touch-manipulation md:mb-2 md:mr-2 ${isSendModeMenuTarget("send-mode") ? "scale-[0.97]" : ""}`}
             style={{ WebkitTouchCallout: "none" } as React.CSSProperties}
@@ -1143,7 +1161,7 @@ export default function ChatInput({
             <button
               aria-disabled={!showAbortControl && !canSend}
               aria-haspopup={modeMenuEnabled ? "menu" : undefined}
-              aria-expanded={modeMenuEnabled ? Boolean(sendModeMenu) : undefined}
+              aria-expanded={modeMenuEnabled ? sendModeMenu?.id === "send-mode" : undefined}
               tabIndex={!showAbortControl && !canSend ? -1 : undefined}
               className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors md:h-8 md:w-8 ${DS.focus} ${
                 showAbortControl || canSend
@@ -1201,7 +1219,7 @@ export default function ChatInput({
             )}
           </ContextMenu>
         )}
-        {sendModeMenu && (
+        {sendModeMenu?.id === "send-mode" && !recordingView && (
           <ContextMenu position={sendModeMenu} onClose={closeSendModeMenu}>
             <div className="px-3 py-2 text-xs text-text-muted">
               Send options
@@ -1212,6 +1230,20 @@ export default function ChatInput({
               label="Send with Autopilot"
               onClick={() => handleMenuSend("autopilot")}
               disabled={!canSend}
+              title="Let Copilot continue until task complete, error, stop, or limit."
+            />
+          </ContextMenu>
+        )}
+        {sendModeMenu?.id === "voice-finish" && finishMenuEnabled && (
+          <ContextMenu position={sendModeMenu} onClose={closeSendModeMenu}>
+            <div className="px-3 py-2 text-xs text-text-muted">
+              Send options
+            </div>
+            <CtxDivider />
+            <CtxItem
+              icon={<span className="h-[14px] w-[14px]" aria-hidden="true" />}
+              label="Send with Autopilot"
+              onClick={finishWithAutopilot}
               title="Let Copilot continue until task complete, error, stop, or limit."
             />
           </ContextMenu>
