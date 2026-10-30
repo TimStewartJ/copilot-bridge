@@ -27,7 +27,6 @@ export function toOverviewSessions(raw: unknown[]): { sessions: OverviewSession[
 
 /** Derives every active task's state from one read of each source; no per-task queries beyond task hydration. */
 export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSession[] | null, now = Date.now(), tasks?: Task[], invalidSessions = 0): TaskOverview {
-  const sourceErrors: string[] = [];
   const active = (tasks ?? ctx.taskStore.listTasks()).filter(task => task.status === "active");
   const groups = new Map(ctx.taskGroupStore.listGroups().map(group => [group.id, group]));
   const momentum = ctx.taskStore.listMomentumSignals();
@@ -59,8 +58,6 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     jobsBySession.set(job.originSessionId, (jobsBySession.get(job.originSessionId) ?? 0) + 1);
   }
   const sessionById = new Map((sessions ?? []).map(session => [session.sessionId, session]));
-  if (!sessions) sourceErrors.push("Conversation status is unavailable, so working, stalled and question signals may be missing.");
-  else if (invalidSessions > 0) sourceErrors.push(`${invalidSessions} conversation record${invalidSessions === 1 ? " was" : "s were"} unreadable, so some working and question signals may be missing.`);
   const sessionsComplete = !!sessions && invalidSessions === 0;
 
   const rows: TaskOverviewRow[] = active.map(task => {
@@ -88,7 +85,6 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
         || activity.unavailable.expectedInPreview && !expectedInPreview) {
         activity.unavailable = { scope, reason, ...(expectedInPreview ? { expectedInPreview: true } : {}) };
       }
-      if (scope === "source" && !expectedInPreview && !sourceErrors.includes(reason)) sourceErrors.push(reason);
     };
     if (unknownScheduleTasks.has(task.id)) unavailable("task", "An enabled schedule has an invalid expiry date.");
     if (task.sessionIds.length > 0 && !(ctx.deferredPromptStore && ctx.deferLoopStore && ctx.managementJobStore)) {
@@ -100,7 +96,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
       const deleted = !session && !archivedIds.has(id) && !!sessions && !ctx.isStaging && !!ctx.sessionMetaStore && invalidSessions === 0;
       if (!session && !archivedIds.has(id) && !deleted) {
         activity.sessionIndexKnown = false;
-        if (!sessions) unavailable("source", sourceErrors[0]);
+        if (!sessions) unavailable("source", "Conversation status is unavailable, so working, stalled and question signals may be missing.");
         else if (ctx.isStaging) unavailable("source", "Production conversations are not copied into this isolated preview.", true);
         else if (!ctx.sessionMetaStore) unavailable("source", "Conversation archive status is unavailable.");
         else unavailable("task", "A linked conversation could not be read.");
@@ -145,7 +141,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
   });
   const counts = Object.fromEntries(TASK_STATE_ORDER.map(state => [state, 0])) as Record<TaskState, number>;
   for (const row of rows) counts[row.state]++;
-  return { tasks: rows, sessionsComplete, counts, sourceErrors, generatedAt: new Date(now).toISOString() };
+  return { tasks: rows, sessionsComplete, counts, generatedAt: new Date(now).toISOString() };
 }
 
 const engagedTime = (row: TaskOverviewRow) => (row.lastEngagedAt ? Date.parse(row.lastEngagedAt) : 0);

@@ -42,6 +42,5 @@ export interface TaskOverview {
   /** False when conversation status was unavailable or partly unreadable; linked tasks are then never called quiet. */
   sessionsComplete: boolean;
   counts: Record<TaskState, number>;
-  sourceErrors: string[];
   generatedAt: string;
 }

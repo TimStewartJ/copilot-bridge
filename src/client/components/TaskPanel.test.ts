@@ -322,7 +322,7 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("describes a shared source gap separately from the selected task's attention badge", async () => {
+  it("shows no notice or unknown badge for a shared source gap", async () => {
     const data = taskOverviewMock().data!;
     taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{
       ...data.tasks[0], activity: createTaskActivity({
@@ -331,8 +331,8 @@ describe("TaskPanel", () => {
       }),
     }] } });
     const html = await renderTaskPanelHtml(createTask());
-    expect(html).toContain("Activity data incomplete");
-    expect(html).toContain("Preview conversations are isolated.");
+    expect(html).not.toContain("Activity data");
+    expect(html).not.toContain("Preview conversations are isolated.");
     expect(html).not.toContain('data-status="unknown"');
     expect(html).not.toContain("Needs a look</span>");
   });

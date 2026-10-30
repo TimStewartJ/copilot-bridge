@@ -15,7 +15,7 @@ const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id
 function overview(tasks: TaskOverviewRow[]): TaskOverview {
   const counts = { needs_you: 0, in_motion: 0, up_next: 0, waiting: 0, no_next_step: 0, gone_quiet: 0, set_aside: 0 };
   for (const task of tasks) counts[task.state] += 1;
-  return { tasks, sessionsComplete: true, counts, sourceErrors: [], generatedAt: "2026-09-22T12:00:00Z" };
+  return { tasks, sessionsComplete: true, counts, generatedAt: "2026-09-22T12:00:00Z" };
 }
 
 describe("All tasks", () => {
@@ -146,7 +146,7 @@ describe("All tasks", () => {
       && getReactProps(buttons().find(node => node.textContent?.startsWith("Building"))!)?.["aria-label"]).toBe("Building");
   });
 
-  it("shows a shared source gap once instead of putting Unknown on every affected row", async () => {
+  it("shows no notice and no Unknown on rows for a shared source gap", async () => {
     const tasks = ["First copied task", "Second copied task"].map((title, index) => row({
       id: `copy-${index}`, title, order: index, activity: createTaskActivity({
         known: false, sessionIndexKnown: false,
@@ -154,12 +154,7 @@ describe("All tasks", () => {
       }),
     }));
     await render(tasks);
-    const notices = findAllByTag(harness.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"]);
-    expect(notices).toHaveLength(1);
-    expect(findAllByTag(harness.dom.container, "SUMMARY")[0].textContent).toContain("Activity data incomplete");
-    expect(findAllByTag(harness.dom.container, "LI").map(node => node.textContent)).toEqual([
-      "First copied task", "Second copied task",
-    ]);
+    expect(harness.dom.container.textContent).not.toContain("Activity data");
     expect(buttons().filter(node => tasks.some(task => node.textContent?.startsWith(task.title)))
       .map(node => getReactProps(node)?.["aria-label"])).toEqual(["First copied task", "Second copied task"]);
     expect(findAllByTag(harness.dom.container, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual([]);
@@ -170,7 +165,7 @@ describe("All tasks", () => {
       known: false, sessionIndexKnown: false,
       unavailable: { scope: "source", reason: "Production conversations are isolated.", expectedInPreview: true },
     }) })]);
-    expect(findAllByTag(harness.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(0);
+    expect(harness.dom.container.textContent).not.toContain("Activity data");
     expect(findAllByTag(harness.dom.container, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual([]);
     expect(buttons().find(node => getReactProps(node)?.["aria-label"] === "Copied task")).toBeDefined();
   });

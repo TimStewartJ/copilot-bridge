@@ -10,7 +10,6 @@ import { contextLine, describeIdle, describeTouch } from "../lib/task-state-ui";
 import type { TaskIndicator } from "../hooks/useTaskIndicators";
 import { useTaskAttentionPresentation } from "../hooks/useTaskAttention";
 import TaskAttentionBadge from "./TaskAttentionBadge";
-import TaskAttentionNotice from "./TaskAttentionNotice";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import { OutcomeNotice, QuietReviewDialog } from "./QuietTasks";
 
@@ -61,7 +60,7 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
   const rows = query.data?.tasks ?? [];
   const counts = query.data?.counts;
   const attentionTasks = useMemo(() => rows.map(row => ({ ...row, status: "active" as const })), [rows]);
-  const { taskSignals: signals, taskGlyphs, activityDescriptions, health } = useTaskAttentionPresentation(attentionTasks, taskIndicators, query);
+  const { taskSignals: signals, taskGlyphs, activityDescriptions } = useTaskAttentionPresentation(attentionTasks, taskIndicators, query);
   const byId = useMemo(() => new Map(rows.map(row => [row.id, row])), [rows]);
   const quiet = useMemo(() => sortForState("gone_quiet", rows.filter(row => row.state === "gone_quiet")), [rows]);
   const visibleRows = filter ? rows.filter(row => row.state === filter) : rows;
@@ -168,7 +167,6 @@ export default function AllTasks({ onSelectTask, compact = false, onBack, scroll
   const content = <div className={cx(compact ? "space-y-3 px-4 py-4" : cx(DS.layout.pageColumn, "max-w-5xl space-y-5"), selectedRows.length > 0 && "pb-24")}>
     {header}
     <OutcomeNotice receipt={outcomes.receipt} error={outcomes.error} pending={outcomes.pending} onUndo={() => void outcomes.undoLast()} onDismiss={outcomes.dismiss} />
-    <TaskAttentionNotice health={health} />
     {stats}
     {compact && quiet.length > 0 && <Button fullWidth size="sm" icon={<Sparkles size={13} aria-hidden="true" />} onClick={() => setReviewing(true)}>Review {quiet.length} quiet {quiet.length === 1 ? "task" : "tasks"}</Button>}
     {!query.data ? <EmptyHint>{query.error ? "Task states are unavailable, not empty." : "Loading task states…"}</EmptyHint>
