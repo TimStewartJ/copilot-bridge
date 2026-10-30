@@ -179,7 +179,8 @@ function ActionButtons({ runId, itemId, actions, preview, bridge, onOpen, onChan
         await onCloseTasks(action.do.taskIds);
         await itemFeedback(runId, itemId, "done");
       } else {
-        await actOnItem(runId, itemId, { actionId: action.id });
+        const result = await actOnItem(runId, itemId, { actionId: action.id });
+        if (result.sessionId) onOpen({ bridge: "local", sessionId: result.sessionId });
       }
       setConfirming(undefined);
       await onChanged();

@@ -61,6 +61,8 @@ export interface PacketTask {
   changed: boolean;
   /** Helm's existing thread line for this task, if any. */
   thread?: string;
+  /** On a rebuild, signs that this local task's instructions or notes need tidying. */
+  tidy?: string[];
 }
 
 export interface PacketBridge {
@@ -282,11 +284,20 @@ export async function buildThinkerPacket(input: {
   feedback: HelmFeedbackRecord[];
   previousItems: ThinkerPacket["previousItems"];
   outsideSources?: PacketSource[];
+  /** Tidy-up signs for a task on this Bridge; read only on a rebuild, Helm's weekly fresh look. */
+  tidyHints?: (taskId: string) => string[];
 }): Promise<ThinkerPacket> {
   const threads = new Map(input.memory.filter((entry) => entry.kind === "thread" && entry.key && entry.status === "active").map((entry) => [entry.key!, entry.text]));
   const bridges = await Promise.all(input.sources.map(async (source): Promise<PacketBridge> => {
     try {
-      return await readBridge(source, { watermark: input.lastRunAt, rebuild: input.rebuild, threads });
+      const bridge = await readBridge(source, { watermark: input.lastRunAt, rebuild: input.rebuild, threads });
+      if (input.rebuild && input.tidyHints && bridge.id === "local") {
+        bridge.tasks = bridge.tasks.map((task) => {
+          const tidy = input.tidyHints!(task.taskId);
+          return tidy.length > 0 ? { ...task, tidy } : task;
+        });
+      }
+      return bridge;
     } catch (error) {
       return {
         id: source.id, label: source.label, ok: false, error: error instanceof Error ? error.message : String(error),

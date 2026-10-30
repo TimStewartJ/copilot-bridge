@@ -17,7 +17,7 @@ function bridge(overrides: Partial<PacketBridge> = {}): PacketBridge {
       { sessionId: "s-q", conversation: "Bot", activityAt: "2026-10-25T10:00:00.000Z" },
     ],
     due: [{ actionId: "c1", text: "Move billing" }],
-    tasks: [{ taskId: "t1", title: "AWC", changed: true }, { taskId: "t2", title: "LA trip", changed: false }],
+    tasks: [{ taskId: "t1", title: "AWC", changed: true, tidy: ["instructions mention specific dates 4 times"] }, { taskId: "t2", title: "LA trip", changed: false }],
     working: [],
     omitted: { questions: 0, replies: 0, due: 0, tasks: 0 },
     sessionIds: new Set(["s-q", "s-r", "s-form", "s-other"]),
@@ -46,7 +46,10 @@ describe("thinker publication", () => {
         actions: [{ label: "Yes", primary: true, type: "answer", sessionId: "s-q", requestId: "r1", answer: "yes" }, { label: "Open", type: "open", sessionId: "s-q" }],
         replyTo: { sessionId: "s-q" },
       }],
-      proposals: [{ bridge: "local", text: "Close LA trip", actions: [{ label: "Close", type: "close_tasks", taskIds: ["t2"] }] }],
+      proposals: [
+        { bridge: "local", text: "Close LA trip", actions: [{ label: "Close", type: "close_tasks", taskIds: ["t2"] }] },
+        { bridge: "local", text: "AWC's instructions hold old stories", actions: [{ label: "Tidy", type: "tidy_task", taskId: "t1" }] },
+      ],
       handled: [{ bridge: "local", sessionId: "s-r", why: "FYI: fixed" }],
       memory: { threads: [{ bridge: "local", taskId: "t1", text: "Return flight pending" }], picture: "Tim is planning AWC." },
     }, packet(), []);
@@ -57,6 +60,7 @@ describe("thinker publication", () => {
     // A question without free text can't be answered in Tim's own words.
     expect(result.brief.items[0]!.reply).toEqual({ bridge: "local", sessionId: "s-q" });
     expect(result.handled).toEqual([{ bridge: "local", sessionId: "s-r", title: "Flyer", why: "FYI: fixed", activityAt: "2026-10-25T10:00:00.000Z" }]);
+    expect(result.brief.proposals[1]!.actions[0]!.do).toEqual({ type: "tidy_task", bridge: "local", taskId: "t1" });
     expect(result.memory).toContainEqual({ op: "upsert", kind: "thread", key: "local:t1", text: "Return flight pending", source: "AWC" });
   });
 
@@ -96,18 +100,23 @@ describe("thinker publication", () => {
     ]);
   });
 
-  it("refuses peer task closing and bridges that are unavailable", () => {
+  it("refuses peer task closing and tidying, tidying without signs, and bridges that are unavailable", () => {
     const peer = bridge({ id: "pc", label: "PC" });
     const down: PacketBridge = { ...bridge({ id: "work" }), ok: false, error: "down" };
     const result = validatePublication({
       summary: "x",
       items: [{ kind: "fyi", bridge: "work", title: "t", recommendation: "r" }],
-      proposals: [{ bridge: "pc", text: "close", actions: [{ label: "Close", type: "close_tasks", taskIds: ["t1"] }] }],
+      proposals: [
+        { bridge: "pc", text: "close", actions: [{ label: "Close", type: "close_tasks", taskIds: ["t1"] }, { label: "Tidy", type: "tidy_task", taskId: "t1" }] },
+        { bridge: "local", text: "tidy", actions: [{ label: "Tidy", type: "tidy_task", taskId: "t2" }] },
+      ],
     }, packet([bridge(), peer, down]), []);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errors.join("\n")).toMatch(/item 1: bridge must be one of local, pc/);
     expect(result.errors.join("\n")).toMatch(/close_tasks only works for tasks on bridge "local"/);
+    expect(result.errors.join("\n")).toMatch(/proposal 1 action 2: tidy_task only works for tasks on bridge "local"/);
+    expect(result.errors.join("\n")).toMatch(/proposal 2 action 1: tidy_task needs the taskId of a local task listed with tidy signs/);
   });
 
   it("protects Tim's memory and enforces the size limits", () => {

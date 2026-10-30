@@ -59,4 +59,17 @@ describe("the thinker's packet", () => {
     });
     expect(changed).toMatchObject({ taskId: "t1", changed: true, nextAction: expect.any(String), lastEngagedAt: "2026-10-26T09:00:00.000Z" });
   });
+
+  it("reads tidy signs for this Bridge's tasks only on the weekly rebuild", async () => {
+    const local = { ...source(2), id: "local", local: true };
+    const tidyHints = (taskId: string) => (taskId === "t1" ? ["notes are 30,000 characters"] : []);
+    const build = (rebuild: boolean, sources: HelmSource[]) => buildThinkerPacket({
+      sources, now: new Date("2026-10-29T18:00:00.000Z"), trigger: "schedule", rebuild, lastRunAt: null,
+      memory: [], feedback: [], previousItems: [], tidyHints,
+    });
+    const tidyOf = (packet: Awaited<ReturnType<typeof build>>) => packet.bridges.map((bridge) => bridge.tasks.map((task) => task.tidy));
+
+    expect(tidyOf(await build(true, [local, source(2)]))).toEqual([[undefined, ["notes are 30,000 characters"]], [undefined, undefined]]);
+    expect(tidyOf(await build(false, [local]))).toEqual([[undefined, undefined]]);
+  });
 });

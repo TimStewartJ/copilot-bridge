@@ -40,6 +40,7 @@ export const AGENT_LIFECYCLE_GUIDANCE = `
 * Agents launched with mode "sync" are one-shot: never call write_agent on them. Default to sync for one-off work; background needs independent work or an expected same-task follow-up.
 * To wait for a background agent, call read_agent once with wait: true. If still running, end the turn and await notification; do not poll.
 * A write_agent message is not seen until its current turn ends, which may be the whole assignment. Queued messages run as separate turns; do not expect a notification until the last one is done. Send at most one while it works, or have its brief name a file it re-reads. To discard unwanted queued work, read what you need, then stop it with agent_stop, which discards them, before starting a successor.
+* An agent re-reads its whole conversation on every step, so it costs more the longer it lives. When work continues over several pieces, give each agent one bounded piece. Have it write its result, decisions and open questions to a file in the session folder, or return them for you to save if it cannot write files. Start the next piece with a fresh agent and a short brief that points to those files, rather than sending more work to an agent that has already done a lot. A short follow-up that needs what an agent just did can still go to that agent.
 * Replacing an agent or removing its files does not stop it. Use agent_stop. Idle agents still count against the shared live-agent limit; once you have the result and need no follow-up, use agent_dismiss.
 `.trim();
 

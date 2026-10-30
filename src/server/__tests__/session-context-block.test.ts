@@ -61,7 +61,7 @@ function sectionContent(deps: BridgeContextDeps, task: Task | null, name: string
 }
 
 describe("bridge context sections", () => {
-  it("renders a task's changing state in one task_state section", () => {
+  it("renders a task's changing state in task_state and its notes in task_notes", () => {
     const checklistStore = { listChecklistItems: () => [
       checklistItem({ id: "c1", text: "Call the landlord", deadline: "2026-04-02" }),
       checklistItem({ id: "c2", text: "Pick neighborhoods", done: true }),
@@ -73,14 +73,21 @@ describe("bridge context sections", () => {
       pullRequests: [{ repoId: "r", repoName: "owner/repo", prId: 42, provider: "github" }],
     });
 
-    const content = buildBridgeContextSections({ checklistStore }, task, { groupName: "Home", notes: "Budget $3k" })[0]!.content;
+    const [state, notes] = buildBridgeContextSections({ checklistStore }, task, { groupName: "Home", notes: "Budget $3k" });
+    const content = state!.content;
 
     expect(content.startsWith("<task_state>\nTask: \"Find a rental\" (taskId: task-1, status: active, kind: task)")).toBe(true);
     expect(content).toContain("Linked work items: #ABC-1 (linear)");
     expect(content).toContain("Linked PRs: owner/repo #42");
     expect(content).toContain("- Next step: Tour 2040 Main");
-    expect(content).toContain("Task notes (the current state of the work; any rules the user wrote here still apply):\nTwo strong leads.");
-    expect(content).toContain('Group notes (task group "Home"):\nBudget $3k');
+    expect(content).not.toContain("Two strong leads.");
+    expect(notes!.content).toBe([
+      "<task_notes>",
+      "Task notes (the current state of the work; any rules the user wrote here still apply):\nTwo strong leads.",
+      "",
+      'Group notes (task group "Home"):\nBudget $3k',
+      "</task_notes>",
+    ].join("\n"));
     expect(content).toContain("Checklist: 1 open, 1 completed. Use action_list for the full checklist.");
     expect(content).toContain("- [ ] Call the landlord [id: c1] (due 2026-04-02)");
     expect(content).not.toContain("Pick neighborhoods");
@@ -99,7 +106,6 @@ describe("bridge context sections", () => {
     const before = structuredClone(items);
     const task = createTask({
       doneWhen: "The user reviews the preview and deployment is verified.",
-      notes: "Preserve task order. A completed implementation is not deployment approval.",
     });
     const content = sectionContent({ checklistStore: { listChecklistItems: () => items } }, task, "task_state");
 
@@ -107,7 +113,6 @@ describe("bridge context sections", () => {
     expect(content).toContain("- [ ] Second in the saved order [id: second] (due 2026-04-02)\n- [ ] First by name, last in the saved order [id: first]");
     expect(content).not.toContain(completedText);
     expect(content).toContain(`- Done when: ${task.doneWhen}`);
-    expect(content).toContain(task.notes);
     expect(items).toEqual(before);
   });
 
@@ -176,22 +181,27 @@ describe("bridge context sections", () => {
   it("hashes each section independently so only the changed one is resent", () => {
     const docsStore = createDocsStore(makeTestDir("context-block-docs"));
     docsStore.writePage("runbooks/deploy", "# Deploy");
-    const before = buildBridgeContextSections({ docsStore }, createTask({ notes: "first" }));
-    const again = buildBridgeContextSections({ docsStore }, createTask({ notes: "first" }));
-    const after = buildBridgeContextSections({ docsStore }, createTask({ notes: "second" }));
+    const build = (task: Task | null) => buildBridgeContextSections({ docsStore }, task);
+    const hashes = (task: Task | null) => build(task).map((section) => section.hash);
+    const before = hashes(createTask({ notes: "first" }));
 
-    expect(before.map((section) => section.name)).toEqual(["task_state", "knowledge_base"]);
-    expect(again.map((section) => section.hash)).toEqual(before.map((section) => section.hash));
-    expect(after[0]!.hash).not.toBe(before[0]!.hash);
-    expect(after[1]!.hash).toBe(before[1]!.hash);
-    // Both sections are always present, so leaving a task or emptying the docs is just a change.
+    expect(build(null).map((section) => section.name)).toEqual(["task_state", "task_notes", "knowledge_base"]);
+    expect(hashes(createTask({ notes: "first" }))).toEqual(before);
+    // A new next step leaves the notes alone; new notes leave the rest of the state alone.
+    const moved = hashes(createTask({ notes: "first", nextAction: "Call the landlord" }));
+    expect([moved[0] !== before[0], moved[1] !== before[1], moved[2] !== before[2]]).toEqual([true, false, false]);
+    const edited = hashes(createTask({ notes: "second" }));
+    expect([edited[0] !== before[0], edited[1] !== before[1], edited[2] !== before[2]]).toEqual([false, true, false]);
+    // Every section is always present, so leaving a task or emptying the docs is just a change.
     const detached = buildBridgeContextSections({}, null);
     expect(detached.map((section) => section.content)).toEqual([
       "<task_state>\nThis chat is not linked to a Bridge task.\n</task_state>",
+      "<task_notes>\nThis chat is not linked to a Bridge task.\n</task_notes>",
       "<knowledge_base>\nThe knowledge base is empty.\n</knowledge_base>",
     ]);
-    expect(detached[0]!.hash).not.toBe(before[0]!.hash);
     expect([...emptyBridgeContextHashes().values()]).toEqual(detached.map((section) => section.hash));
+    // Linked notes that were emptied differ from the starting point, so a chat is told after a restart.
+    expect(sectionContent({}, createTask({ notes: "" }), "task_notes")).toBe("<task_notes>\nThis task has no notes.\n</task_notes>");
   });
 
   it("keeps deadline rendering stable as the clock crosses follow-up and checklist deadlines", () => {
@@ -221,7 +231,7 @@ describe("bridge context sections", () => {
     docsStore.addDbEntry("notes", { title: "First note" });
     docsStore.addDbEntry("notes", { title: "Second note" });
     expect(buildBridgeContextSections({ docsStore }, null)).toEqual(before);
-    expect(before[1]!.content).toContain('notes/ "Notes": title (text)');
+    expect(before[2]!.content).toContain('notes/ "Notes": title (text)');
     expect(scan).not.toHaveBeenCalled();
   });
 });

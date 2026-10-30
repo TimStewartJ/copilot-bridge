@@ -101,13 +101,18 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
       if (bridge.id !== "local") errors.push(`${where}: close_tasks only works for tasks on bridge "local"; propose opening the task instead`);
       else if (ids.length === 0 || ids.length > 10 || ids.some((id) => !bridge.tasks.some((task) => task.taskId === id))) errors.push(`${where}: close_tasks needs 1–10 taskIds listed for local`);
       else action = { type: "close_tasks", bridge: bridge.id, taskIds: [...new Set(ids)] };
+    } else if (type === "tidy_task") {
+      const task = bridge.tasks.find((candidate) => candidate.taskId === rawAction.taskId);
+      if (bridge.id !== "local") errors.push(`${where}: tidy_task only works for tasks on bridge "local"`);
+      else if (!task?.tidy?.length) errors.push(`${where}: tidy_task needs the taskId of a local task listed with tidy signs`);
+      else action = { type: "tidy_task", bridge: bridge.id, taskId: task.taskId };
     } else if (type === "open") {
       const sessionOk = typeof rawAction.sessionId === "string" && bridge.sessionIds.has(rawAction.sessionId);
       const taskOk = typeof rawAction.taskId === "string" && bridge.tasks.some((task) => task.taskId === rawAction.taskId);
       if (!sessionOk && !taskOk) errors.push(`${where}: open needs a sessionId or taskId listed for ${bridge.id}`);
       else action = { type: "open", bridge: bridge.id, ...(sessionOk ? { sessionId: rawAction.sessionId } : { taskId: rawAction.taskId }) };
     } else {
-      errors.push(`${where}: type must be answer, send, tick, close_tasks or open`);
+      errors.push(`${where}: type must be answer, send, tick, close_tasks, tidy_task or open`);
     }
     return action ? { id: `a${index + 1}`, label, ...(rawAction.primary === true ? { primary: true } : {}), do: action } : undefined;
   };

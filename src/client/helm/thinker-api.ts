@@ -32,7 +32,7 @@ export const fetchHelmBriefStatus = (signal?: AbortSignal) => request<HelmBriefS
 export const markHelmBriefSeen = (runId: string) => request<HelmBriefStatus>(`/brief/${encodeURIComponent(runId)}/seen`, { method: "POST", body: "{}" });
 export const thinkNow = () => request<HelmRunView>("/think", { method: "POST", body: "{}" });
 export const actOnItem = (runId: string, itemId: string, input: { actionId?: string; text?: string }) =>
-  request<{ ok: true; outcome: string }>(`/brief/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/act`, { method: "POST", body: JSON.stringify(input) });
+  request<{ ok: true; outcome: string; sessionId?: string }>(`/brief/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/act`, { method: "POST", body: JSON.stringify(input) });
 export const itemFeedback = (runId: string, itemId: string, kind: "not_for_helm" | "dismiss" | "done" | "reopen", note?: string) =>
   request<{ ok: true }>(`/brief/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/feedback`, { method: "POST", body: JSON.stringify({ kind, ...(note ? { note } : {}) }) });
 export const undoHandled = (id: string) => request<HelmHandledView>(`/handled/${encodeURIComponent(id)}/undo`, { method: "POST" });

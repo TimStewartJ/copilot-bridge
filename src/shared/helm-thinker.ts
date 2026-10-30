@@ -97,6 +97,8 @@ export type HelmActionDo =
   | { type: "send"; bridge: string; sessionId: string; message: string }
   | { type: "tick"; bridge: string; actionId: string }
   | { type: "close_tasks"; bridge: string; taskIds: string[] }
+  /** Starts a chat on a local task that proposes tidying its instructions and notes. */
+  | { type: "tidy_task"; bridge: string; taskId: string }
   | { type: "open"; bridge: string; sessionId?: string; taskId?: string };
 
 export interface HelmAction {

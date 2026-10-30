@@ -836,6 +836,29 @@ describe("Session routes (mocked)", () => {
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("task-session");
   });
 
+  it("POST /api/tasks/:id/tidy starts a linked chat with the tidy prompt and keeps it when the prompt isn't confirmed", async () => {
+    const sessionManager = createMockSessionManager();
+    sessionManager.createTaskSession = vi.fn()
+      .mockResolvedValueOnce({ sessionId: "tidy-1" })
+      .mockResolvedValueOnce({ sessionId: "tidy-2" });
+    sessionManager.startWorkAndWaitForDelivery = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("offline"));
+    ({ app, ctx } = createTestApp({ sessionManager }));
+    const task = ctx.taskStore.createTask("Selling");
+
+    const started = await request(app).post(`/api/tasks/${task.id}/tidy`);
+    expect(started.status).toBe(200);
+    expect(started.body).toEqual({ sessionId: "tidy-1" });
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("tidy-1");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("tidy-1", expect.stringContaining(`(taskId: ${task.id})`));
+
+    const unconfirmed = await request(app).post(`/api/tasks/${task.id}/tidy`);
+    expect(unconfirmed.status).toBe(200);
+    expect(unconfirmed.body).toEqual({ sessionId: "tidy-2", error: expect.stringMatching(/wasn't confirmed/) });
+    expect((await request(app).post("/api/tasks/missing/tidy")).status).toBe(404);
+  });
+
   it("POST /api/chat requires sessionId and prompt", async () => {
     const res = await request(app)
       .post("/api/chat")

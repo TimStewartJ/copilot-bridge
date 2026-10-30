@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Task, TaskGroup, Session } from "../api";
-import { fetchTaskGitStatus, patchTask } from "../api";
+import { fetchTaskGitStatus, patchTask, startTaskTidy } from "../api";
+import { useToast } from "../useToast";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useTaskAttention } from "../hooks/useTaskAttention";
 import type { TaskSessionSource } from "../hooks/useTaskIndicators";
@@ -33,6 +34,7 @@ import {
   RotateCcw,
   History,
   ScrollText,
+  Sparkles,
 } from "lucide-react";
 import DocPreviewSheet from "./DocPreviewSheet";
 import TaskMomentumFields from "./TaskMomentumFields";
@@ -185,6 +187,19 @@ export default function TaskPanel({
   scrollRestoration,
 }: TaskPanelProps) {
   const queryClient = useQueryClient();
+  const { showToast, dismissToast } = useToast();
+
+  async function startTidy(taskId: string) {
+    const toastId = showToast({ tone: "info", title: "Starting a tidy-up chat", loading: true, durationMs: 0, haptic: false });
+    try {
+      const started = await startTaskTidy(taskId);
+      if (started.error) showToast({ id: toastId, tone: "error", title: started.error, loading: false, durationMs: undefined });
+      else dismissToast(toastId);
+      onSelectSession(started.sessionId);
+    } catch (error) {
+      showToast({ id: toastId, tone: "error", title: "Couldn't start the tidy-up chat", description: error instanceof Error ? error.message : String(error), loading: false, durationMs: undefined });
+    }
+  }
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
   const {
     enrichedWIs,
@@ -855,13 +870,22 @@ export default function TaskPanel({
                 onMoveTaskToGroup,
               }}
               onClose={() => setTaskMenuPosition(null)}
-              renderLeadingItems={onViewDashboard ? (closeMenu) => (
-                <CtxItem
-                  icon={<LayoutDashboard size={14} />}
-                  label="Open task overview"
-                  onClick={() => { closeMenu(); openTaskOverview(); }}
-                />
-              ) : undefined}
+              renderLeadingItems={(closeMenu) => (
+                <>
+                  {onViewDashboard && (
+                    <CtxItem
+                      icon={<LayoutDashboard size={14} />}
+                      label="Open task overview"
+                      onClick={() => { closeMenu(); openTaskOverview(); }}
+                    />
+                  )}
+                  <CtxItem
+                    icon={<Sparkles size={14} />}
+                    label="Tidy instructions and notes"
+                    onClick={() => { closeMenu(); void startTidy(currentTask.id); }}
+                  />
+                </>
+              )}
             />
           )}
         </div>

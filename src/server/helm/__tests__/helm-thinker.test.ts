@@ -190,6 +190,35 @@ describe("Helm thinker", () => {
     await expect(thinker.act(run.id, "i1", { actionId: "a1" })).rejects.toThrow(/newer brief/);
   });
 
+  it("starts a tidy-up chat on the task, and keeps a started chat whose first message wasn't confirmed", async () => {
+    const { store, thinker } = setup();
+    const ctx = (thinker as any).ctx;
+    const task = { id: "t1", title: "AWC", kind: "task", workItems: [], notes: "Long notes", cwd: undefined, sessionIds: [] as string[] };
+    ctx.taskStore.getTask = (id: string) => (id === "t1" ? task : undefined);
+    ctx.taskStore.linkSession = (_taskId: string, sessionId: string) => { task.sessionIds.push(sessionId); };
+    ctx.sessionManager.createTaskSession = vi.fn()
+      .mockResolvedValueOnce({ sessionId: "tidy-1" })
+      .mockResolvedValueOnce({ sessionId: "tidy-2" });
+    ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("runtime busy"));
+    const { run, publish } = activate(thinker, store);
+    (thinker as any).active.packet.bridges[0].tasks[0].tidy = ["notes are 30,000 characters"];
+    await publish({ ...BRIEF, proposals: [
+      { bridge: "local", text: "Tidy AWC", actions: [{ label: "Tidy", type: "tidy_task", taskId: "t1" }] },
+      { bridge: "local", text: "Tidy AWC again", actions: [{ label: "Tidy", type: "tidy_task", taskId: "t1" }] },
+    ] });
+    store.finishRun(run.id, { status: "done" });
+    (thinker as any).active = undefined;
+
+    await expect(thinker.act(run.id, "p1", { actionId: "a1" })).resolves.toEqual({ ok: true, outcome: "Started a tidy-up chat", sessionId: "tidy-1" });
+    expect(task.sessionIds).toEqual(["tidy-1"]);
+    expect(ctx.sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("tidy-1", expect.stringContaining('Tidy the standing instructions and notes of the task "AWC" (taskId: t1)'));
+    // The chat exists, so the proposal is done and points at it instead of offering a second chat.
+    await expect(thinker.act(run.id, "p2", { actionId: "a1" })).resolves.toMatchObject({ sessionId: "tidy-2", outcome: expect.stringMatching(/open it to check/) });
+    expect(store.getItemStates(run.id).p2?.status).toBe("done");
+  });
+
   it("holds a new brief as unseen until Tim has seen it, and only the latest brief can be seen", async () => {
     const { store, thinker } = setup();
     expect(thinker.getBriefStatus()).toEqual({ runId: null, seen: true });
