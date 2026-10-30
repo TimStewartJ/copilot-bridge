@@ -197,7 +197,7 @@ describe("SessionManager session config", () => {
     const globalBus = createTestBus();
     const taskStore = createTaskStore(db, globalBus);
     const task = taskStore.createTask("Context task");
-    const manager = new SessionManager({
+    const managerOptions = {
       globalBus,
       eventBusRegistry: createEventBusRegistry(),
       sessionTitles: createSessionTitlesStore(db),
@@ -205,7 +205,8 @@ describe("SessionManager session config", () => {
       config: { sessionMcpServers: {} },
       copilotHome: makeTestDir("turn-context"),
       resolveSessionProfile: (sessionId: string) => (sessionId === "helm-session" ? { id: "helm" } : undefined),
-    } as any) as any;
+    };
+    const manager = new SessionManager(managerOptions as any) as any;
     taskStore.linkSession(task.id, "chat");
     taskStore.updateTask(task.id, { notes: "First notes" });
 
@@ -222,6 +223,13 @@ describe("SessionManager session config", () => {
     changed.commit();
     expect(manager.prepareTurnContext("chat").block).toBeUndefined();
 
+    // A new next step resends the task's state without its notes.
+    taskStore.updateTask(task.id, { nextAction: "Call the landlord" });
+    const moved = manager.prepareTurnContext("chat");
+    expect(moved.block).toContain("- Next step: Call the landlord");
+    expect(moved.block).not.toContain("<task_notes>");
+    moved.commit();
+
     // A send prepared before compaction or truncation cannot mark the block delivered afterwards.
     const stale = manager.prepareTurnContext("chat");
     expect(stale.block).toBeUndefined();
@@ -232,6 +240,11 @@ describe("SessionManager session config", () => {
     const afterReset = manager.prepareTurnContext("chat");
     expect(afterReset.block).toContain("Third notes");
     afterReset.commit();
+
+    // Notes cleared before a restart still reach the chat: the new ledger starts from "no task".
+    taskStore.updateTask(task.id, { notes: "" });
+    const restarted = new SessionManager(managerOptions as any) as any;
+    expect(restarted.prepareTurnContext("chat").block).toContain("<task_notes>\nThis task has no notes.\n</task_notes>");
 
     taskStore.unlinkSession(task.id, "chat");
     const retired = manager.prepareTurnContext("chat");

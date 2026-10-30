@@ -1705,6 +1705,11 @@ export async function createTaskSession(
   return data.sessionId;
 }
 
+/** Starts a chat that proposes tidying the task's instructions and notes; returns its id. */
+export async function startTaskTidy(taskId: string): Promise<{ sessionId: string; error?: string }> {
+  return apiFetch<{ sessionId: string; error?: string }>(`/api/tasks/${encodeURIComponent(taskId)}/tidy`, {});
+}
+
 export async function fetchTaskAgentDefinitions(taskId: string): Promise<TaskAgentDefinitionSummary[]> {
   const data = await apiFetch<{ agentDefinitions: TaskAgentDefinitionSummary[] }>(
     `/api/tasks/${encodeURIComponent(taskId)}/agent-definitions`,

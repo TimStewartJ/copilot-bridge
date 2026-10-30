@@ -46,6 +46,7 @@ import { createLocalSource, createPeerSource, sourceLink, type HelmSource } from
 import { mergeSourceIds, toRunView, type HelmRunRecord, type HelmThinkerStore } from "./store.js";
 import { connectSource, RunSources, SourceError, sourceUnsupportedReason, type SourceConnector, type SourceToolInfo } from "./outside-sources.js";
 import type { McpServer } from "../../mcp-server-store.js";
+import { startTaskTidyChat, taskTidyHints } from "../../task-tidy.js";
 
 /** How long one run may take before it is given up. */
 const RUN_TIMEOUT_MS = 30 * 60_000;
@@ -413,7 +414,7 @@ export class HelmThinker {
                     properties: {
                       label: { type: "string" },
                       primary: { type: "boolean" },
-                      type: { type: "string", enum: ["answer", "send", "tick", "close_tasks", "open"] },
+                      type: { type: "string", enum: ["answer", "send", "tick", "close_tasks", "tidy_task", "open"] },
                       sessionId: { type: "string" },
                       requestId: { type: "string" },
                       answer: { type: "string" },
@@ -588,6 +589,10 @@ export class HelmThinker {
         memory,
         feedback,
         previousItems: (previousBrief?.items ?? []).map((item) => ({ title: item.title, status: states[item.id]?.status ?? "open", outcome: states[item.id]?.outcome ?? null })),
+        tidyHints: (taskId) => {
+          const task = this.ctx.taskStore.getTask(taskId);
+          return task ? taskTidyHints(task) : [];
+        },
         outsideSources: (sources?.statuses ?? []).map((status) => ({
           name: status.name, ok: status.ok, ...(status.error ? { error: status.error } : {}),
           lastReadAt: coverage[status.serverId] ?? null,
@@ -824,7 +829,7 @@ export class HelmThinker {
   }
 
   /** Carries out an action Tim clicked, or sends his own words to an item's conversation. */
-  async act(runId: string, itemId: string, input: { actionId?: unknown; text?: unknown }): Promise<{ ok: true; outcome: string }> {
+  async act(runId: string, itemId: string, input: { actionId?: unknown; text?: unknown }): Promise<{ ok: true; outcome: string; sessionId?: string }> {
     const { run, brief } = this.briefFor(runId);
     if (this.store.latestRun("done")?.id !== run.id) throw new HelmError("Helm has written a newer brief. Refresh to act on it.", 409);
     const item = brief.items.find((candidate) => candidate.id === itemId);
@@ -833,19 +838,19 @@ export class HelmThinker {
     const title = item?.title ?? proposal!.text;
     // Claimed before anything is sent, so a double click or a second tab can't act twice.
     if (!this.store.claimItem(run.id, itemId)) throw new HelmError("This has already been done", 409);
-    let outcome: string;
+    let result: { outcome: string; sessionId?: string };
     try {
-      outcome = await this.carryOut(run.id, itemId, item, proposal, input);
+      result = await this.carryOut(run.id, itemId, item, proposal, input);
     } catch (error) {
       this.store.setItemState(run.id, itemId, "open", null);
       throw error;
     }
-    this.store.setItemState(run.id, itemId, "done", outcome);
-    this.store.addFeedback({ runId: run.id, itemId, kind: "answered", note: outcome, itemTitle: title });
-    return { ok: true, outcome };
+    this.store.setItemState(run.id, itemId, "done", result.outcome);
+    this.store.addFeedback({ runId: run.id, itemId, kind: "answered", note: result.outcome, itemTitle: title });
+    return { ok: true, ...result };
   }
 
-  private async carryOut(runId: string, itemId: string, item: HelmBriefItem | undefined, proposal: HelmProposal | undefined, input: { actionId?: unknown; text?: unknown }): Promise<string> {
+  private async carryOut(runId: string, itemId: string, item: HelmBriefItem | undefined, proposal: HelmProposal | undefined, input: { actionId?: unknown; text?: unknown }): Promise<{ outcome: string; sessionId?: string }> {
     let outcome: string;
     if (typeof input.text === "string") {
       const words = input.text.trim();
@@ -868,6 +873,14 @@ export class HelmThinker {
       const action = (item?.actions ?? proposal!.actions).find((candidate) => candidate.id === input.actionId);
       if (!action) throw new HelmError("That action is no longer available", 404);
       const what = action.do;
+      if (what.type === "tidy_task") {
+        if (what.bridge !== "local") throw new HelmError("Tidy-ups only start on this Bridge", 400);
+        const launch = await startTaskTidyChat(this.ctx, what.taskId);
+        // A started chat is kept even when its first message wasn't confirmed, so a retry can't start a second one.
+        return launch.ok
+          ? { outcome: "Started a tidy-up chat", sessionId: launch.sessionId }
+          : { outcome: "Started a tidy-up chat; open it to check its first message arrived", sessionId: launch.sessionId };
+      }
       const source = this.source(what.bridge);
       if (what.type === "answer") {
         const live = await source.input(what.sessionId, "user_input", what.requestId);
@@ -884,7 +897,7 @@ export class HelmThinker {
         throw new HelmError("This action is carried out in the app", 400);
       }
     }
-    return outcome;
+    return { outcome };
   }
 
   feedback(runId: string, itemId: string, input: { kind?: unknown; note?: unknown }): void {

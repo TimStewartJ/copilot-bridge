@@ -24,6 +24,7 @@ import {
   type SessionWorkspaceWarningPayload,
 } from "./session-view.js";
 import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext } from "./session-creation-options.js";
+import { startTaskTidyChat } from "./task-tidy.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
 import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
 import { maxIsoTime } from "../shared/session-activity.js";
@@ -3635,6 +3636,20 @@ export function createApiRouter(
       if (err instanceof TaskAgentDefinitionValidationError) {
         return res.status(400).json({ error: err.message });
       }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Start a chat that proposes tidying the task's instructions and notes
+  router.post("/tasks/:id/tidy", async (req, res) => {
+    if (!ctx.taskStore.getTask(req.params.id)) return res.status(404).json({ error: "Task not found" });
+    try {
+      const launch = await startTaskTidyChat(ctx, req.params.id, () => sessionList.invalidate("route:task-tidy:create"));
+      res.json(launch.ok
+        ? { sessionId: launch.sessionId }
+        : { sessionId: launch.sessionId, error: "The tidy-up chat started, but its first message wasn't confirmed. Open it to check." });
+    } catch (err) {
+      if (sendSessionCapacityError(res, err)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

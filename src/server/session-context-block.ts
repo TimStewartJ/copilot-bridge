@@ -15,11 +15,13 @@ import { formatTaskMomentumContext } from "./session-task-momentum.js";
 /**
  * Task and knowledge-base state that changes while a chat runs. It travels at the start of user
  * messages instead of in the system prompt, so edits never invalidate the cached conversation and
- * reach cached chats on their next message. Both sections are always present, so a chat that
+ * reach cached chats on their next message. Every section is always present, so a chat that
  * leaves its task or loses its knowledge base is told so like any other change, and each section
- * is resent only when it changes.
+ * is resent only when it changes. Notes have a section of their own because they are the largest
+ * part of a task's state and change least often: a new history line or next step resends only
+ * task_state.
  */
-export type BridgeContextSectionName = "task_state" | "knowledge_base";
+export type BridgeContextSectionName = "task_state" | "task_notes" | "knowledge_base";
 
 export interface BridgeContextSection {
   name: BridgeContextSectionName;
@@ -89,11 +91,7 @@ function section(name: BridgeContextSectionName, lines: string[], empty: string)
   return { name, content, hash: createHash("sha256").update(content).digest("hex") };
 }
 
-function buildTaskState(
-  deps: BridgeContextDeps,
-  task: Task | null | undefined,
-  groupNotes: { groupName: string; notes: string } | null | undefined,
-): BridgeContextSection {
+function buildTaskState(deps: BridgeContextDeps, task: Task | null | undefined): BridgeContextSection {
   if (!task) return section("task_state", [], "This chat is not linked to a Bridge task.");
   const lines: string[] = [`Task: "${task.title}" (taskId: ${task.id}, status: ${task.status}, kind: ${task.kind})`];
   if (task.title === PLACEHOLDER_TASK_TITLE) lines.push(PLACEHOLDER_TITLE_GUIDANCE);
@@ -105,12 +103,6 @@ function buildTaskState(
   }
   const momentum = formatTaskMomentumContext(task);
   if (momentum) lines.push(momentum);
-  if (task.notes.trim()) {
-    lines.push(`Task notes (the current state of the work; any rules the user wrote here still apply):\n${task.notes.trim()}`);
-  }
-  if (groupNotes?.notes?.trim()) {
-    lines.push(`Group notes (task group "${groupNotes.groupName}"):\n${groupNotes.notes.trim()}`);
-  }
   const checklist = deps.checklistStore?.listChecklistItems(task.id) ?? [];
   if (checklist.length > 0) {
     const open = checklist.filter((item) => !item.done);
@@ -130,6 +122,26 @@ function buildTaskState(
     ].join("\n"));
   }
   return section("task_state", lines, "");
+}
+
+// A linked task without notes must not read like a chat without a task: that text is the
+// ledger's starting point, so after a restart a chat whose notes were cleared would not be told.
+const NO_TASK_NOTES = "This chat is not linked to a Bridge task.";
+const EMPTY_TASK_NOTES = "This task has no notes.";
+
+function buildTaskNotes(
+  task: Task | null | undefined,
+  groupNotes: { groupName: string; notes: string } | null | undefined,
+): BridgeContextSection {
+  if (!task) return section("task_notes", [], NO_TASK_NOTES);
+  const lines: string[] = [];
+  if (task.notes.trim()) {
+    lines.push(`Task notes (the current state of the work; any rules the user wrote here still apply):\n${task.notes.trim()}`);
+  }
+  if (groupNotes?.notes?.trim()) {
+    lines.push(`Group notes (task group "${groupNotes.groupName}"):\n${groupNotes.notes.trim()}`);
+  }
+  return section("task_notes", lines, EMPTY_TASK_NOTES);
 }
 
 function buildKnowledgeBase(deps: BridgeContextDeps, task: Task | null | undefined): BridgeContextSection {
@@ -159,7 +171,7 @@ export function buildBridgeContextSections(
   task: Task | null | undefined,
   groupNotes?: { groupName: string; notes: string } | null,
 ): BridgeContextSection[] {
-  return [buildTaskState(deps, task, groupNotes), buildKnowledgeBase(deps, task)];
+  return [buildTaskState(deps, task), buildTaskNotes(task, groupNotes), buildKnowledgeBase(deps, task)];
 }
 
 /**
