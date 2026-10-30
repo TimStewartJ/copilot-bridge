@@ -140,14 +140,13 @@ describe("task continuation evidence", () => {
       .toMatchObject({ known: false, unavailable: { scope: "task", reason: expect.stringContaining("could not be read") } });
   });
 
-  it("keeps expected preview gaps out of source errors without inventing complete evidence", () => {
+  it("marks expected preview gaps as expected without inventing complete evidence", () => {
     const { ctx } = setup();
     const other = ctx.taskStore.createTask("Another copied task");
     ctx.taskStore.linkSession(other.id, "other-conversation");
     const overview = buildTaskOverview({ ...ctx, isStaging: true }, [], NOW);
     expect(overview.tasks.every(row => row.activity?.unavailable?.scope === "source"
       && row.activity.unavailable.expectedInPreview === true)).toBe(true);
-    expect(overview.sourceErrors).toEqual([]);
     expect(overview.tasks.every(row => row.activity?.known === false)).toBe(true);
   });
 
@@ -158,7 +157,6 @@ describe("task continuation evidence", () => {
       sessionManager: { getSessionRunState: () => "idle", getPendingUserInputCount: () => 0 },
     }, [], NOW);
     expect(overview.tasks[0].activity?.unavailable).toEqual({ scope: "source", reason: "Runtime continuation status is unavailable." });
-    expect(overview.sourceErrors).toEqual(["Runtime continuation status is unavailable."]);
   });
 
   it("keeps known questions visible even when the conversation index is unavailable", () => {

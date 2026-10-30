@@ -30,7 +30,7 @@ describe("phone task list sections", () => {
   afterEach(async () => { await harness?.cleanup(); harness = null; });
 
   async function renderList(overrides: Partial<ComponentProps<typeof TaskList>>, overviewTasks: unknown[] = []) {
-    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, sourceErrors: [], tasks: overviewTasks });
+    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, tasks: overviewTasks });
     harness = await createDialogTestHarness();
     await harness.render(createElement(TaskList, { tasks: [], activeTaskId: null, onSelectTask: vi.fn(), onNewTask: vi.fn(), ...overrides }));
   }
@@ -75,7 +75,7 @@ describe("phone task list sections", () => {
     expect(unreadRows).toEqual(["deferred", "closed"]);
   });
 
-  it("uses one source notice on the phone without changing task order", async () => {
+  it("shows no source notice on the phone and keeps task order", async () => {
     const tasks = ["one", "two"].map((id, order) => createTask({ id, title: `Copied ${id}`, order }));
     await renderList({ tasks }, tasks.map(task => ({
       ...task, activity: createTaskActivity({
@@ -83,7 +83,7 @@ describe("phone task list sections", () => {
         unavailable: { scope: "source", reason: "Preview conversations are isolated." },
       }),
     })));
-    expect(findAllByTag(harness!.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(1);
+    expect(harness!.dom.container.textContent).not.toContain("Activity data");
     const rows = findAllByTag(harness!.dom.container, "BUTTON").filter(node => getReactProps(node)?.["data-task-id"]);
     expect(rows.map(node => getReactProps(node)?.["data-task-id"])).toEqual(["one", "two"]);
     expect(rows.every(node => !getReactProps(node)?.["data-task-attention"])).toBe(true);

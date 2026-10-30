@@ -7,7 +7,6 @@ import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useTaskAttention } from "../hooks/useTaskAttention";
 import type { TaskSessionSource } from "../hooks/useTaskIndicators";
 import TaskAttentionBadge from "./TaskAttentionBadge";
-import TaskAttentionNotice from "./TaskAttentionNotice";
 import { useSessionWorkspaceQuery } from "../hooks/queries/useSessionWorkspace";
 import { queryKeys } from "../queryClient";
 import { getTaskCompletionCounts, getTaskCompletionState } from "../task-completion-helpers";
@@ -328,7 +327,7 @@ export default function TaskPanel({
 
   const currentTask = task && momentumTask && momentumTask.id === task.id ? momentumTask : task;
   const attentionTasks = useMemo(() => currentTask ? [currentTask] : [], [currentTask]);
-  const { taskSignals, activityDescriptions, health } = useTaskAttention(attentionTasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
+  const { taskSignals, activityDescriptions } = useTaskAttention(attentionTasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
   const alertChips = useMemo(() => {
     if (!currentTask) return [];
     return getTaskAlertChips({
@@ -450,9 +449,6 @@ export default function TaskPanel({
         scrollRestoration={scrollRestoration}
       >
         <div className="mx-auto w-full max-w-3xl">
-        {health?.affectedTasks.some(affected => affected.id === task.id) && (
-          <div className="mx-3 mt-3 md:hidden"><TaskAttentionNotice health={health} /></div>
-        )}
         <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-2 p-3")}>
         <div className="flex items-start gap-1">
           <div className="min-w-0 flex-1 space-y-1.5">

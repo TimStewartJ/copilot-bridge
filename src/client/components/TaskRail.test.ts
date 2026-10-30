@@ -4,6 +4,7 @@ import type { Session, Task } from "../api";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
 import { advanceTimersByTimeAct, findAllByTag, getReactProps, waitTick, waitUntilAct } from "../test-react-harness";
 import { createTaskActivity } from "../../test-support/task-attention";
+import { TASK_OVERVIEW_KEY } from "../hooks/queries/useTaskOverview";
 
 const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
@@ -77,7 +78,7 @@ describe("TaskRail navigation attention", () => {
       onToggleExpanded: vi.fn(),
       ...overrides,
     };
-    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, sourceErrors: [], tasks: overviewTasks });
+    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, tasks: overviewTasks });
     harness ??= await createDialogTestHarness();
     await harness.render(createElement(TaskRail, props));
     return props;
@@ -312,7 +313,7 @@ describe("TaskRail navigation attention", () => {
     expect(harness!.dom.container.textContent).not.toMatch(/need[s]? a look|marked/);
   });
 
-  it("keeps shared unavailability out of task badges and reports it once for the list", async () => {
+  it("keeps shared unavailability out of task badges and shows no notice", async () => {
     const tasks = ["one", "two"].map((id, order) => createTask({ id, title: `Copied ${id}`, order }));
     await renderRail({ tasks, expanded: true }, tasks.map(task => ({
       ...task, activity: createTaskActivity({
@@ -320,22 +321,11 @@ describe("TaskRail navigation attention", () => {
         unavailable: { scope: "source", reason: "Preview conversations are isolated." },
       }),
     })));
-    await waitUntilAct(harness!.act, () => harness!.dom.container.textContent?.includes("Activity data incomplete") === true);
-    expect(findAllByTag(harness!.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(1);
+    await waitUntilAct(harness!.act, () => harness!.queryClient.getQueryState(TASK_OVERVIEW_KEY)?.status === "success");
+    expect(harness!.dom.container.textContent).not.toContain("Activity data");
     const rows = findAllByTag(harness!.dom.container, "BUTTON").filter(node => getReactProps(node)?.["data-task-id"]);
     expect(rows.map(node => getReactProps(node)?.["data-task-id"])).toEqual(["one", "two"]);
     expect(rows.every(node => !getReactProps(node)?.["data-task-attention"])).toBe(true);
     expect(rows.every(node => !node.textContent?.includes("Unknown"))).toBe(true);
-  });
-
-  it("leaves the source notice to All tasks while that view is open", async () => {
-    const tasks = [createTask()];
-    await renderRail({ tasks, expanded: true, isAllTasksActive: true }, tasks.map(task => ({
-      ...task, activity: createTaskActivity({
-        known: false, sessionIndexKnown: false,
-        unavailable: { scope: "source", reason: "Preview conversations are isolated." },
-      }),
-    })));
-    expect(findAllByTag(harness!.dom.container, "DIV").filter(node => getReactProps(node)?.["data-task-attention-notice"])).toHaveLength(0);
   });
 });

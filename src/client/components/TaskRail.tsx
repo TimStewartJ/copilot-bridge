@@ -31,7 +31,6 @@ import TaskKindBadge from "./TaskKindBadge";
 import { getTaskKindLabel } from "../task-kind";
 import { shouldShowTaskRowUnreadDot } from "../task-row-signals";
 import TaskAttentionBadge from "./TaskAttentionBadge";
-import TaskAttentionNotice from "./TaskAttentionNotice";
 import { DS, cx } from "../design/tokens";
 import { Button, CountBadge, IdentitySwatch, StatusIcon } from "../design/primitives";
 import CopilotQuotaMenu from "./CopilotQuotaMenu";
@@ -182,7 +181,7 @@ export default function TaskRail({
     return map;
   }, [sessions]);
 
-  const { overview, taskIndicators, taskSignals, taskGlyphs, activityDescriptions, health } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
+  const { overview, taskIndicators, taskSignals, taskGlyphs, activityDescriptions } = useTaskAttention(tasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
 
   const { nonArchived, archived: archivedTasks } = useMemo(
     () => splitArchivedTasks(tasks),
@@ -331,7 +330,6 @@ export default function TaskRail({
 
         {/* Task items */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col items-center gap-2 py-2 scrollbar-thin">
-          <TaskAttentionNotice health={isAllTasksActive ? null : health} collapsed onExpand={onToggleExpanded} />
           {hasGroups && groupedSections ? (
             // Grouped mode — color dividers between groups
             groupedSections.map((section, si) => {
@@ -671,7 +669,6 @@ export default function TaskRail({
               <Button ref={newTaskButtonRef} fullWidth className="mb-1.5" icon={<Plus size={14} aria-hidden="true" />} onClick={() => onNewTask()}>
                 New task
               </Button>
-              <TaskAttentionNotice health={isAllTasksActive ? null : health} compact />
               {reorderMode.reordering && <TaskReorderBar onDone={reorderMode.stop} />}
               <UnreadTaskEdgePill edge={unreadTaskEdges.above} direction="above" onJump={unreadTaskEdges.jumpToTask} />
 

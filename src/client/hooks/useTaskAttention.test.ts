@@ -23,8 +23,8 @@ const row = (id: string, overrides: Partial<TaskOverviewRow> = {}): TaskOverview
   reasons: [], idleDays: 0, staleWait: false, busyCount: 0, stalledCount: 0, inputCount: 0,
   automationCount: 0, activity: createTaskActivity(), ...overrides,
 });
-const overview = (rows: TaskOverviewRow[], sourceErrors: string[] = []): TaskOverview => ({
-  tasks: rows, sessionsComplete: true, generatedAt: NOW, sourceErrors,
+const overview = (rows: TaskOverviewRow[]): TaskOverview => ({
+  tasks: rows, sessionsComplete: true, generatedAt: NOW,
   counts: { needs_you: 0, in_motion: 0, waiting: 0, up_next: 0, no_next_step: rows.length, gone_quiet: 0, set_aside: 0 },
 });
 const indicator = (overrides: Partial<TaskIndicator> = {}): TaskIndicator => ({
@@ -36,7 +36,7 @@ const sourceGap = () => createTaskActivity({
   unavailable: { scope: "source", reason: "Preview conversations are isolated." },
 });
 
-describe("task attention source health", () => {
+describe("task attention source gaps", () => {
   let harness: DialogTestHarness;
   let reading: ReturnType<typeof useTaskAttentionPresentation>;
   beforeEach(async () => {
@@ -49,20 +49,19 @@ describe("task attention source health", () => {
 
   async function render(tasks: Task[], data?: TaskOverview, indicators = new Map<string, TaskIndicator>(), error?: Error) {
     function Probe() {
-      reading = useTaskAttentionPresentation(tasks, indicators, { data, isError: !!error, error });
+      reading = useTaskAttentionPresentation(tasks, indicators, { data, isError: !!error });
       return null;
     }
     await harness.render(createElement(Probe));
   }
 
-  it("shows loading once without unknown/review badges while keeping explicit attention", async () => {
+  it("shows no unknown/review badges while loading but keeps explicit attention", async () => {
     const tasks = ["idle", "question", "reply", "revisit"].map(id => task(id,
       id === "revisit" ? { nextTouchAt: "2026-10-19T15:00:00Z" } : {}));
     await render(tasks, undefined, new Map([
       ["question", indicator({ needsUserInputCount: 1 })],
       ["reply", indicator({ unreadCount: 1 })],
     ]));
-    expect(reading.health?.state).toBe("loading");
     expect(reading.taskSignals.get("idle")).toBeNull();
     expect(reading.taskSignals.get("question")?.kind).toBe("needs-input");
     expect(reading.taskSignals.get("reply")?.kind).toBe("unread");
@@ -77,9 +76,6 @@ describe("task attention source health", () => {
     expect(reading.taskSignals.get("copy-a")).toBeNull();
     expect(reading.taskSignals.get("copy-b")).toBeNull();
     expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
-    expect(reading.health?.state).toBe("partial");
-    expect(reading.health?.messages).toEqual(["Preview conversations are isolated."]);
-    expect(reading.health?.affectedTasks.map(task => task.id)).toEqual(["copy-a", "copy-b"]);
   });
 
   it("leaves expected preview isolation quiet without creating review suggestions", async () => {
@@ -92,12 +88,9 @@ describe("task attention source health", () => {
     expect(reading.taskSignals.get("copy")).toBeNull();
     expect(reading.activityDescriptions.get("copy")).toBe("");
     expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
-    expect(reading.health).toBeNull();
-    await render(tasks, data, new Map([["copy", indicator({ sessionStateKnown: false, sessionSource: { loading: false, error: "Offline" } })]]));
-    expect(reading.health?.messages).toEqual(["Conversation status could not be refreshed: Offline"]);
   });
 
-  it("does not retain a stale review cue without a notice when a preview gap is expected", async () => {
+  it("does not retain a stale review cue when a preview gap is expected", async () => {
     const tasks = [task("copy")];
     let data = overview([row("copy")]);
     function Probe() { reading = useTaskAttentionPresentation(tasks, undefined, { data, isError: false }); return null; }
@@ -109,7 +102,6 @@ describe("task attention source health", () => {
     }) })]);
     await harness.render(createElement(Probe));
     expect(reading.taskSignals.get("copy")).toBeNull();
-    expect(reading.health).toBeNull();
   });
 
   it("reserves individual unknown badges for task-specific problems", async () => {
@@ -121,7 +113,6 @@ describe("task attention source health", () => {
     ]));
     expect(reading.taskSignals.get("broken")).toMatchObject({ kind: "status-unknown", detail: "A linked conversation is missing." });
     expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
-    expect(reading.health).toBeNull();
   });
 
   it("keeps saved waits and known work blank while shared information is missing", async () => {
@@ -135,32 +126,21 @@ describe("task attention source health", () => {
     expect(reading.activityDescriptions.get("wait")).toBe("Waiting for: Reviewer");
   });
 
-  it("does not apply an unrelated source warning to valid task evidence", async () => {
-    await render([task("healthy")], overview([row("healthy")], ["An unrelated conversation record was unreadable."]));
-    expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
-    expect(reading.health?.affectedTasks).toEqual([]);
-  });
-
   it("distinguishes read-state loading, initial failure and failed refresh", async () => {
     const tasks = [task("task")], data = overview([row("task")]);
     await render(tasks, data, new Map([["task", indicator({ readStateKnown: false })]]));
-    expect(reading.health?.state).toBe("loading");
     expect(reading.taskSignals.get("task")).toBeNull();
     await render(tasks, data, new Map([["task", indicator({ readStateKnown: false, readStateError: "Offline" })]]));
-    expect(reading.health?.state).toBe("unavailable");
     expect(reading.taskSignals.get("task")).toBeNull();
     await render(tasks, data, new Map([["task", indicator({ unreadCount: 1, readStateError: "Offline" })]]));
-    expect(reading.health?.state).toBe("stale");
     expect(reading.taskSignals.get("task")?.kind).toBe("unread");
   });
 
   it("distinguishes conversation-source loading from failure without row-level Unknown noise", async () => {
     const tasks = [task("task")], data = overview([row("task")]);
     await render(tasks, data, new Map([["task", indicator({ sessionStateKnown: false, sessionSource: { loading: true } })]]));
-    expect(reading.health?.state).toBe("loading");
     expect(reading.taskSignals.get("task")).toBeNull();
     await render(tasks, data, new Map([["task", indicator({ sessionStateKnown: false, sessionSource: { loading: false, error: "Offline" } })]]));
-    expect(reading.health?.state).toBe("unavailable");
     expect(reading.taskSignals.get("task")).toBeNull();
   });
 
@@ -183,7 +163,6 @@ describe("task attention source health", () => {
     expect([...result!.taskSignals.keys()]).toEqual(["first", "second"]);
     expect(result!.taskSignals.get("first")?.kind).toBe("needs-look");
     expect(result!.taskSignals.get("second")).toBeNull();
-    expect(result!.health).toMatchObject({ state: "stale", updatedAt: NOW, messages: ["Offline"] });
   });
 
   it("retains the previous reading when the server reports a shared source failure, then recovers", async () => {
@@ -196,12 +175,11 @@ describe("task attention source health", () => {
     expect(result!.taskSignals.get("task")?.kind).toBe("needs-look");
     api.fetchTaskOverview.mockResolvedValue(overview([row("task", { activity: sourceGap() })]));
     await harness.act(async () => { await harness.queryClient.refetchQueries({ queryKey: TASK_OVERVIEW_KEY }); });
-    await waitUntilAct(harness.act, () => result.health?.state === "stale");
+    await waitUntilAct(harness.act, () => result.overview.data?.tasks[0]?.activity?.known === false);
     expect(result!.taskSignals.get("task")?.kind).toBe("needs-look");
-    expect(result!.health).toMatchObject({ updatedAt: NOW, messages: ["Preview conversations are isolated."] });
     api.fetchTaskOverview.mockResolvedValue(overview([row("task", { activity: createTaskActivity({ scheduledCount: 1 }) })]));
     await harness.act(async () => { await harness.queryClient.refetchQueries({ queryKey: TASK_OVERVIEW_KEY }); });
-    await waitUntilAct(harness.act, () => result.health === null);
+    await waitUntilAct(harness.act, () => result.overview.data?.tasks[0]?.activity?.scheduledCount === 1);
     expect(result!.taskSignals.get("task")).toBeNull();
   });
 
@@ -222,6 +200,5 @@ describe("task attention source health", () => {
     indicators = new Map([["task", indicator({ sessionStateKnown: false })]]);
     await harness.render(createElement(Probe));
     expect(reading.taskSignals.get("task")).toBeNull();
-    expect(reading.health?.state).toBe("stale");
   });
 });
