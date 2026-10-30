@@ -174,6 +174,54 @@ describe("runSelfUpdateJob active-release drift", () => {
     expect(requestRestartMock).not.toHaveBeenCalled();
   });
 
+  it("activates HEAD when upstream history was rewritten but HEAD descends from the release's files", async () => {
+    const oldSha = "1111111111111111111111111111111111111111";
+    const headSha = "2222222222222222222222222222222222222222";
+    const twinSha = "3333333333333333333333333333333333333333";
+    const releaseTree = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const dataDir = makeTestDir("self-update-rewritten-history");
+    activeReleaseMock.value = manifest(oldSha, dataDir);
+    reusableReleaseMock.value = manifest(headSha, dataDir);
+    vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
+    vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
+    runValidationCommandMock.mockImplementation(async (options: ValidationCommandOptions) => {
+      const command = [options.command, ...(options.args ?? [])].join(" ");
+      if (command.startsWith("git merge-base --is-ancestor")) return { ok: false, output: "" };
+      if (command === `git rev-parse --verify --quiet ${oldSha}^{tree}`) return { ok: true, output: `${releaseTree}\n` };
+      if (command === `git log --format=%H %T ${oldSha}..${headSha}`) {
+        return { ok: true, output: `${headSha} ${"b".repeat(40)}\n${twinSha} ${releaseTree}\n` };
+      }
+      return {
+        ok: true,
+        output: command === "git rev-parse --short HEAD"
+          ? "22222222\n"
+          : command === "git rev-parse --abbrev-ref HEAD"
+            ? "main\n"
+            : command === "git pull --rebase origin main"
+              ? "Already up to date.\n"
+              : `${headSha}\n`,
+      };
+    });
+
+    const { runSelfUpdateJob } = await import("../self-update-job.js");
+    const result = await runSelfUpdateJob({}, {
+      controlRoot: process.cwd(),
+      runtimePaths: {
+        dataDir,
+        docsDir: join(dataDir, "docs"),
+        env: sourceManagedEnv(),
+      },
+      log: () => {},
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.activeReleaseDrift).toBe(true);
+    expect(requestRestartMock).toHaveBeenCalledWith(
+      dataDir,
+      expect.objectContaining({ releaseCandidate: expect.objectContaining({ commitSha: headSha }) }),
+    );
+  });
+
   it("isolates release-slot validation from the running Bridge environment", async () => {
     const oldSha = "1111111111111111111111111111111111111111";
     const headSha = "2222222222222222222222222222222222222222";

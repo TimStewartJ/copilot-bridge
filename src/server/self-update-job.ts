@@ -43,6 +43,7 @@ interface SelfUpdateRunOptions {
   isolateRuntimeEnv?: boolean;
   executable?: string;
   args?: readonly string[];
+  logOutput?: boolean;
 }
 
 function createSelfUpdateRunner(
@@ -71,7 +72,7 @@ function createSelfUpdateRunner(
         shell: options.args ? false : undefined,
         failureOutputFormat: "plain",
       });
-      if (result.output.trim()) log(result.output.trimEnd());
+      if (options.logOutput !== false && result.output.trim()) log(result.output.trimEnd());
       return result;
     } finally {
       validationEnv?.cleanup();
@@ -88,6 +89,46 @@ async function isAncestor(
     timeoutMs: 30_000,
   });
   return result.ok;
+}
+
+/**
+ * HEAD holds the running release when the release commit is an ancestor of HEAD, or when upstream
+ * history was rewritten and HEAD descends from a commit with exactly the release's files.
+ */
+async function headHoldsRelease(
+  run: ReturnType<typeof createSelfUpdateRunner>,
+  log: (message: string) => void,
+  releaseSha: string,
+  headSha: string,
+): Promise<boolean> {
+  if (await isAncestor(run, releaseSha, headSha)) return true;
+
+  const releaseTree = await run(`git rev-parse --verify --quiet ${releaseSha}^{tree}`, {
+    executable: "git",
+    args: ["rev-parse", "--verify", "--quiet", `${releaseSha}^{tree}`],
+    timeoutMs: 30_000,
+  });
+  const tree = releaseTree.ok ? releaseTree.output.trim() : "";
+  if (!tree) return false;
+
+  const rewrittenSide = await run(`git log --format="%H %T" ${releaseSha}..${headSha}`, {
+    executable: "git",
+    args: ["log", "--format=%H %T", `${releaseSha}..${headSha}`],
+    timeoutMs: 30_000,
+    logOutput: false,
+  });
+  if (!rewrittenSide.ok) return false;
+  const twin = rewrittenSide.output
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(" "))
+    .find(([, commitTree]) => commitTree === tree)?.[0];
+  if (!twin) return false;
+
+  log(
+    `Active release ${releaseSha.slice(0, 8)} is not an ancestor of HEAD, but HEAD descends from ${twin.slice(0, 8)}, ` +
+    "which has the same files. Upstream history was rewritten; updating is not a downgrade.",
+  );
+  return true;
 }
 
 async function prepareOrReuseReleaseCandidate(options: {
@@ -146,7 +187,7 @@ async function handleUnchangedHeadDrift(options: {
     return { success: true, message: "Already up to date — no restart needed." };
   }
 
-  if (!(await isAncestor(options.run, options.activeRelease.commitSha, options.fullHeadSha))) {
+  if (!(await headHoldsRelease(options.run, options.log, options.activeRelease.commitSha, options.fullHeadSha))) {
     removeRollbackCheckpointIfCreated(options.preDeployShaFile, options.rollbackCheckpoint);
     return toolFailure("Active release points at a different or newer commit than the control checkout.", {
       detail:
@@ -229,9 +270,10 @@ async function failIfActiveReleaseWouldDowngrade(options: {
   fullHeadSha: string;
   shortHeadSha: string;
   run: ReturnType<typeof createSelfUpdateRunner>;
+  log: (message: string) => void;
 }): Promise<Record<string, unknown> | null> {
   if (!options.activeRelease || options.activeRelease.commitSha === options.fullHeadSha) return null;
-  if (await isAncestor(options.run, options.activeRelease.commitSha, options.fullHeadSha)) return null;
+  if (await headHoldsRelease(options.run, options.log, options.activeRelease.commitSha, options.fullHeadSha)) return null;
 
   return toolFailure("Active release points at a different or newer commit than the control checkout.", {
     detail:
@@ -309,6 +351,7 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
     fullHeadSha: newFullSha,
     shortHeadSha: newSha,
     run,
+    log,
   });
   if (downgradeFailure) {
     removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);
