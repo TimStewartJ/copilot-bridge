@@ -32,6 +32,8 @@ interface UseLongPressMenuReturn<T> {
    * were swapped out (reorder mode), so the first click on them afterwards is not eaten.
    */
   resetClickGuard: () => void;
+  /** Close the menu and forget any press in progress, for when the pressed control goes away. */
+  reset: () => void;
 }
 
 const LONG_PRESS_MS = 500;
@@ -63,6 +65,11 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
     triggered.current = false;
   }, []);
   const openMenu = useCallback((x: number, y: number, id: T) => setMenu({ x, y, id }), []);
+  const reset = useCallback(() => {
+    cancelLongPress();
+    triggered.current = false;
+    setMenu(null);
+  }, [cancelLongPress]);
 
   const bind = useCallback(
     (id: T, onClick: () => void): LongPressBindings => ({
@@ -113,5 +120,5 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
     [longPressTarget],
   );
 
-  return { bind, menu, openMenu, closeMenu, isTarget, resetClickGuard };
+  return { bind, menu, openMenu, closeMenu, isTarget, resetClickGuard, reset };
 }

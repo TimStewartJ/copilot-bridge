@@ -1,6 +1,7 @@
 import { createElement, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  advanceTimersByTimeAct,
   createReactDomHarness,
   findAllByTag,
   getReactProps,
@@ -349,8 +350,8 @@ describe("ChatInput voice retry", () => {
     });
     useVoiceInputMock.mockReturnValue({ ...state, phase, cancelRecording, elapsedSeconds: 4 });
     await renderChatInput(props);
-    // Only the recording line, Cancel and Finish remain while the microphone is open.
-    expect(queryButtonByAriaLabel(getHarness().dom.container, "Autopilot")).toBeUndefined();
+    // While the microphone is open, Finish, Autopilot, the recording line and Cancel remain.
+    expect(getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.["aria-pressed"]).toBe(true);
     expect(queryButtonByAriaLabel(getHarness().dom.container, "Attach file")).toBeUndefined();
     expect(queryButtonByAriaLabel(getHarness().dom.container, "Remove attachment notes.txt")).toBeUndefined();
     await getHarness().act(async () => {
@@ -619,7 +620,7 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenLastCalledWith("and thanks", undefined, "interactive");
   });
 
-  it("auto-sends a recording made with Autopilot on and starts it in Autopilot", async () => {
+  it("auto-sends a recording when Autopilot is turned on while talking and starts it in Autopilot", async () => {
     let phase: "idle" | "recording" = "idle";
     const startRecording = vi.fn(() => { phase = "recording"; });
     const stopRecording = vi.fn();
@@ -635,12 +636,12 @@ describe("ChatInput voice retry", () => {
     await renderChatInput({ onSubmitVoiceCapture });
 
     await getHarness().act(async () => {
-      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.onClick?.();
-    });
-    await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
     });
     expect(startRecording).toHaveBeenCalledOnce();
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.onClick?.();
+    });
     const stopButton = findButtonByAriaLabel(getHarness().dom.container, "Stop recording, transcribe, and send automatically");
     await getHarness().act(async () => {
       getReactProps(stopButton)?.onClick?.();
@@ -664,6 +665,86 @@ describe("ChatInput voice retry", () => {
     });
     // Like a typed send, the Autopilot choice covered just that message.
     expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  async function startAutoSendRecording(onSubmitVoiceCapture = vi.fn(async () => "autosend" as const)) {
+    const voice = { phase: "idle" as "idle" | "recording" };
+    const baseVoice = useVoiceInputMock();
+    const stopRecording = vi.fn();
+    const cancelRecording = vi.fn(() => true);
+    useVoiceInputMock.mockImplementation(() => ({
+      ...baseVoice,
+      phase: voice.phase,
+      isRecording: voice.phase === "recording",
+      startRecording: vi.fn(() => { voice.phase = "recording"; }),
+      stopRecording,
+      cancelRecording,
+    }));
+    await renderChatInput({ onSubmitVoiceCapture });
+    await getHarness().act(async () => {
+      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
+    });
+    const finish = () => findButtonByAriaLabel(getHarness().dom.container, "Stop recording, transcribe, and send automatically");
+    return { voice, stopRecording, cancelRecording, finish };
+  }
+
+  it("offers Send with Autopilot on Finish, and Escape closes that menu without dropping the recording", async () => {
+    const onSubmitVoiceCapture = vi.fn(async () => "autosend" as const);
+    const { stopRecording, cancelRecording, finish } = await startAutoSendRecording(onSubmitVoiceCapture);
+    const container = getHarness().dom.container;
+    const openMenu = async () => {
+      await getHarness().act(async () => {
+        getReactProps(finish())?.onContextMenu?.({ preventDefault: vi.fn(), clientX: 10, clientY: 20 });
+      });
+    };
+
+    await openMenu();
+    const escape = getReactProps(findAllByTag(container, "DIV").find((element) => getReactProps(element)?.onKeyDown))?.onKeyDown;
+    await getHarness().act(async () => {
+      escape({ key: "Escape", nativeEvent: {}, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    });
+    expect(findAllByTag(container, "BUTTON").some((button) => button.textContent === "Send with Autopilot")).toBe(false);
+    expect(cancelRecording).not.toHaveBeenCalled();
+
+    await openMenu();
+    await getHarness().act(async () => {
+      getReactProps(findButtonByText(container, "Send with Autopilot"))?.onClick?.();
+    });
+    expect(stopRecording).toHaveBeenCalledOnce();
+    const [{ onAudioCaptured }] = useVoiceInputMock.mock.calls.at(-1) as [{
+      onAudioCaptured: (capture: { audio: Blob; contextKey: string }) => Promise<void>;
+    }];
+    await getHarness().act(async () => {
+      await onAudioCaptured({ audio: new Blob(["voice"]), contextKey: "session-1" });
+    });
+    expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend", sendMode: "autopilot" }));
+  });
+
+  it("forgets a hold on Finish when the recording ends under it, so the next Send is not swallowed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const onSend = vi.fn();
+      const { voice, finish } = await startAutoSendRecording();
+      await getHarness().act(async () => {
+        getReactProps(finish())?.onTouchStart?.({ touches: [{ clientX: 10, clientY: 20 }] });
+      });
+      // The recording reaches its limit before the hold would open the menu.
+      voice.phase = "idle";
+      await renderChatInput({ onSend });
+      await advanceTimersByTimeAct(getHarness().act, 1_000);
+      const container = getHarness().dom.container;
+      expect(findAllByTag(container, "BUTTON").some((button) => button.textContent === "Send with Autopilot")).toBe(false);
+
+      await getHarness().act(async () => {
+        getReactProps(findTextarea(container))?.onChange?.({ target: { value: "typed after", style: { height: "" }, scrollHeight: 48 } });
+      });
+      await getHarness().act(async () => {
+        getReactProps(findButtonByAriaLabel(container, "Send message").parentNode)?.onClick?.();
+      });
+      expect(onSend).toHaveBeenCalledWith("typed after", undefined, "interactive");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("auto-sends a recording started while the chat was still loading once loading has finished", async () => {
