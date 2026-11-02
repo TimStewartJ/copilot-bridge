@@ -10,13 +10,18 @@ function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): numb
   return a.kind === "ongoing" ? -1 : 1;
 }
 
-/** Sort tasks by status priority then by order, with ongoing tasks floating to top within each status tier. */
+/**
+ * Sort tasks by status priority then by order. Active ongoing tasks float to the top; archived
+ * tasks keep their stored order, which is newest archived first.
+ */
 export function sortTasksByStatusAndOrder(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
     const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (statusDiff !== 0) return statusDiff;
-    const kindDiff = compareOngoingFirst(a, b);
-    if (kindDiff !== 0) return kindDiff;
+    if (a.status === "active") {
+      const kindDiff = compareOngoingFirst(a, b);
+      if (kindDiff !== 0) return kindDiff;
+    }
     return a.order - b.order;
   });
 }

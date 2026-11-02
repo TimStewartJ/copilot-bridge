@@ -75,10 +75,11 @@ function createGroupHelper(overrides: Partial<TaskGroup> = {}): TaskGroup {
 }
 
 describe("task helpers", () => {
-  it("sorts ongoing tasks above normal tasks within each status", () => {
+  it("floats active ongoing tasks to the top but keeps archived tasks in archive order", () => {
     const tasks = [
       createTaskHelper({ id: "normal-old", order: 0 }),
       createTaskHelper({ id: "ongoing-newer", kind: "ongoing", order: 4 }),
+      createTaskHelper({ id: "archived-ongoing", kind: "ongoing", status: "archived", order: 1 }),
       createTaskHelper({ id: "archived-normal", status: "archived", order: 0 }),
       createTaskHelper({ id: "normal-new", order: 1 }),
     ];
@@ -88,6 +89,7 @@ describe("task helpers", () => {
       "normal-old",
       "normal-new",
       "archived-normal",
+      "archived-ongoing",
     ]);
   });
 
