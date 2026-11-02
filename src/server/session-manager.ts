@@ -202,6 +202,7 @@ import { resumeSessionWithTimeout, SESSION_RESUME_TIMEOUT_MS } from "./session-r
 export type { McpServerStatus, StartWorkOptions } from "./session-runner.js";
 import {
   deriveModelStateFromEventsFileAsync,
+  turnOrModelChangeSince,
 } from "./session-events-model.js";
 import {
   createVisibleActivityTracker,
@@ -4268,17 +4269,42 @@ export class SessionManager {
     );
   }
 
-  private cacheResumedSession(
+  private async cacheResumedSession(
     sessionId: string,
     session: AgentSession,
     sessionConfig?: PromptFingerprintConfig,
   ): Promise<AgentSession> {
-    return this.cacheSession(sessionId, session, sessionConfig).then((cachedSession) => {
-      if (cachedSession === session) {
-        this.maybeAutoNameSession(sessionId, { session });
-      }
-      return cachedSession;
-    });
+    const cachedSession = await this.cacheSession(sessionId, session, sessionConfig);
+    if (cachedSession === session) {
+      await this.restoreUnclaimedLevel(sessionId, session);
+      this.maybeAutoNameSession(sessionId, { session });
+    }
+    return cachedSession;
+  }
+
+  /**
+   * A routed model (Copilot Fusion) holds a level change until the chat's next user turn and keeps
+   * it only in memory, so a chat closed or restarted before that turn resumes on its old level.
+   * Stages the level the Bridge last chose again when the chat has had no turn and no model change
+   * since that choice. Never fails the resume.
+   */
+  private async restoreUnclaimedLevel(sessionId: string, session: AgentSession): Promise<void> {
+    const chosen = this.readPersistedSessionModelState(sessionId);
+    const chosenAt = chosen.updatedAt ? Date.parse(chosen.updatedAt) : Number.NaN;
+    if (!chosen.model || !chosen.reasoningEffort || !Number.isFinite(chosenAt)) return;
+    const sid = sessionId.slice(0, 8);
+    try {
+      const modelMetadata = this.modelMetadata ?? (this.backend ? await this.loadModelMetadataForRuntime(this.backend) : undefined);
+      const metadata = modelMetadata?.find((candidate) => candidate.id === chosen.model);
+      if (!modelUsesDynamicSelection(metadata) || !metadata?.supportedReasoningEfforts?.includes(chosen.reasoningEffort)) return;
+      const current = await session.getCurrentModel();
+      if (current?.modelId !== chosen.model || !current.reasoningEffort || current.reasoningEffort === chosen.reasoningEffort) return;
+      if (await turnOrModelChangeSince(this.getSessionEventsPath(sessionId), chosenAt) !== false) return;
+      await session.setReasoningEffort(chosen.reasoningEffort);
+      console.log(`[sdk] [${sid}] Restored level ${chosen.reasoningEffort}, which the runtime dropped before the chat's next turn (resumed on ${current.reasoningEffort})`);
+    } catch (error) {
+      console.warn(`[sdk] [${sid}] Could not restore the chat's level: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** A new session handle may come with a different Fusion context limit (`session-context-budget.ts`). */

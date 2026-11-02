@@ -5,6 +5,7 @@ import {
   deriveModelStateFromEventsContent,
   deriveModelStateFromEventsFile,
   deriveModelStateFromEventsFileAsync,
+  turnOrModelChangeSince,
 } from "../session-events-model.js";
 import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir } from "./helpers.js";
@@ -408,6 +409,69 @@ describe("SessionManager.getSessionModelState", () => {
   });
 });
 
+describe("SessionManager resuming a chat whose Fusion level was never claimed", () => {
+  const event = (type: string, timestamp: string, data: Record<string, unknown> = {}) =>
+    `${JSON.stringify({ type, data, timestamp })}\n`;
+  const lastChange = event("session.model_change", "2026-10-29T11:00:00.000Z", { newModel: "auto", autoTier: "hydrafusion-max" });
+  const closedAndResumed = event("session.shutdown", "2026-10-29T12:02:00.000Z")
+    + event("session.resume", "2026-10-29T12:02:05.000Z", { selectedModel: "auto", autoTierIdCompat: "hydrafusion-max" });
+
+  async function resume(name: string, options: {
+    events: string;
+    chosen?: { model: string; reasoningEffort: string };
+    current?: { modelId: string; reasoningEffort?: string };
+  }) {
+    const home = makeTestDir(name);
+    const sessionDir = join(home, "session-state", "chat");
+    writePersistedSessionModelState(sessionDir, {
+      ...(options.chosen ?? { model: "auto", reasoningEffort: "hydrafusion" }),
+      updatedAt: "2026-10-29T12:00:00.000Z",
+    });
+    writeFileSync(join(sessionDir, "events.jsonl"), options.events);
+    const manager = createManager(home);
+    manager.modelMetadata = [
+      { id: "auto", selectionMode: "dynamic", supportedReasoningEfforts: ["balance", "hydrafusion", "hydrafusion-max"] },
+      { id: "claude-opus-5.5", supportedReasoningEfforts: ["medium", "high"] },
+    ];
+    const getCurrentModel = vi.fn().mockResolvedValue(options.current ?? { modelId: "auto", reasoningEffort: "hydrafusion-max" });
+    const setReasoningEffort = vi.fn().mockResolvedValue(undefined);
+    await manager.cacheResumedSession("chat", makeAgentSessionStub({ getCurrentModel, setReasoningEffort }));
+    return { getCurrentModel, setReasoningEffort };
+  }
+
+  it("stages the level the Bridge chose again when the chat closed before a turn claimed it", async () => {
+    const { setReasoningEffort } = await resume("level-unclaimed", { events: lastChange + closedAndResumed });
+    expect(setReasoningEffort).toHaveBeenCalledExactlyOnceWith("hydrafusion");
+  });
+
+  it("keeps the runtime's level once a turn or a model change followed the choice", async () => {
+    const turn = await resume("level-claimed-by-turn", {
+      events: lastChange + event("user.message", "2026-10-29T12:01:00.000Z") + closedAndResumed,
+    });
+    const change = await resume("level-changed-in-runtime", {
+      events: lastChange + event("session.model_change", "2026-10-29T12:01:00.000Z", { newModel: "auto", autoTier: "hydrafusion-max" })
+        + closedAndResumed,
+    });
+    expect(turn.setReasoningEffort).not.toHaveBeenCalled();
+    expect(change.setReasoningEffort).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the levels already match, the level is gone, or the model is not routed", async () => {
+    const events = lastChange + closedAndResumed;
+    const same = await resume("level-same", { events, current: { modelId: "auto", reasoningEffort: "hydrafusion" } });
+    const gone = await resume("level-gone", { events, chosen: { model: "auto", reasoningEffort: "retired-level" } });
+    const ordinary = await resume("level-ordinary", {
+      events,
+      chosen: { model: "claude-opus-5.5", reasoningEffort: "high" },
+      current: { modelId: "claude-opus-5.5", reasoningEffort: "medium" },
+    });
+    expect(same.setReasoningEffort).not.toHaveBeenCalled();
+    expect(gone.setReasoningEffort).not.toHaveBeenCalled();
+    expect(ordinary.getCurrentModel).not.toHaveBeenCalled();
+    expect(ordinary.setReasoningEffort).not.toHaveBeenCalled();
+  });
+});
+
 describe("SessionManager.getSessionUsageMetrics", () => {
   it("returns unavailable when the session is not live", async () => {
     const manager = createManager(makeTestDir("usage-metrics-unavailable"));
@@ -600,5 +664,51 @@ describe("deriveModelStateFromEventsFileAsync", () => {
     } finally {
       concat.mockRestore();
     }
+  });
+});
+
+describe("turnOrModelChangeSince", () => {
+  const at = (iso: string) => Date.parse(iso);
+  const event = (type: string, timestamp: string, extra: Record<string, unknown> = {}) =>
+    `${JSON.stringify({ type, data: {}, timestamp, ...extra })}\n`;
+  const write = (name: string, content: string) => {
+    const path = join(makeTestDir(name), "events.jsonl");
+    writeFileSync(path, content);
+    return path;
+  };
+  const chosenAt = at("2026-10-29T12:00:00.000Z");
+
+  it("is false when only shutdown and resume bookkeeping follow the choice", async () => {
+    const path = write("activity-since-none", event("session.model_change", "2026-10-29T11:00:00.000Z")
+      + event("user.message", "2026-10-29T11:30:00.000Z")
+      + event("session.shutdown", "2026-10-29T12:00:05.000Z")
+      + event("session.resume", "2026-10-29T12:00:07.000Z"));
+    await expect(turnOrModelChangeSince(path, chosenAt)).resolves.toBe(false);
+  });
+
+  it("is true once a user turn or a model change follows the choice, but not one a sub-agent logged", async () => {
+    const before = event("session.start", "2026-10-29T11:00:00.000Z");
+    await expect(turnOrModelChangeSince(write("activity-since-turn", before
+      + event("user.message", "2026-10-29T12:01:00.000Z")), chosenAt)).resolves.toBe(true);
+    await expect(turnOrModelChangeSince(write("activity-since-change", before
+      + event("session.model_change", "2026-10-29T12:01:00.000Z")), chosenAt)).resolves.toBe(true);
+    await expect(turnOrModelChangeSince(write("activity-since-subagent", before
+      + event("session.model_change", "2026-10-29T12:01:00.000Z", { agentId: "agent-1" })
+      + event("user.message", "2026-10-29T12:02:00.000Z", { agentId: "agent-1" })), chosenAt)).resolves.toBe(false);
+  });
+
+  it("reads only the end of a long log and is unknown when that end starts after the choice", async () => {
+    const filler = (from: string, count: number) => Array.from({ length: count }, () =>
+      JSON.stringify({ type: "internal.trace", data: { pad: "x".repeat(1_000) }, timestamp: from })).join("\n") + "\n";
+    const longAfter = write("activity-since-unknown", event("session.start", "2026-10-29T11:00:00.000Z")
+      + filler("2026-10-29T12:30:00.000Z", 2_000));
+    await expect(turnOrModelChangeSince(longAfter, chosenAt)).resolves.toBeUndefined();
+
+    const reachesBack = write("activity-since-reaches", filler("2026-10-29T11:30:00.000Z", 2_000)
+      + event("session.resume", "2026-10-29T12:05:00.000Z"));
+    await expect(turnOrModelChangeSince(reachesBack, chosenAt)).resolves.toBe(false);
+
+    const missing = join(makeTestDir("activity-since-missing"), "events.jsonl");
+    await expect(turnOrModelChangeSince(missing, chosenAt)).resolves.toBeUndefined();
   });
 });

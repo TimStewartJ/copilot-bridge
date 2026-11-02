@@ -21,6 +21,7 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
+import { isRecord } from "../shared/is-record.js";
 
 export interface DerivedModelState {
   model?: string;
@@ -242,6 +243,61 @@ export async function deriveModelStateFromEventsFileAsync(eventsPath: string): P
     return tailLines.reduce((state, line) => foldModelStateLine(state, line), beforeTail);
   } catch {
     return {};
+  } finally {
+    await file.close().catch(() => {});
+  }
+}
+
+/** Bytes from the end of the log that {@link turnOrModelChangeSince} reads. */
+const ACTIVITY_TAIL_BYTES = 1024 * 1024;
+const ACTIVITY_MARKER_BYTES = ['"user.message"', '"session.model_change"'].map((marker) => Buffer.from(marker));
+
+function eventTime(event: unknown): number {
+  const timestamp = isRecord(event) ? event.timestamp : undefined;
+  return typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
+}
+
+/**
+ * Whether the log records a user turn or a model change at or after `since` (epoch milliseconds).
+ * Reads only the end of the log, so the answer is undefined when no such event is there and that
+ * end does not reach back to `since`, or when the log cannot be read. Sub-agent events are ignored.
+ */
+export async function turnOrModelChangeSince(eventsPath: string, since: number): Promise<boolean | undefined> {
+  let file: FileHandle;
+  try {
+    file = await open(eventsPath, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const { size } = await file.stat();
+    const start = Math.max(0, size - ACTIVITY_TAIL_BYTES);
+    let reachesBack = start === 0;
+    let found = false;
+    let records = 0;
+    const visit = (record: Buffer) => {
+      records += 1;
+      // A window that starts mid-log starts mid-record; the next record shows how far back it reaches.
+      if (start > 0 && records === 1) return;
+      if (start > 0 && records === 2) {
+        try {
+          reachesBack = eventTime(JSON.parse(record.toString("utf-8"))) < since;
+        } catch { /* an unreadable record leaves the reach unknown */ }
+      }
+      if (found || !ACTIVITY_MARKER_BYTES.some((marker) => record.includes(marker))) return;
+      try {
+        const event: unknown = JSON.parse(record.toString("utf-8"));
+        found = isRecord(event)
+          && (event.type === "user.message" || event.type === "session.model_change")
+          && !isSubagentScopedEvent(event)
+          && eventTime(event) >= since;
+      } catch { /* skip malformed lines */ }
+    };
+    const scan = await scanJsonlRecords(file, visit, { start, end: size });
+    if (scan.trailing) visit(scan.trailing.record);
+    return found ? true : reachesBack ? false : undefined;
+  } catch {
+    return undefined;
   } finally {
     await file.close().catch(() => {});
   }

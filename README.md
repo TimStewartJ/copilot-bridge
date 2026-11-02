@@ -151,6 +151,10 @@ experiment that SDK hosts do not receive, so Bridge turns on the runtime's `DYNA
 `HYDRAFUSION_PLAN_V2` feature flags itself. Chats saved on the retired HydraFusion research preview move to
 Fusion High when they resume.
 
+The runtime holds a level change until the chat's next user turn and keeps it only in memory, so a chat closed or
+restarted before that turn resumes on its old level. On resume Bridge stages the level it last saved for the chat
+again, unless the chat's log shows a user turn or a model change since that choice.
+
 At High and Max, Fusion can have another model review a step's answer and replace it, so the session log keeps
 a turn's messages and tool calls only once the turn commits. While a turn runs, Bridge shows the runtime's
 progress reports as its status: which model is on which step and how many tools have run.
