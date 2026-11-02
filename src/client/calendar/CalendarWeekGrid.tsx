@@ -1,6 +1,7 @@
 // The week (or single-day) grid: an all-day row, a row that counts agent runs when their layer is
 // hidden, and 24 hours of timed items laid into lanes. Events can be dragged to another time or
-// day, and their bottom edge dragged to change when they end. Other dates open where they live.
+// day, and their bottom edge dragged to change when they end; imported events only open. Other
+// dates open where they live.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { CalendarItem, CalendarResponse } from "../../shared/calendar";
 import { DS, cx } from "../design/tokens";
@@ -15,6 +16,9 @@ const ALL_DAY_SHOWN = 3;
 const DRAG_THRESHOLD_PX = 4;
 /** On a touch screen an event is picked up by holding it, so a swipe still scrolls. */
 const TOUCH_HOLD_MS = 350;
+
+/** Imported events are read-only here: the next import would undo a move. */
+const movable = (item: CalendarItem) => item.kind === "event" && !item.externalId;
 
 export interface EventMove {
   item: CalendarItem;
@@ -167,7 +171,7 @@ export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpe
   }, [drag !== null, dayUnder, endDrag, onMoveEvent, onOpenItem]);
 
   const startDrag = (item: CalendarItem, mode: DragChange["mode"], day: string) => (event: ReactPointerEvent) => {
-    if (event.button !== 0 || item.kind !== "event" || !item.eventId) return;
+    if (event.button !== 0 || !movable(item) || !item.eventId) return;
     event.stopPropagation();
     const touch = event.pointerType === "touch";
     const next: Drag = {
@@ -219,12 +223,12 @@ export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpe
             <div key={day} className="min-w-0 space-y-0.5 border-l border-border-subtle p-1">
               {items.slice(0, hidden > 0 ? ALL_DAY_SHOWN - 1 : ALL_DAY_SHOWN).map((item) => (
                 <button key={item.id} type="button"
-                  onPointerDown={item.kind === "event" ? startDrag(item, "move", day) : undefined}
-                  onClick={item.kind === "event" ? undefined : () => onOpenItem(item)}
-                  onKeyDown={(event) => { if (item.kind === "event" && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onOpenItem(item); } }}
+                  onPointerDown={movable(item) ? startDrag(item, "move", day) : undefined}
+                  onClick={movable(item) ? undefined : () => onOpenItem(item)}
+                  onKeyDown={(event) => { if (movable(item) && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onOpenItem(item); } }}
                   title={`${itemTitle(item)}${item.taskTitle ? ` · ${item.taskTitle}` : ""}`}
                   className={cx(DS.focus, itemSurface(item), "flex w-full min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-left text-[11.5px] leading-4",
-                    item.kind === "event" && "cursor-grab touch-manipulation select-none", dragging === item.id && "opacity-80 ring-1 ring-text-secondary")}>
+                    movable(item) && "cursor-grab touch-manipulation select-none", dragging === item.id && "opacity-80 ring-1 ring-text-secondary")}>
                   <KindIcon kind={item.kind} size={11} />
                   <span className="truncate">{itemTitle(item)}</span>
                 </button>
@@ -288,22 +292,23 @@ function DayColumn({ day, items, isToday, now, columnRef, dragging, onOpenItem, 
       ))}
       {placed.map(({ item, span, lane }) => {
         const event = item.kind === "event";
+        const canMove = movable(item);
         const height = Math.max(event ? 22 : 20, ((span.end - span.start) / 60) * HOUR_PX - 2);
         const width = 100 / lane.lanes;
         // The end can be dragged only where the event ends, not on a day it merely runs through.
-        const endsHere = event && !!item.end && itemDayKeys({ ...item, start: item.end, end: item.end }, [day]).length > 0
+        const endsHere = canMove && !!item.end && itemDayKeys({ ...item, start: item.end, end: item.end }, [day]).length > 0
           && Date.parse(item.end) > Date.parse(item.start);
         return (
           <div key={item.id}
             className={cx(itemSurface(item), "group absolute overflow-hidden rounded-md text-[11.5px] leading-[1.3]",
-              event && "touch-manipulation select-none", dragging === item.id && "z-20 opacity-90 ring-1 ring-text-secondary")}
+              canMove && "touch-manipulation select-none", dragging === item.id && "z-20 opacity-90 ring-1 ring-text-secondary")}
             style={{ top: (span.start / 60) * HOUR_PX + 1, height, left: `calc(${lane.lane * width}% + 2px)`, width: `calc(${width}% - 4px)` }}>
             <button type="button"
-              onPointerDown={event ? startDrag(item, "move", day) : undefined}
-              onClick={event ? undefined : () => onOpenItem(item)}
-              onKeyDown={(keyEvent) => { if (event && (keyEvent.key === "Enter" || keyEvent.key === " ")) { keyEvent.preventDefault(); onOpenItem(item); } }}
+              onPointerDown={canMove ? startDrag(item, "move", day) : undefined}
+              onClick={canMove ? undefined : () => onOpenItem(item)}
+              onKeyDown={(keyEvent) => { if (canMove && (keyEvent.key === "Enter" || keyEvent.key === " ")) { keyEvent.preventDefault(); onOpenItem(item); } }}
               title={`${itemTime(item)} · ${itemTitle(item)}${item.taskTitle && item.kind !== "revisit" ? ` · ${item.taskTitle}` : ""}`}
-              className={cx(DS.focus, "block h-full w-full px-1.5 py-0.5 text-left", event && "cursor-grab")}>
+              className={cx(DS.focus, "block h-full w-full px-1.5 py-0.5 text-left", canMove && "cursor-grab")}>
               <span className="flex min-w-0 items-center gap-1">
                 <KindIcon kind={item.kind} size={11} />
                 <span className={cx("truncate", event && "font-medium")}>{itemTitle(item)}</span>

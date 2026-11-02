@@ -155,6 +155,26 @@ describe("fresh database schema", () => {
     reopened.close();
   });
 
+  it("adds the calendar externalId column and its unique index to existing events", () => {
+    const dataDir = makeTestDir("calendar-external-id-migration");
+    const legacy = openDatabase(dataDir);
+    legacy.exec(`
+      DROP INDEX idx_calendar_events_externalId;
+      ALTER TABLE calendar_events DROP COLUMN externalId;
+      INSERT INTO calendar_events(id,title,allDay,start,"end",timezone,createdAt,updatedAt)
+      VALUES('old-event','Dentist',0,'2031-05-05T16:00:00.000Z','2031-05-05T17:00:00.000Z','UTC','2026-01-01','2026-01-01');
+    `);
+    legacy.close();
+    const migrated = openDatabase(dataDir);
+    expect(migrated.prepare("SELECT id, externalId FROM calendar_events").get()).toEqual({ id: "old-event", externalId: null });
+    const insert = migrated.prepare(`INSERT INTO calendar_events(id,title,allDay,start,"end",timezone,createdAt,updatedAt,externalId)
+      VALUES(?,'Imported',0,'2031-05-06T16:00:00.000Z','2031-05-06T17:00:00.000Z','UTC','2026-01-01','2026-01-01',?)`);
+    insert.run("no-source", null);
+    insert.run("imported", "source:1");
+    expect(() => insert.run("duplicate", "source:1")).toThrow(/UNIQUE/);
+    migrated.close();
+  });
+
   it("adds the checkpoint column to an existing defer loop table", () => {
     const dataDir = makeTestDir("db-defer-checkpoint-migration");
     const legacy = new DatabaseSync(join(dataDir, "bridge.db"));

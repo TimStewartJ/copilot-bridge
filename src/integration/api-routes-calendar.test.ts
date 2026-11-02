@@ -60,4 +60,57 @@ describe("calendar API", () => {
     const names = getBridgeToolDefinitions(ctx).map((tool) => tool.name);
     for (const name of ["calendar_list", "calendar_event_create", "calendar_event_update", "calendar_event_delete"]) expect(names).toContain(name);
   });
+
+  it("imports events by externalId without duplicates, and deletes them in bulk", async () => {
+    const { app, ctx } = createTestApp();
+    const tools = new Map(getBridgeToolDefinitions(ctx).map((tool) => [tool.name, tool]));
+    const call = (name: string, args: Record<string, unknown>) => tools.get(name)!.handler(args, {}) as Promise<any>;
+    const task = ctx.taskStore.createTask("Trip", undefined, "task");
+    const imported = (n: number, overrides: Record<string, unknown> = {}) => ({
+      title: `Meeting ${n}`, start: `2031-05-0${n}T09:00:00-07:00`, timezone: ZONE, externalId: `source:${n}`, ...overrides,
+    });
+
+    const first = await call("calendar_event_create", { events: [imported(5), imported(6), { title: "Local", start: "2031-05-07T09:00:00-07:00", timezone: ZONE }] });
+    expect(first).toMatchObject({ success: true, created: 3, updated: 0, unchanged: 0 });
+    const [five, six, local] = first.results;
+    expect(five).toMatchObject({ externalId: "source:5", result: "created" });
+    expect(local.externalId).toBeUndefined();
+
+    // Linking an imported event to a task survives later imports that do not name one.
+    await call("calendar_event_update", { eventId: five.eventId, taskId: task.id });
+    const again = await call("calendar_event_create", { events: [imported(5), imported(6, { location: "Room 2" })] });
+    expect(again).toMatchObject({ created: 0, updated: 1, unchanged: 1 });
+    expect(again.results).toEqual([
+      { eventId: five.eventId, externalId: "source:5", result: "unchanged" },
+      { eventId: six.eventId, externalId: "source:6", result: "updated" },
+    ]);
+    expect(ctx.calendarStore!.getEvent(five.eventId)?.taskId).toBe(task.id);
+    expect(ctx.calendarStore!.getEvent(six.eventId)?.location).toBe("Room 2");
+    const repeat = await call("calendar_event_create", { events: [imported(5), imported(6, { location: "Room 2" })] });
+    expect(repeat).toMatchObject({ created: 0, updated: 0, unchanged: 2 });
+
+    // The single-event shape upserts too, and so does the REST route.
+    expect(await call("calendar_event_create", imported(6, { title: "Renamed" }))).toMatchObject({ result: "updated", event: { id: six.eventId, title: "Renamed" } });
+    const posted = await request(app).post("/api/calendar/events").send({ ...imported(6, { title: "Renamed" }), allDay: false });
+    expect(posted.status).toBe(200);
+    expect(posted.body).toMatchObject({ result: "unchanged", event: { id: six.eventId } });
+    expect(ctx.calendarStore!.listEvents()).toHaveLength(3);
+
+    // A batch is saved whole or not at all.
+    const rejected = await call("calendar_event_create", { events: [imported(8), imported(8)] });
+    expect(rejected.resultType).toBe("failure");
+    expect(rejected.textResultForLlm).toContain("events[1]");
+    expect((await call("calendar_event_create", { events: [imported(9), imported(8, { taskId: "missing-task" })] })).resultType).toBe("failure");
+    expect(ctx.calendarStore!.listEvents()).toHaveLength(3);
+    expect((await call("calendar_event_update", { eventId: local.eventId, externalId: "source:5" })).resultType).toBe("failure");
+
+    const listed = await call("calendar_list", { from: "2031-05-05", to: "2031-05-11", timezone: ZONE });
+    expect(listed.items.filter((item: { kind: string }) => item.kind === "event").map((item: { eventId: string; externalId?: string }) => [item.eventId, item.externalId]))
+      .toEqual([[five.eventId, "source:5"], [six.eventId, "source:6"], [local.eventId, undefined]]);
+
+    expect(await call("calendar_event_delete", { eventIds: [five.eventId, "missing", six.eventId] }))
+      .toEqual({ success: true, deleted: [five.eventId, six.eventId], notFound: ["missing"] });
+    expect(ctx.calendarStore!.listEvents().map((event) => event.id)).toEqual([local.eventId]);
+    expect((await call("calendar_event_delete", { eventId: "missing" })).resultType).toBe("failure");
+  });
 });

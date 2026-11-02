@@ -101,6 +101,7 @@ function expandEvent(event: CalendarEvent, window: Window, taskTitle: (id: strin
     title: event.title,
     allDay: event.allDay,
     eventId: event.id,
+    ...(event.externalId ? { externalId: event.externalId } : {}),
     ...(event.taskId ? { taskId: event.taskId, taskTitle: taskTitle(event.taskId) } : {}),
     ...(event.location ? { location: event.location } : {}),
     ...(event.repeat ? { repeating: true } : {}),

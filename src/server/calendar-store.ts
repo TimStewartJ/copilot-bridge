@@ -3,10 +3,13 @@
 // lays them beside these events.
 
 import type { DatabaseSync } from "./db.js";
+import { runImmediateTransaction } from "./db-transaction.js";
 import type { GlobalBus } from "./global-bus.js";
 import { isRecord } from "../shared/is-record.js";
 import {
   CALENDAR_MAX_ALL_DAY_SPAN_DAYS,
+  CALENDAR_MAX_BATCH,
+  CALENDAR_MAX_EXTERNAL_ID,
   CALENDAR_MAX_LOCATION,
   CALENDAR_MAX_NOTES,
   CALENDAR_MAX_TIMED_SPAN_MS,
@@ -38,13 +41,33 @@ export class CalendarNotFoundError extends Error {
   }
 }
 
-const EDITABLE_FIELDS = ["title", "allDay", "start", "end", "timezone", "repeat", "location", "notes", "taskId"] as const;
+const EDITABLE_FIELDS = ["title", "allDay", "start", "end", "timezone", "repeat", "location", "notes", "taskId", "externalId"] as const;
 const REPEAT_EVERY = new Set(["day", "week", "month", "year"]);
 
 type EventFields = Omit<CalendarEvent, "id" | "createdBy" | "createdAt" | "updatedAt">;
 
+export type CalendarSaveResult = "created" | "updated" | "unchanged";
+
+export interface SavedCalendarEvent {
+  result: CalendarSaveResult;
+  event: CalendarEvent;
+}
+
 function fail(message: string): never {
   throw new CalendarValidationError(message);
+}
+
+function optionalExternalId(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") fail("externalId must be a string or null");
+  if (value.length > CALENDAR_MAX_EXTERNAL_ID) fail(`externalId must be at most ${CALENDAR_MAX_EXTERNAL_ID} characters`);
+  return value;
+}
+
+function checkBatchSize(list: unknown, what: string): unknown[] {
+  if (!Array.isArray(list)) fail(`${what} must be a list`);
+  if (list.length > CALENDAR_MAX_BATCH) fail(`At most ${CALENDAR_MAX_BATCH} ${what} per call`);
+  return list;
 }
 
 function optionalText(value: unknown, field: string, max: number): string | undefined {
@@ -101,6 +124,7 @@ function validateFields(input: Record<string, unknown>): EventFields {
   }
   const taskId = input.taskId === undefined || input.taskId === null || input.taskId === "" ? undefined : input.taskId;
   if (taskId !== undefined && typeof taskId !== "string") fail("taskId must be a string or null");
+  const externalId = optionalExternalId(input.externalId);
   return {
     title,
     allDay: input.allDay,
@@ -111,7 +135,17 @@ function validateFields(input: Record<string, unknown>): EventFields {
     ...(optionalText(input.location, "location", CALENDAR_MAX_LOCATION) ? { location: optionalText(input.location, "location", CALENDAR_MAX_LOCATION) } : {}),
     ...(optionalText(input.notes, "notes", CALENDAR_MAX_NOTES) ? { notes: optionalText(input.notes, "notes", CALENDAR_MAX_NOTES) } : {}),
     ...(taskId ? { taskId } : {}),
+    ...(externalId ? { externalId } : {}),
   };
+}
+
+/** The stored columns of an event, in the order write() binds them. */
+function columnValues(fields: EventFields): Array<string | number | null> {
+  return [
+    fields.title, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timezone,
+    fields.repeat?.every ?? null, fields.repeat?.interval ?? null, fields.repeat?.until ?? null,
+    fields.location ?? null, fields.notes ?? null, fields.taskId ?? null, fields.externalId ?? null,
+  ];
 }
 
 function rejectUnknown(body: Record<string, unknown>): void {
@@ -137,6 +171,7 @@ function rowToEvent(row: Record<string, unknown>): CalendarEvent {
     ...(row.location ? { location: String(row.location) } : {}),
     ...(row.notes ? { notes: String(row.notes) } : {}),
     ...(row.taskId ? { taskId: String(row.taskId) } : {}),
+    ...(row.externalId ? { externalId: String(row.externalId) } : {}),
     createdBy: row.createdBy === "agent" ? "agent" : "user",
     createdAt: String(row.createdAt),
     updatedAt: String(row.updatedAt),
@@ -154,23 +189,24 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
   }
 
   function write(id: string, fields: EventFields, createdBy: CalendarEvent["createdBy"], createdAt: string, now: string, insert: boolean): void {
-    const values = [
-      fields.title, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timezone,
-      fields.repeat?.every ?? null, fields.repeat?.interval ?? null, fields.repeat?.until ?? null,
-      fields.location ?? null, fields.notes ?? null, fields.taskId ?? null,
-    ];
+    const values = columnValues(fields);
     if (insert) {
       db.prepare(`INSERT INTO calendar_events (title, allDay, start, "end", timezone, repeatEvery, repeatInterval, repeatUntil,
-        location, notes, taskId, id, createdBy, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        location, notes, taskId, externalId, id, createdBy, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(...values, id, createdBy, createdAt, now);
     } else {
       db.prepare(`UPDATE calendar_events SET title = ?, allDay = ?, start = ?, "end" = ?, timezone = ?, repeatEvery = ?, repeatInterval = ?,
-        repeatUntil = ?, location = ?, notes = ?, taskId = ?, updatedAt = ? WHERE id = ?`).run(...values, now, id);
+        repeatUntil = ?, location = ?, notes = ?, taskId = ?, externalId = ?, updatedAt = ? WHERE id = ?`).run(...values, now, id);
     }
   }
 
   function getEvent(id: string): CalendarEvent | undefined {
     const row = db.prepare("SELECT * FROM calendar_events WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? rowToEvent(row) : undefined;
+  }
+
+  function getEventByExternalId(externalId: string): CalendarEvent | undefined {
+    const row = db.prepare("SELECT * FROM calendar_events WHERE externalId = ?").get(externalId) as Record<string, unknown> | undefined;
     return row ? rowToEvent(row) : undefined;
   }
 
@@ -181,16 +217,51 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     return (rows as Array<Record<string, unknown>>).map(rowToEvent);
   }
 
-  function createEvent(body: unknown, createdBy: CalendarEvent["createdBy"] = "user"): CalendarEvent {
-    if (!isRecord(body)) fail("Request body must be an object");
-    rejectUnknown(body);
-    const fields = validateFields(body);
-    ensureTask(fields.taskId);
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    write(id, fields, createdBy, now, now, true);
-    emitChange();
-    return getEvent(id)!;
+  /**
+   * Adds events, all or none. An event whose externalId already exists updates that event in place:
+   * the body replaces its fields, except that it keeps its task when the body names none.
+   */
+  function saveEvents(bodies: unknown, createdBy: CalendarEvent["createdBy"] = "user"): SavedCalendarEvent[] {
+    const list = checkBatchSize(bodies, "events");
+    const label = (index: number) => list.length > 1 ? `events[${index}]: ` : "";
+    const seen = new Set<string>();
+    const parsed = list.map((body, index) => {
+      try {
+        if (!isRecord(body)) fail("Request body must be an object");
+        rejectUnknown(body);
+        const fields = validateFields(body);
+        if (fields.externalId) {
+          if (seen.has(fields.externalId)) fail(`externalId ${fields.externalId} appears more than once`);
+          seen.add(fields.externalId);
+        }
+        return { fields, keepTask: body.taskId === undefined };
+      } catch (error) {
+        if (error instanceof CalendarValidationError) throw new CalendarValidationError(`${label(index)}${error.message}`);
+        throw error;
+      }
+    });
+    const saved = runImmediateTransaction(db, () => parsed.map(({ fields, keepTask }, index): SavedCalendarEvent => {
+      const existing = fields.externalId ? getEventByExternalId(fields.externalId) : undefined;
+      const next: EventFields = existing && keepTask && existing.taskId ? { ...fields, taskId: existing.taskId } : fields;
+      try {
+        ensureTask(next.taskId);
+      } catch (error) {
+        if (error instanceof CalendarNotFoundError) throw new CalendarNotFoundError(`${label(index)}${error.message}`);
+        throw error;
+      }
+      const now = new Date().toISOString();
+      if (!existing) {
+        const id = crypto.randomUUID();
+        write(id, next, createdBy, now, now, true);
+        return { result: "created", event: getEvent(id)! };
+      }
+      const before = columnValues(existing);
+      if (columnValues(next).every((value, i) => value === before[i])) return { result: "unchanged", event: existing };
+      write(existing.id, next, existing.createdBy, existing.createdAt, now, false);
+      return { result: "updated", event: getEvent(existing.id)! };
+    }));
+    if (saved.some((entry) => entry.result !== "unchanged")) emitChange();
+    return saved;
   }
 
   /** Changes the whole event (every repeat). A field set to null is cleared; the result is checked whole. */
@@ -207,6 +278,7 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     }
     const fields = validateFields(merged);
     ensureTask(fields.taskId);
+    if (fields.externalId && getEventByExternalId(fields.externalId)?.id !== id) fail(`Another event already has externalId ${fields.externalId}`);
     write(id, fields, existing.createdBy, existing.createdAt, new Date().toISOString(), false);
     emitChange();
     return getEvent(id)!;
@@ -218,7 +290,22 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     emitChange();
   }
 
-  return { getEvent, listEvents, createEvent, updateEvent, deleteEvent };
+  /** Deletes the listed events, all in one go, and says which IDs had no event. */
+  function deleteEvents(ids: unknown): { deleted: string[]; notFound: string[] } {
+    const list = checkBatchSize(ids, "eventIds");
+    if (list.some((id) => typeof id !== "string" || !id)) fail("eventIds must be non-empty strings");
+    const unique = [...new Set(list as string[])];
+    const deleted: string[] = [];
+    const notFound: string[] = [];
+    runImmediateTransaction(db, () => {
+      const statement = db.prepare("DELETE FROM calendar_events WHERE id = ?");
+      for (const id of unique) (Number(statement.run(id).changes) > 0 ? deleted : notFound).push(id);
+    });
+    if (deleted.length) emitChange();
+    return { deleted, notFound };
+  }
+
+  return { getEvent, listEvents, saveEvents, updateEvent, deleteEvent, deleteEvents };
 }
 
 export type CalendarStore = ReturnType<typeof createCalendarStore>;

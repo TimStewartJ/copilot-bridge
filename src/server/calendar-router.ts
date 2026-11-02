@@ -55,7 +55,11 @@ export function registerCalendarRoutes(router: Router, ctx: CalendarContext): vo
     res.json({ event });
   });
   router.post("/calendar/events", (req, res) => {
-    try { res.status(201).json({ event: ctx.calendarStore.createEvent(req.body, "user") }); } catch (error) { sendError(res, error); }
+    try {
+      // An externalId that already exists updates that event instead of adding one.
+      const [saved] = ctx.calendarStore.saveEvents([req.body], "user");
+      res.status(saved.result === "created" ? 201 : 200).json({ event: saved.event, result: saved.result });
+    } catch (error) { sendError(res, error); }
   });
   router.patch("/calendar/events/:id", (req, res) => {
     try { res.json({ event: ctx.calendarStore.updateEvent(req.params.id, req.body) }); } catch (error) { sendError(res, error); }

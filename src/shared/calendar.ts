@@ -26,6 +26,11 @@ export interface CalendarEvent {
   location?: string;
   notes?: string;
   taskId?: string;
+  /**
+   * The event's ID in a calendar it was imported from. Opaque to the Bridge and unique: saving an
+   * event with an externalId that already exists updates that event instead of adding another.
+   */
+  externalId?: string;
   createdBy: "user" | "agent";
   createdAt: string;
   updatedAt: string;
@@ -47,6 +52,8 @@ export interface CalendarItem {
   taskId?: string;
   taskTitle?: string;
   eventId?: string;
+  /** An imported event's ID in its source calendar. */
+  externalId?: string;
   checklistItemId?: string;
   scheduleId?: string;
   location?: string;
@@ -80,6 +87,9 @@ export const CALENDAR_MAX_WINDOW_DAYS = 62;
 export const CALENDAR_MAX_TITLE = 200;
 export const CALENDAR_MAX_LOCATION = 300;
 export const CALENDAR_MAX_NOTES = 4000;
+export const CALENDAR_MAX_EXTERNAL_ID = 512;
+/** Most events one call may save or delete. */
+export const CALENDAR_MAX_BATCH = 500;
 export const CALENDAR_MAX_TIMED_SPAN_MS = 14 * 86_400_000;
 export const CALENDAR_MAX_ALL_DAY_SPAN_DAYS = 366;
 
