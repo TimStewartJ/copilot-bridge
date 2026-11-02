@@ -73,16 +73,6 @@ export function deriveTaskState(input: TaskStateInput, now: number = Date.now())
 
 export const TASK_STATE_ORDER: TaskState[] = ["needs_you", "in_motion", "waiting", "up_next", "no_next_step", "gone_quiet", "set_aside"];
 
-export const TASK_STATE_LABELS: Record<TaskState, string> = {
-  needs_you: "Needs you",
-  in_motion: "In motion",
-  waiting: "Waiting",
-  up_next: "Up next",
-  no_next_step: "No next step",
-  gone_quiet: "Gone quiet",
-  set_aside: "Set aside",
-};
-
 /** The latest of several optional ISO timestamps. */
 export function latestTime(...values: Array<string | undefined | null>): string | undefined {
   let best: number | undefined;

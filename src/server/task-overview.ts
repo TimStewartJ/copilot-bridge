@@ -131,7 +131,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     return {
       id: task.id, title: task.title, kind: task.kind, muted: task.muted, deferred: task.deferred, order: task.order,
       ...(task.completedAt ? { completedAt: task.completedAt } : {}),
-      ...(group ? { groupId: group.id, groupName: group.name, groupColor: group.color, groupOrder: group.order } : {}),
+      ...(group ? { groupId: group.id, groupName: group.name, groupColor: group.color } : {}),
       ...(task.nextAction ? { nextAction: task.nextAction } : {}), ...(task.waitingOn ? { waitingOn: task.waitingOn } : {}),
       ...(task.nextTouchAt ? { nextTouchAt: task.nextTouchAt } : {}),
       ...derived, ...(lastEngagedAt ? { lastEngagedAt } : {}), ...(lastTouchKind ? { lastTouchKind } : {}),

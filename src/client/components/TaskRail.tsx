@@ -3,7 +3,7 @@ import { type Task, type TaskGroup, type Session, type TaskPatch } from "../api"
 import { GROUP_COLORS } from "../group-colors";
 import { IDENTITY_FILL, identityColor } from "../design/identity";
 import { timeAgo } from "../time";
-import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel, Layers, EyeOff } from "lucide-react";
+import { Sparkles, MessageSquare, Plus, Settings, PanelLeftClose, PanelLeftOpen, Archive, ChevronDown, ChevronRight, FolderOpen, Palette, Pencil, FolderMinus, ArrowUp, ArrowDown, BookOpen, LayoutDashboard, Tag, FileText, ListTodo, Trash2, Pin, Search, ShipWheel, EyeOff } from "lucide-react";
 import TagPicker from "./TagPicker";
 import { TagPillList } from "./TagPill";
 import ContextMenu, { CtxItem, CtxDivider } from "./ContextMenu";
@@ -43,8 +43,6 @@ interface TaskRailProps {
   onNewTask: (groupId?: string) => void;
   isQuickChatsActive: boolean;
   onGoHome: () => void;
-  onOpenAllTasks?: () => void;
-  isAllTasksActive?: boolean;
   onOpenSettings: () => void;
   onOpenDocs: () => void;
   onOpenHelm?: () => void;
@@ -124,8 +122,6 @@ export default function TaskRail({
   onNewTask,
   isQuickChatsActive,
   onGoHome,
-  onOpenAllTasks,
-  isAllTasksActive = false,
   onOpenSettings,
   onOpenDocs,
   onOpenHelm,
@@ -506,18 +502,6 @@ export default function TaskRail({
               </span>
             )}
           </button>
-          {onOpenAllTasks && (
-            <button
-              type="button"
-              onClick={onOpenAllTasks}
-              title="All tasks"
-              aria-label="All tasks"
-              aria-current={isAllTasksActive ? "page" : undefined}
-              className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isAllTasksActive)}`}
-            >
-              <Layers size={18} />
-            </button>
-          )}
           <button
             type="button"
             onClick={() => {
@@ -971,19 +955,6 @@ export default function TaskRail({
         </button>
       </div>
 
-      {onOpenAllTasks && (
-        <div className="px-2 pb-1">
-          <button
-            type="button"
-            onClick={onOpenAllTasks}
-            aria-current={isAllTasksActive ? "page" : undefined}
-            className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isAllTasksActive)}`}
-          >
-            <Layers size={14} />
-            All tasks
-          </button>
-        </div>
-      )}
 
       {/* Docs */}
       <div className="px-2 pb-1">

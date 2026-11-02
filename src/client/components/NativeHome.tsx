@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, MessageCircle, Pin, RefreshCw } from "lucide-react";
 import { fetchHome, fetchHomeInput, submitElicitationResponse, submitUserInputResponse } from "../api";
 import type { HomeInputSummary, HomePage, HomeSection } from "../../shared/home";
@@ -62,7 +62,6 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
   const answerable = !!selectedInput && !!input && !inputQuery.error;
   const quietForReview = useMemo(() => (overview.data?.tasks ?? []).filter(row => row.state === "gone_quiet")
     .sort((a, b) => (a.lastEngagedAt ? Date.parse(a.lastEngagedAt) : 0) - (b.lastEngagedAt ? Date.parse(b.lastEngagedAt) : 0)), [overview.data]);
-  if (requested === "tasks") return <Navigate to="/dashboard/tasks" replace />;
   function visit(target: HomeSection, targetOffset = 0) {
     const params = new URLSearchParams(search);
     params.set("section", target); params.set("offset", String(targetOffset));
@@ -117,8 +116,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
     })}
     {!needsCount && !data.inputErrors.length && <EmptyHint>{data.inputs.total === null ? "Question status unavailable." : "Nothing needs you right now."}</EmptyHint>}
   </Section>;
-  const pickUp = data && <Section label="Pick up where you left off" level="page" surface
-    action={<Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/tasks")}>All tasks <ArrowRight size={14} /></Button>}>
+  const pickUp = data && <Section label="Pick up where you left off" level="page" surface>
     {resume.map(row => {
       const badge = stateBadge(row), context = contextLine(row);
       return <div key={row.id} className="flex min-w-0 items-center gap-3 border-t border-border py-2.5 first:border-t-0">
@@ -134,7 +132,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
         <Button size="sm" variant="ghost" onClick={() => resumeRow(row)}>Resume <ChevronRight size={14} /></Button>
       </div>;
     })}
-    {!resume.length && <EmptyHint>Nothing in motion this week. <button className={cx(DS.focus, "underline")} onClick={() => navigate("/dashboard/tasks")}>See all tasks</button></EmptyHint>}
+    {!resume.length && <EmptyHint>Nothing in motion this week.</EmptyHint>}
   </Section>;
   const quietTotal = quiet.total ?? 0;
   const worthALook = data && quietTotal > 0 && <Section label="Worth a look" count={`${quiet.items.length} of ${quietTotal}`} surface

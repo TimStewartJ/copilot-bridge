@@ -4,7 +4,7 @@ import type { TaskActivity } from "./task-attention.js";
 /** What Tim last did to a task. Opening it or reading a conversation deliberately does not count. */
 export type TaskTouchKind = "edited" | "message" | "created";
 
-/** One active task with its derived state, for Home, All tasks and the sidebar. */
+/** One active task with its derived state, for Home and the sidebar. */
 export interface TaskOverviewRow {
   id: string;
   title: string;
@@ -12,7 +12,6 @@ export interface TaskOverviewRow {
   groupId?: string;
   groupName?: string;
   groupColor?: string;
-  groupOrder?: number;
   muted: boolean;
   deferred: boolean;
   completedAt?: string;

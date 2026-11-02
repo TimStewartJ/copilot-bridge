@@ -121,7 +121,7 @@ Two states that hold at once are drawn as one glyph built from both, as `unread-
 two marks side by side and not as a pulsing dot: a pulse is lost under reduced motion, and it reads
 as urgency when it means that more is still coming.
 
-Task navigation, the phone task list, All tasks and task headers show attention rather than routine
+Task navigation, the phone task list and task headers show attention rather than routine
 activity. A question gets `needs-input` and "Needs you"; unread information gets "New replies", drawn
 as `unread`, or as `unread-working` while a turn is running. A known lack of continuation gets `review` and
 "Needs a look" ("Review" in narrow rows); a saved wait with no revisit date and nothing checking on it

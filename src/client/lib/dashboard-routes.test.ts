@@ -5,7 +5,6 @@ import {
   getDashboardTabId,
   getDashboardTabPath,
   getRememberedDashboardPath,
-  isAllTasksPath,
   isDashboardRoutePath,
 } from "./dashboard-routes";
 
@@ -32,11 +31,5 @@ describe("dashboard focus routes", () => {
     expect(getDashboardTabFromPathname("/dashboard/work-map")).toBe("work-map");
     expect(getDashboardTabId("work-map")).toBe("dashboard-work-map-tab");
     expect(getDashboardPanelId("work-map")).toBe("dashboard-work-map-panel");
-  });
-  it("recognises the All tasks view apart from Home", () => {
-    expect(isAllTasksPath("/dashboard/tasks")).toBe(true);
-    expect(isAllTasksPath("/dashboard/tasks/")).toBe(true);
-    expect(isAllTasksPath("/dashboard")).toBe(false);
-    expect(isAllTasksPath("/tasks")).toBe(false);
   });
 });

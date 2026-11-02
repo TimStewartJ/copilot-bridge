@@ -36,12 +36,6 @@ describe("getMobileRouteMeta", () => {
     expect(getMobileRouteMeta("/docs/recipes", "?db")).toMatchObject({ route: "docs-detail", showSharedHeader: false, docPath: "recipes" });
   });
 
-  it("opens All tasks as part of Home, leaving the Work tab's task list as it is on desktop", () => {
-    expect(getMobileRouteMeta("/dashboard/tasks")).toMatchObject({ route: "dashboard", activeTab: "home", workSegment: null });
-    expect(getMobileRouteMeta("/dashboard/tasks/")).toMatchObject({ route: "dashboard", activeTab: "home" });
-    expect(getMobileRouteMeta("/")).toMatchObject({ route: "task-list", activeTab: "work", workSegment: "tasks" });
-  });
-
   it("puts the task list and the quick chats under one Work tab, told apart by segment", () => {
     expect(getMobileRouteMeta("/")).toMatchObject({ route: "task-list", activeTab: "work", workSegment: "tasks", isRoot: true });
     expect(getMobileRouteMeta("/chats")).toMatchObject({ route: "chat-list", activeTab: "work", workSegment: "chats", isRoot: true });

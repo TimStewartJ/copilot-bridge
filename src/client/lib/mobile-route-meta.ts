@@ -1,5 +1,5 @@
 import { matchPath } from "react-router-dom";
-import { isAllTasksPath, isDashboardRoutePath } from "./dashboard-routes";
+import { isDashboardRoutePath } from "./dashboard-routes";
 
 export type MobileNavTab = "home" | "work" | "helm" | "docs" | "settings";
 
@@ -97,8 +97,7 @@ function buildMeta(overrides: Partial<MobileRouteMeta> & Pick<MobileRouteMeta, "
 export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMeta {
   const normalizedPath = normalizePathname(pathname);
 
-  // All tasks is a view Home opens; the Work tab keeps the ordinary task list, as on desktop.
-  if (isDashboardRoutePath(normalizedPath) || isAllTasksPath(normalizedPath)) {
+  if (isDashboardRoutePath(normalizedPath)) {
     return buildMeta({
       route: "dashboard",
       activeTab: "home",

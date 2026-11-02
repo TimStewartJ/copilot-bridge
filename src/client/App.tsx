@@ -54,7 +54,7 @@ import {
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
 import { looksUntouched } from "./lib/untouched-task";
-import { ALL_TASKS_PATH, getRememberedDashboardPath, isAllTasksPath, isDashboardRoutePath } from "./lib/dashboard-routes";
+import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { haptic } from "./lib/haptics";
 import { getMobileRouteMeta, resolveMobileWorkTabTarget, type MobileNavTab, type MobileWorkSegment } from "./lib/mobile-route-meta";
 import { createBridgeMobileScrollRestoreState, getMobileScrollRestorationPolicy } from "./lib/mobile-scroll-restoration";
@@ -956,7 +956,6 @@ function AppShell() {
 
   const isDocsActive = mobileRouteMeta.activeTab === "docs";
   const isDashboardActive = location.pathname === "/" || isDashboardRoutePath(location.pathname);
-  const isAllTasksActive = isAllTasksPath(location.pathname);
 
   // ── Mobile bottom nav state ──────────────────────────────────
   const mobileActiveTab = mobileRouteMeta.activeTab;
@@ -1848,8 +1847,6 @@ function AppShell() {
         onNewTask={handleNewTask}
         isQuickChatsActive={quickChatsMode && !activeTaskId}
         onGoHome={handleOpenDashboard}
-        onOpenAllTasks={() => navigate(ALL_TASKS_PATH)}
-        isAllTasksActive={isAllTasksActive}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
         onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
@@ -2045,7 +2042,6 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
-                  taskIndicators={navTaskIndicators}
                   helmTalk={helmTalk}
                 />
               }
@@ -2064,23 +2060,7 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
-                  taskIndicators={navTaskIndicators}
                   helmTalk={helmTalk}
-                  scrollRestoration={mobileDashboardScrollRestoration}
-                />
-              }
-            />
-            <Route
-              path="dashboard/tasks"
-              element={
-                <Dashboard
-                  onSelectTask={handleSelectTask}
-                  onCreateTaskForWorkItems={handleCreateTaskForWorkItems}
-                  onSelectSession={navigateToSession}
-                  onStartPromptSession={handleStartPromptSession}
-                  tasks={tasks}
-                  taskGroups={taskGroups}
-                  taskIndicators={navTaskIndicators}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -2105,7 +2085,6 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
-                  taskIndicators={navTaskIndicators}
                   scrollRestoration={mobileDashboardScrollRestoration}
                 />
               }
@@ -2302,7 +2281,6 @@ function AppShell() {
                   onStartPromptSession={handleStartPromptSession}
                   tasks={tasks}
                   taskGroups={taskGroups}
-                  taskIndicators={navTaskIndicators}
                   helmTalk={helmTalk}
                 />
               }

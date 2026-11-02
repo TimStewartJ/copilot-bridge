@@ -163,11 +163,9 @@ describe("TaskRail navigation attention", () => {
     expect(className(content)).toMatch(/(^|\s)(p|py)-\S/);
   });
 
-  it("offers All tasks as navigation and keeps set-aside tasks out of the working list", async () => {
-    const onOpenAllTasks = vi.fn();
+  it("keeps set-aside tasks out of the working list", async () => {
     await renderRail({
       expanded: true,
-      onOpenAllTasks,
       tasks: [
         createTask(),
         createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1 }),
@@ -178,11 +176,6 @@ describe("TaskRail navigation attention", () => {
     expect(text()).toContain("Current work");
     expect(text()).not.toContain("Parked idea");
     expect(text()).toContain("Set aside (2)");
-
-    const allTasks = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.trim() === "All tasks");
-    expect(allTasks).toBeDefined();
-    await harness!.act(async () => { getReactProps(allTasks)!.onClick(); });
-    expect(onOpenAllTasks).toHaveBeenCalledOnce();
 
     const toggle = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.includes("Set aside (2)"));
     await harness!.act(async () => { getReactProps(toggle)!.onClick(); await waitTick(); });
