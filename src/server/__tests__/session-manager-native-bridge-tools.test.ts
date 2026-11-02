@@ -8,7 +8,7 @@ import { defineBridgeTool } from "../agent-tools-mcp/adapter.js";
 import { createTestBus, makeAgentSessionStub, makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 
 const EXTRA_MCP_SERVER_NAME = "extra-tools";
-const DEFAULT_NATIVE_TOOLS = [{ name: "global_bridge_tool" }, { name: "session_bridge_tool" }];
+const DEFAULT_NATIVE_TOOLS = [{ name: "global_bridge_tool" }, { name: "session_bridge_tool" }, { name: "tag_list", defer: "auto" }];
 
 function createCapabilities() {
   return {
@@ -40,7 +40,7 @@ function createFakeSession(sessionId: string, tools: any[] = DEFAULT_NATIVE_TOOL
         name: tool.name,
         description: tool.description ?? "",
         input_schema: tool.parameters,
-        deferLoading: false,
+        deferLoading: tool.defer === "auto",
       })),
     })),
     listMcpServers: vi.fn(async () => ({
@@ -115,6 +115,10 @@ function createBridgeToolServer() {
     description: "Session Bridge tool",
     scope: "session",
     handler: async () => "session",
+  }));
+  server.registerTool(defineBridgeTool("tag_list", {
+    description: "Rarely used Bridge tool",
+    handler: async () => "tags",
   }));
   server.registerTool(defineBridgeTool("report_intent", {
     description: "Excluded Bridge tool",
@@ -298,11 +302,11 @@ describe("SessionManager native Bridge tools", () => {
 
     expect(result.sessionId).toMatch(/[0-9a-f-]{36}/);
     const config = backend.createSession.mock.calls[0][0] as any;
-    expect(config.tools.map((tool: any) => tool.name).sort()).toEqual([
-      "global_bridge_tool",
-      "session_bridge_tool",
-    ]);
-    expect(config.tools.every((tool: any) => tool.defer === "never")).toBe(true);
+    expect(Object.fromEntries(config.tools.map((tool: any) => [tool.name, tool.defer]))).toEqual({
+      global_bridge_tool: "never",
+      session_bridge_tool: "never",
+      tag_list: "auto",
+    });
     expect(config.tools.every((tool: any) => tool.skipPermission === true)).toBe(true);
     expect(config.mcpServers.custom).toEqual({ command: "custom-mcp", args: [] });
     // Generic built-in MCP seam still flows through untouched.
@@ -951,6 +955,7 @@ describe("SessionManager native Bridge tools", () => {
     expect(config.tools.map((tool: any) => tool.name).sort()).toEqual([
       "global_bridge_tool",
       "session_bridge_tool",
+      "tag_list",
     ]);
     expect(config.mcpServers.custom).toEqual({ command: "custom-mcp", args: [] });
     expect(config.mcpServers[EXTRA_MCP_SERVER_NAME]).toEqual({ command: "node", args: ["extra-mcp.js"] });

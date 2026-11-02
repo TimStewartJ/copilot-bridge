@@ -119,7 +119,7 @@ export {
 import type { McpServerStore } from "./mcp-server-store.js";
 import { sampleProcessTree } from "./platform.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-mcp/server.js";
-import { createNativeBridgeTools, type BridgeNativeTool } from "./bridge-native-tools.js";
+import { createNativeBridgeTools, DEFERRED_BRIDGE_TOOL_NAMES, type BridgeNativeTool } from "./bridge-native-tools.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { createBridgeBrowserLifecycle, noopBrowserLifecycle, type BrowserLifecycle } from "./browser-lifecycle.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -2962,7 +2962,7 @@ export class SessionManager {
     if (!this.shouldUseNativeBridgeTools()) return undefined;
     const definitions = this.eligibleNativeBridgeToolDefinitions();
     if (definitions.length === 0) return undefined;
-    return createNativeBridgeTools(definitions);
+    return createNativeBridgeTools(definitions, { deferRarelyUsed: true });
   }
 
   private invalidateModelMetadata(): void {
@@ -3137,6 +3137,7 @@ export class SessionManager {
       const missing = expectedTools.filter((name) => !toolNames.has(name));
       const deferred = tools
         .filter((tool) => expectedTools.includes(tool.name) && tool.deferLoading === true)
+        .filter((tool) => !DEFERRED_BRIDGE_TOOL_NAMES.has(tool.name))
         .map((tool) => tool.name);
       const deferredExternal = tools.filter((tool) => !expectedTools.includes(tool.name) && tool.deferLoading === true);
       if (deferredExternal.length > 0) {

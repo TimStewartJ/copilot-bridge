@@ -23,7 +23,7 @@ const mcpTools = Array.from({ length: 35 }, (_, index) => ({
 }));
 
 async function fixture(signal: AbortSignal) {
-  const home = makeTestDir("copilot-eager-tools");
+  const home = makeTestDir("copilot-tool-loading");
   const cwd = join(home, "workspace");
   const requests: Record<string, unknown>[] = [];
   const fixtureErrors: string[] = [];
@@ -112,10 +112,16 @@ async function fixture(signal: AbortSignal) {
     memory: { enabled: false }, enableConfigDiscovery: false, skillDirectories: [], instructionDirectories: [],
     availableTools: ["task", "custom:*", "mcp:*"],
     mcpServers: { fixture: { type: "http", url: `http://127.0.0.1:${address.port}/mcp`, tools: ["*"] } },
-    tools: [defineTool("external_fixture", {
-      description: "An external tool that normally allows deferral.", defer: "auto",
-      parameters: { type: "object", properties: {} }, handler: async () => "fixture result",
-    })],
+    tools: [
+      defineTool("external_eager", {
+        description: "An external tool that is always loaded.", defer: "never",
+        parameters: { type: "object", properties: {} }, handler: async () => "fixture result",
+      }),
+      defineTool("external_fixture", {
+        description: "An external tool that loads on demand.", defer: "auto",
+        parameters: { type: "object", properties: {} }, handler: async () => "fixture result",
+      }),
+    ],
     customAgents: [{ name: "fixture-agent", description: "Local test agent.", prompt: "Return the fixture response." }],
     provider: { type: "openai", baseUrl: `http://127.0.0.1:${address.port}/v1`, wireApi: "completions" },
   } satisfies SessionConfig;
@@ -129,41 +135,34 @@ function requestToolNames(request: Record<string, unknown> | undefined): unknown
   ) : [];
 }
 
-function assertEagerRequest(request: Record<string, unknown> | undefined) {
+function assertToolPolicy(request: Record<string, unknown> | undefined) {
   const names = requestToolNames(request);
-  expect(names).toContain("external_fixture");
+  expect(names).toContain("external_eager");
   for (const tool of mcpTools) expect(names).toContain(`fixture-${tool.name}`);
-  expect(names.length).toBeGreaterThan(30);
-  expect(names).not.toContain("tool_search_tool");
-}
-
-function assertDeferredRequest(request: Record<string, unknown> | undefined) {
-  const names = requestToolNames(request);
   expect(names).toContain("tool_search_tool");
   expect(names).not.toContain("external_fixture");
-  for (const tool of mcpTools) expect(names).not.toContain(`fixture-${tool.name}`);
 }
 
-describe("native eager tool definitions", () => {
-  it("sends all MCP/external definitions on create, model/agent switch, subagent and cold resume", async ({ signal }) => {
-    const { client, backend, config, requests, fixtureErrors, cleanup } = await fixture(signal);
+describe("native tool loading policy", () => {
+  it("keeps MCP and always-loaded definitions and defers only on-demand tools on create, model/agent switch, subagent and cold resume", async ({ signal }) => {
+    const { backend, config, requests, fixtureErrors, cleanup } = await fixture(signal);
     try {
       const session = await backend.createSession(config);
       await session.initializeTools();
       const metadata = await session.getCurrentToolMetadata();
-      expect(metadata?.tools?.some((tool) => tool.deferLoading === true)).toBe(false);
+      expect(metadata?.tools?.map((tool) => tool.name)).toContain("external_fixture");
       await session.sendAndWait({ prompt: "Return the fixture response." }, null);
-      assertEagerRequest(requests.at(-1));
+      assertToolPolicy(requests.at(-1));
 
       await session.setModel("gpt-4.1");
       await session.sendAndWait({ prompt: "Return the fixture response after switching model." }, null);
       expect(requests.at(-1)?.model).toBe("gpt-4.1");
-      assertEagerRequest(requests.at(-1));
+      assertToolPolicy(requests.at(-1));
 
       const raw = sdkSession(session);
       await raw.rpc.agent.select({ name: "fixture-agent" });
       await session.sendAndWait({ prompt: "Return the fixture response as the selected agent." }, null);
-      assertEagerRequest(requests.at(-1));
+      assertToolPolicy(requests.at(-1));
       await raw.rpc.agent.deselect();
 
       const beforeChild = requests.length;
@@ -171,35 +170,20 @@ describe("native eager tool definitions", () => {
         name: "task",
         arguments: {
           description: "Check child tool definitions", prompt: "Return the fixture response.",
-          agent_type: "fixture-agent", name: "eager-fixture-child", mode: "sync",
+          agent_type: "fixture-agent", name: "tool-loading-child", mode: "sync",
         },
       });
       expect(child, typeof child === "string" ? child : child.textResultForLlm).toMatchObject({ resultType: "success" });
       expect(requests.length).toBeGreaterThan(beforeChild);
-      assertEagerRequest(requests.at(-1));
+      assertToolPolicy(requests.at(-1));
       await session.release();
 
       const resumed = await backend.resumeSession(session.sessionId, config);
       await resumed.initializeTools();
       await resumed.sendAndWait({ prompt: "Return the fixture response after cold resume." }, null);
-      assertEagerRequest(requests.at(-1));
+      assertToolPolicy(requests.at(-1));
       await resumed.release();
 
-      // Since CLI 1.0.90 this loopback completions provider defers when a create or resume call asks
-      // for tool search, and the request is not stored with the session. So the Bridge resume asks
-      // too: same session, same request, and only the Bridge sends every definition.
-      // CAPI deferral still needs a real preview smoke.
-      const deferring = { ...config, toolSearch: { enabled: true, deferThreshold: 1 } };
-      const legacy = await client.createSession(deferring);
-      await legacy.rpc.tools.initializeAndValidate();
-      await legacy.sendAndWait({ prompt: "Persist this session created with tool search enabled." });
-      assertDeferredRequest(requests.at(-1));
-      await legacy.disconnect();
-      const upgraded = await backend.resumeSession(legacy.sessionId, deferring);
-      await upgraded.initializeTools();
-      await upgraded.sendAndWait({ prompt: "Return the fixture response with eager tools after resume." }, null);
-      assertEagerRequest(requests.at(-1));
-      await upgraded.release();
       expect(fixtureErrors).toEqual([]);
     } finally { await cleanup(); }
   });

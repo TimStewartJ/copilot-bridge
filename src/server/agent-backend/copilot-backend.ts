@@ -757,6 +757,14 @@ const PENDING_INTERACTION_PLACEHOLDER = async (): Promise<{ action: "cancel" }> 
 });
 const PENDING_INTERACTION_ASK_USER_VARIANT = "elicitation";
 
+function keepMcpToolsLoaded(servers: unknown): unknown {
+  if (!isRecord(servers)) return servers;
+  return Object.fromEntries(Object.entries(servers).map(([name, server]) => [
+    name,
+    isRecord(server) && server.deferTools === undefined ? { ...server, deferTools: "never" } : server,
+  ]));
+}
+
 function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   sdkConfig: Record<string, unknown>;
   pendingInteractionEvents: boolean;
@@ -774,8 +782,11 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
     ? requestedFusionContext
     : undefined;
   const sdkConfig = toRuntimeSessionConfig(callerConfig, fusionContextTokens);
-  // Apply on every create/resume, including helpers and sessions with a different model.
-  sdkConfig.toolSearch = { enabled: false };
+  // Apply on every create/resume, including helpers and sessions with a different model. Only
+  // Bridge tools marked defer "auto" load on demand; MCP servers stay loaded unless a server's
+  // own settings say otherwise.
+  sdkConfig.toolSearch = { enabled: true };
+  if (sdkConfig.mcpServers !== undefined) sdkConfig.mcpServers = keepMcpToolsLoaded(sdkConfig.mcpServers);
   if (pendingInteractionEvents) {
     sdkConfig.onElicitationRequest = PENDING_INTERACTION_PLACEHOLDER;
     sdkConfig.askUserVariant = PENDING_INTERACTION_ASK_USER_VARIANT;

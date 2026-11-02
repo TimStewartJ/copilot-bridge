@@ -57,6 +57,18 @@ describe("bridge-native-tools", () => {
     );
   });
 
+  it("lets only the rarely used Bridge tools load on demand, and only when asked", () => {
+    const definitions = ["sample_tool", "tag_create"].map((name): BridgeToolDefinition => ({
+      name, description: name, inputSchema: { type: "object", properties: {} }, handler: async () => "ok",
+    }));
+    const policy = (tools: ReturnType<typeof createNativeBridgeTools>) =>
+      Object.fromEntries(tools.map((tool) => [tool.name, tool.defer]));
+
+    expect(policy(createNativeBridgeTools(definitions, { deferRarelyUsed: true })))
+      .toEqual({ sample_tool: "never", tag_create: "auto" });
+    expect(policy(createNativeBridgeTools(definitions))).toEqual({ sample_tool: "never", tag_create: "never" });
+  });
+
   it("converts Bridge failure results into SDK failure results without stringifying", () => {
     const result = convertBridgeToolResultToSdk(toolFailure("Nope"));
 
