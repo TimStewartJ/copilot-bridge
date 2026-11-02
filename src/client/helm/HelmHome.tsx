@@ -7,7 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, Brain, Check, ExternalLink, Loader2, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
 import type { HelmAction, HelmBriefItem, HelmBriefResponse, HelmItemKind, HelmProposal } from "../../shared/helm-thinker";
 import type { TaskOverviewRow } from "../../shared/task-overview";
-import { Badge, Button, EmptyHint, Notice, Section, TextArea, TextInput } from "../design/primitives";
+import { Badge, Button, Details, EmptyHint, IconButton, MetaLine, Notice, Section, TextArea, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "../components/PullToRefresh";
 import { OutcomeNotice } from "../components/QuietTasks";
@@ -91,15 +91,19 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
           </div>}
         </div>
         {brief && <p className="max-w-3xl text-[15px] leading-relaxed text-text-primary">{brief.summary}</p>}
-        <div className={cx(DS.text.meta, "flex flex-wrap items-center gap-x-3 gap-y-1")}>
-          {run && <span>Helm thought at {formatClock(run.startedAt)}{run.finishedAt ? ` · ${formatDuration(run)}` : ""}</span>}
-          {run?.changeCount != null && <span>read {run.changeCount} changes{bridgeNames ? ` on ${bridgeNames}` : ""}</span>}
-          {run && run.sources.some((source) => source.used) && <span>also read {run.sources.filter((source) => source.used).map((source) => source.name).join(", ")}</span>}
-          {run?.credits != null && <span>{formatCredits(run.credits)}</span>}
-          {data?.nextRunAt && <span>next look {formatClock(data.nextRunAt)}</span>}
-          {run?.transcriptAvailable && <button type="button" className={cx(DS.focus, "hover:text-text-primary hover:underline")} onClick={() => onSelectSession(run.sessionId)}>How Helm got here</button>}
-          {data && !data.running && <Button variant="ghost" size="sm" disabled={starting} onClick={() => void think()}><RefreshCw size={13} />Think again</Button>}
-        </div>
+        {(run || data?.nextRunAt) && <div className="flex items-start gap-1">
+          {run ? <Details className="flex-1" label={`Updated ${formatClock(run.startedAt)}`} detail={data?.nextRunAt ? `next ${formatClock(data.nextRunAt)}` : undefined}>
+            <MetaLine items={[
+              run.finishedAt && `took ${formatDuration(run)}`,
+              run.changeCount != null && `read ${run.changeCount} changes${bridgeNames ? ` on ${bridgeNames}` : ""}`,
+              run.sources.some((source) => source.used) && `also read ${run.sources.filter((source) => source.used).map((source) => source.name).join(", ")}`,
+              run.credits != null && formatCredits(run.credits),
+            ]} />
+            {run.transcriptAvailable && <button type="button" className={cx(DS.focus, DS.text.meta, "mt-1 hover:text-text-primary hover:underline")} onClick={() => onSelectSession(run.sessionId)}>How Helm got here</button>}
+          </Details>
+            : <span className={cx(DS.text.meta, "flex-1 py-1")}>Next look {formatClock(data!.nextRunAt!)}</span>}
+          {data && !data.running && <IconButton label="Think again" className="-mt-0.5" disabled={starting} onClick={() => void think()}><RefreshCw size={14} /></IconButton>}
+        </div>}
         {run?.bridges.filter((bridge) => !bridge.ok).map((bridge) => <Notice key={bridge.id} tone="warning" title={`${bridge.label} couldn't be read`}>{bridge.error}</Notice>)}
         {run?.sources.filter((source) => !source.ok).map((source) => <Notice key={source.serverId} tone="warning" title={`${source.name} couldn't be read`}>{source.error}</Notice>)}
       </header>
