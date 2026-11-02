@@ -1101,6 +1101,7 @@ export class SessionManager {
       listModels: () => this.listModels(),
       buildSessionConfig: (options) => this.buildSessionConfig(options),
       getParentWorkingDirectory: (sessionId) => this.getEffectiveSessionCwd(sessionId),
+      getParentTask: (sessionId) => this.findLinkedTask(sessionId),
       beginLifecycle: () => {
         if (this.shuttingDown) throw new Error(PROMPT_DELIVERY_SHUTDOWN_MESSAGE);
         return this.beginSessionCreationLifetime();

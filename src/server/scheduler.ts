@@ -373,6 +373,7 @@ export async function triggerSchedule(
     const elapsed = comparisonMs - lastRunAtMs;
     if (elapsed >= 0 && elapsed < MIN_INTERVAL_MS) {
       console.log(`[scheduler] Skipping "${schedule.name}" — too soon (${Math.round(elapsed / 1000)}s since last run)`);
+      consumeTooSoonCronSlot(schedule, options.scheduledFor);
       return { skipped: `Too soon — ${Math.round((MIN_INTERVAL_MS - elapsed) / 1000)}s until next allowed run` };
     }
   }
@@ -564,7 +565,7 @@ export async function triggerSchedule(
     }
 
     const nextRunAt = schedule.type === "cron" && schedule.cron
-      ? computeNextRunAt(schedule.cron, schedule.timezone)
+      ? computeNextAllowedCronRunAt(schedule.cron, schedule.timezone, new Date().toISOString(), new Date())
       : undefined;
     if (automaticSlotClaim && triggerSource !== "manual") {
       const finalized = scheduleStore.completeAutomaticRun(scheduleId, automaticSlotClaim, sessionId, nextRunAt);
@@ -704,8 +705,7 @@ function ensureCronNextRunAt(schedule: Schedule, now = new Date()): string | und
   let nextRunAt = currentNextRunAt;
 
   if (lastRunAt) {
-    const lastRunTime = Date.parse(lastRunAt);
-    const expectedAfterLastRun = computeNextRunAt(schedule.cron, schedule.timezone, new Date(lastRunAt));
+    const expectedAfterLastRun = computeNextAllowedCronRunAt(schedule.cron, schedule.timezone, lastRunAt, new Date(lastRunAt));
     const expectedAfterLastRunTime = expectedAfterLastRun ? Date.parse(expectedAfterLastRun) : NaN;
     const expectedAfterLastRunIsRecent = Number.isFinite(expectedAfterLastRunTime)
       && nowTime - expectedAfterLastRunTime <= CRON_CURSOR_REWIND_WINDOW_MS;
@@ -714,7 +714,8 @@ function ensureCronNextRunAt(schedule: Schedule, now = new Date()): string | und
       && (
         !nextRunAt
         || !Number.isFinite(currentNextTime)
-        || currentNextTime <= lastRunTime
+        // Also covers a cursor on a slot the minimum interval would skip.
+        || currentNextTime < expectedAfterLastRunTime
         || (expectedAfterLastRunTime <= nowTime && currentNextTime > nowTime && expectedAfterLastRunIsRecent)
       )
     ) {
@@ -729,6 +730,35 @@ function ensureCronNextRunAt(schedule: Schedule, now = new Date()): string | und
     scheduleStore.updateNextRunAt(schedule.id, nextRunAt);
   }
   return nextRunAt;
+}
+
+/**
+ * The first cron slot after `after` that the minimum interval since `lastRunAt` lets run.
+ * Keeping the cursor off slots that would be skipped stops the trigger, the slot lookup and
+ * missed-run catch-up from returning to the same skipped slot every minute.
+ */
+function computeNextAllowedCronRunAt(
+  cronExpr: string,
+  timezone: string | undefined,
+  lastRunAt: string | undefined,
+  after: Date,
+): string | undefined {
+  const lastRunTime = lastRunAt ? Date.parse(lastRunAt) : NaN;
+  // computeNextRunAt is strictly after its start, so start 1ms early to allow the exact boundary.
+  const earliestAllowed = Number.isFinite(lastRunTime) ? lastRunTime + MIN_INTERVAL_MS - 1 : -Infinity;
+  return computeNextRunAt(cronExpr, timezone, new Date(Math.max(after.getTime(), earliestAllowed)));
+}
+
+/** Moves a cron cursor past a slot skipped as too soon, so the next allowed slot runs. */
+function consumeTooSoonCronSlot(schedule: Schedule, scheduledFor: string | undefined): void {
+  if (schedule.type !== "cron" || !schedule.cron || !scheduledFor) return;
+  const slotTime = Date.parse(scheduledFor);
+  const currentNextRunAt = normalizeIso(schedule.nextRunAt);
+  if (!Number.isFinite(slotTime) || (currentNextRunAt && Date.parse(currentNextRunAt) > slotTime)) return;
+  const nextRunAt = computeNextAllowedCronRunAt(schedule.cron, schedule.timezone, schedule.lastRunAt, new Date());
+  if (!nextRunAt || nextRunAt === currentNextRunAt) return;
+  scheduleStore.updateNextRunAt(schedule.id, nextRunAt);
+  bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
 }
 
 function reconcileCronNextRunAt(now = new Date()): void {

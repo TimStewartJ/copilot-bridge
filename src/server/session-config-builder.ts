@@ -89,6 +89,11 @@ export interface ScheduleContext {
 export interface SessionConfigOptions {
   sessionId?: string;
   task?: Task | null;
+  /**
+   * Adds this task's tag-linked MCP servers without the rest of the task (prompt context, task
+   * agents, working directory). Defer workers use it to get their parent chat's servers.
+   */
+  mcpServerTask?: Pick<Task, "id" | "groupId"> | null;
   scheduleContext?: ScheduleContext;
   modelOverride?: string;
   reasoningEffortOverride?: string;
@@ -466,9 +471,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   };
 
   // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
-  if (task && deps.tagStore) {
-    const resolved = deps.tagStore.resolveEffectiveTags(task.id, task.groupId);
-    if (resolved.mergedInstructions) {
+  const tagTask = task ?? params.options?.mcpServerTask;
+  if (tagTask && deps.tagStore) {
+    const resolved = deps.tagStore.resolveEffectiveTags(tagTask.id, tagTask.groupId);
+    if (task && resolved.mergedInstructions) {
       contextParts.push(`\n<tag_instructions>\n${resolved.mergedInstructions}\n</tag_instructions>`);
     }
     // Merge tag-selected MCP registry servers into session config.

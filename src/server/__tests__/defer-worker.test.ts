@@ -863,7 +863,7 @@ describe("defer worker", () => {
 
   it("runs with configured model options and deletes the temporary session", async () => {
     const copilotHome = makeTestDir("defer-worker");
-    const buildSessionConfig = vi.fn(() => ({
+    const buildSessionConfig = vi.fn((_options: Record<string, unknown>) => ({
       mcpServers: { ado: { type: "http" } },
       pendingInteractionEvents: true,
       enableConfigDiscovery: true,
@@ -922,6 +922,7 @@ describe("defer worker", () => {
       }] as any,
       buildSessionConfig,
       getParentWorkingDirectory: () => "D:\\work",
+      getParentTask: (sessionId) => sessionId === "parent-session" ? { id: "task-1", groupId: "group-1" } : undefined,
       beginLifecycle: lifecycle.beginLifecycle,
       reserveCapacity: async () => () => undefined,
       createSession: createSession as any,
@@ -949,7 +950,10 @@ describe("defer worker", () => {
       modelOverride: "small-model",
       reasoningEffortOverride: "low",
       contextTierOverride: "long_context",
+      // The parent chat's task decides the tag-linked MCP servers.
+      mcpServerTask: { id: "task-1", groupId: "group-1" },
     }));
+    expect(buildSessionConfig.mock.calls[0]?.[0]).not.toHaveProperty("task");
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       clientName: "Copilot Bridge Defer Worker",
       enableConfigDiscovery: false,

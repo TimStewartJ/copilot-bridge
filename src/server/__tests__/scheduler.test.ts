@@ -519,6 +519,65 @@ describe("scheduler restart gating", () => {
     expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
   });
 
+  it("keeps the cron cursor off slots skipped as too soon so the next allowed slot runs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-16T19:10:31.000Z"));
+
+    const { ctx, db } = createTestApp();
+    const sessionManager = {
+      isSessionBusy: vi.fn().mockReturnValue(false),
+      createTaskSession: vi.fn()
+        .mockResolvedValueOnce({ sessionId: "manual-run" })
+        .mockResolvedValueOnce({ sessionId: "next-slot-run" }),
+      startWorkAndWaitForDelivery: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    scheduler.initialize(sessionManager, {
+      scheduleStore: ctx.scheduleStore,
+      taskStore: ctx.taskStore,
+      sessionMetaStore: ctx.sessionMetaStore,
+      globalBus: ctx.globalBus,
+    });
+
+    const task = ctx.taskStore.createTask("Scheduled Task");
+    const schedule = ctx.scheduleStore.createSchedule({
+      taskId: task.id,
+      name: "Five-minute watch",
+      prompt: "check",
+      type: "cron",
+      cron: "*/5 * * * *",
+      timezone: "UTC",
+    });
+    const nextRunAt = () => ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt;
+    const triggerCron = () => scheduler.triggerSchedule(schedule.id, {
+      source: "cron",
+      scheduledFor: getCronTriggerScheduledFor(schedule.id),
+    });
+
+    // A manual run mid-interval: 19:15 is under five minutes away, so the cursor goes to 19:20.
+    await expect(scheduler.triggerSchedule(schedule.id, { source: "manual" })).resolves.toEqual({ sessionId: "manual-run" });
+    expect(nextRunAt()).toBe("2026-04-16T19:20:00.000Z");
+
+    // A cursor already sitting on the too-soon slot is consumed by the skip, not re-proposed.
+    db.prepare("UPDATE schedules SET nextRunAt = ? WHERE id = ?").run("2026-04-16T19:15:00.000Z", schedule.id);
+    vi.setSystemTime(new Date("2026-04-16T19:15:00.000Z"));
+    await expect(triggerCron()).resolves.toMatchObject({ skipped: expect.stringMatching(/^Too soon/) });
+    expect(nextRunAt()).toBe("2026-04-16T19:20:00.000Z");
+
+    // Cursor reconciliation neither rewinds to the skipped slot nor leaves a stuck cursor on it.
+    vi.setSystemTime(new Date("2026-04-16T19:16:00.000Z"));
+    scheduler.registerSchedule(schedule.id);
+    expect(nextRunAt()).toBe("2026-04-16T19:20:00.000Z");
+    db.prepare("UPDATE schedules SET nextRunAt = ? WHERE id = ?").run("2026-04-16T19:15:00.000Z", schedule.id);
+    scheduler.registerSchedule(schedule.id);
+    expect(nextRunAt()).toBe("2026-04-16T19:20:00.000Z");
+
+    vi.setSystemTime(new Date("2026-04-16T19:20:00.000Z"));
+    await expect(triggerCron()).resolves.toEqual({ sessionId: "next-slot-run" });
+    expect(nextRunAt()).toBe("2026-04-16T19:25:00.000Z");
+  });
+
   it("allows an older automatic slot retry even after a newer slot completed", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T15:01:00.000Z"));

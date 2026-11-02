@@ -12,6 +12,7 @@ import {
 } from "./defer-checkpoint.js";
 import { BRIDGE_RESTARTING_MESSAGE } from "./backend-availability.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
+import type { Task } from "./task-store.js";
 import { selectHelperModel } from "./helper-model.js";
 import type { AppSettings } from "./settings-store.js";
 import {
@@ -71,6 +72,8 @@ export interface DisposableDeferWorkerDeps {
   listModels(): Promise<AgentModelInfo[]>;
   buildSessionConfig(options: SessionConfigOptions): Record<string, unknown>;
   getParentWorkingDirectory(sessionId: string): string | undefined;
+  /** The parent chat's linked task; the worker gets its tag-linked MCP servers. */
+  getParentTask?(sessionId: string): Pick<Task, "id" | "groupId"> | undefined;
   beginLifecycle(): () => void;
   reserveCapacity(config: Record<string, unknown>): Promise<() => void>;
   createSession(config: Record<string, unknown>): Promise<AgentSession>;
@@ -453,8 +456,10 @@ export class DisposableDeferWorker {
         ? configuredEffort
         : undefined;
       const workingDirectory = this.deps.getParentWorkingDirectory(input.parentSessionId);
+      const parentTask = this.deps.getParentTask?.(input.parentSessionId);
       const baseConfig = this.deps.buildSessionConfig({
         sessionId,
+        ...(parentTask ? { mcpServerTask: parentTask } : {}),
         ...(model ? { modelOverride: model } : {}),
         ...(reasoningEffort ? { reasoningEffortOverride: reasoningEffort } : {}),
         contextTierOverride: configuredContextTier,

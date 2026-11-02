@@ -1016,6 +1016,7 @@ describe("session-config-builder", () => {
       config: { command: "task-mcp", args: ["serve"] },
     });
     const tag = tagStore.createTag("Task tools");
+    tagStore.updateTag(tag.id, { instructions: "Use the task tools carefully." });
     tagStore.addTagMcpServerRef(tag.id, taskServer.id);
     tagStore.setEntityTags("task", "task-1", [tag.id]);
 
@@ -1029,6 +1030,17 @@ describe("session-config-builder", () => {
       "Task MCP": { command: "task-mcp", args: ["serve"] },
     });
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
+    expect(cfg.systemMessage.content).toContain("Use the task tools carefully.");
+
+    // A defer worker asks for the servers only: no task context or tag instructions.
+    const serversOnly = buildSessionConfig({
+      deps: createDeps({ mcpServerStore, tagStore }),
+      options: { mcpServerTask: { id: "task-1" } },
+      callbacks: createCallbacks(),
+    });
+    expect(serversOnly.mcpServers).toEqual(cfg.mcpServers);
+    expect(serversOnly.systemMessage.content).not.toContain("Use the task tools carefully.");
+    expect(serversOnly.systemMessage.content).not.toContain("task-1");
   });
 
   it("preserves GitHub Copilot web search and Bridge-owned MCP servers when task tags rebuild MCP selection", () => {
