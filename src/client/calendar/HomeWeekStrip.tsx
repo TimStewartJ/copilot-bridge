@@ -8,7 +8,7 @@ import { DS, cx } from "../design/tokens";
 import { useNow } from "../hooks/useNow";
 import { daysFrom, formatClockShort, formatFree, freeMinutes, minutesIntoDay, parseDateKey, toDateKey, wallMinutes } from "./calendar-model";
 import { useCalendarQuery } from "./calendar-api";
-import { KindIcon, itemDayKeys, readLayers } from "./calendar-ui";
+import { KindIcon, itemDayKeys, itemSurface, readLayers } from "./calendar-ui";
 
 const LINES = 3;
 
@@ -62,40 +62,47 @@ export default function HomeWeekStrip({ compact = false }: { compact?: boolean }
   const open = (day: string) => navigate(`/calendar?view=day&date=${day}`);
   return (
     <section aria-label="This week" className="space-y-2">
-      <div className="grid grid-cols-7 gap-1.5">
+      <div className={cx(DS.surface.group, "grid grid-cols-7 divide-x divide-border-subtle overflow-hidden")}>
         {days.map((day) => {
           const date = parseDateKey(day);
           const items = byDay.get(day) ?? [];
           const isToday = day === today;
+          const weekend = date.getDay() === 0 || date.getDay() === 6;
           return (
             <button key={day} type="button" onClick={() => open(day)}
               aria-label={`${date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}, ${items.length} item${items.length === 1 ? "" : "s"}`}
-              className={cx(DS.focus, "flex min-w-0 flex-col rounded-lg border px-1.5 py-1.5 text-left transition-colors hover:bg-bg-hover/60",
-                isToday ? "border-text-secondary bg-surface-group" : "border-border-subtle bg-surface-group",
-                compact ? "min-h-[3.75rem] items-center" : "min-h-[6.25rem]")}>
-              <span className={cx("flex items-baseline gap-1 text-[11px]", isToday ? "font-semibold text-text-primary" : "text-text-secondary")}>
+              className={cx(DS.focus, "flex min-w-0 flex-col text-left transition-colors hover:bg-bg-hover/60 focus-visible:-outline-offset-2",
+                weekend && "bg-surface-inset/50")}>
+              <span className={cx("block border-b border-border-subtle py-1 text-[11px] font-medium",
+                compact ? "text-center" : "px-2",
+                isToday ? "text-text-primary" : "text-text-faint")}>
                 {date.toLocaleDateString(undefined, { weekday: compact ? "narrow" : "short" })}
-                <span className="tabular-nums">{date.getDate()}</span>
               </span>
-              {compact ? (
-                <span className="mt-1.5 flex flex-wrap justify-center gap-0.5" aria-hidden="true">
-                  {items.slice(0, 3).map((item) => item.kind === "event"
-                    ? <span key={item.id} className="h-2.5 w-1 rounded-sm bg-text-secondary" />
-                    : <KindIcon key={item.id} kind={item.kind} size={10} />)}
-                  {items.length > 3 && <span className="text-[10px] leading-none text-text-faint">+{items.length - 3}</span>}
+              <span className={cx("flex min-w-0 flex-1 flex-col", compact ? "min-h-[3.25rem] items-center px-0.5 py-1.5" : "min-h-[6rem] px-1 py-1")}>
+                <span className={cx("flex size-6 items-center justify-center rounded-full text-[13px] tabular-nums",
+                  compact ? "self-center" : "self-start",
+                  isToday ? "bg-text-primary font-semibold text-bg-primary" : weekend ? "text-text-secondary" : "font-medium text-text-primary")}>
+                  {date.getDate()}
                 </span>
-              ) : (
-                <span className="mt-1 w-full min-w-0 space-y-0.5">
-                  {items.slice(0, items.length > LINES ? LINES - 1 : LINES).map((item) => (
-                    <span key={item.id} className={cx("flex min-w-0 items-center gap-1 text-[11px] leading-4",
-                      item.kind === "event" ? "text-text-primary" : "text-text-secondary")}>
-                      {item.kind === "event" ? <span className="h-3 w-0.5 shrink-0 rounded-sm bg-text-secondary" /> : <KindIcon kind={item.kind} size={10} />}
-                      <span className="truncate">{shortLabel(item)}</span>
-                    </span>
-                  ))}
-                  {items.length > LINES && <span className="block text-[10.5px] text-text-faint">+{items.length - LINES + 1} more</span>}
-                </span>
-              )}
+                {compact ? (
+                  <span className="mt-1 flex flex-wrap items-center justify-center gap-0.5" aria-hidden="true">
+                    {items.slice(0, 3).map((item) => item.kind === "event"
+                      ? <span key={item.id} className="size-1.5 rounded-full bg-text-secondary" />
+                      : <KindIcon key={item.id} kind={item.kind} size={10} />)}
+                    {items.length > 3 && <span className="text-[10px] leading-none text-text-faint">+{items.length - 3}</span>}
+                  </span>
+                ) : (
+                  <span className="mt-0.5 w-full min-w-0 space-y-0.5">
+                    {items.slice(0, items.length > LINES ? LINES - 1 : LINES).map((item) => (
+                      <span key={item.id} className={cx(itemSurface(item), "flex min-w-0 items-center gap-1 rounded px-1 text-[11px] leading-[1.125rem]")}>
+                        <KindIcon kind={item.kind} size={10} />
+                        <span className="truncate">{shortLabel(item)}</span>
+                      </span>
+                    ))}
+                    {items.length > LINES && <span className="block px-1 text-[10.5px] text-text-faint">+{items.length - LINES + 1} more</span>}
+                  </span>
+                )}
+              </span>
             </button>
           );
         })}
