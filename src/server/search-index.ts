@@ -738,7 +738,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     const params = [fts, ...allowedSessionIds, ...messageDates.params, fts, ...allowedSessionIds, ...titleDates.params];
     const hitsSql = `
       WITH hits AS (
-        SELECT sessionId, min(rank) AS score
+        SELECT sessionId, min(rank) AS score, 0 AS titleHit
         FROM search_chat_messages
         WHERE search_chat_messages MATCH ?
           AND sessionId IN (${placeholders})${messageDates.sql}
@@ -748,7 +748,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
           )
         GROUP BY sessionId
         UNION ALL
-        SELECT sessionId, min(rank) AS score
+        SELECT sessionId, min(rank) AS score, 1 AS titleHit
         FROM search_chat_titles
         WHERE search_chat_titles MATCH ?
           AND sessionId IN (${placeholders})
@@ -760,20 +760,21 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
         GROUP BY sessionId
       ),
       grouped AS (
-        SELECT sessionId, min(score) AS score FROM hits GROUP BY sessionId
+        -- Scores from the two tables are not comparable, so a title hit outranks any message hit.
+        SELECT sessionId, min(score) AS score, max(titleHit) AS titleHit FROM hits GROUP BY sessionId
       )
     `;
     const candidateRows = request.scope === "session"
       ? db.prepare(`
           ${hitsSql}
           SELECT sessionId FROM grouped
-          ORDER BY score, sessionId
+          ORDER BY titleHit DESC, score, sessionId
           LIMIT 1
         `).all(...params) as Array<{ sessionId: string }>
       : db.prepare(`
           ${hitsSql}
           SELECT sessionId FROM grouped
-          ORDER BY score, sessionId
+          ORDER BY titleHit DESC, score, sessionId
           LIMIT ? OFFSET ?
         `).all(...params, CANDIDATE_VALIDATION_LIMIT, request.offset!) as Array<{ sessionId: string }>;
     const errors = await validateCandidateSessions(candidateRows.map((row) => row.sessionId));
@@ -784,13 +785,13 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       ? db.prepare(`
           ${hitsSql}
           SELECT sessionId FROM grouped
-          ORDER BY score, sessionId
+          ORDER BY titleHit DESC, score, sessionId
           LIMIT 1
         `).all(...params) as Array<{ sessionId: string }>
       : db.prepare(`
           ${hitsSql}
           SELECT sessionId FROM grouped
-          ORDER BY score, sessionId
+          ORDER BY titleHit DESC, score, sessionId
           LIMIT ? OFFSET ?
         `).all(...params, CANDIDATE_VALIDATION_LIMIT, request.offset!) as Array<{ sessionId: string }>;
     const rows = currentRows
@@ -867,19 +868,30 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     if (scopedTaskIds.length === 0) return { items: [], total: 0 };
     const placeholders = scopedTaskIds.map(() => "?").join(", ");
     const params = [fts, ...scopedTaskIds];
-    const count = db.prepare(`
-      SELECT count(*) AS total FROM search_tasks
+    // Ranked in code rather than by BM25 alone: long notes dilute BM25, so a task named for the
+    // query lost to a short archived task that only mentioned it. Task counts are small.
+    const matched = db.prepare(`
+      SELECT rowid, taskId, bm25(search_tasks, 0.0, 10.0, 1.0) AS score FROM search_tasks
       WHERE search_tasks MATCH ? AND taskId IN (${placeholders})
-    `).get(...params) as { total?: number };
-    const rows = db.prepare(`
-      SELECT taskId, title, notes FROM search_tasks
-      WHERE search_tasks MATCH ? AND taskId IN (${placeholders})
-      ORDER BY rank, taskId
-      LIMIT ? OFFSET ?
-    `).all(...params, request.limit!, request.offset!) as Array<{ taskId: string; title: string; notes: string }>;
+    `).all(...params) as Array<{ rowid: number; taskId: string; score: number }>;
     const tasksById = taskMap(tasks);
+    const titleHits = new Map<string, number>();
+    const titleMatch = db.prepare(`SELECT taskId FROM search_tasks WHERE search_tasks MATCH ? AND taskId IN (${placeholders})`);
+    for (const keyword of new Set(keywords)) {
+      const rows = titleMatch.all(`title : "${keyword.replaceAll('"', '""')}"`, ...scopedTaskIds) as Array<{ taskId: string }>;
+      for (const { taskId } of rows) titleHits.set(taskId, (titleHits.get(taskId) ?? 0) + 1);
+    }
+    const isArchived = (taskId: string) => tasksById.get(taskId)?.status === "archived";
+    const readRow = db.prepare("SELECT taskId, title, notes FROM search_tasks WHERE rowid = ?");
+    const rows = matched
+      .sort((a, b) => (titleHits.get(b.taskId) ?? 0) - (titleHits.get(a.taskId) ?? 0)
+        || Number(isArchived(a.taskId)) - Number(isArchived(b.taskId))
+        || a.score - b.score
+        || a.taskId.localeCompare(b.taskId))
+      .slice(request.offset!, request.offset! + request.limit!)
+      .map(({ rowid }) => readRow.get(rowid) as { taskId: string; title: string; notes: string });
     return {
-      total: count.total ?? 0,
+      total: matched.length,
       items: rows.map((row) => ({
         taskId: row.taskId,
         title: row.title,

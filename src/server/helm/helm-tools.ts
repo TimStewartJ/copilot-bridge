@@ -81,6 +81,8 @@ export function isHelmBridgeToolName(name: string): boolean {
 
 const MAX_REPLY_CHARS = 3_000;
 const MAX_HISTORY_MESSAGES = 12;
+/** start_session suggests tasks from the opening words of its prompt, where the goal usually is. */
+const START_SESSION_TOPIC_WORDS = 12;
 
 export function formatAgo(iso: string | undefined, now = Date.now()): string | undefined {
   if (!iso) return undefined;
@@ -277,12 +279,12 @@ export function createHelmToolDefinitions(
     return resolveSession(sessions, reference);
   };
   /** Finds tasks by id, link or topic: every topic word first, then any of them. */
-  const searchTasks = async (reference: string, limit: number) => {
+  const searchTasks = async (reference: string, limit: number, options: { anyWord?: boolean } = {}) => {
     const exact = ctx.taskStore.getTask(reference.replace(/^bridge:\/\/tasks?\//i, ""));
     if (exact) return [exact];
     const topic = topicWords(reference);
     if (!ctx.searchIndex || topic.length === 0) return [];
-    const request = { q: topic.join(" "), scope: "global" as const, kind: "task" as const, limit, offset: 0, refreshOnly: true };
+    const request = { q: topic.join(" "), scope: "global" as const, kind: "task" as const, limit, offset: 0, refreshOnly: true, ...(options.anyWord ? { anyWord: true } : {}) };
     let result = await ctx.searchIndex.search(request);
     if (result.tasks.total === 0 && topic.length > 1) result = await ctx.searchIndex.search({ ...request, anyWord: true });
     return result.tasks.items.map((item) => ctx.taskStore.getTask(item.taskId)).filter((task) => task !== undefined);
@@ -340,7 +342,7 @@ export function createHelmToolDefinitions(
       },
     }),
     defineBridgeTool("find", {
-      description: "Find tasks, sessions and notes by what they are about, not only by title: searches task titles and notes, session titles and chat messages, and the knowledge base. Use it whenever the user names a task or session loosely or by topic (\"the Apple integration task\", \"the standalone app\"), before picking one from task_list or list_sessions. Returns the best matches with the text that matched; if several could fit, ask which one.",
+      description: "Find tasks, sessions and notes by what they are about, not only by title: searches task titles and notes, session titles and chat messages, and the knowledge base. Use it whenever the user names a task or session loosely or by topic (\"the Apple integration task\", \"the standalone app\"), before picking one from task_list or list_sessions. Returns the best matches with the text that matched, names first; tasksMatchedAnyWord means the tasks match only some of the words. If several could fit, ask which one.",
       parameters: {
         type: "object",
         properties: {
@@ -367,8 +369,19 @@ export function createHelmToolDefinitions(
           result = await ctx.searchIndex.search({ ...request, q: topicQuery, anyWord: true });
           matchedAnyWord = true;
         }
+        // Chats and notes matching every word, or archived tasks that do, must not hide a live task
+        // that matches only some, often by its title ("Bridge calendar feature" for "Copilot Bridge").
+        let tasksMatchedAnyWord = false;
+        if (!matchedAnyWord && result.tasks.items.every((task) => task.archived) && (kind === "all" || kind === "task") && topic.length > 1) {
+          const tasks = (await ctx.searchIndex.search({ ...request, q: topicQuery, kind: "task", anyWord: true })).tasks;
+          if (tasks.items.some((task) => !task.archived)) {
+            result = { ...result, tasks };
+            tasksMatchedAnyWord = true;
+          }
+        }
         return {
           ...(matchedAnyWord ? { matchedAnyWord: true } : {}),
+          ...(tasksMatchedAnyWord ? { tasksMatchedAnyWord: true } : {}),
           tasks: result.tasks.items.map((task) => ({
             taskId: task.taskId,
             title: task.title,
@@ -525,12 +538,14 @@ export function createHelmToolDefinitions(
       },
     }),
     defineBridgeTool("start_session", {
-      description: "Start a new Bridge session that does real work (coding, research, fixes, writing) with a capable model, optionally inside a task. Returns immediately while it works. Write a complete, self-contained prompt with all needed context.",
+      description: "Start a new Bridge session that does real work (coding, research, fixes, writing) with a capable model. Every call must decide where the work lives: pass taskId (check the task index at the start of this conversation, then find or task_list), or noTask with a reason when no task fits. Without either, nothing starts and the likeliest tasks come back to choose from. Returns immediately while it works. Write a complete, self-contained prompt with all needed context.",
       parameters: {
         type: "object",
         properties: {
           prompt: { type: "string", description: "Full instructions for the worker session." },
-          taskId: { type: "string", description: "Task id to run the session in (use task_list to find it)." },
+          taskId: { type: "string", description: "Task id to run the session in." },
+          noTask: { type: "boolean", description: "True to start it outside any task, only when no existing task fits. Requires reason." },
+          reason: { type: "string", description: "With noTask: why no existing task fits, in a short sentence." },
           model: { type: "string", description: "Model id. Omit to use the user's default model; use list_models to find stronger ones." },
           reasoningEffort: { type: "string", description: "Optional reasoning effort such as low, medium, high." },
         },
@@ -540,6 +555,27 @@ export function createHelmToolDefinitions(
         const prompt = String(args.prompt ?? "").trim();
         if (!prompt) return toolFailure("prompt is required");
         const taskId = typeof args.taskId === "string" && args.taskId.trim() ? args.taskId.trim() : undefined;
+        const noTask = args.noTask === true;
+        const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+        if (taskId && noTask) return toolFailure("Pass either taskId or noTask, not both.");
+        if (noTask && !reason) return toolFailure("noTask needs a reason: say why no existing task fits.");
+        if (!taskId && !noTask) {
+          const candidates = (await searchTasks(topicWords(prompt).slice(0, START_SESSION_TOPIC_WORDS).join(" "), 8, { anyWord: true }))
+            .filter((task) => task.status !== "archived")
+            .slice(0, 5);
+          return {
+            started: false,
+            message: candidates.length
+              ? "No session was started. Pick the task this work belongs to and call start_session again with its taskId, or with noTask and a reason if none fits."
+              : "No session was started and no task matched the prompt. Check the task index or task_list, then call start_session again with a taskId, or with noTask and a reason.",
+            candidates: candidates.map((task) => ({
+              taskId: task.id,
+              title: task.title,
+              link: formatBridgeLink({ kind: "task", taskId: task.id }),
+              ...(task.deferred ? { setAside: true } : {}),
+            })),
+          };
+        }
         if (taskId && !ctx.taskStore.getTask(taskId)) return toolFailure(`Task ${taskId} was not found. Use task_list to find the right task id.`);
         try {
           const { sessionId } = await facade.createSession({
@@ -553,7 +589,7 @@ export function createHelmToolDefinitions(
             success: true,
             ref: sessionRef(sessionId),
             link: formatBridgeLink({ kind: "session", sessionId }),
-            ...(taskId ? { task: ctx.taskStore.getTask(taskId)?.title } : {}),
+            ...(taskId ? { task: ctx.taskStore.getTask(taskId)?.title } : { noTask: reason }),
             model: args.model ?? ctx.settingsStore.getSettings().model ?? "default",
           };
         } catch (error) {

@@ -27,6 +27,7 @@ import { ensureNeutralWorkspaceDir } from "../neutral-workspace.js";
 import { pathsEqual } from "../path-utils.js";
 import { hasActiveDeferredWork } from "../schedule-session-retention.js";
 import { buildHelmChatGuidance, HELM_CHAT_ROLE } from "./helm-prompt.js";
+import { buildHelmTaskIndex } from "./helm-task-index.js";
 import { applyHelmChatProfile, HELM_CHAT_EXCLUDED_TOOLS } from "./helm-session-profile.js";
 import { chooseHelmModel } from "./helm-model.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
@@ -50,6 +51,9 @@ export const HELM_POLICY = {
 
 /** Effort for a Helm conversation or look when neither the Helm role nor the user's default says. */
 export const HELM_FALLBACK_REASONING_EFFORT = "high";
+
+/** Helm's thread lines are keyed "<bridge>:<taskId>"; this Bridge is "local". */
+const LOCAL_THREAD_PREFIX = "local:";
 
 export interface HelmConversationView {
   sessionId: string;
@@ -248,9 +252,37 @@ export class HelmService implements HelmToolRuntime {
           };
         },
         apply: (config) => applyHelmChatProfile(config, { tools }),
+        conversationContext: (sessionId, { afterLoss }) => {
+          // Without a loss, a conversation that already replied before this Bridge process started
+          // got its index then (or predates it): resending would only repeat it.
+          if (!afterLoss && this.store.get(sessionId)?.lastReplyAt) return undefined;
+          return this.buildTaskIndex();
+        },
       };
     }
     return this.profile;
+  }
+
+  /** The index of live tasks a conversation starts with, with Helm's thread line for each. */
+  buildTaskIndex(): string | undefined {
+    const tasks = this.ctx.taskStore.listTasks();
+    const thinker = this.ctx.helmThinker;
+    const threadEntries = (thinker?.listMemory() ?? [])
+      .filter((entry) => entry.kind === "thread" && entry.status === "active" && entry.key?.startsWith(LOCAL_THREAD_PREFIX));
+    const sourceNames = thinker?.sourceNames(threadEntries.flatMap((entry) => entry.fromSources)) ?? {};
+    const threads = new Map(threadEntries.map((entry) => [entry.key!.slice(LOCAL_THREAD_PREFIX.length), {
+      text: entry.text,
+      ...(entry.fromSources.length ? { from: [...new Set(entry.fromSources.map((id) => sourceNames[id] ?? id))] } : {}),
+    }]));
+    const meta = this.ctx.sessionMetaStore.listMeta();
+    const lastActivity = new Map<string, number>();
+    for (const task of tasks) {
+      for (const sessionId of task.sessionIds) {
+        const time = Date.parse(meta[sessionId]?.lastVisibleActivityAt ?? "");
+        if (Number.isFinite(time) && time > (lastActivity.get(task.id) ?? 0)) lastActivity.set(task.id, time);
+      }
+    }
+    return buildHelmTaskIndex({ tasks, threads, lastActivity });
   }
 
   // ── Hands-free binding and watched sessions (HelmToolRuntime) ──

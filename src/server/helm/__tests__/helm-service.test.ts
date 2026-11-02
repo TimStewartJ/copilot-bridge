@@ -397,6 +397,40 @@ describe("Helm session profiles", () => {
     expect(applied.systemMessage).toEqual({ mode: "customize", content: "ordinary guidance" });
   });
 
+  it("starts a conversation with the task index built from this Bridge's tasks and Helm's thread lines", async () => {
+    const { helm, ctx, store } = createHarness();
+    Object.assign(ctx, {
+      taskStore: {
+        listTasks: () => [
+          { id: "t-bridge", title: "Copilot Bridge", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-01T00:00:00.000Z", sessionIds: ["s-bridge"] },
+          { id: "t-trip", title: "Trip plans", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-10T00:00:00.000Z", sessionIds: [] },
+        ],
+      },
+      sessionMetaStore: { listMeta: () => ({ "s-bridge": { lastVisibleActivityAt: "2026-09-17T00:00:00.000Z" } }) },
+      helmThinker: {
+        listMemory: () => [
+          { kind: "thread", key: "local:t-bridge", text: "Calendar import in review.", status: "active", fromSources: [] },
+          { kind: "thread", key: "local:t-trip", text: "Hotel replied.", status: "active", fromSources: ["mail-server"] },
+          { kind: "thread", key: "laptop:t-bridge", text: "A peer Bridge's line.", status: "active", fromSources: [] },
+          { kind: "rule", key: null, text: "Not a thread.", status: "active", fromSources: [] },
+        ],
+        sourceNames: (ids: Iterable<string>) => Object.fromEntries([...ids].map((id) => [id, "Mail"])),
+      },
+    });
+    const conversation = await helm.createConversation();
+    const profile = helm.getSessionProfile();
+    const index = profile.conversationContext?.(conversation.sessionId, { afterLoss: false });
+    expect(index?.split("\n").slice(2, 4)).toEqual([
+      "- [Copilot Bridge](bridge://task/t-bridge): Calendar import in review.",
+      "- [Trip plans](bridge://task/t-trip): Hotel replied. [from Mail]",
+    ]);
+    // A conversation that replied before this process started already has it, unless it was lost since.
+    store.recordReply(conversation.sessionId, "2026-09-18T09:01:00.000Z");
+    expect(profile.conversationContext?.(conversation.sessionId, { afterLoss: false })).toBeUndefined();
+    expect(profile.conversationContext?.(conversation.sessionId, { afterLoss: true })).toBe(index);
+    helm.dispose();
+  });
+
   it("moves conversations pinned to the old Helm folder to the Bridge workspace", async () => {
     const { helm, ctx } = createHarness();
     const legacy = await helm.createConversation();

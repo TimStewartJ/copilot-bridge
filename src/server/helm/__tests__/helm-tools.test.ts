@@ -1,5 +1,12 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AppContext } from "../../app-context.js";
+import { createSearchIndex } from "../../search-index.js";
+import { createSessionMetaStore } from "../../session-meta-store.js";
+import { createSessionTitlesStore } from "../../session-titles.js";
+import { createTaskStore } from "../../task-store.js";
+import { createTestBus, makeTestDir, setupTestDb } from "../../__tests__/helpers.js";
 import {
   boundToolResult,
   buildBridgeSnapshotLine,
@@ -288,6 +295,78 @@ describe("Helm tools", () => {
     expect(facade.sent[0]).toEqual(["eeeeeeee-5555-4000-8000-000000000005", "Investigate the flaky test"]);
     const missingTask = await tool(ctx, facade, "start_session").run({ prompt: "x", taskId: "nope" });
     expect(missingTask.resultType).toBe("failure");
+  });
+
+  it("starts a session only once the caller chose a task or explicitly none, and otherwise suggests live tasks", async () => {
+    const { ctx } = createContext();
+    const tasks: Record<string, { id: string; title: string; status: string; deferred?: boolean }> = {
+      "task-1": { id: "task-1", title: "Tellus Expeditions", status: "active" },
+      "task-old": { id: "task-old", title: "Tellus prototype", status: "archived" },
+      "task-garden": { id: "task-garden", title: "Garden", status: "active", deferred: true },
+    };
+    const search = vi.fn(async () => ({
+      tasks: { total: 3, items: [{ taskId: "task-old" }, { taskId: "task-1" }, { taskId: "task-garden" }] },
+      chats: { total: 0, items: [] },
+      docs: { total: 0, items: [] },
+      coverage: { state: "ready" },
+    }));
+    Object.assign(ctx, { taskStore: { getTask: (id: string) => tasks[id] }, searchIndex: { search } });
+    const facade = createFacade();
+    const start = (args: Record<string, unknown>) => tool(ctx, facade, "start_session").run({ prompt: "Fix the Tellus biome blend", ...args });
+
+    expect(await start({})).toEqual({
+      started: false,
+      message: expect.stringContaining("No session was started"),
+      candidates: [
+        { taskId: "task-1", title: "Tellus Expeditions", link: "bridge://task/task-1" },
+        { taskId: "task-garden", title: "Garden", link: "bridge://task/task-garden", setAside: true },
+      ],
+    });
+    expect((await start({ noTask: true })).resultType).toBe("failure");
+    expect((await start({ noTask: true, reason: "One-off", taskId: "task-1" })).resultType).toBe("failure");
+    expect(facade.sent).toEqual([]);
+
+    expect(await start({ noTask: true, reason: "A one-off question, not part of any task" }))
+      .toMatchObject({ success: true, noTask: "A one-off question, not part of any task" });
+    expect(facade.sent).toHaveLength(1);
+  });
+
+  it.each([
+    "Bridge calendar feature",
+    "bridge management",
+  ])("find puts the live task named for %j before archived tasks that only mention it", async (query) => {
+    const db = setupTestDb();
+    const copilotHome = makeTestDir("helm-find");
+    const taskStore = createTaskStore(db, createTestBus());
+    const sessionId = "ffffffff-6666-4000-8000-000000000006";
+    // A chat that matches every word must not keep find from looking for tasks by any word.
+    mkdirSync(join(copilotHome, "session-state", sessionId), { recursive: true });
+    writeFileSync(join(copilotHome, "session-state", sessionId, "events.jsonl"), `${JSON.stringify({
+      type: "user.message", id: "m1", timestamp: "2026-11-01T10:00:00.000Z", data: { content: `How is the ${query} going?` },
+    })}\n`);
+    const live = taskStore.createTask("Copilot Bridge");
+    taskStore.updateTask(live.id, { kind: "ongoing", notes: `${"Releases, tunnels, prompts and dashboards. ".repeat(60)}Deploys queue management jobs.` });
+    for (const [title, notes] of [
+      ["Old cleanup", "Removed the bridge management scripts."],
+      ["Dashboard refresh", "Moved the dashboard off the bridge."],
+    ]) {
+      const archived = taskStore.createTask(title);
+      taskStore.updateTask(archived.id, { notes, status: "archived" });
+    }
+    const searchIndex = createSearchIndex(db, {
+      copilotHome, taskStore, sessionMetaStore: createSessionMetaStore(db), sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => [{ sessionId, summary: "Weekly check-in" }],
+    });
+    try {
+      await searchIndex.reconcile({ q: query, scope: "global", kind: "all", limit: 5, offset: 0 });
+      const result = await tool({ searchIndex } as unknown as AppContext, createFacade(), "find").run({ query });
+      expect(result.sessions).toHaveLength(1);
+      expect(result.tasks[0]).toMatchObject({ title: "Copilot Bridge", taskId: live.id });
+      expect(result.tasks[0].archived).toBeUndefined();
+    } finally {
+      await searchIndex.shutdown();
+      db.close();
+    }
   });
 
   it("answers a waiting question with the matching choice", async () => {

@@ -61,6 +61,7 @@ function createManager(
     computerUsePluginDirectory?: string;
     /** Sessions built as a look (locked down) instead of as Helm's chat. */
     lookSessionIds?: Set<string>;
+    conversationContext?: SessionConfigProfile["conversationContext"];
   } = {},
 ) {
   const db = setupTestDb();
@@ -92,6 +93,7 @@ function createManager(
     configOptions: () => ({ promptProfile: "assistant", promptRole: "In this chat you are Helm.", extraGuidance: "<helm>Helm's guidance</helm>" }),
     apply: (config) => applyHelmChatProfile(config, { tools: chatTools }),
     ...(options.defaultTurnEffort ? { defaultTurnReasoningEffort: options.defaultTurnEffort } : {}),
+    ...(options.conversationContext ? { conversationContext: options.conversationContext } : {}),
   };
   const lookProfile: SessionConfigProfile = {
     expectedToolNames: () => HELM_TOOLS.map((tool) => tool.name),
@@ -274,6 +276,37 @@ describe("SessionManager with the Helm profile", () => {
       await manager.startWorkAndWaitForDelivery(helmId, "[hands-free]\nhello", undefined, { reasoningEffort: "none" });
       await vi.waitFor(() => expect(manager.isSessionBusy(helmId)).toBe(false));
       expect(session.calls).toEqual(["setReasoningEffort:high", "send", "send"]);
+    } finally {
+      await manager.gracefulShutdown();
+      db.close();
+    }
+  });
+
+  it("puts the profile's conversation context in front of the first message, and again only after the conversation may have lost it", async () => {
+    const helmId = crypto.randomUUID();
+    let version = 1;
+    const conversationContext = vi.fn((_sessionId: string, _options: { afterLoss: boolean }) => `<index>v${version}</index>`);
+    const { manager, backend, db } = createManager(new Set([helmId]), { conversationContext });
+    const turn = async (prompt: string) => {
+      await manager.startWorkAndWaitForDelivery(helmId, prompt);
+      await vi.waitFor(() => expect(manager.isSessionBusy(helmId)).toBe(false));
+    };
+    try {
+      await manager.initialize();
+      await manager.createSession({ expectedSessionId: helmId });
+      const session = await backend.createSession.mock.results[0]!.value;
+      await turn("first");
+      version = 2;
+      await turn("second");
+      manager.resetTurnContext(helmId);
+      await turn("after compaction");
+      expect(session.send.mock.calls.map(([options]: [{ prompt: string; displayPrompt?: string }]) => [options.prompt, options.displayPrompt])).toEqual([
+        ["<index>v1</index>\n\nfirst", "first"],
+        // A changed index is not resent mid-conversation: the cached conversation stays as it was.
+        ["second", undefined],
+        ["<index>v2</index>\n\nafter compaction", "after compaction"],
+      ]);
+      expect(conversationContext.mock.calls.map(([, options]) => options.afterLoss)).toEqual([false, true]);
     } finally {
       await manager.gracefulShutdown();
       db.close();

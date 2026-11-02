@@ -157,6 +157,17 @@ describe("global search index", () => {
     expect(JSON.stringify(result)).not.toContain("injected text");
   });
 
+  it("ranks a chat named for the query before chats that only mention it", async () => {
+    const { copilotHome, index, sessions } = fixture();
+    writeEvents(copilotHome, sessions[0]!.sessionId, []);
+    writeEvents(copilotHome, sessions[1]!.sessionId, [
+      event("user.message", "launch-1", "launch", "2026-09-01T10:00:00.000Z"),
+    ]);
+    const result = await index.search({ ...request, q: "launch", kind: "chat" });
+    expect(result.chats.items.map((hit) => hit.sessionId)).toEqual([sessions[0]!.sessionId, sessions[1]!.sessionId]);
+    await index.shutdown();
+  });
+
   it("supports quoted phrase keywords and strict task/session scopes", async () => {
     const { copilotHome, index, sessions, taskStore } = fixture();
     writeEvents(copilotHome, sessions[0]!.sessionId, [

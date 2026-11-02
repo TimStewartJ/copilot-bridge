@@ -656,6 +656,13 @@ export interface SessionConfigProfile {
    * a settings change applies to the next message rather than the next conversation.
    */
   defaultTurnReasoningEffort?(): string | undefined;
+  /**
+   * Context a profiled chat gets in front of a user message, in place of the bridge_context block
+   * ordinary chats get. Asked for until this process has delivered it, then again only after the
+   * conversation may have lost it (compaction, undo; `afterLoss` is then true). Changes in between
+   * are not sent, so the conversation stays the same for the prompt cache.
+   */
+  conversationContext?(sessionId: string, options: { afterLoss: boolean }): string | undefined;
 }
 
 /** Options that don't come from AppContext — caller provides these directly. */
@@ -5516,6 +5523,7 @@ export class SessionManager {
       }
       this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
       this.deliveredTurnContext.delete(sessionId);
+      this.deliveredProfileContext.delete(sessionId);
       this.deps.backgroundCommandStore?.forgetSession(sessionId);
       this.deps.chatMessageIdStore?.forgetSession(sessionId);
       this.deps.unsentMessageStore?.forgetSession(sessionId);
@@ -5618,7 +5626,8 @@ export class SessionManager {
   private prepareBridgeContext(sessionId: string): { block?: string; commit(): void } {
     const none = { commit: () => {} };
     // Profiled chats (Helm and its looks) have no task and read the Bridge through their own tools.
-    if (this.deps.resolveSessionProfile?.(sessionId)) return none;
+    const profile = this.deps.resolveSessionProfile?.(sessionId);
+    if (profile) return this.prepareProfileContext(sessionId, profile);
     const task = this.findLinkedTask(sessionId) ?? null;
     const sections = buildBridgeContextSections(this.deps, task, this.lookupGroupNotes(task?.groupId));
     const delivered = this.deliveredTurnContext.get(sessionId) ?? { generation: 0, hashes: emptyBridgeContextHashes() };
@@ -5633,6 +5642,31 @@ export class SessionManager {
         const current = this.deliveredTurnContext.get(sessionId);
         if (!current || current.generation !== generation) return;
         for (const section of changed) current.hashes.set(section.name, section.hash);
+      },
+    };
+  }
+
+  /** The ledger generation at which each profiled chat last received its conversation context. */
+  private readonly deliveredProfileContext = new Map<string, number>();
+
+  private prepareProfileContext(sessionId: string, profile: SessionConfigProfile): { block?: string; commit(): void } {
+    const none = { commit: () => {} };
+    if (!profile.conversationContext) return none;
+    const generation = this.deliveredTurnContext.get(sessionId)?.generation ?? 0;
+    if (this.deliveredProfileContext.get(sessionId) === generation) return none;
+    let block: string | undefined;
+    try {
+      block = profile.conversationContext(sessionId, { afterLoss: generation > 0 });
+    } catch (error) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not build the conversation context:`, error);
+      return none;
+    }
+    if (!block) return none;
+    return {
+      block,
+      commit: () => {
+        if ((this.deliveredTurnContext.get(sessionId)?.generation ?? 0) !== generation) return;
+        this.deliveredProfileContext.set(sessionId, generation);
       },
     };
   }
