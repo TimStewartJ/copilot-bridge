@@ -9,6 +9,7 @@ import { join, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { registerHomeRoutes } from "./home.js";
+import { registerCalendarRoutes } from "./calendar-router.js";
 import { resolveSessionSummary } from "./session-list.js";
 import type { ApiServices } from "./api-services.js";
 export type { ApiServiceOptions as ApiRouterOptions } from "./api-services.js";
@@ -1196,6 +1197,7 @@ export function createApiRouter(
   // ── Session routes ──────────────────────────────────────────────
 
   registerHomeRoutes(router, ctx, () => sessionList.read());
+  if (ctx.calendarStore) registerCalendarRoutes(router, { ...ctx, calendarStore: ctx.calendarStore });
 
   router.get("/sessions", async (req, res) => {
     try {

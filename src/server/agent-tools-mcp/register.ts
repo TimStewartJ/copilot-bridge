@@ -5,6 +5,7 @@ import { registerAgentDefinitionTools } from "../tools/agent-definition-tools.js
 import { registerBrowserSessionTools } from "../browser-session-tools.js";
 import { registerChecklistTools } from "../tools/checklist-tools.js";
 import { registerActionTools } from "../tools/action-tools.js";
+import { registerCalendarTools } from "../tools/calendar-tools.js";
 import { registerDocsTools } from "../tools/docs-tools.js";
 import { registerDeferTools } from "../tools/defer-tools.js";
 import { registerGitWorktreeTools } from "../tools/git-worktree-tools.js";
@@ -52,6 +53,7 @@ export function registerAllBridgeTools(
   registerTagTools(server, ctx, { hiddenTools });
   registerActionTools(server, ctx, { hiddenTools });
   registerChecklistTools(server, ctx, { hiddenTools });
+  registerCalendarTools(server, ctx, { hiddenTools });
   registerGitWorktreeTools(server, ctx, { hiddenTools });
   registerScheduleTools(server, ctx, { hiddenTools });
   registerDocsTools(server, ctx, { hiddenTools });

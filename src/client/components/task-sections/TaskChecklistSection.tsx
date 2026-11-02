@@ -1,10 +1,27 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChecklistItem } from "../../api";
 import { shouldSurfaceReadyToCompleteCue } from "../../task-completion-helpers";
 import { getTaskPanelChecklistPreview } from "../../task-panel-preview";
 import ChecklistItemRow from "../ChecklistItemRow";
 import CollapsibleCompleted from "../shared/CollapsibleCompleted";
-import { CheckCircle2, Plus } from "lucide-react";
+import { CheckCircle2, Flag, Plus } from "lucide-react";
+import { extractWhen } from "../../../shared/typed-date";
+import { DS, cx } from "../../design/tokens";
+
+/**
+ * A date said at the end of a new item ("Renew passport by fri") becomes its deadline. Only a date:
+ * a deadline has no time, so a phrase with one stays in the text rather than lose the time.
+ */
+export function readDeadlinePhrase(text: string, now = new Date()): { text: string; deadline: string; phrase: string } | null {
+  const found = extractWhen(text.trim(), now);
+  if (!found || found.when.time) return null;
+  return { text: found.rest, deadline: found.when.date, phrase: found.phrase };
+}
+
+function formatDeadline(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -13,7 +30,7 @@ export interface TaskChecklistSectionProps {
   checklistItems: ChecklistItem[];
   newChecklistItemText: string;
   onNewChecklistItemTextChange: (text: string) => void;
-  onCreateChecklistItem: (text: string) => Promise<void>;
+  onCreateChecklistItem: (text: string, deadline?: string) => Promise<void>;
   onChecklistItemUpdate: (checklistItem: ChecklistItem) => void;
   onChecklistItemDelete: (id: string) => void;
   variant?: "panel" | "card";
@@ -52,6 +69,28 @@ export default function TaskChecklistSection({
   const panelOpenItems = showAllOpen ? openChecklistItems : panelPreview.openPreviewItems;
   const shouldShowOpenExpansion = panelPreview.hiddenOpenCount > 0;
   const [showReadyCue, setShowReadyCue] = useState(false);
+  // The text the reader chose to keep as typed; a new edit reads it again.
+  const [keptAsText, setKeptAsText] = useState<string | null>(null);
+  const deadlinePhrase = useMemo(() => newChecklistItemText.trim() && keptAsText !== newChecklistItemText
+    ? readDeadlinePhrase(newChecklistItemText) : null, [newChecklistItemText, keptAsText]);
+  const submitNewItem = async () => {
+    const text = newChecklistItemText.trim();
+    if (!text) return false;
+    onNewChecklistItemTextChange("");
+    setKeptAsText(null);
+    if (deadlinePhrase) await onCreateChecklistItem(deadlinePhrase.text, deadlinePhrase.deadline);
+    else await onCreateChecklistItem(text);
+    return true;
+  };
+  const deadlineHint = deadlinePhrase && (
+    <div className={cx(DS.text.meta, "flex items-center gap-1.5", isCard ? "px-3 pb-1" : "px-3 pb-1")}>
+      <Flag size={11} className="text-warning" aria-hidden="true" />
+      <span>Due {formatDeadline(deadlinePhrase.deadline)}</span>
+      <button type="button" className={cx(DS.focus, "text-text-secondary hover:text-text-primary")}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => setKeptAsText(newChecklistItemText)}>Keep as text</button>
+    </div>
+  );
   const previousOpenChecklistItemsRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -128,10 +167,7 @@ export default function TaskChecklistSection({
             className="flex items-center gap-2 px-3 py-1.5"
             onSubmit={async (e) => {
               e.preventDefault();
-              const text = newChecklistItemText.trim();
-              if (!text) return;
-              onNewChecklistItemTextChange("");
-              await onCreateChecklistItem(text);
+              await submitNewItem();
             }}
           >
             <Plus size={14} className="text-text-faint shrink-0" />
@@ -143,6 +179,7 @@ export default function TaskChecklistSection({
               className="flex-1 text-sm bg-transparent border-none outline-none text-text-primary placeholder:text-text-faint"
             />
           </form>
+          {deadlineHint}
         </div>
       ) : (
         <>
@@ -180,14 +217,14 @@ export default function TaskChecklistSection({
                     return;
                   }
                   if (e.key === "Enter" && text) {
-                    onNewChecklistItemTextChange("");
-                    await onCreateChecklistItem(text);
+                    await submitNewItem();
                     setShowAllOpen(true);
                   }
                 }}
               />
             </div>
           )}
+          {showComposer && deadlineHint}
           {shouldShowOpenExpansion && (
             <button
               onClick={() => setShowAllOpen((value) => !value)}

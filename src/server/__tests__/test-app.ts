@@ -22,6 +22,7 @@ import { createBridgeSessionStateStore } from "../bridge-session-state-store.js"
 import { createCopilotCliSessionCatalog } from "../copilot-cli-session-catalog.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createChecklistStore } from "../checklist-store.js";
+import { createCalendarStore } from "../calendar-store.js";
 import { createTagStore } from "../tag-store.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
 import { createCopilotModelPriceStore } from "../copilot-model-price-store.js";
@@ -102,6 +103,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   const taskGroupStore = createTaskGroupStore(db, globalBus);
   const pushSubscriptionStore = createPushSubscriptionStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
+  const calendarStore = createCalendarStore(db, globalBus);
   const telemetryStore = createTelemetryStore(db);
 
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
@@ -118,6 +120,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     cliSessionCatalog: createCopilotCliSessionCatalog({ copilotHome: runtimePaths.copilotHome }),
     readStateStore: createReadStateStore(db),
     checklistStore,
+    calendarStore,
     tagStore: createTagStore(db),
     mcpServerStore: createMcpServerStore(db),
     copilotModelPriceStore: createCopilotModelPriceStore(db),

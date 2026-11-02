@@ -47,6 +47,7 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 vi.mock("./TaskMomentumHistory", () => ({ default: () => null, LatestMomentumChange: () => null }));
+vi.mock("../calendar/TaskDatesSection", () => ({ default: () => null }));
 const taskHistoryMock = vi.hoisted(() => vi.fn((_taskId: string, _limit?: number, _enabled?: boolean) => ({
   data: undefined as undefined | { entries: Array<{ id: number; taskId: string; at: string; source: "agent" | "user" | "system"; text: string }>; total: number },
 })));

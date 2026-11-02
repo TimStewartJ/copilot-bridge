@@ -380,3 +380,87 @@ function localDatePartsEqual(actual: LocalDateParts, expected: LocalDateParts): 
     && actual.hour === expected.hour
     && actual.minute === expected.minute;
 }
+
+export interface WallDate { year: number; month: number; day: number }
+export interface WallTime extends WallDate { hour: number; minute: number }
+
+/** The local date and time `date` shows in `timezone` (the server's zone when omitted). */
+export function wallTimeIn(date: Date, timezone?: string): WallTime & { weekday: number } {
+  return getDatePartsInTz(date, timezone);
+}
+
+/**
+ * The instant a local wall time names in `timezone`. A time that falls in a daylight-saving gap is
+ * read with the offset in force before the gap (2:30 in a 2:00–3:00 gap is 3:30 after it), as
+ * calendar standards do. In a fold, where the time happens twice, the earlier instant wins.
+ */
+export function wallTimeToInstant(parts: WallTime, timezone?: string): Date {
+  const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+  const exact = localTimeToDate({ ...parts, weekday }, timezone);
+  const target = localPartsToUtcMs(parts);
+  const offsetAt = (instant: number) => localPartsToUtcMs(getDatePartsInTz(new Date(instant), timezone)) - instant;
+  if (exact) {
+    // Prefer the earlier of two matches when the clock repeats some time (30 minutes to 2 hours).
+    for (const back of [120, 90, 60, 30]) {
+      const earlier = new Date(exact.getTime() - back * 60_000);
+      if (localDatePartsEqual(getDatePartsInTz(earlier, timezone), { ...parts, weekday })) return earlier;
+    }
+    return exact;
+  }
+  const before = offsetAt(target - offsetAt(target) - 3 * 3_600_000);
+  return new Date(target - before);
+}
+
+export interface CronDayRuns {
+  /** How many times the schedule fires on the day within the bounds. */
+  count: number;
+  /** The first `limit` of those times, as instants in order. */
+  times: string[];
+}
+
+/**
+ * When a cron expression fires on one local calendar day of its zone, after `afterMs` and before
+ * `beforeMs`. On an ordinary day the count comes from the expression's fields, so a dense schedule
+ * costs the same as a sparse one. On a day the clock changes, every minute of the day is checked as
+ * the scheduler does: a skipped hour never fires and a repeated hour fires twice.
+ */
+export function cronRunsOnLocalDay(
+  cronExpr: string,
+  timezone: string | undefined,
+  day: WallDate,
+  limit: number,
+  bounds: { afterMs?: number; beforeMs?: number } = {},
+): CronDayRuns | undefined {
+  const parsed = parseCronExpression(cronExpr);
+  if (!parsed) return undefined;
+  const weekday = new Date(Date.UTC(day.year, day.month - 1, day.day)).getUTCDay();
+  if (!fieldIncludes(parsed.month, day.month) || !fieldIncludes(parsed.day, day.day) || !fieldIncludes(parsed.weekday, weekday)) {
+    return { count: 0, times: [] };
+  }
+  const after = bounds.afterMs ?? -Infinity;
+  const before = bounds.beforeMs ?? Infinity;
+  const dayStart = wallTimeToInstant({ ...day, hour: 0, minute: 0 }, timezone).getTime();
+  const next = new Date(Date.UTC(day.year, day.month - 1, day.day + 1));
+  const dayEnd = wallTimeToInstant({ year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate(), hour: 0, minute: 0 }, timezone).getTime();
+  const times: string[] = [];
+  let count = 0;
+  if (dayEnd - dayStart !== 86_400_000) {
+    for (let at = dayStart; at < dayEnd; at += 60_000) {
+      if (at <= after || at >= before) continue;
+      if (!matchesCronParts(parsed, getDatePartsInTz(new Date(at), timezone))) continue;
+      if (times.length < limit) times.push(new Date(at).toISOString());
+      count += 1;
+    }
+    return { count, times };
+  }
+  // An ordinary day: wall minutes map one to one onto instants from local midnight.
+  for (const hour of parsed.hour.values) {
+    for (const minute of parsed.minute.values) {
+      const at = dayStart + (hour * 60 + minute) * 60_000;
+      if (at <= after || at >= before) continue;
+      if (times.length < limit) times.push(new Date(at).toISOString());
+      count += 1;
+    }
+  }
+  return { count, times };
+}

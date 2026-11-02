@@ -116,7 +116,9 @@ import { FileViewerHost } from "./components/FilePreview";
 
 const HelmView = lazy(() => import("./helm/HelmView"));
 const HelmMemory = lazy(() => import("./helm/HelmMemory"));
+const CalendarPage = lazy(() => import("./calendar/CalendarPage"));
 import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
+import { calendarRootKey } from "./calendar/calendar-api";
 import { helmBriefKey, helmBriefStatusKey, markHelmBriefSeen, useHelmBriefStatusQuery, useLoadedHelmBriefRunId } from "./helm/thinker-api";
 import { HandsFreeProvider, useHandsFree } from "./voice/HandsFreeProvider";
 import { HandsFreePill } from "./voice/HandsFreeDock";
@@ -574,10 +576,15 @@ function AppShell() {
         break;
       case "schedule:changed":
         // Enabled schedules keep a task out of Gone quiet.
-        refetch(["task"], TASK_OVERVIEW_KEY);
+        refetch(["task"], TASK_OVERVIEW_KEY, calendarRootKey);
         break;
       case "task:changed":
         taskChangeInvalidator.handleTaskChange(event.taskId);
+        // Revisits and checklist deadlines are calendar dates.
+        refetch(calendarRootKey);
+        break;
+      case "calendar:changed":
+        refetch(calendarRootKey);
         break;
       case "management-job:changed":
         refetch(queryKeys.managementJobsRoot, TASK_OVERVIEW_KEY);
@@ -591,13 +598,13 @@ function AppShell() {
         if (event.readState) applyServerStateRef.current(event.readState);
         break;
       case "helm:changed":
-        if (event.reason === "brief") refetch(helmBriefStatusKey, helmBriefKey);
+        if (event.reason === "brief") refetch(helmBriefStatusKey, helmBriefKey, calendarRootKey);
         else refetch(helmStateQueryKey);
         break;
       case "status:connected":
         void refetchRestartStatus();
         // Events missed while disconnected: sessions, Home, Helm and what has been read.
-        refetch(activeSessionsKey, queryKeys.dashboard, helmStateQueryKey, helmBriefStatusKey);
+        refetch(activeSessionsKey, queryKeys.dashboard, helmStateQueryKey, helmBriefStatusKey, calendarRootKey);
         fetchReadState().then((state) => applyServerStateRef.current(state)).catch(() => undefined);
         break;
     }
@@ -938,6 +945,10 @@ function AppShell() {
     navigate("/helm");
   }, [navigate]);
 
+  const handleOpenCalendar = useCallback(() => {
+    navigate("/calendar");
+  }, [navigate]);
+
   const handleOpenDocsRoot = useCallback(() => {
     navigate("/docs");
   }, [navigate]);
@@ -994,10 +1005,11 @@ function AppShell() {
         handleSelectMobileWorkSegment(target.segment, target.replace);
         break;
       }
+      case "calendar": handleOpenCalendar(); break;
       case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
+  }, [handleOpenCalendar, handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
 
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;
@@ -1778,6 +1790,7 @@ function AppShell() {
     docs: mobileRouteMeta.route === "docs-root" || mobileRouteMeta.route === "docs-detail",
     search: location.pathname === "/search",
     helm: mobileRouteMeta.route === "helm",
+    calendar: mobileRouteMeta.route === "calendar",
   };
 
   const helmTalk = (
@@ -1847,6 +1860,8 @@ function AppShell() {
         onNewTask={handleNewTask}
         isQuickChatsActive={quickChatsMode && !activeTaskId}
         onGoHome={handleOpenDashboard}
+        onOpenCalendar={handleOpenCalendar}
+        isCalendarActive={location.pathname === "/calendar"}
         onOpenSettings={handleOpenSettings}
         onOpenDocs={handleOpenDocs}
         onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
@@ -2016,7 +2031,7 @@ function AppShell() {
         flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden
         ${/* Desktop: always visible */""}
         ${/* Mobile: visible for chat, settings, and task dashboard */""}
-        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs || isMobileRoute.search || isMobileRoute.helm ? "flex" : "hidden md:flex"}
+        ${isMobileRoute.dashboard || isMobileRoute.chat || isMobileRoute.settings || isMobileRoute.taskDashboard || isMobileRoute.docs || isMobileRoute.search || isMobileRoute.helm || isMobileRoute.calendar ? "flex" : "hidden md:flex"}
       `.trim()}>
         {mobileRouteMeta.showSharedHeader && (
           <MobileDetailHeader
@@ -2271,6 +2286,14 @@ function AppShell() {
             />
             <Route path="docs/*" element={<DocsView onDocTitleChange={setDocTitle} />} />
             <Route path="settings" element={<SettingsView />} />
+            <Route
+              path="calendar"
+              element={
+                <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading calendar…</div>}>
+                  <CalendarPage onSelectTask={handleSelectTask} tasks={tasks} />
+                </Suspense>
+              }
+            />
             <Route
               path="helm"
               element={

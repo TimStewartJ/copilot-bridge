@@ -952,6 +952,26 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_event_log_stats_folds_updated ON event_log_stats_folds(updatedAt);
 
+    -- Calendar events the Bridge owns. Timed events keep UTC instants; all-day events keep dates.
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      allDay INTEGER NOT NULL DEFAULT 0,
+      start TEXT NOT NULL,
+      "end" TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      repeatEvery TEXT,
+      repeatInterval INTEGER,
+      repeatUntil TEXT,
+      location TEXT,
+      notes TEXT,
+      taskId TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      createdBy TEXT NOT NULL DEFAULT 'user',
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_taskId ON calendar_events(taskId);
+
     -- The browser's id for a chat message, by the runtime id of the user message it was sent as
     CREATE TABLE IF NOT EXISTS chat_message_client_ids (
       sessionId TEXT NOT NULL,

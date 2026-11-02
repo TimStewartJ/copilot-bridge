@@ -151,6 +151,21 @@ describe("TaskChecklistSection panel expansion", () => {
       expect(harness.dom.container.textContent).toContain("Show fewer open items");
     });
   });
+
+  it.each([
+    ["Renew passport by 2031-05-07", ["Renew passport", "2031-05-07"]],
+    // A deadline has no time, so a phrase with one stays in the text.
+    ["Call the bank 2031-05-07 3pm", ["Call the bank 2031-05-07 3pm"]],
+  ])("reads a deadline from %j", async (text, expected) => {
+    const onCreateChecklistItem = vi.fn(async () => {});
+    await withChecklistSection(createBaseProps({ newChecklistItemText: text, onCreateChecklistItem, variant: "panel" }), async (harness) => {
+      const input = findInputByPlaceholder(harness.dom.container, "+ Add item…");
+      await harness.act(async () => {
+        await getReactProps(input)?.onKeyDown?.({ key: "Enter" });
+      });
+      expect(onCreateChecklistItem).toHaveBeenCalledWith(...expected);
+    });
+  });
 });
 
 describe("TaskChecklistSection panel composer", () => {

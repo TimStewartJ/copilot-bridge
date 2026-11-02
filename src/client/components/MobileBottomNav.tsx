@@ -1,4 +1,4 @@
-import { BookOpen, Layers, LayoutDashboard, Settings, ShipWheel, type LucideIcon } from "lucide-react";
+import { BookOpen, CalendarDays, Layers, LayoutDashboard, Settings, ShipWheel, type LucideIcon } from "lucide-react";
 import { useMemo } from "react";
 import {
   describeTabAttention,
@@ -36,6 +36,7 @@ export function MobileBottomNav({
     { id: "home", label: "Home", icon: LayoutDashboard },
     { id: "helm", label: "Helm", icon: ShipWheel },
     { id: "work", label: "Work", icon: Layers },
+    { id: "calendar", label: "Calendar", icon: CalendarDays },
     ...(showDocs ? [{ id: "docs" as MobileNavTab, label: "Docs", icon: BookOpen }] : []),
     { id: "settings", label: "Settings", icon: Settings },
   ], [showDocs]);

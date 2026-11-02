@@ -37,11 +37,11 @@ describe("MobileBottomNav", () => {
     harness = null;
   });
 
-  it("has five destinations, with Helm's conversation beside Home, tasks and chats under Work, and no quota slot", async () => {
+  it("has six destinations, with Helm's conversation beside Home, tasks and chats under Work, and no quota slot", async () => {
     harness = await createReactDomHarness();
     await harness.render(createElement(MobileBottomNav, { activeTab: "home", onSelectTab: vi.fn() }));
 
-    expect(navLabels(harness.dom.container)).toEqual(["Home", "Helm", "Work", "Docs", "Settings"]);
+    expect(navLabels(harness.dom.container)).toEqual(["Home", "Helm", "Work", "Calendar", "Docs", "Settings"]);
 
     const nav = findAllByTag(harness.dom.container, "NAV")[0];
     expect(getReactProps(nav)?.style).toEqual({
@@ -94,7 +94,7 @@ describe("MobileBottomNav", () => {
       helmMark: "Helm replied",
     }));
 
-    expect(navLabels(harness.dom.container)).toEqual(["Home, New brief from Helm", "Helm, Helm replied", "Work", "Docs", "Settings"]);
+    expect(navLabels(harness.dom.container)).toEqual(["Home, New brief from Helm", "Helm, Helm replied", "Work", "Calendar", "Docs", "Settings"]);
     expect(findAllByTag(findButtonByLabel(harness.dom.container, "Helm, Helm replied"), "SPAN")
       .some((span) => getReactProps(span)?.["data-status"] === "unread")).toBe(true);
   });

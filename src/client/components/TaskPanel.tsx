@@ -1,3 +1,4 @@
+import TaskDatesSection from "../calendar/TaskDatesSection";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -649,7 +650,7 @@ export default function TaskPanel({
               checklistItems={checklistItems}
               newChecklistItemText={newChecklistItemText}
               onNewChecklistItemTextChange={setNewChecklistItemText}
-              onCreateChecklistItem={async (text) => { await createChecklistItemMutation.mutateAsync({ text }); }}
+              onCreateChecklistItem={async (text, deadline) => { await createChecklistItemMutation.mutateAsync({ text, deadline }); }}
               onChecklistItemUpdate={onChecklistItemUpdate}
               onChecklistItemDelete={(id) => onChecklistItemDelete(id)}
               variant="panel"
@@ -659,6 +660,8 @@ export default function TaskPanel({
               onComposerDone={() => setChecklistComposerOpen(false)}
             />
           </Section>
+
+          <TaskDatesSection taskId={task.id} />
 
           <Section
             label="Details"

@@ -84,6 +84,18 @@ describe("TaskMomentumFields design migration", () => {
     expect(container.textContent).toContain("Nothing starts by itself");
   });
 
+  it("reads a typed revisit date", async () => {
+    const task = createTask({ deferred: true });
+    patchTaskMock.mockResolvedValue({ ...task, nextTouchAt: new Date(2030, 4, 2, 10, 30).toISOString() });
+    const container = await render(task);
+    const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Set revisit date");
+    await harness!.act(async () => getReactProps(add)!.onClick());
+    const input = findAllByTag(container, "INPUT")[0];
+    await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: "May 2 2030 10:30am" } }));
+    await harness!.act(async () => getReactProps(input)!.onBlur());
+    expect(patchTaskMock).toHaveBeenCalledWith(task.id, { nextTouchAt: new Date(2030, 4, 2, 10, 30).toISOString() });
+  });
+
   it("stays open after saves and same-task updates, but closes when switching tasks", async () => {
     const task = createTask({ nextAction: "Read" });
     const container = await render(task);

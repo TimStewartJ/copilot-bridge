@@ -14,6 +14,7 @@ import { OutcomeNotice } from "../components/QuietTasks";
 import { useTaskOutcomes } from "../hooks/useTaskOutcomes";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import { useIsMobile } from "../useIsMobile";
+import HomeWeekStrip from "../calendar/HomeWeekStrip";
 import {
   actOnItem, formatAgo, formatCredits, formatClock, formatDuration, itemFeedback, thinkNow, undoHandled, updateHelmMemory, useHelmBrief, useInvalidateHelm,
 } from "./thinker-api";
@@ -102,6 +103,8 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
         {run?.bridges.filter((bridge) => !bridge.ok).map((bridge) => <Notice key={bridge.id} tone="warning" title={`${bridge.label} couldn't be read`}>{bridge.error}</Notice>)}
         {run?.sources.filter((source) => !source.ok).map((source) => <Notice key={source.serverId} tone="warning" title={`${source.name} couldn't be read`}>{source.error}</Notice>)}
       </header>
+
+      <HomeWeekStrip compact={phone || column} />
 
       {data?.running && <Notice tone="info" icon={<Loader2 size={15} className="animate-spin" />} title="Helm is thinking">
         Started {formatAgo(data.running.startedAt)} on {data.running.model ?? "its model"}.

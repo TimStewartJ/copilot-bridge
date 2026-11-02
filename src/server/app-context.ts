@@ -50,6 +50,7 @@ import type { ManagementJobStore } from "./management-job-store.js";
 import type { StagingPreviewDiscoveryController } from "./staging-preview-discovery.js";
 import type { SessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
+import type { CalendarStore } from "./calendar-store.js";
 import type { HelmService } from "./helm/helm-service.js";
 import type { HelmStore } from "./helm/helm-store.js";
 import type { HelmThinkerStore } from "./helm/thinker/store.js";
@@ -72,6 +73,8 @@ export interface AppContext {
   cliSessionCatalog?: CopilotCliSessionCatalog;
   readStateStore: ReadStateStore;
   checklistStore: ChecklistStore;
+  /** The Bridge's own calendar events. */
+  calendarStore?: CalendarStore;
   stopPushEventNotifications?: PushEventNotificationDisposer;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;

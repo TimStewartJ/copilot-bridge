@@ -4,7 +4,8 @@ import type { Task } from "../api";
 import { patchTask } from "../api";
 import { DS, cx } from "../design/tokens";
 import { Button, DisclosureRow, Field, FieldList, Notice, Section, TextInput } from "../design/primitives";
-import { formatRevisit, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
+import { formatRevisit, formatRevisitMoment, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
+import { parseWhen, whenToDate } from "../../shared/typed-date";
 import { getTaskLifecycleDisplayState, getTaskStatusLabel } from "../task-completion-helpers";
 import TaskDeferralDialog from "./TaskDeferralDialog";
 import TaskMomentumHistory, { LatestMomentumChange } from "./TaskMomentumHistory";
@@ -32,7 +33,7 @@ const FIELD_CONFIGS: FieldConfig[] = [
   { key: "doneWhen", label: "Done when", placeholder: "What does finished look like?", type: "text", actionLabel: "Set finish line" },
   { key: "nextAction", label: "Next step", placeholder: "What would move this forward?", type: "text", actionLabel: "Add next step" },
   { key: "waitingOn", label: "Waiting for", placeholder: "A reply, delivery, or prerequisite", type: "text", actionLabel: "Add a wait" },
-  { key: "nextTouchAt", label: "Revisit on", placeholder: "When would you like to check back?", type: "datetime-local", actionLabel: "Set revisit date" },
+  { key: "nextTouchAt", label: "Revisit on", placeholder: "fri 9am, in 2 weeks, Nov 15", type: "text", actionLabel: "Set revisit date" },
 ];
 
 const FIELD_CONFIG_BY_KEY = FIELD_CONFIGS.reduce<Record<MomentumFieldKey, FieldConfig>>((acc, config) => {
@@ -277,6 +278,9 @@ function TaskMomentumEditor({
                     {displayValue}
                   </div>
                 )}
+                {field.key === "nextTouchAt" && isEditing && drafts.nextTouchAt.trim() && <p className={cx(DS.text.meta, "mt-1.5")}>
+                  {readRevisit(drafts.nextTouchAt) ? formatRevisitMoment(toDateTimeStorageValue(readRevisit(drafts.nextTouchAt))) : "Not a date yet"}
+                </p>}
                 {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows under Needs you when it arrives. Nothing starts by itself.</p>}
               </Field>
             );
@@ -315,8 +319,16 @@ function toFieldValues(task: Task): FieldValues {
   };
 }
 
+/** A typed revisit ("fri", "in 2 weeks 3pm") as the date-time field value; 9:00 when no time is said. */
+function readRevisit(value: string): string {
+  const when = parseWhen(value.trim());
+  return when ? toDateTimeInputValue(whenToDate(when, 9).toISOString()) : "";
+}
+
 function normalizeDraft(field: MomentumFieldKey, value: string): string {
-  return field === "nextTouchAt" ? value : value.trim();
+  if (field !== "nextTouchAt") return value.trim();
+  if (!value.trim()) return "";
+  return readRevisit(value) || value.trim();
 }
 
 function formatFieldDisplay(field: MomentumFieldKey, value: string): string {
@@ -326,5 +338,8 @@ function formatFieldDisplay(field: MomentumFieldKey, value: string): string {
 
 function serializeFieldValue(field: MomentumFieldKey, value: string): string | null {
   if (!value) return null;
-  return field === "nextTouchAt" ? toDateTimeStorageValue(value) : value;
+  if (field !== "nextTouchAt") return value;
+  // Only a value the date reader understood: the browser's own parser rolls Feb 30 into March.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) || !readRevisit(value)) throw new Error("Couldn't read that date. Try “fri 9am” or “Nov 15”.");
+  return toDateTimeStorageValue(value);
 }
