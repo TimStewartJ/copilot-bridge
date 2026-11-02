@@ -724,14 +724,14 @@ describe("ChatView exact-message history", () => {
     }
   });
 
-  it("pages whole-chat matches when next navigation crosses a search page boundary", async () => {
+  it("pages whole-chat matches, within the search's dates, when next navigation crosses a search page boundary", async () => {
     const firstPageMatches = Array.from({ length: 20 }, (_, index) => ({
       sourceEventId: `event-${index}`,
       role: "assistant" as const,
       snippet: `needle ${index}`,
     }));
     const { act, dom, cleanup } = await renderChatView({
-      routeEntry: "/sessions/session-1?message=event-18&search=needle&matchOffset=0",
+      routeEntry: "/sessions/session-1?message=event-18&search=needle&matchOffset=0&searchAfter=2026-10-01T07%3A00%3A00.000Z",
       streamOverrides: { isStreaming: false, pendingOrigin: null },
       fetchMessagesFastResult: {
         messages: [{ id: "entry-18", sourceEventId: "event-18", role: "assistant", content: "needle 18" }],
@@ -813,6 +813,7 @@ describe("ChatView exact-message history", () => {
         scope: "session",
         offset: 20,
         limit: 20,
+        after: "2026-10-01T07:00:00.000Z",
       }));
 
       await act(async () => {

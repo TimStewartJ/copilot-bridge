@@ -55,6 +55,10 @@ export interface DocsSearchOptions {
   prefix?: boolean;
   /** Match pages with any of the words instead of all of them (best matches rank first). */
   anyWord?: boolean;
+  /** Only pages last modified at or after this ISO instant. */
+  after?: string;
+  /** Only pages last modified before this ISO instant. */
+  before?: string;
 }
 
 /** Descriptions ride along on every tree node, so keep them to a preview length. */
@@ -116,10 +120,22 @@ const DOCS_SNIPPET_SQL = `
     rank as score
   FROM docs_fts
   JOIN docs_pages ON docs_pages.rowid = docs_fts.rowid
-  WHERE docs_fts MATCH ?
-  ORDER BY rank
-  LIMIT ? OFFSET ?
-`;
+  WHERE docs_fts MATCH ?`;
+
+/** `AND` conditions on a page's last modified time, with their parameters in order. */
+function modifiedRangeClause(searchOptions: DocsSearchOptions): { sql: string; params: string[] } {
+  let sql = "";
+  const params: string[] = [];
+  if (searchOptions.after) {
+    sql += " AND julianday(docs_pages.modified) >= julianday(?)";
+    params.push(searchOptions.after);
+  }
+  if (searchOptions.before) {
+    sql += " AND julianday(docs_pages.modified) < julianday(?)";
+    params.push(searchOptions.before);
+  }
+  return { sql, params };
+}
 
 // ── Factory ───────────────────────────────────────────────────────
 
@@ -337,12 +353,22 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
     if (!sanitized) return { results: [], total: 0 };
 
     return withFtsRepair("search docs", () => {
-      const countRow = db.prepare(`
-        SELECT count(*) as total FROM docs_fts WHERE docs_fts MATCH ?
-      `).get(sanitized) as any;
+      const modified = modifiedRangeClause(searchOptions);
+      const countRow = (modified.sql
+        ? db.prepare(`
+          SELECT count(*) as total FROM docs_fts
+          JOIN docs_pages ON docs_pages.rowid = docs_fts.rowid
+          WHERE docs_fts MATCH ?${modified.sql}
+        `).get(sanitized, ...modified.params)
+        : db.prepare(`
+          SELECT count(*) as total FROM docs_fts WHERE docs_fts MATCH ?
+        `).get(sanitized)) as any;
       const total = countRow?.total || 0;
 
-      const rows = db.prepare(DOCS_SNIPPET_SQL).all(sanitized, limit, offset) as any[];
+      const rows = db.prepare(`${DOCS_SNIPPET_SQL}${modified.sql}
+        ORDER BY rank
+        LIMIT ? OFFSET ?
+      `).all(sanitized, ...modified.params, limit, offset) as any[];
 
       return {
         total,

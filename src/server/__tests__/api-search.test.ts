@@ -30,6 +30,13 @@ describe("search API", () => {
       error: "refreshOnly must be true or false",
     });
     await request(app).get("/api/search?q=needle&refreshOnly=true").expect(200);
+    for (const bad of ["after=0", "after=2026-10-01", "before=+102026-10-01T00:00:00Z", "after=2026-02-30T00:00:00Z"]) {
+      await request(app).get(`/api/search?q=needle&${bad}`).expect(400);
+    }
+    await request(app).get("/api/search?q=needle&after=2026-10-02T00:00:00Z&before=2026-10-01T00:00:00Z").expect(400, {
+      error: "after must be earlier than before",
+    });
+    await request(app).get("/api/search?q=needle&after=2026-10-01T00:00:00-07:00&before=2026-11-01T00:00:00Z").expect(200);
   });
 
   it("searches an archived session from disk without warming it", async () => {

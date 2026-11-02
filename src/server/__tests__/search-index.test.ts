@@ -44,7 +44,7 @@ function fixture() {
     docsIndex,
     listSessions: async () => sessions,
   });
-  return { db, copilotHome, docsIndex, index, sessionMetaStore, sessions, taskStore };
+  return { db, copilotHome, docsIndex, docsStore, index, sessionMetaStore, sessions, taskStore };
 }
 
 const request = {
@@ -219,6 +219,76 @@ describe("global search index", () => {
     expect(result.chats.items[0]!.matchCount).toBe(12);
     expect(result.chats.items[0]!.matches.map((match) => match.sourceEventId))
       .toEqual(["match-5", "match-6", "match-7", "match-8", "match-9"]);
+  });
+
+  it("limits messages to the date range, and chats found by title, tasks and docs to their last change", async () => {
+    const { copilotHome, docsIndex, docsStore, index, sessions, taskStore } = fixture();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      writeEvents(copilotHome, sessions[0]!.sessionId, [
+        event("user.message", "september", "needle in September", "2026-09-01T10:00:00.000Z"),
+        event("user.message", "october", "needle in October", "2026-10-15T10:00:00.000Z"),
+        event("user.message", "october-2", "needle again in October", "2026-10-16T10:00:00.000Z"),
+      ]);
+      sessions[1]!.summary = "Needle planning";
+      writeEvents(copilotHome, sessions[1]!.sessionId, [
+        event("user.message", "plain", "nothing to find", "2026-09-02T10:00:00.000Z"),
+      ]);
+      vi.setSystemTime(new Date("2026-09-03T10:00:00.000Z"));
+      taskStore.createTask("September needle task");
+      docsStore.writePage("notes/september", "# September\n\nA needle page.");
+      vi.setSystemTime(new Date("2026-10-20T10:00:00.000Z"));
+      taskStore.createTask("October needle task");
+      docsStore.writePage("notes/october", "# October\n\nA needle page.");
+      docsIndex.reindex();
+    } finally {
+      vi.useRealTimers();
+    }
+    const october = { after: "2026-10-01T00:00:00.000Z", before: "2026-11-01T00:00:00.000Z" };
+
+    const result = await index.search({ ...request, ...october });
+    expect(result.chats.items.map((hit) => [hit.sessionId, hit.matchCount])).toEqual([[sessions[0]!.sessionId, 2]]);
+    expect(result.chats.items[0]!.matches.map((match) => match.sourceEventId).sort()).toEqual(["october", "october-2"]);
+    expect(result.tasks.items.map((hit) => hit.title)).toEqual(["October needle task"]);
+    expect(result.docs.items.map((hit) => hit.path)).toEqual(["notes/october"]);
+    expect(result.docs.total).toBe(1);
+
+    const september = await index.search({ ...request, before: "2026-10-01T00:00:00.000Z" });
+    expect(september.chats.items.map((hit) => [hit.sessionId, hit.matchCount]).sort())
+      .toEqual([[sessions[0]!.sessionId, 1], [sessions[1]!.sessionId, 0]].sort());
+    expect(september.tasks.items.map((hit) => hit.title)).toEqual(["September needle task"]);
+
+    const page = await index.search({
+      ...request, ...october, scope: "session", sessionId: sessions[0]!.sessionId, kind: "chat", limit: 1, offset: 1,
+    });
+    expect(page.chats.items[0]).toMatchObject({ matchCount: 2, matches: [{ sourceEventId: expect.stringMatching(/^october/) }] });
+
+    const unbounded = await index.search(request);
+    expect(unbounded.chats.total).toBe(2);
+    expect(unbounded.tasks.total).toBe(2);
+    await index.shutdown();
+  });
+
+  it("dates the chats an index made before it recorded each chat's last message", async () => {
+    const { db, copilotHome, index, sessions, taskStore, sessionMetaStore } = fixture();
+    sessions[1]!.summary = "Needle planning";
+    writeEvents(copilotHome, sessions[0]!.sessionId, []);
+    writeEvents(copilotHome, sessions[1]!.sessionId, [
+      event("user.message", "plain", "nothing to find", "2026-09-02T10:00:00.000Z"),
+    ]);
+    await index.search(request);
+    await index.shutdown();
+    db.exec("ALTER TABLE search_indexed_sessions DROP COLUMN lastMessageAt");
+
+    const upgraded = createSearchIndex(db, {
+      copilotHome, taskStore, sessionMetaStore, sessionTitles: createSessionTitlesStore(db),
+      listSessions: async () => sessions,
+    });
+    const result = await upgraded.search({ ...request, kind: "chat", refreshOnly: true, after: "2026-09-01T00:00:00.000Z" });
+    expect(result.chats.items.map((hit) => hit.sessionId)).toEqual([sessions[1]!.sessionId]);
+    const later = await upgraded.search({ ...request, kind: "chat", refreshOnly: true, after: "2026-09-03T00:00:00.000Z" });
+    expect(later.chats.total).toBe(0);
+    await upgraded.shutdown();
   });
 
   it("returns indexing coverage after one bounded batch and completes cooperatively", async () => {

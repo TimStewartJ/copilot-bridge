@@ -28,6 +28,8 @@ const MESSAGE_INSERT_BATCH_SIZE = 500;
 const CANDIDATE_VALIDATION_LIMIT = 100;
 const CHAT_MATCHES_PER_SESSION = 5;
 const REMOVAL_BATCH_SIZE = 250;
+/** The newest message time in a set of message rows, as a canonical UTC ISO string. */
+const LATEST_TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', max(julianday(timestamp)))";
 const SEARCH_TABLES = [
   "search_chat_titles",
   "search_chat_messages",
@@ -129,6 +131,33 @@ function taskMap(tasks: readonly Task[]): Map<string, Task> {
   return new Map(tasks.map((task) => [task.id, task]));
 }
 
+function hasDateRange(request: BridgeSearchRequest): boolean {
+  return Boolean(request.after || request.before);
+}
+
+/** `AND` conditions keeping `column` inside the request's date range, with their parameters in order. */
+function dateRangeClause(column: string, request: BridgeSearchRequest): { sql: string; params: string[] } {
+  let sql = "";
+  const params: string[] = [];
+  if (request.after) {
+    sql += ` AND julianday(${column}) >= julianday(?)`;
+    params.push(request.after);
+  }
+  if (request.before) {
+    sql += ` AND julianday(${column}) < julianday(?)`;
+    params.push(request.before);
+  }
+  return { sql, params };
+}
+
+function isInDateRange(value: string | undefined, request: BridgeSearchRequest): boolean {
+  if (!hasDateRange(request)) return true;
+  const time = Date.parse(value ?? "");
+  if (!Number.isFinite(time)) return false;
+  return (!request.after || time >= Date.parse(request.after))
+    && (!request.before || time < Date.parse(request.before));
+}
+
 export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS search_indexed_sessions (
@@ -137,7 +166,8 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       mtimeMs REAL NOT NULL,
       ctimeMs REAL NOT NULL DEFAULT -1,
       digest TEXT NOT NULL,
-      indexedAt TEXT NOT NULL
+      indexedAt TEXT NOT NULL,
+      lastMessageAt TEXT
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS search_chat_titles USING fts5(
       sessionId UNINDEXED,
@@ -179,6 +209,20 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   const indexedSessionColumns = db.prepare("PRAGMA table_info(search_indexed_sessions)").all() as Array<{ name?: string }>;
   if (!indexedSessionColumns.some((column) => column.name === "ctimeMs")) {
     db.exec("ALTER TABLE search_indexed_sessions ADD COLUMN ctimeMs REAL NOT NULL DEFAULT -1");
+  }
+  // One transaction: a column added without its values would stay empty, since unchanged chats are not re-read.
+  if (!indexedSessionColumns.some((column) => column.name === "lastMessageAt")) {
+    runTransaction(db, () => {
+      db.exec("ALTER TABLE search_indexed_sessions ADD COLUMN lastMessageAt TEXT");
+      db.exec(`
+        UPDATE search_indexed_sessions SET lastMessageAt = latest.lastMessageAt
+        FROM (
+          SELECT sessionId, ${LATEST_TIMESTAMP_SQL} AS lastMessageAt
+          FROM search_chat_messages GROUP BY sessionId
+        ) AS latest
+        WHERE latest.sessionId = search_indexed_sessions.sessionId
+      `);
+    });
   }
 
   let activeWrite: Promise<string[]> | null = null;
@@ -310,14 +354,15 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
           FROM search_pending_messages
         `).run(session.sessionId);
         db.prepare(`
-          INSERT INTO search_indexed_sessions(sessionId, size, mtimeMs, ctimeMs, digest, indexedAt)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO search_indexed_sessions(sessionId, size, mtimeMs, ctimeMs, digest, indexedAt, lastMessageAt)
+          VALUES (?, ?, ?, ?, ?, ?, (SELECT ${LATEST_TIMESTAMP_SQL} FROM search_pending_messages))
           ON CONFLICT(sessionId) DO UPDATE SET
             size=excluded.size,
             mtimeMs=excluded.mtimeMs,
             ctimeMs=excluded.ctimeMs,
             digest=excluded.digest,
-            indexedAt=excluded.indexedAt
+            indexedAt=excluded.indexedAt,
+            lastMessageAt=excluded.lastMessageAt
         `).run(
           session.sessionId,
           fingerprint.size,
@@ -335,7 +380,8 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
             mtimeMs=-1,
             ctimeMs=-1,
             digest='',
-            indexedAt=excluded.indexedAt
+            indexedAt=excluded.indexedAt,
+            lastMessageAt=NULL
         `).run(session.sessionId, new Date().toISOString());
       }
       db.exec("DELETE FROM search_pending_messages");
@@ -680,13 +726,22 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     if (allowedSessionIds.length === 0) return { result: { items: [], total: 0 }, errors: [] };
 
     const placeholders = allowedSessionIds.map(() => "?").join(", ");
-    const params = [fts, ...allowedSessionIds, fts, ...allowedSessionIds];
+    const messageDates = dateRangeClause("search_chat_messages.timestamp", request);
+    const titleDates = dateRangeClause("dated.lastMessageAt", request);
+    // A chat found by its title has no message to date it, so it counts by its last message.
+    const titleDateSql = hasDateRange(request)
+      ? `AND EXISTS (
+            SELECT 1 FROM search_indexed_sessions dated
+            WHERE dated.sessionId = search_chat_titles.sessionId${titleDates.sql}
+          )`
+      : "";
+    const params = [fts, ...allowedSessionIds, ...messageDates.params, fts, ...allowedSessionIds, ...titleDates.params];
     const hitsSql = `
       WITH hits AS (
         SELECT sessionId, min(rank) AS score
         FROM search_chat_messages
         WHERE search_chat_messages MATCH ?
-          AND sessionId IN (${placeholders})
+          AND sessionId IN (${placeholders})${messageDates.sql}
           AND NOT EXISTS (
             SELECT 1 FROM search_quarantined_sessions quarantined
             WHERE quarantined.sessionId = search_chat_messages.sessionId
@@ -697,6 +752,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
         FROM search_chat_titles
         WHERE search_chat_titles MATCH ?
           AND sessionId IN (${placeholders})
+          ${titleDateSql}
           AND NOT EXISTS (
             SELECT 1 FROM search_quarantined_sessions quarantined
             WHERE quarantined.sessionId = search_chat_titles.sessionId
@@ -749,10 +805,10 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       const matches = db.prepare(`
         SELECT sourceEventId, role, timestamp, content
         FROM search_chat_messages
-        WHERE search_chat_messages MATCH ? AND sessionId = ?
+        WHERE search_chat_messages MATCH ? AND sessionId = ?${messageDates.sql}
         ORDER BY rank, rowid
         LIMIT ? OFFSET ?
-      `).all(fts, sessionId, messageLimit, messageOffset) as Array<{
+      `).all(fts, sessionId, ...messageDates.params, messageLimit, messageOffset) as Array<{
         sourceEventId: string;
         role: "user" | "assistant";
         timestamp?: string | null;
@@ -761,8 +817,8 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       const matchCountRow = db.prepare(`
         SELECT count(*) AS total
         FROM search_chat_messages
-        WHERE search_chat_messages MATCH ? AND sessionId = ?
-      `).get(fts, sessionId) as { total?: number };
+        WHERE search_chat_messages MATCH ? AND sessionId = ?${messageDates.sql}
+      `).get(fts, sessionId, ...messageDates.params) as { total?: number };
       const linkedTask = tasksById.get(
         tasks.find((task) => task.sessionIds.includes(sessionId))?.id ?? "",
       );
@@ -805,7 +861,9 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   ): { items: SearchTaskHit[]; total: number } {
     if (request.scope === "session") return { items: [], total: 0 };
     reconcileTasks(tasks);
-    const scopedTaskIds = request.scope === "task" ? [request.taskId!] : tasks.map((task) => task.id);
+    const scopedTaskIds = (request.scope === "task" ? tasks.filter((task) => task.id === request.taskId) : tasks)
+      .filter((task) => isInDateRange(task.updatedAt, request))
+      .map((task) => task.id);
     if (scopedTaskIds.length === 0) return { items: [], total: 0 };
     const placeholders = scopedTaskIds.map(() => "?").join(", ");
     const params = [fts, ...scopedTaskIds];
@@ -880,7 +938,11 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
       && deps.docsIndex
     ) {
       try {
-        const result = deps.docsIndex.search(request.q, request.limit, request.offset, { anyWord: request.anyWord });
+        const result = deps.docsIndex.search(request.q, request.limit, request.offset, {
+          anyWord: request.anyWord,
+          ...(request.after ? { after: request.after } : {}),
+          ...(request.before ? { before: request.before } : {}),
+        });
         docs = {
           total: result.total,
           items: result.results.map((item) => ({

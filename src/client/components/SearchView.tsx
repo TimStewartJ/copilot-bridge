@@ -18,7 +18,8 @@ import useElementScrollRestoration from "../hooks/useElementScrollRestoration";
 import { formatSearchExcerpt, getSearchHighlightTerms } from "../lib/search-text";
 import { timeAgo } from "../time";
 import { DS, cx } from "../design/tokens";
-import { Button, SegmentedControl } from "../design/primitives";
+import { Button, SegmentedControl, Select, TextInput } from "../design/primitives";
+import { parseSearchWhen, resolveSearchDateRange, type SearchDateRange, type SearchWhen } from "../lib/search-dates";
 
 const PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -95,6 +96,7 @@ function chatPath(
   returnTo: string,
   query: string,
   matchOffset: number,
+  dateRange: SearchDateRange,
 ): string {
   const path = getSessionPath({ sessionId: hit.sessionId, taskId: hit.taskId });
   const params = new URLSearchParams({
@@ -103,6 +105,9 @@ function chatPath(
     search: query,
     matchOffset: String(matchOffset),
   });
+  // The chat steps through the same matches, so it searches the same dates.
+  if (dateRange.after) params.set("searchAfter", dateRange.after);
+  if (dateRange.before) params.set("searchBefore", dateRange.before);
   return `${path}?${params.toString()}`;
 }
 
@@ -130,6 +135,15 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
   const sessionId = params.get("sessionId") ?? undefined;
   const query = params.get("q") ?? "";
   const offset = parseOffset(params.get("offset"));
+  const when = parseSearchWhen(params.get("when"));
+  const afterDate = params.get("after") ?? "";
+  const beforeDate = params.get("before") ?? "";
+  // Rolling periods are fixed when chosen, so a refresh or a poll asks for the same range.
+  const dateRange = useMemo(
+    () => resolveSearchDateRange({ when, after: afterDate, before: beforeDate }),
+    [afterDate, beforeDate, when],
+  );
+  const hasDateRange = Boolean(dateRange.after || dateRange.before);
   const returnTo = safeInternalPath(params.get("from"), "/");
   const [draft, setDraft] = useState(query);
   const [response, setResponse] = useState<BridgeSearchResponse | null>(null);
@@ -145,10 +159,10 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSearchUrl = `${location.pathname}${location.search}`;
   const currentParams = params.toString();
-  const requestKey = JSON.stringify({ query, scope, kind, taskId, sessionId, offset, retryRevision });
+  const requestKey = JSON.stringify({ query, scope, kind, taskId, sessionId, offset, dateRange, retryRevision });
   const visibleResponse = responseKey === requestKey ? response : null;
   // With nothing typed, the results are the unread chats. Tasks, docs and one chat's messages have none to list.
-  const listsUnreadChats = !query.trim() && scope !== "session" && (kind === "all" || kind === "chat") && isUnread !== undefined;
+  const listsUnreadChats = !query.trim() && !hasDateRange && scope !== "session" && (kind === "all" || kind === "chat") && isUnread !== undefined;
   const unreadChats = useMemo(() => (listsUnreadChats
     ? listUnreadSessions({ sessions, tasks, isUnread, activeSessionId, taskId: scope === "task" ? taskId ?? "" : undefined })
     : []), [activeSessionId, isUnread, listsUnreadChats, scope, sessions, taskId, tasks]);
@@ -205,6 +219,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
       limit: PAGE_SIZE,
       offset,
       refreshOnly: preserveCurrentResponse,
+      ...dateRange,
     }, { signal: controller.signal }).then((next) => {
       if (!controller.signal.aborted) {
         setResponse(next);
@@ -219,7 +234,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [kind, offset, pollRevision, query, requestKey, retryRevision, scope, sessionId, taskId]);
+  }, [dateRange, kind, offset, pollRevision, query, requestKey, retryRevision, scope, sessionId, taskId]);
 
   useEffect(() => {
     if (!(visibleResponse?.coverage.reconciling ?? (visibleResponse?.coverage.state === "indexing"))) return;
@@ -268,7 +283,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
     else navigate(returnTo, { replace: true });
   };
 
-  // Arrow keys walk the result rows from the query field, so a result opens without tabbing past the source controls.
+  // Arrow keys walk the result rows from the query field (not the date fields, which use them), so a result opens without tabbing past the source controls.
   const moveResultFocus = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     if (event.defaultPrevented || event.nativeEvent?.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -278,7 +293,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
     const down = event.key === "ArrowDown";
     const next = index >= 0
       ? down ? rows[index + 1] : rows[index - 1] ?? layoutRef.current?.querySelector<HTMLElement>("input")
-      : down && target.tagName === "INPUT" ? rows[0] : undefined;
+      : down && target.getAttribute?.("role") === "combobox" ? rows[0] : undefined;
     if (!next) return;
     event.preventDefault();
     next.focus();
@@ -310,18 +325,45 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
               }}
             />
           </form>
-          <SegmentedControl
-            ariaLabel="Search sources"
-            value={kind}
-            onChange={(value) => updateParams({ kind: value === "all" ? null : value, offset: null })}
-            options={[
-              { value: "all", label: "All" },
-              { value: "chat", label: "Chats" },
-              { value: "task", label: "Tasks" },
-              { value: "doc", label: "Docs" },
-            ]}
-            size="sm"
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              ariaLabel="Search sources"
+              value={kind}
+              onChange={(value) => updateParams({ kind: value === "all" ? null : value, offset: null })}
+              options={[
+                { value: "all", label: "All" },
+                { value: "chat", label: "Chats" },
+                { value: "task", label: "Tasks" },
+                { value: "doc", label: "Docs" },
+              ]}
+              size="sm"
+            />
+            <div className="w-36 shrink-0"><Select inputSize="sm" aria-label="Date" value={when}
+              title="Messages count by when they were sent; tasks, docs and chat titles by their last change"
+              onChange={(event) => {
+                const next = event.target.value as SearchWhen;
+                updateParams({
+                  when: next === "any" ? null : next,
+                  after: next === "custom" ? afterDate || null : null,
+                  before: next === "custom" ? beforeDate || null : null,
+                  offset: null,
+                });
+              }}>
+              <option value="any">Any time</option>
+              <option value="day">Today</option>
+              <option value="week">Past week</option>
+              <option value="month">Past month</option>
+              <option value="year">Past year</option>
+              <option value="custom">Custom</option>
+            </Select></div>
+            {when === "custom" && <div className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
+              <div className="min-w-0 flex-1 sm:w-40 sm:flex-none"><TextInput type="date" inputSize="sm" aria-label="From date" value={afterDate}
+                onChange={(event) => updateParams({ after: event.target.value || null, offset: null })} /></div>
+              <span className="text-xs text-text-muted">to</span>
+              <div className="min-w-0 flex-1 sm:w-40 sm:flex-none"><TextInput type="date" inputSize="sm" aria-label="To date" value={beforeDate}
+                onChange={(event) => updateParams({ before: event.target.value || null, offset: null })} /></div>
+            </div>}
+          </div>
         </header>
 
       <div ref={scrollRef} data-testid="search-scroll" className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
@@ -375,6 +417,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
                   currentSearchUrl,
                   query,
                   scope === "session" ? offset : 0,
+                  dateRange,
                 )
               : chatHistoryPath(hit, currentSearchUrl);
             return <article key={hit.sessionId} className="py-3 first:pt-0">
@@ -397,6 +440,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
                   currentSearchUrl,
                   query,
                   scope === "session" ? offset : 0,
+                  dateRange,
                 );
                 return <div key={match.sourceEventId} className="py-3 first:pt-0 last:pb-0">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
@@ -406,6 +450,8 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
                       canonical.searchParams.delete("from");
                       canonical.searchParams.delete("search");
                       canonical.searchParams.delete("matchOffset");
+                      canonical.searchParams.delete("searchAfter");
+                      canonical.searchParams.delete("searchBefore");
                       setCopyError(null);
                       void writeClipboardText(canonical.toString()).then(
                         () => setCopiedId(match.sourceEventId),

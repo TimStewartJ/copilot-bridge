@@ -224,6 +224,8 @@ const HIBERNATE_IDLE_GRACE_MINUTES = [0, 1, 2, 5, 15, 30, 60] as const;
 const DEFAULT_HIBERNATE_IDLE_GRACE_MINUTES = 2;
 const SEARCH_SCOPES = new Set<SearchScope>(["global", "task", "session"]);
 const SEARCH_KINDS = new Set<SearchKind>(["all", "chat", "task", "doc"]);
+// Four-digit years only: SQLite's date functions cannot read the extended years Date.parse accepts.
+const SEARCH_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 /** Work items a new task can be linked to in one request, as when several are selected on the work map. */
 const MAX_INITIAL_WORK_ITEMS = 100;
 const DEFAULT_SEARCH_LIMIT = 20;
@@ -245,6 +247,20 @@ function parseStrictBoundedInteger(
     throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return parsed;
+}
+
+function parseSearchInstant(value: unknown, name: string): string {
+  if (value === undefined || value === "") return "";
+  if (typeof value !== "string" || !SEARCH_INSTANT_PATTERN.test(value)) {
+    throw new Error(`${name} must be an ISO date and time with a time zone, such as 2026-10-01T07:00:00.000Z`);
+  }
+  const [year, month, day] = value.slice(0, 10).split("-").map(Number) as [number, number, number];
+  const time = Date.parse(value);
+  // Date.parse rolls an impossible day such as 30 February into the next month.
+  if (!Number.isFinite(time) || month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) {
+    throw new Error(`${name} is not a valid date`);
+  }
+  return new Date(time).toISOString();
 }
 
 function parseSearchRequest(query: express.Request["query"]): Required<BridgeSearchRequest> {
@@ -270,11 +286,16 @@ function parseSearchRequest(query: express.Request["query"]): Required<BridgeSea
   if (query.refreshOnly !== undefined && query.refreshOnly !== "true" && query.refreshOnly !== "false") {
     throw new Error("refreshOnly must be true or false");
   }
+  const after = parseSearchInstant(query.after, "after");
+  const before = parseSearchInstant(query.before, "before");
+  if (after && before && after >= before) throw new Error("after must be earlier than before");
 
   return {
     q,
     refreshOnly: query.refreshOnly === "true",
     anyWord: false,
+    after,
+    before,
     scope: scope as SearchScope,
     taskId,
     sessionId,

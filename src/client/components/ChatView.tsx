@@ -589,6 +589,9 @@ export default function ChatView({
   const targetSourceEventId = routeSearchParams.get("message");
   const historyOnlyMode = routeSearchParams.get("history") === "1";
   const searchQuery = routeSearchParams.get("search")?.trim() ?? "";
+  // A search limited to dates passes its range on, so stepping through matches skips the same messages.
+  const searchAfter = routeSearchParams.get("searchAfter") ?? "";
+  const searchBefore = routeSearchParams.get("searchBefore") ?? "";
   const requestedMatchOffset = parseNonNegativeInteger(routeSearchParams.get("matchOffset"));
   const returnToSearch = safeInternalPath(routeSearchParams.get("from"));
   const historicalMode = Boolean(sessionId && (targetSourceEventId || historyOnlyMode));
@@ -762,6 +765,8 @@ export default function ChatView({
       kind: "chat",
       limit: SEARCH_MATCH_PAGE_SIZE,
       offset: requestedMatchOffset,
+      ...(searchAfter ? { after: searchAfter } : {}),
+      ...(searchBefore ? { before: searchBefore } : {}),
     }, { signal: controller.signal }).then((result) => {
       if (controller.signal.aborted) return;
       const hit = result.chats.items[0];
@@ -780,12 +785,12 @@ export default function ChatView({
       if (!controller.signal.aborted) setSearchMatchPageLoading(false);
     });
     return () => controller.abort();
-  }, [historicalMode, requestedMatchOffset, searchQuery, sessionId]);
+  }, [historicalMode, requestedMatchOffset, searchAfter, searchBefore, searchQuery, sessionId]);
 
   useEffect(() => {
     setSearchMatchPage(null);
     setSearchMatchPageError(null);
-  }, [historicalMode, requestedMatchOffset, searchQuery, sessionId]);
+  }, [historicalMode, requestedMatchOffset, searchAfter, searchBefore, searchQuery, sessionId]);
 
   const refreshMcpObservation = useCallback(() => {
     if (!sessionId) return;
@@ -2486,12 +2491,18 @@ export default function ChatView({
 
   const historicalMatchIds = useMemo(() => {
     if (!historicalMode || !searchQuery) return [];
+    const afterTime = searchAfter ? Date.parse(searchAfter) : undefined;
+    const beforeTime = searchBefore ? Date.parse(searchBefore) : undefined;
     return displayEntries.flatMap((entry) => {
       if (!isChatMessageEntry(entry) || !textMatchesSearchQuery(entry.content, searchQuery)) return [];
+      if (afterTime !== undefined || beforeTime !== undefined) {
+        const time = Date.parse(entry.timestamp ?? "");
+        if (!Number.isFinite(time) || (afterTime !== undefined && time < afterTime) || (beforeTime !== undefined && time >= beforeTime)) return [];
+      }
       const sourceId = entry.sourceEventId ?? entry.id;
       return sourceId ? [sourceId] : [];
     });
-  }, [displayEntries, historicalMode, searchQuery]);
+  }, [displayEntries, historicalMode, searchAfter, searchBefore, searchQuery]);
   const activeSearchMatchPage = searchMatchPage?.ids.includes(targetSourceEventId ?? "")
     ? searchMatchPage
     : null;
@@ -2539,6 +2550,8 @@ export default function ChatView({
           kind: "chat",
           limit: SEARCH_MATCH_PAGE_SIZE,
           offset: adjacentOffset,
+          ...(searchAfter ? { after: searchAfter } : {}),
+          ...(searchBefore ? { before: searchBefore } : {}),
         });
         const hit = result.chats.items[0];
         const ids = hit?.matches.map((match) => match.sourceEventId) ?? [];
@@ -2572,6 +2585,8 @@ export default function ChatView({
     navigableMatchIds,
     navigableMatchOffset,
     routeSearchParams,
+    searchAfter,
+    searchBefore,
     searchMatchPage,
     searchQuery,
     sessionId,

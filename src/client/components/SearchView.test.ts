@@ -338,6 +338,30 @@ describe("SearchView", () => {
     }), expect.any(Object));
   });
 
+  it("limits the search to the chosen dates and hands them to the chat it opens", async () => {
+    searchBridgeMock.mockResolvedValue(response({
+      chats: {
+        total: 1,
+        items: [{
+          sessionId: "session-1", title: "Launch notes", archived: false, matchCount: 1,
+          matches: [{ sourceEventId: "event-1", role: "user", snippet: "needle in October" }],
+        }],
+      },
+    }));
+    const rendered = await render("/search?q=needle&offset=20");
+    const select = findAllByTag(rendered.dom.container, "SELECT")[0];
+    await rendered.act(async () => { getReactProps(select)?.onChange?.({ target: { value: "custom" } }); });
+    const fromDate = findAllByTag(rendered.dom.container, "INPUT").find((node) => node.getAttribute("aria-label") === "From date");
+    await rendered.act(async () => { getReactProps(fromDate)?.onChange?.({ target: { value: "2026-10-01" } }); });
+
+    const after = new Date(2026, 9, 1).toISOString();
+    expect(searchBridgeMock).toHaveBeenLastCalledWith(expect.objectContaining({ q: "needle", offset: 0, after }), expect.any(Object));
+    expect(searchBridgeMock.mock.lastCall?.[0]).not.toHaveProperty("before");
+    await waitUntilAct(rendered.act, () => rendered.dom.container.textContent?.includes("Launch notes") ?? false);
+    await rendered.act(async () => { getReactProps(findButton(rendered.dom.container, "needle in October"))?.onClick?.(); });
+    expect(rendered.dom.container.textContent).toContain(`searchAfter=${encodeURIComponent(after)}`);
+  });
+
   it("debounces search into a URL replace and hides stale results while the new request loads", async () => {
     vi.useFakeTimers();
     searchBridgeMock.mockResolvedValueOnce(response({
