@@ -15,6 +15,7 @@ import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
+  discardUnsentMessage,
   fetchSlashCommands,
   fetchMessagesFast,
   searchBridge,
@@ -60,9 +61,12 @@ import {
   indexUserMessageHistory,
   isAtOrBeforeWatermark,
   mergeUserMessages,
+  placeUnsentMessages,
+  sameUnsentMessages,
   settlePendingSends,
   type PendingSend,
 } from "./chat/user-message-merge";
+import type { UnsentMessageView } from "../../shared/unsent-message.js";
 import { timeAgo } from "../time";
 import type { VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
 import { writeClipboardText } from "../lib/clipboard";
@@ -172,7 +176,11 @@ interface ChatViewProps {
     attachments?: Attachment[],
     mode?: SendMode,
     clientMessageId?: string,
+    /** Called with the new chat's id before the view moves to it, so this send goes along. */
+    onSessionCreated?: (sessionId: string) => void,
   ) => Promise<void>;
+  /** Puts a message back in the composer, keeping what is written there. */
+  onRestoreDraft?: (draft: { text: string; attachments?: Attachment[] }) => void;
   emptyState?: ReactNode;
   defaultSendMode?: SendMode;
   voiceJob?: VoiceBackgroundJob | null;
@@ -343,6 +351,8 @@ interface HistoryReader {
 
 const NO_HISTORY_READER: HistoryReader = { load() {}, refresh() {}, abandonVisibleRefresh() {} };
 const NO_AGENT_BLOCKS: ReadonlyMap<string, string> = new Map();
+const NO_UNSENT_MESSAGES: readonly UnsentMessageView[] = [];
+const NO_IDS: ReadonlySet<string> = new Set();
 
 let clientMessageIdCounter = 0;
 
@@ -559,6 +569,7 @@ export default function ChatView({
   onDraftChange,
   onDraftClear,
   onCreateAndSend,
+  onRestoreDraft,
   emptyState,
   defaultSendMode = DEFAULT_SEND_MODE,
   voiceJob,
@@ -605,6 +616,14 @@ export default function ChatView({
    * committed window stays purely disk-derived.
    */
   const [pendingSends, setPendingSends] = useState<PendingSend[]>([]);
+  /** Messages the agent never got, as the last history read had them. */
+  const [unsentMessages, setUnsentMessages] = useState<readonly UnsentMessageView[]>(NO_UNSENT_MESSAGES);
+  /** Not-sent messages discarded (or being discarded) or resent here, hidden at once. */
+  const [discardedUnsentIds, setDiscardedUnsentIds] = useState<ReadonlySet<string>>(NO_IDS);
+  /** Every not-sent message history has listed in this chat; one that left the list was resolved. */
+  const [listedUnsentIds, setListedUnsentIds] = useState<ReadonlySet<string>>(NO_IDS);
+  /** The chat a first send in this view created; its sends come along when the view moves to it. */
+  const adoptedDraftSessionRef = useRef<string | null>(null);
   const [retryingRun, setRetryingRun] = useState(false);
   const [retryRunError, setRetryRunError] = useState<string | null>(null);
   const retryingRunRef = useRef(false);
@@ -855,7 +874,10 @@ export default function ChatView({
   // Identity alone is not enough: the loaded window is only a suffix of history, so an item whose
   // disk entry sits above the window would otherwise re-render at the bottom, out of order. Disk is
   // append-ordered, so its newest entry is a watermark — anything at or before it is committed.
-  const userMessageHistory = useMemo(() => indexUserMessageHistory(entries), [entries]);
+  const userMessageHistory = useMemo(
+    () => indexUserMessageHistory(entries, unsentMessages),
+    [entries, unsentMessages],
+  );
   const committedWatermarkMs = userMessageHistory.watermarkMs;
   const isCommittedByWatermark = useCallback(
     (timestamp?: string) => isAtOrBeforeWatermark(timestamp, committedWatermarkMs),
@@ -1088,8 +1110,17 @@ export default function ChatView({
     setUndoError(null);
     setUndoingEventId(null);
     setLoadMoreError(null);
-    pendingSendsRef.current = [];
-    setPendingSends([]);
+    // A first send that created this chat comes along with the view; anything else stays behind.
+    if (sessionId === null || adoptedDraftSessionRef.current !== sessionId) {
+      adoptedDraftSessionRef.current = null;
+      pendingSendsRef.current = [];
+      setPendingSends([]);
+    }
+    if (prevSession !== sessionId) {
+      setUnsentMessages(NO_UNSENT_MESSAGES);
+      setDiscardedUnsentIds(NO_IDS);
+      setListedUnsentIds(NO_IDS);
+    }
     setCreating(false);
     setShowJumpToLatest(false);
     cancelFollowScroll();
@@ -1152,11 +1183,20 @@ export default function ChatView({
         : mode === "tail" ? Math.min(HISTORY_REFRESH_MAX_LIMIT, loaded) : INITIAL_PAGE_SIZE;
       const noticeEpoch = historyEpochRef.current;
       try {
-        const { messages: fetched, runState, runNotice: savedRunNotice, total, warm, lastVisibleActivityAt, startOffset, hasNewer, agents } = await fetchMessagesFast(
+        const { messages: fetched, runState, runNotice: savedRunNotice, total, warm, lastVisibleActivityAt, startOffset, hasNewer, agents, unsentMessages: fetchedUnsent } = await fetchMessagesFast(
           sessionId,
           targetSourceEventId ? { before: 50, after: 50, aroundEventId: targetSourceEventId } : { limit },
         );
         if (superseded()) return;
+        if (!historicalMode) {
+          const nextUnsent = fetchedUnsent ?? NO_UNSENT_MESSAGES;
+          setUnsentMessages((current) => (sameUnsentMessages(current, nextUnsent) ? current : nextUnsent));
+          if (nextUnsent.length > 0) {
+            setListedUnsentIds((current) => (nextUnsent.every((message) => current.has(message.id))
+              ? current
+              : new Set([...current, ...nextUnsent.map((message) => message.id)])));
+          }
+        }
         // Before the entries, so the snapshot cached with them holds the agents they name.
         applyAgentRecords(agents ?? NO_AGENT_RECORDS);
         const windowStart = Math.max(0, total - fetched.length);
@@ -1537,6 +1577,16 @@ export default function ChatView({
     setPendingSends(next);
   }, []);
 
+  /** Not-sent messages this view no longer shows: discarded here, or sent again by a send it holds. */
+  const hiddenUnsentIds = useMemo<ReadonlySet<string>>(() => {
+    const resent = pendingSends.flatMap((send) => (send.resendOf ? [send.resendOf] : []));
+    // Listed once and no longer: resent, discarded or delivered, here or on another device.
+    const current = new Set(unsentMessages.map((message) => message.id));
+    const resolved = [...listedUnsentIds].filter((id) => !current.has(id));
+    if (resent.length === 0 && resolved.length === 0) return discardedUnsentIds;
+    return new Set([...discardedUnsentIds, ...resent, ...resolved]);
+  }, [discardedUnsentIds, listedUnsentIds, pendingSends, unsentMessages]);
+
   // A message still being delivered, or one that failed and can be retried, exists only in this page.
   // A queued one is kept by the server.
   const hasUndeliveredMessage = pendingSends.some((send) => send.delivery !== undefined && !send.delivery.queued);
@@ -1547,7 +1597,8 @@ export default function ChatView({
     ownerSessionId: string | null,
     delivery: ChatMessageDelivery | undefined,
   ) => {
-    if (sessionIdRef.current !== ownerSessionId) return;
+    // Sends belong to the view that holds them: one left behind by moving to another chat is gone.
+    if (!pendingSendsRef.current.some((send) => send.id === messageId)) return;
     updatePendingSends((current) => current.map((send) => send.id === messageId
       ? { ...send, delivery }
       : send));
@@ -1555,9 +1606,9 @@ export default function ChatView({
 
   const removeOptimisticMessage = useCallback((
     messageId: string,
-    ownerSessionId: string | null,
+    _ownerSessionId: string | null,
   ) => {
-    if (sessionIdRef.current !== ownerSessionId) return;
+    if (!pendingSendsRef.current.some((send) => send.id === messageId)) return;
     updatePendingSends((current) => current.filter((send) => send.id !== messageId));
   }, [updatePendingSends]);
 
@@ -1567,17 +1618,23 @@ export default function ChatView({
     prompt: string,
     attachments: Attachment[] | undefined,
     mode: SendMode | undefined,
+    resendOf?: string,
   ) => {
     try {
       let response: ChatMessageAcceptedResponse | void;
       if (ownerSessionId === null) {
         if (!onCreateAndSend) throw new Error("Draft session creation is unavailable.");
-        response = await onCreateAndSend(prompt, attachments, mode, messageId);
+        response = await onCreateAndSend(prompt, attachments, mode, messageId, (createdSessionId) => {
+          adoptedDraftSessionRef.current = createdSessionId;
+        });
+      } else if (resendOf) {
+        response = await sendMessage(prompt, attachments, mode, messageId, resendOf);
       } else if (mode !== undefined) {
         response = await sendMessage(prompt, attachments, mode, messageId);
       } else {
         response = await sendMessage(prompt, attachments, undefined, messageId);
       }
+      if (resendOf) setDiscardedUnsentIds((current) => new Set(current).add(resendOf));
       if (response?.mode === "command") {
         removeOptimisticMessage(messageId, ownerSessionId);
       } else if (response?.mode === "queued") {
@@ -1593,6 +1650,12 @@ export default function ChatView({
         historyRef.current.refresh({ reach: "window" });
       }
     } catch (error) {
+      if (resendOf && error instanceof ApiError && error.status === 409) {
+        // Resent or discarded from somewhere else first: that outcome stands.
+        removeOptimisticMessage(messageId, ownerSessionId);
+        historyRef.current.refresh({ reach: "window" });
+        return;
+      }
       const errorMessage = getErrorMessage(error).trim() || "Message could not be sent.";
       haptic("error");
       updateOptimisticMessageDelivery(messageId, ownerSessionId, {
@@ -1624,8 +1687,62 @@ export default function ChatView({
       currentSend.content,
       currentSend.attachments,
       currentSend.delivery.mode,
+      currentSend.resendOf,
     );
   }, [deliverOptimisticMessage, sessionId, updateOptimisticMessageDelivery]);
+
+  /** Sends a not-sent message again as a new message at the end of the chat; the original goes. */
+  const handleResendUnsent = useCallback((message: ChatMessage) => {
+    const originalId = message.clientMessageId;
+    if (!sessionId || !originalId || !message.unsent) return;
+    if (pendingSendsRef.current.some((send) => send.resendOf === originalId)) return;
+    const mode: SendMode | undefined = isStreaming
+      ? undefined
+      : message.agentMode === "autopilot" ? "autopilot" : DEFAULT_SEND_MODE;
+    const messageId = createClientMessageId();
+    historyRef.current.abandonVisibleRefresh();
+    stickToBottomRef.current = true;
+    updatePendingSends((current) => [
+      ...current,
+      {
+        id: messageId,
+        content: message.content,
+        delivery: createSendingDelivery(mode),
+        resendOf: originalId,
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+      },
+    ]);
+    void deliverOptimisticMessage(messageId, sessionId, message.content, message.attachments, mode, originalId);
+  }, [deliverOptimisticMessage, isStreaming, sessionId, updatePendingSends]);
+
+  const handleDiscardUnsent = useCallback(async (message: ChatMessage) => {
+    const id = message.clientMessageId;
+    if (!sessionId || !id) return;
+    setDiscardedUnsentIds((current) => new Set(current).add(id));
+    try {
+      await discardUnsentMessage(sessionId, id);
+      if (sessionIdRef.current !== sessionId) return;
+      setUnsentMessages((current) => current.filter((unsent) => unsent.id !== id));
+    } catch {
+      haptic("error");
+      if (sessionIdRef.current !== sessionId) return;
+      setDiscardedUnsentIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [sessionId]);
+
+  /** Puts a not-sent message back in the composer to change it, and takes it out of the chat. */
+  const handleEditUnsent = useCallback((message: ChatMessage) => {
+    if (!onRestoreDraft) return;
+    onRestoreDraft({
+      text: message.content === "(attachment)" ? "" : message.content,
+      ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+    });
+    void handleDiscardUnsent(message);
+  }, [handleDiscardUnsent, onRestoreDraft]);
 
   const handleSend = useCallback(async (prompt: string, attachments?: Attachment[], mode?: SendMode) => {
     if (loading) {
@@ -1747,7 +1864,10 @@ export default function ChatView({
    * `events.jsonl` has not surfaced yet, plus optimistic sends this client owns.
    */
   const liveEntries = useMemo<ChatEntry[]>(() => {
-    const nextEntries: ChatEntry[] = [...userMessageMerge.liveEntries];
+    // A not-sent message discarded or resent here leaves at once, including its live copy.
+    const nextEntries: ChatEntry[] = userMessageMerge.liveEntries.filter((entry) => (
+      !entry.unsent || !entry.clientMessageId || !hiddenUnsentIds.has(entry.clientMessageId)
+    ));
     // Within one model call the order is fixed: thinking, then text, then tool calls. The overlay
     // can briefly hold the turn that just ended as well (its history read is still in flight), and
     // that turn's items come first.
@@ -1865,6 +1985,7 @@ export default function ChatView({
     displayedReasoning,
     displayedStreamingContent,
     hasStreamingText,
+    hiddenUnsentIds,
     isStreaming,
     uncommittedAssistantSegments,
     uncommittedCompletion,
@@ -1954,13 +2075,18 @@ export default function ChatView({
     [agentRecords, runActive],
   );
   const agentAttachmentCache = useRef<AgentAttachmentCache>(new WeakMap()).current;
+  // Messages the agent never got sit where they were sent, among the saved ones.
+  const transcriptEntries = useMemo(
+    () => placeUnsentMessages(committedEntries, unsentMessages, { hasOlder: hasMore, hidden: hiddenUnsentIds }),
+    [committedEntries, hasMore, hiddenUnsentIds, unsentMessages],
+  );
   const displayEntries = useMemo(
     () => attachTranscriptAgents(
-      liveEntries.length > 0 ? [...committedEntries, ...liveEntries] : committedEntries,
+      liveEntries.length > 0 ? [...transcriptEntries, ...liveEntries] : transcriptEntries,
       agentDirectory,
       agentAttachmentCache,
     ),
-    [agentAttachmentCache, agentDirectory, committedEntries, liveEntries],
+    [agentAttachmentCache, agentDirectory, transcriptEntries, liveEntries],
   );
   const mcpStatusState: "loading" | "ready" | "error" | "stale" = !sessionId
     ? "ready"
@@ -2482,6 +2608,20 @@ export default function ChatView({
     }
   }, [applyHistory, dropFinishedRunOutput, sessionId]);
 
+  const handleEditUnsentMenu = useCallback(() => {
+    const target = messageMenuTarget;
+    if (!target) return;
+    closeMessageMenu();
+    handleEditUnsent(target.message);
+  }, [closeMessageMenu, handleEditUnsent, messageMenuTarget]);
+
+  const handleDiscardUnsentMenu = useCallback(() => {
+    const target = messageMenuTarget;
+    if (!target) return;
+    closeMessageMenu();
+    void handleDiscardUnsent(target.message);
+  }, [closeMessageMenu, handleDiscardUnsent, messageMenuTarget]);
+
   const handleUndoMessageMenu = useCallback(() => {
     const target = messageMenuTarget;
     if (!target) return;
@@ -2757,6 +2897,9 @@ export default function ChatView({
             onRetry={canRetryFailedMessage && failedOptimisticMessage
               ? () => { void handleRetryMessage(failedOptimisticMessage); }
               : undefined}
+            onResendUnsent={msg.unsent && msg.clientMessageId && sessionId && !historicalMode
+              ? () => handleResendUnsent(msg)
+              : undefined}
           />
         </div>,
       );
@@ -2776,6 +2919,7 @@ export default function ChatView({
     renderBlocks,
     messageActions,
     handleFinishSelectingMessageText,
+    handleResendUnsent,
     handleRetryMessage,
     isMessageLongPressTarget,
     onCreateAndSend,
@@ -3010,6 +3154,12 @@ export default function ChatView({
           onSelectText={handleSelectMessageText}
           onFork={handleForkMessageMenu}
           onUndo={handleUndoMessageMenu}
+          {...(messageMenuTarget.message.unsent && messageMenuTarget.message.clientMessageId && sessionId && !historicalMode
+            ? {
+                ...(onRestoreDraft ? { onEditUnsent: handleEditUnsentMenu } : {}),
+                onDiscardUnsent: handleDiscardUnsentMenu,
+              }
+            : {})}
         />
       )}
       {forkError && (

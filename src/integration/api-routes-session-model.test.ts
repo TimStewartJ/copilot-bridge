@@ -37,6 +37,7 @@ describe("GET /api/sessions/:id/model route", () => {
         getSessionRunState: () => "idle",
         getPendingUserInputCount: () => 0,
         isSessionWarm: () => false,
+        waitForSessionCreation: async () => {},
         setSessionModel: async (_id: string, model: string, reasoningEffort?: string) => ({
           model,
           ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -54,6 +55,22 @@ describe("GET /api/sessions/:id/model route", () => {
     expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events", promptProfile: "engineer" });
   });
 
+  it("answers for a chat still being created once it is made, not with guesses", async () => {
+    let created = false;
+    const { app } = createTestApp({
+      sessionManager: {
+        ...createMockSessionManager(),
+        waitForSessionCreation: vi.fn(async () => { created = true; }),
+        getSessionModelState: async () => (created
+          ? { model: "model-picked", source: "live" as const }
+          : { source: "unknown" as const }),
+        getSessionPromptProfile: () => (created ? "assistant" : "engineer"),
+      } as any,
+    });
+    const res = await request(app).get(`/api/sessions/${sessionId}/model`);
+    expect(res.body).toEqual({ model: "model-picked", source: "live", promptProfile: "assistant" });
+  });
+
   it("returns 500 on internal error", async () => {
     const { app } = createTestApp({
       sessionManager: {
@@ -64,6 +81,7 @@ describe("GET /api/sessions/:id/model route", () => {
         getSessionRunState: () => "idle",
         getPendingUserInputCount: () => 0,
         isSessionWarm: () => false,
+        waitForSessionCreation: async () => {},
         setSessionModel: async () => { throw new Error("oops"); },
         getSessionModelState: async () => { throw new Error("getSessionModelState failed"); },
       } as any,
@@ -158,6 +176,7 @@ describe("PATCH /api/sessions/:id/model route", () => {
         getSessionRunState: () => "idle",
         getPendingUserInputCount: () => 0,
         isSessionWarm: () => false,
+        waitForSessionCreation: async () => {},
         setSessionModel,
         getSessionModelState: async () => ({ source: "unknown" as const }),
       } as any,
@@ -186,6 +205,7 @@ describe("PATCH /api/sessions/:id/model route", () => {
         getSessionRunState: () => "idle",
         getPendingUserInputCount: () => 0,
         isSessionWarm: () => false,
+        waitForSessionCreation: async () => {},
         setSessionModel: async () => {
           throw new Error("Cannot switch model on a busy session");
         },

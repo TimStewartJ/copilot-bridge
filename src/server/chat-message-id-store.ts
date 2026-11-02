@@ -22,6 +22,9 @@ export function createChatMessageIdStore(db: DatabaseSync) {
     WHERE sessionId = ? AND messageId IN (SELECT value FROM json_each(?))
   `);
   const removeSession = db.prepare("DELETE FROM chat_message_client_ids WHERE sessionId = ?");
+  const selectByClientId = db.prepare(
+    "SELECT 1 FROM chat_message_client_ids WHERE sessionId = ? AND clientMessageId = ? LIMIT 1",
+  );
 
   return {
     record(sessionId: string, messageId: string, clientMessageId: string, at: Date = new Date()): void {
@@ -37,6 +40,10 @@ export function createChatMessageIdStore(db: DatabaseSync) {
       }>;
       for (const row of rows) result.set(row.messageId, row.clientMessageId);
       return result;
+    },
+    /** Whether a message the browser sent under this id reached the runtime. */
+    hasClientMessageId(sessionId: string, clientMessageId: string): boolean {
+      return selectByClientId.get(sessionId, clientMessageId) !== undefined;
     },
     forgetSession(sessionId: string): void {
       removeSession.run(sessionId);

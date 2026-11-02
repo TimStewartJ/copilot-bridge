@@ -62,6 +62,7 @@ function getSessionModelSourceLabel(source?: SessionModelState["source"]): strin
     case "live": return "Live session";
     case "events": return "Saved in session history";
     case "unknown": return "No saved model state";
+    case "starting": return "Starting";
     default: return "Checking session model";
   }
 }

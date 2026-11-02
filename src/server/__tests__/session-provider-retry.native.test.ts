@@ -106,6 +106,8 @@ async function fixture(signal: AbortSignal) {
     resumeSessionWithTimeout: (_backend, _id, resume) => resume,
     notifySessionCapacityChanged: () => {}, findLinkedTask: () => undefined, lookupGroupNotes: () => null,
     persistAndRouteAttachments: () => undefined,
+    persistSessionAttachments: () => ({ routed: undefined, saved: [] }),
+    resumeRuntimeSession: (backend: any, sessionId: string, config: any) => backend.resumeSession(sessionId, config),
     cacheResumedSession: async (_id, resumed: AgentSession) => resumed,
     waitForSessionToolInitialization: () => true, abandonCachedSession: async () => {},
     abortSession: async () => { await session.abort(); return true; },

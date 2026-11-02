@@ -15,6 +15,7 @@ import { createSessionMetaStore } from "../session-meta-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createChatMessageIdStore } from "../chat-message-id-store.js";
+import { createUnsentMessageStore } from "../unsent-message-store.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
@@ -46,12 +47,14 @@ describe("SessionManager run state", () => {
 
     const sessionMetaStore = createSessionMetaStore(db);
     const chatMessageIdStore = createChatMessageIdStore(db);
+    const unsentMessageStore = createUnsentMessageStore(db);
     const manager = new SessionManager({
       globalBus,
       eventBusRegistry,
       sessionTitles: createSessionTitlesStore(db),
       sessionMetaStore,
       chatMessageIdStore,
+      unsentMessageStore,
       taskStore: {
         findTaskBySessionId: vi.fn().mockReturnValue(null),
       } as any,
@@ -77,6 +80,7 @@ describe("SessionManager run state", () => {
       sessionContextStore,
       sessionMetaStore,
       chatMessageIdStore,
+      unsentMessageStore,
       copilotHome,
     };
   }
@@ -573,7 +577,7 @@ describe("SessionManager run state", () => {
   });
 
   it("joins sent and steered prompts to their saved messages by the runtime's message id", async () => {
-    const { manager, eventBusRegistry, chatMessageIdStore } = createManager();
+    const { manager, eventBusRegistry, chatMessageIdStore, unsentMessageStore } = createManager();
     const { session, getHandler } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
@@ -586,9 +590,10 @@ describe("SessionManager run state", () => {
       return "message-first";
     });
 
-    manager.startWork("session-1", "same text", undefined, { clientMessageId: "client-first" });
+    manager.startWork("session-1", "same text", undefined, { clientMessageId: "client-first", keepUndelivered: true });
     await flushMicrotasks();
     const bus = eventBusRegistry.getBus("session-1");
+    expect(unsentMessageStore.has("session-1", "client-first")).toBe(true);
 
     // The runtime can save the message before `send` returns its id.
     getHandler()?.({
@@ -600,6 +605,10 @@ describe("SessionManager run state", () => {
     expect(bus?.getSnapshot().pendingUserMessages).toEqual([
       expect.objectContaining({ id: "client-first", pending: true }),
     ]);
+    await flushMicrotasks();
+    // Saved by the runtime, so history shows it from now on; only its id is kept, against repeats.
+    expect(unsentMessageStore.get("session-1", "client-first")?.storedState).toBe("delivered");
+    expect(unsentMessageStore.list("session-1")).toEqual([]);
 
     releaseFirstSend?.();
     await flushMicrotasks();
@@ -3975,8 +3984,8 @@ describe("SessionManager run state", () => {
     expect(session.disconnect).not.toHaveBeenCalled();
   });
 
-  it("does not send the prompt after a local abort during initial resume", async () => {
-    const { manager, eventBusRegistry } = createManager();
+  it("sends nothing and keeps the resumed session ready after a stop during initial resume", async () => {
+    const { manager, eventBusRegistry, unsentMessageStore } = createManager();
     let resolveResume!: (session: any) => void;
     const resumePromise = new Promise<any>((resolve) => {
       resolveResume = resolve;
@@ -3994,17 +4003,90 @@ describe("SessionManager run state", () => {
     };
 
     const bus = eventBusRegistry.getOrCreateBus("session-1");
-    manager.startWork("session-1", "hello");
+    const streamed: Array<{ type: string; undelivered?: unknown }> = [];
+    bus.subscribe((event: any) => streamed.push({ type: event.type, undelivered: event.userMessage?.undelivered }));
+    manager.startWork("session-1", "hello", undefined, { clientMessageId: "client-1", keepUndelivered: true });
     await flushMicrotasks();
 
     await expect(manager.abortSession("session-1")).resolves.toBe(true);
     expect(bus.getSnapshot().terminalType).toBe("aborted");
+    // The message stays in the chat as not sent, and the browser hears so before the stream ends.
+    expect(unsentMessageStore.list("session-1")).toEqual([
+      expect.objectContaining({ id: "client-1", content: "hello", state: "stopped" }),
+    ]);
+    const updated = streamed.findIndex((event) => event.type === "user_message_updated");
+    expect(streamed[updated]?.undelivered).toEqual({ state: "stopped" });
+    expect(updated).toBeLessThan(streamed.findIndex((event) => event.type === "aborted"));
+    // The message says it was stopped; nothing ran, so the run adds no "Stopped" card of its own.
+    expect(bus.getSnapshot().runNotice).toBeUndefined();
 
     resolveResume(session);
     await flushMicrotasks();
 
     expect(send).not.toHaveBeenCalled();
-    expect(session.disconnect).toHaveBeenCalledTimes(1);
+    // Nothing reached it, so it is healthy: the next message uses it instead of resuming again.
+    expect(session.disconnect).not.toHaveBeenCalled();
+    expect(session.abort).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(manager.getSessionRunState("session-1")).toBe("idle"));
+    expect(manager.isSessionWarm("session-1")).toBe(true);
+  });
+
+  it.each<[string, Record<string, string>, boolean]>([
+    ["makes a Bridge chat the runtime never saved again under its id", { "bridge-launch-context.json": "{}" }, true],
+    ["leaves saved history that fails to load alone", { "bridge-launch-context.json": "{}", "events.jsonl": "" }, false],
+    ["leaves a folder the Bridge did not make alone", {}, false],
+  ])("%s", async (_name, files, recreated) => {
+    const copilotHome = makeTestDir("recreate-unsaved");
+    const { manager } = createManager({ copilotHome });
+    const dir = join(copilotHome, "session-state", "session-1");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "bridge-model-state.json"), JSON.stringify({ model: "model-chosen" }));
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+    if (!("bridge-launch-context.json" in files)) rmSync(join(dir, "bridge-model-state.json"));
+    const { session } = makeSession();
+    (session as any).sessionId = "session-1";
+    const createSession = vi.fn().mockResolvedValue(session);
+    manager.backend = {
+      resumeSession: vi.fn().mockRejectedValue(
+        new Error("Request session.resume failed with message: Failed to load session events: Session not found: session-1"),
+      ),
+      createSession,
+    };
+
+    manager.startWork("session-1", "hello");
+    await vi.waitFor(() => expect(manager.getSessionRunState("session-1") === "idle" || session.send.mock.calls.length > 0).toBe(true));
+
+    if (recreated) {
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1", model: "model-chosen" }));
+      await vi.waitFor(() => expect(session.send).toHaveBeenCalled());
+    } else {
+      expect(createSession).not.toHaveBeenCalled();
+      expect(session.send).not.toHaveBeenCalled();
+    }
+  });
+
+  it("stops at once and never sends when Stop comes while the turn is being set up", async () => {
+    const { manager } = createManager();
+    let releaseMode!: () => void;
+    const send = vi.fn().mockResolvedValue("message-1");
+    const session = makeAgentSessionStub({
+      setSendMode: vi.fn(() => new Promise<void>((resolve) => { releaseMode = resolve; })),
+      on: vi.fn(() => vi.fn()),
+      send,
+      abort: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn(),
+    });
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+
+    manager.startWork("session-1", "hello");
+    await vi.waitFor(() => expect(session.setSendMode).toHaveBeenCalled());
+    await expect(manager.abortSession("session-1")).resolves.toBe(true);
+    // No turn is running in the runtime yet, so there is nothing to ask it to stop.
+    expect(session.abort).not.toHaveBeenCalled();
+
+    releaseMode();
+    await flushMicrotasks();
+    expect(send).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(manager.getSessionRunState("session-1")).toBe("idle"));
   });
 

@@ -147,7 +147,8 @@ class ConversationSession implements VoiceClientSink {
         deliver: async (text, clientMessageId) => {
           const { delivery } = await sendChatMessage(ctx, sessionId, text, clientMessageId ? { clientMessageId } : {});
           try { ctx.taskStore.recordUserMessage(sessionId); } catch { /* bookkeeping only */ }
-          return delivery === "accepted" ? "started" : delivery;
+          // Spoken messages are not kept as not sent, so "stopped" never comes back here.
+          return delivery === "accepted" || delivery === "stopped" ? "started" : delivery;
         },
         abort: () => ctx.sessionManager.abortSession(sessionId),
         title: async () => {

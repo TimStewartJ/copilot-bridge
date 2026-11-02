@@ -13,7 +13,7 @@ import { MESSAGE_MARKDOWN_COMPONENTS } from "./chat-markdown";
 import { APP_PROSE } from "./shared/prose-classes";
 import { MessageActionToolbar } from "./MessageActions";
 import { DS, cx } from "../design/tokens";
-import { AutopilotBadge } from "../design/primitives";
+import { AutopilotBadge, StatusIcon } from "../design/primitives";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -35,7 +35,15 @@ interface MessageBubbleProps {
   onFinishSelectingText?: () => void;
   /** Lets sent images and files in history load from the session's copy on the server. */
   sessionId?: string;
+  /** Sends a user message the agent never got (`message.unsent`) again. Edit and Discard are in its menu. */
+  onResendUnsent?: () => void;
 }
+
+const UNSENT_REASON: Record<NonNullable<ChatMessage["unsent"]>["state"], { label: string; title: string }> = {
+  stopped: { label: "Stopped", title: "Stopped before the agent got it" },
+  interrupted: { label: "Bridge restarted", title: "The Bridge restarted before the agent got it" },
+  failed: { label: "Failed", title: "The turn could not start" },
+};
 
 /**
  * Copy / more actions, shown while the message is hovered or focused. They float where they can
@@ -109,6 +117,7 @@ export default memo(function MessageBubble({
   selectingText = false,
   onFinishSelectingText,
   sessionId,
+  onResendUnsent,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const actionSlot = actions && messageKey !== undefined && (
@@ -127,7 +136,9 @@ export default memo(function MessageBubble({
     const isFailed = message.delivery?.failed === true;
     const isQueued = !isFailed && message.delivery?.queued === true;
     const isPending = Boolean(message.delivery) && !isFailed;
-    const deliveryState = isFailed ? "failed" : isQueued ? "queued" : isPending ? "sending" : "sent";
+    const unsent = message.unsent;
+    const unsentReason = unsent ? UNSENT_REASON[unsent.state] : undefined;
+    const deliveryState = unsent ? "unsent" : isFailed ? "failed" : isQueued ? "queued" : isPending ? "sending" : "sent";
     const sentWithAutopilot = message.agentMode === "autopilot" || message.delivery?.mode === "autopilot";
     return (
       <div className="flex justify-end">
@@ -157,7 +168,7 @@ export default memo(function MessageBubble({
               // not just break after the width is fixed (break-words). Keep this off replies:
               // it is inherited and would squeeze markdown tables instead of letting them scroll.
               <div className={`rounded-3xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere] ${
-                isFailed ? "border border-error/40 bg-bg-elevated" : "bg-bg-elevated"
+                isFailed ? "border border-error/40 bg-bg-elevated" : unsent ? "border border-surface-edge bg-bg-elevated" : "bg-bg-elevated"
               }`}>
                 {message.content}
               </div>
@@ -166,6 +177,33 @@ export default memo(function MessageBubble({
               <AutopilotBadge title="Sent with Autopilot: Copilot keeps going on its own until the task is done" />
             )}
           </div>
+          {unsent && unsentReason && (
+            <div className="mt-1.5 flex flex-col items-end gap-1 text-xs text-text-secondary" role="status">
+              <div className="flex items-center justify-end gap-2">
+                <span className="inline-flex items-center gap-1.5" title={unsentReason.title}>
+                  <StatusIcon kind={unsent.state === "failed" ? "danger" : "warning"} decorative />
+                  <span>Not sent · {unsentReason.label}</span>
+                </span>
+                {onResendUnsent && (
+                  <button
+                    type="button"
+                    className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.secondary)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onResendUnsent();
+                    }}
+                  >
+                    <RotateCcw size={12} aria-hidden="true" />
+                    Resend
+                  </button>
+                )}
+              </div>
+              {unsent.error && (
+                // Shown, not hidden in a tooltip: a phone has no hover.
+                <span className="line-clamp-2 max-w-full text-right text-text-faint">{unsent.error}</span>
+              )}
+            </div>
+          )}
           {isQueued && (
             <div className="mt-1.5 flex items-center justify-end gap-1.5 text-xs text-text-muted" role="status">
               <Clock size={12} aria-hidden="true" />

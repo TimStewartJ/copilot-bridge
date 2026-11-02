@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Session, Task } from "./api";
+import { ApiError, type Session, type Task } from "./api";
 import {
   cleanupFailedFirstSendSession,
   sendMaterializedFirstPrompt,
@@ -71,7 +71,7 @@ describe("first-send session cleanup", () => {
       queryKeys.task("task-1"),
       createTask({ activeSessionIds: ["session-new"] }),
     );
-    const sendError = new Error("send failed");
+    const sendError = new ApiError("send failed", 500);
     const sendChatMessage = vi.fn(async () => {
       throw sendError;
     });
@@ -139,7 +139,7 @@ describe("first-send session cleanup", () => {
       queryKeys.sessions({ includeArchived: false }),
       [createSession("session-new", { isOptimistic: true })],
     );
-    const sendError = new Error("send failed");
+    const sendError = new ApiError("send failed", 500);
     const deleteError = new Error("delete failed");
     const logger = { error: vi.fn() };
 
@@ -164,5 +164,21 @@ describe("first-send session cleanup", () => {
     expect(logger.error).toHaveBeenCalledWith("Failed to clean up unsent session:", deleteError);
     expect(queryClient.getQueryData<Session[]>(queryKeys.sessions({ includeArchived: false })))
       .toEqual([]);
+  });
+
+  it("keeps the chat when the send got no answer from the server", async () => {
+    const networkError = new TypeError("Failed to fetch");
+    const onRejected = vi.fn();
+
+    await expect(sendMaterializedFirstPrompt({
+      sessionId: "session-new",
+      prompt: "hello",
+      sendChatMessage: vi.fn(async () => {
+        throw networkError;
+      }),
+      onRejected,
+    })).rejects.toBe(networkError);
+
+    expect(onRejected).not.toHaveBeenCalled();
   });
 });

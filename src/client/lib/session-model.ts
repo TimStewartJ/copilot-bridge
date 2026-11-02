@@ -14,15 +14,14 @@ import { getPromptProfileInfo } from "../../shared/prompt-profiles.js";
 export function buildOptimisticSessionModelState(
   options: CreateSessionOptions,
   defaultModelId?: string,
-): SessionModelState | undefined {
+): SessionModelState {
   const model = options.model || defaultModelId;
-  if (!model && !options.reasoningEffort && !options.contextTier && !options.promptProfile) return undefined;
   return {
     ...(model ? { model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.contextTier ? { contextTier: options.contextTier } : {}),
     ...(options.promptProfile ? { promptProfile: options.promptProfile } : {}),
-    source: "unknown",
+    source: "starting",
   };
 }
 

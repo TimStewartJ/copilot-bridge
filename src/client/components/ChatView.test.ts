@@ -2246,6 +2246,7 @@ describe("ChatView draft materialization", () => {
         undefined,
         "interactive",
         expect.stringMatching(/^client-/),
+        expect.any(Function),
       );
 
       await act(async () => {
@@ -2268,6 +2269,42 @@ describe("ChatView draft materialization", () => {
       expect(fetchMessagesFastMock).toHaveBeenCalledWith("created-session", { limit: 50 });
       expect(reconnectMock).not.toHaveBeenCalledWith("created-session");
       expect(ensureConnectedMock).not.toHaveBeenCalledWith("created-session");
+    } finally {
+      delivery.resolve();
+      await cleanup();
+    }
+  });
+
+  it("keeps the first message on screen when the view moves into the chat it created", async () => {
+    const delivery = createDeferred<void>();
+    const onCreateAndSend = vi.fn((
+      _prompt: string, _attachments: unknown, _mode: unknown, _id: unknown,
+      onSessionCreated?: (sessionId: string) => void,
+    ) => {
+      onSessionCreated?.("created-session");
+      return delivery.promise;
+    });
+    const { dom, act, cleanup, render } = await renderChatView({
+      composerKey: "draft:quickchat",
+      sessionId: null,
+      onCreateAndSend,
+      streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null },
+    });
+
+    try {
+      const props = chatInputMock.mock.calls.at(-1)?.[0] as { onSend: (prompt: string) => Promise<void> };
+      await act(async () => {
+        void props.onSend("first message");
+        await waitTick();
+      });
+      // The created chat has no history yet and no live copy has arrived.
+      fetchMessagesFastMock.mockResolvedValueOnce({ messages: [], runState: "idle", total: 0, warm: true });
+      await render({ composerKey: "created-session", sessionId: "created-session" });
+      await act(async () => {
+        await waitTick();
+      });
+
+      expect(dom.container.textContent).toContain("first message");
     } finally {
       delivery.resolve();
       await cleanup();

@@ -1,4 +1,4 @@
-import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal, TextSelect, Undo2 } from "lucide-react";
+import { Check, Clock, Copy, GitFork, Loader2, MoreHorizontal, Pencil, TextSelect, Undo2, X } from "lucide-react";
 import type { ChatMessage } from "../api";
 import { timeAgo } from "../time";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
@@ -87,6 +87,10 @@ interface MessageActionsMenuProps {
   onSelectText: () => void;
   onFork: () => void;
   onUndo: () => void;
+  /** A message the agent never got: put it back in the message box. */
+  onEditUnsent?: () => void;
+  /** A message the agent never got: remove it from the chat. */
+  onDiscardUnsent?: () => void;
 }
 
 export function MessageActionsMenu({
@@ -102,7 +106,10 @@ export function MessageActionsMenu({
   onSelectText,
   onFork,
   onUndo,
+  onEditUnsent,
+  onDiscardUnsent,
 }: MessageActionsMenuProps) {
+  const unsent = Boolean(target.message.unsent);
   const timestamp = formatMessageTimestamp(target.message.timestamp);
   const forkBoundaryEventId = target.message.role === "assistant"
     ? target.message.forkBoundaryEventId
@@ -143,6 +150,26 @@ export function MessageActionsMenu({
           disabled={forkDisabled || forkLoading}
           title={forkDisabled ? "Wait until this session is idle" : "Fork a new session through this response"}
         />
+      )}
+      {unsent && onEditUnsent && (
+        <CtxItem
+          icon={<Pencil size={14} />}
+          label="Edit"
+          onClick={onEditUnsent}
+          title="Put it back in the message box"
+        />
+      )}
+      {unsent && onDiscardUnsent && (
+        <>
+          <CtxDivider />
+          <CtxItem
+            icon={<X size={14} />}
+            label="Discard"
+            onClick={onDiscardUnsent}
+            className="text-error"
+            title="Remove this message from the chat"
+          />
+        </>
       )}
       {target.message.undoEventId && (
         <>

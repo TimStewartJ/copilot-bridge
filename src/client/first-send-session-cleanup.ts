@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
+  ApiError,
   deleteSession as deleteSessionApi,
   sendChatMessage as sendChatMessageApi,
   type Attachment,
@@ -117,10 +118,14 @@ export async function sendMaterializedFirstPrompt({
       ...(clientMessageId ? { clientMessageId } : {}),
     });
   } catch (error) {
-    try {
-      await onRejected?.(error);
-    } catch (cleanupError) {
-      logger.error("Failed to handle rejected first send:", cleanupError);
+    // Only an answer from the server says the message was not taken. With no answer (the
+    // connection dropped) it may well be running, so the chat stays and the send can be retried.
+    if (error instanceof ApiError) {
+      try {
+        await onRejected?.(error);
+      } catch (cleanupError) {
+        logger.error("Failed to handle rejected first send:", cleanupError);
+      }
     }
     throw error;
   }

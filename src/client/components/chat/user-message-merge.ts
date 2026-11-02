@@ -1,4 +1,5 @@
 import type { Attachment, ChatEntry, ChatMessage, ChatMessageDelivery } from "../../api";
+import type { UnsentMessageView } from "../../../shared/unsent-message.js";
 import { getLatestEntryActivityTimestamp } from "../../chat-cache";
 import type { LivePendingUserMessage } from "../../useSessionStream";
 
@@ -19,6 +20,8 @@ export interface PendingSend {
   messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
+  /** This send is a not-sent message sent again; that message stays hidden while this one is around. */
+  resendOf?: string;
 }
 
 /** What loaded history knows about saved user messages. */
@@ -59,8 +62,15 @@ function isUserMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "
   return (!entry.type || entry.type === "message") && entry.role === "user";
 }
 
-export function indexUserMessageHistory(entries: ChatEntry[]): UserMessageHistory {
-  const clientMessageIds = new Set<string>();
+/**
+ * `unsent` are messages the agent never got that the chat keeps: they settle their live copies and
+ * this page's sends like saved ones, but say nothing about how far saved history reaches.
+ */
+export function indexUserMessageHistory(
+  entries: ChatEntry[],
+  unsent: readonly UnsentMessageView[] = [],
+): UserMessageHistory {
+  const clientMessageIds = new Set<string>(unsent.map((message) => message.id));
   const messageIds = new Set<string>();
   const sourceEventIds = new Set<string>();
   for (const entry of entries) {
@@ -144,13 +154,14 @@ export function mergeUserMessages({ history, live, placeholders }: {
     // The failed bubble, with its Retry, stands for this message.
     if (send?.delivery?.failed) continue;
     // A live copy means the server is running the message, so it is no longer queued.
-    const delivery = send?.delivery?.queued ? undefined : send?.delivery;
+    const delivery = send?.delivery?.queued || message.undelivered ? undefined : send?.delivery;
     liveEntries.push({
       id: `live-user-${message.id}`,
       type: "message",
       role: "user",
       content: message.content,
       ...(delivery ? { delivery } : {}),
+      ...(message.undelivered ? { unsent: message.undelivered, clientMessageId: message.id } : {}),
       ...(message.attachments?.length ? { attachments: message.attachments } : {}),
       ...(message.timestamp ? { timestamp: message.timestamp } : {}),
     });
@@ -181,4 +192,63 @@ export function settlePendingSends(
   const learned = learnFromLive(placeholders, live);
   const { settledIds } = mergeUserMessages({ history, live, placeholders: learned });
   return settledIds.size === 0 ? learned : learned.filter((send) => !settledIds.has(send.id));
+}
+
+/** When an entry happened, for placing a not-sent message among them; undefined when it has no time. */
+function entryStartTimestamp(entry: ChatEntry): number {
+  const at = entry.type === "tool"
+    ? entry.toolCall.startedAt ?? entry.toolCall.completedAt
+    : "timestamp" in entry ? entry.timestamp : undefined;
+  return at ? Date.parse(at) : Number.NaN;
+}
+
+/** A message the agent never got, as the chat shows it. */
+export function unsentMessageEntry(message: UnsentMessageView): UserMessageEntry {
+  return {
+    id: `unsent-${message.id}`,
+    type: "message",
+    role: "user",
+    content: message.content,
+    clientMessageId: message.id,
+    timestamp: message.createdAt,
+    unsent: { state: message.state, ...(message.error ? { error: message.error } : {}) },
+    ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })) } : {}),
+    ...(message.mode === "autopilot" ? { agentMode: "autopilot" as const } : {}),
+  };
+}
+
+/**
+ * Puts the messages the agent never got where they were sent: before the first saved entry that
+ * happened after them, or after all of saved history. One older than everything loaded is left for
+ * the older page it belongs to (`hasOlder`). `hidden` are ids being resent or discarded.
+ */
+export function placeUnsentMessages(
+  entries: ChatEntry[],
+  unsent: readonly UnsentMessageView[],
+  { hasOlder, hidden }: { hasOlder: boolean; hidden?: ReadonlySet<string> },
+): ChatEntry[] {
+  const shown = unsent.filter((message) => !hidden?.has(message.id));
+  if (shown.length === 0) return entries;
+  const result = [...entries];
+  // Newest first, so each insert leaves the positions of the older ones untouched.
+  const ordered = [...shown].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  for (const message of ordered) {
+    const at = Date.parse(message.createdAt);
+    let index = entries.findIndex((entry) => entryStartTimestamp(entry) > at);
+    if (index < 0) index = entries.length;
+    if (index === 0 && hasOlder) continue;
+    result.splice(index, 0, unsentMessageEntry(message));
+  }
+  return result;
+}
+
+/** Whether two reads returned the same not-sent messages, so a re-read keeps the old list. */
+export function sameUnsentMessages(a: readonly UnsentMessageView[], b: readonly UnsentMessageView[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((message, index) => {
+    const other = b[index]!;
+    return message.id === other.id && message.state === other.state && message.error === other.error
+      && message.content === other.content;
+  });
 }

@@ -919,8 +919,53 @@ describe("Session routes (mocked)", () => {
       "test-session",
       "hello",
       undefined,
-      { clientMessageId: "client-message-1" },
+      { clientMessageId: "client-message-1", keepUndelivered: true },
     );
+
+    // The same browser message again (a retry after a lost answer) is not run twice.
+    ctx.chatMessageIdStore?.record("test-session", "runtime-message-1", "client-message-1");
+    const repeat = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello", clientMessageId: "client-message-1" });
+    expect(repeat.status).toBe(202);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST /api/chat keeps a first message that was stopped before the agent got it", async () => {
+    ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockRejectedValue(
+      new Error("Session was aborted before the prompt was accepted"),
+    );
+
+    const res = await request(app)
+      .post("/api/chat")
+      .send({ sessionId: "test-session", prompt: "hello", clientMessageId: "client-stopped", waitForDelivery: true });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "stopped" });
+  });
+
+  it("resends a not-sent message once, from whichever device asks first", async () => {
+    const store = ctx.unsentMessageStore!;
+    store.recordPending({ sessionId: "test-session", id: "client-old", content: "hello again" });
+    store.markUndelivered("test-session", "client-old", "stopped");
+    ctx.sessionManager.startWork = vi.fn();
+
+    const first = await request(app)
+      .post("/api/sessions/test-session/unsent-messages/client-old/resend")
+      .send({ clientMessageId: "client-new" });
+    const second = await request(app)
+      .post("/api/sessions/test-session/unsent-messages/client-old/resend")
+      .send({ clientMessageId: "client-newer" });
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(409);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledTimes(1);
+    expect(ctx.sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello again", undefined, {
+      clientMessageId: "client-new",
+      keepUndelivered: true,
+    });
+    expect(store.list("test-session")).toEqual([]);
+    expect((await request(app).delete("/api/sessions/test-session/unsent-messages/client-old")).status).toBe(404);
   });
 
   it("POST /api/chat waits for first-prompt delivery when requested", async () => {

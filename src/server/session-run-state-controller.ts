@@ -5,9 +5,12 @@ import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
 export type SessionRunState = "busy" | "stalled" | "idle";
 
+/** Why a prompt never reached the runtime: the user stopped it, the Bridge shut down, or the turn failed. */
+export type PromptDeliveryFailure = "aborted" | "shutdown" | "error";
+
 export type PromptDeliveryResult =
   | { status: "accepted" }
-  | { status: "failed"; message: string };
+  | { status: "failed"; reason: PromptDeliveryFailure; message: string };
 
 export interface SessionRunRecord {
   state: Exclude<SessionRunState, "idle">;
@@ -25,6 +28,16 @@ export interface SessionRunController {
   promptDelivery: Promise<PromptDeliveryResult>;
   isCompleted(): boolean;
   markPromptAccepted(): void;
+  /**
+   * Called once, synchronously, when the run ends before its prompt was accepted, ahead of the
+   * terminal event (which closes the stream), so what it publishes still reaches the browser.
+   */
+  onPromptUndelivered(handler: (result: Extract<PromptDeliveryResult, { status: "failed" }>) => void): void;
+  /** The run will send a prompt and has not yet: a Stop now has no runtime turn to stop. */
+  markSendPending(): void;
+  /** The prompt is being handed to the runtime; stopping now needs the runtime to stop the turn. */
+  markSendStarted(): void;
+  isBeforeSend(): boolean;
   completeDone(content: string, options?: SessionTerminalOptions): void;
   completeError(message: string, options?: SessionTerminalOptions): void;
   completeAborted(content: string, options?: SessionTerminalOptions): void;
@@ -101,6 +114,8 @@ export class SessionRunStateController {
       resolvePromptDelivery = resolve;
     });
     let promptDeliverySettled = false;
+    let sendPhase: "none" | "pending" | "started" = "none";
+    const undeliveredHandlers: Array<(result: Extract<PromptDeliveryResult, { status: "failed" }>) => void> = [];
 
     const settleAbortFallback = (fired: boolean) => {
       const resolver = resolveAbortFallback;
@@ -119,6 +134,16 @@ export class SessionRunStateController {
     const settlePromptDelivery = (result: PromptDeliveryResult) => {
       if (promptDeliverySettled) return;
       promptDeliverySettled = true;
+      if (result.status === "failed") {
+        for (const handler of undeliveredHandlers.splice(0)) {
+          try {
+            handler(result);
+          } catch (error) {
+            this.logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Undelivered prompt handler failed:`, error);
+          }
+        }
+      }
+      undeliveredHandlers.length = 0;
       resolvePromptDelivery(result);
     };
     const persistTerminalSnapshot = (sourceEventId?: string) => {
@@ -154,6 +179,16 @@ export class SessionRunStateController {
       completion,
       promptDelivery,
       isCompleted: () => completed,
+      onPromptUndelivered: (handler) => {
+        if (!promptDeliverySettled) undeliveredHandlers.push(handler);
+      },
+      markSendPending: () => {
+        if (sendPhase === "none") sendPhase = "pending";
+      },
+      markSendStarted: () => {
+        sendPhase = "started";
+      },
+      isBeforeSend: () => sendPhase === "pending",
       markPromptAccepted: () => {
         const current = this.sessionRuns.get(sessionId);
         if (current) {
@@ -184,7 +219,7 @@ export class SessionRunStateController {
       },
       completeError: (message, options) => {
         this.completedAssistantPreviews.delete(sessionId);
-        settlePromptDelivery({ status: "failed", message });
+        settlePromptDelivery({ status: "failed", reason: "error", message });
         finish((timestamp) => {
           bus.emit({
             type: "error",
@@ -197,7 +232,7 @@ export class SessionRunStateController {
       },
       completeAborted: (content, options) => {
         this.completedAssistantPreviews.delete(sessionId);
-        settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryAbortedMessage });
+        settlePromptDelivery({ status: "failed", reason: "aborted", message: this.deps.promptDeliveryAbortedMessage });
         finish((timestamp) => {
           bus.emit({
             type: "aborted",
@@ -213,7 +248,7 @@ export class SessionRunStateController {
       },
       completeShutdown: (content, options) => {
         this.completedAssistantPreviews.delete(sessionId);
-        settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryShutdownMessage });
+        settlePromptDelivery({ status: "failed", reason: "shutdown", message: this.deps.promptDeliveryShutdownMessage });
         finish((timestamp) => {
           bus.emit({
             type: "shutdown",
@@ -241,7 +276,7 @@ export class SessionRunStateController {
               return;
             }
             this.logger.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Abort not confirmed after ${delayMs}ms — resolving locally`);
-            settlePromptDelivery({ status: "failed", message: this.deps.promptDeliveryAbortedMessage });
+            settlePromptDelivery({ status: "failed", reason: "aborted", message: this.deps.promptDeliveryAbortedMessage });
             resolve(finish((timestamp) => {
               const assistantSourceEventId = getAssistantSourceEventId?.();
               bus.emit({

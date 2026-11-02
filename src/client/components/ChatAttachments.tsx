@@ -112,6 +112,10 @@ export function attachmentImageSrc(att: Attachment, sessionId?: string): string 
     return null;
   }
   if (att.type === "uploaded" && att.previewUrl) return att.previewUrl;
+  // A message kept by the server names its files as saved in the session.
+  if (att.type === "uploaded" && sessionId && att.mimeType.startsWith("image/")) {
+    return sessionFileUrl(sessionId, att.displayName);
+  }
   if (att.type === "file" && sessionId && isImageFileName(att.path) && isSessionUpload(att.path, sessionId)) {
     return sessionFileUrl(sessionId, attachmentName(att));
   }
@@ -120,6 +124,7 @@ export function attachmentImageSrc(att: Attachment, sessionId?: string): string 
 
 /** Where a sent file can be read from, when the server still has it. */
 function attachmentFileUrl(att: Attachment, sessionId?: string): string | undefined {
+  if (sessionId && att.type === "uploaded" && !att.previewUrl) return sessionFileUrl(sessionId, att.displayName);
   if (!sessionId || att.type !== "file" || !isSessionUpload(att.path, sessionId)) return undefined;
   return sessionFileUrl(sessionId, att.path.split(/[\\/]/).pop() ?? attachmentName(att));
 }

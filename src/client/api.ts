@@ -20,6 +20,7 @@ import type {
   CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
+import type { UnsentMessageState, UnsentMessageView } from "../shared/unsent-message.js";
 import type { RunNotice } from "../shared/session-stream.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
 import type { ResponseStyleSettings } from "../shared/response-style.js";
@@ -404,6 +405,8 @@ export interface ChatMessage {
   agentMode?: "autopilot";
   /** Client-only state for optimistic messages awaiting server acceptance. */
   delivery?: ChatMessageDelivery;
+  /** A user message the agent never got, kept in the chat as not sent. */
+  unsent?: { state: UnsentMessageState; error?: string };
 }
 
 /** A tool call rendered as its own entry in the chronological chat list */
@@ -1026,7 +1029,8 @@ export async function patchSession(id: string, updates: { archived: boolean }): 
 
 // ── Session model ─────────────────────────────────────────────────
 
-export type SessionModelSource = "live" | "events" | "unknown";
+/** "starting": the browser's own guess for a chat it just created, until the server answers. */
+export type SessionModelSource = "live" | "events" | "unknown" | "starting";
 export type { CopilotContextTier };
 
 export interface SessionModelState {
@@ -1146,6 +1150,30 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
+/** Hides a message the agent never got. Resolves when it is gone, including when it already was. */
+export async function discardUnsentMessage(sessionId: string, messageId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/unsent-messages/${encodeURIComponent(messageId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(err.error || res.statusText, res.status);
+  }
+}
+
+/** Sends a message the agent never got again, as a new message (`clientMessageId`) at the end of the chat. */
+export function resendUnsentMessage(
+  sessionId: string,
+  messageId: string,
+  clientMessageId: string,
+): Promise<ChatMessageAcceptedResponse> {
+  return apiFetch<ChatMessageAcceptedResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/unsent-messages/${encodeURIComponent(messageId)}/resend`,
+    { clientMessageId },
+  );
+}
+
 export type BatchAction = "archive" | "unarchive" | "delete" | "markRead";
 
 export async function batchSessionAction(
@@ -1218,8 +1246,9 @@ export interface ChatMessageAcceptedResponse {
   /**
    * "queued": the session could not take the message yet; the server sends it once it can.
    * "hands-free": a Helm message that will also be answered out loud.
+   * "stopped": Stop came before the agent had it; the chat keeps it as not sent.
    */
-  mode?: "steered" | "queued" | "command" | "hands-free";
+  mode?: "steered" | "queued" | "command" | "hands-free" | "stopped";
 }
 
 export function retrySessionRun(sessionId: string, runId: string): Promise<ChatMessageAcceptedResponse> {
@@ -1280,6 +1309,8 @@ export async function fetchSlashCommands(sessionId: string): Promise<SlashComman
 /** Fast message loading — reads from disk, no SDK resume needed */
 export interface MessagesFastResponse {
   messages: ChatEntry[];
+  /** Messages the agent never got, oldest first, wherever they sit in the chat. */
+  unsentMessages?: UnsentMessageView[];
   runState: SessionRunState;
   runNotice?: RunNotice;
   total: number;

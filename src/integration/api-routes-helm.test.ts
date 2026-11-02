@@ -124,7 +124,10 @@ describe("Helm routes", () => {
     const res = await request(app).post("/api/chat").send({ sessionId: body.sessionId, prompt: "what needs me?", clientMessageId: "client-1" });
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ status: "accepted" });
-    expect(sessionManager.startWork).toHaveBeenCalledWith(body.sessionId, "what needs me?", undefined, { clientMessageId: "client-1" });
+    expect(sessionManager.startWork).toHaveBeenCalledWith(body.sessionId, "what needs me?", undefined, {
+      clientMessageId: "client-1",
+      keepUndelivered: true,
+    });
   });
 
   it("starts hands-free only once the speech engine is installed", async () => {

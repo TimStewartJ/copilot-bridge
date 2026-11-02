@@ -22,6 +22,7 @@ import type { SessionMetaStore } from "./session-meta-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
 import type { ChatMessageIdStore } from "./chat-message-id-store.js";
+import type { UnsentMessageStore } from "./unsent-message-store.js";
 import type { Task } from "./task-store.js";
 import {
   normalizePendingElicitationRequest,
@@ -43,6 +44,7 @@ import {
 } from "./subagent-correlation.js";
 import { createToolLoopGuard } from "./tool-loop-guard.js";
 import type {
+  PersistedSessionAttachments,
   RoutedSdkAttachment,
   StartWorkAttachment,
 } from "./session-attachment-routing.js";
@@ -322,6 +324,11 @@ export interface StartWorkOptions {
    * Lets one conversation think harder for some turns than others (Helm: typed vs spoken).
    */
   reasoningEffort?: string;
+  /**
+   * The message is a person's chat message (sent with `clientMessageId`): if the run ends before
+   * the agent has it, it stays in the chat marked not sent instead of being lost.
+   */
+  keepUndelivered?: boolean;
 }
 
 async function setSessionModeForSend(session: AgentSession, mode: string): Promise<void> {
@@ -404,6 +411,8 @@ export interface SessionRunnerDeps {
   sessionContextStore?: SessionContextStore;
   /** Records the browser message id each sent chat message was given by the runtime. */
   chatMessageIdStore?: Pick<ChatMessageIdStore, "record">;
+  /** Chat messages accepted for a run that the agent has not received yet. */
+  unsentMessageStore?: Pick<UnsentMessageStore, "recordPending" | "markUndelivered" | "markSending" | "markSendFailed" | "retire">;
   copilotHome?: string;
   /** A model's display name from the known model list, for status text. */
   modelDisplayName?(modelId: string): string | undefined;
@@ -438,6 +447,14 @@ export interface SessionRunnerDeps {
     sessionId: string,
     attachments?: StartWorkAttachment[],
   ): RoutedSdkAttachment[] | undefined;
+  persistSessionAttachments(
+    sessionId: string,
+    attachments?: StartWorkAttachment[],
+  ): PersistedSessionAttachments;
+  /** A run let go of the session, so a message waiting for it can start. */
+  notifySessionReleased?(sessionId: string): void;
+  /** Resumes a runtime session, making it again when the runtime never saved the chat. */
+  resumeRuntimeSession(backend: AgentBackend, sessionId: string, resumeConfig: any): Promise<any>;
   cacheResumedSession(sessionId: string, session: any, sessionConfig?: any): Promise<any>;
   waitForSessionToolInitialization(sessionId: string, session: any): boolean | Promise<boolean>;
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
@@ -799,6 +816,8 @@ export class SessionRunner {
       throw new Error("Session is busy processing another message");
     }
 
+    // Saved before anything else: the files are what a message the agent never got is kept with.
+    const persistedAttachments = this.deps.persistSessionAttachments(sessionId, attachments);
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
@@ -808,7 +827,10 @@ export class SessionRunner {
     const projectedUserMessageId = hiddenPrompt
       ? undefined
       : bus.setPendingPrompt(visiblePrompt, attachments, options.clientMessageId);
-    return this.startBackgroundRun(
+    const keptMessageId = !hiddenPrompt && options.keepUndelivered && options.clientMessageId
+      ? this.recordPendingMessage(sessionId, options.clientMessageId, visiblePrompt, persistedAttachments, options.mode)
+      : undefined;
+    const runController = this.startBackgroundRun(
       sessionId,
       bus,
       (runController) => this.doWork(
@@ -819,6 +841,7 @@ export class SessionRunner {
         attachments,
         options,
         projectedUserMessageId,
+        persistedAttachments.routed,
       ),
       {
         ...(hiddenPrompt ? {} : { pendingPrompt: visiblePrompt }),
@@ -826,6 +849,76 @@ export class SessionRunner {
         attentionMode: options.attentionMode === "quiet" ? "quiet" : "normal",
       },
     );
+    if (keptMessageId) this.keepMessageUntilDelivered(sessionId, bus, runController, keptMessageId, projectedUserMessageId);
+    return runController;
+  }
+
+  /** Records a person's message before its turn starts. Returns its id, or nothing when it could not be kept. */
+  private recordPendingMessage(
+    sessionId: string,
+    clientMessageId: string,
+    content: string,
+    attachments: PersistedSessionAttachments,
+    mode: SendMode | undefined,
+  ): string | undefined {
+    const store = this.deps.unsentMessageStore;
+    if (!store) return undefined;
+    try {
+      store.recordPending({
+        sessionId,
+        id: clientMessageId,
+        content,
+        ...(attachments.saved.length > 0 ? { attachments: attachments.saved } : {}),
+        ...(mode ? { mode } : {}),
+      });
+      return clientMessageId;
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not record a message before sending it:`, err);
+      return undefined;
+    }
+  }
+
+  /**
+   * Keeps a person's message in the chat if its run ends before the agent has it, and lets it go
+   * once the runtime saved it. The not-sent state is published before the run's terminal event,
+   * which closes the browser's stream.
+   */
+  private keepMessageUntilDelivered(
+    sessionId: string,
+    bus: SessionEventBus,
+    runController: SessionRunController,
+    messageId: string,
+    projectedUserMessageId: string | undefined,
+  ): void {
+    runController.onPromptUndelivered((result) => {
+      const state = result.reason === "aborted" ? "stopped" : result.reason === "shutdown" ? "interrupted" : "failed";
+      const error = result.reason === "error" ? result.message : undefined;
+      // A message already handed to the runtime is the runtime's: its answer settles it, not the stop.
+      const kept = this.updateKeptMessage(sessionId, (store) => store.markUndelivered(sessionId, messageId, state, error));
+      if (kept && projectedUserMessageId) bus.markPromptUndelivered(projectedUserMessageId, state, error);
+    });
+    void runController.promptDelivery.then((result) => {
+      if (result.status === "accepted") this.retireKeptMessage(sessionId, messageId);
+    });
+  }
+
+  private retireKeptMessage(sessionId: string, messageId: string): void {
+    this.updateKeptMessage(sessionId, (store) => store.retire(sessionId, messageId));
+  }
+
+  /** A change to a kept message's record; a store failure is logged and never fails the run. */
+  private updateKeptMessage<T>(
+    sessionId: string,
+    change: (store: NonNullable<SessionRunnerDeps["unsentMessageStore"]>) => T,
+  ): T | undefined {
+    const store = this.deps.unsentMessageStore;
+    if (!store) return undefined;
+    try {
+      return change(store);
+    } catch (err) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not update a kept chat message:`, err);
+      return undefined;
+    }
   }
 
   startWork(sessionId: string, prompt: string, attachments?: StartWorkAttachment[], options?: StartWorkOptions): void {
@@ -950,6 +1043,8 @@ export class SessionRunner {
     } catch (err) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] Failed to record the client id of a sent message:`, err);
     }
+    // The runtime has it, even when the run was stopped while the send was on its way.
+    this.retireKeptMessage(sessionId, clientMessageId);
   }
 
   private startBackgroundRun(
@@ -982,6 +1077,7 @@ export class SessionRunner {
       });
       // Before any pending eviction: a turn the runtime started while this run was letting go is next.
       this.followRuntimeTurn(sessionId);
+      this.deps.notifySessionReleased?.(sessionId);
       void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
       this.deps.notifySessionCapacityChanged();
       this.deps.flushPendingSessionEviction(sessionId);
@@ -998,12 +1094,15 @@ export class SessionRunner {
     options: StartWorkOptions = {},
     /** The live entry showing this prompt, from `setPendingPrompt`; absent for hidden prompts. */
     projectedUserMessageId?: string,
+    /** `attachments` as already saved and routed by the caller. */
+    routedAttachments?: RoutedSdkAttachment[],
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
     let projectedEntryId = projectedUserMessageId;
-    const sdkAttachments = this.deps.persistAndRouteAttachments(sessionId, attachments);
+    const sdkAttachments = routedAttachments ?? this.deps.persistAndRouteAttachments(sessionId, attachments);
     const attachCount = sdkAttachments?.length ?? 0;
     const activeRunController = runController ?? this.createRunController(sessionId, bus);
+    activeRunController.markSendPending();
     const parsedCommand = parseSlashCommandPrompt(prompt);
     let sendPrompt = prompt;
     let displayPrompt: string | undefined = options.displayPrompt;
@@ -1017,6 +1116,9 @@ export class SessionRunner {
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending ${mode} prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       execute: async (session) => {
+        // A Stop can land during any await below; nothing may reach the session after it.
+        const stopped = () => activeRunController.isCompleted();
+        if (stopped()) return;
         if (parsedCommand) {
           commandResult = await invokeSlashCommand(session, parsedCommand);
           if (commandResult.kind !== "send") {
@@ -1034,20 +1136,33 @@ export class SessionRunner {
             pendingPrompt: displayPrompt ?? sendPrompt,
           });
         }
+        if (stopped()) return;
         if (options.reasoningEffort) {
           await this.deps.applyTurnReasoningEffort?.(sessionId, session, options.reasoningEffort);
+          if (stopped()) return;
         }
         await setSessionModeForSend(session, mode);
+        if (stopped()) return;
         // Built per attempt from the original prompt: a stale-session retry resends it whole.
         const turnContext = this.deps.prepareTurnContext?.(sessionId);
+        activeRunController.markSendStarted();
+        const keptMessageId = options.keepUndelivered ? options.clientMessageId : undefined;
+        if (keptMessageId) this.updateKeptMessage(sessionId, (store) => store.markSending(sessionId, keptMessageId));
         const turnPrompt = turnContext?.block ? `${turnContext.block}\n\n${sendPrompt}` : sendPrompt;
         const turnDisplayPrompt = turnContext?.block ? displayPrompt ?? sendPrompt : displayPrompt;
-        const messageId = await session.send({
-          prompt: turnPrompt,
-          ...(turnDisplayPrompt ? { displayPrompt: turnDisplayPrompt } : {}),
-          ...(options.promptSource ? { source: options.promptSource } : {}),
-          ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
-        });
+        let messageId: unknown;
+        try {
+          messageId = await session.send({
+            prompt: turnPrompt,
+            ...(turnDisplayPrompt ? { displayPrompt: turnDisplayPrompt } : {}),
+            ...(options.promptSource ? { source: options.promptSource } : {}),
+            ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
+          });
+        } catch (error) {
+          // The runtime did not take it: a retry may send it again, or the run ends with it not sent.
+          if (keptMessageId) this.updateKeptMessage(sessionId, (store) => store.markSendFailed(sessionId, keptMessageId));
+          throw error;
+        }
         turnContext?.commit();
         this.claimSentUserMessage(sessionId, bus, projectedEntryId, messageId, options.clientMessageId);
       },
@@ -1141,7 +1256,7 @@ export class SessionRunner {
           s = await this.deps.resumeSessionWithTimeout(
             this.client!,
             sessionId,
-            this.client!.resumeSession(sessionId, resumeConfig),
+            this.deps.resumeRuntimeSession(this.client!, sessionId, resumeConfig),
             "resumeSession timed out after 60s",
           );
           s = await this.deps.cacheResumedSession(sessionId, s, resumeConfig);
@@ -1160,11 +1275,10 @@ export class SessionRunner {
       this.deps.abandonCachedSession(sessionId, activeSession);
 
     let session = await resumeSession();
-    if (!session || runController.isCompleted()) {
-      if (!session) return;
-      await abandonSession(session);
-      return;
-    }
+    // Stopped while the session was being created or resumed: nothing was sent, so the session is
+    // healthy and stays ready for the next message. Dropping it would leave a chat whose runtime
+    // never saved anything impossible to resume.
+    if (!session || runController.isCompleted()) return;
     /** A turn the runtime starts after this run is followed with this run's attention mode. */
     const rememberAttentionMode = (activeSession: unknown): boolean => {
       const feed = this.sessionFeeds.get(sessionId);

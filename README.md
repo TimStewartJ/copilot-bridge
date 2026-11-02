@@ -576,6 +576,24 @@ instructions, avoiding a rejected completion attempt and a second answer after l
 Autopilot. The workaround is needed for CLI 1.0.95 through the tested 1.0.98-0 preview;
 remove it once a native mode-switch test passes without the explicit filter refresh.
 
+### Messages the agent never got
+
+A chat message is recorded (`unsent_chat_messages`, `src/server/unsent-message-store.ts`) when its
+turn starts and dropped once the runtime has saved it. If the turn ends first (Stop while the chat
+is still starting, a failed start, or a Bridge restart), the message stays in the chat where it was
+sent, marked "Not sent", with Resend (a new message at the end; one device wins). Edit (back to the
+composer) and Discard are in the message's menu. The run adds no "Stopped" card of its own, since
+nothing ran. Stop never deletes a chat, and a first send is only rolled back when the server refused
+it, not when the answer was lost on the way.
+
+Stop before anything reached the runtime ends the run at once, and nothing is sent after it. A
+message sent right after waits for the stopped run to let go of the chat (up to 45 s) and then
+starts normally instead of being queued. A repeated `clientMessageId` is never run twice.
+
+A Bridge-made chat whose runtime never saved a message cannot be resumed (CLI 1.0.105 answers
+"Session not found"); it is created again under the same id with its model, prompt profile and
+launch agent. Spoken messages and agent-to-chat messages are not kept this way.
+
 ### Agent questions
 
 A question an agent asks with `ask_user` is shown as a form in the chat and on Home, and the

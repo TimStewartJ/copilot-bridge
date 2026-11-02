@@ -27,6 +27,21 @@ export function deduplicateFilename(dir: string, name: string): string {
   return `${stem} (${i})${ext}`;
 }
 
+/** A file a message carried, as saved in the session's files/ folder. */
+export interface SavedSessionAttachment {
+  type: "uploaded";
+  displayName: string;
+  mimeType: string;
+  size?: number;
+}
+
+export interface PersistedSessionAttachments {
+  /** What the SDK is given. */
+  routed: RoutedSdkAttachment[] | undefined;
+  /** What was kept on disk, by the names it was saved under, so the message can be shown or sent again. */
+  saved: SavedSessionAttachment[];
+}
+
 /**
  * Save blob attachments to the session's files/ directory and convert
  * non-image attachments to SDK `file` type (path-based) so the agent
@@ -37,7 +52,15 @@ export function persistAndRouteAttachments(
   attachments?: StartWorkAttachment[],
   deps: AttachmentRoutingDeps = {},
 ): RoutedSdkAttachment[] | undefined {
-  if (!attachments?.length) return undefined;
+  return persistSessionAttachments(sessionId, attachments, deps).routed;
+}
+
+export function persistSessionAttachments(
+  sessionId: string,
+  attachments?: StartWorkAttachment[],
+  deps: AttachmentRoutingDeps = {},
+): PersistedSessionAttachments {
+  if (!attachments?.length) return { routed: undefined, saved: [] };
 
   const logger = deps.logger ?? console;
   const copilotHome = deps.copilotHome ?? join(homedir(), ".copilot");
@@ -45,6 +68,7 @@ export function persistAndRouteAttachments(
   mkdirSync(filesDir, { recursive: true });
 
   const result: RoutedSdkAttachment[] = [];
+  const saved: SavedSessionAttachment[] = [];
   for (const att of attachments) {
     if (att.type === "uploaded") {
       // File already on disk from multipart upload
@@ -60,10 +84,12 @@ export function persistAndRouteAttachments(
       }
       if (att.mimeType.startsWith("image/")) {
         // Images: read and convert to blob so the model sees them visually
-        const data = readFileSync(filePath).toString("base64");
-        result.push({ type: "blob", data, mimeType: att.mimeType, displayName: safeName });
+        const bytes = readFileSync(filePath);
+        result.push({ type: "blob", data: bytes.toString("base64"), mimeType: att.mimeType, displayName: safeName });
+        saved.push({ type: "uploaded", displayName: safeName, mimeType: att.mimeType, size: bytes.length });
       } else {
         result.push({ type: "file", path: filePath, displayName: safeName });
+        saved.push({ type: "uploaded", displayName: safeName, mimeType: att.mimeType });
       }
       logger.log(`[sdk] [${sessionId.slice(0, 8)}] Resolved uploaded attachment: ${safeName} (${att.mimeType})`);
     } else {
@@ -74,15 +100,18 @@ export function persistAndRouteAttachments(
         logger.warn(`[sdk] [${sessionId.slice(0, 8)}] Skipping attachment with unsafe name: ${att.displayName}`);
         continue;
       }
-      writeFileSync(filePath, Buffer.from(att.data, "base64"));
+      const bytes = Buffer.from(att.data, "base64");
+      writeFileSync(filePath, bytes);
+      saved.push({ type: "uploaded", displayName: safeName, mimeType: att.mimeType, size: bytes.length });
 
       if (att.mimeType.startsWith("image/")) {
-        result.push(att);
+        // Named as saved: history shows a sent image from the session's copy by this name.
+        result.push({ ...att, displayName: safeName });
       } else {
         result.push({ type: "file", path: filePath, displayName: safeName });
       }
       logger.log(`[sdk] [${sessionId.slice(0, 8)}] Saved attachment: ${safeName} (${att.mimeType})`);
     }
   }
-  return result;
+  return { routed: result, saved };
 }

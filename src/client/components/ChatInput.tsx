@@ -84,6 +84,15 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
+/** Identifies a list of attachments by what they are, not by object identity. */
+function attachmentListKey(items: readonly Attachment[] | undefined): string {
+  return (items ?? []).map((item) => item.type === "file"
+    ? `file:${item.path}`
+    : item.type === "blob"
+      ? `blob:${item.displayName ?? ""}:${item.data.length}`
+      : `uploaded:${item.displayName}:${item.size}`).join("|");
+}
+
 function revokePreviewUrls(items: Attachment[]): void {
   for (const item of items) {
     if (item.type === "uploaded" && item.previewUrl) {
@@ -491,6 +500,19 @@ export default function ChatInput({
     setInput(nextText);
     requestAnimationFrame(() => adjustTextareaHeight());
   }, [adjustTextareaHeight, composerKey, draft?.text]);
+
+  // Attachments put back from outside (a not-sent message taken back to edit). The composer's own
+  // changes reach the draft at once, so the two only differ when something else changed the draft.
+  const draftAttachmentsKey = attachmentListKey(draft?.attachments);
+  useEffect(() => {
+    if (restoredForRef.current !== composerKey) return;
+    if (draftAttachmentsKey === attachmentListKey(attachmentsRef.current)) return;
+    const next = draft?.attachments ?? [];
+    attachmentsRef.current = next;
+    setAttachments(next);
+    // Only the key matters: the draft object changes with every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerKey, draftAttachmentsKey]);
 
   // Auto-focus on session change (desktop only — avoids keyboard popup on mobile)
   useEffect(() => {

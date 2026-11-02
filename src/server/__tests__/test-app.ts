@@ -42,6 +42,7 @@ import { createApiServices } from "../api-services.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
 import { createInterruptedRunStore } from "../interrupted-run-store.js";
+import { createUnsentMessageStore } from "../unsent-message-store.js";
 import { createChatMessageIdStore } from "../chat-message-id-store.js";
 import type { AppContext } from "../app-context.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
@@ -136,6 +137,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     deferLoopStore: createDeferLoopStore(db),
     interruptedRunStore: createInterruptedRunStore(db),
     chatMessageIdStore: createChatMessageIdStore(db),
+    unsentMessageStore: createUnsentMessageStore(db),
     helmStore: createHelmStore(db),
     copilotHome,
     apiBasePath: "/api",

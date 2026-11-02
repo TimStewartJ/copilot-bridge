@@ -2939,6 +2939,10 @@ function SessionRoute({
     },
     [composerKey, setDraft],
   );
+  const handleRestoreDraft = useCallback((restored: { text: string; attachments?: import("./api").Attachment[] }) => {
+    restoreDraft(composerKey, restored);
+    requestComposerFocus();
+  }, [composerKey, requestComposerFocus, restoreDraft]);
   const handleDraftClear = useCallback(() => {
     clearDraft(composerKey);
     if (sessionId) {
@@ -2959,11 +2963,13 @@ function SessionRoute({
     attachments?: import("./api").Attachment[],
     mode?: SendMode,
     clientMessageId?: string,
+    onSessionCreated?: (sessionId: string) => void,
   ) => {
     const createOptions = launchCreateOptions;
     const sentDraft = readDraft(composerKey);
     const sentLaunchMode = launchMode;
     const newSessionId = await materializeSession(taskId, createOptions);
+    onSessionCreated?.(newSessionId);
     const optimisticModelState = buildOptimisticSessionModelState(createOptions, defaultModelId);
     if (optimisticModelState) {
       queryClient.setQueryData(queryKeys.sessionModel(newSessionId), optimisticModelState);
@@ -3101,6 +3107,7 @@ function SessionRoute({
         onDraftChange={handleDraftChange}
         onDraftClear={handleDraftClear}
         onCreateAndSend={isDraft ? onCreateAndSend : undefined}
+        onRestoreDraft={handleRestoreDraft}
         emptyState={draftEmptyState}
         defaultSendMode={isDraft ? launchMode : DEFAULT_SEND_MODE}
         voiceJob={voiceJob}

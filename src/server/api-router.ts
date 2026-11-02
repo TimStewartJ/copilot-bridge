@@ -196,7 +196,8 @@ import {
 } from "./management-job-enqueue.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { isBridgeRestartingError } from "./backend-availability.js";
-import { sendChatMessage } from "./chat-message-delivery.js";
+import { ChatMessageIdConflictError, sendChatMessage } from "./chat-message-delivery.js";
+import type { UnsentMessageView } from "../shared/unsent-message.js";
 import { requestRestart } from "./restart-signal.js";
 import { getRestartBlockers, readRestartStatus } from "./restart-status.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "./tools/helpers.js";
@@ -224,6 +225,8 @@ const HIBERNATE_IDLE_GRACE_MINUTES = [0, 1, 2, 5, 15, 30, 60] as const;
 const DEFAULT_HIBERNATE_IDLE_GRACE_MINUTES = 2;
 const SEARCH_SCOPES = new Set<SearchScope>(["global", "task", "session"]);
 const SEARCH_KINDS = new Set<SearchKind>(["all", "chat", "task", "doc"]);
+/** How long a read of a chat's model waits for the chat to finish being created. */
+const SESSION_CREATION_DETAIL_WAIT_MS = 30_000;
 // Four-digit years only: SQLite's date functions cannot read the extended years Date.parse accepts.
 const SEARCH_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
 /** Work items a new task can be linked to in one request, as when several are selected on the work map. */
@@ -441,6 +444,7 @@ function truncateAgentTaskText(task: SessionAgentTask, maxLength = AGENT_TEXT_MA
 
 function getChatDeliveryErrorStatus(error: unknown): number {
   if (isBridgeRestartingError(error)) return 503;
+  if (error instanceof ChatMessageIdConflictError) return 409;
   const message = error instanceof Error ? error.message : String(error);
   if (/stalled|not accepting steering|\breconnecting\b|not busy|ended before steering/i.test(message)) return 409;
   return 500;
@@ -1806,6 +1810,16 @@ export function createApiRouter(
   });
 
   // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
+  /** Messages the agent never got, shown in the chat as not sent. A failed read hides them, nothing more. */
+  function readUnsentMessages(sessionId: string): UnsentMessageView[] {
+    try {
+      return ctx.unsentMessageStore?.list(sessionId) ?? [];
+    } catch (error) {
+      console.warn(`[chat] [${sessionId.slice(0, 8)}] Could not read unsent messages:`, error);
+      return [];
+    }
+  }
+
   router.get("/sessions/:id/messages-fast", async (req, res) => {
     try {
       const aroundEventId = typeof req.query.aroundEventId === "string"
@@ -1863,8 +1877,10 @@ export function createApiRouter(
       );
       const status = getSessionStatus(ctx, req.params.id);
       const warm = ctx.sessionManager.isSessionWarm(req.params.id);
+      const unsentMessages = readUnsentMessages(req.params.id);
       res.json({
         messages: annotateClientMessageIds(ctx.chatMessageIdStore, req.params.id, messages),
+        ...(unsentMessages.length > 0 ? { unsentMessages } : {}),
         ...status,
         total,
         hasMore,
@@ -2196,6 +2212,8 @@ export function createApiRouter(
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
     try {
+      // A chat still being created has neither its model nor its profile yet; answer once it has.
+      await ctx.sessionManager.waitForSessionCreation(sessionId, SESSION_CREATION_DETAIL_WAIT_MS);
       const result = await ctx.sessionManager.getSessionModelState(sessionId);
       const promptProfile = ctx.sessionManager.getSessionPromptProfile(sessionId);
       res.json({ ...result, ...(promptProfile ? { promptProfile } : {}) });
@@ -2592,14 +2610,77 @@ export function createApiRouter(
     try {
       const { delivery } = await sendChatMessage(ctx, sessionId, prompt, {
         attachments, mode, waitForDelivery, clientMessageId,
+        // A person's message from the chat: kept if the agent never gets it, and never sent twice.
+        ...(clientMessageId ? { keepUndelivered: true } : {}),
       });
       noteUserMessage(sessionId);
-      res.status(202).json({
-        status: "accepted",
-        ...(["steered", "command", "queued"].includes(delivery) ? { mode: delivery } : {}),
-      });
+      res.status(202).json(chatAcceptedResponse(delivery));
     } catch (err) {
       res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  function chatAcceptedResponse(delivery: string): { status: "accepted"; mode?: string } {
+    return {
+      status: "accepted",
+      ...(["steered", "command", "queued", "stopped"].includes(delivery) ? { mode: delivery } : {}),
+    };
+  }
+
+  // A message the agent never got: discard it, or send it again as a new message.
+  router.delete("/sessions/:id/unsent-messages/:messageId", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Discarding a message")) return;
+    const { id: sessionId, messageId } = req.params;
+    const store = ctx.unsentMessageStore;
+    if (!store) return res.status(503).json({ error: "Unsent messages are unavailable" });
+    if (!store.discard(sessionId, messageId)) {
+      return res.status(404).json({ error: "This message was already sent or discarded." });
+    }
+    const bus = ctx.eventBusRegistry.getBus(sessionId);
+    bus?.discardPendingPrompt(messageId);
+    bus?.announceHistoryChange();
+    res.status(204).end();
+  });
+
+  router.post("/sessions/:id/unsent-messages/:messageId/resend", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Resending a message")) return;
+    const { id: sessionId, messageId } = req.params;
+    const clientMessageId = req.body?.clientMessageId;
+    if (typeof clientMessageId !== "string" || !clientMessageId.trim() || clientMessageId.length > 200) {
+      return res.status(400).json({ error: "clientMessageId must be a non-empty string of at most 200 characters" });
+    }
+    if (clientMessageId === messageId) {
+      return res.status(400).json({ error: "A resent message needs a new clientMessageId" });
+    }
+    const store = ctx.unsentMessageStore;
+    if (!store) return res.status(503).json({ error: "Unsent messages are unavailable" });
+    // Only one resend wins, from any device; the copy is a new message at the end of the chat.
+    const claimed = store.claimResend(sessionId, messageId);
+    if (!claimed) {
+      return res.status(409).json({ error: "This message was already resent or discarded." });
+    }
+    let accepted = false;
+    try {
+      const { delivery } = await sendChatMessage(ctx, sessionId, claimed.content, {
+        ...(claimed.attachments?.length ? { attachments: claimed.attachments } : {}),
+        ...(claimed.mode ? { mode: claimed.mode } : {}),
+        clientMessageId,
+        keepUndelivered: true,
+      });
+      accepted = true;
+      noteUserMessage(sessionId);
+      res.status(202).json(chatAcceptedResponse(delivery));
+    } catch (err) {
+      res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      try {
+        store.finishResend(sessionId, claimed, accepted);
+      } catch (error) {
+        console.warn(`[chat] [${sessionId.slice(0, 8)}] Could not settle a resent message:`, error);
+      }
+      const bus = ctx.eventBusRegistry.getBus(sessionId);
+      if (accepted) bus?.discardPendingPrompt(messageId);
+      bus?.announceHistoryChange();
     }
   });
 

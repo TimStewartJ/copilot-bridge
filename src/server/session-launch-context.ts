@@ -9,7 +9,11 @@ const FILE_NAME = "bridge-launch-context.json";
 
 export interface SessionLaunchContext {
   scheduleContext?: Pick<ScheduleContext, "name" | "type" | "runCount" | "previousRunReport">;
+  /** The task agent the chat was started with, so the runtime session can be made again with it. */
+  agent?: string;
 }
+
+export const SESSION_LAUNCH_CONTEXT_FILE = FILE_NAME;
 
 function readPreviousRunReport(value: unknown): PreviousRunReport | undefined {
   if (!isRecord(value)) return undefined;
@@ -52,6 +56,7 @@ export function readSessionLaunchContext(directory: string): SessionLaunchContex
     || schedule.runCount < 0
   )) throw new Error("Invalid Bridge session schedule launch context");
   return {
+    ...(typeof value.agent === "string" && value.agent.trim() ? { agent: value.agent.trim() } : {}),
     ...(isRecord(schedule) ? {
       scheduleContext: {
         name: String(schedule.name),
@@ -69,6 +74,7 @@ export function writeSessionLaunchContext(directory: string, context: SessionLau
   mkdirSync(directory, { recursive: true });
   const schedule = context.scheduleContext;
   const value: SessionLaunchContext = {
+    ...(context.agent ? { agent: context.agent } : {}),
     ...(schedule ? {
       scheduleContext: {
         name: schedule.name,

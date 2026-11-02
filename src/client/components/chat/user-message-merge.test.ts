@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEntry, ChatMessage } from "../../api";
 import type { LivePendingUserMessage } from "../../useSessionStream";
+import type { UnsentMessageView } from "../../../shared/unsent-message.js";
 import {
   indexUserMessageHistory,
   learnFromLive,
   mergeUserMessages,
+  placeUnsentMessages,
   settlePendingSends,
   type PendingSend,
   type UserMessageEntry,
@@ -14,6 +16,8 @@ interface World {
   history: ChatEntry[];
   live: LivePendingUserMessage[];
   sends: PendingSend[];
+  /** Messages the agent never got, as the last history read listed them. */
+  unsent?: UnsentMessageView[];
 }
 
 type Step = [what: string, change: (world: World) => World, expected: string[]];
@@ -27,6 +31,7 @@ const T2 = "2026-01-01T00:00:02.000Z";
 const T3 = "2026-01-01T00:00:03.000Z";
 
 function deliveryLabel(entry: UserMessageEntry): string {
+  if (entry.unsent) return `not sent: ${entry.unsent.state}`;
   if (!entry.delivery) return "sent";
   if (entry.delivery.failed) return "failed";
   return entry.delivery.queued ? "queued" : "sending";
@@ -35,12 +40,14 @@ function deliveryLabel(entry: UserMessageEntry): string {
 /** What the transcript shows for user messages: history, then the live overlay's user bubbles. */
 function view(world: World): string[] {
   const merge = mergeUserMessages({
-    history: indexUserMessageHistory(world.history),
+    history: indexUserMessageHistory(world.history, world.unsent),
     live: world.live,
     placeholders: world.sends,
   });
-  const saved = world.history.flatMap((entry) => (
-    (!entry.type || entry.type === "message") && entry.role === "user" ? [`history ${entry.content}`] : []
+  const saved = placeUnsentMessages(world.history, world.unsent ?? [], { hasOlder: false }).flatMap((entry) => (
+    (!entry.type || entry.type === "message") && entry.role === "user"
+      ? [entry.unsent ? `kept ${entry.content} (${entry.unsent.state})` : `history ${entry.content}`]
+      : []
   ));
   return [
     ...saved,
@@ -54,7 +61,7 @@ function step(world: World, change: (world: World) => World): World {
   const next = change(world);
   return {
     ...next,
-    sends: settlePendingSends(next.sends, next.live, indexUserMessageHistory(next.history)),
+    sends: settlePendingSends(next.sends, next.live, indexUserMessageHistory(next.history, next.unsent)),
   };
 }
 
@@ -77,6 +84,10 @@ function setHistory(...history: ChatEntry[]): (world: World) => World {
   return (world) => ({ ...world, history });
 }
 
+function setUnsent(...unsent: UnsentMessageView[]): (world: World) => World {
+  return (world) => ({ ...world, unsent });
+}
+
 function savedUser(content: string, ids: Partial<ChatEntry> & { timestamp?: string }): ChatEntry {
   return { id: `saved-${content}`, role: "user", content, ...ids } as ChatEntry;
 }
@@ -86,6 +97,36 @@ function savedAssistant(content: string, timestamp: string): ChatEntry {
 }
 
 const cases: Array<{ name: string; steps: Step[] }> = [
+  {
+    name: "a message stopped before the agent got it stays, ahead of the next one",
+    steps: [
+      ["send", send("c1", "first", SENDING), ["placeholder first (sending)"]],
+      ["live copy", setLive({ id: "c1", content: "first" }), ["live first (sending)"]],
+      [
+        "stopped",
+        (world) => setDelivery("c1", undefined)(setLive({ id: "c1", content: "first", undelivered: { state: "stopped" } })(world)),
+        ["live first (not sent: stopped)"],
+      ],
+      [
+        "next message",
+        (world) => send("c2", "second", SENDING)(setLive(
+          { id: "c1", content: "first", undelivered: { state: "stopped" } },
+          { id: "c2", content: "second" },
+        )(world)),
+        ["live first (not sent: stopped)", "live second (sending)"],
+      ],
+      [
+        "history lists it",
+        setUnsent({ id: "c1", content: "first", state: "stopped", createdAt: T1 }),
+        ["kept first (stopped)", "live second (sending)"],
+      ],
+      [
+        "next message saved",
+        setHistory(savedUser("second", { clientMessageId: "c2", sourceEventId: "e2", timestamp: T2 })),
+        ["kept first (stopped)", "history second"],
+      ],
+    ],
+  },
   {
     name: "a sending placeholder renders as sending",
     steps: [["send", send("c1", "hi", SENDING), ["placeholder hi (sending)"]]],
@@ -329,6 +370,22 @@ describe("mergeUserMessages", () => {
       delivery: FAILED,
       attachments,
     }]);
+  });
+});
+
+describe("placeUnsentMessages", () => {
+  const unsent = (id: string, createdAt: string): UnsentMessageView => ({ id, content: id, state: "stopped", createdAt });
+  const history = [savedUser("a", { timestamp: T1 }), savedAssistant("b", T3)];
+
+  it.each<[string, UnsentMessageView[], { hasOlder: boolean; hidden?: Set<string> }, string[]]>([
+    ["between the saved entries around it", [unsent("x", T2)], { hasOlder: false }, ["saved-a", "unsent-x", "saved-b"]],
+    ["after everything saved", [unsent("x", "2026-01-01T00:00:04.000Z")], { hasOlder: false }, ["saved-a", "saved-b", "unsent-x"]],
+    ["in the order sent", [unsent("y", T2), unsent("x", "2026-01-01T00:00:01.500Z")], { hasOlder: false }, ["saved-a", "unsent-x", "unsent-y", "saved-b"]],
+    ["at the top when nothing older is left", [unsent("x", "2026-01-01T00:00:00.000Z")], { hasOlder: false }, ["unsent-x", "saved-a", "saved-b"]],
+    ["left for the older page it belongs to", [unsent("x", "2026-01-01T00:00:00.000Z")], { hasOlder: true }, ["saved-a", "saved-b"]],
+    ["not at all once discarded or resent", [unsent("x", T2)], { hasOlder: false, hidden: new Set(["x"]) }, ["saved-a", "saved-b"]],
+  ])("places a not-sent message %s", (_name, messages, options, expected) => {
+    expect(placeUnsentMessages(history, messages, options).map((entry) => entry.id)).toEqual(expected);
   });
 });
 

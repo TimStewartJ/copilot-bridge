@@ -250,7 +250,7 @@ export const operationScenarios: IntegrationScenario[] = [
       const start = vi.spyOn(world.ctx.sessionManager, "startWork");
       const response = await request(world.app).post("/api/chat").send({ sessionId: "chat-session", prompt: "Investigate the failure", clientMessageId: "client-message-1" });
       expect(response.status).toBe(202);
-      expect(start).toHaveBeenCalledWith("chat-session", "Investigate the failure", undefined, { clientMessageId: "client-message-1" });
+      expect(start).toHaveBeenCalledWith("chat-session", "Investigate the failure", undefined, { clientMessageId: "client-message-1", keepUndelivered: true });
       expect(response.body).toMatchObject({ status: "accepted" });
     },
   },

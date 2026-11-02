@@ -32,6 +32,7 @@ import {
 } from "../shared/terminal-completion.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { UnsentMessageState } from "../shared/unsent-message.js";
 import { normalizeProviderRetryState, type ProviderRetryState, type RunNotice } from "../shared/session-stream.js";
 export type { RunNotice, RunNoticeKind } from "../shared/session-stream.js";
 
@@ -227,6 +228,8 @@ export interface ProjectedUserMessage {
   messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
+  /** The run ended before the agent got it; the chat keeps it as not sent. */
+  undelivered?: { state: UnsentMessageState; error?: string };
 }
 
 /** A saved `user.message` whose runtime message id no projected entry has claimed yet. */
@@ -436,6 +439,8 @@ export class SessionEventBus {
   private runId = randomUUID();
   private streamingContent = "";
   private userMessages: ProjectedUserMessage[] = [];
+  /** This run ended before the agent got its message, which says so itself; the run adds no notice. */
+  private promptUndelivered = false;
   /** Saved user messages by runtime message id, until the entry they belong to is known. */
   private unclaimedSavedUserMessages = new Map<string, SavedUserMessage>();
   private liveAssistantSegments: LiveAssistantSegment[] = [];
@@ -542,6 +547,11 @@ export class SessionEventBus {
    */
   private advanceHistory(): void {
     this.broadcast({ type: "history_advanced" });
+  }
+
+  /** Something the chat's history shows changed outside a run (a not-sent message was resent or discarded). */
+  announceHistoryChange(): void {
+    this.advanceHistory();
   }
 
   /**
@@ -660,6 +670,28 @@ export class SessionEventBus {
     }
   }
 
+  /** The live entry with this id (a browser message's clientMessageId), if this run shows one. */
+  findUserMessage(entryId: string): ProjectedUserMessage | undefined {
+    const message = this.userMessages.find((entry) => entry.id === entryId);
+    return message ? structuredClone(message) : undefined;
+  }
+
+  /** The agent never got this prompt. Shown as not sent until the chat's history takes it over. */
+  markPromptUndelivered(entryId: string, state: UnsentMessageState, error?: string): void {
+    const index = this.userMessages.findIndex((message) => message.id === entryId);
+    if (index < 0) return;
+    const current = this.userMessages[index]!;
+    if (current.sourceEventId !== undefined) return;
+    const next: ProjectedUserMessage = {
+      ...current,
+      pending: false,
+      undelivered: { state, ...(error ? { error } : {}) },
+    };
+    this.userMessages = this.userMessages.map((entry, entryIndex) => entryIndex === index ? next : entry);
+    this.promptUndelivered = true;
+    this.broadcast({ type: "user_message_updated", userMessage: structuredClone(next) });
+  }
+
   /** Remove a projected prompt that was never saved, when its delivery fails. */
   discardPendingPrompt(entryId: string): void {
     const removed = this.userMessages.find((message) => message.id === entryId);
@@ -672,8 +704,10 @@ export class SessionEventBus {
     const current = this.userMessages[index]!;
     if (current.sourceEventId !== undefined) return;
     if (current.messageId) this.unclaimedSavedUserMessages.delete(current.messageId);
+    // Saved after all (a send that was already on its way when the run stopped): it was delivered.
+    const { undelivered: _undelivered, ...saved } = current;
     const next: ProjectedUserMessage = {
-      ...current,
+      ...saved,
       pending: false,
       ...(sourceEventId ? { sourceEventId } : {}),
       ...(timestamp ? { timestamp } : {}),
@@ -1097,7 +1131,7 @@ export class SessionEventBus {
       }
       this.currentTurnId = undefined;
       this.currentTurnInstanceId = undefined;
-      this.runNotice = createRunNotice({
+      this.runNotice = this.promptUndelivered ? undefined : createRunNotice({
         terminalType,
         runId: this.runId,
         ...(this.terminalEventId ? { terminalSourceEventId: this.terminalEventId } : {}),
@@ -1213,6 +1247,7 @@ export class SessionEventBus {
     this.cancelAgentChangeRecheck();
     this.clearPendingInteractionIndex();
     this.userMessages = [];
+    this.promptUndelivered = false;
     this.unclaimedSavedUserMessages.clear();
     this.liveAssistantSegments = [];
     this.lastAssistantSegment = undefined;

@@ -23,7 +23,7 @@ import {
   type AgentSlashCommandInfo,
 } from "./agent-backend/index.js";
 import { existsSync } from "node:fs";
-import { rm, stat } from "node:fs/promises";
+import { access, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createTaskStore } from "./task-store.js";
@@ -62,6 +62,7 @@ import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
 import type { ChatMessageIdStore } from "./chat-message-id-store.js";
+import type { UnsentMessageStore } from "./unsent-message-store.js";
 import type { BackgroundCommandStore } from "./background-command-store.js";
 import {
   BACKGROUND_COMMAND_PROTECT_MS,
@@ -70,7 +71,12 @@ import {
   type BackgroundCommandStopCause,
   type RunningBackgroundCommand,
 } from "./background-commands.js";
-import { readSessionLaunchContext, writeSessionLaunchContext, type SessionLaunchContext } from "./session-launch-context.js";
+import {
+  readSessionLaunchContext,
+  SESSION_LAUNCH_CONTEXT_FILE,
+  writeSessionLaunchContext,
+  type SessionLaunchContext,
+} from "./session-launch-context.js";
 import { AppliedPromptFingerprints, type PromptFingerprintConfig } from "./session-prompt-fingerprint.js";
 import { readContextBudget, recordFusionContextLimit, recordModelChange } from "./session-context-budget.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
@@ -141,6 +147,7 @@ import {
 import {
   deduplicateFilename as deduplicateAttachmentFilename,
   persistAndRouteAttachments as persistAndRouteSessionAttachments,
+  persistSessionAttachments,
   type RoutedSdkAttachment,
   type StartWorkAttachment,
 } from "./session-attachment-routing.js";
@@ -235,6 +242,7 @@ import {
 } from "../shared/copilot-context.js";
 import { resolveSupportedReasoningEffort } from "../shared/reasoning-effort.js";
 import {
+  BRIDGE_SESSION_MODEL_STATE_FILE,
   readPersistedSessionModelState,
   writePersistedSessionModelState,
   type PersistedSessionModelState,
@@ -565,6 +573,11 @@ export interface SessionManagerDeps {
   interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
   /** Records the browser message id each sent chat message was given by the runtime. */
   chatMessageIdStore?: Pick<ChatMessageIdStore, "record" | "forgetSession">;
+  /** Chat messages the Bridge accepted that the agent never received. */
+  unsentMessageStore?: Pick<
+    UnsentMessageStore,
+    "recordPending" | "markUndelivered" | "markSending" | "markSendFailed" | "retire" | "forgetSession"
+  >;
   /** Called when a run ends in the ordinary way while a resume the Bridge had put off is still to come. */
   onPostponedResumeSuperseded?: (sessionId: string) => void;
   /** Markers for commands running in attached shells, so one the Bridge stops can be reported. */
@@ -736,6 +749,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     sessionMetaStore: ctx.sessionMetaStore,
     interruptedRunStore: ctx.interruptedRunStore,
     chatMessageIdStore: ctx.chatMessageIdStore,
+    unsentMessageStore: ctx.unsentMessageStore,
     onPostponedResumeSuperseded: (sessionId) => {
       if (ctx.isStaging || !ctx.deferredPromptStore) return;
       const cancelled = cancelScheduledRestartResume(
@@ -842,6 +856,8 @@ export class SessionManager {
   private readonly suppressPassiveResumeEvents: boolean;
   private readonly processStartedAtMs = Date.now();
   private activeRunControllers = new Map<string, SessionRunController>();
+  /** Messages waiting for a settling session to be let go (see `waitWhileSessionSettles`). */
+  private readonly sessionReleaseWaiters = new Map<string, Set<() => void>>();
   private resumingSessions = new Map<string, number>();
   private readonly pendingSessionResumeAdmissions = new Set<string>();
   private readonly settlingTimedOutSessionResumes = new Map<string, TimedOutSessionResume>();
@@ -1124,6 +1140,7 @@ export class SessionManager {
       telemetryStore: deps.telemetryStore,
       sessionContextStore: deps.sessionContextStore,
       chatMessageIdStore: deps.chatMessageIdStore,
+      unsentMessageStore: deps.unsentMessageStore,
       copilotHome: deps.copilotHome,
       modelDisplayName: (modelId) => this.modelMetadata?.find((model) => model.id === modelId)?.name,
       isSessionBusy: (sessionId) => this.isSessionBusy(sessionId),
@@ -1137,6 +1154,12 @@ export class SessionManager {
       resetTurnContext: (sessionId) => this.resetTurnContext(sessionId),
       imageBudget: this.imageBudget,
       persistAndRouteAttachments: (sessionId, attachments) => this.persistAndRouteAttachments(sessionId, attachments),
+      persistSessionAttachments: (sessionId, attachments) => persistSessionAttachments(sessionId, attachments, {
+        copilotHome: this.deps.copilotHome,
+        logger: console,
+      }),
+      notifySessionReleased: (sessionId) => this.notifySessionReleased(sessionId),
+      resumeRuntimeSession: (backend, sessionId, resumeConfig) => this.resumeRuntimeSession(backend, sessionId, resumeConfig),
       beginSessionResume: (sessionId, sessionConfig, isCancelled) =>
         this.beginSessionResume(sessionId, sessionConfig, {
           isCancelled,
@@ -1233,6 +1256,28 @@ export class SessionManager {
 
   private awaitPendingSessionCreation(sessionId: string): Promise<AgentSession | undefined> {
     return this.pendingSessionCreations.get(sessionId) ?? Promise.resolve(undefined);
+  }
+
+  /**
+   * Waits, at most `timeoutMs`, for a chat whose creation is under way, so what is read about it
+   * afterwards (its model, its profile) is what it was made with rather than a guess.
+   */
+  async waitForSessionCreation(sessionId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.isSessionCreationPending(sessionId)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      // Before the runtime call starts there is no promise yet, only the reserved id.
+      const pending = this.pendingSessionCreations.get(sessionId)?.then(() => undefined, () => undefined);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, pending ? remaining : Math.min(remaining, 100));
+        timer.unref?.();
+        void pending?.then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
   }
 
   /** The id has been handed out and the runtime has not finished creating the session. */
@@ -2174,6 +2219,73 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Resumes the runtime session of a chat. A chat the Bridge made whose runtime never saved
+   * anything (it was stopped before its first message reached the agent, then dropped by a restart
+   * or eviction) cannot be resumed; it is made again under the same id, as it was launched.
+   */
+  private async resumeRuntimeSession(
+    backend: AgentBackend,
+    sessionId: string,
+    resumeConfig: any,
+  ): Promise<AgentSession> {
+    try {
+      return await backend.resumeSession(sessionId, resumeConfig);
+    } catch (error) {
+      const recreateConfig = await this.configToRecreateUnsavedSession(sessionId, error);
+      if (!recreateConfig) throw error;
+      const startedAt = Date.now();
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] The runtime never saved this chat; creating its session again`);
+      const session = await backend.createSession(recreateConfig);
+      if (session.sessionId !== sessionId) {
+        try { await session.disconnect?.(); } catch { /* best-effort */ }
+        throw error;
+      }
+      this.recordSpan("session.recreateUnsaved", Date.now() - startedAt, sessionId);
+      return session;
+    }
+  }
+
+  /** The create config for a chat that can be made again (see `resumeRuntimeSession`), else undefined. */
+  private async configToRecreateUnsavedSession(sessionId: string, error: unknown): Promise<any | undefined> {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/\bSession not found\b/i.test(message) || !this.isSessionStatePathSegment(sessionId)) return undefined;
+    const directory = this.getSessionStateDir(sessionId);
+    const exists = (name: string) => access(join(directory, name)).then(() => true, () => false);
+    const [hasEvents, hasLaunchContext, hasModelState] = await Promise.all([
+      exists("events.jsonl"),
+      exists(SESSION_LAUNCH_CONTEXT_FILE),
+      exists(BRIDGE_SESSION_MODEL_STATE_FILE),
+    ]);
+    // Saved history that fails to load is a different problem; a folder the Bridge did not make is not ours.
+    if (hasEvents || !(hasLaunchContext || hasModelState)) return undefined;
+    let launch: SessionLaunchContext = {};
+    try {
+      launch = readSessionLaunchContext(directory);
+    } catch { /* made again without its launch details */ }
+    const persisted = this.readPersistedSessionModelState(sessionId);
+    const promptProfile = this.deps.sessionPromptProfileStore?.getPromptProfile(sessionId);
+    const modelMetadata = this.modelMetadata;
+    const build = (agent?: string) => this.buildSessionConfig({
+      sessionId,
+      task: this.findLinkedTask(sessionId),
+      ...(launch.scheduleContext ? { scheduleContext: launch.scheduleContext } : {}),
+      ...(promptProfile ? { promptProfile } : {}),
+      ...(persisted.model ? { modelOverride: persisted.model } : {}),
+      ...(persisted.reasoningEffort ? { reasoningEffortOverride: persisted.reasoningEffort } : {}),
+      ...(persisted.contextTier ? { contextTierOverride: persisted.contextTier } : {}),
+      ...(agent ? { agentOverride: agent } : {}),
+      ...(modelMetadata ? { modelMetadata } : {}),
+    });
+    try {
+      return build(launch.agent);
+    } catch (buildError) {
+      if (!launch.agent) throw buildError;
+      // The agent it was started with is gone from the task; the chat still works without it.
+      return build();
+    }
+  }
+
   private endSessionResume(lease: SessionResumeLease): void {
     const { sessionId } = lease;
     this.capacity.releaseResume(lease.token);
@@ -2185,6 +2297,7 @@ export class SessionManager {
     }
     this.sessionRunner.followRuntimeTurn(sessionId);
     this.notifySessionCapacityChanged();
+    this.notifySessionReleased(sessionId);
     this.scheduleCacheOperation(
       this.trimSessionCache("session resume ended"),
       "trimming the session cache after a resume",
@@ -2343,7 +2456,7 @@ export class SessionManager {
       if (!session) {
         await beforeResume?.();
         this.assertRuntimeOwner(owner);
-        const resume = backend.resumeSession(sessionId, sessionConfig);
+        const resume = this.resumeRuntimeSession(backend, sessionId, sessionConfig);
         const resumedSession = timeoutMessage
           ? await this.resumeAgentSessionWithTimeout(backend, sessionId, resume, timeoutMessage, purpose ?? "reload")
           : await this.awaitOwnedSession(owner, resume);
@@ -4570,6 +4683,8 @@ export class SessionManager {
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
         cleanupLabel: "session",
+        // Also marks the chat as made by the Bridge, which lets a lost runtime session be made again.
+        launchContext: {},
         onCreateStarting: options.onCreateStarting,
       });
       if (bridgeSessionId && (options.background || options.expectedSessionId)) {
@@ -4930,7 +5045,10 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
-        launchContext: { scheduleContext: runScheduleContext },
+        launchContext: {
+          scheduleContext: runScheduleContext,
+          ...(options.agent ? { agent: options.agent } : {}),
+        },
         promptProfile,
         onCreateStarting: options.onCreateStarting,
       });
@@ -4949,10 +5067,11 @@ export class SessionManager {
     }
   }
 
-  private completeSessionAbortLocally(sessionId: string, content: string): void {
+  /** `expected` is the run that was asked to stop; a run started since is never ended by this. */
+  private completeSessionAbortLocally(sessionId: string, content: string, expected?: SessionRunController): void {
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
     const assistantSourceEventId = bus?.getLastAssistantSegment()?.sourceEventId;
-    const runController = this.activeRunControllers.get(sessionId);
+    const runController = expected ?? this.activeRunControllers.get(sessionId);
     if (runController) {
       runController.completeAborted(content, {
         ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
@@ -4999,6 +5118,17 @@ export class SessionManager {
       return true;
     }
 
+    // Nothing reached the runtime yet, so there is no turn to stop: the run's own check before it
+    // sends keeps the prompt from going out, and the chat is free at once.
+    if (runController.isBeforeSend()) {
+      console.log(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Stopped before the prompt was sent`);
+      const assistantSourceEventId = getAbortAssistantSourceEventId();
+      runController.completeAborted(getAbortContent(), {
+        ...(assistantSourceEventId ? { assistantSourceEventId } : {}),
+      });
+      return true;
+    }
+
     const session = this.sessionObjects.get(sessionId);
     if (!session) {
       console.warn(`[sdk] [${sessionId.slice(0, 8)}] 🛑 No session object during abort — resolving locally`);
@@ -5015,7 +5145,7 @@ export class SessionManager {
       const abortResult = await settleByDeadline(() => session.abort(), deadline);
       if (abortResult.status === "timed-out") {
         console.error(`[sdk] [${sid}] 🛑 Abort timed out; resolving locally and probing the backend channel`);
-        this.completeSessionAbortLocally(sessionId, getAbortContent());
+        this.completeSessionAbortLocally(sessionId, getAbortContent(), runController);
         if (!this.shuttingDown) void this.probeBackendHealth("abort-timeout");
         return true;
       }
@@ -5034,11 +5164,11 @@ export class SessionManager {
         confirmationDeadline,
       );
       if (confirmation.status !== "fulfilled") {
-        this.completeSessionAbortLocally(sessionId, getAbortContent());
+        this.completeSessionAbortLocally(sessionId, getAbortContent(), runController);
       }
     } catch (err) {
       console.error(`[sdk] [${sid}] 🛑 Abort failed:`, err);
-      this.completeSessionAbortLocally(sessionId, getAbortContent());
+      this.completeSessionAbortLocally(sessionId, getAbortContent(), runController);
       if (!this.shuttingDown && isTransientBackendError(err)) void this.probeBackendHealth("abort-failed");
     }
     return true;
@@ -5360,6 +5490,7 @@ export class SessionManager {
       this.deliveredTurnContext.delete(sessionId);
       this.deps.backgroundCommandStore?.forgetSession(sessionId);
       this.deps.chatMessageIdStore?.forgetSession(sessionId);
+      this.deps.unsentMessageStore?.forgetSession(sessionId);
 
       // Remove the session-state directory from disk so listSessionsFromDisk() won't resurrect it
       const copilotHome = this.getCopilotHome();
@@ -5629,6 +5760,52 @@ export class SessionManager {
     return this.sessionHolds.has(sessionId)
       || this.isSessionResuming(sessionId)
       || this.runStateController.isSessionBusy(sessionId);
+  }
+
+  /**
+   * Busy only on the way to being free: a run that already ended (stopped) is still letting go of
+   * the session, or the session is loading with no run in it. A message sent now can neither steer
+   * nor start, but can start as soon as that finishes.
+   */
+  isSessionSettling(sessionId: string): boolean {
+    if (!this.isSessionBusy(sessionId) || this.sessionHolds.has(sessionId)) return false;
+    if (this.runStateController.getSessionRunState(sessionId) === "stalled") return false;
+    const run = this.activeRunControllers.get(sessionId);
+    if (run) return run.isCompleted();
+    return !this.runStateController.isSessionBusy(sessionId);
+  }
+
+  /**
+   * Waits while the session is settling (see `isSessionSettling`). True when it is no longer
+   * settling, which does not promise it is free: another message may have started a run meanwhile.
+   */
+  async waitWhileSessionSettles(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.isSessionSettling(sessionId)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise<void>((resolve) => {
+        const waiters = this.sessionReleaseWaiters.get(sessionId) ?? new Set<() => void>();
+        const done = () => {
+          clearTimeout(timer);
+          waiters.delete(done);
+          if (waiters.size === 0 && this.sessionReleaseWaiters.get(sessionId) === waiters) {
+            this.sessionReleaseWaiters.delete(sessionId);
+          }
+          resolve();
+        };
+        const timer = setTimeout(done, remaining);
+        waiters.add(done);
+        this.sessionReleaseWaiters.set(sessionId, waiters);
+      });
+    }
+    return true;
+  }
+
+  private notifySessionReleased(sessionId: string): void {
+    const waiters = this.sessionReleaseWaiters.get(sessionId);
+    if (!waiters) return;
+    for (const wake of [...waiters]) wake();
   }
 
   /** Whether a run of the session is in flight. Loading the session and Bridge's own holds on it do not count. */
@@ -5976,7 +6153,7 @@ export class SessionManager {
           session = await this.resumeAgentSessionWithTimeout(
             client,
             sessionId,
-            client.resumeSession(sessionId, resumeConfig),
+            this.resumeRuntimeSession(client, sessionId, resumeConfig),
             "resumeSession timed out after 60s",
             "model-switch",
           );

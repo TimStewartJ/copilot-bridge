@@ -9,13 +9,14 @@ import type {
   PendingUserInputRequestView,
   ToolArgs,
 } from "./api";
-import { API_BASE, reportTiming, retrySessionRun, sendChatMessage } from "./api";
+import { API_BASE, reportTiming, resendUnsentMessage, retrySessionRun, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import { isSendMode, type SendMode } from "../shared/send-mode.js";
 import { normalizeProviderRetryState, type ProviderRetryState, type RunNotice } from "../shared/session-stream.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
 import { isRecord } from "../shared/is-record.js";
+import { isUnsentMessageState, type UnsentMessageState } from "../shared/unsent-message.js";
 import { normalizeAgentInstructions } from "../shared/subagent.js";
 import {
   appendReasoningDelta,
@@ -119,6 +120,8 @@ export interface LivePendingUserMessage {
   messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
+  /** The run ended before the agent got it; the chat keeps it as not sent. */
+  undelivered?: { state: UnsentMessageState; error?: string };
 }
 
 export type StreamStatus = "idle" | "sending" | "thinking" | "streaming";
@@ -129,6 +132,8 @@ type SendMessageArgs = [
   attachments?: Attachment[],
   mode?: SendMode,
   clientMessageId?: string,
+  /** Sends the not-sent message with this id again, as `clientMessageId`, instead of `prompt`. */
+  resendOf?: string,
 ];
 
 export interface ElicitationCancellationNotice {
@@ -336,7 +341,38 @@ export function normalizePendingUserMessage(value: unknown): LivePendingUserMess
     ...(optionalString(value.messageId) ? { messageId: optionalString(value.messageId) } : {}),
     ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
     ...(optionalString(value.timestamp) ? { timestamp: optionalString(value.timestamp) } : {}),
+    ...(isRecord(value.undelivered) && isUnsentMessageState(value.undelivered.state)
+      ? {
+          undelivered: {
+            state: value.undelivered.state,
+            ...(optionalString(value.undelivered.error) ? { error: optionalString(value.undelivered.error) } : {}),
+          },
+        }
+      : {}),
   };
+}
+
+/**
+ * A message the agent never got stays in the chat. The server's live copy of it ends with its run,
+ * so until history lists it (where it then shows instead) this view keeps its own.
+ */
+function keepUndeliveredMessages(messages: LivePendingUserMessage[]): LivePendingUserMessage[] {
+  const kept = messages.filter((message) => message.undelivered);
+  return kept.length > 0 ? kept : [];
+}
+
+function withKeptUndeliveredMessages(
+  incoming: LivePendingUserMessage[],
+  current: LivePendingUserMessage[],
+): LivePendingUserMessage[] {
+  const kept = current.filter((message) => message.undelivered && !incoming.some((entry) => entry.id === message.id));
+  return kept.length > 0 ? [...kept, ...incoming] : incoming;
+}
+
+function withoutUndelivered(message: LivePendingUserMessage): LivePendingUserMessage {
+  if (!message.undelivered) return message;
+  const { undelivered: _undelivered, ...rest } = message;
+  return rest;
 }
 
 function normalizePendingUserMessages(value: unknown): LivePendingUserMessage[] {
@@ -625,7 +661,9 @@ export function useSessionStream(
       pendingElicitations: pendingOrigin === "reconnect" ? current.pendingElicitations : [],
       liveAssistantSegments: pendingOrigin === "reconnect" ? current.liveAssistantSegments : [],
       liveReasoning: pendingOrigin === "reconnect" ? current.liveReasoning : [],
-      pendingUserMessages: pendingOrigin === "reconnect" ? current.pendingUserMessages : [],
+      pendingUserMessages: pendingOrigin === "reconnect"
+        ? current.pendingUserMessages
+        : keepUndeliveredMessages(current.pendingUserMessages),
       streamingContent: pendingOrigin === "reconnect" ? current.streamingContent : "",
       pendingOrigin,
       runMode: runMode ?? current.runMode,
@@ -711,7 +749,7 @@ export function useSessionStream(
           {
             liveAssistantSegments,
             liveReasoning: complete ? keepCommittedReasoning(liveReasoning) : liveReasoning,
-            pendingUserMessages,
+            pendingUserMessages: withKeptUndeliveredMessages(pendingUserMessages, current.pendingUserMessages),
             streamingContent: complete ? "" : streamingContent,
             // Completed items stay after a terminal snapshot until the disk read confirms them.
             liveTools,
@@ -886,7 +924,8 @@ export function useSessionStream(
           ...current,
           pendingUserMessages: current.pendingUserMessages.map((entry) => entry.id === id
             ? {
-                ...entry,
+                // Saved, so delivered after all (a send already on its way when Stop came).
+                ...withoutUndelivered(entry),
                 ...(optionalString(event.sourceEventId)
                   ? { sourceEventId: optionalString(event.sourceEventId) }
                   : {}),
@@ -1192,20 +1231,26 @@ export function useSessionStream(
 
   const { mutateAsync: sendMessageRequest } = useMutation({
     mutationKey: queryKeys.sessionSend(sessionId),
-    mutationFn: async ([prompt, attachments, mode, clientMessageId]: SendMessageArgs) => {
+    mutationFn: async ([prompt, attachments, mode, clientMessageId, resendOf]: SendMessageArgs) => {
       if (!sessionId) return;
       const startedFromIdle = streamStateRef.current.streamStatus === "idle";
       if (startedFromIdle) {
         setStreamState((current) => createState("sending", {
           contextSummary: current.contextSummary,
           historyEpoch: current.historyEpoch,
+          pendingUserMessages: keepUndeliveredMessages(current.pendingUserMessages),
           pendingOrigin: "message",
           runMode: mode ?? current.runMode,
         }));
       }
       try {
-        const response = await sendChatMessage(sessionId, prompt, attachments, mode, { clientMessageId });
-        if (response.mode === "steered" || response.mode === "queued" || response.mode === "command") {
+        const response = resendOf && clientMessageId
+          ? await resendUnsentMessage(sessionId, resendOf, clientMessageId)
+          : await sendChatMessage(sessionId, prompt, attachments, mode, { clientMessageId });
+        if (
+          response.mode === "steered" || response.mode === "queued"
+          || response.mode === "command" || response.mode === "stopped"
+        ) {
           if (startedFromIdle && sessionRef.current === sessionId) connectStream(sessionId, "reconnect");
           return response;
         }
