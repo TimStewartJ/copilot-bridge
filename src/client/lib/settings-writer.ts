@@ -86,6 +86,7 @@ const MESSAGE_LABELS: Partial<Record<SettingsKey, string>> = {
   customInstructions: "custom instructions",
   providers: "providers",
   computerUse: "computer use",
+  imageGeneration: "image generation",
   deferWorker: "deferred workers",
   browser: "browser settings",
   helm: "Helm settings",

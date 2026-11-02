@@ -399,6 +399,90 @@ export function getVisualArtifactFromToolCompletion(
   };
 }
 
+/** The runtime's built-in tool that generates and edits images. */
+export const IMAGE_GENERATION_TOOL_NAME = "image_generation";
+
+const GENERATED_IMAGE_FILE_RE = /^[\w.-]+\.(?:png|jpe?g|webp)$/i;
+const MAX_GENERATED_IMAGE_ALT_CHARS = 1_000;
+
+/** Decoded size of base64 data, which is what the card shows as the file size. */
+function base64DecodedBytes(data: unknown): number | undefined {
+  if (typeof data !== "string" || !data) return undefined;
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - padding;
+}
+
+/**
+ * Images the runtime's image tool generated or edited, as visual cards. The runtime saves each one
+ * in the session's images/ folder and lists it in the result's structured content; the card loads
+ * it through the session's image route. The URL is relative to the API root (`/api/...`), and the
+ * client puts its own base path in front. An image saved anywhere else is left out, because that
+ * route could not serve it.
+ */
+export function getGeneratedImageVisuals(
+  event: any,
+  toolName: string | undefined,
+  sessionId?: string,
+  args?: unknown,
+): TransformedVisual[] {
+  const data = event?.data;
+  if (toolName !== IMAGE_GENERATION_TOOL_NAME || !sessionId || data?.success !== true) return [];
+  const result = data?.result;
+  const images = result?.structuredContent?.imageGeneration?.images;
+  if (!Array.isArray(images)) return [];
+  const toolArgs = args && typeof args === "object" ? args as Record<string, unknown> : {};
+  const edited = Array.isArray(toolArgs.input_images) && toolArgs.input_images.length > 0;
+  const prompt = typeof toolArgs.prompt === "string" ? toolArgs.prompt.trim() : "";
+  const visuals: TransformedVisual[] = [];
+  for (const image of images) {
+    const savedPath = typeof image?.savedPath === "string" ? image.savedPath : "";
+    // win32 path functions split on both separators, so this reads paths saved on any host.
+    const fileName = winPath.basename(savedPath);
+    const folder = winPath.dirname(savedPath);
+    if (
+      !GENERATED_IMAGE_FILE_RE.test(fileName)
+      || winPath.basename(folder) !== "images"
+      || winPath.basename(winPath.dirname(folder)) !== sessionId
+    ) {
+      continue;
+    }
+    const contentIndex = typeof image.contentIndex === "number" ? image.contentIndex : undefined;
+    const content = contentIndex === undefined ? undefined : result?.contents?.[contentIndex];
+    const binary = contentIndex === undefined ? undefined : result?.binaryResultsForLlm?.[contentIndex];
+    const size = base64DecodedBytes(content?.data)
+      ?? (typeof binary?.byteLength === "number" ? binary.byteLength : undefined)
+      ?? base64DecodedBytes(binary?.data)
+      ?? 0;
+    const url = `/api/sessions/${encodeURIComponent(sessionId)}/images/${encodeURIComponent(fileName)}`;
+    visuals.push({
+      artifactId: `generated-${fileName}`,
+      kind: "image",
+      title: edited ? "Edited image" : "Generated image",
+      displayName: fileName,
+      mimeType: typeof image.mimeType === "string" ? image.mimeType : "image/png",
+      size,
+      url,
+      downloadUrl: `${url}?download`,
+      ...(prompt ? { altText: prompt.slice(0, MAX_GENERATED_IMAGE_ALT_CHARS) } : {}),
+    });
+  }
+  return visuals;
+}
+
+/** The visual cards a completed tool call adds to the chat, in the order they are shown. */
+export function getToolCompletionVisuals(
+  event: any,
+  toolName: string | undefined,
+  sessionId?: string,
+  args?: unknown,
+): TransformedVisual[] {
+  if (toolName === "publish_visual") {
+    const visual = getVisualArtifactFromToolCompletion(event, toolName, sessionId);
+    return visual ? [visual] : [];
+  }
+  return getGeneratedImageVisuals(event, toolName, sessionId, args);
+}
+
 export function getVisibleEventTimestamp(event: any, sessionId?: string): string | undefined {
   if (!isVisibleMessageEvent(event, sessionId)) return undefined;
   return event?.data?.timestamp ?? event?.timestamp;
@@ -643,8 +727,10 @@ export function transformEventsToMessages(
   const correlator = new SubagentCorrelator();
   const toolNames = new Map<string, string>();
   const assistantForkBoundaries = getAssistantForkBoundaries(events);
-  // Detect visual artifact publications from publish_visual tool completions
-  const visualResults = new Map<string, TransformedVisual>();
+  // Visual cards from tool completions (publish_visual, generated images), by tool call
+  const visualResults = new Map<string, TransformedVisual[]>();
+  // Arguments of image calls, which say whether an image was generated or edited
+  const imageToolArgs = new Map<string, unknown>();
 
   for (const event of events) {
     const data = (event as any).data;
@@ -654,6 +740,7 @@ export function transformEventsToMessages(
     if (event.type === "tool.execution_start" && data?.toolCallId) {
       openToolCallOwners.set(data.toolCallId, getSdkAgentId(event));
       toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
+      if (toolNames.get(data.toolCallId) === IMAGE_GENERATION_TOOL_NAME) imageToolArgs.set(data.toolCallId, data.arguments);
     } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
       // Raw completion data is retained so pass 2 can derive display text through the same shared
       // resolver the live fold uses. The event array is already in memory, so this costs nothing.
@@ -665,8 +752,13 @@ export function transformEventsToMessages(
       });
       correlator.completeTool(data.toolCallId);
       openToolCallOwners.delete(data.toolCallId);
-      const visual = getVisualArtifactFromToolCompletion(event, toolNames.get(data.toolCallId), sessionId);
-      if (visual) visualResults.set(data.toolCallId, visual);
+      const visuals = getToolCompletionVisuals(
+        event,
+        toolNames.get(data.toolCallId),
+        sessionId,
+        imageToolArgs.get(data.toolCallId),
+      );
+      if (visuals.length > 0) visualResults.set(data.toolCallId, visuals);
     } else if ((event.type === "tool.execution_progress" || event.type === "tool.execution_partial_result") && data?.toolCallId) {
       const nextText = event.type === "tool.execution_progress"
         ? data.progressMessage
@@ -871,9 +963,8 @@ export function transformEventsToMessages(
           completedAt: complete?.timestamp,
         },
       });
-      // Emit a visual entry immediately after the tool entry for publish_visual completions
-      const visual = visualResults.get(data.toolCallId);
-      if (visual) {
+      // Visual cards the call produced follow its tool entry.
+      for (const visual of visualResults.get(data.toolCallId) ?? []) {
         entries.push({
           id: `entry-${idx++}`,
           type: "visual",

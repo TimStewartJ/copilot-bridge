@@ -60,6 +60,11 @@ export interface ComputerUseSettings {
   enabled?: boolean;
 }
 
+/** Lets chats call the runtime's image tool, which bills a separate image model per image. On unless `enabled` is false. */
+export interface ImageGenerationSettings {
+  enabled?: boolean;
+}
+
 /** Hands-free voice settings and Helm's names list. Helm's model and effort are its role in `modelRoles`. */
 export interface HelmSettings extends Partial<Omit<UnifiedHelmSettings, HelmLegacySettingKey>> {
   /**
@@ -120,6 +125,7 @@ export interface AppSettings {
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   computerUse?: ComputerUseSettings;
+  imageGeneration?: ImageGenerationSettings;
   helm?: HelmSettings;
   /** Early compaction for models whose provider rejects large requests; unset uses the defaults. */
   imageBudget?: ImageBudgetSettings;
@@ -284,14 +290,30 @@ function normalizeDeferWorkerSettings(value: unknown): DeferWorkerSettings | und
   };
 }
 
-function normalizeComputerUseSettings(value: unknown): ComputerUseSettings | undefined {
+/** An opt-in feature switch: `{ enabled: true }` when on, unset when off. */
+function normalizeEnabledSwitch(key: string, value: unknown): { enabled: true } | undefined {
+  const enabled = readEnabledFlag(key, value);
+  return enabled === true ? { enabled: true } : undefined;
+}
+
+function readEnabledFlag(key: string, value: unknown): boolean | undefined {
   if (value === undefined || value === null) return undefined;
-  if (!isRecord(value)) validationError("computerUse must be an object");
+  if (!isRecord(value)) validationError(`${key} must be an object`);
   const enabled = value.enabled;
   if (enabled !== undefined && enabled !== null && typeof enabled !== "boolean") {
-    validationError("computerUse.enabled must be a boolean");
+    validationError(`${key}.enabled must be a boolean`);
   }
-  return enabled === true ? { enabled: true } : undefined;
+  return typeof enabled === "boolean" ? enabled : undefined;
+}
+
+/** On unless turned off, so only `{ enabled: false }` is kept. */
+function normalizeImageGenerationSettings(value: unknown): ImageGenerationSettings | undefined {
+  return readEnabledFlag("imageGeneration", value) === false ? { enabled: false } : undefined;
+}
+
+/** Whether chats get the runtime's image tool: on unless the setting turns it off. */
+export function isImageGenerationEnabled(settings: Pick<AppSettings, "imageGeneration"> | undefined): boolean {
+  return settings?.imageGeneration?.enabled !== false;
 }
 
 function normalizeImageBudgetSettings(value: unknown): ImageBudgetSettings | undefined {
@@ -694,7 +716,10 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("deferWorker" in value) {
     normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
   }
-  if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
+  if ("computerUse" in value) normalized.computerUse = normalizeEnabledSwitch("computerUse", value.computerUse);
+  if ("imageGeneration" in value) {
+    normalized.imageGeneration = normalizeImageGenerationSettings(value.imageGeneration);
+  }
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
   if ("experimental" in value) normalized.experimental = normalizeExperimentalSettings(value.experimental);

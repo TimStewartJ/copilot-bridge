@@ -1110,6 +1110,48 @@ describe("readMessagesFromDisk latest-page path", () => {
       });
   });
 
+  it("counts a generated image's card in the total", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-generated-image");
+    const sessionId = "generated-image";
+    const savedPath = join(copilotHome, "session-state", sessionId, "images", "image-1.png");
+    // Later messages fill more than a whole-file read (1 MB), so the image's entries are only counted by the scan.
+    const later = Array.from({ length: 300 }, (_, index) => ({
+      type: "user.message",
+      timestamp: "2026-04-30T10:01:00.000Z",
+      data: { content: `later ${index} ${"x".repeat(5_000)}` },
+    }));
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        { type: "user.message", timestamp: "2026-04-30T10:00:00.000Z", data: { content: "Draw a bridge" } },
+        {
+          type: "tool.execution_start",
+          timestamp: "2026-04-30T10:00:01.000Z",
+          data: { toolCallId: "image", toolName: "image_generation", arguments: { prompt: "A bridge" } },
+        },
+        {
+          type: "tool.execution_complete",
+          timestamp: "2026-04-30T10:00:09.000Z",
+          data: {
+            toolCallId: "image",
+            success: true,
+            result: {
+              content: "Image generated successfully.",
+              structuredContent: { imageGeneration: { images: [{ contentIndex: 0, savedPath }] } },
+            },
+          },
+        },
+        ...later,
+      ],
+    });
+    const { deps } = createDeps(copilotHome);
+
+    const latest = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+    expect(latest.total).toBe(3 + later.length);
+
+    const oldest = await readMessagesFromDisk(deps, sessionId, { limit: 3, before: 3 });
+    expect(oldest.messages.map((entry) => entry.type)).toEqual(["message", "tool", "visual"]);
+  });
+
   it("falls back to a full read when the tail is invalidated by mtime change or appended events", async () => {
     // falls back to a full read when event log mtime changes without a size change
     {

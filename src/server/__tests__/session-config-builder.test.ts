@@ -587,6 +587,25 @@ describe("session-config-builder", () => {
     });
   });
 
+  it("sends the image generation switch on create and resume, on unless the setting turns it off", () => {
+    const settingsStoreWith = (imageGeneration?: { enabled: boolean }) => ({
+      getSettings: () => ({ ...(imageGeneration ? { imageGeneration } : {}) }),
+      updateSettings: vi.fn(),
+      getMcpServers: () => ({}),
+    }) as unknown as SettingsStore;
+    for (const forResume of [false, true]) {
+      for (const [setting, enabled] of [[undefined, true], [{ enabled: false }, false]] as const) {
+        const cfg = buildSessionConfig({
+          deps: createDeps({ settingsStore: settingsStoreWith(setting) }),
+          options: { forResume },
+          callbacks: createCallbacks(),
+        });
+        expect(cfg.imageGeneration, `forResume=${forResume}`).toEqual({ enabled });
+        expect(cfg.systemMessage.content.includes("<image_generation>"), `guidance forResume=${forResume}`).toBe(enabled);
+      }
+    }
+  });
+
   it.each([
     {
       label: "a usable tier runs on its own model, effort and context, never New chats' values",

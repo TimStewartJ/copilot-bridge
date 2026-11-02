@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
-import type { VisualArtifact } from "../api";
+import { API_BASE, type VisualArtifact } from "../api";
 import VisualArtifactModal from "./VisualArtifactModal";
 import VisualArtifactRenderer from "./VisualArtifactRenderer";
 import { DS, cx } from "../design/tokens";
-import { describeVisualKind } from "./visualDisplay";
+import { describeVisualKind, withAppBase } from "./visualDisplay";
 import { formatFileSize, PreviewCaption, showImages } from "./ChatAttachments";
 
 interface VisualArtifactCardProps {
@@ -14,7 +14,8 @@ interface VisualArtifactCardProps {
  * A visual the agent published, shown the way a chat app shows an artifact: the content in one
  * frame, and beneath it a line that says what it is, with Expand and Download beside it.
  */
-export default function VisualArtifactCard({ visual }: VisualArtifactCardProps) {
+export default function VisualArtifactCard({ visual: published }: VisualArtifactCardProps) {
+  const visual = withAppBase(published, API_BASE);
   const [modalOpen, setModalOpen] = useState(false);
   const isImage = visual.kind === "image";
   const { label: kindLabel, Icon: KindIcon } = describeVisualKind(visual.kind);

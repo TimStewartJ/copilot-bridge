@@ -470,6 +470,8 @@ export class DisposableDeferWorker {
         ...baseConfig,
         // Nobody can answer a worker, so it gets neither ask_user nor the elicitation capability.
         pendingInteractionEvents: false,
+        // Nobody asked for an image either, and each one is billed.
+        imageGeneration: { enabled: false },
         excludedTools: [...(Array.isArray(baseConfig.excludedTools) ? baseConfig.excludedTools : []), "ask_user"],
         tools: [
           ...(Array.isArray(baseConfig.tools) ? baseConfig.tools : []),

@@ -9,6 +9,7 @@ import {
   SystemPromptSection,
   ModelsSection,
   ComputerUseSection,
+  ImageGenerationSection,
   ImageBudgetSection,
   ExperimentalSection,
   AppearanceSection,
@@ -336,6 +337,7 @@ export default function SettingsView() {
               <ProvidersSection draft={draft} setDraft={setDraft} />
               <McpServersSection />
               <ComputerUseSection draft={draft} setDraft={setDraft} />
+              <ImageGenerationSection draft={draft} setDraft={setDraft} />
               <SkillsSection />
             </CategoryPanel>
 

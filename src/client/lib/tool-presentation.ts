@@ -240,6 +240,20 @@ const TOOL_VERBS: Record<string, ToolVerb> = {
     icon: "image",
     target: (args) => ({ text: stringArg(args, "title", "displayName"), mono: false }),
   },
+  image_generation: {
+    active: "Generating image",
+    done: "Generated image",
+    icon: "image",
+    target: (args, { running }) => {
+      const prompt = stringArg(args, "prompt");
+      const edit = Array.isArray(args.input_images) && args.input_images.length > 0;
+      return {
+        ...(edit ? { label: running ? "Editing image" : "Edited image" } : {}),
+        ...(prompt ? { text: firstLine(prompt) } : {}),
+        mono: false,
+      };
+    },
+  },
   send_attachment: {
     active: "Attaching",
     done: "Attached",

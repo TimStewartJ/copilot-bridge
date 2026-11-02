@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
 import type { Task } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
-import type { SettingsStore } from "./settings-store.js";
+import { isImageGenerationEnabled, type SettingsStore } from "./settings-store.js";
 import { buildSubagentPlan } from "../shared/subagent-settings.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { isModelUsable, resolveModelRole, resolveModelTier } from "./model-roles.js";
@@ -33,6 +33,7 @@ import {
   COMPUTER_USE_OFF_GUIDANCE,
   DEFAULT_IDENTITY,
   HOME_GUIDANCE,
+  IMAGE_GENERATION_GUIDANCE,
   LONG_RUNNING_WORK_GUIDANCE,
   createCodingModeStatementRemover,
   removeCliOutputSurfaceNote,
@@ -291,6 +292,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     cfg.pluginDirectories = [computerUsePlugin.pluginDirectory];
   }
 
+  // The runtime offers its image tool only when asked, and a resident session keeps whatever it
+  // was last given, so the switch is sent explicitly on create and on every resume.
+  const imageGenerationEnabled = isImageGenerationEnabled(settings);
+  cfg.imageGeneration = { enabled: imageGenerationEnabled };
+
   // Model + reasoningEffort only belong on createSession. On resume the SDK
   // overwrites _selectedModel without sanitizing chat history (which corrupts
   // cross-family tool_call shapes). Resume intentionally trusts the SDK's
@@ -373,6 +379,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     WORK_REFERENCE_GUIDANCE,
     DOC_LINK_GUIDANCE,
     ...(computerUseEnabled ? [] : [COMPUTER_USE_OFF_GUIDANCE]),
+    ...(imageGenerationEnabled ? [IMAGE_GENERATION_GUIDANCE] : []),
   ];
 
   if (task) {

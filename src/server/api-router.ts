@@ -30,6 +30,7 @@ import { parseWorkspaceCwd } from "./session-formatting.js";
 import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import {
+  isImageGenerationEnabled,
   SettingsValidationError,
   type AppSettings,
 } from "./settings-store.js";
@@ -65,7 +66,13 @@ import {
 } from "./api-request-telemetry.js";
 import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktree-status.js";
 import { readLauncherLogTail } from "./launcher-log.js";
-import { isCanonicalSessionId, resolveOutboundAttachment, resolveSessionUploadedFile, type ResolvedOutboundAttachment } from "./outbound-attachments.js";
+import {
+  isCanonicalSessionId,
+  resolveOutboundAttachment,
+  resolveSessionGeneratedImage,
+  resolveSessionUploadedFile,
+  type ResolvedOutboundAttachment,
+} from "./outbound-attachments.js";
 import type { Result } from "./tool-results.js";
 import { resolveAvailableWorkspaceCwd } from "./session-workspace-availability.js";
 import {
@@ -1739,6 +1746,18 @@ export function createApiRouter(
       return res.status(400).json({ error: "fileName is invalid" });
     }
     return sendSessionFile(req, res, resolveSessionUploadedFile(getCopilotHome(ctx), req.params.id, fileName));
+  });
+
+  // Images the runtime's image tool generated or edited, from the session's images/ folder.
+  router.get("/sessions/:id/images/:fileName", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const fileName = sessionFileName(req.params.fileName);
+    if (!fileName) {
+      return res.status(400).json({ error: "fileName is invalid" });
+    }
+    return sendSessionFile(req, res, resolveSessionGeneratedImage(getCopilotHome(ctx), req.params.id, fileName));
   });
 
   function sendVisualArtifact(owner: VisualArtifactOwner, artifactId: string, res: express.Response, mode: "inline" | "download"): void {
@@ -4783,17 +4802,19 @@ export function createApiRouter(
       clearProviderCache();
 
       const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
+      const imageGenerationChanged = isImageGenerationEnabled(prev) !== isImageGenerationEnabled(updated);
       const fusionContextChanged = prev.experimental?.fusionContextTokens !== updated.experimental?.fusionContextTokens;
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
       // Plugin changes can't be hot-swapped on a live session — evict so the next
-      // resume rebuilds with the new config. The Fusion context limit is applied on
-      // resume too. Sub-agent models (Helpers, Reviewers, tiers) reach a loaded chat
-      // the next time it is resumed.
-      if (computerUseChanged || fusionContextChanged) {
-        console.log(`[settings] ${computerUseChanged ? "Computer use" : "Fusion context limit"} changed — evicting cached sessions for re-resume`);
+      // resume rebuilds with the new config. The Fusion context limit and image
+      // generation are applied on resume too. Sub-agent models (Helpers, Reviewers,
+      // tiers) reach a loaded chat the next time it is resumed.
+      if (computerUseChanged || imageGenerationChanged || fusionContextChanged) {
+        const changed = computerUseChanged ? "Computer use" : imageGenerationChanged ? "Image generation" : "Fusion context limit";
+        console.log(`[settings] ${changed} changed — evicting cached sessions for re-resume`);
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
         // Model/reasoning changes apply to future sessions only. Existing cached

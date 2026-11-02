@@ -140,6 +140,12 @@ Desktop computer use is turned off for this Bridge, so this session has no compu
 </computer_use>
 `.trim();
 
+export const IMAGE_GENERATION_GUIDANCE = `
+<image_generation>
+When you call the image tool, set quality to "medium" unless the user asks for another quality. Each image it generates or edits appears in the chat as a card by itself. Do not embed or link it in your reply or publish it again; give its saved path only when the user asks for the file.
+</image_generation>
+`.trim();
+
 export const STAGING_INSTRUCTIONS = `
 <staging_workflow>
 When modifying code in this repository (the Copilot Bridge):

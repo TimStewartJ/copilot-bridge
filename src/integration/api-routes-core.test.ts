@@ -770,6 +770,33 @@ describe("Attachment routes", () => {
       expect(res.status, label).toBe(status);
     }
   });
+
+  it("GET /api/sessions/:id/images/:fileName serves the runtime's generated images and nothing else", async () => {
+    const copilotHome = makeTestDir("route-generated-images");
+    const { app: imagesApp } = createTestApp({ copilotHome });
+    const imagesDir = join(copilotHome, "session-state", sessionId, "images");
+    mkdirSync(imagesDir, { recursive: true });
+    writeFileSync(join(imagesDir, "image-0a1b.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    writeFileSync(join(imagesDir, "notes.txt"), "not an image");
+
+    const image = await request(imagesApp).get(`/api/sessions/${sessionId}/images/image-0a1b.png`);
+    expect(image.status).toBe(200);
+    expect(image.headers["content-type"]).toMatch(/^image\/png/);
+    expect(image.headers["content-disposition"]).toBeUndefined();
+    const download = await request(imagesApp).get(`/api/sessions/${sessionId}/images/image-0a1b.png?download`);
+    expect(download.headers["content-disposition"]).toContain("attachment;");
+
+    const cases: [string, string, number][] = [
+      ["not an image", `/api/sessions/${sessionId}/images/notes.txt`, 404],
+      ["traversal to files/", `/api/sessions/${sessionId}/images/..%2Ffiles%2Fphoto.png`, 400],
+      ["bad session id", `/api/sessions/not-a-session/images/image-0a1b.png`, 400],
+      ["missing image", `/api/sessions/${sessionId}/images/image-ffff.png`, 404],
+    ];
+    for (const [label, path, status] of cases) {
+      const res = await request(imagesApp).get(path);
+      expect(res.status, label).toBe(status);
+    }
+  });
 });
 
 describe("Telemetry routes", () => {

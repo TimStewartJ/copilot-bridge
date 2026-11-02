@@ -9,8 +9,9 @@ import {
   createTranscriptCursor,
   createVisibleActivityTracker,
   getLastVisibleActivityAt,
+  getToolCompletionVisuals,
   getVisibleReasoningText,
-  getVisualArtifactFromToolCompletion,
+  IMAGE_GENERATION_TOOL_NAME,
   isAutopilotContinuationEvent,
   isVisibleMessageEvent,
   projectTranscriptEvent,
@@ -55,7 +56,7 @@ const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
  * only a handful of sessions are ever read concurrently, so this is deliberately small.
  */
 const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
-const EVENT_LOG_STATS_CACHE_VERSION = 5;
+const EVENT_LOG_STATS_CACHE_VERSION = 6;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
 /** Backstop bound on retained cursor checkpoints when the log has very short turns. */
@@ -154,7 +155,8 @@ interface EventLogStatsScannerState {
   malformedCandidateCount: number;
   totalEntries: number;
   openVisibleToolCallIds: string[];
-  visiblePublishVisualToolCallIds: string[];
+  /** Visible calls that may add visual cards when they complete, as [toolCallId, toolName]. */
+  visibleVisualToolCalls: Array<[string, string]>;
   pendingTerminalCompletionEntry: boolean;
   latestEventId?: string;
   latestTurnId?: string;
@@ -428,7 +430,7 @@ function createEventLogStatsScannerState(agentTurnsStamped = false): EventLogSta
     malformedCandidateCount: 0,
     totalEntries: 0,
     openVisibleToolCallIds: [],
-    visiblePublishVisualToolCallIds: [],
+    visibleVisualToolCalls: [],
     pendingTerminalCompletionEntry: false,
     turnIndex: 0,
     cursor,
@@ -450,7 +452,7 @@ function cloneEventLogStatsScannerState(
   return {
     ...state,
     openVisibleToolCallIds: [...state.openVisibleToolCallIds],
-    visiblePublishVisualToolCallIds: [...state.visiblePublishVisualToolCallIds],
+    visibleVisualToolCalls: state.visibleVisualToolCalls.map(([id, name]) => [id, name]),
     cursor: cloneTranscriptCursor(state.cursor),
     baseCheckpoint: { offset: state.baseCheckpoint.offset, cursor: cloneTranscriptCursor(state.baseCheckpoint.cursor) },
     checkpoints: state.checkpoints.map((checkpoint) => ({ offset: checkpoint.offset, cursor: cloneTranscriptCursor(checkpoint.cursor) })),
@@ -471,7 +473,7 @@ function cloneEventLogStatsScannerState(
 function createEventLogStatsScanner(sessionId: string, initialState?: EventLogStatsScannerState) {
   const state = initialState ?? createEventLogStatsScannerState();
   const openVisibleToolCallIds = new Set(state.openVisibleToolCallIds);
-  const visiblePublishVisualToolCallIds = new Set(state.visiblePublishVisualToolCallIds);
+  const visibleVisualToolCalls = new Map(state.visibleVisualToolCalls);
   const visibleActivityTracker = createVisibleActivityTracker(sessionId, state.activity);
   const agentFold = new TranscriptAgentFold(state.agents);
   const agentOwners = new AgentEventOwners(state.agentOwners);
@@ -527,8 +529,9 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
         const toolCallId = getToolCallId(event);
         if (toolCallId) {
           openVisibleToolCallIds.add(toolCallId);
-          if (getToolName(event) === "publish_visual") {
-            visiblePublishVisualToolCallIds.add(toolCallId);
+          const toolName = getToolName(event);
+          if (toolName === "publish_visual" || toolName === IMAGE_GENERATION_TOOL_NAME) {
+            visibleVisualToolCalls.set(toolCallId, toolName);
           }
         }
       }
@@ -543,10 +546,11 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
         openVisibleToolCallIds.delete(toolCallId);
       }
 
-      if (visiblePublishVisualToolCallIds.has(toolCallId)) {
-        const visual = getVisualArtifactFromToolCompletion(event, "publish_visual", sessionId);
-        if (visual) state.totalEntries += 1;
-        visiblePublishVisualToolCallIds.delete(toolCallId);
+      const visualToolName = visibleVisualToolCalls.get(toolCallId);
+      if (visualToolName) {
+        // Arguments only change a card's title, never how many there are.
+        state.totalEntries += getToolCompletionVisuals(event, visualToolName, sessionId).length;
+        visibleVisualToolCalls.delete(toolCallId);
       }
       return;
     }
@@ -563,7 +567,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
 
   const syncState = (): EventLogStatsScannerState => {
     state.openVisibleToolCallIds = [...openVisibleToolCallIds];
-    state.visiblePublishVisualToolCallIds = [...visiblePublishVisualToolCallIds];
+    state.visibleVisualToolCalls = [...visibleVisualToolCalls];
     state.activity = visibleActivityTracker.getState();
     state.agents = agentFold.getState();
     state.agentOwners = agentOwners.entries();

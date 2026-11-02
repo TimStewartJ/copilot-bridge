@@ -5,6 +5,7 @@ export { ProviderEditor } from "./ProviderEditor";
 export { SystemPromptSection } from "./SystemPromptSection";
 export { ModelMoveDisclosure } from "./ModelMoveDisclosure";
 export { ComputerUseSection } from "./ComputerUseSection";
+export { ImageGenerationSection } from "./ImageGenerationSection";
 export { ImageBudgetSection } from "./ImageBudgetSection";
 export { ExperimentalSection } from "./ExperimentalSection";
 export { AppearanceSection } from "./AppearanceSection";

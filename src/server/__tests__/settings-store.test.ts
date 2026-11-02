@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers.js";
-import { createSettingsStore } from "../settings-store.js";
+import { createSettingsStore, isImageGenerationEnabled } from "../settings-store.js";
 import type { SettingsStore } from "../settings-store.js";
 import type { DatabaseSync } from "../db.js";
 import { testExecutablePath } from "./test-paths.js";
@@ -268,6 +268,24 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({
       computerUse: "on" as any,
     })).toThrow("computerUse must be an object");
+  });
+
+  it("keeps image generation on unless it is explicitly turned off", () => {
+    expect(isImageGenerationEnabled(store.getSettings())).toBe(true);
+
+    expect(store.updateSettings({ imageGeneration: { enabled: false } }).imageGeneration).toEqual({ enabled: false });
+    expect(store.updateSettings({ identity: "unrelated" }).imageGeneration).toEqual({ enabled: false });
+    expect(isImageGenerationEnabled(store.getSettings())).toBe(false);
+
+    for (const on of [{ enabled: true }, {}, null]) {
+      store.updateSettings({ imageGeneration: { enabled: false } });
+      expect(store.updateSettings({ imageGeneration: on as any }).imageGeneration).toBeUndefined();
+      expect(isImageGenerationEnabled(store.getSettings())).toBe(true);
+    }
+
+    expect(() => store.updateSettings({
+      imageGeneration: { enabled: "false" } as any,
+    })).toThrow("imageGeneration.enabled must be a boolean");
   });
 
   it("persists and validates remembered model presets", () => {

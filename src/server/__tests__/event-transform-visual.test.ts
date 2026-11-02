@@ -416,3 +416,72 @@ describe("event-transform: vega-lite visual entries", () => {
     expect(htmlEntries.filter((e) => e.type === "visual")[0].visual?.mimeType, "html default mime").toBe("text/html");
   });
 });
+
+describe("event-transform: generated images", () => {
+  const PNG_BASE64 = Buffer.from("not really a png, ten bytes long").toString("base64");
+  const savedIn = (sessionId: string, fileName = "image-0a1b2c3d4e5f6071.png") =>
+    `C:\\Users\\someone\\.copilot\\session-state\\${sessionId}\\images\\${fileName}`;
+
+  function imageEvents(options: { args?: Record<string, unknown>; savedPath?: string; success?: boolean } = {}) {
+    return [
+      {
+        type: "tool.execution_start",
+        timestamp: "2026-04-10T10:00:01.000Z",
+        data: { toolCallId: "tc-image", toolName: "image_generation", arguments: options.args ?? { prompt: "A small bridge at dusk" } },
+      },
+      {
+        type: "tool.execution_complete",
+        timestamp: "2026-04-10T10:00:09.000Z",
+        data: {
+          toolCallId: "tc-image",
+          success: options.success ?? true,
+          result: {
+            content: "Image generated successfully.",
+            contents: [{ type: "image", data: PNG_BASE64, mimeType: "image/png" }],
+            structuredContent: {
+              imageGeneration: {
+                images: [{
+                  contentIndex: 0,
+                  mimeType: "image/png",
+                  width: 1024,
+                  height: 1024,
+                  imageId: "sha256:abc",
+                  savedPath: options.savedPath ?? savedIn(SESSION_ID),
+                }],
+              },
+            },
+          },
+        },
+      },
+    ];
+  }
+
+  it.each([
+    { label: "a new image", args: { prompt: "A small bridge at dusk" }, title: "Generated image" },
+    { label: "an edit", args: { prompt: "Make the sky orange", input_images: [{ image_id: "sha256:abc" }] }, title: "Edited image" },
+  ])("shows $label as an image card after its tool entry, served from the session's images folder", ({ args, title }) => {
+    const entries = transformEventsToMessages(imageEvents({ args }), SESSION_ID);
+
+    expect(entries.map((entry) => entry.type)).toEqual(["tool", "visual"]);
+    expect(entries[1].visual).toEqual({
+      artifactId: "generated-image-0a1b2c3d4e5f6071.png",
+      kind: "image",
+      title,
+      displayName: "image-0a1b2c3d4e5f6071.png",
+      mimeType: "image/png",
+      size: Buffer.from(PNG_BASE64, "base64").length,
+      url: `/api/sessions/${SESSION_ID}/images/image-0a1b2c3d4e5f6071.png`,
+      downloadUrl: `/api/sessions/${SESSION_ID}/images/image-0a1b2c3d4e5f6071.png?download`,
+      altText: args.prompt,
+    });
+  });
+
+  it.each([
+    { label: "a failed call", options: { success: false } },
+    { label: "an image saved for another session", options: { savedPath: savedIn("ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee") } },
+    { label: "an image saved outside an images folder", options: { savedPath: `C:\\Users\\someone\\Downloads\\${SESSION_ID}\\image-1.png` } },
+  ])("shows no card for $label", ({ options }) => {
+    const entries = transformEventsToMessages(imageEvents(options), SESSION_ID);
+    expect(entries.filter((entry) => entry.type === "visual")).toEqual([]);
+  });
+});

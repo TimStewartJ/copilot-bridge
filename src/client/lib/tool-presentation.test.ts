@@ -71,6 +71,14 @@ describe("describeToolCall", () => {
       .toMatchObject({ verb: "Searching the web", target: "latest React release" });
   });
 
+  it("says whether an image call generates or edits, with its prompt", () => {
+    const prompt = "A flat app icon of a bridge\nat dusk";
+    expect(describeToolCall({ name: "image_generation", args: { prompt } }, "running"))
+      .toMatchObject({ verb: "Generating image", target: "A flat app icon of a bridge", mono: false, icon: "image" });
+    expect(describeToolCall({ name: "image_generation", args: { prompt, input_images: [{ image_id: "sha256:a" }] } }, "done"))
+      .toMatchObject({ verb: "Edited image", target: "A flat app icon of a bridge" });
+  });
+
   it("uses an agent's name and brief for a delegated task", () => {
     expect(describeToolCall({
       name: "🤖 Explore agent",

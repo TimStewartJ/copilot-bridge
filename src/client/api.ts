@@ -2361,6 +2361,11 @@ export interface ComputerUseSettings {
   enabled?: boolean;
 }
 
+/** On unless `enabled` is false. */
+export interface ImageGenerationSettings {
+  enabled?: boolean;
+}
+
 export interface ComputerUseStatus {
   enabled: boolean;
   available: boolean;
@@ -2406,6 +2411,7 @@ export interface AppSettings {
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   computerUse?: ComputerUseSettings;
+  imageGeneration?: ImageGenerationSettings;
   helm?: HelmSettings;
   imageBudget?: ImageBudgetSettings;
   experimental?: ExperimentalSettings;

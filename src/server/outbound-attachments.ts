@@ -107,27 +107,26 @@ export function getSessionFilesDir(copilotHome: string, sessionId: string): stri
   return join(copilotHome, "session-state", sessionId, "files");
 }
 
-/**
- * A file the user attached to a prompt, kept in the session's files/ folder. The CLI records sent
- * images without their bytes, so chat history shows them from here. Only direct children of the
- * folder resolve; subfolders such as outgoing/ and visuals/ have routes of their own.
- */
-export function resolveSessionUploadedFile(copilotHome: string, sessionId: string, fileName: string): Result<ResolvedOutboundAttachment> {
-  if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
+/** Where the runtime's image tool saves what it generates or edits. */
+export function getSessionGeneratedImagesDir(copilotHome: string, sessionId: string): string {
+  return join(copilotHome, "session-state", sessionId, "images");
+}
+
+/** One file directly inside `dir`, resolved through links, or an error the routes map to 403/404. */
+function resolveDirectChildFile(dir: string, fileName: string): Result<ResolvedOutboundAttachment> {
   if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) return err("fileName is invalid");
-  const filesDir = getSessionFilesDir(copilotHome, sessionId);
-  const filePath = join(filesDir, fileName);
+  const filePath = join(dir, fileName);
   if (!existsSync(filePath)) return err("File not found");
 
   let realPath: string;
-  let realFilesDir: string;
+  let realDir: string;
   try {
     realPath = realpathSync(filePath);
-    realFilesDir = realpathSync(filesDir);
+    realDir = realpathSync(dir);
   } catch {
     return err("File not found");
   }
-  if (!isPathAtOrUnder(realFilesDir, realPath) || dirname(realPath) !== realFilesDir) return err("File path is unsafe");
+  if (!isPathAtOrUnder(realDir, realPath) || dirname(realPath) !== realDir) return err("File path is unsafe");
 
   try {
     if (!statSync(realPath).isFile()) return err("File not found");
@@ -137,6 +136,23 @@ export function resolveSessionUploadedFile(copilotHome: string, sessionId: strin
   const displayName = basename(realPath);
   const mimeType = inferOutboundAttachmentMimeType(displayName);
   return ok({ filePath: realPath, displayName, mimeType, inline: isInlineRenderableAttachment(mimeType) });
+}
+
+/**
+ * A file the user attached to a prompt, kept in the session's files/ folder. The CLI records sent
+ * images without their bytes, so chat history shows them from here. Only direct children of the
+ * folder resolve; subfolders such as outgoing/ and visuals/ have routes of their own.
+ */
+export function resolveSessionUploadedFile(copilotHome: string, sessionId: string, fileName: string): Result<ResolvedOutboundAttachment> {
+  if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
+  return resolveDirectChildFile(getSessionFilesDir(copilotHome, sessionId), fileName);
+}
+
+/** An image the runtime's image tool saved for this session. Only raster images resolve. */
+export function resolveSessionGeneratedImage(copilotHome: string, sessionId: string, fileName: string): Result<ResolvedOutboundAttachment> {
+  if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
+  if (!isInlineRenderableAttachment(inferOutboundAttachmentMimeType(fileName))) return err("fileName is invalid");
+  return resolveDirectChildFile(getSessionGeneratedImagesDir(copilotHome, sessionId), fileName);
 }
 
 export function publishOutboundAttachment(input: PublishOutboundAttachmentInput): Result<PublishedOutboundAttachment> {

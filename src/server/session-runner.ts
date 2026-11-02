@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 
-import { getVisibleEventTimestamp } from "./event-transform.js";
+import { getGeneratedImageVisuals, getVisibleEventTimestamp } from "./event-transform.js";
 import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";
 import { createFusionProgress, FUSION_PROGRESS_EVENT_TYPES } from "./fusion-progress.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -2204,6 +2204,14 @@ export class SessionRunner {
             timestamp: event.timestamp,
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           });
+          for (const visual of getGeneratedImageVisuals(
+            event,
+            completedToolName,
+            sessionId,
+            completedToolCallId ? toolArgsMap.get(completedToolCallId) : undefined,
+          )) {
+            bus.emit({ type: "visual_published", ...visual, timestamp: event.timestamp });
+          }
           if (
             typeof data?.toolCallId === "string"
             && completedSubAgent

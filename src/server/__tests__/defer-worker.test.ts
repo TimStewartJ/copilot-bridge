@@ -869,6 +869,7 @@ describe("defer worker", () => {
       enableConfigDiscovery: true,
       enableFileHooks: false,
       excludedTools: ["report_intent"],
+      imageGeneration: { enabled: true },
     }));
     const createSession = vi.fn(async (config: Record<string, unknown>) =>
       createNaturalSession(
@@ -958,6 +959,8 @@ describe("defer worker", () => {
       // Nobody can answer a worker, so it must not be able to ask.
       pendingInteractionEvents: false,
       excludedTools: ["report_intent", "ask_user"],
+      // Nor did anybody ask it for an image, even with chats allowed to make them.
+      imageGeneration: { enabled: false },
     }));
     const helper = await createSession.mock.results[0]!.value;
     expect(helper.sendAndWait).toHaveBeenCalledWith(expect.objectContaining({
