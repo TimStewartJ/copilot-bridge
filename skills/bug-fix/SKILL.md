@@ -22,7 +22,7 @@ You own the fix from the first reproduction to before-and-after proof on the sur
 3. List hypotheses for the cause and binary-search them with runtime evidence: logs, a debugger, temporary instrumentation, a narrowed input. Each check should rule out about half of what remains.
 4. When two fixes fail on the same premise, stop fixing and test the premise itself.
 5. Revert every change a refuted hypothesis motivated, including temporary instrumentation, before you go on. Once the evidence confirms a root cause, record it and its evidence with task_history_add when the chat has a task.
-6. Make the smallest fix the evidence justifies, at the place that causes the bug rather than where the symptom shows.
+6. Make the smallest fix the evidence justifies, at the place that causes the bug rather than where the symptom shows. When people misread a screen, fix its layout or names rather than adding explanatory text.
 7. Rerun the exact reproduction from step 2 and keep the failing-then-passing output (or before and after screenshots) to paste in the reply.
 8. Add a regression test only where it is cheap and the repository's test rules call for one; extend an existing test before writing a new one. Run the checks for the area you touched.
 9. Check the neighbors the fix could break (other callers, the other platform, empty and error inputs) on the real surface.

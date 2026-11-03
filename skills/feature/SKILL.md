@@ -21,9 +21,10 @@ You own the feature from its data shape to proof on the real surface it changes.
 4. List what is in scope and what is out, with the assumptions you made.
 5. If the change crosses a module boundary (a public API, a storage schema, a protocol, a shared component), compare two designs before writing code: two sub-agents with the task tool, or the `panel-review` helper. Pick one and record the choice and reason with task_history_add.
 6. Build in small ordered steps, each leaving the tree working: data shape and storage, then logic, then the surface, then docs. Leave changes uncommitted unless the user asked for commits or the repository's instructions say to commit. If you commit, stay on the current branch unless it is the default branch; then create a working branch named the way the user's instructions say. Never switch branches over uncommitted work.
+   - For a screen, keep the purpose, layout and implementation simple. Cut taglines, helper text and secondary labels. If a screen needs them to make sense, fix the layout. Keep a sentence only where the reader would otherwise get a consequence wrong, and for errors.
 7. Run the repository's checks for the touched areas after each step and fix failures before the next one.
 8. Add tests where the repository's test rules call for them, at the layer that owns the behavior.
-9. Verify on the matching real surface: run the app, call the API, run the command. For UI, take screenshots at the widths and themes the project cares about and look at them.
+9. Verify on the matching real surface: run the app, call the API, run the command. For UI, take screenshots at the widths and themes the project cares about and check them against the screen rule in step 6.
    - Use the skill that fills the `verify` role when <skill_roles> lists one; if none, use the tools available and say which.
 10. Update the docs that describe the changed behavior.
 11. For pull request mechanics, hand off to the `pr-to-merge-ready` playbook.
