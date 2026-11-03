@@ -126,7 +126,8 @@ activity. A question gets `needs-input` and "Needs you"; unread information gets
 as `unread`, or as `unread-working` while a turn is running. A known lack of continuation gets `review` and
 "Needs a look" ("Review" in narrow rows); a saved wait with no revisit date and nothing checking on it
 counts as no continuation. Reached revisits retain their cue. In task rows, a task with no attention
-mark and a turn running shows the `working` spinner, which is not counted as attention. Scheduled,
+mark and a turn running shows the `working` spinner, which is not counted as attention. A reached
+revisit gives the leading slot to the spinner while a turn runs and keeps its "Revisit" badge. Scheduled,
 deferred tasks and waits with a date or a check otherwise leave the leading slot blank. Show that context
 in hover text, metadata or task details, and keep lifecycle labels separate from attention.
 Loading has one message per view. Shared source gaps use one activity-data disclosure with affected

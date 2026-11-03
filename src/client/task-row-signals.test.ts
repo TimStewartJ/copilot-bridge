@@ -52,4 +52,14 @@ describe("attention-only task rows", () => {
     expect(getTaskLeadingGlyph(null, indicator({ deferCount: 1 }), createTaskActivity({ deferredCount: 1 }))).toBeNull();
     expect(getTaskLeadingGlyph(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1, unreadCount: 1 }), NOW), busy)).toBe("unread-working");
     expect(getTaskLeadingGlyph(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1, needsUserInputCount: 1 }), NOW), busy)).toBe("needs-input");
+  });
+  it("shows the spinner over a reached revisit while a turn runs, keeping the Revisit label", () => {
+    const busy = indicator({ busy: true, busyCount: 1 });
+    for (const due of [{ ...task, nextTouchAt: "2000-01-01T00:00:00Z" }, { ...task, deferred: true, nextTouchAt: "2000-01-01T00:00:00Z" }]) {
+      const revisit = getTaskAttentionSignal(due, busy, NOW);
+      expect(revisit).toMatchObject({ label: "Revisit" });
+      expect(getTaskLeadingGlyph(revisit, busy)).toBe("working");
+      expect(getTaskLeadingGlyph(revisit, indicator(), createTaskActivity({ runCount: 1 }))).toBe("working");
+      expect(getTaskLeadingGlyph(revisit, indicator())).toBe(revisit!.status);
+    }
   });});
