@@ -217,7 +217,7 @@ export const operationScenarios: IntegrationScenario[] = [
       const start = vi.spyOn(world.ctx.sessionManager, "startWork");
       const response = await request(world.app).post("/api/chat").send({ sessionId: "busy-session", prompt: "Change direction", mode: "autopilot" });
       expect(response.status).toBe(202);
-      expect(steer).toHaveBeenCalledWith("busy-session", "Change direction", undefined);
+      expect(steer).toHaveBeenCalledWith("busy-session", "Change direction", undefined, undefined, { skipOpenQuestions: true });
       expect(start).not.toHaveBeenCalled();
     },
   },

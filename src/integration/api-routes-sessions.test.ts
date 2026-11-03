@@ -1014,7 +1014,14 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ status: "accepted", mode: "steered" });
-    expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith("busy-session", "adjust course", undefined);
+    // The person wrote instead of answering, so any question they had open is set aside.
+    expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith(
+      "busy-session",
+      "adjust course",
+      undefined,
+      undefined,
+      { skipOpenQuestions: true },
+    );
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
@@ -1036,6 +1043,7 @@ describe("Session routes (mocked)", () => {
       "adjust course",
       undefined,
       "client-message-2",
+      { skipOpenQuestions: true },
     );
   });
 

@@ -2668,6 +2668,7 @@ export function createApiRouter(
         attachments, mode, waitForDelivery, clientMessageId,
         // A person's message from the chat: kept if the agent never gets it, and never sent twice.
         ...(clientMessageId ? { keepUndelivered: true } : {}),
+        skipOpenQuestions: true,
       });
       noteUserMessage(sessionId);
       res.status(202).json(chatAcceptedResponse(delivery));
@@ -2722,6 +2723,7 @@ export function createApiRouter(
         ...(claimed.mode ? { mode: claimed.mode } : {}),
         clientMessageId,
         keepUndelivered: true,
+        skipOpenQuestions: true,
       });
       accepted = true;
       noteUserMessage(sessionId);

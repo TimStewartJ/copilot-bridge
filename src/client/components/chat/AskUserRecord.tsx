@@ -21,6 +21,8 @@ function describeOutcome(outcome: AskUserOutcome, durationMs: number | undefined
       return "not answered, the run went on without you";
     case "autopilot":
       return "Autopilot went on without you";
+    case "skipped":
+      return "you sent a message instead";
     case "failed":
       return "the question failed";
     case "unanswered":

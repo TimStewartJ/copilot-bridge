@@ -18,6 +18,8 @@ export type AskUserOutcome =
   | "away"
   /** The chat was in Autopilot, so the question was answered without being shown. */
   | "autopilot"
+  /** The user sent a message instead of answering. */
+  | "skipped"
   | "failed"
   | "unanswered"
   | "other";
@@ -127,7 +129,7 @@ function classify(toolCall: ToolCall, result: string | undefined): AskUserOutcom
   if (result === undefined) return "unanswered";
   // A reply Bridge gave in the user's place arrives as an answer, so it is recognised first.
   const automatic = readAutomaticAnswerReason(result);
-  if (automatic) return automatic === "autopilot" ? "autopilot" : "away";
+  if (automatic) return automatic === "unanswered" ? "away" : automatic;
   if (/^user responded:/i.test(result)) return "answered";
   if (/^user (?:cancell?ed|dismissed)/i.test(result)) return "cancelled";
   if (/^user declined/i.test(result)) return "declined";

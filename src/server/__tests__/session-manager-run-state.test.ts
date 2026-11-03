@@ -2394,6 +2394,68 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState(sessionId)).toBe("idle");
   });
 
+  it("answers the open questions as skipped once a message the user sent instead is with the runtime", async () => {
+    const sessionId = "session-skip-questions";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    const order: string[] = [];
+    session.send.mockImplementation(async (...[options]: any[]) => {
+      order.push(`send:${options.prompt}`);
+      return undefined;
+    });
+    session.respondToUserInput.mockImplementation(async (...[requestId]: any[]) => {
+      order.push(`answer:${requestId}`);
+      return true;
+    });
+    session.tryRespondToElicitation.mockImplementation(async (...[requestId]: any[]) => {
+      order.push(`answer:${requestId}`);
+      return true;
+    });
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    order.length = 0;
+
+    const approval = { type: "object", properties: { approved: { type: "boolean" } } };
+    const timestamp = new Date().toISOString();
+    getHandler()?.({ type: "user_input.requested", timestamp, data: { requestId: "ui-1", question: "Which one?" } });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: { requestId: "el-ask", message: "Approve?", mode: "form", requestedSchema: approval },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: { requestId: "el-mcp", message: "Token?", mode: "form", elicitationSource: "some-mcp", requestedSchema: approval },
+    });
+    await flushMicrotasks();
+
+    // A message from a tool or another chat leaves the user's questions alone.
+    await manager.steerSession(sessionId, "from a tool");
+    expect(order).toEqual(["send:from a tool"]);
+
+    await manager.steerSession(sessionId, "wait, first explain X", undefined, undefined, { skipOpenQuestions: true });
+    await flushMicrotasks();
+
+    expect(order[1]).toBe("send:wait, first explain X");
+    expect(session.respondToUserInput.mock.calls).toEqual([
+      ["ui-1", { answer: AUTOMATIC_ANSWERS.skipped, wasFreeform: true }],
+    ]);
+    expect(session.tryRespondToElicitation.mock.calls).toEqual([
+      ["el-ask", { action: "accept", content: { approved: AUTOMATIC_ANSWERS.skipped } }],
+      ["el-mcp", { action: "cancel" }],
+    ]);
+    expect(eventBusRegistry.getBus(sessionId)?.getPendingInteractionIndex()).toEqual({
+      pendingUserInputs: [],
+      pendingElicitations: [],
+    });
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+  });
+
   it("auto-answers questions that waited half an hour instead of aborting the turn", async () => {
     const sessionId = "session-auto-answer";
     const { manager, telemetryStore, globalBus } = createManager({ telemetry: true });

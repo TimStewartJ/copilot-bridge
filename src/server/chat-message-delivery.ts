@@ -36,6 +36,11 @@ export interface ChatMessageDeliveryOptions {
    * and sent at most once per `clientMessageId` (a repeat answers with what became of the first).
    */
   keepUndelivered?: boolean;
+  /**
+   * The user typed this in the chat while the agent waited on a question: the question is answered
+   * as skipped so the message reaches the agent now.
+   */
+  skipOpenQuestions?: boolean;
 }
 
 export interface ChatMessageDelivery {
@@ -181,12 +186,17 @@ export async function sendChatMessage(
     const busyAtSend = manager.isSessionBusy(sessionId);
     try {
       if (busyAtSend) {
-        if (clientMessageId) {
+        const isCommand = Boolean(parseSlashCommandPrompt(prompt));
+        // A person writing instead of answering sets the open questions aside; a command does not.
+        const steerOptions = options.skipOpenQuestions && !isCommand ? { skipOpenQuestions: true } : undefined;
+        if (steerOptions) {
+          await manager.steerSession(sessionId, prompt, attachments, clientMessageId, steerOptions);
+        } else if (clientMessageId) {
           await manager.steerSession(sessionId, prompt, attachments, clientMessageId);
         } else {
           await manager.steerSession(sessionId, prompt, attachments);
         }
-        return { delivery: parseSlashCommandPrompt(prompt) ? "command" : "steered" };
+        return { delivery: isCommand ? "command" : "steered" };
       }
       const launchOptions = mode || clientMessageId ? {
         ...(mode ? { mode } : {}),

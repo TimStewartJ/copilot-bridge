@@ -113,6 +113,10 @@ describe("readAskUserRecord", () => {
     expect(autopilot?.fields.some((field) => field.answered)).toBe(false);
     expect(readAskUserRecord(call({ question: "Proceed?" }, `User responded: ${AUTOMATIC_ANSWERS.autopilot}`)))
       .toEqual({ message: "Proceed?", fields: [], outcome: "autopilot" });
+
+    const skipped = readAskUserRecord(call(ONE_OF, `User responded:\npreProv: ${AUTOMATIC_ANSWERS.skipped}`));
+    expect(skipped?.outcome).toBe("skipped");
+    expect(skipped?.fields.some((field) => field.answered)).toBe(false);
   });
 
   it("ignores other tools and calls with no question", () => {

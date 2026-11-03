@@ -5440,13 +5440,93 @@ export class SessionManager {
     prompt: string,
     attachments?: StartWorkAttachment[],
     clientMessageId?: string,
+    options: {
+      /** The user wrote instead of answering: the questions open now are answered as skipped. */
+      skipOpenQuestions?: boolean;
+    } = {},
   ): Promise<void> {
     // A message steered into the turn being paused would be lost with it.
     if (this.imageBudget.isPausing(sessionId)) {
       throw new Error("Bridge is summarizing the images in this chat. Send your message again in a minute.");
     }
+    // Only the questions the user had in front of them when they sent the message.
+    const open = options.skipOpenQuestions ? this.busPendingInteractionIndex(sessionId) : undefined;
+    const openQuestions = open && {
+      pendingUserInputs: [...open.pendingUserInputs],
+      pendingElicitations: [...open.pendingElicitations],
+    };
     await this.sessionRunner.steerSession(sessionId, prompt, attachments, clientMessageId);
     this.noteUserPrompt(sessionId);
+    // After the send, so the runtime already holds the message when ask_user returns and gives it
+    // to the agent before its next step.
+    if (openQuestions) await this.skipOpenQuestions(sessionId, openQuestions);
+  }
+
+  /**
+   * Answers questions the user set aside by sending a message, telling the agent their message
+   * follows. An MCP server's form is cancelled instead, since its answer is never invented.
+   * Never rejects: a question that cannot be answered stays open for the user.
+   */
+  private async skipOpenQuestions(sessionId: string, open: PendingInteractionSnapshot): Promise<void> {
+    if (open.pendingUserInputs.length === 0 && open.pendingElicitations.length === 0) return;
+    const session = this.sessionObjects.get(sessionId);
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    if (!session || !bus || bus.complete) return;
+    const timestamp = new Date().toISOString();
+    const skip = async (
+      kind: "user_input" | "elicitation",
+      requestId: string,
+      respond: () => Promise<boolean>,
+      settle: (answered: boolean) => void,
+    ): Promise<void> => {
+      const startedAt = Date.now();
+      try {
+        const answered = await this.runPendingInteractionOperation("Skipping a question", respond);
+        settle(answered);
+        this.recordSpan("session.pending_interaction.auto_answer", Date.now() - startedAt, sessionId, {
+          kind,
+          action: "skip",
+          answered,
+          waitedMs: 0,
+          reason: "skipped",
+        });
+      } catch (error) {
+        console.warn(
+          `[sdk] [${sessionId.slice(0, 8)}] Could not skip ${kind} ${requestId} for a sent message:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    };
+
+    await Promise.all([
+      ...open.pendingUserInputs.map((request) => {
+        const response = { answer: AUTOMATIC_ANSWERS.skipped, wasFreeform: true };
+        return skip(
+          "user_input",
+          request.requestId,
+          () => session.respondToUserInput(request.requestId, response),
+          (answered) => answered
+            ? bus.emitUserInputAnswered(request.requestId, response, timestamp)
+            : bus.emitUserInputCanceled(request.requestId, { reason: "answered_elsewhere", timestamp }),
+        );
+      }),
+      ...open.pendingElicitations.map((request) => {
+        const response: AgentElicitationResponse = automaticFormAnswer(request, "skipped")
+          ?? CANCELED_ELICITATION_RESPONSE;
+        return skip(
+          "elicitation",
+          request.requestId,
+          () => session.tryRespondToElicitation(request.requestId, response),
+          (answered) => answered && response.action === "accept"
+            ? bus.emitElicitationResolved(request.requestId, "accept", timestamp)
+            : bus.emitElicitationCanceled(request.requestId, {
+                reason: answered ? "superseded" : "answered_elsewhere",
+                timestamp,
+              }),
+        );
+      }),
+    ]);
+    void this.reconcilePendingInteractionCounts(sessionId, session);
   }
 
   /** @internal Test seam — delegates to the SessionRunner. */
