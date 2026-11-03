@@ -13,7 +13,6 @@ import { createDocsIndex } from "../server/docs-index.js";
 import { createDocsStore } from "../server/docs-store.js";
 import { createTagStore } from "../server/tag-store.js";
 import { createTaskStore } from "../server/task-store.js";
-import { createTaskAgentDefinitionStore } from "../server/task-agent-definition-store.js";
 import { HOME_GUIDANCE } from "../server/session-instructions.js";
 import { buildBridgeContextSections, renderBridgeContextBlock } from "../server/session-context-block.js";
 import { readPersistedSessionModelState } from "../server/session-model-state-sidecar.js";
@@ -456,52 +455,6 @@ describe("SessionManager session config", () => {
     expect(content).toContain("- Next step: Open the preview");
     expect(content).toContain("- Waiting for: Design review");
     expect(content).toContain("- Revisit on: 9999-05-04T11:00:00.000Z");
-  });
-
-  it("selects the requested task agent before returning a new session", async () => {
-    const db = setupTestDb();
-    const globalBus = createTestBus();
-    const dataDir = makeTestDir("bridge-selected-agent");
-    const copilotHome = join(dataDir, ".copilot");
-    const taskStore = createTaskStore(db, globalBus);
-    const task = taskStore.createTask("Selected agent");
-    const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir });
-    taskAgentDefinitionStore.createTaskAgentDefinition({
-      taskId: task.id,
-      name: "api-reviewer",
-      description: "Reviews APIs",
-      prompt: "Review APIs.",
-    });
-    const session = makeAgentSessionStub({
-      sessionId: "selected-session",
-    });
-    const manager = new SessionManager({
-      globalBus,
-      eventBusRegistry: createEventBusRegistry(),
-      sessionTitles: createSessionTitlesStore(db),
-      taskStore,
-      taskAgentDefinitionStore,
-      config: { sessionMcpServers: {} },
-      copilotHome,
-    }) as any;
-    manager.backend = {
-      createSession: vi.fn(async () => session),
-      deleteSession: vi.fn(async () => undefined),
-    };
-
-    await manager.createTaskSession(
-      task.id,
-      task.title,
-      task.workItems,
-      task.notes,
-      task.cwd,
-      undefined,
-      { agent: "api-reviewer" },
-    );
-
-    expect(manager.backend.createSession.mock.calls[0][0]).toMatchObject({
-      agent: "api-reviewer",
-    });
   });
 
   it("keeps stored non-active task status in newly created task sessions", async () => {

@@ -65,7 +65,6 @@ describe("NewSessionLaunchPanel", () => {
   it("hides selector labels but preserves accessible names and the actual choices", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
-      agentDefinitions: [],
       models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
       selectedModelId: "gpt-5.6",
       reasoningEffortOptions: [{ value: "high", label: "High" }],
@@ -77,9 +76,10 @@ describe("NewSessionLaunchPanel", () => {
     const hiddenLabels = [...findAllByTag(container, "LABEL"), ...findAllByTag(container, "DIV")]
       .filter((element) => getReactProps(element)?.className === "sr-only")
       .map((element) => element.textContent);
-    expect(hiddenLabels).toEqual(["Agent", "Playbook", "Model", "Effort", "Context", "Mode"]);
-    const agentLabel = findAllByTag(container, "LABEL")[0];
-    expect(getReactProps(agentLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
+    expect(hiddenLabels).toEqual(["Playbook", "Model", "Effort", "Context", "Mode"]);
+    const playbookLabel = findAllByTag(container, "LABEL")[0];
+    expect(getReactProps(playbookLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
+    expect(container.textContent).not.toContain("Default Copilot agent");
     const groupLabels = findAllByTag(container, "DIV")
       .filter((element) => getReactProps(element)?.role === "group")
       .map((element) => getReactProps(element)?.["aria-label"]);
@@ -89,7 +89,7 @@ describe("NewSessionLaunchPanel", () => {
       "Context for new session",
       "Run mode for new session",
     ]);
-    for (const choice of ["Default Copilot agent", "GPT-5.6", "High", "Standard context", "Automatic playbook", "Interactive", "Autopilot"]) {
+    for (const choice of ["GPT-5.6", "High", "Standard context", "Automatic playbook", "Interactive", "Autopilot"]) {
       expect(container.textContent).toContain(choice);
     }
   });
@@ -155,51 +155,6 @@ describe("NewSessionLaunchPanel", () => {
     await harness!.act(() => getReactProps(buttons.find((button) => button.textContent === "Save as Deep"))!.onClick());
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows a blank-default agent picker for task chats", async () => {
-    const onAgentChange = vi.fn();
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      agentDefinitions: [
-        {
-          taskId: "task-1",
-          name: "api-reviewer",
-          displayName: "API Reviewer",
-          description: "Reviews APIs",
-          tools: null,
-          infer: false,
-          userInvocable: true,
-          fileName: "api-reviewer.agent.md",
-          createdAt: "2026-08-13T00:00:00.000Z",
-          updatedAt: "2026-08-13T00:00:00.000Z",
-        },
-        {
-          taskId: "task-1",
-          name: "hidden-agent",
-          description: "Hidden",
-          tools: null,
-          infer: true,
-          userInvocable: false,
-          fileName: "hidden-agent.agent.md",
-          createdAt: "2026-08-13T00:00:00.000Z",
-          updatedAt: "2026-08-13T00:00:00.000Z",
-        },
-      ],
-      selectedAgentName: "",
-      onAgentChange,
-    }));
-
-    const select = findAllByTag(harness!.dom.container, "SELECT")[0];
-    expect(select).toBeTruthy();
-    expect(select.textContent).toContain("Default Copilot agent");
-    expect(select.textContent).toContain("API Reviewer");
-    expect(select.textContent).not.toContain("hidden-agent");
-
-    await harness!.act(async () => {
-      getReactProps(select)?.onChange?.({ target: { value: "api-reviewer" } });
-    });
-    expect(onAgentChange).toHaveBeenCalledWith("api-reviewer");
   });
 
   it("marks the selected preset as live", async () => {

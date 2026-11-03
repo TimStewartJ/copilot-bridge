@@ -1,7 +1,6 @@
 import { isBridgeSourceManagementAvailable } from "../distribution-mode.js";
 import type { AppContext } from "../app-context.js";
 import { registerAttachmentTools } from "../tools/attachment-tools.js";
-import { registerAgentDefinitionTools } from "../tools/agent-definition-tools.js";
 import { registerBrowserSessionTools } from "../browser-session-tools.js";
 import { registerChecklistTools } from "../tools/checklist-tools.js";
 import { registerActionTools } from "../tools/action-tools.js";
@@ -49,7 +48,6 @@ export function registerAllBridgeTools(
 
   registerReportIntentTool(server, ctx);
   registerManagementJobTools(server, ctx, { hiddenTools });
-  registerAgentDefinitionTools(server, ctx, { hiddenTools });
   registerTaskTools(server, ctx, { hiddenTools });
   registerTaskGroupTools(server, ctx, { hiddenTools });
   registerTagTools(server, ctx, { hiddenTools });

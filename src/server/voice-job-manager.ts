@@ -29,7 +29,6 @@ interface AcceptVoiceJobInput {
     model?: string;
     reasoningEffort?: string;
     contextTier?: CopilotContextTier;
-    agent?: string;
   };
 }
 
@@ -384,12 +383,10 @@ export function createVoiceJobManager({
       model?: string;
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
-      agent?: string;
     },
   ): Promise<string> {
     if (!taskId) {
-      const { agent: _agent, ...quickChatOptions } = sessionOptions ?? {};
-      const result = await sessionManager.createSession(quickChatOptions);
+      const result = await sessionManager.createSession(sessionOptions ?? {});
       return result.sessionId;
     }
 

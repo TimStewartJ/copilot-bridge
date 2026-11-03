@@ -357,7 +357,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_get_info", {
-    description: "Get task details including title, kind, status, tags, linked session counts/previews, work items, PRs, instructions, notes, the number of history entries (read them with task_history_list), and task agent definitions",
+    description: "Get task details including title, kind, status, tags, linked session counts/previews, work items, PRs, instructions, notes, and the number of history entries (read them with task_history_list)",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The exact task ID, copied verbatim from task_list or from injected task context. Never guess, infer, or reconstruct an ID from a task title." } }, required: ["taskId"] },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
@@ -365,24 +365,12 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       const tags = (ctx.tagStore?.getEntityTags("task", args.taskId) ?? [])
         .map(({ id, name, color }) => ({ id, name, color }));
       const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
-      const agentDefinitions = (ctx.taskAgentDefinitionStore
-        ?.listTaskAgentDefinitions(args.taskId) ?? [])
-        .map((definition) => ({
-          name: definition.name,
-          displayName: definition.displayName ?? null,
-          description: definition.description,
-          tools: definition.tools,
-          infer: definition.infer,
-          createdAt: definition.createdAt,
-          updatedAt: definition.updatedAt,
-        }));
       return {
         ...task.value,
         ...compactTaskInfoSessionIds(task.value.sessionIds),
         tags,
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),
         historyCount: ctx.taskHistoryStore?.countEntries(args.taskId) ?? 0,
-        agentDefinitions,
       };
     },
   }),

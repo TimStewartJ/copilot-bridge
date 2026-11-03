@@ -74,7 +74,6 @@ import { useRestartBridgeMutation } from "./hooks/queries/useBridgeRuntimeStatus
 import { useSettingsQuery } from "./hooks/queries/useSettings";
 import { useModelsQuery } from "./hooks/queries/useModels";
 import { useSessionModelQuery } from "./hooks/queries/useSessionModel";
-import { useTaskAgentDefinitionsQuery } from "./hooks/queries/useTaskAgentDefinitions";
 import { useModelPresets } from "./hooks/useModelPresets";
 import {
   buildNewSessionCreateOptions,
@@ -2649,7 +2648,6 @@ function SessionRoute({
   const isDraft = sessionId === null;
   const chatHandsFree = useChatHandsFree(sessionId);
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
-  const taskAgentDefinitionsQuery = useTaskAgentDefinitionsQuery(taskId);
   const sessionModelQuery = useSessionModelQuery(sessionId);
   const sessionReloadToken = sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
@@ -2712,14 +2710,12 @@ function SessionRoute({
   const launchCreateOptions = useMemo(
     () => ({
       ...buildNewSessionCreateOptions(launchState),
-      ...(taskId && draftLaunch?.agent ? { agent: draftLaunch.agent } : {}),
       ...(launchPlaybookForCreate ? { playbook: launchPlaybookForCreate } : {}),
     }),
     [
       launchState.modelForCreate,
       launchState.selectedContextTier,
       launchState.selectedReasoningEffort,
-      draftLaunch?.agent,
       launchPlaybookForCreate,
       taskId,
     ],
@@ -2756,7 +2752,6 @@ function SessionRoute({
       contextTierSelection,
     });
     setDraftLaunchOptions(composerKey, (current) => ({
-      ...(current?.agent ? { agent: current.agent } : {}),
       model: selection.modelId,
       presetSlot: selection.slot,
       ...(reasoningEffortSelection ? { reasoningEffort: reasoningEffortSelection } : {}),
@@ -2896,28 +2891,6 @@ function SessionRoute({
     });
   }, [composerKey, setDraftLaunchOptions]);
 
-  const handleLaunchAgentChange = useCallback((agent?: string) => {
-    setDraftLaunchOptions(composerKey, (current) => {
-      const next = { ...(current ?? {}) };
-      if (agent) next.agent = agent;
-      else delete next.agent;
-      return Object.keys(next).length > 0 ? next : undefined;
-    });
-  }, [composerKey, setDraftLaunchOptions]);
-
-  useEffect(() => {
-    const selectedAgent = draftLaunch?.agent;
-    if (!selectedAgent || taskAgentDefinitionsQuery.isLoading) return;
-    const available = taskAgentDefinitionsQuery.data
-      ?.some((definition) => definition.name === selectedAgent && definition.userInvocable) === true;
-    if (!available) handleLaunchAgentChange(undefined);
-  }, [
-    draftLaunch?.agent,
-    handleLaunchAgentChange,
-    taskAgentDefinitionsQuery.data,
-    taskAgentDefinitionsQuery.isLoading,
-  ]);
-
   useEffect(() => {
     if (previousDraftRouteKeyRef.current === draftRouteKey) return;
     previousDraftRouteKeyRef.current = draftRouteKey;
@@ -3052,16 +3025,12 @@ function SessionRoute({
       playbooksLoading={playbooksQuery.isLoading}
       selectedPlaybook={draftLaunch?.playbook}
       mode={launchMode}
-      agentDefinitions={taskId ? taskAgentDefinitionsQuery.data ?? [] : undefined}
-      agentDefinitionsLoading={taskId ? taskAgentDefinitionsQuery.isLoading : undefined}
-      selectedAgentName={draftLaunch?.agent}
       onPresetChange={handleLaunchPresetChange}
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={handleLaunchReasoningEffortChange}
       onContextTierChange={handleLaunchContextTierChange}
       onPlaybookChange={handleLaunchPlaybookChange}
       onModeChange={setLaunchMode}
-      onAgentChange={handleLaunchAgentChange}
       onModelSelectionCommitted={requestComposerFocus}
       tierChange={launchTierChange}
     />

@@ -94,7 +94,6 @@ import {
   parseAdoWorkReferenceUrl,
 } from "../shared/ado-work-reference.js";
 import { isRecord } from "../shared/is-record.js";
-import { TaskAgentDefinitionValidationError } from "./task-agent-definition-store.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
 import {
@@ -1021,7 +1020,7 @@ export function createApiRouter(
           } catch {
             return res.status(400).json({ error: "sessionOptions must be valid JSON" });
           }
-          const resolved = await resolveSessionCreationOptions(parsedSessionOptions, { taskId });
+          const resolved = await resolveSessionCreationOptions(parsedSessionOptions);
           if (resolved.error) {
             return res.status(resolved.status ?? 400).json({ error: resolved.error });
           }
@@ -1049,9 +1048,6 @@ export function createApiRouter(
         });
         return res.status(202).json(job);
       } catch (error) {
-        if (error instanceof TaskAgentDefinitionValidationError) {
-          return res.status(400).json({ error: error.message });
-        }
         return res.status(error instanceof InvalidRecordingError ? 400 : 500).json({
           error: error instanceof Error ? error.message : String(error),
         });
@@ -2134,9 +2130,6 @@ export function createApiRouter(
       res.json({ ready: true });
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
-      if (err instanceof TaskAgentDefinitionValidationError) {
-        return res.status(400).json({ error: err.message });
-      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -2187,11 +2180,8 @@ export function createApiRouter(
     return union.size > 0 ? union : null;
   }
 
-  async function resolveSessionCreationOptions(
-    body: unknown,
-    scope: { taskId?: string } = {},
-  ) {
-    return resolveSessionCreationOptionsForContext(ctx, body, scope);
+  async function resolveSessionCreationOptions(body: unknown) {
+    return resolveSessionCreationOptionsForContext(ctx, body);
   }
 
   function settingsModelSnapshot(settings: AppSettings): string {
@@ -2433,9 +2423,6 @@ export function createApiRouter(
       res.json(result);
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
-      if (err instanceof TaskAgentDefinitionValidationError) {
-        return res.status(400).json({ error: err.message });
-      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -3305,40 +3292,6 @@ export function createApiRouter(
     }
   });
 
-  router.get("/tasks/:id/agent-definitions", (req, res) => {
-    const task = ctx.taskStore.getTask(req.params.id);
-    if (!task) return res.status(404).json({ error: "Task not found" });
-    if (!ctx.taskAgentDefinitionStore) {
-      return res.status(501).json({ error: "Task agent definitions are not available" });
-    }
-    try {
-      const agentDefinitions = ctx.taskAgentDefinitionStore
-        .listTaskAgentDefinitions(task.id)
-        .map(({ prompt: _prompt, frontmatter: _frontmatter, raw: _raw, ...summary }) => summary);
-      res.json({ agentDefinitions });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(error instanceof TaskAgentDefinitionValidationError ? 400 : 500).json({ error: message });
-    }
-  });
-
-  router.get("/tasks/:id/agent-definitions/:name", (req, res) => {
-    const task = ctx.taskStore.getTask(req.params.id);
-    if (!task) return res.status(404).json({ error: "Task not found" });
-    if (!ctx.taskAgentDefinitionStore) {
-      return res.status(501).json({ error: "Task agent definitions are not available" });
-    }
-    try {
-      const agentDefinition = ctx.taskAgentDefinitionStore
-        .getTaskAgentDefinition(task.id, req.params.name);
-      if (!agentDefinition) return res.status(404).json({ error: "Agent definition not found" });
-      res.json({ agentDefinition });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(error instanceof TaskAgentDefinitionValidationError ? 400 : 500).json({ error: message });
-    }
-  });
-
   router.get("/tasks/:id", (req, res) => {
     const task = ctx.taskStore.getTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
@@ -3756,7 +3709,7 @@ export function createApiRouter(
     }
 
     try {
-      const creationResult = await resolveSessionCreationOptions(req.body, { taskId: task.id });
+      const creationResult = await resolveSessionCreationOptions(req.body);
       if (creationResult.error) {
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
@@ -3780,9 +3733,6 @@ export function createApiRouter(
       res.json(result);
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
-      if (err instanceof TaskAgentDefinitionValidationError) {
-        return res.status(400).json({ error: err.message });
-      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

@@ -29,7 +29,6 @@ const SYNC_TREE_OPERATIONS_ALLOWED: Record<string, string> = {
   "server/validation-command-env.ts": "validation commands run in the job runner",
   "server/staging-backend-manager.ts": "copies docs while seeding preview data, which the job runner does",
   "server/docs-snapshot-store.ts": "bounded by the docs folder, inside one synchronous snapshot transaction",
-  "server/task-agent-definition-store.ts": "a task's agent folder holds a handful of small files",
 };
 const SYNC_TREE_CALL = /\b(rmSync|cpSync|rmdirSync)\s*\(/g;
 

@@ -4,7 +4,6 @@ import { readdir, readFile } from "node:fs/promises";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./db.js";
 import { createTaskStore } from "./task-store.js";
-import { createTaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createSessionMetaStore } from "./session-meta-store.js";
 import { createSessionWorkspaceStore } from "./session-workspace-store.js";
@@ -89,13 +88,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const db = openDatabase(dataDir);
   const globalBus = createGlobalBus();
   const eventBusRegistry = createEventBusRegistry();
-  const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir });
-  const taskStore = createTaskStore(db, globalBus, {
-    runtimePaths,
-    onTaskDeleted: (taskId) => {
-      taskAgentDefinitionStore.removeTaskAgentDefinitions(taskId);
-    },
-  });
+  const taskStore = createTaskStore(db, globalBus, { runtimePaths });
   const taskGroupStore = createTaskGroupStore(db, globalBus);
   const scheduleStore = createScheduleStore(db);
   const settingsStore = createSettingsStore(db);
@@ -178,21 +171,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const helmStore = createHelmStore(db);
   const helmThinkerStore = createHelmThinkerStore(db);
 
-  try {
-    taskAgentDefinitionStore.sweepOrphanedTaskAgentDirectories(
-      new Set(taskStore.listTasks().map((task) => task.id)),
-    );
-  } catch (error) {
-    console.warn(
-      "[task-agent-definitions] Startup orphan sweep failed:",
-      error instanceof Error ? error.message : error,
-    );
-  }
-
-
   const ctx: AppContext = {
     taskStore,
-    taskAgentDefinitionStore,
     taskGroupStore,
     scheduleStore,
     settingsStore,

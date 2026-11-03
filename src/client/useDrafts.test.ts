@@ -135,7 +135,6 @@ describe("useDrafts launch persistence", () => {
       launch: {
         model: "claude-sonnet-5",
         presetSlot: "preset2",
-        agent: "api-reviewer",
         contextTier: { modelId: "claude-sonnet-5", value: "long_context" },
       },
     });

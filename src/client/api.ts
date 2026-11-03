@@ -567,25 +567,6 @@ export interface Task {
   tags?: Tag[];
 }
 
-export interface TaskAgentDefinitionSummary {
-  taskId: string;
-  name: string;
-  displayName?: string;
-  description: string;
-  tools: string[] | null;
-  infer: boolean;
-  userInvocable: boolean;
-  fileName: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface TaskAgentDefinition extends TaskAgentDefinitionSummary {
-  prompt: string;
-  frontmatter: Record<string, unknown>;
-  raw: string;
-}
-
 export type TaskCompletionAction = "complete-and-archive";
 
 export interface TaskPatch {
@@ -1031,7 +1012,6 @@ export interface CreateSessionOptions {
   contextTier?: CopilotContextTier;
   /** A playbook id or "none" for the direct path; unset lets the agent choose. */
   playbook?: string;
-  agent?: string;
 }
 
 export async function createSession(options: CreateSessionOptions = {}): Promise<string> {
@@ -1773,7 +1753,6 @@ export async function createTaskSession(
       ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
       ...(options.contextTier ? { contextTier: options.contextTier } : {}),
       ...(options.playbook ? { playbook: options.playbook } : {}),
-      ...(options.agent ? { agent: options.agent } : {}),
     },
   );
   return data.sessionId;
@@ -1782,23 +1761,6 @@ export async function createTaskSession(
 /** Starts a chat that proposes tidying the task's instructions and notes; returns its id. */
 export async function startTaskTidy(taskId: string): Promise<{ sessionId: string; error?: string }> {
   return apiFetch<{ sessionId: string; error?: string }>(`/api/tasks/${encodeURIComponent(taskId)}/tidy`, {});
-}
-
-export async function fetchTaskAgentDefinitions(taskId: string): Promise<TaskAgentDefinitionSummary[]> {
-  const data = await apiFetch<{ agentDefinitions: TaskAgentDefinitionSummary[] }>(
-    `/api/tasks/${encodeURIComponent(taskId)}/agent-definitions`,
-  );
-  return data.agentDefinitions;
-}
-
-export async function fetchTaskAgentDefinition(
-  taskId: string,
-  name: string,
-): Promise<TaskAgentDefinition> {
-  const data = await apiFetch<{ agentDefinition: TaskAgentDefinition }>(
-    `/api/tasks/${encodeURIComponent(taskId)}/agent-definitions/${encodeURIComponent(name)}`,
-  );
-  return data.agentDefinition;
 }
 
 // ── Task Group API ────────────────────────────────────────────────

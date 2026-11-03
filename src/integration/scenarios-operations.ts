@@ -177,51 +177,6 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-16", title: "lists task agent summaries and retrieves protected prompt detail",
-    async run(world) {
-      const task = await world.createTask("Agent host");
-      world.ctx.taskAgentDefinitionStore!.createTaskAgentDefinition({ taskId: task.id, name: "reviewer", displayName: "Reviewer", description: "Reviews changes", prompt: "Review all changes.", tools: ["view"] });
-      const list = await request(world.app).get(`/api/tasks/${task.id}/agent-definitions`);
-      expect(list.body.agentDefinitions[0]).not.toHaveProperty("prompt");
-      const detail = await request(world.app).get(`/api/tasks/${task.id}/agent-definitions/reviewer`);
-      expect(detail.body.agentDefinition).toMatchObject({ name: "reviewer", prompt: "Review all changes.", tools: ["view"] });
-    },
-  },
-  {
-    id: "OPS-17", title: "launches a task session with a selected task-scoped agent",
-    async run(world) {
-      const task = await world.createTask("Agent launch host");
-      world.ctx.taskAgentDefinitionStore!.createTaskAgentDefinition({ taskId: task.id, name: "planner", description: "Plans work", prompt: "Plan the work." });
-      const create = vi.spyOn(world.ctx.sessionManager, "createTaskSession").mockResolvedValue({ sessionId: "agent-session" });
-      const launched = await request(world.app).post(`/api/tasks/${task.id}/session`).send({ agent: "planner" });
-      expect(launched.status).toBe(200);
-      expect(create).toHaveBeenCalledWith(task.id, task.title, task.workItems, task.notes, task.cwd, undefined, expect.objectContaining({ agent: "planner", background: true }));
-      expect(world.ctx.taskStore.getTask(task.id)?.sessionIds).toContain("agent-session");
-    },
-  },
-  {
-    id: "OPS-18", title: "rejects a task agent from an unrelated task",
-    async run(world) {
-      const owner = await world.createTask("Agent owner");
-      const other = await world.createTask("Other task");
-      world.ctx.taskAgentDefinitionStore!.createTaskAgentDefinition({ taskId: owner.id, name: "private-agent", description: "Private", prompt: "Private prompt" });
-      const rejected = await request(world.app).post(`/api/tasks/${other.id}/session`).send({ agent: "private-agent" });
-      expect(rejected.status).toBe(400);
-      expect(rejected.body.error).toContain("not available for this task");
-      expect(world.ctx.taskStore.getTask(other.id)?.sessionIds).toEqual([]);
-    },
-  },
-  {
-    id: "OPS-19", title: "removes task agent definitions when the owning task is deleted",
-    async run(world) {
-      const task = await world.createTask("Disposable agent host");
-      world.ctx.taskAgentDefinitionStore!.createTaskAgentDefinition({ taskId: task.id, name: "temporary-agent", description: "Temporary", prompt: "Temporary prompt" });
-      expect((await request(world.app).get(`/api/tasks/${task.id}/agent-definitions`)).body.agentDefinitions).toHaveLength(1);
-      await request(world.app).delete(`/api/tasks/${task.id}`);
-      expect(world.ctx.taskAgentDefinitionStore!.listTaskAgentDefinitions(task.id)).toEqual([]);
-    },
-  },
-  {
     id: "OPS-20", title: "creates a global session with validated model launch options",
     async run(world) {
       vi.spyOn(world.ctx.sessionManager, "listModels").mockResolvedValue([{ id: "gpt-test", name: "GPT Test", policy: { state: "enabled" }, supportedReasoningEfforts: ["high"] }] as any);
@@ -280,18 +235,15 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-25", title: "coordinates a task, specialist, schedule, knowledge page, and native Home",
+    id: "OPS-25", title: "coordinates a task, schedule, knowledge page, and native Home",
     async run(world) {
       const task = await world.createTask("Cross-boundary launch", { notes: "Coordinate all systems" });
-      world.ctx.taskAgentDefinitionStore!.createTaskAgentDefinition({ taskId: task.id, name: "launch-reviewer", description: "Reviews launch", prompt: "Review launch readiness." });
       world.initializeScheduler();
       const schedule = await world.createSchedule(task.id, "Daily launch review");
       await world.writePage("launch/readiness", "# Launch Readiness\n\nReview daily.");
       await world.updateTask(task.id, { nextAction: "Run the launch review" });
-      const agents = await request(world.app).get(`/api/tasks/${task.id}/agent-definitions`);
       const schedules = await request(world.app).get(`/api/schedules?taskId=${task.id}`);
       const search = await request(world.app).get("/api/docs/search?q=readiness");
-      expect(agents.body.agentDefinitions[0].name).toBe("launch-reviewer");
       expect(schedules.body[0].id).toBe(schedule.id);
       expect(search.body.results[0].path).toBe("launch/readiness");
       expect((await request(world.app).get("/api/home")).body.resume[0]).toMatchObject({ id: task.id, nextAction: "Run the launch review" });

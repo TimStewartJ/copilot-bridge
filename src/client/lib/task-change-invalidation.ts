@@ -15,7 +15,6 @@ export function invalidateTaskScopedChangeQueries(
   taskId: string,
 ): void {
   void queryClient.invalidateQueries({ queryKey: queryKeys.taskChecklistItems(taskId) });
-  void queryClient.invalidateQueries({ queryKey: queryKeys.taskAgentDefinitions(taskId) });
   void queryClient.invalidateQueries({ queryKey: ["session-workspace"] });
   void queryClient.invalidateQueries({
     predicate: (query) =>

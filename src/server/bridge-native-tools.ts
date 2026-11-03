@@ -24,7 +24,6 @@ export type BridgeNativeTool = Tool<Record<string, unknown>> & {
  */
 export const DEFERRED_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "action_add", "action_remove", "action_update",
-  "agent_definition_create", "agent_definition_remove",
   "checklist_add", "checklist_list", "checklist_remove", "checklist_update",
   "defer_reactivate",
   "docs_db_add", "docs_db_create", "docs_db_delete", "docs_delete",

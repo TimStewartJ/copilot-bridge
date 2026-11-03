@@ -139,33 +139,6 @@ describe("session manager task tools", () => {
     }));
   });
 
-  it("task_get_info includes task agent definition summaries without prompts", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Agent info host");
-    ctx.taskAgentDefinitionStore?.createTaskAgentDefinition({
-      taskId: task.id,
-      name: "api-reviewer",
-      displayName: "API Reviewer",
-      description: "Reviews API compatibility",
-      prompt: "Review API changes for compatibility.",
-      tools: [],
-    });
-    const infoTool = getTool(ctx, "task_get_info");
-
-    const info = await infoTool.handler({ taskId: task.id }, createInvocation("task_get_info")) as any;
-
-    expect(info.agentDefinitions).toEqual([{
-      name: "api-reviewer",
-      displayName: "API Reviewer",
-      description: "Reviews API compatibility",
-      tools: [],
-      infer: false,
-      createdAt: expect.any(String),
-      updatedAt: expect.any(String),
-    }]);
-    expect(JSON.stringify(info.agentDefinitions)).not.toContain("Review API changes");
-  });
-
   it("task_get_info includes direct task tag summaries and an empty list when untagged", async () => {
     const { ctx } = createTestApp();
     const taggedTask = ctx.taskStore.createTask("Tagged info");

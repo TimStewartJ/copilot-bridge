@@ -1,4 +1,4 @@
-import type { ModelInfo, ModelPresets, TaskAgentDefinitionSummary } from "../api";
+import type { ModelInfo, ModelPresets } from "../api";
 import type {
   LaunchOption,
 } from "../lib/new-session-launch";
@@ -29,16 +29,12 @@ interface NewSessionLaunchPanelProps {
   /** A playbook id, "none" for the direct path, or unset for Automatic. */
   selectedPlaybook?: string;
   mode: SendMode;
-  agentDefinitions?: readonly TaskAgentDefinitionSummary[];
-  agentDefinitionsLoading?: boolean;
-  selectedAgentName?: string;
   onPresetChange: (slot: ModelPresetSlot) => void;
   onModelChange: (slot: ModelPresetSlot, modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort?: string) => void;
   onContextTierChange: (contextTier?: CopilotContextTier) => void;
   onPlaybookChange: (playbook?: string) => void;
   onModeChange: (mode: SendMode) => void;
-  onAgentChange?: (agentName?: string) => void;
   /** Called after a preset or model is chosen so the composer can take focus. */
   onModelSelectionCommitted?: () => void;
   /** Set when this chat's model, effort or context differ from its tier's. */
@@ -66,16 +62,12 @@ export default function NewSessionLaunchPanel({
   playbooksLoading,
   selectedPlaybook,
   mode,
-  agentDefinitions,
-  agentDefinitionsLoading,
-  selectedAgentName,
   onPresetChange,
   onModelChange,
   onReasoningEffortChange,
   onContextTierChange,
   onPlaybookChange,
   onModeChange,
-  onAgentChange,
   onModelSelectionCommitted,
   tierChange,
 }: NewSessionLaunchPanelProps) {
@@ -89,29 +81,18 @@ export default function NewSessionLaunchPanel({
         </div>
 
         <div className="space-y-4">
-          {agentDefinitions !== undefined && (
-            <FormRow
-              label="Agent"
-              htmlFor="new-session-agent"
-              hideLabel
-            >
-              <Select
-                id="new-session-agent"
-                value={selectedAgentName ?? ""}
-                disabled={agentDefinitionsLoading}
-                onChange={(event) => onAgentChange?.(event.target.value || undefined)}
-              >
-                <option value="">Default Copilot agent</option>
-                {agentDefinitions
-                  .filter((definition) => definition.userInvocable)
-                  .map((definition) => (
-                    <option key={definition.name} value={definition.name}>
-                      {definition.displayName ?? definition.name}
-                    </option>
-                  ))}
-              </Select>
-            </FormRow>
-          )}
+          <FormRow label="Playbook" htmlFor="new-session-playbook" hideLabel>
+            <PlaybookSelect
+              id="new-session-playbook"
+              playbooks={playbooks}
+              value={selectedPlaybook ?? ""}
+              disabled={playbooksLoading}
+              emptyLabel="Automatic playbook"
+              includeDirect
+              onValueChange={(value) => onPlaybookChange(value || undefined)}
+            />
+          </FormRow>
+
           <FormRow label="Model" hideLabel>
             {modelsLoading ? (
               <div className={`flex h-10 items-center text-[13px] md:h-9 ${DS.motion.live}`} role="status">
@@ -173,18 +154,6 @@ export default function NewSessionLaunchPanel({
               <button type="button" className={cx(DS.focus, "rounded hover:text-text-primary hover:underline")} onClick={tierChange.onSave}>Save as {tierChange.tierLabel}</button>
             </div>
           )}
-
-          <FormRow label="Playbook" htmlFor="new-session-playbook" hideLabel>
-            <PlaybookSelect
-              id="new-session-playbook"
-              playbooks={playbooks}
-              value={selectedPlaybook ?? ""}
-              disabled={playbooksLoading}
-              emptyLabel="Automatic playbook"
-              includeDirect
-              onValueChange={(value) => onPlaybookChange(value || undefined)}
-            />
-          </FormRow>
 
           <FormRow label="Mode" hideLabel>
             <LaunchOptionRow

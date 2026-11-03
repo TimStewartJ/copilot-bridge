@@ -34,8 +34,7 @@ export function isTaskUntouched(ctx: AppContext, task: Task): boolean {
     && ctx.scheduleStore.listSchedules(task.id).length === 0
     && ctx.checklistStore.listChecklistItems(task.id).length === 0
     && (ctx.taskHistoryStore?.countEntries(task.id) ?? 0) === 0
-    && (ctx.tagStore?.getEntityTags("task", task.id).length ?? 0) === 0
-    && (ctx.taskAgentDefinitionStore?.listTaskAgentDefinitions(task.id).length ?? 0) === 0;
+    && (ctx.tagStore?.getEntityTags("task", task.id).length ?? 0) === 0;
 }
 
 export interface TaskDeletionOptions {

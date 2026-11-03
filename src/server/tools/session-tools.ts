@@ -79,7 +79,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
       let sending = false;
       try {
         invocation.signal?.throwIfAborted();
-        const creation = await resolveSessionCreationOptions(ctx, args, { taskId });
+        const creation = await resolveSessionCreationOptions(ctx, args);
         if (creation.error) return toolFailure(creation.error);
         const task = taskId ? ctx.taskStore.getTask(taskId) : undefined;
         if (taskId && !task) return toolFailure(`Task ${taskId} was not found.`);

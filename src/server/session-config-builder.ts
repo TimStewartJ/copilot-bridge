@@ -18,11 +18,6 @@ import {
 } from "./mcp-config.js";
 import type { McpServerStore } from "./mcp-server-store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
-import {
-  TaskAgentDefinitionValidationError,
-  toCopilotCustomAgentConfig,
-  type TaskAgentDefinitionStore,
-} from "./task-agent-definition-store.js";
 import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import {
   AGENT_LIFECYCLE_GUIDANCE,
@@ -87,15 +82,14 @@ export interface SessionConfigOptions {
   sessionId?: string;
   task?: Task | null;
   /**
-   * Adds this task's tag-linked MCP servers without the rest of the task (prompt context, task
-   * agents, working directory). Defer workers use it to get their parent chat's servers.
+   * Adds this task's tag-linked MCP servers without the rest of the task (prompt context, working
+   * directory). Defer workers use it to get their parent chat's servers.
    */
   mcpServerTask?: Pick<Task, "id" | "groupId"> | null;
   scheduleContext?: ScheduleContext;
   modelOverride?: string;
   reasoningEffortOverride?: string;
   contextTierOverride?: CopilotContextTier;
-  agentOverride?: string;
   /** Replaces the base method's role sentence in the preamble (Helm's chat says it is Helm). */
   promptRole?: string;
   /** Guidance appended after the Bridge's own, for chats with a role of their own (Helm). */
@@ -113,7 +107,6 @@ export interface SessionConfigOptions {
 
 export interface SessionConfigBuilderDeps {
   checklistStore?: ChecklistStore;
-  taskAgentDefinitionStore?: TaskAgentDefinitionStore;
   settingsStore?: SettingsStore;
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;
@@ -215,7 +208,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     modelOverride,
     reasoningEffortOverride,
     contextTierOverride,
-    agentOverride,
     forResume,
   } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
@@ -231,24 +223,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   const packSkillDirs = activePacks.map((pack) => catalogSkills.find((skill) => skill.packId === pack.id)?.skillsDir ?? pack.root);
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
-  const taskAgentDefinitions = task
-    ? deps.taskAgentDefinitionStore?.listTaskAgentDefinitions(task.id) ?? []
-    : [];
-  const hasTaskAgentDefinitions = taskAgentDefinitions.length > 0;
-  const selectedTaskAgent = agentOverride?.trim();
-  if (selectedTaskAgent) {
-    const definition = taskAgentDefinitions.find((candidate) => candidate.name === selectedTaskAgent);
-    if (!definition) {
-      throw new TaskAgentDefinitionValidationError(
-        `Agent definition "${selectedTaskAgent}" is not available for task ${task?.id ?? "unknown"}`,
-      );
-    }
-    if (!definition.userInvocable) {
-      throw new TaskAgentDefinitionValidationError(
-        `Agent definition "${selectedTaskAgent}" cannot be selected for a new chat`,
-      );
-    }
-  }
   const cfg: any = {
     pendingInteractionEvents: true,
     enableExperimentalMode: true,
@@ -266,11 +240,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       packs: packSkillDirs,
       home: getHomeSkillsDir(callbacks.getCopilotHome()),
     }),
-    ...(hasTaskAgentDefinitions
-      ? { customAgents: taskAgentDefinitions.map(toCopilotCustomAgentConfig) }
-      : {}),
-    ...(hasTaskAgentDefinitions ? { customAgentsLocalOnly: true } : {}),
-    ...(!forResume && selectedTaskAgent ? { agent: selectedTaskAgent } : {}),
   };
   // Explicitly disable Copilot's cloud-backed agentic memory. The feature stores
   // and recalls facts via the remote Memory API (`/v1/memory_stores/.../memories`)
@@ -414,21 +383,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     );
     if (task.instructions?.trim()) {
       contextParts.push(`<task_instructions>\nStanding rules for this task. Follow them in every session.\n${task.instructions.trim()}\n</task_instructions>`);
-    }
-    if (taskAgentDefinitions.length > 0) {
-      const definitions = taskAgentDefinitions.map((definition) => {
-        const invocation = definition.infer ? "automatic or explicit" : "explicit only";
-        const description = definition.description.replace(/\s+/g, " ");
-        const tools = definition.tools === null
-          ? "all session tools"
-          : definition.tools.length === 0
-            ? "no tools"
-            : definition.tools.join(", ");
-        return `- ${definition.name}: ${description} (${invocation}; tools: ${tools})`;
-      }).join("\n");
-      contextParts.push(
-        `Task agent definitions available through Copilot's native task/custom-agent surface:\n${definitions}`,
-      );
     }
   }
 

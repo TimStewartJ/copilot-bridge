@@ -54,7 +54,6 @@ import type { BridgeToolsMcpServer } from "./agent-tools-mcp/index.js";
 import type { ManagementJobStore } from "./management-job-store.js";
 import type { StagingPreviewDiscoveryController } from "./staging-preview-discovery.js";
 import type { SessionOverlayMaintenance } from "./session-overlay-maintenance.js";
-import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import type { CalendarStore } from "./calendar-store.js";
 import type { HelmService } from "./helm/helm-service.js";
 import type { HelmStore } from "./helm/helm-store.js";
@@ -65,7 +64,6 @@ import type { VoiceRuntime } from "./voice/voice-runtime.js";
 
 export interface AppContext {
   taskStore: TaskStore;
-  taskAgentDefinitionStore?: TaskAgentDefinitionStore;
   taskGroupStore: TaskGroupStore;
   scheduleStore: ScheduleStore;
   settingsStore: SettingsStore;

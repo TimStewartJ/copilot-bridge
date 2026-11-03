@@ -53,7 +53,6 @@ import { LoadingSkeletonRegion, Skeleton, SkeletonRow, SkeletonText } from "./sh
 import { DS, cx } from "../design/tokens";
 import { Badge, Button, IconButton, Section, IdentitySwatch } from "../design/primitives";
 import {
-  AgentDefinitionsSection,
   WorkItemList,
   PullRequestList,
   TaskChecklistSection,
@@ -61,8 +60,6 @@ import {
   RelatedDocsSection,
   ScheduleSection,
 } from "./task-sections";
-import AgentDefinitionPreviewSheet from "./AgentDefinitionPreviewSheet";
-import type { TaskAgentDefinitionSummary } from "../api";
 
 
 function pluralize(count: number, noun: string): string {
@@ -226,7 +223,6 @@ export default function TaskPanel({
     inheritedTagIds,
     effectiveTags,
     relatedDocs,
-    agentDefinitions,
     refresh,
   } = ws;
   const activeSession = linkedSessions.find((session) => session.sessionId === activeSessionId) ?? null;
@@ -235,7 +231,6 @@ export default function TaskPanel({
 
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
   const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
-  const [previewAgentDefinition, setPreviewAgentDefinition] = useState<TaskAgentDefinitionSummary | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [highlightChecklistItemId, setHighlightChecklistItemId] = useState<string | null>(null);
   const [panelHighlightRequest, setPanelHighlightRequest] = useState<{ highlightId: string | null } | null>(null);
@@ -412,7 +407,6 @@ export default function TaskPanel({
     hasNotesSummary ? { label: "notes" } : null,
     historyTotal > 0 ? { label: `${historyTotal} history ${historyTotal === 1 ? "entry" : "entries"}` } : null,
     relatedDocs.length > 0 ? { label: pluralize(relatedDocs.length, "doc") } : null,
-    agentDefinitions.length > 0 ? { label: pluralize(agentDefinitions.length, "agent") } : null,
     sched.schedules.length > 0 ? { label: pluralize(sched.schedules.length, "schedule") } : null,
     workspaceProblem
       ? { label: sessionWorkspace?.pathState === "missing" ? "workspace missing" : "workspace needs a look", tone: sessionWorkspace?.pathState === "missing" ? "danger" as const : "warning" as const }
@@ -746,13 +740,6 @@ export default function TaskPanel({
                     taskId={task.id}
                   />
                 )}
-                {agentDefinitions.length > 0 && (
-                  <AgentDefinitionsSection
-                    taskId={task.id}
-                    definitions={agentDefinitions}
-                    onPreview={setPreviewAgentDefinition}
-                  />
-                )}
                 {sched.schedules.length > 0 && (
                   <ScheduleSection
                     schedules={sched.schedules}
@@ -804,13 +791,6 @@ export default function TaskPanel({
             <DocPreviewSheet
               docPath={previewDocPath}
               onClose={() => setPreviewDocPath(null)}
-            />
-          )}
-          {previewAgentDefinition && (
-            <AgentDefinitionPreviewSheet
-              taskId={task.id}
-              definition={previewAgentDefinition}
-              onClose={() => setPreviewAgentDefinition(null)}
             />
           )}
 

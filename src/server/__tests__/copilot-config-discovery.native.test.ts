@@ -9,9 +9,7 @@ import type { AgentSession } from "../agent-backend/types.js";
 import { buildCopilotClientOptions } from "../copilot-client-options.js";
 import { getProcessHost } from "../process-host.js";
 import { buildSessionConfig } from "../session-config-builder.js";
-import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
-import { createTaskStore } from "../task-store.js";
-import { createTestBus, makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
+import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
 import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
 function sdkSession(session: AgentSession): CopilotSession {
@@ -33,16 +31,6 @@ async function fixture(signal: AbortSignal) {
   const hookMarker = join(project, "hook-ran.txt");
   const mcpRequests: string[] = [];
   const modelRequests: Record<string, unknown>[] = [];
-  const db = setupTestDb();
-  const task = createTaskStore(db, createTestBus()).createTask("Discovery fixture");
-  const taskAgentDefinitionStore = createTaskAgentDefinitionStore({ dataDir: join(home, "data") });
-  taskAgentDefinitionStore.createTaskAgentDefinition({
-    taskId: task.id,
-    name: "bridge-reviewer",
-    description: "Bridge-defined reviewer.",
-    prompt: "The Bridge-defined reviewer takes precedence.",
-    tools: ["view"],
-  });
   const server = createServer((request, response) => {
     if (request.method !== "POST") { response.writeHead(405).end(); return; }
     let body = "";
@@ -110,10 +98,8 @@ async function fixture(signal: AbortSignal) {
       await writeFixture(join(directory, name, "SKILL.md"),
         `---\nname: ${name}\ndescription: Isolated discovery fixture.\n---\n${name} instructions.\n`);
     }
-    for (const name of ["repo-reviewer", "bridge-reviewer"]) {
-      await writeFixture(join(project, ".github", "agents", `${name}.agent.md`),
-        `---\nname: ${name}\ndescription: Repository reviewer.\ntools: ["view"]\n---\nRepository-defined reviewer.\n`);
-    }
+    await writeFixture(join(project, ".github", "agents", "repo-reviewer.agent.md"),
+      '---\nname: repo-reviewer\ndescription: Repository reviewer.\ntools: ["view"]\n---\nRepository-defined reviewer.\n');
     await writeFixture(join(project, "hook.mjs"),
       'import { writeFile } from "node:fs/promises"; await writeFile("hook-ran.txt", "hook ran");\n');
     await writeFixture(join(project, ".github", "hooks", "fixture.json"), JSON.stringify({
@@ -141,7 +127,6 @@ async function fixture(signal: AbortSignal) {
     finally {
       try { await stopCopilotRuntime(backend); }
       finally {
-        db.close();
         server.closeAllConnections();
         if (server.listening) await new Promise<void>((resolve, reject) => {
           server.close((error) => error ? reject(error) : resolve());
@@ -155,9 +140,9 @@ async function fixture(signal: AbortSignal) {
     const config = buildSessionConfig({
       deps: {
         config: { sessionMcpServers: { fixture: { type: "http", url: `${origin}/explicit`, tools: ["allowed"] } } },
-        clientEnv: env, taskAgentDefinitionStore,
+        clientEnv: env,
       },
-      options: { task, forResume },
+      options: { forResume },
       callbacks: { resolveEffectiveSessionCwd: () => workingDirectory, getCopilotHome: () => home },
     });
     delete config.githubMcpToolConfig;
@@ -178,11 +163,7 @@ async function assertProjectCatalog(session: AgentSession, modelRequests: readon
     expect(skills).toContainEqual(expect.objectContaining({ name, enabled: true }));
   }
   const agents = (await raw.rpc.agent.list()).agents;
-  expect(agents).toContainEqual(expect.objectContaining({ name: "repo-reviewer" }));
-  expect(agents).toContainEqual(expect.objectContaining({
-    name: "bridge-reviewer", description: "Bridge-defined reviewer.", tools: ["view"],
-  }));
-  expect(agents.filter((agent) => agent.name === "bridge-reviewer")).toHaveLength(1);
+  expect(agents).toContainEqual(expect.objectContaining({ name: "repo-reviewer", description: "Repository reviewer." }));
   expect((await raw.rpc.mcp.listConfigured()).servers.map((server) => server.name)).toEqual(["fixture"]);
   const tools = (await session.getCurrentToolMetadata())?.tools?.map((tool) => tool.name);
   expect(tools).toContain("fixture-allowed");
@@ -192,10 +173,9 @@ async function assertProjectCatalog(session: AgentSession, modelRequests: readon
   expect((await raw.rpc.skills.getInvoked()).skills).toContainEqual(expect.objectContaining({
     name: "repo-github", content: expect.stringContaining("repo-github instructions."),
   }));
-  await raw.rpc.agent.select({ name: "bridge-reviewer" });
+  await raw.rpc.agent.select({ name: "repo-reviewer" });
   await session.sendAndWait({ prompt: "Persist this local discovery fixture." }, null);
-  expect(JSON.stringify(modelRequests.at(-1)?.messages)).toContain("The Bridge-defined reviewer takes precedence.");
-  expect(JSON.stringify(modelRequests.at(-1)?.messages)).not.toContain("Repository-defined reviewer.");
+  expect(JSON.stringify(modelRequests.at(-1)?.messages)).toContain("Repository-defined reviewer.");
   await raw.rpc.agent.deselect();
 }
 
@@ -237,12 +217,10 @@ describe("native workspace configuration discovery", () => {
     try {
       const config = configFor(project);
       config.mcpServers = {};
-      delete config.customAgents;
-      delete config.customAgentsLocalOnly;
       const disabled = await backend.createSession(config);
       expect((await sdkSession(disabled).rpc.mcp.listConfigured()).servers).toEqual([]);
       expect((await sdkSession(disabled).rpc.agent.list()).agents).toContainEqual(expect.objectContaining({
-        name: "bridge-reviewer", description: "Repository reviewer.",
+        name: "repo-reviewer", description: "Repository reviewer.",
       }));
       await disabled.sendAndWait({ prompt: "Finish this local hook opt-out fixture." }, null);
       await disabled.release();

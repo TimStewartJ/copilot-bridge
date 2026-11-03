@@ -13,7 +13,6 @@ const sessionListMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const pullToRefreshMock = vi.hoisted(() => vi.fn(({ children }: { children: unknown }) => children));
 const taskPanelSummaryRowMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const taskNotesSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
-const agentDefinitionsSectionMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 const fetchTaskGitStatusMock = vi.hoisted(() => vi.fn());
 const patchTaskMock = vi.hoisted(() => vi.fn());
 const taskOverviewMock = vi.hoisted(() => vi.fn(() => ({
@@ -135,10 +134,6 @@ vi.mock("./DocPreviewSheet", () => ({
   default: () => null,
 }));
 
-vi.mock("./AgentDefinitionPreviewSheet", () => ({
-  default: () => null,
-}));
-
 vi.mock("./task-sections", () => ({
   WorkItemList: () => null,
   PullRequestList: () => null,
@@ -146,7 +141,6 @@ vi.mock("./task-sections", () => ({
   TaskNotesSection: (props: unknown) => taskNotesSectionMock(props),
   RelatedDocsSection: () => null,
   ScheduleSection: () => null,
-  AgentDefinitionsSection: (props: unknown) => agentDefinitionsSectionMock(props),
 }));
 
 function createTask(overrides: Partial<Task> = {}): Task {
@@ -241,7 +235,6 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
     inheritedTagIds: new Set(),
     effectiveTags: [],
     relatedDocs: [],
-    agentDefinitions: [],
     refresh: async () => {},
     ...overrides,
   };
@@ -250,7 +243,6 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   taskPanelSummaryRowMock.mockClear();
   taskNotesSectionMock.mockClear();
-  agentDefinitionsSectionMock.mockClear();
   queryClientMock.fetchQuery.mockReset();
   queryClientMock.fetchQuery.mockResolvedValue(null);
   queryClientMock.invalidateQueries.mockReset();
@@ -618,7 +610,6 @@ describe("TaskPanel", () => {
       const html = await renderTaskPanelHtml(createTask({ notes: "Some notes", cwd: "/workspace/copilot-bridge" }));
       expect(html).toContain("notes");
       expect(html).toContain("copilot-bridge");
-      expect(agentDefinitionsSectionMock).not.toHaveBeenCalled();
       expect(taskPanelSummaryRowMock).not.toHaveBeenCalled();
     } finally {
       detailsExpandedMock.value = true;

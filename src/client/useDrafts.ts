@@ -34,7 +34,6 @@ export interface DraftLaunchOptions {
   contextTier?: DraftScopedLaunchSelection<CopilotContextTier>;
   /** A playbook id or "none"; unset lets the agent choose. */
   playbook?: string;
-  agent?: string;
 }
 
 type DraftLaunchOptionsUpdate =
@@ -157,13 +156,8 @@ function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOpti
     }
   }
 
-  if ("agent" in value) {
-    if (isNonEmptyString(value.agent)) {
-      launch.agent = value.agent;
-    } else {
-      changed = true;
-    }
-  }
+  // The new-chat Agent picker was removed; drop a choice an older draft saved.
+  if ("agent" in value) changed = true;
 
   if ("reasoningEffort" in value) {
     const selection = value.reasoningEffort;
@@ -199,7 +193,7 @@ function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOpti
     }
   }
 
-  if (!launch.model && !launch.reasoningEffort && !launch.contextTier && !launch.playbook && !launch.agent) {
+  if (!launch.model && !launch.reasoningEffort && !launch.contextTier && !launch.playbook) {
     return { changed: true };
   }
   return { value: launch, changed };

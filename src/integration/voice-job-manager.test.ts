@@ -122,13 +122,13 @@ describe("voice job restart gating", () => {
     });
   });
 
-  it("passes a selected task agent through draft voice session creation", async () => {
+  it("passes launch options through task draft voice session creation", async () => {
     const runtimePaths = createRestartRuntimePaths();
     const db = openMemoryDatabase();
     const store = createVoiceJobStore(db);
     const globalBus = createGlobalBus();
     const taskStore = createTaskStore(db, globalBus, { runtimePaths });
-    const task = taskStore.createTask("Voice agent task");
+    const task = taskStore.createTask("Voice task");
     const sessionManager = {
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "task-session" }),
     } as any;
@@ -154,7 +154,7 @@ describe("voice job restart gating", () => {
       composerKey: `draft:task:${task.id}`,
       taskId: task.id,
       sourceFilePath,
-      sessionOptions: { agent: "api-reviewer" },
+      sessionOptions: { model: "gpt-5.6-sol" },
     });
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledWith(
@@ -164,7 +164,7 @@ describe("voice job restart gating", () => {
       task.notes,
       task.cwd,
       undefined,
-      { agent: "api-reviewer" },
+      { model: "gpt-5.6-sol" },
     );
   });
 

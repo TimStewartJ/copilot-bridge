@@ -26,12 +26,6 @@ import {
   GITHUB_COPILOT_MCP_READONLY_URL,
   GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
 } from "../github-copilot-mcp.js";
-import {
-  createTaskAgentDefinitionStore,
-  type TaskAgentDefinitionStore,
-} from "../task-agent-definition-store.js";
-import { createTaskStore } from "../task-store.js";
-import { createTestBus } from "./helpers.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -283,106 +277,6 @@ describe("session-config-builder", () => {
     const reset = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
     expect(reset.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
     expect(reset.systemMessage.sections.tone.content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
-  });
-
-  it("injects task agent definitions into both create and resume configs", () => {
-    const db = setupTestDb();
-    const taskStore = createTaskStore(db, createTestBus());
-    const taskAgentDefinitionStore = createTaskAgentDefinitionStore({
-      dataDir: makeTestRuntimePaths("session-config-task-agent").dataDir,
-    });
-    const task = taskStore.createTask("Config task");
-    taskAgentDefinitionStore.createTaskAgentDefinition({
-      taskId: task.id,
-      name: "migration-reviewer",
-      displayName: "Migration Reviewer",
-      description: "Reviews migration compatibility",
-      prompt: "Review migrations for compatibility regressions.",
-      tools: ["view", "grep"],
-    });
-
-    for (const forResume of [false, true]) {
-      const cfg = buildSessionConfig({
-        deps: createDeps({ taskAgentDefinitionStore }),
-        options: { task, ...(forResume ? { forResume: true } : {}) },
-        callbacks: createCallbacks(),
-      });
-
-      expect(cfg.customAgents).toEqual([{
-        name: "migration-reviewer",
-        displayName: "Migration Reviewer",
-        description: "Reviews migration compatibility",
-        prompt: "Review migrations for compatibility regressions.",
-        tools: ["view", "grep"],
-        infer: false,
-      }]);
-      expect(cfg.customAgentsLocalOnly).toBe(true);
-      expect(cfg.systemMessage.content).toContain(
-        "Task agent definitions available through Copilot's native task/custom-agent surface",
-      );
-      expect(cfg.systemMessage.content).toContain(
-        "migration-reviewer: Reviews migration compatibility (explicit only; tools: view, grep)",
-      );
-    }
-
-    db.close();
-  });
-
-  it("selects a task agent only on initial session creation", () => {
-    const taskAgentDefinitionStore = createTaskAgentDefinitionStore({
-      dataDir: makeTestRuntimePaths("session-config-selected-agent").dataDir,
-    });
-    const task = createTask();
-    taskAgentDefinitionStore.createTaskAgentDefinition({
-      taskId: task.id,
-      name: "selected-reviewer",
-      description: "Reviews selected work",
-      prompt: "Review the selected work.",
-    });
-
-    const created = buildSessionConfig({
-      deps: createDeps({ taskAgentDefinitionStore }),
-      options: { task, agentOverride: "selected-reviewer" },
-      callbacks: createCallbacks(),
-    });
-    const resumed = buildSessionConfig({
-      deps: createDeps({ taskAgentDefinitionStore }),
-      options: { task, agentOverride: "selected-reviewer", forResume: true },
-      callbacks: createCallbacks(),
-    });
-
-    expect(created.agent).toBe("selected-reviewer");
-    expect(resumed.agent).toBeUndefined();
-    expect(() => buildSessionConfig({
-      deps: createDeps({ taskAgentDefinitionStore }),
-      options: { task, agentOverride: "missing-agent" },
-      callbacks: createCallbacks(),
-    })).toThrow('Agent definition "missing-agent" is not available');
-  });
-
-  it("rejects selecting a task agent that is not user-invocable", () => {
-    const taskAgentDefinitionStore = {
-      listTaskAgentDefinitions: () => [{
-        taskId: "task-1",
-        name: "internal-reviewer",
-        description: "Internal only",
-        prompt: "Review internally.",
-        tools: null,
-        infer: true,
-        userInvocable: false,
-        fileName: "internal-reviewer.agent.md",
-        createdAt: "2026-08-20T00:00:00.000Z",
-        updatedAt: "2026-08-20T00:00:00.000Z",
-        frontmatter: {},
-        raw: "",
-      }],
-    } as unknown as TaskAgentDefinitionStore;
-
-    expect(() => buildSessionConfig({
-      deps: createDeps({ taskAgentDefinitionStore }),
-      options: { task: createTask(), agentOverride: "internal-reviewer" },
-      callbacks: createCallbacks(),
-    })).toThrow('Agent definition "internal-reviewer" cannot be selected');
   });
 
   it("renders identity, custom instructions, model settings, and common system guidance", () => {

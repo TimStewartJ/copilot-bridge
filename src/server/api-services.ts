@@ -161,7 +161,7 @@ export function createApiServices(ctx: AppContext, options: ApiServiceOptions = 
       return delivery === "started" ? "started" : "steered";
     },
     createSession: async ({ taskId, model, reasoningEffort }) => {
-      const creation = await resolveSessionCreationOptions(ctx, { model, reasoningEffort }, taskId ? { taskId } : {});
+      const creation = await resolveSessionCreationOptions(ctx, { model, reasoningEffort });
       if (creation.error) throw new Error(creation.error);
       if (!taskId) {
         const result = await ctx.sessionManager.createSession({ background: true, ...creation.options });

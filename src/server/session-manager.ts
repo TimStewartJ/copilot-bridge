@@ -48,7 +48,6 @@ import type { GlobalBus } from "./global-bus.js";
 import type { EventBusRegistry } from "./event-bus.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { TaskStore } from "./task-store.js";
-import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import { resolveSessionPlaybook, toSessionPlaybookView, type SessionPlaybookStore } from "./session-playbook-store.js";
@@ -600,7 +599,6 @@ export interface SessionManagerDeps {
   onBackgroundCommandsStopped?(sessionId: string): void;
   cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
   taskStore: TaskStore;
-  taskAgentDefinitionStore?: TaskAgentDefinitionStore;
   taskGroupStore?: TaskGroupStore;
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
@@ -796,7 +794,6 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     },
     cliSessionCatalog: ctx.cliSessionCatalog,
     taskStore: ctx.taskStore,
-    taskAgentDefinitionStore: ctx.taskAgentDefinitionStore,
     taskGroupStore: ctx.taskGroupStore,
     checklistStore: ctx.checklistStore,
     settingsStore: ctx.settingsStore,
@@ -2286,23 +2283,15 @@ export class SessionManager {
     } catch { /* made again without its launch details */ }
     const persisted = this.readPersistedSessionModelState(sessionId);
     const modelMetadata = this.modelMetadata;
-    const build = (agent?: string) => this.buildSessionConfig({
+    return this.buildSessionConfig({
       sessionId,
       task: this.findLinkedTask(sessionId),
       ...(launch.scheduleContext ? { scheduleContext: launch.scheduleContext } : {}),
       ...(persisted.model ? { modelOverride: persisted.model } : {}),
       ...(persisted.reasoningEffort ? { reasoningEffortOverride: persisted.reasoningEffort } : {}),
       ...(persisted.contextTier ? { contextTierOverride: persisted.contextTier } : {}),
-      ...(agent ? { agentOverride: agent } : {}),
       ...(modelMetadata ? { modelMetadata } : {}),
     });
-    try {
-      return build(launch.agent);
-    } catch (buildError) {
-      if (!launch.agent) throw buildError;
-      // The agent it was started with is gone from the task; the chat still works without it.
-      return build();
-    }
   }
 
   private endSessionResume(lease: SessionResumeLease): void {
@@ -5009,7 +4998,6 @@ export class SessionManager {
       contextTier?: CopilotContextTier;
       /** The user's launch choice: a playbook name, or NO_PLAYBOOK for the direct path. */
       playbook?: string;
-      agent?: string;
       expectedSessionId?: string;
       onCreateStarting?: () => void;
     } = {},
@@ -5076,7 +5064,6 @@ export class SessionManager {
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
-        ...(options.agent ? { agentOverride: options.agent } : {}),
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -5091,10 +5078,7 @@ export class SessionManager {
         logMessage: (sessionId, duration) =>
           `[sdk] Created task session ${sessionId} for "${taskTitle}" (${duration}ms)`,
         cleanupLabel: "task session",
-        launchContext: {
-          scheduleContext: runScheduleContext,
-          ...(options.agent ? { agent: options.agent } : {}),
-        },
+        launchContext: { scheduleContext: runScheduleContext },
         ...(initialPlaybook ? { playbook: initialPlaybook } : {}),
         onCreateStarting: options.onCreateStarting,
       });

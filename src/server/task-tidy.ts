@@ -62,13 +62,13 @@ export type TaskTidyLaunch =
 
 /** Starts a chat on the task that tidies it, and waits until its first message is accepted. */
 export async function startTaskTidyChat(
-  ctx: Pick<AppContext, "settingsStore" | "sessionManager" | "taskAgentDefinitionStore" | "taskStore">,
+  ctx: Pick<AppContext, "settingsStore" | "sessionManager" | "taskStore">,
   taskId: string,
   onCreated?: () => void,
 ): Promise<TaskTidyLaunch> {
   const task = ctx.taskStore.getTask(taskId);
   if (!task) throw new Error("Task not found");
-  const creation = await resolveSessionCreationOptions(ctx, {}, { taskId });
+  const creation = await resolveSessionCreationOptions(ctx, {});
   if (creation.error) throw new Error(creation.error);
   // Created in the foreground, so a chat that failed to start is an error rather than a chat to open.
   const { sessionId } = await ctx.sessionManager.createTaskSession(

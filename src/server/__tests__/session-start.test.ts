@@ -135,7 +135,6 @@ describe("session_start", () => {
     {}, { prompt: "" }, { prompt: "  " }, { prompt: 42 }, { prompt: "x", taskId: " " },
     { prompt: "x", taskId: "missing-task" }, { prompt: "x", model: 42 },
     { prompt: "x", reasoningEffort: false }, { prompt: "x", contextTier: "huge" },
-    { prompt: "x", agent: "undeclared" },
   ])("rejects invalid arguments before creating a chat: %j", async (args) => {
     const { call, sessionManager } = createHarness();
     expect(await call(args)).toMatchObject({ resultType: "failure" });

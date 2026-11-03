@@ -452,7 +452,6 @@ export function createTaskStore(
   bus: GlobalBus,
   opts: {
     runtimePaths?: RuntimePaths;
-    onTaskDeleted?: (taskId: string) => void;
   } = {},
 ) {
   function defaultTaskCwd(): string | undefined {
@@ -503,17 +502,6 @@ export function createTaskStore(
 
   function emitChange(taskId: string): void {
     bus.emit({ type: "task:changed", taskId });
-  }
-
-  function notifyTaskDeleted(taskId: string): void {
-    try {
-      opts.onTaskDeleted?.(taskId);
-    } catch (error) {
-      console.warn(
-        `[tasks] Task ${taskId} was deleted but attached agent files could not be cleaned up:`,
-        error instanceof Error ? error.message : error,
-      );
-    }
   }
 
   // ── CRUD ──────────────────────────────────────────────────────────
@@ -789,8 +777,7 @@ export function createTaskStore(
   }
 
   function deleteTask(id: string): void {
-    const result = db.prepare("DELETE FROM tasks WHERE id = ?").run(id) as { changes?: number };
-    if ((result.changes ?? 0) > 0) notifyTaskDeleted(id);
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
     emitChange(id);
   }
 
@@ -968,7 +955,6 @@ export function createTaskStore(
       db.exec("ROLLBACK");
       throw error;
     }
-    notifyTaskDeleted(id);
     emitChange(id);
     return { deletedScheduleIds };
   }
@@ -1009,7 +995,6 @@ export function createTaskStore(
       db.exec("ROLLBACK");
       throw error;
     }
-    notifyTaskDeleted(id);
     emitChange(id);
     return { deletedScheduleIds, archivedSessionIds };
   }

@@ -1,7 +1,6 @@
 import { isCopilotContextTier, type CopilotContextTier } from "../shared/copilot-context.js";
 import { isPlaybookName } from "../shared/workflow-vocabulary.js";
 import type { AppContext } from "./app-context.js";
-import { TaskAgentDefinitionValidationError } from "./task-agent-definition-store.js";
 
 export interface SessionCreationOptions {
   model?: string;
@@ -9,13 +8,11 @@ export interface SessionCreationOptions {
   contextTier?: CopilotContextTier;
   /** A playbook name, or "none" for the direct path. */
   playbook?: string;
-  agent?: string;
 }
 
 export async function resolveSessionCreationOptions(
-  ctx: Pick<AppContext, "settingsStore" | "sessionManager" | "taskAgentDefinitionStore">,
+  ctx: Pick<AppContext, "settingsStore" | "sessionManager">,
   body: unknown,
-  scope: { taskId?: string } = {},
 ): Promise<{ options?: SessionCreationOptions; error?: string; status?: number }> {
   const payload = body && typeof body === "object"
     ? body as Record<string, unknown>
@@ -33,9 +30,6 @@ export async function resolveSessionCreationOptions(
   if (payload.contextTier !== undefined && !isCopilotContextTier(payload.contextTier)) {
     return { error: "contextTier must be default or long_context", status: 400 };
   }
-  if (payload.agent !== undefined && payload.agent !== null && typeof payload.agent !== "string") {
-    return { error: "agent must be a string", status: 400 };
-  }
   if (payload.playbook !== undefined && payload.playbook !== null && payload.playbook !== "" && !isPlaybookName(payload.playbook)) {
     return { error: "playbook must be a playbook name", status: 400 };
   }
@@ -47,33 +41,9 @@ export async function resolveSessionCreationOptions(
   const contextTier = isCopilotContextTier(payload.contextTier)
     ? payload.contextTier
     : undefined;
-  const agent = typeof payload.agent === "string" ? payload.agent.trim() : "";
-  if (agent) {
-    if (!scope.taskId) {
-      return { error: "agent selection is only available for task sessions", status: 400 };
-    }
-    let definition;
-    try {
-      definition = ctx.taskAgentDefinitionStore
-        ?.listTaskAgentDefinitions(scope.taskId)
-        .find((candidate) => candidate.name === agent);
-    } catch (error) {
-      if (error instanceof TaskAgentDefinitionValidationError) {
-        return { error: error.message, status: 400 };
-      }
-      throw error;
-    }
-    if (!definition) {
-      return { error: `Agent definition is not available for this task: ${agent}`, status: 400 };
-    }
-    if (!definition.userInvocable) {
-      return { error: `Agent definition cannot be selected for a new chat: ${agent}`, status: 400 };
-    }
-  }
   if (!model && !reasoningEffort && !contextTier) {
     return {
       options: {
-        ...(agent ? { agent } : {}),
         ...(playbook ? { playbook } : {}),
       },
     };
@@ -99,7 +69,6 @@ export async function resolveSessionCreationOptions(
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(contextTier ? { contextTier } : {}),
-      ...(agent ? { agent } : {}),
       ...(playbook ? { playbook } : {}),
     },
   };
