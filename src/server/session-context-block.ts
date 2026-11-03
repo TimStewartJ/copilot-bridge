@@ -204,13 +204,13 @@ function buildPlaybook(playbook: PlaybookContext | undefined, choices: readonly 
   if (!playbook) {
     if (choices.length === 0) return section("playbook", [], NO_ACTIVE_PLAYBOOK);
     return section("playbook", [
-      `${NO_ACTIVE_PLAYBOOK} Before you start on the user's request, call playbook_select: the playbook below that fits the work, or "none" when the request is small and fully specified. It returns the playbook's steps; copy them into your todo list. Do the same when the user turns to a different task.${choices.some((choice) => choice.id === "pickup") ? " When the user asks to resume, continue or finish earlier work, choose pickup even when the kind of work is obvious; pickup hands over to that playbook." : ""}`,
+      `${NO_ACTIVE_PLAYBOOK} Before you start on the user's request, call playbook_select: the playbook below that fits the work, or "none" when the request is small and fully specified. It returns the playbook's steps; copy them into your todo list. Match again when the user wants a different outcome, even within the same task.${choices.some((choice) => choice.id === "pickup") ? " When the user asks to resume, continue or finish earlier work, choose pickup even when the kind of work is obvious; pickup hands over to that playbook." : ""}`,
       choices.map((choice) => `- ${choice.id}${choice.label ? ` (${choice.label})` : ""}: ${shortDescription(choice.description)}`).join("\n"),
     ], "");
   }
   if (playbook.playbook === NO_PLAYBOOK) {
     return section("playbook", [
-      `Direct path (${PLAYBOOK_CHOSEN_BY[playbook.source]}): no playbook for this chat until the user or a new task calls for one.`,
+      `Direct path (${PLAYBOOK_CHOSEN_BY[playbook.source]}): answer small requests directly. Select a playbook when the requested outcome calls for one, even on the same topic.`,
     ], "");
   }
   if (!playbook.installed) {
@@ -220,7 +220,7 @@ function buildPlaybook(playbook: PlaybookContext | undefined, choices: readonly 
   }
   const name = playbook.label ? `${playbook.playbook} ("${playbook.label}")` : playbook.playbook;
   return section("playbook", [
-    `Active playbook: ${name}; ${PLAYBOOK_CHOSEN_BY[playbook.source]}. If its steps are not in this conversation yet, call playbook_select with "${playbook.playbook}" to get them. Copy the steps into your todo list, follow them, and call verify_complete when they are done.`,
+    `Active playbook: ${name}; ${PLAYBOOK_CHOSEN_BY[playbook.source]}. Keep it for clarifications and asides. If the user asks for a different outcome, select the method that fits before answering, including Direct for a new small goal. If it still fits and its steps aren't in the conversation, fetch them with playbook_select. Verify the work you actually complete.`,
     ...(playbook.extensions.length > 0 ? [`On this machine ${playbook.extensions.join(", ")} add steps to it; playbook_select returns them too.`] : []),
   ], "");
 }

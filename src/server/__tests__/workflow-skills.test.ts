@@ -6,6 +6,7 @@ import { formatModelRolesBlock } from "../skill-catalog.js";
 import { createUnattendedRunStore } from "../unattended-run-store.js";
 import { createSettingsStore } from "../settings-store.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
+import { createNativeBridgeTools } from "../bridge-native-tools.js";
 import type { SkillPackConfig } from "../../shared/skill-packs.js";
 import { makeTestDir, setupTestDb } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
@@ -148,12 +149,22 @@ describe("playbook_select", () => {
     expect(await tool.handler({ playbook: "research" }, invocation)).toMatchObject({ steps: expect.stringContaining("canonical source") });
     expect(set).not.toHaveBeenCalled();
 
-    // The direct path for one request leaves a playbook the schedule (or user, or task) set in place.
-    vi.mocked(ctx.sessionManager.getSessionPlaybook).mockReturnValue({ playbook: "research", source: "schedule", label: "Research" });
-    const direct: any = await tool.handler({ playbook: "none" }, invocation);
-    expect(direct).toMatchObject({ success: true, playbook: "none" });
-    expect(direct.message).toContain("stays on Research, which its schedule chose");
+    for (const source of ["agent", "user", "task", "schedule"] as const) {
+      vi.mocked(ctx.sessionManager.getSessionPlaybook).mockReturnValue({ playbook: "research", source, label: "Research" });
+      expect(await tool.handler({ playbook: "none" }, invocation)).toMatchObject({ success: true, playbook: "none" });
+      expect(set).not.toHaveBeenCalled();
+    }
+
+    vi.mocked(ctx.sessionManager.getSessionPlaybook).mockReturnValue({ playbook: "feature", source: "agent" });
+    const [native] = createNativeBridgeTools([tool]);
+    const helper = { ...invocation, agentId: "reviewer" };
+    const delegated = await native!.handler!({ playbook: "research" }, helper);
+    expect(delegated).toMatchObject({ resultType: "success", textResultForLlm: expect.stringContaining("Open the canonical source") });
+    await native!.handler!({ playbook: "none", newOutcome: true }, helper);
     expect(set).not.toHaveBeenCalled();
+    await tool.handler({ playbook: "none", newOutcome: true }, invocation);
+    expect(set).toHaveBeenCalledWith(SESSION, "none", "agent");
+    set.mockClear();
     vi.mocked(ctx.sessionManager.getSessionPlaybook).mockReturnValue({});
 
     expect(await tool.handler({ playbook: "none" }, invocation)).toMatchObject({ success: true, playbook: "none" });

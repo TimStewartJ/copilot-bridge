@@ -9,6 +9,8 @@ export interface BridgeToolInvocation {
    * real session id.
    */
   sessionId: string | undefined;
+  /** SDK sub-agent instance; a delegated call shares its parent chat's sessionId. */
+  agentId?: string;
   toolCallId: string;
   toolName: string;
   arguments: Record<string, unknown>;
@@ -51,6 +53,7 @@ function bridgeInvocationFromMcp(
 ): BridgeToolInvocation {
   return {
     sessionId: normalizeInvocationSessionId(extra?.sessionId),
+    agentId: extra?.agentId,
     toolCallId: extra?.requestId === undefined || extra?.requestId === null ? "" : String(extra.requestId),
     toolName: name,
     arguments: args,

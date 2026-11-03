@@ -11,7 +11,7 @@ import { isAdaptedToolHandler } from "./adapter.js";
 import { sniffImageMimeFromBase64 } from "../image-mime.js";
 import { isRecord } from "../../shared/is-record.js";
 
-export type BridgeToolHandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+export type BridgeToolHandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification> & { agentId?: string };
 export type BridgeToolHandlerResult = string | CallToolResult | object;
 export type BridgeToolScope = "global" | "session" | "both";
 

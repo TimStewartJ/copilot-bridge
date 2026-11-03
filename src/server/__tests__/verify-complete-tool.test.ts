@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
+import { createNativeBridgeTools } from "../bridge-native-tools.js";
 import type { SkillCatalog } from "../skill-catalog.js";
 import type { SkillSummary } from "../skills-registry.js";
 import { createTestApp } from "./test-app.js";
@@ -27,7 +28,7 @@ function setup(active?: string) {
   if (!tool) throw new Error("verify_complete tool not found");
   const call = (args: Record<string, unknown>) =>
     tool.handler(args, { sessionId, toolCallId: "call-1", toolName: "verify_complete", arguments: args }) as Promise<any>;
-  return { app, ctx, call };
+  return { app, ctx, call, tool };
 }
 
 const pass = (kind: string, ref?: string) => ({ kind, claim: `${kind} checked`, result: "pass", ...(ref ? { ref } : {}) });
@@ -65,9 +66,16 @@ describe("verify_complete", () => {
   });
 
   it("checks an explicit playbook and adds one history entry to the chat's task", async () => {
-    const { ctx, call } = setup();
+    const { ctx, call, tool } = setup();
     const task = ctx.taskStore.createTask("Crash on save");
     ctx.taskStore.linkSession(task.id, sessionId);
+
+    const [native] = createNativeBridgeTools([tool]);
+    const args = { summary: "Reviewed the plan", playbook: "research", evidence: [pass("sourced")] };
+    const delegated = await native!.handler!(args, { sessionId, agentId: "reviewer", toolCallId: "nested", toolName: tool.name, arguments: args });
+    expect(delegated).toMatchObject({ resultType: "failure", textResultForLlm: expect.stringContaining("parent agent") });
+    expect(ctx.completionReportStore!.listForSession(sessionId)).toEqual([]);
+    expect(ctx.taskHistoryStore!.listEntries(task.id)).toEqual([]);
 
     const unknown = await call({ summary: "Done", playbook: "nonexistent", evidence: [pass("tested")] });
     expect(unknown.textResultForLlm).toMatch(/not an installed playbook.*bug-fix, research/);

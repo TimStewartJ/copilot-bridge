@@ -64,7 +64,7 @@ export function createCompletionToolDefinitions(ctx: AppContext): BridgeToolDefi
         "An item's result says whether the check supports the work you are reporting: for `reproduced`, pass means the defect was reproduced. A premise you checked and found false (for example a build that has not passed) is a pass item whose claim states what you found; use fail only when your own work failed a check. " +
         "Mark an in-scope check you could not run honestly: result \"not_run\", or list it in unverified; either makes the report partial. Caveats outside what was asked (not pushed, no pull request, other platforms) go in notes, which never change the status. " +
         "Every claim must point to something that happened in this chat or on the real system. " +
-        "The chat shows the report as a card; still tell the user the outcome.",
+        "The chat shows the report as a card; still tell the user the outcome. For delegated work, return the evidence to the parent instead.",
       parameters: {
         type: "object",
         properties: {
@@ -102,6 +102,7 @@ export function createCompletionToolDefinitions(ctx: AppContext): BridgeToolDefi
         required: ["summary", "evidence"],
       },
       handler: async (args: any, invocation) => {
+        if (invocation.agentId) return toolFailure("No chat report was recorded. Return your findings and evidence to the parent agent instead.");
         const input = readCompletionInput(args);
         if (!input.ok) return toolFailure(input.error);
         const sessionId = invocation.sessionId;
