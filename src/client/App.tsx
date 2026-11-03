@@ -406,7 +406,10 @@ function AppShell() {
       return { ...prev, [sessionId]: normalizedReadThrough };
     });
   }, []);
+  // The chat the reader marked unread while reading it. It stays unread until they leave it or send in it.
+  const heldUnreadSessionIdRef = useRef<string | null>(null);
   const markReadThroughRendered = useCallback((sessionId: string) => {
+    if (heldUnreadSessionIdRef.current === sessionId) return;
     const session = sessions.find((candidate) => candidate.sessionId === sessionId);
     const readThroughActivityAt = getSessionReadThroughActivityTime(
       session,
@@ -472,6 +475,11 @@ function AppShell() {
   // Helper to invalidate session/task/group queries. Nobody awaits the active list, so it shares the event refetches.
   const invalidateSessions = useCallback(() =>
     eventQueries.invalidateQueries({ queryKey: queryKeys.sessions({ includeArchived: false }), exact: true }), [eventQueries]);
+  // Sending in a chat means the reader is back in it, so a held unread mark is released.
+  const handleMessageSent = useCallback(() => {
+    heldUnreadSessionIdRef.current = null;
+    void invalidateSessions();
+  }, [invalidateSessions]);
   const invalidateAllSessionQueries = useCallback(() => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["sessions"] }),
     queryClient.invalidateQueries({ queryKey: queryKeys.taskArchivedSessionsRoot }),
@@ -676,6 +684,12 @@ function AppShell() {
   // The chat Tim is reading: the open chat, or Helm's conversation while it is on screen beside or
   // instead of the brief (Helm's conversations have no chat route of their own).
   const readingSessionId = activeSessionId ?? (helmTalkVisible ? helmStateQuery.data?.current?.sessionId ?? null : null);
+  const readingSessionIdRef = useRef(readingSessionId);
+  readingSessionIdRef.current = readingSessionId;
+  const markUnreadAndHold = useCallback((sessionId: string) => {
+    if (sessionId === readingSessionIdRef.current) heldUnreadSessionIdRef.current = sessionId;
+    markUnread(sessionId);
+  }, [markUnread]);
 
   // Background tabs should not clear unread state just because they still
   // have the session selected.
@@ -689,6 +703,7 @@ function AppShell() {
     ) {
       markReadThroughRendered(previousSessionId);
     }
+    if (previousSessionId !== readingSessionId) heldUnreadSessionIdRef.current = null;
     previousReadingSessionIdRef.current = readingSessionId;
   }, [readingSessionId, pageHasAttention, markReadThroughRendered]);
 
@@ -716,6 +731,7 @@ function AppShell() {
     const onPageHide = () => {
       if (!hasAttentionRef.current || searchOpenRef.current) return;
       if (dwelledSessionIdRef.current !== readingSessionId) return;
+      if (heldUnreadSessionIdRef.current === readingSessionId) return;
       const session = sessions.find((candidate) => candidate.sessionId === readingSessionId);
       const readThroughActivityAt = getSessionReadThroughActivityTime(
         session,
@@ -1799,7 +1815,7 @@ function AppShell() {
   const helmTalk = (
     <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading Helm…</div>}>
       <HelmView
-        onMessageSent={invalidateSessions}
+        onMessageSent={handleMessageSent}
         getDraft={getDraft}
         setDraft={setDraft}
         clearDraft={clearDraft}
@@ -1898,7 +1914,7 @@ function AppShell() {
         onForkSession={handleForkSession}
         onReloadSession={handleReloadSession}
         onLinkToTask={handleLinkToTask}
-        onMarkUnread={markUnread}
+        onMarkUnread={markUnreadAndHold}
         onMarkAllQuickChatsRead={handleMarkAllRead}
         onRequestArchived={requestArchivedSessions}
         archivedLoaded={archivedLoaded}
@@ -1964,7 +1980,7 @@ function AppShell() {
                   onDeleteSession={handleDeleteSession}
                   onForkSession={handleForkSession}
                   onReloadSession={handleReloadSession}
-                  markUnread={markUnread}
+                  markUnread={markUnreadAndHold}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
                   onOpenSearch={() => navigate(`/search?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`)}
                   hasDraft={hasDraft}
@@ -2014,7 +2030,7 @@ function AppShell() {
                   onDeleteSession={handleDeleteSession}
                   onForkSession={handleForkSession}
                   onReloadSession={handleReloadSession}
-                  onMarkUnread={markUnread}
+                  onMarkUnread={markUnreadAndHold}
                   hasDraft={hasDraft}
                   onMoveTaskToGroup={handleMoveTaskToGroup}
                   onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
@@ -2141,7 +2157,7 @@ function AppShell() {
                     onDeleteSession={handleDeleteSession}
                     onForkSession={handleForkSession}
                     onReloadSession={handleReloadSession}
-                    onMarkUnread={markUnread}
+                    onMarkUnread={markUnreadAndHold}
                     hasDraft={hasDraft}
                     onMoveTaskToGroup={handleMoveTaskToGroup}
                     onRefresh={async () => { await Promise.all([invalidateTasks(), invalidateAllSessionQueries(), invalidateTaskGroups()]); }}
@@ -2171,7 +2187,7 @@ function AppShell() {
               element={
                 <SessionRoute
                   sessions={sessions}
-                  onMessageSent={invalidateSessions}
+                  onMessageSent={handleMessageSent}
                   onRenderedReadThrough={rememberRenderedReadThrough}
                   getDraft={getDraft}
                   getDraftSession={getDraftSession}
@@ -2226,7 +2242,7 @@ function AppShell() {
                     archivingIds={archivingIds}
                     exitingIds={exitingIds}
                     onBulkAction={handleBulkAction}
-                    onMarkUnread={markUnread}
+                    onMarkUnread={markUnreadAndHold}
                     hasDraft={hasDraft}
                     onRequestArchived={requestArchivedSessions}
                     archivedLoaded={archivedLoaded}
@@ -2253,7 +2269,7 @@ function AppShell() {
               element={
                 <SessionRoute
                   sessions={sessions}
-                  onMessageSent={invalidateSessions}
+                  onMessageSent={handleMessageSent}
                   onRenderedReadThrough={rememberRenderedReadThrough}
                   getDraft={getDraft}
                   getDraftSession={getDraftSession}
@@ -2412,7 +2428,7 @@ function MobileTaskListView({
         onDeleteSession,
         onForkSession,
         onReloadSession,
-        markUnread,
+        markUnread: markUnreadAndHold,
   onRefresh,
   hasDraft,
   onMarkAllRead,
@@ -2516,7 +2532,7 @@ function MobileTaskListView({
             onDeleteSession={onDeleteSession}
             onForkSession={onForkSession}
             onReloadSession={onReloadSession}
-            onMarkUnread={markUnread}
+            onMarkUnread={markUnreadAndHold}
             onMarkAllRead={onMarkAllRead}
             hasDraft={hasDraft}
             onBulkAction={onBulkAction}
