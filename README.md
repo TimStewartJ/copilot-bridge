@@ -587,6 +587,11 @@ successful resume, or healthy ping.
 
 ### Autopilot completion
 
+When an Autopilot run records a playbook report, its finish card shows the report status.
+**View evidence** jumps to that report in the chat. If the run explicitly selected a playbook but
+recorded no matching report, the card says so. Direct requests and runs whose boundaries are
+unclear in the loaded history keep their usual finish card. This does not change when Autopilot stops.
+
 Before sending a turn, the Copilot adapter refreshes tool exclusions for its mode:
 `task_complete` is hidden outside Autopilot, and Autopilot restores the configured
 exclusions. Other tool filters are preserved. This also refreshes the tool's system

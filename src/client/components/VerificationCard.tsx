@@ -3,7 +3,7 @@ import { Check } from "lucide-react";
 import type { ToolCall } from "../api";
 import { Badge, StatusIcon } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
-import { readVerificationRecord, type VerificationRecord } from "../lib/verification-record";
+import { readVerificationRecord, verificationAnchorId, type VerificationRecord } from "../lib/verification-record";
 import { EVIDENCE_KIND_DESCRIPTIONS } from "../../shared/workflow-vocabulary.js";
 import type { CompletionEvidence, CompletionStatus } from "../../shared/completion-report.js";
 
@@ -67,15 +67,16 @@ function kindLabel(kind: CompletionEvidence["kind"]): string {
   return kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
-export function VerificationCardView({ record }: { record: VerificationRecord }) {
-  const view = STATUS_VIEW[record.status];
+export function VerificationStatusBadge({ status }: { status: CompletionStatus }) {
+  const view = STATUS_VIEW[status];
+  return <Badge tone={view.tone}><StatusMark status={status} />{view.label}</Badge>;
+}
+
+export function VerificationCardView({ record, id }: { record: VerificationRecord; id?: string }) {
   return (
-    <section className={cx(DS.surface.group, "min-w-0 px-4 py-3")} data-verification-status={record.status}>
+    <section id={id} tabIndex={id ? -1 : undefined} aria-label="Verification evidence" className={cx(DS.surface.group, DS.focus, "min-w-0 px-4 py-3")} data-verification-status={record.status}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <Badge tone={view.tone}>
-          <StatusMark status={record.status} />
-          {view.label}
-        </Badge>
+        <VerificationStatusBadge status={record.status} />
         {record.playbookLabel && <span className={cx(DS.text.sectionLabel, "min-w-0 truncate")}>{record.playbookLabel}</span>}
       </div>
       <p className={cx("mt-2 whitespace-pre-wrap break-words", DS.text.content)}>{record.summary}</p>
@@ -128,5 +129,5 @@ export default memo(function VerificationCard({ toolCall }: { toolCall: ToolCall
     [toolCall.args, toolCall.name, toolCall.result, toolCall.success],
   );
   if (!record) return null;
-  return <VerificationCardView record={record} />;
+  return <VerificationCardView record={record} id={verificationAnchorId(toolCall.toolCallId)} />;
 });

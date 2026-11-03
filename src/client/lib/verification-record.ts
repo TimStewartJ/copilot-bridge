@@ -1,4 +1,5 @@
 import type { ToolCall } from "../api";
+import { isPlaybookName } from "../../shared/workflow-vocabulary.js";
 import {
   COMPLETION_TOOL_NAME,
   deriveCompletionStatus,
@@ -12,6 +13,7 @@ import {
 export interface VerificationRecord {
   status: CompletionStatus;
   summary: string;
+  playbook?: string;
   playbookLabel?: string;
   evidence: CompletionEvidence[];
   unverified: string[];
@@ -33,6 +35,17 @@ function readResult(result: string | undefined): Record<string, unknown> | undef
   }
 }
 
+export function readSelectedPlaybook(call: ToolCall): string | undefined {
+  if (call.parentToolCallId || call.isSubAgent || call.success === false
+    || !/^(?:bridge-tools-(?:session-)?)?playbook_select$/i.test(call.name.trim())) return undefined;
+  const result = readResult(call.result);
+  return result?.success === true && isPlaybookName(result.playbook) ? result.playbook : undefined;
+}
+
+export function verificationAnchorId(toolCallId: string): string {
+  return `verification-${toolCallId}`;
+}
+
 /**
  * The card for a recorded `verify_complete` call: the evidence from its arguments, the status and
  * playbook label from its result. A rejected or unfinished call has no card.
@@ -52,6 +65,7 @@ export function readVerificationRecord(toolCall: Pick<ToolCall, "name" | "args" 
   return {
     status: isCompletionStatus(reported) ? reported : deriveCompletionStatus(evidence, unverified),
     summary,
+    playbook: isPlaybookName(result?.playbook) ? result.playbook : input.value.playbook,
     ...(label ? { playbookLabel: label } : {}),
     evidence,
     unverified,

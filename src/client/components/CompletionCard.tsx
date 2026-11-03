@@ -4,7 +4,10 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { ChatCompletionEntry } from "../api";
-import { AutopilotBadge } from "../design/primitives";
+import { AutopilotBadge, Button } from "../design/primitives";
+import { DS, cx } from "../design/tokens";
+import { verificationAnchorId } from "../lib/verification-record";
+import { VerificationStatusBadge } from "./VerificationCard";
 import type { AutopilotRunSummary } from "../lib/autopilot-runs";
 import { formatDuration } from "../lib/tool-presentation";
 import remarkWikilink from "../lib/remark-wikilink";
@@ -40,6 +43,7 @@ const CompletionSummary = memo(function CompletionSummary({ content }: { content
 export default function CompletionCard({ entry, autopilot }: CompletionCardProps) {
   const isError = entry.completion.status === "error";
   const Icon = isError ? AlertTriangle : CheckCircle2;
+  const verification = autopilot?.verification;
 
   return (
     <div
@@ -55,6 +59,17 @@ export default function CompletionCard({ entry, autopilot }: CompletionCardProps
           </AutopilotBadge>
         )}
       </div>
+      {verification?.kind === "recorded" && (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <VerificationStatusBadge status={verification.status} />
+          <Button variant="ghost" aria-controls={verificationAnchorId(verification.toolCallId)} onClick={() => {
+            const target = document.getElementById(verificationAnchorId(verification.toolCallId));
+            target?.focus({ preventScroll: true });
+            target?.scrollIntoView({ block: "center" });
+          }}>View evidence</Button>
+        </div>
+      )}
+      {verification?.kind === "missing" && <p className={cx(DS.text.meta, "mt-2")}>No verification report recorded</p>}
       <div className={`ds-prose mt-2 max-w-none text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}>
         <CompletionSummary content={entry.content} />
       </div>
