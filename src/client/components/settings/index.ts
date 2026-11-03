@@ -24,6 +24,7 @@ export { UpdatesSection } from "./UpdatesSection";
 export { DeployGuardsSection } from "./DeployGuardsSection";
 export { BridgeCommitsSection } from "./BridgeCommitsSection";
 export { CopilotUsageSection } from "./CopilotUsageSection";
+export { CopilotAccountsSection } from "./CopilotAccountsSection";
 export { BrowserDiagnosticsSection } from "./BrowserDiagnosticsSection";
 export { ManagementJobsSection } from "./ManagementJobsSection";
 export { SettingsCategoryNav } from "./SettingsCategoryNav";

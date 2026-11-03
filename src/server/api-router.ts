@@ -37,6 +37,7 @@ import {
 import { validateSupportedCronExpression } from "./cron-next-run.js";
 import {
   ModelRefreshBlockedError,
+  CopilotAccountSwitchError,
   SessionCapacityError,
   SessionHistoryUndoError,
   type ModelSelection,
@@ -1384,6 +1385,36 @@ export function createApiRouter(
         snapshots: [],
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  });
+
+  // GET /copilot-accounts — the signed-in Copilot accounts (never their tokens) and which is active.
+  router.get("/copilot-accounts", async (_req, res) => {
+    try {
+      res.json(await ctx.sessionManager.listCopilotAccounts());
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /copilot-accounts/switch — make another signed-in account the one new chats run on.
+  router.post("/copilot-accounts/switch", async (req, res) => {
+    const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+    if (!id) {
+      res.status(400).json({ error: "id is required" });
+      return;
+    }
+    try {
+      res.json(await ctx.sessionManager.switchCopilotAccount(id));
+    } catch (err) {
+      if (err instanceof CopilotAccountSwitchError) {
+        res.status(err.status).json({ error: err.message, activeSessions: err.activeSessions });
+        return;
+      }
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      // Even a failed restart may have switched; the next read asks the runtime again.
+      copilotQuotaReader.invalidate?.();
     }
   });
 

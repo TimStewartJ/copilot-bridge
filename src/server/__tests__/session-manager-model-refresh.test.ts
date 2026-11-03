@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBusRegistry } from "../event-bus.js";
 import {
+  CopilotAccountSwitchError,
   MODEL_METADATA_VALIDATION_TIMEOUT_MS,
   MODEL_REFRESH_CLIENT_ROTATION_TIMEOUT_MS,
   ModelRefreshBlockedError,
@@ -68,7 +69,7 @@ async function expectRotationTimeout(promise: Promise<unknown>, operation: strin
   );
 }
 
-function createManager(backends: unknown[]) {
+function createManager(backends: unknown[], clientEnv?: Record<string, string | undefined>) {
   const db = setupTestDb();
   const copilotHome = makeTestDir("model-refresh");
   const globalBus = createTestBus();
@@ -85,6 +86,7 @@ function createManager(backends: unknown[]) {
     config: { sessionMcpServers: {} },
     copilotHome,
     createBackend: createBackendSpy,
+    ...(clientEnv ? { clientEnv } : {}),
   };
   return { manager: new SessionManager(deps), createBackendSpy };
 }
@@ -591,5 +593,83 @@ describe("SessionManager model refresh", () => {
 
     await expect(runtimeMetadata).resolves.toEqual([{ id: "future-model", name: "Future Model" }]);
     expect(backend.listModels).toHaveBeenCalledOnce();
+  });
+});
+
+describe("SessionManager account switch", () => {
+  const account = (id: string, active: boolean) => ({
+    id, host: "https://github.com", login: `user-${id}`, plan: "business", organizations: [], active, usedPercent: null,
+  });
+
+  /** A runtime whose active account is `activeId`; its helper sessions switch through `switchAccount`. */
+  function createAccountBackend(activeId: string, switchAccount = vi.fn(async (_id: string) => {})) {
+    return Object.assign(createBackend([]), {
+      listAccounts: vi.fn(async () => [account("a", activeId === "a"), account("b", activeId === "b")]),
+      createSession: vi.fn(async () => makeAgentSessionStub({ sessionId: "helper", switchAccount })),
+      switchAccount,
+    });
+  }
+
+  it("switches through a helper session, then restarts the runtime onto the account", async () => {
+    const oldBackend = createAccountBackend("a");
+    const freshBackend = createAccountBackend("b");
+    const { manager } = createManager([oldBackend, freshBackend]);
+    await manager.initialize();
+
+    const result = await manager.switchCopilotAccount("b");
+
+    expect(oldBackend.switchAccount).toHaveBeenCalledWith("b");
+    expect(oldBackend.deleteSession).toHaveBeenCalledWith(expect.any(String));
+    expect(oldBackend.stop).toHaveBeenCalledOnce();
+    expect(freshBackend.start).toHaveBeenCalledOnce();
+    expect(result.fixedToken).toBe(false);
+    expect(result.accounts.find((entry) => entry.active)?.id).toBe("b");
+  });
+
+  it.each([
+    ["a chat is running", undefined, (manager: SessionManager) => (manager as any).sessionHolds.start("active-session", "model-switching")],
+    ["a fixed token pins the account", { BRIDGE_COPILOT_GITHUB_TOKEN: "test-token" }, () => {}],
+  ])("refuses while %s", async (_case, clientEnv, prepare) => {
+    const oldBackend = createAccountBackend("a");
+    const { manager } = createManager([oldBackend, createAccountBackend("b")], clientEnv);
+    await manager.initialize();
+    prepare(manager);
+
+    const error = await manager.switchCopilotAccount("b").catch((cause) => cause);
+
+    expect(error).toBeInstanceOf(CopilotAccountSwitchError);
+    expect(error.status).toBe(409);
+    expect(oldBackend.switchAccount).not.toHaveBeenCalled();
+    expect(oldBackend.stop).not.toHaveBeenCalled();
+  });
+
+  it("still restarts the runtime when the switch fails, since it may have saved the account", async () => {
+    const oldBackend = createAccountBackend("a", vi.fn(async () => { throw new Error("switch refused"); }));
+    const freshBackend = createAccountBackend("a");
+    const { manager } = createManager([oldBackend, freshBackend]);
+    await manager.initialize();
+
+    await expect(manager.switchCopilotAccount("b")).rejects.toThrow("switch refused");
+
+    expect(oldBackend.stop).toHaveBeenCalledOnce();
+    expect(freshBackend.start).toHaveBeenCalledOnce();
+    expect((await manager.listCopilotAccounts()).accounts.find((entry) => entry.active)?.id).toBe("a");
+  });
+
+  it("waits for a model refresh under way, then restarts again with the switch", async () => {
+    const first = createAccountBackend("a");
+    const refreshed = createAccountBackend("a");
+    const switched = createAccountBackend("b");
+    const { manager } = createManager([first, refreshed, switched]);
+    await manager.initialize();
+
+    const refresh = manager.refreshModels();
+    const result = await manager.switchCopilotAccount("b");
+    await refresh;
+
+    expect(first.switchAccount).not.toHaveBeenCalled();
+    expect(refreshed.switchAccount).toHaveBeenCalledWith("b");
+    expect(switched.start).toHaveBeenCalledOnce();
+    expect(result.accounts.find((entry) => entry.active)?.id).toBe("b");
   });
 });

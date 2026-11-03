@@ -278,7 +278,8 @@ import {
 import { createRetainedCopilotUsageEntry } from "./copilot-usage-store.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { createDisposableTitleSessionId, DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
-import { buildCopilotClientOptions } from "./copilot-client-options.js";
+import { buildCopilotClientOptions, resolveBridgeCopilotGitHubToken } from "./copilot-client-options.js";
+import type { CopilotAccountsStatus } from "../shared/copilot-accounts.js";
 import { BUILT_IN_GITHUB_MCP_SERVER } from "./built-in-mcp-servers.js";
 export type { DerivedModelState } from "./session-events-model.js";
 export {
@@ -483,6 +484,18 @@ export class ModelRefreshBlockedError extends Error {
   constructor(readonly activeSessions: number) {
     super(`Cannot refresh model list while ${activeSessions} active session(s) are running. Try again after active turns finish.`);
     this.name = "ModelRefreshBlockedError";
+  }
+}
+
+const ACCOUNT_SWITCH_HELPER_DISPOSE_MS = 10_000;
+/** The whole switch on the old runtime, helper creation included, while new work waits. */
+const ACCOUNT_SWITCH_TIMEOUT_MS = 60_000;
+
+/** A switch the Bridge refused; `status` is the HTTP status the API answers with. */
+export class CopilotAccountSwitchError extends Error {
+  constructor(message: string, readonly status: 404 | 409, readonly activeSessions?: number) {
+    super(message);
+    this.name = "CopilotAccountSwitchError";
   }
 }
 
@@ -3243,7 +3256,13 @@ export class SessionManager {
    * like title helpers, never kept, and swept at startup if a crash leaks it. dispose() removes it.
    */
   async createHelperSession(config: AgentSessionConfig): Promise<{ session: AgentSession; dispose(): Promise<void> }> {
-    const backend = await this.getBackendAfterRotation();
+    return this.createHelperSessionOn(await this.getBackendAfterRotation(), config);
+  }
+
+  private async createHelperSessionOn(
+    backend: AgentBackend,
+    config: AgentSessionConfig,
+  ): Promise<{ session: AgentSession; dispose(): Promise<void> }> {
     const sessionId = createDisposableTitleSessionId();
     const session = await this.createOwnedSession(backend, {
       ...buildSessionNameHelperBaseConfig(),
@@ -3920,7 +3939,8 @@ export class SessionManager {
     return resumed;
   }
 
-  private async rotateBackendForModelRefresh(): Promise<AgentBackend> {
+  /** `beforeRetire` runs on the old runtime once the rotation holds new work and before it stops. */
+  private async rotateBackendForModelRefresh(beforeRetire?: (backend: AgentBackend) => Promise<void>): Promise<AgentBackend> {
     if (this.backendRotation) {
       return this.backendRotation;
     }
@@ -3933,18 +3953,21 @@ export class SessionManager {
 
     const previousBackend = this.backend;
     if (!previousBackend) throw new Error("SessionManager not initialized");
-    return this.replaceBackend(previousBackend, "model-refresh");
+    return this.replaceBackend(previousBackend, "model-refresh", beforeRetire);
   }
 
   private async replaceBackend(
     previousBackend: AgentBackend,
     reason: "recovery" | "model-refresh",
+    beforeRetire?: (backend: AgentBackend) => Promise<void>,
   ): Promise<AgentBackend> {
     if (this.backendRotation) return this.backendRotation;
     // Publish the join promise before eviction, but let those handles release
     // normally until the backend fence takes ownership.
     const rotation = Promise.resolve().then(async () => {
       if (reason === "model-refresh") await this.evictAllCachedSessions();
+      // A failure here leaves the old runtime in place, as if no rotation had started.
+      if (beforeRetire) await beforeRetire(previousBackend);
       this.backendDisconnectUnsubscribe?.();
       this.backendDisconnectUnsubscribe = null;
       const transition: BackendTransition = { owner: previousBackend, phase: "retiring" };
@@ -4149,6 +4172,78 @@ export class SessionManager {
     const auth = await client.getAccountAuth();
     this.recordSpan("session.getAccountAuth", Date.now() - t0);
     return auth;
+  }
+
+  private usesFixedCopilotToken(): boolean {
+    return Boolean(resolveBridgeCopilotGitHubToken(this.deps.clientEnv));
+  }
+
+  /** The Copilot accounts the runtime has signed in, without tokens. */
+  async listCopilotAccounts(): Promise<CopilotAccountsStatus> {
+    const client = await this.getBackendAfterRotation();
+    if (typeof client.listAccounts !== "function") {
+      throw new Error("Account listing is not supported by the active agent backend");
+    }
+    const t0 = Date.now();
+    const accounts = await client.listAccounts();
+    this.recordSpan("session.listCopilotAccounts", Date.now() - t0, undefined, { count: accounts.length });
+    return { accounts, fixedToken: this.usesFixedCopilotToken() };
+  }
+
+  /**
+   * Makes another signed-in account the one every new chat runs on. The runtime saves the choice
+   * itself but keeps reporting the old account until it restarts, so the switch runs inside a
+   * model-refresh rotation: once the rotation holds new work, a helper session on the old runtime
+   * switches, then the runtime restarts onto whatever account it saved. Like a model refresh it refuses while a
+   * chat is running, so running chats keep their account.
+   */
+  async switchCopilotAccount(accountId: string): Promise<CopilotAccountsStatus> {
+    const t0 = Date.now();
+    if (this.usesFixedCopilotToken()) {
+      throw new CopilotAccountSwitchError("BRIDGE_COPILOT_GITHUB_TOKEN fixes the account; remove it and restart to switch.", 409);
+    }
+    const before = await this.listCopilotAccounts();
+    const target = before.accounts.find((account) => account.id === accountId);
+    if (!target) throw new CopilotAccountSwitchError("That account is not signed in.", 404);
+    if (target.active) return before;
+    // A rotation already under way would be joined instead of carrying the switch.
+    while (this.backendRotation) await this.backendRotation.catch(() => undefined);
+    // The runtime restarts whatever the switch did: a switch that failed or ran out of time may
+    // still have saved the account, and only stopping the runtime ends it and its helper session.
+    let switchError: unknown;
+    try {
+      await this.rotateBackendForModelRefresh(async (backend) => {
+        const settled = await settleByDeadline(
+          () => this.switchAccountOn(backend, accountId),
+          createDeadline(ACCOUNT_SWITCH_TIMEOUT_MS),
+        );
+        if (settled.status === "rejected") switchError = settled.error;
+        if (settled.status === "timed-out") switchError = new Error("Copilot did not finish the account switch in time.");
+      });
+    } catch (error) {
+      if (error instanceof ModelRefreshBlockedError) {
+        const count = error.activeSessions;
+        throw new CopilotAccountSwitchError(`Switch after ${count === 1 ? "the running chat finishes" : `the ${count} running chats finish`}.`, 409, count);
+      }
+      throw error;
+    }
+    this.recordSpan("session.switchCopilotAccount", Date.now() - t0, undefined, { ok: !switchError });
+    if (switchError) throw switchError;
+    return this.listCopilotAccounts();
+  }
+
+  private async switchAccountOn(backend: AgentBackend, accountId: string): Promise<void> {
+    const helper = await this.createHelperSessionOn(backend, { clientName: "Copilot Bridge account switch" });
+    try {
+      if (typeof helper.session.switchAccount !== "function") {
+        throw new Error("Account switching is not supported by the active agent backend");
+      }
+      await helper.session.switchAccount(accountId);
+    } finally {
+      // The runtime stops next, which ends the helper anyway; a stuck detach must not hold the restart.
+      // A helper left on disk is swept at the next startup like any disposable session.
+      await settleByDeadline(() => helper.dispose(), createDeadline(ACCOUNT_SWITCH_HELPER_DISPOSE_MS));
+    }
   }
 
   /**

@@ -29,7 +29,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   { id: "tags", label: "Tags", group: "connections" },
   { id: "voice", label: "Voice", group: "connections" },
   { id: "system", label: "System", group: "host" },
-  { id: "usage", label: "Copilot usage", group: "host" },
+  { id: "usage", label: "Copilot", group: "host" },
 ];
 
 export const DEFAULT_CATEGORY: CategoryId = "chat";

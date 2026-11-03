@@ -199,6 +199,27 @@ describe("createCopilotQuotaReader", () => {
     expect(getQuota).toHaveBeenCalledTimes(3);
   });
 
+  it("after invalidate, a read already under way neither answers later reads nor caches", async () => {
+    let releaseOld!: () => void;
+    const oldRead = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const logins = ["old-user", "new-user"];
+    const getAuth = vi.fn(async () => {
+      const login = logins.shift()!;
+      if (login === "old-user") await oldRead;
+      return { authInfo: { type: "user", login } };
+    });
+    const reader = createCopilotQuotaReader({ getQuota: async () => quotaResult(), getAuth, cacheTtlMs: 60_000 });
+
+    const stale = reader.read();
+    reader.invalidate?.();
+    const fresh = await reader.read({ refresh: true });
+    releaseOld();
+    await stale;
+
+    expect(fresh.identity?.login).toBe("new-user");
+    expect((await reader.read()).identity?.login).toBe("new-user");
+  });
+
   it("still returns the counter when only the auth enrichment fails", async () => {
     const reader = createCopilotQuotaReader({
       getQuota: async () => quotaResult(),

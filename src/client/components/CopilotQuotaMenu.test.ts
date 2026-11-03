@@ -1,4 +1,5 @@
-import { createElement } from "react";
+import { createElement, type ComponentType } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CopilotQuotaStatus } from "../api";
 import {
@@ -8,6 +9,11 @@ import {
   type ReactDomHarness,
 } from "../test-react-harness";
 import CopilotQuotaMenu, { CopilotQuotaCard } from "./CopilotQuotaMenu";
+
+/** The details dialog links to Settings, so the menu renders inside a router. */
+function routed<P extends object>(component: ComponentType<P>, props?: P) {
+  return createElement(MemoryRouter, null, createElement(component as ComponentType<object>, props ?? {}));
+}
 
 const useCopilotQuotaQueryMock = vi.hoisted(() => vi.fn());
 
@@ -114,7 +120,7 @@ describe("CopilotQuotaMenu", () => {
 
   it("shows a compact quota summary on hover", async () => {
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu, { collapsed: true }));
+    await harness.render(routed(CopilotQuotaMenu, { collapsed: true }));
 
     expect(harness.dom.container.textContent).not.toContain("Click for quota details");
 
@@ -130,7 +136,7 @@ describe("CopilotQuotaMenu", () => {
 
   it("offers the full quota dialog from a compact mobile settings control", async () => {
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaCard, { compact: true }));
+    await harness.render(routed(CopilotQuotaCard, { compact: true }));
     const button = findAllByTag(harness.dom.container, "BUTTON")[0];
     expect(button.textContent).toContain("Quota");
     expect(button.textContent).toContain("0.8%");
@@ -143,7 +149,7 @@ describe("CopilotQuotaMenu", () => {
 
   it("opens detailed quota information from the rail control", async () => {
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu));
+    await harness.render(routed(CopilotQuotaMenu));
 
     const trigger = findButtonByLabel(
       harness.dom.container,
@@ -185,7 +191,7 @@ describe("CopilotQuotaMenu", () => {
         refresh: vi.fn(),
       });
       harness = await createReactDomHarness();
-      await harness.render(createElement(CopilotQuotaMenu));
+      await harness.render(routed(CopilotQuotaMenu));
 
       const trigger = findButtonByLabel(
         harness.dom.container,
@@ -214,7 +220,7 @@ describe("CopilotQuotaMenu", () => {
       refresh: vi.fn(),
     });
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu));
+    await harness.render(routed(CopilotQuotaMenu));
     const trigger = findAllByTag(harness.dom.container, "BUTTON")[0];
     await harness.act(async () => {
       getReactProps(trigger)?.onClick?.();
@@ -295,7 +301,7 @@ describe("CopilotQuotaMenu", () => {
       refresh: vi.fn(),
     });
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu, { collapsed: true }));
+    await harness.render(routed(CopilotQuotaMenu, { collapsed: true }));
 
     await harness.act(async () => {
       getReactProps(findMenuRoot(harness!.dom.container))?.onMouseEnter?.();
@@ -317,7 +323,7 @@ describe("CopilotQuotaMenu", () => {
       error: new Error("Cached quota read"), isLoading: false, refresh,
     });
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu));
+    await harness.render(routed(CopilotQuotaMenu));
     const trigger = findButtonByLabel(harness.dom.container, "Cached Copilot quota, ~79,393.9 AI credits used");
     expect(getReactProps(trigger)?.["aria-haspopup"]).toBe("dialog");
     await harness.act(async () => getReactProps(trigger)?.onClick?.());
@@ -335,7 +341,7 @@ describe("CopilotQuotaMenu", () => {
       error: null, isLoading: false, refresh: vi.fn(),
     });
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu));
+    await harness.render(routed(CopilotQuotaMenu));
     const trigger = findButtonByLabel(harness.dom.container, "Live Copilot quota, Unknown premium requests used");
     expect(paceFill(harness.dom.container, "usage")).toBeUndefined();
     await harness.act(async () => getReactProps(trigger)?.onClick?.());
@@ -347,7 +353,7 @@ describe("CopilotQuotaMenu", () => {
     freezeAtHalfMonth();
     mockQuotaUsage(100);
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu, { collapsed: true }));
+    await harness.render(routed(CopilotQuotaMenu, { collapsed: true }));
 
     const month = paceFill(harness.dom.container, "month");
     const usage = paceFill(harness.dom.container, "usage");
@@ -368,7 +374,7 @@ describe("CopilotQuotaMenu", () => {
     freezeAtHalfMonth();
     mockQuotaUsage(900);
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu));
+    await harness.render(routed(CopilotQuotaMenu));
 
     expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ width: "90%" });
     expect(getReactProps(paceFill(harness.dom.container, "month-marker"))?.style).toEqual({ marginLeft: "50%" });
@@ -376,7 +382,7 @@ describe("CopilotQuotaMenu", () => {
 
   it("keeps a sliver of usage visible when only a fraction of a percent is used", async () => {
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaMenu));
+    await harness.render(routed(CopilotQuotaMenu));
 
     expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ minWidth: 2 });
   });
@@ -398,7 +404,7 @@ describe("CopilotQuotaCard", () => {
     freezeAtHalfMonth();
     mockQuotaUsage(100);
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaCard));
+    await harness.render(routed(CopilotQuotaCard));
 
     const text = harness.dom.container.textContent;
     expect(text).toContain("Copilot quota");
@@ -432,7 +438,7 @@ describe("CopilotQuotaCard", () => {
       refresh: vi.fn(),
     });
     harness = await createReactDomHarness();
-    await harness.render(createElement(CopilotQuotaCard));
+    await harness.render(routed(CopilotQuotaCard));
 
     expect(harness.dom.container.textContent).toContain("Account quota lookup is not available in this Copilot SDK build");
     expect(paceFill(harness.dom.container, "usage")).toBeUndefined();

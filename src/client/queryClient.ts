@@ -85,6 +85,7 @@ export const queryKeys = {
       ...(scope?.sessionLinksRevision ? [scope.sessionLinksRevision] : []),
     ] as const,
   copilotQuota: ["copilot-usage", "quota"] as const,
+  copilotAccounts: ["copilot-accounts"] as const,
   updates: (channel?: string) => ["updates", channel ?? "default"] as const,
   relatedDocs: (tagIds: string[]) => ["related-docs", ...tagIds] as const,
   docsRoot: ["docs"] as const,

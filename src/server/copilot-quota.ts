@@ -54,6 +54,8 @@ export interface CopilotQuotaStatus {
 
 export interface CopilotQuotaReader {
   read(options?: { refresh?: boolean }): Promise<CopilotQuotaStatus>;
+  /** Forgets the cached reading; a read already under way neither answers later reads nor caches. */
+  invalidate?(): void;
 }
 
 export interface CreateCopilotQuotaReaderOptions {
@@ -89,6 +91,7 @@ export function createCopilotQuotaReader({
   let cached: { status: CopilotQuotaStatus; fetchedAtMs: number } | null = null;
   let inflight: Promise<CopilotQuotaStatus> | null = null;
   let lastLiveUserError: string | null = null;
+  let generation = 0;
 
   // A failed live fetch silently falls back to numbers that never change, so say so once.
   async function fetchLiveUser(fetchUser: () => Promise<unknown>): Promise<unknown> {
@@ -107,6 +110,7 @@ export function createCopilotQuotaReader({
   }
 
   async function fetchStatus(): Promise<CopilotQuotaStatus> {
+    const startedGeneration = generation;
     const fetchedAtMs = now();
     const fetchedAt = new Date(fetchedAtMs).toISOString();
     let status: CopilotQuotaStatus;
@@ -128,7 +132,7 @@ export function createCopilotQuotaReader({
         error: error instanceof Error ? error.message : String(error),
       };
     }
-    cached = { status, fetchedAtMs };
+    if (startedGeneration === generation) cached = { status, fetchedAtMs };
     return status;
   }
 
@@ -139,10 +143,16 @@ export function createCopilotQuotaReader({
         return cached.status;
       }
       if (inflight) return inflight;
-      inflight = fetchStatus().finally(() => {
-        inflight = null;
+      const read = fetchStatus().finally(() => {
+        if (inflight === read) inflight = null;
       });
-      return inflight;
+      inflight = read;
+      return read;
+    },
+    invalidate() {
+      generation += 1;
+      cached = null;
+      inflight = null;
     },
   };
 }

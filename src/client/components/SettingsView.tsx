@@ -24,6 +24,7 @@ import {
   DeployGuardsSection,
   BridgeCommitsSection,
   CopilotUsageSection,
+  CopilotAccountsSection,
   ManagementJobsSection,
   BrowserDiagnosticsSection,
   BridgeRuntimeSection,
@@ -378,6 +379,7 @@ export default function SettingsView() {
             </CategoryPanel>
 
             <CategoryPanel category="usage" activeCategory={activeCategory}>
+              <CopilotAccountsSection />
               <CopilotUsageSection />
             </CategoryPanel>
           </div>

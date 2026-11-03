@@ -9,6 +9,7 @@ import { openMemoryDatabase } from "../server/db.js";
 import type { serializeCopilotUsageSummary } from "../server/copilot-usage-serializer.js";
 import { COPILOT_USAGE_UNATTRIBUTED_MODEL } from "../shared/copilot-usage.js";
 import { createApiRouter } from "../server/api-router.js";
+import { CopilotAccountSwitchError } from "../server/session-manager.js";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
   createCopilotUsageTestHome,
@@ -825,5 +826,39 @@ describe("Copilot quota route", () => {
     expect(res.body.available).toBe(false);
     expect(res.body.primary).toBeNull();
     expect(typeof res.body.error).toBe("string");
+  });
+});
+
+describe("Copilot account routes", () => {
+  const status = {
+    accounts: [{ id: "sel-1", host: "https://github.com", login: "example-user", plan: "business", organizations: [], active: true, usedPercent: 4 }],
+    fixedToken: false,
+  };
+
+  it("GET /api/copilot-accounts returns the accounts", async () => {
+    ({ app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), listCopilotAccounts: vi.fn(async () => status) } as never,
+    }));
+
+    const res = await request(app).get("/api/copilot-accounts");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(status);
+  });
+
+  it.each([
+    ["a missing id", {}, undefined, 400],
+    ["a refused switch", { id: "sel-2" }, new CopilotAccountSwitchError("Switch after the running chat finishes.", 409, 1), 409],
+  ])("POST /api/copilot-accounts/switch answers %s", async (_case, body, error, expected) => {
+    const switchCopilotAccount = vi.fn(async () => { if (error) throw error; return status; });
+    ({ app } = createTestApp({
+      sessionManager: { ...createMockSessionManager(), switchCopilotAccount } as never,
+    }));
+
+    const res = await request(app).post("/api/copilot-accounts/switch").send(body);
+
+    expect(res.status).toBe(expected);
+    expect(typeof res.body.error).toBe("string");
+    if (error) expect(res.body.activeSessions).toBe(1);
   });
 });

@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
-import { AlertTriangle, ChevronRight, Gauge, Loader2, RotateCw, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { AlertTriangle, ChevronRight, Gauge, Loader2, RotateCw, UserRound, X } from "lucide-react";
 import type { CopilotQuotaStatus } from "../api";
 import { useCopilotQuotaQuery } from "../hooks/queries/useCopilotQuota";
 import { LoadingSkeletonRegion, Skeleton } from "./shared/Skeleton";
@@ -365,6 +366,7 @@ function CopilotQuotaDetailsDialog({
   onClose: () => void;
 }) {
   const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
+  const navigate = useNavigate();
   const failedRefresh = refreshError ?? (status?.available && error ? formatError(error) : null);
 
   return (
@@ -393,10 +395,16 @@ function CopilotQuotaDetailsDialog({
 
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
           <p className={DS.usage.meta}>Current period · all clients</p>
-          <Button size="sm" variant="ghost" onClick={onRefresh} disabled={refreshing || isLoading}
-            icon={refreshing ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}>
-            Refresh
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button size="sm" variant="ghost" icon={<UserRound size={12} />}
+              onClick={() => { onClose(); navigate("/settings?group=usage"); }}>
+              Accounts
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onRefresh} disabled={refreshing || isLoading}
+              icon={refreshing ? <Loader2 size={12} className="animate-spin" /> : <RotateCw size={12} />}>
+              Refresh
+            </Button>
+          </div>
         </div>
       </div>
     </div>

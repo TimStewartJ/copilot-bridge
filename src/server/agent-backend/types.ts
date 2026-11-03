@@ -38,6 +38,7 @@ import type {
   PermissionRequestResult,
   SectionOverride,
 } from "@github/copilot-sdk";
+import type { CopilotAccount } from "../../shared/copilot-accounts.js";
 import type { CopilotModelContextMetadata } from "../../shared/copilot-context.js";
 import type { SubagentPlan } from "../../shared/subagent-settings.js";
 import type { RuntimeFenceOptions } from "./runtime-fence.js";
@@ -384,6 +385,11 @@ export interface AgentSession {
   /** Returns the runtime switch result when the backend exposes it. */
   setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined>;
   setReasoningEffort(reasoningEffort: string): Promise<void>;
+  /**
+   * Makes a signed-in account the runtime's active one. It is saved at once and new sessions use
+   * it; runtime-wide reads (current auth, model list, quota) follow only after a runtime restart.
+   */
+  switchAccount?(accountId: string): Promise<void>;
   /** Optional compatibility facade; lifecycle owners use release(). */
   disconnect?(): Promise<unknown> | void;
   /**
@@ -695,6 +701,9 @@ export interface AgentBackend {
    * what makes a quota refresh return fresh numbers.
    */
   fetchAccountCopilotUser?(): Promise<unknown>;
+
+  /** The accounts the runtime has signed in, without their tokens. */
+  listAccounts?(): Promise<CopilotAccount[]>;
 }
 
 /**

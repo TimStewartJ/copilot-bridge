@@ -62,6 +62,7 @@ vi.mock("./settings", () => {
     ImageBudgetSection: EmptySection,
     ExperimentalSection: EmptySection,
     CopilotUsageSection: EmptySection,
+    CopilotAccountsSection: EmptySection,
     DeviceManagementSection: EmptySection,
     ManagementJobsSection: EmptySection,
     BridgeRuntimeSection: EmptySection,

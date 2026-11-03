@@ -27,6 +27,8 @@ import {
   toRuntimeSessionConfig,
 } from "./copilot-fusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
+import { signedInAccountIds, toCopilotAccounts } from "../copilot-accounts.js";
+import type { CopilotAccount } from "../../shared/copilot-accounts.js";
 import { capDeadline, createDeadline, settleByDeadline, sleepUntilDeadline, type Deadline } from "../deadline.js";
 import {
   getProcessIdentityStatuses,
@@ -441,6 +443,17 @@ class CopilotAgentSession implements AgentSession {
       return undefined;
     }
     return this.rpc("session.setModel", () => switchTo.call(this.session.rpc.model, { ...target.options, modelId: target.modelId }));
+  }
+
+  async switchAccount(accountId: string): Promise<void> {
+    const accounts = this.session?.rpc?.accounts;
+    if (typeof accounts?.set !== "function") {
+      throw new Error("Account switching is not available in this Copilot SDK build");
+    }
+    const result: any = await this.rpc("session.switchAccount", () => accounts.set.call(accounts, {
+      command: { kind: "switchActive", selectionId: accountId },
+    }));
+    if (result?.ok !== true) throw new Error("Copilot did not switch the account");
   }
 
   async setReasoningEffort(reasoningEffort: string): Promise<void> {
@@ -1550,6 +1563,27 @@ export class CopilotBackend implements AgentBackend {
       throw new Error("Account auth lookup is not available in this Copilot SDK build");
     }
     return this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account));
+  }
+
+  async listAccounts(): Promise<CopilotAccount[]> {
+    const account = (this.client as any).rpc?.account;
+    const { getAllUsers, getCurrentAuth, getQuota } = account ?? {};
+    if (typeof getAllUsers !== "function" || typeof getCurrentAuth !== "function") {
+      throw new Error("Account listing is not available in this Copilot SDK build");
+    }
+    const [users, auth] = await Promise.all([
+      this.rpc("backend.getAccountUsers", () => getAllUsers.call(account)),
+      this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account)),
+    ]) as [unknown, any];
+    const quotaById = new Map<string, unknown>();
+    if (typeof getQuota === "function") {
+      await Promise.all(signedInAccountIds(users).map(async (selectionId) => {
+        try {
+          quotaById.set(selectionId, await this.rpc("backend.getAccountUsageQuota", () => getQuota.call(account, { selectionId })));
+        } catch { /* the row shows no usage */ }
+      }));
+    }
+    return toCopilotAccounts(users, auth?.authInfo, quotaById);
   }
 
   async fetchAccountCopilotUser(): Promise<unknown> {

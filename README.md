@@ -125,7 +125,9 @@ cp .env.example .env   # Edit .env with your settings if needed
 
 The launcher and direct server entrypoint load `.env` automatically at startup. Existing exported environment variables still win over values from the file.
 
-For Copilot SDK authentication, set `BRIDGE_COPILOT_GITHUB_TOKEN` if you want Bridge to use a dedicated token and skip stored-login/`gh` fallback. Leave it empty to keep the SDK default auth discovery, including GitHub CLI fallback. Bridge uses that same SDK auth to host GitHub MCP `web_search`, so no PAT or separate OAuth app is needed for the built-in web-search path.
+For Copilot SDK authentication, set `BRIDGE_COPILOT_GITHUB_TOKEN` if you want Bridge to use a dedicated token and skip stored-login/`gh` fallback. Leave it empty to keep the SDK default auth discovery, including GitHub CLI fallback.
+
+With more than one Copilot CLI login (`copilot login` once per account), Settings > Copilot > Accounts lists them with plan and quota use and switches the one every new chat runs on. The CLI saves the choice in its own config. Switching restarts the runtime the way Refresh models does, so it is refused while a chat is running, and running chats keep their account. A non-empty `BRIDGE_COPILOT_GITHUB_TOKEN` fixes the account and turns switching off. Accounts borrowed from `gh` or token environment variables are not listed. Bridge uses that same SDK auth to host GitHub MCP `web_search`, so no PAT or separate OAuth app is needed for the built-in web-search path.
 
 GitHub work item and pull request enrichment reuses the same ambient auth: `BRIDGE_COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. With no token available it still enriches public repositories anonymously. Fully qualified references (`owner/repo#123`, an issue/PR URL, or an `owner/repo` PR repository) work without any GitHub provider settings; the optional owner/default-repo settings only resolve short references like `123` or `repo#123`.
 

@@ -16,6 +16,8 @@ import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
 import type { McpServerConfig } from "../mcp-config";
 import type { CopilotPricingModelResolutionStatus } from "../shared/copilot-pricing.js";
 import type { CopilotUsageRangeKey } from "../shared/copilot-usage-range.js";
+import type { CopilotAccountsStatus } from "../shared/copilot-accounts.js";
+export type { CopilotAccount, CopilotAccountsStatus } from "../shared/copilot-accounts.js";
 import type {
   CopilotContextTier,
   CopilotModelContextMetadata,
@@ -2381,6 +2383,14 @@ export async function fetchCopilotQuota(options?: {
   return apiFetch<CopilotQuotaStatus>(`/api/copilot-usage/quota${query}`, undefined, {
     signal: options?.signal,
   });
+}
+
+export async function fetchCopilotAccounts(signal?: AbortSignal): Promise<CopilotAccountsStatus> {
+  return apiFetch<CopilotAccountsStatus>("/api/copilot-accounts", undefined, { signal });
+}
+
+export async function switchCopilotAccount(id: string): Promise<CopilotAccountsStatus> {
+  return apiFetch<CopilotAccountsStatus>("/api/copilot-accounts/switch", { id });
 }
 
 // ── Settings API ──────────────────────────────────────────────────
