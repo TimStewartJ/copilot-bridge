@@ -26,6 +26,7 @@ Add a rule here only if it applies across the repository and no check enforces i
 - While implementing, run `npm run check:fast` and the lane for the area you changed: `check:client`, `check:server`, `check:packages`, `check:integration`, `check:launcher`, `check:staging`, or `check:native`.
 - `npm run check:pr` is the review gate. `staging_preview` runs it, and `staging_deploy` runs it when preview validation was skipped or invalidated, so do not run it by hand right before them. Outside that workflow, run it before asking for review.
 - Documentation-only edits need no test run unless they change generated docs, scripts, examples, or validation guidance.
+- Docs must not copy figures that another file determines: package versions, download or definition sizes, counts, totals worked out from several constants, or benchmark results. Name the file or constant that holds the value instead. A single configured limit can be stated, ideally with its constant named. A measurement kept as evidence says what it was measured on.
 
 ## Cross-platform code
 

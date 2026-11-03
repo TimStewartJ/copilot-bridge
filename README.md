@@ -53,7 +53,7 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
   - Regular sessions and deferred workers also persist a `tool.failure` span immediately for each failed call, independently of the bounded worker trace. Both use the same classifier and retain structured status/error codes, retry delays and request/correlation IDs when available, plus call timing and session/watch identifiers. Diagnostic fields are restricted and bounded; unfamiliar structured codes are retained without requiring a known-code mapping. Raw errors, arguments and result bodies are not copied into these spans. Missing diagnostics remain absent. Spans retain the existing seven-day lifetime. Failure classification and retry guidance do not automatically replay tools or change a worker's reported outcome.
 - **Provider enrichment** - optional Azure DevOps, GitHub, and Linear integrations for richer work item and pull request cards.
 - **Tool-rich automation** - built-in task/doc/schedule tools, web search, browser fetch/exec/session tools, and optional desktop computer use. Computer use is the Computer Use plugin that ships with the Copilot SDK, loaded per session when Settings > Integrations > Computer use is on. First-prompt tool initialization is shared by runtime handle and must finish before sending. Slow discovery at 30 seconds reports progress, not failure; the hard readiness budget covers both bounded backend RPCs. Failed initialization never counts as ready. Timing and outcome are recorded as `session.tools.initialization` telemetry spans.
-- **Tool loading** - every Copilot session is created and resumed with tool search on, including helpers, scheduled/defer work, and custom agents. MCP servers stay fully loaded unless a server's own settings say otherwise (`deferTools`), and so do most Bridge tools. The Bridge tools chats rarely use (`DEFERRED_BRIDGE_TOOL_NAMES` in `src/server/bridge-native-tools.ts`, about 23K characters of definitions) load on demand: the runtime lists their names and the model loads them with `tool_search_tool`. Helm's own sessions keep every tool loaded. Existing server selections, tool allowlists/exclusions, and permission policies still apply. `copilot-tool-loading.native.test.ts` checks the model request payloads on create, model and agent switch, subagents and cold resume.
+- **Tool loading** - every Copilot session is created and resumed with tool search on, including helpers, scheduled/defer work, and custom agents. MCP servers stay fully loaded unless a server's own settings say otherwise (`deferTools`), and so do most Bridge tools. The Bridge tools chats rarely use (`DEFERRED_BRIDGE_TOOL_NAMES` in `src/server/bridge-native-tools.ts`) load on demand: the runtime lists their names and the model loads them with `tool_search_tool`. Helm's own sessions keep every tool loaded. Existing server selections, tool allowlists/exclusions, and permission policies still apply. `copilot-tool-loading.native.test.ts` checks the model request payloads on create, model and agent switch, subagents and cold resume.
 - **Workspace customization** - model, reasoning effort, agent identity, custom instructions, theme, favicon, and MCP server registry from the UI.
 - **Repository configuration discovery** - ordinary chats discover supported Copilot configuration from their resolved workspace on creation and resume, including project skills and custom agents. Personal and Bridge-bundled skill directories remain available, and Bridge's explicit session configuration takes precedence. Repository file hooks are explicitly disabled; naming helpers, deferred workers, and Helm's looks keep configuration discovery off. Existing chats pick up the change when their runtime handle is next resumed. The Skills page lists personal, pack and Bridge-bundled skills, not the workspace-specific runtime catalog.
 - **Moving chats to another model** - "Move existing chats to another model", a closed line under Settings > Chat > New chats, switches every chat that is not archived from one model to another, for when a model is replaced. The same move is available to scripts; see [Moving chats to another model](#moving-chats-to-another-model).
@@ -70,13 +70,13 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
   - **Outside sources** - **Settings → Helm → Sources Helm may read** lets the looks call chosen tools of this Bridge's local (command) MCP servers, such as a mail reader; only tools that declare themselves read-only (`readOnlyHint`, not destructive) can be chosen, and the server has to make sure of it. The Bridge is the MCP client: it starts each chosen server when a look begins (through the process host), offers the look one tool, `read_source`, that refuses anything not chosen, wraps every result in `<<<OUTSIDE_SOURCE …>>>` markers with a random id, caps each result (40K characters), each message (2 MB) and the look's total (240K characters), and ends the servers' process trees when the look ends or the Bridge shuts down. The packet tells the look when each source was last read by a look that published, so mail missed while a source was down is read next time. Everything a look writes is marked with the sources that may have shaped it, read in that look or carried in through memory or the last brief; Home shows which sources a look read, items say *From …*, What Helm knows shows *may draw on …*, and `helm_brief` hands those parts to Helm's chat marked as outside content.
   - **Helm's memory** - **What Helm knows** (`/helm/memory`) shows what every run starts from: your priorities and rules, one thread line per live task, people, dates and a standing picture (under 4,000 words), each with its source and when it was last confirmed. Memory points to tasks and conversations instead of copying them; each run is given only what changed since the last finished run (all of it on the last run of Sunday), and entries not confirmed for 30 days are sent back to be re-checked. Helm never changes or drops what you wrote or kept; it proposes new rules and priorities, which you keep or forget. Each kind has a size limit (priorities 15, rules 40, threads 120, people and dates 50). "Not for Helm", Done, answers and undos go back to the next run as feedback. The fast Helm chat reads the brief (`helm_brief`) and saves what you ask it to remember (`remember`). Peer Bridges are read over HTTP at the URL you configure (no redirects followed) and are only changed by your clicks.
 - **Hands-free in any chat** - the hands-free button in a chat's composer, Helm's included, lets you talk to that chat and hear its replies. Hands-free is a layer on top of the chat, not a mode of it: the chat gets your words as ordinary messages, at its own model and effort, and writes ordinary replies; nothing about speech is added to its instructions. One chat listens at a time; the dock sits above that chat's composer and a pill follows you elsewhere.
-  - **The layer's own model** - the *Hands-free* row in **Settings → Models** (Fast until you choose; on a tier it runs at `low`; if the tier has no model yet, the *Small jobs* model). Each call is a fresh helper session (`hands-free-model.ts`). It decides what each thing you said is for: send it to the chat (fixing only misheard names from the names list, never rephrasing), ignore it (talk not meant for the chat, shown in the dock as *Not sent* with **Send**), report progress, stop the work, repeat, read the whole reply, keep replies short, or leave. Measured 26 Oct 2026 on gpt-6.1-terra at `low`: 46 of 46 routing cases right, median 1.26 s (first token 0.97 s, p90 1.66 s). Without an answer it sends the words, as hands-free did before.
+  - **The layer's own model** - the *Hands-free* row in **Settings → Models** (Fast until you choose; on a tier it runs at `low`; if the tier has no model yet, the *Small jobs* model). Each call is a fresh helper session (`hands-free-model.ts`). It decides what each thing you said is for: send it to the chat (fixing only misheard names from the names list, never rephrasing), ignore it (talk not meant for the chat, shown in the dock as *Not sent* with **Send**), report progress, stop the work, repeat, read the whole reply, keep replies short, or leave. Without an answer it sends the words, as hands-free did before.
   - **Fixed phrases first** - "stop" / "be quiet" stops speech only; "cancel that" / "stop working" stops the chat's running work (only the run you meant); "how's it going" / "is it done yet" is answered from the run's activity and never sent to the chat; "say that again" and "read me the whole thing" are handled without the model, as are sleep and leaving. While the chat is working, anything else you say steers it.
   - **Replies and progress** - an acknowledgement ("On it.", "Got it, I'll pass that on.") as soon as the message is sent. Every run of the chat while hands-free is on is followed (typed ones too); when it finishes, a short plain reply is read word for word and a longer one is summarized with an offer to read the whole thing (say yes and long replies in that chat are read in full from then on). A long run says how it is going by itself at 20 s, 50 s and then every 90 s, from its tool steps; a question it asks is announced as on screen. Hands-free does not fall asleep while the chat is working, and what it wanted to say waits for a gap in your speech. If hands-free reconnects within five minutes, the layer knows, so "what did you say?" repeats the last thing said.
   - **Long speech stays complete** - recordings and long hands-free turns use recognition chunks capped at 20 seconds, including padding, even when steady noise hides pauses. This prevents the recognizer dropping whole sentences from oversized input.
   - **Hands-free from a phone app** - an HTTP voice client that reconnects to the same voice conversation within its 60-second grace is sent, again, every part of the current reply it has not started playing (the hello says `resendsAudio`); the web page keeps its own scheduled audio and is not. Short transcripts that repeat the assistant's own recent words count as echo, not barge-in. Tether starts hands-free with `helmSessionId` and reads it back in the hello; both still work (`sessionId` is the new name).
   - **Voice pipeline** - speech detection, Smart Turn end-of-turn detection, Parakeet speech recognition, and Kokoro voices run locally in an isolated engine process; only text reaches your Copilot model. Barge-in, sleep and the "Hey Bridge" wake phrase (the first spoken clause is at most 45 characters and speech synthesis gets half the CPU threads, so audio starts sooner), and announcements when chats Helm dispatched finish. Hands-free settings (voice, speed, patience, announcements, names list) are in **Settings → Voice** and the dock's settings button. Audio streams over WebSocket, falling back to HTTP POST + SSE for tunnels and proxies that block upgrades. Per-conversation JSONL logs live in `data/voice/logs`. `/voice` redirects to Helm.
-- **Local speech engine** - one on-demand install (~920 MB of pinned, digest-verified packages and models in `data/voice`, override with `BRIDGE_VOICE_DIR`) from **Settings → Voice** or the first time you go hands-free. It powers both hands-free and the chat mic: where WebCodecs Opus is available (Chrome, Edge, desktop Firefox, Safari 26+), the browser encodes mono capture at 32 kbit/s as Ogg Opus while retaining a 16 kHz WAV fallback: about an eighth of the upload. Opus is lossy, so transcripts can differ slightly from WAV. Unsupported or failed encodings use WAV, and `BRIDGE_TRANSCRIPTION_OPUS_UPLOADS=false` disables compression for new recordings. Encoding uses a 48 kHz capture clock to preserve codec delay and exact recording length; then the engine transcribes recordings on the CPU with Parakeet v3 (25 European languages, automatic punctuation), split at pauses so long clips never hold up a live conversation. A recording can run for 5 minutes (`BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS`): the composer shows the clock against that limit and, on reaching it, stops and submits what it has. The engine process starts on first use, loads only the models a feature needs, and exits after 10 idle minutes.
+- **Local speech engine** - one on-demand install (pinned, digest-verified packages and models listed in `src/server/voice/voice-catalog.ts`, stored in `data/voice`, override with `BRIDGE_VOICE_DIR`; the download button shows the size) from **Settings → Voice** or the first time you go hands-free. It powers both hands-free and the chat mic: where WebCodecs Opus is available (Chrome, Edge, desktop Firefox, Safari 26+), the browser encodes mono capture at 32 kbit/s as Ogg Opus while retaining a 16 kHz WAV fallback: about an eighth of the upload. Opus is lossy, so transcripts can differ slightly from WAV. Unsupported or failed encodings use WAV, and `BRIDGE_TRANSCRIPTION_OPUS_UPLOADS=false` disables compression for new recordings. Encoding uses a 48 kHz capture clock to preserve codec delay and exact recording length; then the engine transcribes recordings on the CPU with Parakeet v3 (25 European languages, automatic punctuation), split at pauses so long clips never hold up a live conversation. A recording can run for 5 minutes (`BRIDGE_TRANSCRIPTION_MAX_DURATION_SECONDS`): the composer shows the clock against that limit and, on reaching it, stops and submits what it has. The engine process starts on first use, loads only the models a feature needs, and exits after 10 idle minutes.
 - **Cancel a chat recording** - while the mic is starting or recording, **Cancel** (or Escape with focus in the composer) stops the microphone and discards its audio without transcribing or sending. Typed text, attachments and the selected send mode stay unchanged. Stop still submits the recording; once finishing or uploading begins, Cancel is no longer offered. Leaving the chat during a recording still submits what was captured.
 - **Speech engine setup on locked-down hosts** - the npm packages are fetched with the machine's own npm client (`npm pack`), so a private registry and its credentials, proxy and CA settings apply exactly as they did when Bridge itself was installed; the models come over HTTPS from GitHub Releases and Hugging Face. Everything is checked against a pinned digest whichever way it arrives. A host that can reach neither source can still be set up: copy the archives into `data/voice/downloads` (`npm pack <name>@<version>` produces the package files) and run setup again, which uses them without touching npm or the network. A failed setup names the file, the real reason (npm's error code or the connection error behind "fetch failed"), and those by-hand steps. If Node itself cannot connect because of a required proxy or TLS inspection, start Bridge with Node's own switches for that: `NODE_OPTIONS=--use-env-proxy` or `--use-system-ca` (Node 22.21+), or `NODE_EXTRA_CA_CERTS`.
 
@@ -131,8 +131,8 @@ GitHub work item and pull request enrichment reuses the same ambient auth: `BRID
 
 ### Copilot Runtime
 
-Bridge uses `@github/copilot-sdk` 1.0.28 and launches the pinned `@github/copilot` CLI (1.0.105 stable) through its npm
-loader, so a CLI release can be validated independently of the SDK's bundled runtime (also 1.0.105). Install optional dependencies
+Bridge uses `@github/copilot-sdk` and launches the `@github/copilot` CLI through its npm loader. `package.json` pins
+both versions separately, so a CLI release can be validated independently of the runtime the SDK bundles. Install optional dependencies
 (the npm default) so the platform-specific CLI and SDK packages are present; no separate CLI runtime override or
 wrapper is needed. The SDK natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge
 tool-loading metadata.
@@ -159,7 +159,7 @@ At High and Max, Fusion can have another model review a step's answer and replac
 a turn's messages and tool calls only once the turn commits. While a turn runs, Bridge shows the runtime's
 progress reports as its status: which model is on which step and how many tools have run.
 
-Fusion reports a conservative budget for itself (128K at High and Max), but each step runs within the window of
+Fusion reports a conservative budget for itself, but each step runs within the window of
 the model doing it, and the runtime compacts at 80% of that window or when a switch moves the chat to a model it
 no longer fits. The context meter therefore follows the window of the model that ran the last step; after a
 model switch or a new Fusion limit (the server reports when, as `budgetChangedAt` with usage), the runtime's
@@ -168,8 +168,9 @@ Experimental can raise the limit for every Fusion step through the runtime's `mo
 runtime drops that override on resume and on a switch to another model, so the Copilot backend applies it on
 create, after a resume onto Fusion and on every switch to Fusion (`agent-backend/copilot-fusion.ts`), and saving
 a new limit evicts cached sessions so it reaches each chat with its next message. Larger prompts cost more: GPT
-models bill prompts over 272K at their long-context rate, and the runtime counts a Claude prompt about a third
-lower than Anthropic does, so Settings offers at most 600K.
+models bill prompts past a threshold at a higher long-context rate, and the runtime counts a Claude prompt lower
+than Anthropic does, so the choices Settings offers (`FUSION_CONTEXT_TOKEN_CHOICES` in
+`src/shared/experimental-settings.ts`) stay well below the largest model windows.
 
 ### Packaged Release Mode
 
@@ -236,7 +237,7 @@ Three forwarding failures in the last five verified observations recycle only th
 
 Dev Tunnels sends a visitor to one sign-in provider per tunnel, so mixing Microsoft and GitHub rules on one tunnel sends browsers without a cookie to the wrong sign-in page. To offer both, list two tunnels, each with one kind of rule. Each additional tunnel gets its own `tunnel-runtime-<name>.json` state file. The Bridge has no sign-in of its own, so each tunnel's access control is the whole security boundary.
 
-A tunnel owned by a GitHub account can run next to tunnels owned by the devtunnel CLI's login: list it as `github:<name>`. The CLI holds one login at a time, so instead of using it the launcher reads the github.com credential that Git Credential Manager (or another git credential helper) stores for HTTPS, asks the Dev Tunnels API for a host token for that tunnel, and runs `devtunnel host <name>.<cluster> --access-token -` with the token on stdin. Host tokens last about 24 hours; the launcher fetches the next one an hour before expiry and restarts the host with it, a gap of a few seconds. Prompts are disabled, so if the credential is missing or revoked the launcher logs why and retries; sign in once with a git command over HTTPS to github.com to fix it. With owner-only access, only that GitHub account can open the tunnel. To create one, run `devtunnel user login -g`, `devtunnel create <name>` and `devtunnel port create <name> -p 3333`, then log the CLI back in to the account that owns your other tunnels.
+A tunnel owned by a GitHub account can run next to tunnels owned by the devtunnel CLI's login: list it as `github:<name>`. The CLI holds one login at a time, so instead of using it the launcher reads the github.com credential that Git Credential Manager (or another git credential helper) stores for HTTPS, asks the Dev Tunnels API for a host token for that tunnel, and runs `devtunnel host <name>.<cluster> --access-token -` with the token on stdin. Host tokens expire; the launcher fetches the next one an hour before expiry and restarts the host with it, a gap of a few seconds. Prompts are disabled, so if the credential is missing or revoked the launcher logs why and retries; sign in once with a git command over HTTPS to github.com to fix it. With owner-only access, only that GitHub account can open the tunnel. To create one, run `devtunnel user login -g`, `devtunnel create <name>` and `devtunnel port create <name> -p 3333`, then log the CLI back in to the account that owns your other tunnels.
 
 To start the packaged release automatically when you sign in, run this from the extracted release root:
 
@@ -577,7 +578,7 @@ defer turns are not automatically continued. Expiring a resume barrier also requ
 fenced recovery rather than admitting another handle.
 
 **Contract limit:** release acknowledges SDK handle ownership, not zero remaining OS
-processes. Pinned SDK 1.0.13 / CLI 1.0.84-3 Linux experiments found attached children
+processes. Linux experiments on SDK 1.0.13 / CLI 1.0.84-3 found attached children
 draining for about five seconds after release, even with the former reaper or an
 additional native close call. Do not infer process exit from an empty task list,
 successful resume, or healthy ping.
@@ -588,8 +589,7 @@ Before sending a turn, the Copilot adapter refreshes tool exclusions for its mod
 `task_complete` is hidden outside Autopilot, and Autopilot restores the configured
 exclusions. Other tool filters are preserved. This also refreshes the tool's system
 instructions, avoiding a rejected completion attempt and a second answer after leaving
-Autopilot. The workaround is needed for CLI 1.0.95 through the tested 1.0.98-0 preview;
-remove it once a native mode-switch test passes without the explicit filter refresh.
+Autopilot. The workaround dates from CLI 1.0.95; remove it once a native mode-switch test passes without the explicit filter refresh.
 
 ### Messages the agent never got
 
@@ -605,7 +605,7 @@ Stop before anything reached the runtime ends the run at once, and nothing is se
 message sent right after waits for the stopped run to let go of the chat (up to 45 s) and then
 starts normally instead of being queued. A repeated `clientMessageId` is never run twice.
 
-A Bridge-made chat whose runtime never saved a message cannot be resumed (CLI 1.0.105 answers
+A Bridge-made chat whose runtime never saved a message cannot be resumed (the runtime answers
 "Session not found"); it is created again under the same id with its model, playbook and
 launch agent. Spoken messages and agent-to-chat messages are not kept this way.
 
@@ -703,7 +703,7 @@ verification, survivor, and child-exit timings and errors. No failed retirement
 episode is retried. A timed-out RPC triggers a liveness probe. The runtime is declared
 lost at once when its process exits, the pipe closes, or a ping fails for a reason other
 than a timeout. While the transport still looks alive, it is declared lost only after
-three consecutive pings that time out with the runtime silent, about 18 seconds. That
+three consecutive pings (`BACKEND_PING_ATTEMPTS`) that time out with the runtime silent. That
 indicates unresponsiveness, not proof that the runtime process crashed or its transport
 physically closed.
 
@@ -713,8 +713,8 @@ Bridge's own main thread is busy a reply the runtime already sent waits behind
 everything that arrived before it. Output from the runtime during a ping therefore
 means "alive, and the Bridge is behind": the probe logs that once, keeps pinging
 without counting, and ends as healthy as soon as any of its pings is answered,
-however late. A runtime that keeps sending but answers none of fifty such pings (at
-least five minutes) is declared lost after all.
+however late. A runtime that keeps sending but answers none of fifty such pings
+(`BACKEND_PING_BEHIND_ATTEMPTS`) is declared lost after all.
 
 The Bridge also replaces a runtime that reported no failure, when a session release is
 still held 60 seconds after it began, when a second session resume times out while an
@@ -722,13 +722,13 @@ earlier one is still unsettled, or when a timed-out resume has not settled a min
 later. Those deadlines run on the Bridge's clock, which is the wrong clock when the
 Bridge is the one behind, so each of them is decided by one rule:
 
-- At the deadline the Bridge sends a ping of its own. Answered within its five seconds,
+- At the deadline the Bridge sends a ping of its own. Answered within its timeout
+  (`backend.ping` in `src/server/agent-backend/rpc-timeouts.ts`),
   it shows that the Bridge has handled everything the runtime wrote before that answer.
   If the release or resume is still open then, the runtime is replaced: one ping after
   the deadline.
-- Not answered in time, the liveness probe above decides. A silent runtime is declared
-  lost by it about 23 seconds after the deadline, which is 83 seconds after a release
-  began. A late answer means the Bridge was behind: nothing is replaced, and the wait
+- Not answered in time, the liveness probe above decides, and declares a silent runtime
+  lost. A late answer means the Bridge was behind: nothing is replaced, and the wait
   starts once more, for one more minute and only once, because a release or resume is
   several requests and a later one may itself have been waiting on the Bridge. After
   that minute the Bridge pings again and replaces the runtime if the wait is still
