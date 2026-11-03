@@ -113,4 +113,51 @@ describe("calendar API", () => {
     expect(ctx.calendarStore!.listEvents().map((event) => event.id)).toEqual([local.eventId]);
     expect((await call("calendar_event_delete", { eventId: "missing" })).resultType).toBe("failure");
   });
+
+  it("keeps where an imported event came from and lists every import source", async () => {
+    const { ctx } = createTestApp();
+    const tools = new Map(getBridgeToolDefinitions(ctx).map((tool) => [tool.name, tool]));
+    const call = (name: string, args: Record<string, unknown>) => tools.get(name)!.handler(args, {}) as Promise<any>;
+    const at = (day: number) => `2031-05-0${day}T09:00:00-07:00`;
+
+    const saved = await call("calendar_event_create", { events: [
+      { title: "Standup", start: at(5), timezone: ZONE, externalId: "a:1", source: " Work-Mail " },
+      { title: "Far away", start: "2031-09-01T09:00:00-07:00", timezone: ZONE, externalId: "b:1", source: "family" },
+      { title: "Unnamed", start: at(6), timezone: ZONE, externalId: "c:1" },
+      { title: "Dentist", start: at(7), timezone: ZONE },
+    ] });
+    expect(saved).toMatchObject({ success: true, created: 4 });
+    expect(ctx.calendarStore!.getEvent(saved.results[0].eventId)?.source).toBe("work-mail");
+
+    // Sources cover every stored event, not just the window, so the filters stay put between weeks.
+    const listed = await call("calendar_list", { from: "2031-05-05", to: "2031-05-11", timezone: ZONE });
+    expect(listed.importedSources).toEqual(["family", "work-mail", "imported"]);
+    expect(listed.items.filter((item: { kind: string }) => item.kind === "event").map((item: { title: string; source?: string }) => [item.title, item.source]))
+      .toEqual([["Standup", "work-mail"], ["Unnamed", undefined], ["Dentist", undefined]]);
+
+    // Re-importing without a source clears it, like any other field the import leaves out.
+    expect(await call("calendar_event_create", { title: "Standup", start: at(5), timezone: ZONE, externalId: "a:1" })).toMatchObject({ result: "updated" });
+    expect(ctx.calendarStore!.getEvent(saved.results[0].eventId)?.source).toBeUndefined();
+
+    expect((await call("calendar_event_create", { title: "Own", start: at(8), timezone: ZONE, source: "outlook" })).textResultForLlm).toContain("source needs an externalId");
+    expect((await call("calendar_event_create", { title: "Bad", start: at(8), timezone: ZONE, externalId: "d:1", source: "has space" })).resultType).toBe("failure");
+  });
+
+  it("gives own events and each source a colour the person can change", async () => {
+    const { app, ctx } = createTestApp();
+    ctx.calendarStore!.saveEvents([
+      { title: "Standup", allDay: false, start: "2031-05-05T09:00:00-07:00", timezone: ZONE, externalId: "o:1", source: "outlook" },
+      { title: "Hike", allDay: false, start: "2031-05-06T09:00:00-07:00", timezone: ZONE, externalId: "f:1", source: "family" },
+    ]);
+    const colors = async () => (await request(app).get("/api/calendar").query({ from: "2031-05-05", to: "2031-05-11", timezone: ZONE })).body.colors;
+    expect(await colors()).toEqual({ own: "emerald", sources: { family: "slate", outlook: "blue" } });
+
+    expect((await request(app).patch("/api/calendar/colors").send({ own: "amber", sources: { family: "rose" } })).status).toBe(200);
+    expect((await request(app).patch("/api/calendar/colors").send({ sources: { outlook: "indigo" } })).status).toBe(200);
+    expect(await colors()).toEqual({ own: "amber", sources: { family: "rose", outlook: "indigo" } });
+
+    expect((await request(app).patch("/api/calendar/colors").send({ own: "teal" })).status).toBe(400);
+    expect((await request(app).patch("/api/calendar/colors").send({ sources: { "Not A Source": "blue" } })).status).toBe(400);
+    expect(await colors()).toEqual({ own: "amber", sources: { family: "rose", outlook: "indigo" } });
+  });
 });

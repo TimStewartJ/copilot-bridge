@@ -10,6 +10,10 @@ import {
   CALENDAR_MAX_ALL_DAY_SPAN_DAYS,
   CALENDAR_MAX_BATCH,
   CALENDAR_MAX_EXTERNAL_ID,
+  CALENDAR_SOURCE_RE,
+  CALENDAR_COLORS,
+  isCalendarColor,
+  type CalendarColor,
   CALENDAR_MAX_LOCATION,
   CALENDAR_MAX_NOTES,
   CALENDAR_MAX_TIMED_SPAN_MS,
@@ -41,8 +45,9 @@ export class CalendarNotFoundError extends Error {
   }
 }
 
-const EDITABLE_FIELDS = ["title", "allDay", "start", "end", "timezone", "repeat", "location", "notes", "taskId", "externalId"] as const;
+const EDITABLE_FIELDS = ["title", "allDay", "start", "end", "timezone", "repeat", "location", "notes", "taskId", "externalId", "source"] as const;
 const REPEAT_EVERY = new Set(["day", "week", "month", "year"]);
+const COLORS_KEY = "calendar:colors";
 
 type EventFields = Omit<CalendarEvent, "id" | "createdBy" | "createdAt" | "updatedAt">;
 
@@ -62,6 +67,14 @@ function optionalExternalId(value: unknown): string | undefined {
   if (typeof value !== "string") fail("externalId must be a string or null");
   if (value.length > CALENDAR_MAX_EXTERNAL_ID) fail(`externalId must be at most ${CALENDAR_MAX_EXTERNAL_ID} characters`);
   return value;
+}
+
+function optionalSource(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") fail("source must be a string or null");
+  const name = value.trim().toLowerCase();
+  if (!CALENDAR_SOURCE_RE.test(name)) fail("source must be a short name such as outlook: up to 32 lowercase letters, digits, dots, dashes or underscores");
+  return name;
 }
 
 function checkBatchSize(list: unknown, what: string): unknown[] {
@@ -125,6 +138,9 @@ function validateFields(input: Record<string, unknown>): EventFields {
   const taskId = input.taskId === undefined || input.taskId === null || input.taskId === "" ? undefined : input.taskId;
   if (taskId !== undefined && typeof taskId !== "string") fail("taskId must be a string or null");
   const externalId = optionalExternalId(input.externalId);
+  const source = optionalSource(input.source);
+  // The source says where an imported event came from, so only an imported event has one.
+  if (source && !externalId) fail("source needs an externalId");
   return {
     title,
     allDay: input.allDay,
@@ -136,6 +152,7 @@ function validateFields(input: Record<string, unknown>): EventFields {
     ...(optionalText(input.notes, "notes", CALENDAR_MAX_NOTES) ? { notes: optionalText(input.notes, "notes", CALENDAR_MAX_NOTES) } : {}),
     ...(taskId ? { taskId } : {}),
     ...(externalId ? { externalId } : {}),
+    ...(source ? { source } : {}),
   };
 }
 
@@ -144,7 +161,7 @@ function columnValues(fields: EventFields): Array<string | number | null> {
   return [
     fields.title, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timezone,
     fields.repeat?.every ?? null, fields.repeat?.interval ?? null, fields.repeat?.until ?? null,
-    fields.location ?? null, fields.notes ?? null, fields.taskId ?? null, fields.externalId ?? null,
+    fields.location ?? null, fields.notes ?? null, fields.taskId ?? null, fields.externalId ?? null, fields.source ?? null,
   ];
 }
 
@@ -172,6 +189,7 @@ function rowToEvent(row: Record<string, unknown>): CalendarEvent {
     ...(row.notes ? { notes: String(row.notes) } : {}),
     ...(row.taskId ? { taskId: String(row.taskId) } : {}),
     ...(row.externalId ? { externalId: String(row.externalId) } : {}),
+    ...(row.source ? { source: String(row.source) } : {}),
     createdBy: row.createdBy === "agent" ? "agent" : "user",
     createdAt: String(row.createdAt),
     updatedAt: String(row.updatedAt),
@@ -192,11 +210,11 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     const values = columnValues(fields);
     if (insert) {
       db.prepare(`INSERT INTO calendar_events (title, allDay, start, "end", timezone, repeatEvery, repeatInterval, repeatUntil,
-        location, notes, taskId, externalId, id, createdBy, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        location, notes, taskId, externalId, source, id, createdBy, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(...values, id, createdBy, createdAt, now);
     } else {
       db.prepare(`UPDATE calendar_events SET title = ?, allDay = ?, start = ?, "end" = ?, timezone = ?, repeatEvery = ?, repeatInterval = ?,
-        repeatUntil = ?, location = ?, notes = ?, taskId = ?, externalId = ?, updatedAt = ? WHERE id = ?`).run(...values, now, id);
+        repeatUntil = ?, location = ?, notes = ?, taskId = ?, externalId = ?, source = ?, updatedAt = ? WHERE id = ?`).run(...values, now, id);
     }
   }
 
@@ -305,7 +323,44 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     return { deleted, notFound };
   }
 
-  return { getEvent, listEvents, saveEvents, updateEvent, deleteEvent, deleteEvents };
+  /** The colours the person chose; kinds of event they never chose a colour for are absent. */
+  function getColors(): { own?: CalendarColor; sources: Record<string, CalendarColor> } {
+    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(COLORS_KEY) as { value?: unknown } | undefined;
+    try {
+      const stored = JSON.parse(typeof row?.value === "string" ? row.value : "{}") as unknown;
+      if (!isRecord(stored)) return { sources: {} };
+      const sources = isRecord(stored.sources)
+        ? Object.fromEntries(Object.entries(stored.sources).filter((entry): entry is [string, CalendarColor] => isCalendarColor(entry[1])))
+        : {};
+      return { ...(isCalendarColor(stored.own) ? { own: stored.own } : {}), sources };
+    } catch {
+      return { sources: {} };
+    }
+  }
+
+  /** Sets the colour of the person's own events and of any sources named; others keep theirs. */
+  function setColors(body: unknown): void {
+    if (!isRecord(body)) fail("Request body must be an object");
+    const unknown = Object.keys(body).filter((key) => key !== "own" && key !== "sources");
+    if (unknown.length) fail(`Unknown field: ${unknown.join(", ")}`);
+    const colorError = `a colour must be one of: ${CALENDAR_COLORS.join(", ")}`;
+    if (body.own !== undefined && !isCalendarColor(body.own)) fail(`own: ${colorError}`);
+    if (body.sources !== undefined && !isRecord(body.sources)) fail("sources must be an object of source names to colours");
+    const sources = (body.sources ?? {}) as Record<string, unknown>;
+    for (const [source, color] of Object.entries(sources)) {
+      if (!CALENDAR_SOURCE_RE.test(source)) fail(`Unknown source name "${source}"`);
+      if (!isCalendarColor(color)) fail(`sources.${source}: ${colorError}`);
+    }
+    const current = getColors();
+    const next = {
+      ...(body.own ? { own: body.own } : current.own ? { own: current.own } : {}),
+      sources: { ...current.sources, ...(sources as Record<string, CalendarColor>) },
+    };
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(COLORS_KEY, JSON.stringify(next));
+    emitChange();
+  }
+
+  return { getEvent, listEvents, saveEvents, updateEvent, deleteEvent, deleteEvents, getColors, setColors };
 }
 
 export type CalendarStore = ReturnType<typeof createCalendarStore>;

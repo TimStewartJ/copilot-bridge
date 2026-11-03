@@ -969,7 +969,8 @@ function initSchema(db: DatabaseSync): void {
       createdBy TEXT NOT NULL DEFAULT 'user',
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL,
-      externalId TEXT
+      externalId TEXT,
+      source TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_taskId ON calendar_events(taskId);
 
@@ -1039,6 +1040,8 @@ function initSchema(db: DatabaseSync): void {
   // An event's ID in the calendar it was imported from, so a repeat import updates it in place.
   addColumn("calendar_events", "externalId", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");
+  // The calendar an imported event comes from, so the calendar can say where it came from.
+  addColumn("calendar_events", "source", "TEXT");
 
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {

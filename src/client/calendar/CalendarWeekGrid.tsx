@@ -3,12 +3,12 @@
 // day, and their bottom edge dragged to change when they end; imported events only open. Other
 // dates open where they live.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { CalendarItem, CalendarResponse } from "../../shared/calendar";
+import type { CalendarColors, CalendarItem, CalendarResponse } from "../../shared/calendar";
 import { DS, cx } from "../design/tokens";
 import { useNow } from "../hooks/useNow";
 import { haptic } from "../lib/haptics";
 import { addDaysKey, draggedTimes, layoutLanes, minutesIntoDay, parseDateKey, snapMinutes, toDateKey, wallMinutes, type DragChange } from "./calendar-model";
-import { KindIcon, itemDayKeys, itemSurface, itemTime, itemTitle, type CalendarLayer } from "./calendar-ui";
+import { EventBar, KindIcon, itemDayKeys, itemShown, itemSurface, itemTime, itemTitle, type CalendarLayer } from "./calendar-ui";
 
 const HOUR_PX = 48;
 const ALL_DAY_SHOWN = 3;
@@ -31,6 +31,8 @@ interface Props {
   days: string[];
   data: CalendarResponse | undefined;
   layers: Record<CalendarLayer, boolean>;
+  /** Import sources the person has hidden. */
+  hiddenSources: readonly string[];
   onOpenItem: (item: CalendarItem) => void;
   onOpenDay: (day: string) => void;
   /** Changes an event's time; resolves once saved. */
@@ -65,7 +67,7 @@ function nextTimes(item: CalendarItem, change: DragChange): { start: string; end
   return draggedTimes(item.start, item.end ?? item.start, change);
 }
 
-export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpenDay, onMoveEvent, pending }: Props) {
+export default function CalendarWeekGrid({ days, data, layers, hiddenSources, onOpenItem, onOpenDay, onMoveEvent, pending }: Props) {
   const now = useNow(true, 60_000);
   const today = toDateKey(new Date(now));
   const scroller = useRef<HTMLDivElement>(null);
@@ -84,11 +86,11 @@ export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpe
   }, []);
 
   // While a drag is live the item is drawn where it would land.
-  const visible = useMemo(() => (data?.items ?? []).filter((item) => layers[item.kind]).map((item) => {
+  const visible = useMemo(() => (data?.items ?? []).filter((item) => itemShown(item, layers, hiddenSources)).map((item) => {
     if (drag?.moved && drag.item.id === item.id) return { ...item, ...nextTimes(item, drag.change) };
     const saving = item.eventId ? pending.get(item.id) : undefined;
     return saving ? { ...item, ...saving } : item;
-  }), [data, layers, drag, pending]);
+  }), [data, layers, hiddenSources, drag, pending]);
   const byDay = useMemo(() => {
     const allDay = new Map<string, CalendarItem[]>();
     const timed = new Map<string, CalendarItem[]>();
@@ -227,8 +229,9 @@ export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpe
                   onClick={movable(item) ? undefined : () => onOpenItem(item)}
                   onKeyDown={(event) => { if (movable(item) && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onOpenItem(item); } }}
                   title={`${itemTitle(item)}${item.taskTitle ? ` · ${item.taskTitle}` : ""}`}
-                  className={cx(DS.focus, itemSurface(item), "flex w-full min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-left text-[11.5px] leading-4",
+                  className={cx(DS.focus, itemSurface(item), "relative flex w-full min-w-0 items-center gap-1 overflow-hidden rounded px-1.5 py-0.5 text-left text-[11.5px] leading-4",
                     movable(item) && "cursor-grab touch-manipulation select-none", dragging === item.id && "opacity-80 ring-1 ring-text-secondary")}>
+                  <EventBar item={item} colors={data?.colors} />
                   <KindIcon kind={item.kind} size={11} />
                   <span className="truncate">{itemTitle(item)}</span>
                 </button>
@@ -260,7 +263,7 @@ export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpe
           {days.map((day) => (
             <DayColumn key={day} day={day} items={byDay.timed.get(day) ?? []} isToday={day === today} now={now}
               columnRef={(element) => { if (element) columns.current.set(day, element); else columns.current.delete(day); }}
-              dragging={dragging} onOpenItem={onOpenItem} startDrag={startDrag} />
+              dragging={dragging} onOpenItem={onOpenItem} startDrag={startDrag} colors={data?.colors} />
           ))}
         </div>
       </div>
@@ -268,8 +271,9 @@ export default function CalendarWeekGrid({ days, data, layers, onOpenItem, onOpe
   );
 }
 
-function DayColumn({ day, items, isToday, now, columnRef, dragging, onOpenItem, startDrag }: {
+function DayColumn({ day, items, isToday, now, columnRef, dragging, onOpenItem, startDrag, colors }: {
   day: string; items: CalendarItem[]; isToday: boolean; now: number; dragging: string | null;
+  colors: CalendarColors | undefined;
   columnRef: (element: HTMLDivElement | null) => void;
   onOpenItem: (item: CalendarItem) => void;
   startDrag: (item: CalendarItem, mode: DragChange["mode"], day: string) => (event: ReactPointerEvent) => void;
@@ -303,6 +307,7 @@ function DayColumn({ day, items, isToday, now, columnRef, dragging, onOpenItem, 
             className={cx(itemSurface(item), "group absolute overflow-hidden rounded-md text-[11.5px] leading-[1.3]",
               canMove && "touch-manipulation select-none", dragging === item.id && "z-20 opacity-90 ring-1 ring-text-secondary")}
             style={{ top: (span.start / 60) * HOUR_PX + 1, height, left: `calc(${lane.lane * width}% + 2px)`, width: `calc(${width}% - 4px)` }}>
+            <EventBar item={item} colors={colors} />
             <button type="button"
               onPointerDown={canMove ? startDrag(item, "move", day) : undefined}
               onClick={canMove ? undefined : () => onOpenItem(item)}

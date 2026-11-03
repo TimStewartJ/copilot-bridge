@@ -1,7 +1,7 @@
 export { DS, cx, type DsTone, type DsButtonVariant, type DsButtonSize, type DsStatusKind } from "./tokens";
 export {
   AutopilotBadge, AutopilotIcon, Badge, Button, ChoiceButton, CountBadge, Details, DisclosureRow, EmptyHint,
-  Field, FieldList, FormRow, IconButton, IdentitySwatch, MetaLine, Notice, Panel, Section,
+  Field, FieldList, FormRow, IconButton, IdentityColorChoice, IdentitySwatch, MetaLine, Notice, Panel, Section,
   SegmentedControl, Select, SettingList, SettingRow, StatRow, StatusIcon, STATUS_LABEL, Switch, TextArea, TextInput, type SegmentedOption,
 } from "./primitives";
 export {

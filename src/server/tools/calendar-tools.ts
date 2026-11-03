@@ -36,6 +36,10 @@ const EVENT_FIELDS = {
     type: ["string", "null"],
     description: "The event's ID in a calendar it is imported from, any string up to 512 characters. Unique: saving an event with an externalId that already exists updates that event. Optional.",
   },
+  source: {
+    type: ["string", "null"],
+    description: "Short lowercase name of the calendar an imported event comes from, such as outlook. Needs externalId. The calendar shows imported events by source and lets the user hide each source. Optional.",
+  },
 } as const;
 
 function calendarToolFailure(error: unknown) {

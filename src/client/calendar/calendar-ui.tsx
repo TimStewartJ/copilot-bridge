@@ -1,8 +1,11 @@
 // What every calendar screen shares: how a kind of item looks, how its time reads, and where it
 // opens. Kinds are told apart by their glyph (shape first, colour only on the glyph), so the grid
-// stays neutral like the rest of the Bridge.
+// stays neutral like the rest of the Bridge. Events carry the identity colour the person gave their
+// kind (their own, or an import source) on a bar at the block's edge, never as a fill; imported
+// events also step back in weight, so they read right even when two kinds share a colour.
 import { Bot, Flag, RotateCcw } from "lucide-react";
-import type { CalendarItem, CalendarItemKind } from "../../shared/calendar";
+import { DEFAULT_OWN_COLOR, defaultSourceColor, sourceOf, UNNAMED_SOURCE, type CalendarColor, type CalendarColors, type CalendarItem, type CalendarItemKind } from "../../shared/calendar";
+import { IDENTITY_FILL } from "../design/identity";
 import { cx } from "../design/tokens";
 import { dayEndMs, formatClockShort, parseDateKey } from "./calendar-model";
 
@@ -29,11 +32,53 @@ export function KindIcon({ kind, size = 12, className }: { kind: CalendarItemKin
   return null;
 }
 
-/** The block recipe for an item on the grid: events are content; derived dates step back. */
+/** An event copied in from another calendar: read-only here, since the next import replaces it. */
+export function isImported(item: CalendarItem): boolean {
+  return item.kind === "event" && !!item.externalId;
+}
+
+const SOURCE_NAMES: Record<string, string> = { outlook: "Outlook", google: "Google Calendar", icloud: "iCloud" };
+
+/** "Outlook" for "outlook"; undefined when an imported event names no source. */
+export function sourceName(source: string | undefined): string | undefined {
+  if (!source) return undefined;
+  return SOURCE_NAMES[source] ?? source.charAt(0).toUpperCase() + source.slice(1);
+}
+
+/** The filter label for one source of imported events. */
+export function sourceFilterLabel(source: string): string {
+  return source === UNNAMED_SOURCE ? "Imported" : `From ${sourceName(source)}`;
+}
+
+/** The block recipe for an item on the grid: own events are content; imported events and derived dates step back. */
 export function itemSurface(item: CalendarItem): string {
-  if (item.kind === "event") return "bg-surface-selected text-text-primary border-l-2 border-text-secondary";
+  if (isImported(item)) return "bg-surface-selected/60 text-text-secondary";
+  if (item.kind === "event") return "bg-surface-selected text-text-primary";
   if (item.kind === "run") return "bg-surface-inset text-text-muted border border-border-subtle";
   return cx("bg-surface-inset text-text-secondary border border-border-subtle", item.done && "line-through text-text-faint");
+}
+
+/** The colour the person gave this event's kind: their own events, or its import source. */
+export function eventColor(item: CalendarItem, colors: CalendarColors | undefined): CalendarColor {
+  if (!isImported(item)) return colors?.own ?? DEFAULT_OWN_COLOR;
+  return colors?.sources[sourceOf(item)] ?? defaultSourceColor(sourceOf(item));
+}
+
+/** The colour bar down an event block's leading edge. The block must be positioned and clip its corners. */
+export function EventBar({ item, colors }: { item: CalendarItem; colors: CalendarColors | undefined }) {
+  if (item.kind !== "event") return null;
+  return <span aria-hidden="true" className={cx("pointer-events-none absolute inset-y-0 left-0 w-[3px]", IDENTITY_FILL[eventColor(item, colors)])} />;
+}
+
+/** The bar alone: the key on a filter chip and the mark before an event in a list. */
+export function EventMark({ color, className }: { color: CalendarColor; className?: string }) {
+  return <span aria-hidden="true" className={cx("inline-block h-3 w-[3px] shrink-0 rounded-sm", IDENTITY_FILL[color], className)} />;
+}
+
+/** The leading mark of an item in a list: the event's colour bar, or the kind's glyph. */
+export function ItemMark({ item, colors, size = 12 }: { item: CalendarItem; colors: CalendarColors | undefined; size?: number }) {
+  if (item.kind === "event") return <EventMark color={eventColor(item, colors)} />;
+  return <KindIcon kind={item.kind} size={size} />;
 }
 
 /** "9am", "9am – 10:30am", "All day". */
@@ -95,4 +140,26 @@ export function readLayers(): Record<CalendarLayer, boolean> {
 
 export function writeLayers(layers: Record<CalendarLayer, boolean>): void {
   try { localStorage.setItem(LAYERS_KEY, JSON.stringify(layers)); } catch { /* private mode */ }
+}
+
+const HIDDEN_SOURCES_KEY = "bridge.calendar.hiddenSources";
+
+/** Sources of imported events the person has hidden. */
+export function readHiddenSources(): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(HIDDEN_SOURCES_KEY) ?? "[]") as unknown;
+    return Array.isArray(stored) ? stored.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeHiddenSources(sources: readonly string[]): void {
+  try { localStorage.setItem(HIDDEN_SOURCES_KEY, JSON.stringify(sources)); } catch { /* private mode */ }
+}
+
+/** The Events layer covers the person's own events; each import source has its own switch. */
+export function itemShown(item: CalendarItem, layers: Record<CalendarLayer, boolean>, hiddenSources: readonly string[]): boolean {
+  if (isImported(item)) return !hiddenSources.includes(sourceOf(item));
+  return layers[item.kind];
 }

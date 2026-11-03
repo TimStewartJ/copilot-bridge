@@ -10,6 +10,7 @@ import { DS, cx } from "../design/tokens";
 import { haptic } from "../lib/haptics";
 import { addDaysKey, parseDateKey, toDateKey } from "./calendar-model";
 import { deleteCalendarEvent, fetchCalendarEvent, updateCalendarEvent, viewerTimeZone, type CalendarEventInput } from "./calendar-api";
+import { sourceName } from "./calendar-ui";
 
 interface Props {
   eventId: string;
@@ -119,8 +120,9 @@ export default function CalendarEventDialog({ eventId, tasks, onClose, onSaved }
   const activeTasks = tasks.filter((task) => task.status === "active" || task.id === form?.taskId);
   // An imported event is replaced by the next import, so it is shown, not edited.
   const readOnly = !!existing?.externalId;
+  const from = sourceName(existing?.source);
   return (
-    <Dialog title={readOnly ? "Event" : "Edit event"} pending={pending} onClose={onClose}>
+    <Dialog title={readOnly ? (from ? `${from} event` : "Imported event") : "Edit event"} pending={pending} onClose={onClose}>
       {!form ? <p className={DS.text.empty}>{error || "Loading…"}</p> : (
         <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); save(); }}>
           <fieldset disabled={readOnly} className="space-y-4">
@@ -187,7 +189,7 @@ export default function CalendarEventDialog({ eventId, tasks, onClose, onSaved }
                 onChange={(event) => set("notes", event.target.value)} />
             </FormRow>
           </fieldset>
-          {readOnly && <p className={DS.text.prose}>Imported from another calendar, so it can't be changed here.</p>}
+          {readOnly && <p className={DS.text.prose}>{from ? `Imported from ${from}, so change it there.` : "Imported from another calendar, so it can't be changed here."}</p>}
           {existing?.repeat && <p className={DS.text.prose}>Changes apply to every repeat.</p>}
           {error && <Notice tone="danger" title="The event was not saved">{error}</Notice>}
           {readOnly ? (

@@ -5,10 +5,11 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import type { CalendarItem } from "../../shared/calendar";
 import { DS, cx } from "../design/tokens";
+import { IdentitySwatch } from "../design/primitives";
 import { useNow } from "../hooks/useNow";
 import { daysFrom, formatClockShort, formatFree, freeMinutes, minutesIntoDay, parseDateKey, toDateKey, wallMinutes } from "./calendar-model";
 import { useCalendarQuery } from "./calendar-api";
-import { KindIcon, itemDayKeys, itemSurface, readLayers } from "./calendar-ui";
+import { EventBar, KindIcon, eventColor, itemDayKeys, itemShown, itemSurface, readHiddenSources, readLayers } from "./calendar-ui";
 
 const LINES = 3;
 
@@ -23,17 +24,18 @@ export default function HomeWeekStrip({ compact = false }: { compact?: boolean }
   const days = useMemo(() => daysFrom(today, 7), [today]);
   const calendar = useCalendarQuery(days[0], days[6]);
   const layers = readLayers();
+  const hiddenSources = readHiddenSources();
   const data = calendar.data;
 
   const byDay = useMemo(() => {
     const map = new Map(days.map((day) => [day, [] as CalendarItem[]]));
     for (const item of data?.items ?? []) {
-      if (item.kind === "run" || !layers[item.kind] || item.done) continue;
+      if (item.kind === "run" || !itemShown(item, layers, hiddenSources) || item.done) continue;
       for (const day of itemDayKeys(item, days)) map.get(day)!.push(item);
     }
     for (const list of map.values()) list.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
     return map;
-  }, [data, days, layers]);
+  }, [data, days, layers, hiddenSources]);
 
   const line = useMemo(() => {
     if (!data) return [];
@@ -87,14 +89,15 @@ export default function HomeWeekStrip({ compact = false }: { compact?: boolean }
                 {compact ? (
                   <span className="mt-1 flex flex-wrap items-center justify-center gap-0.5" aria-hidden="true">
                     {items.slice(0, 3).map((item) => item.kind === "event"
-                      ? <span key={item.id} className="size-1.5 rounded-full bg-text-secondary" />
+                      ? <IdentitySwatch key={item.id} color={eventColor(item, data?.colors)} />
                       : <KindIcon key={item.id} kind={item.kind} size={10} />)}
                     {items.length > 3 && <span className="text-[10px] leading-none text-text-faint">+{items.length - 3}</span>}
                   </span>
                 ) : (
                   <span className="mt-0.5 w-full min-w-0 space-y-0.5">
                     {items.slice(0, items.length > LINES ? LINES - 1 : LINES).map((item) => (
-                      <span key={item.id} className={cx(itemSurface(item), "flex min-w-0 items-center gap-1 rounded px-1 text-[11px] leading-[1.125rem]")}>
+                      <span key={item.id} className={cx(itemSurface(item), "relative flex min-w-0 items-center gap-1 overflow-hidden rounded px-1 text-[11px] leading-[1.125rem]", item.kind === "event" && "pl-1.5")}>
+                        <EventBar item={item} colors={data?.colors} />
                         <KindIcon kind={item.kind} size={10} />
                         <span className="truncate">{shortLabel(item)}</span>
                       </span>

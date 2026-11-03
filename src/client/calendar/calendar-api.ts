@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { API_BASE } from "../api";
-import type { CalendarEvent, CalendarResponse } from "../../shared/calendar";
+import type { CalendarColor, CalendarEvent, CalendarResponse } from "../../shared/calendar";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/api/calendar${path}`, {
@@ -42,6 +42,8 @@ export const updateCalendarEvent = (id: string, input: CalendarEventInput) =>
   request<{ event: CalendarEvent }>(`/events/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }).then((body) => body.event);
 export const deleteCalendarEvent = (id: string) =>
   request<{ success: true }>(`/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const updateCalendarColors = (input: { own?: CalendarColor; sources?: Record<string, CalendarColor> }) =>
+  request<{ success: true }>("/colors", { method: "PATCH", body: JSON.stringify(input) });
 
 export function useCalendarQuery(from: string, to: string, options: { taskId?: string; enabled?: boolean } = {}) {
   const timezone = viewerTimeZone();

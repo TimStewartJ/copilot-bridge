@@ -4,7 +4,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Palette } from "lucide-react";
 import type { Task } from "../api";
 import { patchChecklistItem } from "../api";
 import type { CalendarItem } from "../../shared/calendar";
@@ -16,11 +16,13 @@ import { useToast } from "../useToast";
 import { haptic } from "../lib/haptics";
 import { addDaysKey, daysFrom, parseDateKey, toDateKey, weekStartKey } from "./calendar-model";
 import { calendarRootKey, fetchCalendarEvent, updateCalendarEvent, useCalendarQuery } from "./calendar-api";
-import { KIND_LABEL, KindIcon, LAYER_LABEL, formatShortDate, itemContext, itemTime, itemTitle, readLayers, writeLayers, type CalendarLayer } from "./calendar-ui";
+import { EventMark, KIND_LABEL, KindIcon, LAYER_LABEL, formatShortDate, itemContext, itemShown, itemTime, itemTitle, readHiddenSources, readLayers,
+  sourceFilterLabel, writeHiddenSources, writeLayers, type CalendarLayer } from "./calendar-ui";
 import CalendarWeekGrid, { type EventMove } from "./CalendarWeekGrid";
 import CalendarAgenda, { AgendaRow } from "./CalendarAgenda";
 import CalendarEventDialog from "./CalendarEventDialog";
-import { addCalendarDays, daysBetween, type CalendarEvent } from "../../shared/calendar";
+import CalendarColorsDialog from "./CalendarColorsDialog";
+import { addCalendarDays, daysBetween, DEFAULT_OWN_COLOR, defaultSourceColor, type CalendarColors, type CalendarEvent } from "../../shared/calendar";
 
 type View = "day" | "week" | "agenda";
 const AGENDA_DAYS = 14;
@@ -57,6 +59,7 @@ export default function CalendarPage({ onSelectTask, tasks = [] }: Props) {
   const comingFrom = addDaysKey(days[days.length - 1], 1);
   const comingUp = useCalendarQuery(comingFrom, addDaysKey(comingFrom, COMING_UP_DAYS - 1), { enabled: !phone && view !== "agenda" });
   const [layers, setLayers] = useState(readLayers);
+  const [hiddenSources, setHiddenSources] = useState(readHiddenSources);
   const [editing, setEditing] = useState<string | null>(null);
   const [opened, setOpened] = useState<CalendarItem | null>(null);
   const [pending, setPending] = useState<ReadonlyMap<string, { start: string; end: string }>>(new Map());
@@ -73,6 +76,11 @@ export default function CalendarPage({ onSelectTask, tasks = [] }: Props) {
   const toggleLayer = (layer: CalendarLayer) => setLayers((current) => {
     const next = { ...current, [layer]: !current[layer] };
     writeLayers(next);
+    return next;
+  });
+  const toggleSource = (source: string) => setHiddenSources((current) => {
+    const next = current.includes(source) ? current.filter((entry) => entry !== source) : [...current, source];
+    writeHiddenSources(next);
     return next;
   });
   const refresh = () => void queryClient.invalidateQueries({ queryKey: calendarRootKey });
@@ -118,7 +126,10 @@ export default function CalendarPage({ onSelectTask, tasks = [] }: Props) {
     }
   }, [queryClient, showToast, dismissToast]);
 
-  const listed = (data?.items ?? []).filter((item) => layers[item.kind]);
+  const listed = (data?.items ?? []).filter((item) => itemShown(item, layers, hiddenSources));
+  const importedSources = data?.importedSources ?? [];
+  const colors: CalendarColors = data?.colors ?? { own: DEFAULT_OWN_COLOR, sources: {} };
+  const [coloring, setColoring] = useState(false);
   const overdue = data?.overdue ?? [];
   const side = !phone && view !== "agenda";
 
@@ -141,10 +152,20 @@ export default function CalendarPage({ onSelectTask, tasks = [] }: Props) {
         <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
           <div role="group" aria-label="Show on the calendar" className={DS.choice.group}>
             {(Object.keys(LAYER_LABEL) as CalendarLayer[]).map((layer) => (
-              <ChoiceButton key={layer} selected={layers[layer]} onClick={() => toggleLayer(layer)}>
-                <span className="inline-flex items-center gap-1.5"><KindIcon kind={layer} />{LAYER_LABEL[layer]}</span>
+              <ChoiceButton key={layer} selected={layers[layer]} onClick={() => toggleLayer(layer)}
+                title={layer === "event" && importedSources.length > 0 ? "Events added in the Bridge" : undefined}>
+                <span className="inline-flex items-center gap-1.5">
+                  {layer === "event" ? <EventMark color={colors.own} /> : <KindIcon kind={layer} />}{LAYER_LABEL[layer]}
+                </span>
               </ChoiceButton>
             ))}
+            {importedSources.length > 0 && <span aria-hidden="true" className="mx-1 my-2 w-px self-stretch bg-border" />}
+            {importedSources.map((source) => (
+              <ChoiceButton key={source} selected={!hiddenSources.includes(source)} onClick={() => toggleSource(source)}>
+                <span className="inline-flex items-center gap-1.5"><EventMark color={colors.sources[source] ?? defaultSourceColor(source)} />{sourceFilterLabel(source)}</span>
+              </ChoiceButton>
+            ))}
+            {data && <Button size="sm" variant="ghost" className="self-center" onClick={() => setColoring(true)}><Palette size={14} />Colors</Button>}
           </div>
         </div>
         <p className={DS.text.meta}>Events don't send alerts yet.</p>
@@ -156,24 +177,24 @@ export default function CalendarPage({ onSelectTask, tasks = [] }: Props) {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {view === "agenda" ? (
               <div className={cx(!phone && "min-h-0 overflow-y-auto pr-1")}>
-                {phone && overdue.length > 0 && <OverdueList items={overdue} total={data?.overdueTotal ?? 0} onOpen={openItem} />}
-                {data ? <CalendarAgenda days={days} items={listed} today={today} runCounts={layers.run ? undefined : data.runCounts}
+                {phone && overdue.length > 0 && <OverdueList items={overdue} total={data?.overdueTotal ?? 0} colors={colors} onOpen={openItem} />}
+                {data ? <CalendarAgenda days={days} items={listed} today={today} colors={colors} runCounts={layers.run ? undefined : data.runCounts}
                   onOpenItem={openItem} empty="Nothing in these two weeks." /> : <EmptyHint>Loading…</EmptyHint>}
               </div>
             ) : (
-              <CalendarWeekGrid days={days} data={data} layers={layers} onOpenItem={openItem} onOpenDay={(day) => go({ view: "day", date: day })}
+              <CalendarWeekGrid days={days} data={data} layers={layers} hiddenSources={hiddenSources} onOpenItem={openItem} onOpenDay={(day) => go({ view: "day", date: day })}
                 onMoveEvent={moveEvent} pending={pending} />
             )}
           </div>
           {side && (
             <aside className="hidden w-72 shrink-0 flex-col gap-4 overflow-y-auto lg:flex">
-              <OverdueList items={overdue} total={data?.overdueTotal ?? 0} onOpen={openItem} />
+              <OverdueList items={overdue} total={data?.overdueTotal ?? 0} colors={colors} onOpen={openItem} />
               <Section label="Coming up" level="page">
                 {comingUp.data ? (() => {
-                  const upcoming = comingUp.data.items.filter((item) => item.kind !== "run" && layers[item.kind] && !item.done);
+                  const upcoming = comingUp.data.items.filter((item) => item.kind !== "run" && itemShown(item, layers, hiddenSources) && !item.done);
                   return upcoming.length === 0 ? <EmptyHint>Nothing in the following three weeks.</EmptyHint> : (
                     <div className={DS.surface.divided}>
-                      {upcoming.slice(0, 12).map((item) => <AgendaRow key={item.id} item={item} onOpen={() => openItem(item)}
+                      {upcoming.slice(0, 12).map((item) => <AgendaRow key={item.id} item={item} colors={comingUp.data!.colors} onOpen={() => openItem(item)}
                         time={formatShortDate(item.allDay ? item.start : toDateKey(new Date(item.start)))} />)}
                     </div>
                   );
@@ -186,17 +207,18 @@ export default function CalendarPage({ onSelectTask, tasks = [] }: Props) {
       </div>
 
       {editing && <CalendarEventDialog eventId={editing} tasks={tasks} onClose={() => setEditing(null)} onSaved={refresh} />}
+      {coloring && data && <CalendarColorsDialog colors={data.colors} onClose={() => setColoring(false)} />}
       {opened && <ItemDialog item={opened} onClose={() => setOpened(null)} onSelectTask={onSelectTask} onChanged={refresh} />}
     </div>
   );
 }
 
-function OverdueList({ items, total, onOpen }: { items: CalendarItem[]; total: number; onOpen: (item: CalendarItem) => void }) {
+function OverdueList({ items, total, colors, onOpen }: { items: CalendarItem[]; total: number; colors: CalendarColors; onOpen: (item: CalendarItem) => void }) {
   if (items.length === 0) return null;
   return (
     <Section label="Overdue" count={total} level="page" className="mb-3">
       <div className={DS.surface.divided}>
-        {items.slice(0, 8).map((item) => <AgendaRow key={item.id} item={item} onOpen={() => onOpen(item)}
+        {items.slice(0, 8).map((item) => <AgendaRow key={item.id} item={item} colors={colors} onOpen={() => onOpen(item)}
           time={formatShortDate(item.allDay ? item.start : toDateKey(new Date(item.start)))} />)}
       </div>
       {total > 8 && <p className={cx(DS.text.meta, "px-1.5 pt-1")}>{total - 8} more</p>}

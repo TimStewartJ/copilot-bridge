@@ -8,7 +8,7 @@ import {
 } from "react";
 import { ChevronRight } from "lucide-react";
 import { DS, cx, type DsButtonSize, type DsButtonVariant, type DsStatusKind, type DsTone } from "./tokens";
-import { IDENTITY_FILL, identityColor } from "./identity";
+import { IDENTITY_COLORS, IDENTITY_FILL, identityColor, type IdentityColor } from "./identity";
 import { haptic } from "../lib/haptics";
 
 /**
@@ -749,6 +749,36 @@ export function IdentitySwatch({
       data-identity={identityColor(color)}
       className={cx(DS.swatch.base, DS.swatch.size[size], IDENTITY_FILL[identityColor(color)], className)}
     />
+  );
+}
+
+/** Picking one of the identity colours for something the person names, such as a group, tag or kind of event. */
+export function IdentityColorChoice({
+  value,
+  onChange,
+  label,
+  disabled,
+}: {
+  value: IdentityColor;
+  onChange: (color: IdentityColor) => void;
+  /** What the colour is for, read out to assistive technology. */
+  label: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1">
+      {IDENTITY_COLORS.map((color) => {
+        const selected = color === value;
+        return (
+          <button key={color} type="button" role="radio" aria-checked={selected} aria-label={color} title={color} disabled={disabled}
+            onClick={() => { if (!selected) onChange(color); }}
+            className={cx(DS.focus, "flex size-10 items-center justify-center rounded-md transition-colors disabled:opacity-60 md:size-7",
+              selected ? "bg-surface-selected" : "hover:bg-bg-hover/60")}>
+            <span aria-hidden="true" className={cx("size-4 rounded-[4px]", IDENTITY_FILL[color], selected && "ring-2 ring-text-primary ring-offset-1 ring-offset-surface-overlay")} />
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

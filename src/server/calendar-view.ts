@@ -6,9 +6,14 @@
 import {
   addCalendarDays,
   CALENDAR_MAX_WINDOW_DAYS,
+  compareSources,
   daysBetween,
+  defaultSourceColor,
+  DEFAULT_OWN_COLOR,
   isCalendarDate,
   isTimeZone,
+  sourceOf,
+  type CalendarColor,
   type CalendarEvent,
   type CalendarItem,
   type CalendarResponse,
@@ -36,6 +41,8 @@ export interface CalendarSources {
   taskTitle(taskId: string): string | undefined;
   /** Helm's look times ("HH:MM", server-local) when its looks are on. */
   helmLookTimes(): string[];
+  /** Event colours the person chose; anything absent takes its default. */
+  chosenColors?(): { own?: CalendarColor; sources: Record<string, CalendarColor> };
   serverTimezone: string;
 }
 
@@ -102,6 +109,7 @@ function expandEvent(event: CalendarEvent, window: Window, taskTitle: (id: strin
     allDay: event.allDay,
     eventId: event.id,
     ...(event.externalId ? { externalId: event.externalId } : {}),
+    ...(event.source ? { source: event.source } : {}),
     ...(event.taskId ? { taskId: event.taskId, taskTitle: taskTitle(event.taskId) } : {}),
     ...(event.location ? { location: event.location } : {}),
     ...(event.repeat ? { repeating: true } : {}),
@@ -231,7 +239,9 @@ export function buildCalendar(sources: CalendarSources, query: CalendarQuery): C
 
   let events: CalendarItem[] = [];
   let seriesCapped = false;
+  const importedSources = new Set<string>();
   for (const event of sources.listEvents(taskId ? { taskId } : {})) {
+    if (event.externalId) importedSources.add(sourceOf(event));
     const expanded = expandEvent(event, window, titleOf);
     events.push(...expanded.items);
     seriesCapped ||= expanded.capped;
@@ -296,6 +306,8 @@ export function buildCalendar(sources: CalendarSources, query: CalendarQuery): C
   const at = (item: CalendarItem) => item.allDay ? localMidnight(item.start, timezone) - 1 : Date.parse(item.start);
   const items = [...events, ...deadlines, ...revisits, ...runs.items]
     .sort((a, b) => at(a) - at(b) || a.id.localeCompare(b.id));
+  const sortedSources = [...importedSources].sort(compareSources);
+  const chosen = sources.chosenColors?.() ?? { sources: {} };
   return {
     from,
     to,
@@ -307,5 +319,10 @@ export function buildCalendar(sources: CalendarSources, query: CalendarQuery): C
     overdueTotal: summary.overdueTotal + dueRevisits.length,
     undatedChecklistCount: summary.undated,
     eventsTruncated,
+    importedSources: sortedSources,
+    colors: {
+      own: chosen.own ?? DEFAULT_OWN_COLOR,
+      sources: Object.fromEntries(sortedSources.map((source) => [source, chosen.sources[source] ?? defaultSourceColor(source)])),
+    },
   };
 }

@@ -8,7 +8,7 @@ import { Button, Section } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import { addDaysKey, toDateKey } from "./calendar-model";
 import { useCalendarQuery } from "./calendar-api";
-import { KindIcon, KIND_LABEL, formatShortDate, itemDayKey, itemTime } from "./calendar-ui";
+import { ItemMark, KIND_LABEL, formatShortDate, itemDayKey, itemTime } from "./calendar-ui";
 
 const SHOWN = 5;
 
@@ -48,7 +48,7 @@ export default function TaskDatesSection({ taskId }: { taskId: string }) {
             <span className={cx("w-28 shrink-0 truncate text-xs tabular-nums", overdue ? "text-warning" : "text-text-secondary")}>
               {overdue ? `${formatShortDate(itemDayKey(item))} · late` : when(item)}
             </span>
-            <KindIcon kind={item.kind} />
+            <ItemMark item={item} colors={calendar.data?.colors} />
             <span className="min-w-0 flex-1 truncate text-text-secondary">
               {item.kind === "revisit" ? KIND_LABEL.revisit : item.title}
             </span>

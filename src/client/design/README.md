@@ -199,6 +199,7 @@ hover/selected rows and constrained panes.
 | A message or run that used Autopilot | `AutopilotBadge`; `AutopilotIcon` where only the mark fits |
 | A state with no room for words: a row, a tile corner, a nav icon | `StatusIcon` (`DS.status.corner` on a tile) |
 | A group's or tag's colour beside its name | `IdentitySwatch`; tag names use `IDENTITY_TINT` + `IDENTITY_TEXT` |
+| Choosing a group's, tag's or other named thing's colour | `IdentityColorChoice` |
 | How many things want attention | `CountBadge` |
 | Facts on one quiet line | `MetaLine` |
 | Something the reader should know | `Notice` (neutral surface, toned icon and title) |

@@ -25,6 +25,7 @@ export function createCalendarSources(ctx: CalendarContext): CalendarSources {
       const settings = ctx.helmThinkerStore?.getSettings();
       return settings?.enabled ? settings.times : [];
     },
+    chosenColors: () => ctx.calendarStore.getColors(),
     serverTimezone: getServerTimezone(),
   };
 }
@@ -66,5 +67,8 @@ export function registerCalendarRoutes(router: Router, ctx: CalendarContext): vo
   });
   router.delete("/calendar/events/:id", (req, res) => {
     try { ctx.calendarStore.deleteEvent(req.params.id); res.json({ success: true }); } catch (error) { sendError(res, error); }
+  });
+  router.patch("/calendar/colors", (req, res) => {
+    try { ctx.calendarStore.setColors(req.body); res.json({ success: true }); } catch (error) { sendError(res, error); }
   });
 }
