@@ -306,6 +306,12 @@ export interface CompletionAttentionOptions {
 
 export interface StartWorkOptions {
   attentionMode?: SessionAttentionMode;
+  /**
+   * Who started an automated turn: a defer delivering its result, or a schedule starting its run.
+   * Such turns ran without the user watching, so Home offers a review of them until the user
+   * next writes in the chat.
+   */
+  origin?: "defer" | "schedule";
   completionAttention?: boolean | CompletionAttentionOptions;
   mode?: SendMode;
   clientMessageId?: string;
@@ -416,6 +422,8 @@ export interface SessionRunnerDeps {
   copilotHome?: string;
   /** A model's display name from the known model list, for status text. */
   modelDisplayName?(modelId: string): string | undefined;
+  /** The runtime's skill tool loaded a skill (counted on Settings › Skills). */
+  onSkillUsed?(sessionId: string, skillName: string): void;
 
   isSessionBusy(sessionId: string): boolean;
   hasPlan(sessionId: string): boolean;
@@ -2074,6 +2082,16 @@ export class SessionRunner {
               loopFingerprint: loopCandidate.fingerprint,
               loopCount: loopCandidate.count,
             });
+          }
+          if (toolName === "skill" && !data?.parentToolCallId) {
+            const skillName = typeof data?.arguments?.skill === "string" ? data.arguments.skill : undefined;
+            if (skillName) {
+              try {
+                this.deps.onSkillUsed?.(sessionId, skillName);
+              } catch (error) {
+                console.warn(`[sdk] [${sid}] Could not record skill use:`, error instanceof Error ? error.message : error);
+              }
+            }
           }
           if (data?.toolCallId) {
             toolNameMap.set(data.toolCallId, toolName);

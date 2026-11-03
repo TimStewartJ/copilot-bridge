@@ -9,7 +9,6 @@ import {
   type CopilotContextTier,
 } from "../../shared/copilot-context.js";
 import { formatReasoningEffortLabel } from "../reasoning-effort";
-import { getPromptProfileInfo } from "../../shared/prompt-profiles.js";
 
 export function buildOptimisticSessionModelState(
   options: CreateSessionOptions,
@@ -20,7 +19,6 @@ export function buildOptimisticSessionModelState(
     ...(model ? { model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.contextTier ? { contextTier: options.contextTier } : {}),
-    ...(options.promptProfile ? { promptProfile: options.promptProfile } : {}),
     source: "starting",
   };
 }
@@ -62,6 +60,5 @@ export function formatSessionModelSummaryLabel(
     : getContextTierLabel(model, state.contextTier)
       ?? formatContextTierFallbackLabel(state.contextTier)
       ?? "Default context";
-  const profileLabel = state.promptProfile ? getPromptProfileInfo(state.promptProfile).label : undefined;
-  return [profileLabel, modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
+  return [modelLabel, effortLabel, contextTierLabel].filter(Boolean).join(" · ");
 }

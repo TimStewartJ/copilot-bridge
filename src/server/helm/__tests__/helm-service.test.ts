@@ -365,11 +365,10 @@ describe("HelmService retention", () => {
 });
 
 describe("Helm session profiles", () => {
-  it("makes Helm's chat an ordinary Assistant chat with Helm's own tools and guidance added", async () => {
+  it("makes Helm's chat an ordinary chat with Helm's own role, tools and guidance added", async () => {
     const { helm } = createHarness();
     const profile = helm.getSessionProfile();
     expect(profile.configOptions?.()).toMatchObject({
-      promptProfile: "assistant",
       promptRole: expect.stringContaining("you are Helm"),
       extraGuidance: expect.stringContaining("(claude-opus-5)"),
     });

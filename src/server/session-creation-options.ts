@@ -1,5 +1,5 @@
 import { isCopilotContextTier, type CopilotContextTier } from "../shared/copilot-context.js";
-import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isPlaybookName } from "../shared/workflow-vocabulary.js";
 import type { AppContext } from "./app-context.js";
 import { TaskAgentDefinitionValidationError } from "./task-agent-definition-store.js";
 
@@ -7,7 +7,8 @@ export interface SessionCreationOptions {
   model?: string;
   reasoningEffort?: string;
   contextTier?: CopilotContextTier;
-  promptProfile?: PromptProfileId;
+  /** A playbook name, or "none" for the direct path. */
+  playbook?: string;
   agent?: string;
 }
 
@@ -35,10 +36,10 @@ export async function resolveSessionCreationOptions(
   if (payload.agent !== undefined && payload.agent !== null && typeof payload.agent !== "string") {
     return { error: "agent must be a string", status: 400 };
   }
-  if (payload.promptProfile !== undefined && payload.promptProfile !== null && !isPromptProfileId(payload.promptProfile)) {
-    return { error: "promptProfile must be engineer, assistant, or monitor", status: 400 };
+  if (payload.playbook !== undefined && payload.playbook !== null && payload.playbook !== "" && !isPlaybookName(payload.playbook)) {
+    return { error: "playbook must be a playbook name", status: 400 };
   }
-  const promptProfile = isPromptProfileId(payload.promptProfile) ? payload.promptProfile : undefined;
+  const playbook = isPlaybookName(payload.playbook) ? payload.playbook : undefined;
   const model = typeof payload.model === "string" ? payload.model.trim() : "";
   const reasoningEffort = typeof payload.reasoningEffort === "string"
     ? payload.reasoningEffort.trim()
@@ -73,7 +74,7 @@ export async function resolveSessionCreationOptions(
     return {
       options: {
         ...(agent ? { agent } : {}),
-        ...(promptProfile ? { promptProfile } : {}),
+        ...(playbook ? { playbook } : {}),
       },
     };
   }
@@ -99,7 +100,7 @@ export async function resolveSessionCreationOptions(
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(contextTier ? { contextTier } : {}),
       ...(agent ? { agent } : {}),
-      ...(promptProfile ? { promptProfile } : {}),
+      ...(playbook ? { playbook } : {}),
     },
   };
 }

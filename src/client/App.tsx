@@ -84,7 +84,8 @@ import type { ModelPresetSelection } from "./lib/model-presets";
 import { getModelPresetSlotLabel, type ModelPresetSlot } from "../shared/model-presets.js";
 import { modelUsesDynamicSelection, type CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
-import { resolvePromptProfile, type PromptProfileId, type PromptProfileSetting } from "../shared/prompt-profiles.js";
+import { usePlaybooksQuery } from "./hooks/queries/usePlaybooks";
+import SessionPlaybookChip from "./components/SessionPlaybookChip";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { addOptimisticSessionToCache, mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
@@ -593,6 +594,9 @@ function AppShell() {
         // An agent (or another tab) wrote docs; refresh whatever the Docs view has open. A bulk
         // write sends one event per page, which the shared refetches turn into two refreshes.
         refetch(queryKeys.docsRoot, ["related-docs"]);
+        break;
+      case "skills:changed":
+        refetch(queryKeys.playbooks, queryKeys.skills);
         break;
       case "readstate:changed":
         if (event.readState) applyServerStateRef.current(event.readState);
@@ -2196,7 +2200,6 @@ function AppShell() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
-                  defaultPromptProfile={settings?.promptProfile}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2279,7 +2282,6 @@ function AppShell() {
                   defaultModelId={settings?.model}
                   defaultReasoningEffort={settings?.reasoningEffort}
                   defaultContextTier={settings?.contextTier}
-                  defaultPromptProfile={settings?.promptProfile}
                   launchDefaultsLoading={settingsLoading}
                 />
               }
@@ -2587,7 +2589,6 @@ function SessionRoute({
   defaultModelId,
   defaultReasoningEffort,
   defaultContextTier,
-  defaultPromptProfile,
   launchDefaultsLoading,
 }: {
   sessions: Session[];
@@ -2624,7 +2625,6 @@ function SessionRoute({
   defaultModelId?: string;
   defaultReasoningEffort?: string;
   defaultContextTier?: CopilotContextTier;
-  defaultPromptProfile?: PromptProfileSetting;
   launchDefaultsLoading: boolean;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
@@ -2650,8 +2650,6 @@ function SessionRoute({
   const chatHandsFree = useChatHandsFree(sessionId);
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
   const taskAgentDefinitionsQuery = useTaskAgentDefinitionsQuery(taskId);
-  const tasksQuery = useTasksQuery();
-  const launchTaskCwd = taskId ? tasksQuery.data?.find((task) => task.id === taskId)?.cwd : undefined;
   const sessionModelQuery = useSessionModelQuery(sessionId);
   const sessionReloadToken = sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
@@ -2708,26 +2706,21 @@ function SessionRoute({
   const activePresetSlot = selectedPresetSlot
     ?? modelPresetMemory.findSlotForModel(launchState.modelKey, launchState.availableModels);
   const rememberModelPreset = modelPresetMemory.remember;
-  const launchPromptProfileDefault = resolvePromptProfile({
-    defaultSetting: defaultPromptProfile,
-    hasProjectFolder: Boolean(launchTaskCwd?.trim()),
-  });
-  const selectedLaunchPromptProfile = draftLaunch?.promptProfile ?? launchPromptProfileDefault.id;
-  // Only an explicit choice is sent. The server resolves the default from the chat's actual
-  // working directory, so a stale or still-loading task list can never pin the wrong profile.
-  const launchPromptProfileForCreate = draftLaunch?.promptProfile;
+  const playbooksQuery = usePlaybooksQuery({ enabled: isDraft });
+  // Only an explicit choice is sent; without one the agent picks a playbook (or the task's pin applies).
+  const launchPlaybookForCreate = draftLaunch?.playbook;
   const launchCreateOptions = useMemo(
     () => ({
       ...buildNewSessionCreateOptions(launchState),
       ...(taskId && draftLaunch?.agent ? { agent: draftLaunch.agent } : {}),
-      ...(launchPromptProfileForCreate ? { promptProfile: launchPromptProfileForCreate } : {}),
+      ...(launchPlaybookForCreate ? { playbook: launchPlaybookForCreate } : {}),
     }),
     [
       launchState.modelForCreate,
       launchState.selectedContextTier,
       launchState.selectedReasoningEffort,
       draftLaunch?.agent,
-      launchPromptProfileForCreate,
+      launchPlaybookForCreate,
       taskId,
     ],
   );
@@ -2894,8 +2887,13 @@ function SessionRoute({
     setDraftLaunchOptions,
   ]);
 
-  const handleLaunchPromptProfileChange = useCallback((promptProfile: PromptProfileId) => {
-    setDraftLaunchOptions(composerKey, (current) => ({ ...(current ?? {}), promptProfile }));
+  const handleLaunchPlaybookChange = useCallback((playbook?: string) => {
+    setDraftLaunchOptions(composerKey, (current) => {
+      const next = { ...(current ?? {}) };
+      if (playbook) next.playbook = playbook;
+      else delete next.playbook;
+      return Object.keys(next).length > 0 ? next : undefined;
+    });
   }, [composerKey, setDraftLaunchOptions]);
 
   const handleLaunchAgentChange = useCallback((agent?: string) => {
@@ -3050,7 +3048,9 @@ function SessionRoute({
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
       selectedContextTier={launchState.selectedContextTier}
-      selectedPromptProfile={selectedLaunchPromptProfile}
+      playbooks={playbooksQuery.data ?? []}
+      playbooksLoading={playbooksQuery.isLoading}
+      selectedPlaybook={draftLaunch?.playbook}
       mode={launchMode}
       agentDefinitions={taskId ? taskAgentDefinitionsQuery.data ?? [] : undefined}
       agentDefinitionsLoading={taskId ? taskAgentDefinitionsQuery.isLoading : undefined}
@@ -3059,7 +3059,7 @@ function SessionRoute({
       onModelChange={handleLaunchModelChange}
       onReasoningEffortChange={handleLaunchReasoningEffortChange}
       onContextTierChange={handleLaunchContextTierChange}
-      onPromptProfileChange={handleLaunchPromptProfileChange}
+      onPlaybookChange={handleLaunchPlaybookChange}
       onModeChange={setLaunchMode}
       onAgentChange={handleLaunchAgentChange}
       onModelSelectionCommitted={requestComposerFocus}
@@ -3086,7 +3086,7 @@ function SessionRoute({
         sessionId={sessionId}
         hasPlan={hasPlan}
         routedModel={modelUsesDynamicSelection(modelsQuery.data?.find((model) => model.id === sessionModelQuery.data?.model))}
-        sessionModelSummary={sessionId ? (
+        sessionModelSummary={sessionId ? (<>
           <SessionModelSummary
             title={activeSession?.summary || activeSession?.intentText || "Chat"}
             state={sessionModelQuery.data}
@@ -3101,7 +3101,14 @@ function SessionRoute({
               ? "This session is busy"
               : undefined}
           />
-        ) : undefined}
+          {sessionModelQuery.data && (
+            <SessionPlaybookChip
+              sessionId={sessionId}
+              view={sessionModelQuery.data.playbook}
+              inTask={Boolean(taskId)}
+            />
+          )}
+        </>) : undefined}
         onMessageSent={handleMessageSent}
         onRenderedReadThrough={onRenderedReadThrough}
         draft={draft}

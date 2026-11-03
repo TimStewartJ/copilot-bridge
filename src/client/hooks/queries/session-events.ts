@@ -1,5 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import { isSessionActive, type Session } from "../../api";
+import { isSessionActive, type Session, type SessionModelState, type SessionPlaybookView } from "../../api";
 import type { VoiceSessionActivity } from "../useBackgroundVoiceJobs";
 import type { StatusEvent } from "../../useStatusStream";
 import { queryKeys } from "../../queryClient";
@@ -29,6 +29,19 @@ export function projectVoiceSessionActivity(queryClient: QueryClient, activity: 
       runState: session.runState === "stalled" ? "stalled" : "busy",
       intentText: preserveExistingIntent ? session.intentText : intent,
     };
+  });
+}
+
+/** Puts a chat's new playbook into its cached model state; an empty view means none is active. */
+export function projectSessionPlaybook(
+  queryClient: Pick<QueryClient, "setQueryData">,
+  sessionId: string,
+  view: SessionPlaybookView | undefined,
+): void {
+  queryClient.setQueryData<SessionModelState>(queryKeys.sessionModel(sessionId), (current) => {
+    if (!current) return current;
+    const { playbook: _previous, ...rest } = current;
+    return view?.playbook ? { ...rest, playbook: view } : rest;
   });
 }
 
@@ -85,6 +98,9 @@ export function projectSessionEvent(
         if (isHelmSession) refetch(helmStateQueryKey);
       }
       refetch(queryKeys.dashboard);
+      break;
+    case "session:playbook":
+      if (sessionId) projectSessionPlaybook(queryClient, sessionId, event.playbook);
       break;
     case "session:archived": {
       const ids = archivedEventSessionIds(event);

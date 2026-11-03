@@ -26,6 +26,7 @@ describe("unified defer tools", () => {
     const { ctx } = createTestApp();
     const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
     expect(Object.keys(createTool.inputSchema.properties ?? {}).sort()).toEqual([
+      "check",
       "delaySeconds",
       "expiresAt",
       "intervalSeconds",
@@ -107,13 +108,13 @@ describe("unified defer tools", () => {
     expect(pokeSpy).toHaveBeenCalled();
   });
 
-  it("lists the latest private checkpoint for a recurring defer", async () => {
+  it("lists the latest private checkpoint and check state for a recurring defer", async () => {
     const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const listTool = findTool(tools, "defer_list");
     const created = await createTool.handler(
-      { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3 },
+      { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3, check: { command: ["gh", "pr", "checks", "7"] } },
       makeInvocation("session-abc"),
     ) as any;
     const parsed = parseDeferId(created.deferId)!;
@@ -128,13 +129,22 @@ describe("unified defer tools", () => {
       claimed.claimToken,
       new Date(Date.parse(loop.nextRunAt) + 300_000).toISOString(),
       new Date(Date.parse(loop.nextRunAt) + 1_000).toISOString(),
-      { checkpoint: { status: "succeeded", buildId: 42 } },
+      {
+        checkpoint: { status: "succeeded", buildId: 42 },
+        check: {
+          result: { exitCode: 8, stdout: "pending", stderr: "", fingerprint: "f1" },
+          at: "2026-01-02T03:04:05.000Z",
+          outcome: "unchanged",
+        },
+      },
     );
 
     const result = await listTool.handler({}, makeInvocation("session-abc")) as any;
     expect(result.deferrals).toContainEqual(expect.objectContaining({
       deferId: created.deferId,
       checkpoint: { status: "succeeded", buildId: 42 },
+      check: { command: ["gh", "pr", "checks", "7"], timeoutSeconds: 60 },
+      lastCheck: expect.objectContaining({ exitCode: 8, summary: "unchanged at 2026-01-02T03:04:05.000Z" }),
     }));
   });
 
@@ -149,10 +159,25 @@ describe("unified defer tools", () => {
       .resolves.toEqual(toolFailure("intervalSeconds cannot be combined with delaySeconds or runAt."));
     await expect(createTool.handler({ prompt: "hi", runAt: new Date(Date.now() + 60_000).toISOString(), intervalSeconds: 300 }, makeInvocation("s1")))
       .resolves.toEqual(toolFailure("intervalSeconds cannot be combined with delaySeconds or runAt."));
-    await expect(createTool.handler({ prompt: "hi", delaySeconds: 10, maxRuns: 2 }, makeInvocation("s1")))
-      .resolves.toEqual(toolFailure("name, maxRuns, and expiresAt are valid only for recurring interval defers."));
-    await expect(createTool.handler({ prompt: "hi", delaySeconds: 10, expiresAt: new Date(Date.now() + 60_000).toISOString() }, makeInvocation("s1")))
-      .resolves.toEqual(toolFailure("name, maxRuns, and expiresAt are valid only for recurring interval defers."));
+    for (const recurringOnly of [
+      { maxRuns: 2 },
+      { expiresAt: new Date(Date.now() + 60_000).toISOString() },
+      { check: { command: ["gh"] } },
+    ]) {
+      await expect(createTool.handler({ prompt: "hi", delaySeconds: 10, ...recurringOnly }, makeInvocation("s1")))
+        .resolves.toEqual(toolFailure("name, maxRuns, expiresAt, and check are valid only for recurring interval defers."));
+    }
+    for (const [check, error] of [
+      [{ command: [] }, "check.command must be a non-empty array of non-empty strings: the executable, then its arguments."],
+      [{ command: ["gh", " "] }, "check.command must be a non-empty array of non-empty strings: the executable, then its arguments."],
+      [{ command: ["--version"] }, "check.command must start with the executable, not an option."],
+      [{ command: ["gh"], cwd: "relative/dir" }, "check.cwd must be an absolute path."],
+      [{ command: ["gh"], timeoutSeconds: 601 }, "check.timeoutSeconds must be an integer from 1 to 600."],
+      [{ command: ["gh"], timeoutSeconds: 1.5 }, "check.timeoutSeconds must be an integer from 1 to 600."],
+    ] as const) {
+      await expect(createTool.handler({ prompt: "hi", intervalSeconds: 300, check }, makeInvocation("s1")))
+        .resolves.toEqual(toolFailure(error));
+    }
     await expect(createTool.handler({ prompt: "hi", intervalSeconds: 30 }, makeInvocation("s1")))
       .resolves.toEqual(toolFailure("intervalSeconds must be at least 300 seconds."));
     await expect(createTool.handler({ prompt: "hi", intervalSeconds: 2_592_001 }, makeInvocation("s1")))
@@ -277,7 +302,10 @@ describe("unified defer tools", () => {
     });
 
     const once = await createTool.handler({ prompt: "once", delaySeconds: 60 }, makeInvocation("session-A")) as any;
-    const interval = await createTool.handler({ prompt: "loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A")) as any;
+    const interval = await createTool.handler(
+      { prompt: "loop", intervalSeconds: 300, maxRuns: 2, check: { command: ["gh", "run", "list"], timeoutSeconds: 30 } },
+      makeInvocation("session-A"),
+    ) as any;
     ctx.deferredPromptStore!.cancelById(parseDeferId(once.deferId)!.id);
     endDeferLoop(db, parseDeferId(interval.deferId)!.id, "expired");
     oncePoke.mockClear();
@@ -309,6 +337,7 @@ describe("unified defer tools", () => {
       status: "active",
       attempts: 0,
       lastError: undefined,
+      check: { command: ["gh", "run", "list"], timeoutSeconds: 30 },
     });
     expect(oncePoke).toHaveBeenCalledTimes(1);
     expect(loopPoke).toHaveBeenCalledTimes(1);

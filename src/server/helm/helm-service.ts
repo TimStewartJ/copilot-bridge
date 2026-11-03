@@ -242,7 +242,6 @@ export class HelmService implements HelmToolRuntime {
         configOptions: () => {
           const settings = this.ctx.settingsStore.getSettings();
           return {
-            promptProfile: "assistant",
             promptRole: HELM_CHAT_ROLE,
             extraGuidance: buildHelmChatGuidance({
               timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,

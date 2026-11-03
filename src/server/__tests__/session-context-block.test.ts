@@ -185,7 +185,7 @@ describe("bridge context sections", () => {
     const hashes = (task: Task | null) => build(task).map((section) => section.hash);
     const before = hashes(createTask({ notes: "first" }));
 
-    expect(build(null).map((section) => section.name)).toEqual(["task_state", "task_notes", "knowledge_base"]);
+    expect(build(null).map((section) => section.name)).toEqual(["task_state", "task_notes", "knowledge_base", "playbook"]);
     expect(hashes(createTask({ notes: "first" }))).toEqual(before);
     // A new next step leaves the notes alone; new notes leave the rest of the state alone.
     const moved = hashes(createTask({ notes: "first", nextAction: "Call the landlord" }));
@@ -198,6 +198,7 @@ describe("bridge context sections", () => {
       "<task_state>\nThis chat is not linked to a Bridge task.\n</task_state>",
       "<task_notes>\nThis chat is not linked to a Bridge task.\n</task_notes>",
       "<knowledge_base>\nThe knowledge base is empty.\n</knowledge_base>",
+      "<playbook>\nNo playbook is chosen for this chat yet.\n</playbook>",
     ]);
     expect([...emptyBridgeContextHashes().values()]).toEqual(detached.map((section) => section.hash));
     // Linked notes that were emptied differ from the starting point, so a chat is told after a restart.

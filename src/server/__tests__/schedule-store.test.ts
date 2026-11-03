@@ -76,13 +76,13 @@ describe("schedule-store", () => {
       expect(updated.enabled).toBe(false);
     });
 
-    it("stores, changes and clears a schedule's prompt profile", () => {
-      const created = store.createSchedule({ ...baseCron, promptProfile: "monitor" });
-      expect(created.promptProfile).toBe("monitor");
-      expect(store.updateSchedule(created.id, { promptProfile: "assistant" }).promptProfile).toBe("assistant");
-      expect(store.updateSchedule(created.id, { name: "Renamed" }).promptProfile).toBe("assistant");
-      expect(store.updateSchedule(created.id, { promptProfile: null }).promptProfile).toBeUndefined();
-      expect(store.createSchedule(baseCron).promptProfile).toBeUndefined();
+    it("stores, changes and clears a schedule's playbook", () => {
+      const created = store.createSchedule({ ...baseCron, playbook: "watch" });
+      expect(created.playbook).toBe("watch");
+      expect(store.updateSchedule(created.id, { playbook: "sweep" }).playbook).toBe("sweep");
+      expect(store.updateSchedule(created.id, { name: "Renamed" }).playbook).toBe("sweep");
+      expect(store.updateSchedule(created.id, { playbook: null }).playbook).toBeUndefined();
+      expect(store.createSchedule(baseCron).playbook).toBeUndefined();
     });
 
     it("updateSchedule changes and clears autoArchiveKeep", () => {

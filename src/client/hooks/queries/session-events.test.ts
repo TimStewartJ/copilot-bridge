@@ -120,6 +120,18 @@ describe("session event projection", () => {
     ]);
   });
 
+  it("puts a chat's new playbook in its model state, and removes it when cleared", () => {
+    const { queryClient, project } = fixture();
+    const key = queryKeys.sessionModel("one");
+    queryClient.setQueryData(key, { model: "gpt-5.6", source: "live" });
+    project({ type: "session:playbook", sessionId: "one", playbook: { playbook: "bug-fix", source: "agent", label: "Bug fix" } });
+    expect(queryClient.getQueryData(key)).toEqual({
+      model: "gpt-5.6", source: "live", playbook: { playbook: "bug-fix", source: "agent", label: "Bug fix" },
+    });
+    project({ type: "session:playbook", sessionId: "one", playbook: {} });
+    expect(queryClient.getQueryData(key)).toEqual({ model: "gpt-5.6", source: "live" });
+  });
+
   it.each(["session:title", "session:idle"] as const)("refreshes Helm when its conversation changes: %s", (type) => {
     const { project, effects } = fixture();
     effects.isHelmSession.mockReturnValue(true);

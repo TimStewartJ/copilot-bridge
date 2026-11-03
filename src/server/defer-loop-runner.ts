@@ -15,6 +15,7 @@ import {
   createReturnedDeferDelivery,
 } from "./defer-result-message.js";
 import type { DeferWorkerInput } from "./defer-worker.js";
+import { runDeferCheck, type DeferCheckSpec } from "./defer-check.js";
 import {
   createDeferRunnerCore,
   LEASE_EXPIRED_ERROR,
@@ -63,6 +64,19 @@ export function createDeferLoopRunner(
       intervalSeconds: loop.intervalSeconds,
       ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
       ...(loop.checkpoint ? { checkpoint: loop.checkpoint } : {}),
+      ...(loop.check && loop.checkPending
+        ? {
+            check: {
+              command: loop.check.command,
+              ...(loop.lastCheck?.output ? { previous: loop.lastCheck.output } : {}),
+              current: {
+                exitCode: loop.checkPending.exitCode,
+                stdout: loop.checkPending.stdout,
+                stderr: loop.checkPending.stderr,
+              },
+            },
+          }
+        : {}),
     };
   }
 
@@ -122,6 +136,39 @@ export function createDeferLoopRunner(
         return updated !== undefined;
       }
 
+      /**
+       * Run the loop's check command with no worker held. The first result is the baseline; a result
+       * equal to the last one settles the occurrence quietly. A changed result is kept for the worker.
+       */
+      async function runCheckGate(loop: DeferLoop, check: DeferCheckSpec, claimToken: string) {
+        const cwd = check.cwd ?? sessionManager.getEffectiveSessionCwd?.(loop.sessionId) ?? process.cwd();
+        const result = await runDeferCheck(check, cwd);
+        const checkedAt = new Date();
+        const previous = loop.lastCheck?.fingerprint;
+        const quiet = previous === undefined ? !check.wakeOnFirstRun : previous === result.fingerprint;
+        if (!quiet) {
+          return store.savePendingCheck(loop.id, claimToken, { ...result, at: checkedAt.toISOString() })
+            ? "wake" as const
+            : "settled" as const;
+        }
+        const nextRunAt = new Date(checkedAt.getTime() + loop.intervalSeconds * 1000).toISOString();
+        const status = getDeferLoopOccurrenceStatus(loop, loop.runCount + 1, nextRunAt);
+        const delivery = status === "active"
+          ? undefined
+          : createReturnedDeferDelivery(buildWorkerInput(loop, checkedAt.getTime()), terminalMessage(loop, status));
+        const updated = store.settleOccurrence(loop.id, claimToken, nextRunAt, checkedAt.toISOString(), {
+          ...(status === "active" ? {} : { status }),
+          ...(delivery ? { delivery } : {}),
+          check: {
+            result,
+            at: checkedAt.toISOString(),
+            outcome: previous === undefined ? "baseline" : "unchanged",
+          },
+        });
+        if (updated && delivery) ctx.recordSessionAttention(loop.sessionId);
+        return "settled" as const;
+      }
+
       return {
         listDue: () => store.listDue().map((loop) => ({
           id: loop.id,
@@ -149,6 +196,12 @@ export function createDeferLoopRunner(
           return loop?.status === "active" ? loop : undefined;
         },
         usesWorker: () => true,
+        // A loop with a check runs its command first; one with a changed result waiting goes to its worker.
+        gate: (loop) => {
+          const { check } = loop;
+          if (!check || loop.checkPending) return undefined;
+          return (claimed, claimToken) => runCheckGate(claimed, check, claimToken);
+        },
         reachesArchived: () => false,
         orphaned: (loop) => {
           const cancelled = store.cancelForSession(loop.sessionId);
@@ -199,6 +252,9 @@ export function createDeferLoopRunner(
             ...(status === "active" ? {} : { status }),
             ...(delivery ? { delivery } : {}),
             ...(result.checkpoint ? { checkpoint: result.checkpoint } : {}),
+            ...(loop.checkPending
+              ? { check: { result: loop.checkPending, at: loop.checkPending.at, outcome: "changed" as const } }
+              : {}),
           });
           if (updated && updated.status !== "active" && action !== "finish") {
             ctx.recordSessionAttention(loop.sessionId);

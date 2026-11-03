@@ -7,24 +7,11 @@ import {
   resolveResponseStyle,
 } from "../../../shared/response-style.js";
 import { SettingsSection } from "./SettingsSection";
-import { DS, cx } from "../../design/tokens";
+import { DS } from "../../design/tokens";
 import { Button, Details, SettingList, SettingRow } from "../../design/primitives";
 import { useSettingsWriter } from "../../hooks/queries/useSettings";
 import { DraftTextField } from "./DraftTextField";
 import { DEFAULT_IDENTITY } from "../../../shared/session-identity.js";
-import {
-  AUTO_PROMPT_PROFILE_DESCRIPTION,
-  DEFAULT_PROMPT_PROFILE_SETTING,
-  PROMPT_PROFILES,
-  type PromptProfileSetting,
-} from "../../../shared/prompt-profiles.js";
-
-const PROFILE_SETTING_OPTIONS: ReadonlyArray<{ value: PromptProfileSetting; label: string; description: string }> = [
-  { value: "auto", label: "Automatic", description: AUTO_PROMPT_PROFILE_DESCRIPTION },
-  ...PROMPT_PROFILES.map((profile) => ({ value: profile.id, label: profile.label, description: profile.description })),
-];
-
-
 
 export function SystemPromptSection({
   draft,
@@ -42,43 +29,9 @@ export function SystemPromptSection({
   const responseStyleError = failedKeys.has("responseStyle") ? writeError?.message : null;
 
   const commit = (changes: Partial<AppSettings>) => setDraft({ ...structuredClone(draft), ...changes });
-  const profileSetting = draft.promptProfile ?? DEFAULT_PROMPT_PROFILE_SETTING;
 
   return (
     <>
-      <SettingsSection
-        title="Profiles"
-        description="Default for new chats. Existing chats keep theirs."
-      >
-        <fieldset aria-describedby={`${id}-profile-help`} className="min-w-0">
-          <legend className="sr-only">Default profile for new chats</legend>
-          <div className="space-y-1">
-            {PROFILE_SETTING_OPTIONS.map((option) => (
-              <label key={option.value} className="flex min-h-10 cursor-pointer items-start gap-2 py-1 text-[13px] md:min-h-8">
-                <input
-                  type="radio"
-                  name={`${id}-profile`}
-                  value={option.value}
-                  checked={profileSetting === option.value}
-                  onChange={() => commit({ promptProfile: option.value })}
-                  className={cx(DS.control.checkbox, "mt-0.5")}
-                />
-                <span className="min-w-0">
-                  <span className="block text-text-primary">{option.label}</span>
-                  <span className="block text-xs text-text-secondary">{option.description}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-          <p id={`${id}-profile-help`} className={cx(DS.field.help, "mt-2")}>
-            Tools and permissions are the same in every profile.
-          </p>
-          {failedKeys.has("promptProfile") && writeError?.message && (
-            <p role="alert" className="mt-1 text-xs text-error">{writeError.message}</p>
-          )}
-        </fieldset>
-      </SettingsSection>
-
       <SettingsSection
         title="Response style"
         description="Applies to new and resumed chats."

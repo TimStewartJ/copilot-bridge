@@ -5,7 +5,7 @@ import type { HomeSnapshot } from "../../shared/home";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
 import { advanceTimersByTimeAct, findAllByTag, getReactProps, waitTick } from "../test-react-harness";
-const api = vi.hoisted(() => ({ fetchHome: vi.fn(), fetchHomeInput: vi.fn(), fetchTaskOverview: vi.fn(), patchChecklistItem: vi.fn(), patchTask: vi.fn(),
+const api = vi.hoisted(() => ({ fetchHome: vi.fn(), fetchHomeInput: vi.fn(), fetchTaskOverview: vi.fn(), fetchUnattendedRuns: vi.fn(), patchChecklistItem: vi.fn(), patchTask: vi.fn(),
   submitElicitationResponse: vi.fn(), submitUserInputResponse: vi.fn() }));
 vi.mock("../api", () => api);
 vi.mock("./PullToRefresh", () => ({ default: ({ children }: { children: unknown }) => children }));
@@ -21,7 +21,7 @@ const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id
 describe("Home within native Bridge", () => {
   let harness: DialogTestHarness;
   const selectTask = vi.fn(), selectSession = vi.fn();
-  beforeEach(async () => { vi.resetAllMocks(); vi.useFakeTimers(); harness = await createDialogTestHarness(); api.fetchHome.mockResolvedValue(empty()); });
+  beforeEach(async () => { vi.resetAllMocks(); vi.useFakeTimers(); harness = await createDialogTestHarness(); api.fetchHome.mockResolvedValue(empty()); api.fetchUnattendedRuns.mockResolvedValue({ runs: [] }); });
   afterEach(async () => { await harness.cleanup(); vi.useRealTimers(); });
   async function render() { await harness.render(createElement(MemoryRouter, null, createElement(NativeHome, { onSelectTask: selectTask, onSelectSession: selectSession }))); }
   async function click(label: string) {

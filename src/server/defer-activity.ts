@@ -35,6 +35,9 @@ export interface DeferActivityItem {
   canCancel: boolean;
   canReactivate: boolean;
   failedDelivery?: boolean;
+  /** The command run each interval before the worker; the worker starts only when its output changes. */
+  check?: { command: string[]; cwd?: string };
+  lastCheck?: { outcome: "baseline" | "unchanged" | "changed"; at: string; exitCode?: number; workerPending?: boolean };
 }
 
 export interface DeferActivityRun {
@@ -100,6 +103,20 @@ export function formatLoopDeferActivity(loop: DeferLoop): DeferActivityItem {
     createdAt: loop.createdAt,
     updatedAt: loop.updatedAt,
     ...(loop.lastError ? { lastError: loop.lastError } : {}),
+    ...(loop.check
+      ? { check: { command: loop.check.command, ...(loop.check.cwd ? { cwd: loop.check.cwd } : {}) } }
+      : {}),
+    ...(loop.checkPending
+      ? { lastCheck: { outcome: "changed" as const, at: loop.checkPending.at, exitCode: loop.checkPending.exitCode, workerPending: true } }
+      : loop.lastCheck
+        ? {
+            lastCheck: {
+              outcome: loop.lastCheck.outcome,
+              at: loop.lastCheck.at,
+              ...(loop.lastCheck.output ? { exitCode: loop.lastCheck.output.exitCode } : {}),
+            },
+          }
+        : {}),
     canCancel: loop.status === "active",
     canReactivate: loop.status === "failed"
       || loop.status === "cancelled"

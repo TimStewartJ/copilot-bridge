@@ -8,8 +8,13 @@ import { createTaskAgentDefinitionStore } from "./task-agent-definition-store.js
 import { createTaskGroupStore } from "./task-group-store.js";
 import { createSessionMetaStore } from "./session-meta-store.js";
 import { createSessionWorkspaceStore } from "./session-workspace-store.js";
-import { createSessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import { createSessionPlaybookStore } from "./session-playbook-store.js";
+import { createSkillCatalog } from "./skill-catalog.js";
+import { createSkillPackManager } from "./skill-packs.js";
+import { createSkillUsageStore } from "./skill-usage-store.js";
+import { createUnattendedRunStore } from "./unattended-run-store.js";
 import { createTaskHistoryStore } from "./task-history-store.js";
+import { createCompletionReportStore } from "./completion-report-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
@@ -96,8 +101,22 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const settingsStore = createSettingsStore(db);
   const sessionMetaStore = createSessionMetaStore(db);
   const sessionWorkspaceStore = createSessionWorkspaceStore(db);
-  const sessionPromptProfileStore = createSessionPromptProfileStore(db);
+  const sessionPlaybookStore = createSessionPlaybookStore(db);
+  const skillUsageStore = createSkillUsageStore(db);
+  const unattendedRunStore = createUnattendedRunStore(db);
+  let skillCatalog: ReturnType<typeof createSkillCatalog> | undefined;
+  const skillPacks = createSkillPackManager({
+    dataDir,
+    getPacks: () => settingsStore.getSettings().skillPacks ?? [],
+    onChanged: () => { void skillCatalog?.refresh().catch(() => undefined); },
+  });
+  skillCatalog = createSkillCatalog({
+    getCopilotHome: () => runtimePaths.copilotHome ?? join(homedir(), ".copilot"),
+    listPackRoots: () => skillPacks.activeRoots(undefined, { ignoreTags: true }),
+    onRefreshed: () => globalBus.emit({ type: "skills:changed" }),
+  });
   const taskHistoryStore = createTaskHistoryStore(db);
+  const completionReportStore = createCompletionReportStore(db);
   const sessionTitles = createSessionTitlesStore(db);
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
@@ -179,8 +198,13 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     settingsStore,
     sessionMetaStore,
     sessionWorkspaceStore,
-    sessionPromptProfileStore,
+    sessionPlaybookStore,
+    skillCatalog,
+    skillPacks,
+    skillUsageStore,
+    unattendedRunStore,
     taskHistoryStore,
+    completionReportStore,
     sessionTitles,
     bridgeSessionStateStore,
     cliSessionCatalog,
@@ -332,6 +356,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 
 export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
   void ctx.stopPushEventNotifications?.flush();
+  startSkillCatalog(ctx);
   ctx.scheduler?.initialize(ctx.sessionManager, {
     scheduleStore: ctx.scheduleStore,
     taskStore: ctx.taskStore,
@@ -348,4 +373,34 @@ export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
   }
   ctx.deferredPromptRunner?.start();
   ctx.deferLoopRunner?.start();
+}
+
+/** Git packs older than this are fetched again when the server starts. */
+const SKILL_PACK_STARTUP_STALE_MS = 12 * 60 * 60_000;
+
+/**
+ * Reads pack state, then scans skills, then fetches stale git packs in the background. Sessions
+ * started before the first scan finishes get no <skill_roles> fillers yet, which only costs them
+ * the role hints.
+ */
+export function startSkillCatalog(ctx: AppContext): void {
+  const catalog = ctx.skillCatalog;
+  const packs = ctx.skillPacks;
+  if (!catalog) return;
+  void (async () => {
+    try {
+      await packs?.listStatuses();
+    } catch (error) {
+      console.warn("[skill-packs] Could not read pack state:", error instanceof Error ? error.message : error);
+    }
+    catalog.start();
+    if (packs && !ctx.isStaging) {
+      try {
+        await packs.syncAll({ staleAfterMs: SKILL_PACK_STARTUP_STALE_MS });
+        await packs.pruneRemoved();
+      } catch (error) {
+        console.warn("[skill-packs] Startup sync failed:", error instanceof Error ? error.message : error);
+      }
+    }
+  })();
 }

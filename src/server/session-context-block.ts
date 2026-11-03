@@ -11,6 +11,7 @@ import {
   formatRelatedDocManifestEntry,
 } from "./session-formatting.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
+import { NO_PLAYBOOK, type PlaybookSource } from "../shared/workflow-vocabulary.js";
 
 /**
  * Task and knowledge-base state that changes while a chat runs. It travels at the start of user
@@ -21,7 +22,7 @@ import { formatTaskMomentumContext } from "./session-task-momentum.js";
  * part of a task's state and change least often: a new history line or next step resends only
  * task_state.
  */
-export type BridgeContextSectionName = "task_state" | "task_notes" | "knowledge_base";
+export type BridgeContextSectionName = "task_state" | "task_notes" | "knowledge_base" | "playbook";
 
 export interface BridgeContextSection {
   name: BridgeContextSectionName;
@@ -166,12 +167,77 @@ function buildKnowledgeBase(deps: BridgeContextDeps, task: Task | null | undefin
   return section("knowledge_base", lines, "The knowledge base is empty.");
 }
 
+/** The chat's playbook as the agent is told about it. */
+export interface PlaybookContext {
+  playbook: string;
+  source: PlaybookSource;
+  label?: string;
+  /** False when the name is not an installed playbook (a pin left behind after a skill was removed). */
+  installed: boolean;
+  /** Machine skills that add steps to this playbook. */
+  extensions: string[];
+}
+
+const PLAYBOOK_CHOSEN_BY: Record<PlaybookSource, string> = {
+  user: "the user chose it",
+  agent: "you chose it with playbook_select",
+  task: "this chat's task pins it",
+  schedule: "the schedule that started this chat pins it",
+};
+
+/** A playbook as the agent sees it when choosing one. */
+export interface PlaybookChoice {
+  id: string;
+  label?: string;
+  description: string;
+}
+
+const NO_ACTIVE_PLAYBOOK = "No playbook is chosen for this chat yet.";
+
+function shortDescription(description: string): string {
+  const text = description.replace(/^Playbook:\s*/i, "").replace(/\s+/g, " ").trim();
+  const sentence = text.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text;
+  return oneLine(sentence, 140);
+}
+
+function buildPlaybook(playbook: PlaybookContext | undefined, choices: readonly PlaybookChoice[]): BridgeContextSection {
+  if (!playbook) {
+    if (choices.length === 0) return section("playbook", [], NO_ACTIVE_PLAYBOOK);
+    return section("playbook", [
+      `${NO_ACTIVE_PLAYBOOK} Before you start on the user's request, call playbook_select: the playbook below that fits the work, or "none" when the request is small and fully specified. It returns the playbook's steps; copy them into your todo list. Do the same when the user turns to a different task.${choices.some((choice) => choice.id === "pickup") ? " When the user asks to resume, continue or finish earlier work, choose pickup even when the kind of work is obvious; pickup hands over to that playbook." : ""}`,
+      choices.map((choice) => `- ${choice.id}${choice.label ? ` (${choice.label})` : ""}: ${shortDescription(choice.description)}`).join("\n"),
+    ], "");
+  }
+  if (playbook.playbook === NO_PLAYBOOK) {
+    return section("playbook", [
+      `Direct path (${PLAYBOOK_CHOSEN_BY[playbook.source]}): no playbook for this chat until the user or a new task calls for one.`,
+    ], "");
+  }
+  if (!playbook.installed) {
+    return section("playbook", [
+      `The playbook "${playbook.playbook}" is pinned (${PLAYBOOK_CHOSEN_BY[playbook.source]}), but it is not installed on this machine. Tell the user, then match the task to an installed playbook.`,
+    ], "");
+  }
+  const name = playbook.label ? `${playbook.playbook} ("${playbook.label}")` : playbook.playbook;
+  return section("playbook", [
+    `Active playbook: ${name}; ${PLAYBOOK_CHOSEN_BY[playbook.source]}. If its steps are not in this conversation yet, call playbook_select with "${playbook.playbook}" to get them. Copy the steps into your todo list, follow them, and call verify_complete when they are done.`,
+    ...(playbook.extensions.length > 0 ? [`On this machine ${playbook.extensions.join(", ")} add steps to it; playbook_select returns them too.`] : []),
+  ], "");
+}
+
 export function buildBridgeContextSections(
   deps: BridgeContextDeps,
   task: Task | null | undefined,
   groupNotes?: { groupName: string; notes: string } | null,
+  playbook?: PlaybookContext,
+  playbookChoices: readonly PlaybookChoice[] = [],
 ): BridgeContextSection[] {
-  return [buildTaskState(deps, task), buildTaskNotes(task, groupNotes), buildKnowledgeBase(deps, task)];
+  return [
+    buildTaskState(deps, task),
+    buildTaskNotes(task, groupNotes),
+    buildKnowledgeBase(deps, task),
+    buildPlaybook(playbook, playbookChoices),
+  ];
 }
 
 /**
@@ -179,6 +245,8 @@ export function buildBridgeContextSections(
  * prompt says too. Starting from these hashes means a taskless chat with no docs gets no block.
  */
 export function emptyBridgeContextHashes(): Map<BridgeContextSectionName, string> {
+  // With playbooks installed, the playbook section differs from this starting point, so a chat's
+  // first message always says which playbooks exist.
   return new Map(buildBridgeContextSections({}, null).map((candidate) => [candidate.name, candidate.hash]));
 }
 

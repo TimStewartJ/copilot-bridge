@@ -10,8 +10,7 @@ import { buildCopilotClientOptions } from "../copilot-client-options.js";
 import { buildSessionConfig } from "../session-config-builder.js";
 import { createSettingsStore } from "../settings-store.js";
 import { DEFAULT_IDENTITY } from "../session-instructions.js";
-import { PROMPT_PROFILE_DEFINITIONS } from "../prompt-profiles.js";
-import type { PromptProfileId } from "../../shared/prompt-profiles.js";
+import { BASE_METHOD_ROLE } from "../base-method.js";
 import { buildBridgeContextSections, renderBridgeContextBlock } from "../session-context-block.js";
 import type { Task } from "../task-store.js";
 import { makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
@@ -114,14 +113,14 @@ async function fixture(signal: AbortSignal, completeAutopilot = false) {
     model: string,
     forResume = false,
     identity?: string,
-    promptProfile: PromptProfileId = "engineer",
+    projectFolder = true,
   ): AgentSessionConfig => {
     const settingsStore = identity ? createSettingsStore(setupTestDb()) : undefined;
     settingsStore?.updateSettings({ identity });
     const bridgeConfig = buildSessionConfig({
       deps: { config: { sessionMcpServers: {} }, clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" }, settingsStore },
-      options: { forResume, promptProfile },
-      callbacks: { resolveEffectiveSessionCwd: () => cwd, getCopilotHome: () => home },
+      options: { forResume },
+      callbacks: { resolveEffectiveSessionCwd: () => cwd, getCopilotHome: () => home, isNeutralWorkspaceCwd: () => !projectFolder },
     });
     // Keep every prompt-shaping field; drop only what needs network access or real tools.
     delete bridgeConfig.githubMcpToolConfig;
@@ -165,33 +164,21 @@ const MODEL_TOOL_GUIDANCE: Record<string, string> = {
   "gpt-6-astra": "use rg, glob, view, apply_patch yourself",
 };
 
-const PROFILE_BLOCKS: Record<PromptProfileId, { communication: string; approach: string }> = {
-  engineer: { communication: "<engineering_reports>", approach: "<engineering_approach>" },
-  assistant: { communication: "<conversation_style>", approach: "<assistant_approach>" },
-  monitor: { communication: "<monitor_report>", approach: "<monitor_approach>" },
-};
-
-function assertProfile(prompt: string, promptProfile: PromptProfileId) {
-  const definition = PROMPT_PROFILE_DEFINITIONS[promptProfile];
-  expect(prompt.startsWith(`${DEFAULT_IDENTITY}\n\n${definition.role}\n\n<response_style>`)).toBe(true);
-  // Communication follows the response style inside the tone section, before tool guidance.
-  const communication = prompt.indexOf(PROFILE_BLOCKS[promptProfile].communication);
-  expect(communication).toBeGreaterThan(prompt.indexOf("</response_style>"));
-  // Shared writing rules sit between the style and the profile's communication rules.
+function assertBaseMethod(prompt: string, projectFolder: boolean) {
+  expect(prompt.startsWith(`${DEFAULT_IDENTITY}\n\n${BASE_METHOD_ROLE}\n\n<response_style>`)).toBe(true);
+  // Reporting rules follow the response style inside the tone section, before tool guidance.
+  const reporting = prompt.indexOf("<reporting>");
+  expect(reporting).toBeGreaterThan(prompt.indexOf("</response_style>"));
+  // Shared writing rules sit between the style and the reporting rules.
   expect(prompt.split("<writing>").length - 1).toBe(1);
   expect(prompt.indexOf("<writing>")).toBeGreaterThan(prompt.indexOf("</response_style>"));
-  expect(prompt.indexOf("</writing>")).toBeLessThan(communication);
-  expect(communication).toBeLessThan(prompt.indexOf("# Tool usage efficiency"));
-  // The approach extends the CLI guidelines section, which stays intact.
-  const approach = prompt.indexOf(PROFILE_BLOCKS[promptProfile].approach);
-  expect(approach).toBeGreaterThan(prompt.indexOf("</tips_and_tricks>"));
-  expect(approach).toBeLessThan(prompt.indexOf("<environment_limitations>"));
-  for (const [other, blocks] of Object.entries(PROFILE_BLOCKS)) {
-    if (other === promptProfile) continue;
-    expect(prompt).not.toContain(blocks.communication);
-    expect(prompt).not.toContain(blocks.approach);
-  }
-  if (definition.keepCodingRules) {
+  expect(prompt.indexOf("</writing>")).toBeLessThan(reporting);
+  expect(reporting).toBeLessThan(prompt.indexOf("# Tool usage efficiency"));
+  // The working method extends the CLI guidelines section, which stays intact.
+  const method = prompt.indexOf("<working_method>");
+  expect(method).toBeGreaterThan(prompt.indexOf("</tips_and_tricks>"));
+  expect(method).toBeLessThan(prompt.indexOf("<environment_limitations>"));
+  if (projectFolder) {
     expect(prompt).toContain("<rules_for_code_changes>");
   } else {
     expect(prompt).not.toContain("<rules_for_code_changes>");
@@ -199,9 +186,9 @@ function assertProfile(prompt: string, promptProfile: PromptProfileId) {
   }
 }
 
-function assertBridgePrompt(prompt: string, model: string, promptProfile: PromptProfileId = "engineer") {
+function assertBridgePrompt(prompt: string, model: string, projectFolder = true) {
   expect(prompt).toContain(MODEL_TOOL_GUIDANCE[model]);
-  assertProfile(prompt, promptProfile);
+  assertBaseMethod(prompt, projectFolder);
   expect(prompt).not.toContain("You are GitHub Copilot");
   expect(prompt).not.toContain("You are an interactive tool that helps users with software engineering tasks.");
   // Other identity-group children the Bridge keeps.
@@ -259,7 +246,7 @@ describe("native Bridge system prompt", () => {
         expect(expected, tag).toBeTruthy();
         expect(bridgePrompt.match(block)?.[0], tag).toBe(expected);
       }
-      expect(bridgePrompt).toContain("Do not expand scope or replace a completion condition without agreement.");
+      expect(bridgePrompt).toContain("do not expand or replace them without agreement.");
       expect(bridgePrompt).toContain("Idle sessions and completed checklists do not establish task completion.");
       await engineer.release();
     } finally { await cleanup(); }
@@ -339,21 +326,19 @@ describe("native Bridge system prompt", () => {
     } finally { await cleanup(); }
   });
 
-  it("assembles the Assistant and Monitor profiles on create and cold resume", async ({ signal }) => {
+  it("assembles the prompt of a chat without a project folder on create and cold resume", async ({ signal }) => {
     const { backend, configFor, requests, cleanup } = await fixture(signal);
     try {
       for (const model of ["claude-sonnet-4.5", "gpt-6-astra"]) {
-        for (const promptProfile of ["assistant", "monitor"] as const) {
-          const session = await backend.createSession(configFor(model, false, undefined, promptProfile));
-          await session.sendAndWait({ prompt: "Return the fixture response." }, null);
-          assertBridgePrompt(systemPromptOf(requests.at(-1)), model, promptProfile);
-          await session.release();
+        const session = await backend.createSession(configFor(model, false, undefined, false));
+        await session.sendAndWait({ prompt: "Return the fixture response." }, null);
+        assertBridgePrompt(systemPromptOf(requests.at(-1)), model, false);
+        await session.release();
 
-          const resumed = await backend.resumeSession(session.sessionId, configFor(model, true, undefined, promptProfile));
-          await resumed.sendAndWait({ prompt: "Return the fixture response after cold resume." }, null);
-          assertBridgePrompt(systemPromptOf(requests.at(-1)), model, promptProfile);
-          await resumed.release();
-        }
+        const resumed = await backend.resumeSession(session.sessionId, configFor(model, true, undefined, false));
+        await resumed.sendAndWait({ prompt: "Return the fixture response after cold resume." }, null);
+        assertBridgePrompt(systemPromptOf(requests.at(-1)), model, false);
+        await resumed.release();
       }
     } finally { await cleanup(); }
   });
@@ -403,7 +388,7 @@ describe("native Bridge system prompt", () => {
       const session = await backend.createSession(configFor("gpt-5-mini", false, identity));
       await session.sendAndWait({ prompt: "Return the fixture response." }, null);
       const prompt = systemPromptOf(requests.at(-1));
-      expect(prompt.startsWith(`${identity}\n\n${PROMPT_PROFILE_DEFINITIONS.engineer.role}\n\n<response_style>`)).toBe(true);
+      expect(prompt.startsWith(`${identity}\n\n${BASE_METHOD_ROLE}\n\n<response_style>`)).toBe(true);
       expect(prompt.split(statement).length - 1).toBe(1);
       await session.release();
     } finally { await cleanup(); }

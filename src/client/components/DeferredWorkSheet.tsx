@@ -218,6 +218,27 @@ function DeferCheckpointPreview({ item }: { item: DeferredWorkItem }) {
   );
 }
 
+const CHECK_OUTCOME_LABELS = { baseline: "Baseline", unchanged: "Unchanged", changed: "Changed" } as const;
+
+function DeferCheckLine({ check, lastCheck }: Pick<DeferredWorkItem, "check" | "lastCheck">) {
+  if (!check) return null;
+  return (
+    <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-text-muted">
+      <span>Check</span>
+      <code className={cx(DS.text.literal, "min-w-0 break-all")} title={check.cwd}>{check.command.join(" ")}</code>
+      {lastCheck ? (
+        <span title={new Date(lastCheck.at).toLocaleString()}>
+          {CHECK_OUTCOME_LABELS[lastCheck.outcome]} {timeAgo(lastCheck.at)}
+          {lastCheck.exitCode !== undefined ? ` · exit ${lastCheck.exitCode}` : ""}
+          {lastCheck.workerPending ? " · worker waiting" : ""}
+        </span>
+      ) : (
+        <span>Not run yet</span>
+      )}
+    </div>
+  );
+}
+
 function DeferCard({
   item,
   busy,
@@ -261,6 +282,8 @@ function DeferCard({
       <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">
         {item.prompt}
       </p>
+
+      <DeferCheckLine check={item.check} lastCheck={item.lastCheck} />
 
       <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2 text-[11px] text-text-muted">
         {item.intervalSeconds !== undefined && <span>Every {formatInterval(item.intervalSeconds)}</span>}

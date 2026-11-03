@@ -240,6 +240,12 @@ const TOOL_VERBS: Record<string, ToolVerb> = {
     icon: "image",
     target: (args) => ({ text: stringArg(args, "title", "displayName"), mono: false }),
   },
+  verify_complete: {
+    active: "Recording evidence",
+    done: "Reported evidence",
+    icon: "tasks",
+    target: (args) => ({ text: stringArg(args, "summary"), mono: false }),
+  },
   image_generation: {
     active: "Generating image",
     done: "Generated image",

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
-import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isPlaybookName, isPlaybookSource, type PlaybookSource } from "../shared/workflow-vocabulary.js";
 import { hydrateRowSafely, type RowHydrationContext } from "./store-row-hydration.js";
 
 const BRIDGE_SESSION_STATE_HYDRATION: RowHydrationContext<any> = {
@@ -26,7 +26,9 @@ export interface BridgeSessionState {
   terminalOverlay?: SyntheticTerminalOverlay;
   pendingAutoName: boolean;
   pendingAutoNameReplaceTitle?: string;
-  promptProfile?: PromptProfileId;
+  /** The chat's active playbook, or NO_PLAYBOOK for the direct path. */
+  playbook?: string;
+  playbookSource?: PlaybookSource;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,7 +77,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
       terminalOverlay: parseTerminalOverlay(row),
       pendingAutoName: row.pendingAutoName === 1,
       pendingAutoNameReplaceTitle: row.pendingAutoNameReplaceTitle ?? undefined,
-      promptProfile: isPromptProfileId(row.promptProfile) ? row.promptProfile : undefined,
+      playbook: isPlaybookName(row.playbook) ? row.playbook : undefined,
+      playbookSource: isPlaybookName(row.playbook) && isPlaybookSource(row.playbookSource) ? row.playbookSource : undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -146,6 +149,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND pendingAutoName = 0
         AND pendingAutoNameReplaceTitle IS NULL
         AND promptProfile IS NULL
+        AND playbook IS NULL
     `).run(sessionId);
   }
 
@@ -227,6 +231,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
         AND pendingAutoName = 0
         AND pendingAutoNameReplaceTitle IS NULL
         AND promptProfile IS NULL
+        AND playbook IS NULL
     `).run();
   }
 
@@ -289,23 +294,25 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     pruneIfDefault(sessionId);
   }
 
-  function setPromptProfile(sessionId: string, promptProfile: PromptProfileId): BridgeSessionState {
+  function setPlaybook(sessionId: string, playbook: string, source: PlaybookSource): BridgeSessionState {
     const now = nowIso();
     db.prepare(`
-      INSERT INTO bridge_session_state (sessionId, promptProfile, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO bridge_session_state (sessionId, playbook, playbookSource, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(sessionId) DO UPDATE SET
-        promptProfile = excluded.promptProfile,
+        playbook = excluded.playbook,
+        playbookSource = excluded.playbookSource,
         updatedAt = excluded.updatedAt
-    `).run(sessionId, promptProfile, now, now);
+    `).run(sessionId, playbook, source, now, now);
     return getState(sessionId)!;
   }
 
-  function clearPromptProfile(sessionId: string): void {
+  function clearPlaybook(sessionId: string): void {
     const now = nowIso();
     db.prepare(`
       UPDATE bridge_session_state
-      SET promptProfile = NULL,
+      SET playbook = NULL,
+          playbookSource = NULL,
           updatedAt = ?
       WHERE sessionId = ?
     `).run(now, sessionId);
@@ -487,8 +494,8 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     clearAllTitleOverrides,
     setPinnedCwd,
     clearPinnedCwd,
-    setPromptProfile,
-    clearPromptProfile,
+    setPlaybook,
+    clearPlaybook,
     setScheduleMeta,
     setLastVisibleActivityAt,
     replaceLastVisibleActivityAt,

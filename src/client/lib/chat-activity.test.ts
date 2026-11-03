@@ -90,6 +90,20 @@ describe("groupActivitySegments", () => {
     expect(blocks.map((block) => block.type)).toEqual(["activity"]);
   });
 
+  it("lifts a recorded verify_complete report out of the steps and leaves a rejected one in them", () => {
+    const args = { summary: "Fixed it", evidence: [{ kind: "tested", claim: "suite passes", result: "pass" }] };
+    const recorded = JSON.stringify({ success: true, status: "verified", playbookLabel: "Bug fix" });
+    const blocks = blocksOf([
+      tool("edit", "turn-a"),
+      { ...tool("verify_complete", "turn-a", { args, success: false, result: "Bug fix requires evidence that is missing" }), id: "rejected" },
+      { id: "recorded", type: "tool", turnInstanceId: "turn-a", toolCall: { toolCallId: "recorded-call", name: "verify_complete", args, success: true, result: recorded } },
+    ]);
+
+    expect(blocks.map((block) => block.type)).toEqual(["activity", "verification"]);
+    expect(blocks[1]).toMatchObject({ key: "verification:recorded-call" });
+    expect(activity(blocks)[0]?.steps).toMatchObject([{ kind: "tools", entries: [{ id: "edit" }, { id: "rejected" }] }]);
+  });
+
   it("folds the thinking and tool calls of consecutive turns into one block", () => {
     const blocks = blocksOf([
       { role: "user", content: "Fix the bug" },

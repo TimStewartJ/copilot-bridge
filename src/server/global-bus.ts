@@ -6,9 +6,10 @@ import type { ManagementJobStatus, ManagementJobType } from "./management-job-st
 import type { BackgroundAgentsSummary } from "../shared/session-agents.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { SendMode } from "../shared/send-mode.js";
+import type { SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:mode" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "session:continuation" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-changed" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "management-job:changed" | "backend:status" | "docs:changed" | "helm:changed" | "calendar:changed";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:mode" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "session:continuation" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-changed" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "management-job:changed" | "backend:status" | "docs:changed" | "helm:changed" | "calendar:changed" | "session:playbook" | "skills:changed" | "session:completion";
   sessionId?: string;
   /** `session:archived` for several sessions at once; `sessionId` is then absent. */
   sessionIds?: string[];
@@ -33,6 +34,8 @@ export interface StatusEvent {
   taskId?: string;
   readState?: Record<string, string>;
   agentBackend?: AgentBackendStatus;
+  /** `session:playbook`: the chat's playbook after the change. */
+  playbook?: SessionPlaybookView;
 }
 
 type Listener = (event: StatusEvent) => void;

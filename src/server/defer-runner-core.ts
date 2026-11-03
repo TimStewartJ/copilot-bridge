@@ -75,6 +75,14 @@ export interface DeferWork<Item extends { id: string; sessionId: string }> {
   load(id: string): Item | undefined;
   /** True when the item runs in a worker session of its own; false when it is a message for the chat itself. */
   usesWorker(item: Item): boolean;
+  /**
+   * A step to run before the item takes a worker, or undefined to go straight to `run`. The step
+   * runs with the item claimed but no worker slot or session, and either records the outcome itself
+   * ("settled") or saves what the worker needs and asks for one ("wake"). After "wake" the claim is
+   * given back without counting the try and the item is taken again, this time with a worker.
+   * The step gets the item as claimed. Throwing means the try failed.
+   */
+  gate?(item: Item): DeferGate<Item> | undefined;
   /** True when the item should still reach a chat that has been archived. */
   reachesArchived(item: Item): boolean;
   /** The chat is gone: end the item. Returns whether anything changed. */
@@ -92,6 +100,9 @@ export interface DeferWork<Item extends { id: string; sessionId: string }> {
   /** The work was tried and failed: apply this kind's policy. */
   failed(item: Item, claimToken: string, error: string): void;
 }
+
+export type DeferGateOutcome = "settled" | "wake";
+export type DeferGate<Item> = (claimed: Item, claimToken: string) => Promise<DeferGateOutcome>;
 
 /** What the core lends to a DeferWork. */
 export interface DeferRunnerCoreContext {
@@ -368,8 +379,10 @@ export function createDeferRunnerCore<Item extends { id: string; sessionId: stri
 
     // session:idle is the fast path for a busy chat; the watchdog also retries overdue items.
     if (sessionManager.isSessionBusy(sessionId)) return "blocked";
-    const usesWorker = work.usesWorker(item);
-    const capacityWait = sessionManager.getSessionCapacityWait?.(usesWorker ? undefined : sessionId);
+    // A gate needs neither a worker nor the chat's context, so it does not wait for capacity.
+    const gate = work.gate?.(item);
+    const usesWorker = !gate && work.usesWorker(item);
+    const capacityWait = gate ? undefined : sessionManager.getSessionCapacityWait?.(usesWorker ? undefined : sessionId);
     if (capacityWait) {
       work.noteWait(item, capacityWait);
       // A check waits for a context of its own; a message waits for its chat, and so do the messages after it.
@@ -405,7 +418,7 @@ export function createDeferRunnerCore<Item extends { id: string; sessionId: stri
       }, LEASE_RENEW_INTERVAL_MS);
       renewalTimers.add(renewalTimer);
 
-      void finish(claimed.item, token, renewalTimer, lease).catch((err) => {
+      void finish(claimed.item, token, renewalTimer, lease, gate).catch((err) => {
         console.error(`[${tag}] Unexpected delivery error for ${noun} ${id}:`, err);
       });
       return "claimed";
@@ -430,15 +443,25 @@ export function createDeferRunnerCore<Item extends { id: string; sessionId: stri
     claimToken: string,
     renewalTimer: ReturnType<typeof setInterval>,
     lease: DeferWorkerLease | undefined,
+    gate?: DeferGate<Item>,
   ): Promise<void> {
     const { id, sessionId } = item;
     // A waiting item stays due, so going straight into another pass would spin on it.
     let waiting = false;
     try {
-      await work.run(item, claimToken, lease);
+      if (gate) {
+        // The item stays due, and the next pass takes it with a worker.
+        if (await gate(item, claimToken) === "wake" && !work.release(id, claimToken)) {
+          console.warn(`[${tag}] ${noun} ${id} changed while its gate ran; not starting its worker`);
+        }
+      } else {
+        await work.run(item, claimToken, lease);
+      }
     } catch (error) {
       const message = errorMessage(error);
-      if (
+      if (gate) {
+        work.failed(item, claimToken, message);
+      } else if (
         isDeferWaitError(error)
         || !getReadiness().ready
         // A message's capacity refusal arrives as plain text, so ask again whether its chat can be loaded.

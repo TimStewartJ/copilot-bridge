@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isRecord } from "../shared/is-record.js";
 import type { ScheduleContext } from "./session-config-builder.js";
-import { MAX_PREVIOUS_RUN_REPORT_LENGTH, type PreviousRunReport } from "./prompt-profiles.js";
+import { MAX_PREVIOUS_RUN_REPORT_LENGTH, type PreviousRunReport } from "./scheduled-run-report.js";
 
 const FILE_NAME = "bridge-launch-context.json";
 

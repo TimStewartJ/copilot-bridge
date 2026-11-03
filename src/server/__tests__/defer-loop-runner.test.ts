@@ -23,6 +23,9 @@ import {
   BACKEND_RECONNECTING_MESSAGE,
 } from "../backend-availability.js";
 import type { DatabaseSync } from "../db.js";
+import { getProcessHost, HostExecError } from "../process-host.js";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const makeMockSessionManager = (options: MockDeferSessionManagerOptions = {}) =>
   makeMockDeferSessionManager({ defaultAction: "continue", ...options });
@@ -1152,6 +1155,142 @@ describe("defer-loop-runner", () => {
 
     expect(sm.runDeferWorker).toHaveBeenCalledOnce();
     expect(store.get(loop.id)).toMatchObject({ status: "cancelled", runCount: 0 });
+    runner.shutdown();
+  });
+});
+
+describe("defer-loop-runner check commands", () => {
+  const command = ["fixture-status-cli", "pr", "checks", "7"];
+  const exited = (code: number, stdout: string) =>
+    new HostExecError({ message: `Command failed with exit code ${code}`, code }, stdout, "");
+
+  beforeEach(() => {
+    // With no PATH the Windows lookup has nothing to search, so the name reaches the start as written on any host.
+    vi.stubEnv("PATH", "");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  function setup(options: { maxRuns?: number; wakeOnFirstRun?: boolean } = {}) {
+    const store = createDeferLoopStore(db);
+    const promptStore = createDeferredPromptStore(db);
+    const loop = store.create({
+      sessionId: "session-1",
+      prompt: "Tell me when the checks pass.",
+      intervalSeconds: 300,
+      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+      ...(options.maxRuns !== undefined ? { maxRuns: options.maxRuns } : {}),
+      check: { command, timeoutSeconds: 60, ...(options.wakeOnFirstRun ? { wakeOnFirstRun: true } : {}) },
+    });
+    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
+    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
+    const acquire = sm.tryAcquireDeferWorker;
+    sm.tryAcquireDeferWorker = vi.fn(() => acquire());
+    const execFile = vi.spyOn(getProcessHost(), "execFile");
+    const runner = createDeferLoopRunner(
+      store,
+      sm,
+      createGlobalBus(),
+      createDeferDeliveryGuard(),
+      { deferredPromptStore: promptStore, deferLoopStore: store },
+    );
+    return { store, promptStore, loop, sm, execFile, runner };
+  }
+
+  it("runs the command without a worker until its output changes, then wakes the worker with old and new output", async () => {
+    const { store, loop, sm, execFile, runner } = setup();
+    const workspace = join(tmpdir(), "chat-workspace");
+    sm.getEffectiveSessionCwd = () => workspace;
+    let full = true;
+    sm.getSessionCapacityWait = vi.fn(() => (full ? "No free context." : undefined));
+    execFile
+      .mockRejectedValueOnce(exited(8, "pending\r\n"))
+      .mockRejectedValueOnce(exited(8, "pending  \n"))
+      .mockResolvedValueOnce({ stdout: "pass\n", stderr: "" });
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // The first result is the baseline. It needs no worker, so a full house does not hold it up.
+    expect(execFile).toHaveBeenCalledWith("fixture-status-cli", ["pr", "checks", "7"], expect.objectContaining({ cwd: workspace, timeout: 60_000 }));
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 1, lastCheck: { outcome: "baseline" } });
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 2, lastCheck: { outcome: "unchanged" } });
+    expect(sm.tryAcquireDeferWorker).not.toHaveBeenCalled();
+
+    // The output changed while no context is free: the result waits for a worker and the command is not rerun.
+    await vi.advanceTimersByTimeAsync(300_000 + 2 * DEFER_WATCHDOG_INTERVAL_MS);
+    expect(sm.runDeferWorker).not.toHaveBeenCalled();
+    expect(store.get(loop.id)).toMatchObject({ runCount: 2, checkPending: { exitCode: 0 }, lastError: "No free context." });
+
+    full = false;
+    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
+    expect(execFile).toHaveBeenCalledTimes(3);
+    expect(sm.runDeferWorker).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      check: {
+        command,
+        previous: { exitCode: 8, stdout: "pending", stderr: "" },
+        current: { exitCode: 0, stdout: "pass", stderr: "" },
+      },
+    }));
+    const settled = store.get(loop.id)!;
+    expect(settled).toMatchObject({ status: "active", runCount: 3, lastCheck: { outcome: "changed", output: { exitCode: 0 } } });
+    expect(settled.checkPending).toBeUndefined();
+    runner.shutdown();
+  });
+
+  it.each([
+    { wakeOnFirstRun: false, workerRuns: 0, outcome: "baseline" },
+    { wakeOnFirstRun: true, workerRuns: 1, outcome: "changed" },
+  ])("ends the loop on its last run like any other check (wakeOnFirstRun $wakeOnFirstRun)", async ({ wakeOnFirstRun, workerRuns, outcome }) => {
+    const { store, promptStore, loop, sm, execFile, runner } = setup({ maxRuns: 1, wakeOnFirstRun });
+    execFile.mockResolvedValueOnce({ stdout: "queued", stderr: "" });
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sm.runDeferWorker).toHaveBeenCalledTimes(workerRuns);
+    if (workerRuns) {
+      expect(sm.runDeferWorker).toHaveBeenCalledWith(expect.objectContaining({
+        isFinalRun: true,
+        check: { command, current: { exitCode: 0, stdout: "queued", stderr: "" } },
+      }));
+    }
+    expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 1, lastCheck: { outcome } });
+    const [final] = promptStore.listDeliveriesForSession("session-1");
+    expect(final!.prompt).toContain("FINAL DEFER RESULT: Monitoring stopped after 1 checks");
+    runner.shutdown();
+  });
+
+  it.each([
+    {
+      name: "cannot start",
+      error: new HostExecError({ message: "spawn fixture-status-cli ENOENT", code: "ENOENT" }, "", ""),
+      lastError: "Check command fixture-status-cli was not found (ENOENT)",
+    },
+    {
+      name: "times out",
+      error: new HostExecError({ message: "timed out", code: null, killed: true, signal: "SIGTERM" }, "", "", true),
+      lastError: "Check command fixture-status-cli timed out after 60 seconds.",
+    },
+  ])("counts a check whose command $name as a failed run without starting a worker", async ({ error, lastError }) => {
+    const { store, loop, sm, execFile, runner } = setup();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    execFile.mockRejectedValueOnce(error);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sm.tryAcquireDeferWorker).not.toHaveBeenCalled();
+    const row = store.get(loop.id)!;
+    expect(row).toMatchObject({ status: "active", runCount: 1, attempts: 1 });
+    expect(row.lastError).toContain(lastError);
+    expect(row.lastCheck).toBeUndefined();
+    expect(Date.parse(row.nextRunAt)).toBe(Date.now() + 300_000);
+    expect(warnSpy).toHaveBeenCalled();
     runner.shutdown();
   });
 });

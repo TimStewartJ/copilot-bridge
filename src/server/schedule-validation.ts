@@ -1,4 +1,4 @@
-import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isPlaybookName } from "../shared/workflow-vocabulary.js";
 import { isModelPresetSlot, type ModelPresetSlot } from "../shared/model-presets.js";
 
 export const MAX_SCHEDULE_AUTO_ARCHIVE_KEEP = 1000;
@@ -10,7 +10,8 @@ export type NormalizedScheduleAutoArchiveKeep =
 export interface ScheduleLaunchOptionUpdates {
   /** A tier from Settings › Models; null follows New chats. */
   modelTier?: ModelPresetSlot | null;
-  promptProfile?: PromptProfileId | null;
+  /** A playbook every run follows; null lets each run pick. */
+  playbook?: string | null;
 }
 
 export type ScheduleLaunchOptionValidationResult =
@@ -51,7 +52,7 @@ export function normalizeScheduleAutoArchiveKeep(value: unknown): NormalizedSche
   return { ok: true, value: parsed };
 }
 
-/** Reads the provided model tier and prompt profile; absent fields stay out of the updates. */
+/** Reads the provided model tier and playbook; absent fields stay out of the updates. */
 export function validateScheduleLaunchOptions(input: Record<string, unknown>): ScheduleLaunchOptionValidationResult {
   const updates: ScheduleLaunchOptionUpdates = {};
   if (Object.prototype.hasOwnProperty.call(input, "modelTier")) {
@@ -60,11 +61,11 @@ export function validateScheduleLaunchOptions(input: Record<string, unknown>): S
     else if (isModelPresetSlot(value)) updates.modelTier = value;
     else return { ok: false, error: "modelTier must be preset1, preset2, preset3, or null" };
   }
-  if (Object.prototype.hasOwnProperty.call(input, "promptProfile")) {
-    const value = input.promptProfile;
-    if (value === null || value === "") updates.promptProfile = null;
-    else if (isPromptProfileId(value)) updates.promptProfile = value;
-    else return { ok: false, error: "promptProfile must be engineer, assistant, monitor, or null" };
+  if (Object.prototype.hasOwnProperty.call(input, "playbook")) {
+    const value = input.playbook;
+    if (value === null || value === "") updates.playbook = null;
+    else if (isPlaybookName(value)) updates.playbook = value;
+    else return { ok: false, error: "playbook must be a playbook name or null" };
   }
   return { ok: true, updates };
 }

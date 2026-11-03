@@ -1916,11 +1916,10 @@ describe("SessionManager run state", () => {
   });
 
   it("fails before backend creation when settings become unreadable at the creation boundary", async () => {
-    const getSettings = vi.fn()
-      .mockReturnValueOnce({ mcpServers: {} })
-      .mockImplementation(() => {
-        throw new Error("persisted settings unreadable");
-      });
+    // Building the session config is the first settings read on the creation path.
+    const getSettings = vi.fn(() => {
+      throw new Error("persisted settings unreadable");
+    });
     const { manager } = createManager({
       settingsStore: {
         getMcpServers: () => ({}),

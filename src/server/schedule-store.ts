@@ -1,7 +1,7 @@
 // Schedule store — SQLite persistence
 
 import type { DatabaseSync } from "./db.js";
-import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isPlaybookName } from "../shared/workflow-vocabulary.js";
 import { isModelPresetSlot, type ModelPresetSlot } from "../shared/model-presets.js";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -61,8 +61,8 @@ export interface Schedule {
    * The table's older model, reasoningEffort and contextTier columns are no longer read.
    */
   modelTier?: ModelPresetSlot;
-  /** Profile for sessions this schedule starts; unset follows the settings default. */
-  promptProfile?: PromptProfileId;
+  /** The playbook every run follows (Watch for recurring checks); unset lets the run pick. */
+  playbook?: string;
 
   // Behavior
   enabled: boolean;
@@ -83,7 +83,7 @@ export interface Schedule {
 
 export type ScheduleCreate = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
   Partial<Pick<Schedule,
-    "cron" | "runAt" | "timezone" | "modelTier" | "promptProfile"
+    "cron" | "runAt" | "timezone" | "modelTier" | "playbook"
     | "maxRuns" | "expiresAt" | "autoArchiveKeep"
   >>;
 
@@ -91,7 +91,7 @@ export type ScheduleUpdate = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
   modelTier?: ModelPresetSlot | null;
-  promptProfile?: PromptProfileId | null;
+  playbook?: string | null;
   autoArchiveKeep?: number | null;
 };
 
@@ -138,7 +138,7 @@ export function createScheduleStore(db: DatabaseSync) {
       runAt: row.runAt ?? undefined,
       timezone: row.timezone ?? undefined,
       modelTier: isModelPresetSlot(row.modelTier) ? row.modelTier : undefined,
-      promptProfile: isPromptProfileId(row.promptProfile) ? row.promptProfile : undefined,
+      playbook: isPlaybookName(row.playbook) ? row.playbook : undefined,
       enabled: row.enabled === 1,
       lastSessionId: row.lastSessionId ?? undefined,
       createdAt: row.createdAt,
@@ -170,13 +170,13 @@ export function createScheduleStore(db: DatabaseSync) {
 
     db.prepare(`
       INSERT INTO schedules (id, taskId, name, prompt, type, cron, runAt, timezone, modelTier,
-        promptProfile, enabled, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
+        playbook, enabled, createdAt, updatedAt, runCount, maxRuns, expiresAt, autoArchiveKeep)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?)
     `).run(
       id, input.taskId, input.name, input.prompt, input.type,
       input.cron ?? null, input.runAt ?? null, input.timezone ?? getServerTimezone(),
       input.modelTier ?? null,
-      input.promptProfile ?? null,
+      input.playbook ?? null,
       now, now,
       input.maxRuns ?? null, input.expiresAt ?? null, input.autoArchiveKeep ?? null,
     );
@@ -197,7 +197,7 @@ export function createScheduleStore(db: DatabaseSync) {
     if (updates.runAt !== undefined) { fields.push("runAt = ?"); values.push(updates.runAt); }
     if (updates.timezone !== undefined) { fields.push("timezone = ?"); values.push(updates.timezone); }
     if (updates.modelTier !== undefined) { fields.push("modelTier = ?"); values.push(updates.modelTier); }
-    if (updates.promptProfile !== undefined) { fields.push("promptProfile = ?"); values.push(updates.promptProfile); }
+    if (updates.playbook !== undefined) { fields.push("playbook = ?"); values.push(updates.playbook); }
     if (updates.enabled !== undefined) { fields.push("enabled = ?"); values.push(updates.enabled ? 1 : 0); }
     if (updates.maxRuns !== undefined) { fields.push("maxRuns = ?"); values.push(updates.maxRuns); }
     if (updates.expiresAt !== undefined) { fields.push("expiresAt = ?"); values.push(updates.expiresAt); }

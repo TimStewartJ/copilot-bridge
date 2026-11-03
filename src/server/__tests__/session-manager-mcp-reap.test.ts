@@ -3,7 +3,7 @@ import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
 import { SessionCapacityError, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { createSessionPromptProfileStore } from "../session-prompt-profile-store.js";
+import { createSessionPlaybookStore } from "../session-playbook-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 import { createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub, makeTestDir, setupTestDb } from "./helpers.js";
 import { join } from "node:path";
@@ -77,7 +77,7 @@ function createManager(options: { telemetry?: boolean } = {}): {
       getSettings: () => ({ model: "claude-opus-4.7" }),
     } as any,
     telemetryStore,
-    sessionPromptProfileStore: createSessionPromptProfileStore(db),
+    sessionPlaybookStore: createSessionPlaybookStore(db),
     config: { sessionMcpServers: {} },
     clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" },
   }) as any;
@@ -586,8 +586,8 @@ describe("SessionManager bounded session lifecycle", () => {
     const initial = createSession.mock.calls[0]?.[0] as any;
     const persisted = readSessionLaunchContext(manager.getSessionStateDir("launch-test"));
     expect(persisted).toEqual({ scheduleContext: { name: "Daily", type: "cron", runCount: 2 } });
-    // A folder-less chat under the automatic default is pinned as Assistant before its first resume.
-    expect(manager.getSessionPromptProfile("launch-test")).toBe("assistant");
+    // A chat no one chose a playbook for has none until the agent or the user picks one.
+    expect(manager.getSessionPlaybook("launch-test")).toEqual({});
     const resumed = manager.buildSessionConfig({ sessionId: "launch-test", task, forResume: true });
     expect(resumed.systemMessage).toEqual(initial.systemMessage);
     // Links are task state: they travel in bridge_context with user messages, not in the prompt.
@@ -607,8 +607,16 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager.evictAllCachedSessions();
   });
 
-  describe("prompt profiles", () => {
-    const baseTask = { id: "task-1", title: "Profile task", kind: "task", muted: false, status: "active", notes: "", workItems: [], pullRequests: [] };
+  describe("playbooks", () => {
+    const baseTask = { id: "task-1", title: "Playbook task", kind: "task", muted: false, status: "active", notes: "", workItems: [], pullRequests: [] };
+    const PLAYBOOKS: Record<string, any> = {
+      watch: { id: "watch", kind: "playbook", label: "Watch", description: "Playbook: watch one source.", comparePrevious: true, evidence: ["baseline"], extends: [], roles: [] },
+      research: { id: "research", kind: "playbook", label: "Research", description: "Playbook: answer with sources.", comparePrevious: false, evidence: ["sourced"], extends: [], roles: [] },
+    };
+    const catalog = {
+      current: () => [...Object.values(PLAYBOOKS), { id: "local-notes", kind: undefined, extends: ["research"], roles: [], evidence: [] }],
+      findPlaybook: (name: string | undefined) => (name ? PLAYBOOKS[name] : undefined),
+    };
 
     async function createTaskSessionConfig(
       manager: any,
@@ -617,6 +625,7 @@ describe("SessionManager bounded session lifecycle", () => {
       scheduleContext?: Record<string, unknown>,
       options: Record<string, unknown> = {},
     ) {
+      manager.deps.skillCatalog = catalog;
       manager.deps.taskStore.getTask.mockReturnValue(task);
       const createSession = vi.fn(async (_config: unknown) => fakeSession(sessionId));
       manager.backend = { createSession };
@@ -624,30 +633,21 @@ describe("SessionManager bounded session lifecycle", () => {
       return createSession.mock.calls[0]?.[0] as any;
     }
 
-    it("pins Engineer for a project folder, and prefers the chat's choice over the schedule's and the default", async () => {
+    it("starts a chat on its launch choice, else its schedule's pin, and lets the task pin outrank the schedule", async () => {
       const { manager } = createManager();
-      const project = makeTestDir("profile-project");
-      await createTaskSessionConfig(manager, "with-folder", { ...baseTask, cwd: project });
-      expect(manager.getSessionPromptProfile("with-folder")).toBe("engineer");
+      await createTaskSessionConfig(manager, "scheduled", baseTask, { name: "Watch", type: "cron", runCount: 0, playbook: "watch" });
+      expect(manager.getSessionPlaybook("scheduled")).toEqual({ playbook: "watch", source: "schedule", label: "Watch" });
 
-      const scheduled = await createTaskSessionConfig(manager, "scheduled", { ...baseTask, cwd: project },
-        { name: "Watch", type: "cron", runCount: 0, promptProfile: "monitor" });
-      expect(manager.getSessionPromptProfile("scheduled")).toBe("monitor");
-      expect(scheduled.systemMessage.sections.guidelines.content).toContain("<monitor_approach>");
+      await createTaskSessionConfig(manager, "explicit", baseTask,
+        { name: "Watch", type: "cron", runCount: 0, playbook: "watch" }, { playbook: "research" });
+      expect(manager.getSessionPlaybook("explicit")).toEqual({ playbook: "research", source: "user", label: "Research" });
 
-      await createTaskSessionConfig(manager, "explicit", { ...baseTask, cwd: project },
-        { name: "Watch", type: "cron", runCount: 0, promptProfile: "monitor" }, { promptProfile: "assistant" });
-      expect(manager.getSessionPromptProfile("explicit")).toBe("assistant");
-
-      manager.deps.settingsStore = { getMcpServers: () => ({}), getSettings: () => ({ promptProfile: "monitor" }) };
-      await createTaskSessionConfig(manager, "defaulted", { ...baseTask, cwd: project });
-      expect(manager.getSessionPromptProfile("defaulted")).toBe("monitor");
-      // Chats created before profiles existed keep the Engineer prompt they already had.
-      expect(manager.getSessionPromptProfile("legacy")).toBe("engineer");
+      manager.findLinkedTask = () => ({ ...baseTask, playbook: "research" });
+      expect(manager.getSessionPlaybook("scheduled")).toEqual({ playbook: "research", source: "task", label: "Research" });
       await manager.evictAllCachedSessions();
     });
 
-    it("gives a scheduled Monitor run the previous run's final report and keeps it for resume", async () => {
+    it("gives a scheduled run of a comparing playbook the previous run's final report and keeps it for resume", async () => {
       const { manager } = createManager();
       const previousDir = manager.getSessionStateDir("previous-run");
       mkdirSync(previousDir, { recursive: true });
@@ -659,18 +659,18 @@ describe("SessionManager bounded session lifecycle", () => {
         { type: "assistant.turn_end", data: {} },
       ].map((event) => JSON.stringify(event)).join("\n"));
 
-      const config = await createTaskSessionConfig(manager, "monitor-run", baseTask,
-        { name: "Watch", type: "cron", runCount: 3, promptProfile: "monitor", previousSessionId: "previous-run" });
+      const config = await createTaskSessionConfig(manager, "watch-run", baseTask,
+        { name: "Watch", type: "cron", runCount: 3, playbook: "watch", previousSessionId: "previous-run" });
       expect(config.systemMessage.content).toContain('<previous_run_report completed_at="2026-09-25T15:00:00.000Z">');
       expect(config.systemMessage.content).toContain("Three units open at Maple Court.");
       expect(config.systemMessage.content).not.toContain("Sub-agent notes");
 
-      const resumed = manager.buildSessionConfig({ sessionId: "monitor-run", task: baseTask, forResume: true });
+      const resumed = manager.buildSessionConfig({ sessionId: "watch-run", task: baseTask, forResume: true });
       expect(resumed.systemMessage).toEqual(config.systemMessage);
 
-      const assistantConfig = await createTaskSessionConfig(manager, "assistant-run", baseTask,
-        { name: "Digest", type: "cron", runCount: 3, previousSessionId: "previous-run" });
-      expect(assistantConfig.systemMessage.content).not.toContain("<previous_run_report");
+      const researchConfig = await createTaskSessionConfig(manager, "research-run", baseTask,
+        { name: "Digest", type: "cron", runCount: 3, playbook: "research", previousSessionId: "previous-run" });
+      expect(researchConfig.systemMessage.content).not.toContain("<previous_run_report");
       await manager.evictAllCachedSessions();
     });
 
@@ -689,35 +689,53 @@ describe("SessionManager bounded session lifecycle", () => {
       await expect(manager.readPreviousRunReport("never-ran")).resolves.toBeUndefined();
     });
 
-    it("refuses unknown chats, failed creations, and chats with their own replace-mode prompt", async () => {
+    it("refuses unknown chats, failed creations, uninstalled playbooks and chats with their own prompt", async () => {
       const { manager } = createManager();
-      await expect(manager.setSessionPromptProfile("missing", "monitor")).rejects.toThrow("Session not found");
+      manager.deps.skillCatalog = catalog;
+      await expect(manager.setSessionPlaybook("missing", "watch", "user")).rejects.toThrow("Session not found");
 
       const failed = Promise.reject(new Error("create failed"));
       failed.catch(() => undefined);
       manager.pendingSessionCreations.set("failed-create", failed);
-      await expect(manager.setSessionPromptProfile("failed-create", "monitor")).rejects.toThrow(/creation failed/);
+      await expect(manager.setSessionPlaybook("failed-create", "watch", "user")).rejects.toThrow(/creation failed/);
       manager.pendingSessionCreations.delete("failed-create");
-      expect(manager.getSessionPromptProfile("failed-create")).toBe("engineer");
+
+      mkdirSync(manager.getSessionStateDir("chat"), { recursive: true });
+      await expect(manager.setSessionPlaybook("chat", "unknown-playbook", "user")).rejects.toThrow(/not installed/);
 
       mkdirSync(manager.getSessionStateDir("helm-chat"), { recursive: true });
       manager.deps.resolveSessionProfile = (sessionId: string) => (sessionId === "helm-chat" ? { apply: (cfg: unknown) => cfg } : undefined);
-      await expect(manager.setSessionPromptProfile("helm-chat", "monitor")).rejects.toThrow(/do not apply/);
-      expect(manager.getSessionPromptProfile("helm-chat")).toBeUndefined();
+      await expect(manager.setSessionPlaybook("helm-chat", "watch", "user")).rejects.toThrow(/do not apply/);
+      expect(manager.getSessionPlaybook("helm-chat")).toBeUndefined();
     });
 
-    it("refuses to change a busy chat's profile and evicts an idle chat before confirming", async () => {
+    it("tells the agent about a playbook change in the next message without evicting the chat", async () => {
       const { manager } = createManager();
+      manager.deps.skillCatalog = catalog;
       mkdirSync(manager.getSessionStateDir("chat"), { recursive: true });
-      const busy = vi.spyOn(manager, "isSessionBusy").mockReturnValue(true);
-      await expect(manager.setSessionPromptProfile("chat", "monitor")).rejects.toThrow(/busy/);
-      expect(manager.getSessionPromptProfile("chat")).toBe("engineer");
-
-      busy.mockReturnValue(false);
+      manager.findLinkedTask = () => undefined;
       const evict = vi.spyOn(manager, "evictCachedSession");
-      await expect(manager.setSessionPromptProfile("chat", "monitor")).resolves.toEqual({ promptProfile: "monitor" });
-      expect(manager.getSessionPromptProfile("chat")).toBe("monitor");
-      expect(evict).toHaveBeenCalledWith("chat", undefined, "prompt profile changed");
+      const emitted: unknown[] = [];
+      manager.deps.globalBus.subscribe((event: unknown) => emitted.push(event));
+
+      // The first message names the installed playbooks and asks for a choice.
+      const first = manager.prepareTurnContext("chat");
+      expect(first.block).toContain("call playbook_select");
+      expect(first.block).toContain("- watch (Watch):");
+      expect(first.block).toContain("- research (Research):");
+      first.commit();
+      expect(manager.prepareTurnContext("chat").block).toBeUndefined();
+      await expect(manager.setSessionPlaybook("chat", "research", "user"))
+        .resolves.toEqual({ playbook: "research", source: "user", label: "Research" });
+      expect(evict).not.toHaveBeenCalled();
+      expect(emitted).toContainEqual(expect.objectContaining({ type: "session:playbook", sessionId: "chat" }));
+      const delivery = manager.prepareTurnContext("chat");
+      expect(delivery.block).toContain('Active playbook: research ("Research"); the user chose it.');
+      expect(delivery.block).toContain("local-notes");
+      delivery.commit();
+
+      await manager.setSessionPlaybook("chat", null, "user");
+      expect(manager.prepareTurnContext("chat").block).toContain("No playbook is chosen for this chat yet.");
     });
   });
 

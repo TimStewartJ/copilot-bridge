@@ -59,14 +59,10 @@ import {
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
 import { pathsEqual } from "./path-utils.js";
-import type { PromptProfileId } from "../shared/prompt-profiles.js";
-import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
-import {
-  formatPreviousRunReport,
-  LEGACY_PROMPT_PROFILE,
-  PROMPT_PROFILE_DEFINITIONS,
-  type PreviousRunReport,
-} from "./prompt-profiles.js";
+import { formatPreviousRunReport, type PreviousRunReport } from "./scheduled-run-report.js";
+import { BASE_METHOD, BASE_METHOD_REPORTING, BASE_METHOD_ROLE } from "./base-method.js";
+import { formatModelRolesBlock, formatSkillRolesBlock, type SkillCatalog } from "./skill-catalog.js";
+import { getBundledSkillsDir, getHomeSkillsDir, type SkillPackRoot } from "./skills-registry.js";
 import { resolveComputerUsePlugin, type ComputerUsePluginStatus } from "./computer-use-plugin.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -79,10 +75,11 @@ export interface ScheduleContext {
   lastRunAt?: string;
   /** Resolved against Settings › Models when the session is created; unset follows New chats. */
   modelTier?: ModelPresetSlot;
-  promptProfile?: PromptProfileId;
+  /** The playbook the schedule pins for its runs. */
+  playbook?: string;
   /** The session of the schedule's previous run. */
   previousSessionId?: string;
-  /** What the previous run left; Monitor compares against it. */
+  /** What the previous run left, for playbooks that compare runs (Watch, Sweep). */
   previousRunReport?: PreviousRunReport;
 }
 
@@ -99,12 +96,7 @@ export interface SessionConfigOptions {
   reasoningEffortOverride?: string;
   contextTierOverride?: CopilotContextTier;
   agentOverride?: string;
-  /**
-   * The chat's profile. Session creation resolves and passes it; resume reads the stored choice.
-   * Chats created before profiles existed have none and keep the legacy (Engineer) prompt.
-   */
-  promptProfile?: PromptProfileId;
-  /** Replaces the profile's role sentence in the preamble (Helm's chat says it is Helm). */
+  /** Replaces the base method's role sentence in the preamble (Helm's chat says it is Helm). */
   promptRole?: string;
   /** Guidance appended after the Bridge's own, for chats with a role of their own (Helm). */
   extraGuidance?: string;
@@ -135,12 +127,17 @@ export interface SessionConfigBuilderDeps {
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
   resolveComputerUsePlugin?: () => ComputerUsePluginStatus;
-  sessionPromptProfileStore?: Pick<SessionPromptProfileStore, "getPromptProfile">;
+  /** The last skill scan: playbooks, roles and extensions for <skill_roles>. */
+  skillCatalog?: Pick<SkillCatalog, "current">;
+  /** Skill packs a chat loads, given its task's tag names. */
+  skillPacks?: { activeRoots(taskTagNames?: readonly string[]): SkillPackRoot[] };
 }
 
 export interface SessionConfigBuilderCallbacks {
   resolveEffectiveSessionCwd(opts: { sessionId?: string; task?: Pick<Task, "cwd"> | null }): string | undefined;
   getCopilotHome(): string;
+  /** True for the Bridge's own scratch folder, which is not a project the user works in. */
+  isNeutralWorkspaceCwd?(cwd: string): boolean;
 }
 
 export interface BuildSessionConfigParams {
@@ -200,6 +197,15 @@ function shouldUseSdkGitHubMcp(
     && !servers[GITHUB_COPILOT_MCP_SERVER_NAME];
 }
 
+/**
+ * The runtime keeps the first skill it finds under a name, so folders go in precedence order:
+ * the user's home skills, then packs, then the Bridge's bundled skills. A home copy of a bundled
+ * playbook (Settings › Skills › Customize) therefore replaces it on this machine.
+ */
+export function orderSkillDirectories(dirs: { bundled: string; packs: readonly string[]; home: string }): string[] {
+  return [...new Set([dirs.home, ...dirs.packs, dirs.bundled])];
+}
+
 export function buildSessionConfig(params: BuildSessionConfigParams) {
   const { deps, callbacks } = params;
   const {
@@ -213,6 +219,16 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     forResume,
   } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
+  const hasProjectFolder = !!workingDirectory && !callbacks.isNeutralWorkspaceCwd?.(workingDirectory);
+
+  // Tags decide tag-linked MCP servers, tag instructions and which skill packs this chat loads.
+  const tagTask = task ?? params.options?.mcpServerTask;
+  const resolvedTags = tagTask && deps.tagStore
+    ? deps.tagStore.resolveEffectiveTags(tagTask.id, tagTask.groupId)
+    : undefined;
+  const catalogSkills = deps.skillCatalog?.current() ?? [];
+  const activePacks = deps.skillPacks?.activeRoots(resolvedTags?.tags.map((tag) => tag.name)) ?? [];
+  const packSkillDirs = activePacks.map((pack) => catalogSkills.find((skill) => skill.packId === pack.id)?.skillsDir ?? pack.root);
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
   const taskAgentDefinitions = task
@@ -245,10 +261,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       addBuiltInMcpServers(deps, resolvedMcpServers, sessionId),
     ),
     ...(deps.nativeBridgeTools && deps.nativeBridgeTools.length > 0 ? { tools: deps.nativeBridgeTools } : {}),
-    skillDirectories: [
-      join(REPO_ROOT, "skills"),
-      join(callbacks.getCopilotHome(), "skills"),
-    ],
+    skillDirectories: orderSkillDirectories({
+      bundled: getBundledSkillsDir(REPO_ROOT),
+      packs: packSkillDirs,
+      home: getHomeSkillsDir(callbacks.getCopilotHome()),
+    }),
     ...(hasTaskAgentDefinitions
       ? { customAgents: taskAgentDefinitions.map(toCopilotCustomAgentConfig) }
       : {}),
@@ -385,7 +402,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     DOC_LINK_GUIDANCE,
     ...(computerUseEnabled ? [] : [COMPUTER_USE_OFF_GUIDANCE]),
     ...(imageGenerationEnabled ? [IMAGE_GENERATION_GUIDANCE] : []),
-  ];
+    // Changes only when skills, packs or Settings › Models change, which reach a chat on resume.
+    ...(deps.skillCatalog ? [formatSkillRolesBlock(catalogSkills, new Set(activePacks.map((pack) => pack.id)))] : []),
+    ...(settings ? [formatModelRolesBlock(settings)] : []),
+  ].filter((part): part is string => !!part);
 
   if (task) {
     contextParts.push(
@@ -412,11 +432,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
   }
 
-  const promptProfileId = params.options?.promptProfile
-    ?? (sessionId ? deps.sessionPromptProfileStore?.getPromptProfile(sessionId) : undefined)
-    ?? LEGACY_PROMPT_PROFILE;
-  const promptProfile = PROMPT_PROFILE_DEFINITIONS[promptProfileId];
-
   if (scheduleContext) {
     const kind = scheduleContext.type === "cron" ? "recurring" : "one-time";
     const runLabel = scheduleContext.runCount > 0
@@ -425,7 +440,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     contextParts.push(
       `\nThis session was triggered by schedule "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
     );
-    if (promptProfileId === "monitor") {
+    // Only playbooks that compare runs ask for it; the session manager reads it for those.
+    if (scheduleContext.previousRunReport) {
       contextParts.push(formatPreviousRunReport(scheduleContext.previousRunReport));
     }
   }
@@ -434,11 +450,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // resolved cwd is not evidence of Bridge work.
   const isSelfRepo = !!workingDirectory && pathsEqual(workingDirectory, REPO_ROOT);
   const sections: Partial<Record<string, AgentSectionOverride>> = {};
-  // The staging workflow is an operational rule of this repository, so it applies whatever
-  // the profile; only the CLI's general coding rules depend on the profile.
+  // The staging workflow is an operational rule of this repository, so it applies to every chat
+  // there; the CLI's general coding rules apply only to chats with a project folder.
   const stagingApplies = isSelfRepo
     && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT);
-  if (promptProfile.keepCodingRules) {
+  if (hasProjectFolder) {
     if (stagingApplies) sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
   } else {
     sections.code_change_rules = stagingApplies
@@ -450,15 +466,15 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // guidance and the model self-identification, so only the preamble is replaced.
   // Child overrides apply before the group transform sees the rendered group.
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
-  const preambleText = `${identityText}\n\n${params.options?.promptRole ?? promptProfile.role}`;
+  const preambleText = `${identityText}\n\n${params.options?.promptRole ?? BASE_METHOD_ROLE}`;
   sections.identity = { action: createCodingModeStatementRemover(preambleText) };
   sections.preamble = { action: "replace", content: preambleText };
   // The CLI's tone differs by model family and conflicts with the Bridge style setting.
   sections.tone = {
     action: "replace",
-    content: `${renderResponseStyle(settings?.responseStyle)}\n\n${WRITING_GUIDANCE}\n\n${promptProfile.communication}`,
+    content: `${renderResponseStyle(settings?.responseStyle)}\n\n${WRITING_GUIDANCE}\n\n${BASE_METHOD_REPORTING}`,
   };
-  sections.guidelines = { action: "append", content: promptProfile.approach };
+  sections.guidelines = { action: "append", content: BASE_METHOD };
   sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
   sections.last_instructions = { action: removeConciseReplyDirective };
 
@@ -470,10 +486,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${LONG_RUNNING_WORK_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
   };
 
-  // Tag-based configuration — resolve effective tags and merge instructions + MCP servers
-  const tagTask = task ?? params.options?.mcpServerTask;
-  if (tagTask && deps.tagStore) {
-    const resolved = deps.tagStore.resolveEffectiveTags(tagTask.id, tagTask.groupId);
+  // Tag-based configuration — merge tag instructions and tag-selected MCP servers
+  if (tagTask && resolvedTags) {
+    const resolved = resolvedTags;
     if (task && resolved.mergedInstructions) {
       contextParts.push(`\n<tag_instructions>\n${resolved.mergedInstructions}\n</tag_instructions>`);
     }

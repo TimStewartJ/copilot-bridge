@@ -1,5 +1,7 @@
 import type { AppContext } from "../app-context.js";
+import { DEFER_CHECK_MAX_TIMEOUT_SECONDS, parseDeferCheckSpec, type DeferCheckSpec } from "../defer-check.js";
 import { parseDeferId } from "../defer-ids.js";
+import type { DeferLoop } from "../defer-loop-store.js";
 import { reactivateDefer } from "../defer-reactivate.js";
 import { emitSessionDeferSummary } from "../defer-summary.js";
 import { toolFailure } from "../tool-results.js";
@@ -53,7 +55,26 @@ function formatOneShot(d: any) {
   };
 }
 
-function formatLoop(loop: any) {
+function formatLastCheck(loop: DeferLoop) {
+  if (loop.checkPending) {
+    return {
+      outcome: "changed",
+      at: loop.checkPending.at,
+      exitCode: loop.checkPending.exitCode,
+      summary: `changed at ${loop.checkPending.at}; worker pending`,
+    };
+  }
+  if (!loop.lastCheck) return undefined;
+  return {
+    outcome: loop.lastCheck.outcome,
+    at: loop.lastCheck.at,
+    ...(loop.lastCheck.output ? { exitCode: loop.lastCheck.output.exitCode } : {}),
+    summary: `${loop.lastCheck.outcome} at ${loop.lastCheck.at}`,
+  };
+}
+
+function formatLoop(loop: DeferLoop) {
+  const lastCheck = formatLastCheck(loop);
   return {
     deferId: loop.deferId,
     kind: "interval",
@@ -71,6 +92,8 @@ function formatLoop(loop: any) {
     createdAt: loop.createdAt,
     updatedAt: loop.updatedAt,
     ...(loop.lastError ? { lastError: loop.lastError } : {}),
+    ...(loop.check ? { check: loop.check } : {}),
+    ...(lastCheck ? { lastCheck } : {}),
   };
 }
 
@@ -81,7 +104,7 @@ export interface RegisterDeferToolsOptions {
 export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
     defineSessionBridgeTool("defer_create", {
-      description: "Create a defer associated with this session. Each occurrence runs one bounded check in a temporary worker configured in Bridge Settings. Recurring workers can replace a bounded private JSON checkpoint that is supplied to the next occurrence without notifying the parent. For recurring work, describe when to continue quietly, notify the parent and continue, finish quietly, or return to the parent and stop. Every notification or returned result starts a turn in this session, and that turn usually re-reads the whole conversation uncached, so ask to be notified only about a change you must act on or one the user asked to hear about, and let routine progress continue quietly. Do not tell the worker to call defer_cancel, task_complete, sleep, or poll repeatedly. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for recurrence with maxRuns or expiresAt as a safety stop; do not chain one-shot defers for polling. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
+      description: "Create a defer associated with this session. Each occurrence runs one bounded check in a temporary worker configured in Bridge Settings. Recurring workers can replace a bounded private JSON checkpoint that is supplied to the next occurrence without notifying the parent. For recurring work, describe when to continue quietly, notify the parent and continue, finish quietly, or return to the parent and stop. Every notification or returned result starts a turn in this session, and that turn usually re-reads the whole conversation uncached, so ask to be notified only about a change you must act on or one the user asked to hear about, and let routine progress continue quietly. Do not tell the worker to call defer_cancel, task_complete, sleep, or poll repeatedly. Use delaySeconds or runAt for a one-shot follow-up. Use intervalSeconds for recurrence with maxRuns or expiresAt as a safety stop; do not chain one-shot defers for polling. A recurring defer can carry a check command that the Bridge runs each interval without a model; the worker starts only when the command's exit code or output changes. Prefer it for machine-checkable conditions such as build status, PR state, a file, or an HTTP endpoint read through a CLI. Use schedule_create for durable task-level automation that starts fresh task-linked sessions.",
       parameters: {
         type: "object",
         properties: {
@@ -92,6 +115,17 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           name: { type: "string", description: "Optional recurring defer name. Valid only with intervalSeconds." },
           maxRuns: { type: "number", description: "Optional recurring stop condition. Valid only with intervalSeconds." },
           expiresAt: { type: "string", description: "Optional recurring expiry ISO timestamp. Valid only with intervalSeconds." },
+          check: {
+            type: "object",
+            description: "Optional, recurring only. A command run each interval without a shell. The first run records a baseline; later runs wake the worker only when the exit code or stdout changes, and the worker gets the old and new output. A non-zero exit code is a result, not a failure.",
+            properties: {
+              command: { type: "array", items: { type: "string" }, description: "Executable, then its arguments, e.g. [\"gh\", \"pr\", \"checks\", \"123\"]." },
+              cwd: { type: "string", description: "Absolute working directory. Defaults to this chat's working directory." },
+              timeoutSeconds: { type: "number", description: `Seconds the command may run, 1 to ${DEFER_CHECK_MAX_TIMEOUT_SECONDS}. Default 60.` },
+              wakeOnFirstRun: { type: "boolean", description: "Also start the worker after the first run. Default false." },
+            },
+            required: ["command"],
+          },
         },
         required: ["prompt"],
       },
@@ -118,8 +152,8 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         }
 
         if (!hasInterval) {
-          if (args.maxRuns !== undefined || args.expiresAt !== undefined || args.name !== undefined) {
-            return toolFailure("name, maxRuns, and expiresAt are valid only for recurring interval defers.");
+          if (args.maxRuns !== undefined || args.expiresAt !== undefined || args.name !== undefined || args.check !== undefined) {
+            return toolFailure("name, maxRuns, expiresAt, and check are valid only for recurring interval defers.");
           }
           if (!ctx.deferredPromptStore) return toolFailure("Deferred prompt store is unavailable.");
 
@@ -186,6 +220,13 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
         const name = args.name === undefined ? undefined : String(args.name).trim();
         if (args.name !== undefined && !name) return toolFailure("name must be non-empty when provided.");
 
+        let check: DeferCheckSpec | undefined;
+        if (args.check !== undefined) {
+          const parsed = parseDeferCheckSpec(args.check);
+          if ("error" in parsed) return toolFailure(parsed.error);
+          check = parsed.spec;
+        }
+
         const nextRunAt = new Date(Date.now() + intervalSeconds * 1000).toISOString();
         if (expiresAt && Date.parse(expiresAt) <= Date.parse(nextRunAt)) {
           return toolFailure("expiresAt must be after the first recurring defer run.");
@@ -198,6 +239,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           nextRunAt,
           ...(maxRuns !== undefined ? { maxRuns } : {}),
           ...(expiresAt ? { expiresAt } : {}),
+          ...(check ? { check } : {}),
         });
         emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
         ctx.deferLoopRunner?.poke();
@@ -210,7 +252,10 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
           intervalSeconds: loop.intervalSeconds,
           ...(loop.maxRuns !== undefined ? { maxRuns: loop.maxRuns } : {}),
           ...(loop.expiresAt ? { expiresAt: loop.expiresAt } : {}),
-          message: `Recurring defer scheduled every ${loop.intervalSeconds} seconds.`,
+          ...(loop.check ? { check: loop.check } : {}),
+          message: loop.check
+            ? `Recurring defer scheduled every ${loop.intervalSeconds} seconds; its worker starts only when the check output changes.`
+            : `Recurring defer scheduled every ${loop.intervalSeconds} seconds.`,
         };
       },
     }),
@@ -288,7 +333,7 @@ export function createDeferToolDefinitions(ctx: AppContext): BridgeToolDefinitio
     }),
 
     defineSessionBridgeTool("defer_list", {
-      description: "List same-session defers for this session, including the latest private checkpoint for recurring defers when present. By default returns active defers only; set includeInactive to also return terminal entries.",
+      description: "List same-session defers for this session, including the latest private checkpoint and the check command with its last result for recurring defers when present. By default returns active defers only; set includeInactive to also return terminal entries.",
       parameters: {
         type: "object",
         properties: {

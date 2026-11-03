@@ -31,6 +31,7 @@ vi.mock("../api", () => apiMocks);
 
 vi.mock("../hooks/queries/useScheduleSessions", () => queryMocks);
 vi.mock("../hooks/queries/useModels", () => modelQueryMocks);
+vi.mock("../hooks/queries/usePlaybooks", () => ({ usePlaybooksQuery: () => ({ data: [] }) }));
 
 const NOW = new Date("2026-06-15T17:40:30.000Z");
 

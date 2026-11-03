@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   DEPLOY_SMOKE_COMMAND,
@@ -281,6 +282,52 @@ describe("staging_deploy", () => {
     expect(executedCommands()).toEqual(ran);
     expect(writeFileSyncCallMock.mock.calls.some(([file]) => basename(String(file)) === ".commit-msg")).toBe(false);
     expect(requestRestartMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a retried deploy whose commits carry a blocked email or a denylisted term, before touching production", async () => {
+    const term = "secretname";
+    const guardLog = (cmd: string) => cmd.startsWith("git --no-pager -c core.quotePath=false log ");
+    const { stagingDir, mod } = await setupDeployScenario({
+      through: "stash",
+      respond: (cmd, cwd) => {
+        if (!guardLog(cmd) || cwd !== stagingDir) return undefined;
+        if (!cmd.includes(" -p ")) {
+          return `aaaaaaaaaaaa\0dev@corp.example.com\0user@example.com\0Add a skill\n\x1e\n`;
+        }
+        return [
+          "\x1eaaaaaaaaaaaa",
+          "",
+          "diff --git src/a.ts src/a.ts",
+          "--- src/a.ts",
+          "+++ src/a.ts",
+          "@@ -4,0 +5,2 @@",
+          "+const ok = 1;",
+          `+const model = "${term.toUpperCase()}";`,
+          "",
+        ].join("\n");
+      },
+    });
+    const denylistFile = join(dirname(stagingDir), "denylist.txt");
+    await writeFile(denylistFile, `# private\n${term}\n`);
+
+    const result = await mod.runStagingDeployJob({
+      stagingDir,
+      message: "Retry after resolving conflicts",
+      deployGuards: { blockedEmailPatterns: ["*@corp.example.com"], denylistFile },
+    }) as any;
+
+    expect(result).toMatchObject({ resultType: "failure", toolTelemetry: { bridge: { deployGuard: "refused", findings: 2 } } });
+    expect(result.textResultForLlm).toContain("aaaaaaaaaa author email dev@corp.example.com matches blocked pattern *@corp.example.com");
+    expect(result.textResultForLlm).toContain("src/a.ts:6 in aaaaaaaaaa adds the term on denylist line 2");
+    expect(result.textResultForLlm).toContain(denylistFile);
+    expect(result.textResultForLlm).toContain("git commit --amend --no-edit --reset-author");
+    const commands = executedCommands();
+    expect(commands.some(isStashPushCommand)).toBe(false);
+    expect(commands.filter(guardLog)).toHaveLength(2);
+    expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
+    const written = [JSON.stringify(result), ...stagingLogMock.mock.calls.map(([msg]) => String(msg))].join("\n");
+    expect(written.toLowerCase()).not.toContain(term);
+    expect(existsSync(stagingDir)).toBe(true);
   });
 
   describe("production stash", () => {

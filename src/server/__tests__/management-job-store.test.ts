@@ -641,7 +641,8 @@ describe("staging management tool enqueue", () => {
     const stagingDir = join(dataDir, "worktree");
     mkdirSync(stagingDir, { recursive: true });
     try {
-      const ctx = { managementJobStore: store } as any;
+      const deployGuards = { blockedEmailPatterns: ["*@corp.example.com"] };
+      const ctx = { managementJobStore: store, settingsStore: { getSettings: () => ({ deployGuards }) } } as any;
       const tools = createStagingToolDefinitions(ctx);
       const preview = tools.find((tool) => tool.name === "staging_preview");
       const deploy = tools.find((tool) => tool.name === "staging_deploy");
@@ -669,7 +670,7 @@ describe("staging management tool enqueue", () => {
       expect(deployResult.message).not.toContain("restart cutover is not blocked");
       expect(store.get(deployResult.jobId)).toMatchObject({
         type: "staging_deploy",
-        input: { stagingDir, message: "Ship it" },
+        input: { stagingDir, message: "Ship it", deployGuards },
       });
     } finally {
       db.close();

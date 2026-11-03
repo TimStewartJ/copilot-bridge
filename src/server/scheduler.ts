@@ -494,7 +494,7 @@ export async function triggerSchedule(
           runCount: schedule.runCount,
           lastRunAt: schedule.lastRunAt,
           ...(schedule.modelTier ? { modelTier: schedule.modelTier } : {}),
-          ...(schedule.promptProfile ? { promptProfile: schedule.promptProfile } : {}),
+          ...(schedule.playbook ? { playbook: schedule.playbook } : {}),
           ...(schedule.lastSessionId ? { previousSessionId: schedule.lastSessionId } : {}),
         },
       );
@@ -527,7 +527,7 @@ export async function triggerSchedule(
     // Keep both claims until the runtime accepts delivery, not merely the local
     // launch. Initialization failures must leave this scheduled slot retryable.
     try {
-      await sessionMgr.startWorkAndWaitForDelivery(sessionId, schedule.prompt);
+      await sessionMgr.startWorkAndWaitForDelivery(sessionId, schedule.prompt, undefined, { origin: "schedule" });
     } catch (err) {
       const cleanupErrors: string[] = [];
       let unlinkedCreatedSession = false;

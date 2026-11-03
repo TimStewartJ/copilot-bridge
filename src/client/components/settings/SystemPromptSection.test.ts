@@ -69,10 +69,10 @@ describe("SystemPromptSection", () => {
       expect(labels.some((label) => getReactProps(label)?.htmlFor === props?.id)).toBe(true);
     }
     const radios = findAllByTag(container, "INPUT");
-    expect(new Set(radios.map((radio) => getReactProps(radio)?.name)).size).toBe(2);
+    expect(new Set(radios.map((radio) => getReactProps(radio)?.name)).size).toBe(1);
     expect(radios.every((radio) => getReactProps(radio)?.type === "radio")).toBe(true);
     expect(findAllByTag(container, "LEGEND").map((legend) => legend.textContent))
-      .toEqual(["Default profile for new chats", "Default detail"]);
+      .toEqual(["Default detail"]);
     for (const element of [...labels, ...findAllByTag(container, "LEGEND"), ...findAllByTag(container, "P")]) {
       const className = getReactProps(element)?.className ?? "";
       expect(className).not.toContain("text-text-faint");
@@ -84,22 +84,8 @@ describe("SystemPromptSection", () => {
     const disclosures = findAllByTag(container, "DETAILS");
     expect(disclosures).toHaveLength(4);
     expect(disclosures.every((element) => !getReactProps(element)?.open)).toBe(true);
-    expect(findAllByTag(container, "FIELDSET")).toHaveLength(2);
+    expect(findAllByTag(container, "FIELDSET")).toHaveLength(1);
     expect(container.textContent).toContain("Configured");
-  });
-
-  it("offers Automatic and the three profiles as the default for new chats", async () => {
-    const draft: AppSettings = { mcpServers: {}, theme: "dark" };
-    const { harness, container, setDraft } = await renderSection(draft);
-    const radios = radiosNamed(container, "-profile");
-    expect(radios.map((radio) => getReactProps(radio)?.value)).toEqual(["auto", "engineer", "assistant", "monitor"]);
-    expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false, false]);
-    expect(container.textContent).toContain("Engineer when the chat has a project folder, Assistant otherwise.");
-    expect(container.textContent).toContain("Tools and permissions are the same in every profile.");
-    await harness.act(async () => {
-      getReactProps(radios[3])?.onChange?.();
-    });
-    expect(setDraft).toHaveBeenCalledWith({ ...draft, promptProfile: "monitor" });
   });
 
   it("changes the detail level without overwriting guidance or unrelated settings", async () => {

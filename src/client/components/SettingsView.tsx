@@ -21,6 +21,7 @@ import {
   HandsFreeSettingsSection,
   HelmSettingsSection,
   UpdatesSection,
+  DeployGuardsSection,
   BridgeCommitsSection,
   CopilotUsageSection,
   ManagementJobsSection,
@@ -30,6 +31,7 @@ import {
 } from "./settings";
 import { McpServersSection } from "./settings/McpServersSection";
 import { SkillsSection } from "./settings/SkillsSection";
+import { SkillPacksSection } from "./settings/SkillPacksSection";
 import { CopilotQuotaCard } from "./CopilotQuotaMenu";
 import {
   DEFAULT_CATEGORY,
@@ -338,7 +340,11 @@ export default function SettingsView() {
               <McpServersSection />
               <ComputerUseSection draft={draft} setDraft={setDraft} />
               <ImageGenerationSection draft={draft} setDraft={setDraft} />
+            </CategoryPanel>
+
+            <CategoryPanel category="skills" activeCategory={activeCategory}>
               <SkillsSection />
+              <SkillPacksSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>
 
             <CategoryPanel category="tags" activeCategory={activeCategory}>
@@ -365,6 +371,7 @@ export default function SettingsView() {
             <CategoryPanel category="system" activeCategory={activeCategory}>
               <BridgeRuntimeSection refreshSignal={systemRefresh} />
               <UpdatesSection refreshSignal={systemRefresh} />
+              <DeployGuardsSection draft={draft} setDraft={setDraft} />
               <ManagementJobsSection refreshSignal={systemRefresh} open={sectionParam === "jobs"} />
               <BrowserDiagnosticsSection draft={draft} setDraft={setDraft} refreshSignal={systemRefresh} open={sectionParam === "browser"} />
               <BridgeCommitsSection refreshSignal={systemRefresh} open={sectionParam === "version"} />

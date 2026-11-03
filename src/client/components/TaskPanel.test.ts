@@ -111,6 +111,10 @@ vi.mock("./ScheduleDetailSheet", () => ({
   default: () => null,
 }));
 
+vi.mock("./TaskPlaybookRow", () => ({
+  default: () => null,
+}));
+
 vi.mock("./NotesSheet", () => ({
   default: () => null,
 }));

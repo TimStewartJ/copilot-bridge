@@ -4,7 +4,7 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
-import { isPromptProfileId, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { isPlaybookName, NO_PLAYBOOK } from "../shared/workflow-vocabulary.js";
 import {
   isModelPresetSlot,
   type ModelPresetSlot,
@@ -32,7 +32,8 @@ export interface DraftLaunchOptions {
   presetSlot?: ModelPresetSlot;
   reasoningEffort?: DraftScopedLaunchSelection<string>;
   contextTier?: DraftScopedLaunchSelection<CopilotContextTier>;
-  promptProfile?: PromptProfileId;
+  /** A playbook id or "none"; unset lets the agent choose. */
+  playbook?: string;
   agent?: string;
 }
 
@@ -129,7 +130,7 @@ function normalizeAttachment(value: unknown): NormalizedValue<Attachment> {
 function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOptions> {
   if (!isRecord(value)) return { changed: true };
 
-  let changed = !hasOnlyKeys(value, ["model", "presetSlot", "reasoningEffort", "contextTier", "promptProfile", "agent"]);
+  let changed = !hasOnlyKeys(value, ["model", "presetSlot", "reasoningEffort", "contextTier", "playbook", "agent"]);
   const launch: DraftLaunchOptions = {};
 
   if ("model" in value) {
@@ -148,9 +149,9 @@ function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOpti
     }
   }
 
-  if ("promptProfile" in value) {
-    if (isPromptProfileId(value.promptProfile)) {
-      launch.promptProfile = value.promptProfile;
+  if ("playbook" in value) {
+    if (value.playbook === NO_PLAYBOOK || isPlaybookName(value.playbook)) {
+      launch.playbook = value.playbook;
     } else {
       changed = true;
     }
@@ -198,7 +199,7 @@ function normalizeLaunchOptions(value: unknown): NormalizedValue<DraftLaunchOpti
     }
   }
 
-  if (!launch.model && !launch.reasoningEffort && !launch.contextTier && !launch.promptProfile && !launch.agent) {
+  if (!launch.model && !launch.reasoningEffort && !launch.contextTier && !launch.playbook && !launch.agent) {
     return { changed: true };
   }
   return { value: launch, changed };

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { resolve } from "node:path";
 import { setupTestDb } from "./helpers.js";
 import { createSettingsStore, isImageGenerationEnabled } from "../settings-store.js";
 import type { SettingsStore } from "../settings-store.js";
@@ -236,6 +237,31 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({ imageBudget: { enabled: "no" } as any }))
       .toThrow("imageBudget.enabled must be a boolean");
     expect(() => store.updateSettings({ imageBudget: [] as any })).toThrow("imageBudget must be an object");
+  });
+
+  it("stores trimmed deploy guards, clears empty ones and validates them", () => {
+    const denylistFile = resolve("denylist.txt");
+    expect(store.getSettings().deployGuards).toBeUndefined();
+    expect(store.updateSettings({
+      deployGuards: { blockedEmailPatterns: [" *@corp.example.com "], denylistFile: ` ${denylistFile} ` },
+    }).deployGuards).toEqual({ blockedEmailPatterns: ["*@corp.example.com"], denylistFile });
+    expect(createSettingsStore(db).getSettings().deployGuards).toEqual({
+      blockedEmailPatterns: ["*@corp.example.com"], denylistFile,
+    });
+    expect(store.updateSettings({ deployGuards: { blockedEmailPatterns: [], denylistFile: "" } }).deployGuards)
+      .toBeUndefined();
+
+    for (const [deployGuards, message] of [
+      [{ denylistFile: "relative/denylist.txt" }, "deployGuards.denylistFile must be an absolute path"],
+      [{ blockedEmailPatterns: ["ok@example.com", " "] }, "entries must be non-empty text of at most 200 characters"],
+      [{ blockedEmailPatterns: ["x".repeat(201)] }, "entries must be non-empty text of at most 200 characters"],
+      [{ blockedEmailPatterns: Array.from({ length: 21 }, (_, i) => `${i}@example.com`) }, "a list of at most 20 patterns"],
+      [{ blockedEmailPatterns: "*@example.com" }, "a list of at most 20 patterns"],
+      [{ other: true }, 'deployGuards key "other" is not supported'],
+      [[], "deployGuards must be an object"],
+    ] as const) {
+      expect(() => store.updateSettings({ deployGuards } as any)).toThrow(message);
+    }
   });
 
   it("keeps experimental features off unless set and validates the Fusion context limit", () => {

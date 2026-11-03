@@ -103,6 +103,7 @@ import type { RunNotice } from "../../shared/session-stream.js";
 import type { BridgeSearchResponse } from "../../shared/search.js";
 import MessageBubble from "./MessageBubble";
 import CompletionCard from "./CompletionCard";
+import VerificationCard from "./VerificationCard";
 import DocPreviewSheet from "./DocPreviewSheet";
 import { BridgeReferenceContext } from "./BridgeReference";
 import { docsRoute } from "./docs/docs-model";
@@ -2774,6 +2775,15 @@ export default function ChatView({
         result.push(
           <div key={segment.key} className={`${CHAT_RAIL_CLASS} pt-4`}>
             <AskUserRecordBlock toolCall={segment.toolCall} />
+          </div>,
+        );
+        return;
+      }
+
+      if (segment.type === "verification") {
+        result.push(
+          <div key={segment.key} className={`${CHAT_RAIL_CLASS} pt-3`}>
+            <VerificationCard toolCall={segment.toolCall} />
           </div>,
         );
         return;

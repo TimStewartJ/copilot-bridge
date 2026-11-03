@@ -210,7 +210,7 @@ describe("deferred-prompt-runner", () => {
 
       expect(sm.hasPersistedUserMessage).not.toHaveBeenCalled();
       expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "yes" }]);
-      expect(sm._deliveryOptions[0]).toEqual({ completionAttention: true, clientMessageId: "client-1" });
+      expect(sm._deliveryOptions[0]).toEqual({ completionAttention: true, origin: "defer", clientMessageId: "client-1" });
       expect(store.get(id)?.status).toBe("completed");
       runner.shutdown();
     });

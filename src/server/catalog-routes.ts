@@ -4,7 +4,12 @@ import type { McpServerConfig } from "./mcp-config.js";
 import { isRecord } from "../shared/is-record.js";
 import { TaskGroupValidationError } from "./task-group-store.js";
 import { InvalidTagColorError } from "./tag-store.js";
-import { deleteHomeSkill, isValidSkillId, listSkills, readSkill } from "./skills-registry.js";
+import { customizeSkill, deleteHomeSkill, isValidSkillId, readSkill, scanSkills, writeHomeSkill } from "./skills-registry.js";
+import { runGit } from "./git-command.js";
+import { isCanonicalSessionId } from "./outbound-attachments.js";
+import { isValidSkillPackId } from "../shared/skill-packs.js";
+import { describePlaybook, type PlaybookInfo } from "../shared/workflow-vocabulary.js";
+import { join } from "node:path";
 
 export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilotHome: () => string): void {
   router.get("/task-groups", (_req, res) => {
@@ -122,20 +127,100 @@ export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilo
     res.json({ success: true });
   });
 
-  router.get("/skills", (_req, res) => {
+  const skillOptions = () => ({
+    copilotHome: getCopilotHome(),
+    packs: ctx.skillPacks?.activeRoots(undefined, { ignoreTags: true }) ?? [],
+  });
+  const usageByName = () => new Map((ctx.skillUsageStore?.list() ?? []).map((usage) => [usage.skillName, usage]));
+
+  router.get("/skills", async (_req, res) => {
     try {
-      res.json({ skills: listSkills({ copilotHome: getCopilotHome() }) });
+      const skills = ctx.skillCatalog ? await ctx.skillCatalog.refresh() : await scanSkills(skillOptions());
+      const usage = usageByName();
+      res.json({
+        skills: skills.map((skill) => {
+          const used = usage.get(skill.id) ?? usage.get(skill.name);
+          return used ? { ...skill, useCount: used.useCount, lastUsedAt: used.lastUsedAt } : skill;
+        }),
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  router.get("/skills/:id", (req, res) => {
+  router.get("/playbooks", async (_req, res) => {
+    try {
+      const skills = ctx.skillCatalog ? ctx.skillCatalog.current().length > 0 ? ctx.skillCatalog.current() : await ctx.skillCatalog.refresh() : await scanSkills(skillOptions());
+      const playbooks: PlaybookInfo[] = skills
+        .filter((skill) => skill.kind === "playbook")
+        .map((skill) => ({
+          id: skill.id,
+          label: skill.label ?? skill.name,
+          description: describePlaybook(skill.description),
+          family: skill.family ?? "meta",
+          evidence: skill.evidence,
+          source: skill.source,
+          ...(skill.packName ? { packName: skill.packName } : {}),
+        }));
+      res.json({ playbooks });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/skills/:id", async (req, res) => {
     if (!isValidSkillId(req.params.id)) return res.status(400).json({ error: "invalid skill id" });
     try {
-      const skill = readSkill({ copilotHome: getCopilotHome() }, req.params.id);
+      const skill = await readSkill(skillOptions(), req.params.id);
       if (!skill) return res.status(404).json({ error: "skill not found" });
       res.json({ skill });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.put("/skills/:id", async (req, res) => {
+    if (!isValidSkillId(req.params.id)) return res.status(400).json({ error: "invalid skill id" });
+    const raw = req.body?.raw;
+    if (typeof raw !== "string") return res.status(400).json({ error: "raw must be the full SKILL.md text" });
+    try {
+      const result = await writeHomeSkill(skillOptions(), req.params.id, raw);
+      if (result.status === "invalid") return res.status(400).json({ error: result.error });
+      if (result.status !== "written") return res.status(404).json({ error: "Only skills in your home skills folder can be edited." });
+      void ctx.skillCatalog?.refresh().catch(() => undefined);
+      res.json({ skill: result.skill });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/skills/:id/customize", async (req, res) => {
+    if (!isValidSkillId(req.params.id)) return res.status(400).json({ error: "invalid skill id" });
+    try {
+      const result = await customizeSkill(skillOptions(), req.params.id);
+      if (result.status === "exists") return res.status(409).json({ error: "This skill already has a copy in your home skills folder." });
+      if (result.status === "invalid") return res.status(400).json({ error: result.error });
+      if (result.status !== "written") return res.status(404).json({ error: "skill not found" });
+      void ctx.skillCatalog?.refresh().catch(() => undefined);
+      res.json({ skill: result.skill });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/skills/:id/history", async (req, res) => {
+    if (!isValidSkillId(req.params.id)) return res.status(400).json({ error: "invalid skill id" });
+    try {
+      const skill = await readSkill(skillOptions(), req.params.id);
+      if (!skill) return res.status(404).json({ error: "skill not found" });
+      const skillDir = join(skill.skillsDir, skill.id);
+      const log = await runGit(skillDir, ["log", "-n", "20", "--format=%h%x09%cI%x09%s", "--", "SKILL.md"]);
+      if (!log.ok) return res.json({ commits: [], tracked: false });
+      const commits = log.output.split(/\r?\n/).filter(Boolean).map((line) => {
+        const [hash, at, ...subject] = line.split("\t");
+        return { hash: hash ?? "", at: at ?? "", subject: subject.join("\t") };
+      });
+      res.json({ commits, tracked: true });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -147,11 +232,73 @@ export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilo
       if (result === "invalid") return res.status(400).json({ error: "invalid skill id" });
       if (result === "not-found") return res.status(404).json({ error: "skill not found" });
       console.log("[skills] Home skill deleted — evicting cached sessions");
+      void ctx.skillCatalog?.refresh().catch(() => undefined);
       void ctx.sessionManager.evictAllCachedSessions();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  router.get("/skill-packs", async (_req, res) => {
+    try {
+      res.json({
+        packs: ctx.settingsStore.getSettings().skillPacks ?? [],
+        statuses: await ctx.skillPacks?.listStatuses() ?? [],
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/skill-packs/:id/sync", async (req, res) => {
+    if (!ctx.skillPacks) return res.status(501).json({ error: "Skill packs are not available" });
+    if (!isValidSkillPackId(req.params.id)) return res.status(400).json({ error: "invalid pack id" });
+    try {
+      const status = await ctx.skillPacks.sync(req.params.id);
+      res.json({ status });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(/not configured/i.test(message) ? 404 : 500).json({ error: message });
+    }
+  });
+
+  router.get("/unattended-runs", (_req, res) => {
+    const store = ctx.unattendedRunStore;
+    if (!store) return res.json({ runs: [] });
+    const runs = store.list().flatMap((run) => {
+      const state = ctx.bridgeSessionStateStore?.getState(run.sessionId);
+      if (state?.archived) return [];
+      const task = ctx.taskStore.findTaskBySessionId(run.sessionId);
+      return [{
+        ...run,
+        ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
+        ...(state?.titleOverride ? { title: state.titleOverride } : {}),
+      }];
+    });
+    res.json({ runs });
+  });
+
+  // Asks the chat to review its unattended turns with a reviewer on a different model family.
+  router.post("/unattended-runs/:sessionId/review", (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!isCanonicalSessionId(sessionId)) return res.status(400).json({ error: "Valid sessionId is required" });
+    if (!ctx.unattendedRunStore?.list().some((run) => run.sessionId === sessionId)) {
+      return res.status(404).json({ error: "Nothing ran unattended in this chat." });
+    }
+    try {
+      ctx.sessionManager.startWork(sessionId, "/review-unattended");
+      res.json({ success: true });
+    } catch (err) {
+      res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/unattended-runs/:sessionId", (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!isCanonicalSessionId(sessionId)) return res.status(400).json({ error: "Valid sessionId is required" });
+    ctx.unattendedRunStore?.clear(sessionId);
+    res.json({ success: true });
   });
 
   router.get("/tags", (_req, res) => res.json({ tags: ctx.tagStore?.listTags() ?? [] }));

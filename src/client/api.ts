@@ -2,6 +2,7 @@ import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
 import type { ExperimentalSettings } from "../shared/experimental-settings.js";
+import type { DeployGuardSettings } from "../shared/deploy-guards.js";
 import type {
   SessionModelMoveJob,
   SessionModelMoveRequest,
@@ -76,7 +77,8 @@ import {
   type StartSessionForkResponse,
 } from "../shared/session-fork.js";
 import type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
-import type { PromptProfileId, PromptProfileSetting } from "../shared/prompt-profiles.js";
+import type { PlaybookFamily, PlaybookInfo, SessionPlaybookView, SkillKind } from "../shared/workflow-vocabulary.js";
+import type { SkillPackConfig, SkillPackStatus } from "../shared/skill-packs.js";
 import type { WorkMapData, WorkMapProgress } from "../shared/work-map.js";
 export type { ExternalSessionUseSnapshot } from "../shared/external-session-use.js";
 export type { SessionForkJob, SessionForkJobStatus, StartSessionForkResponse } from "../shared/session-fork.js";
@@ -209,6 +211,9 @@ export interface DeferredWorkItem {
   canCancel: boolean;
   canReactivate: boolean;
   failedDelivery?: boolean;
+  /** Command run each interval; the worker starts only when its output changes. */
+  check?: { command: string[]; cwd?: string };
+  lastCheck?: { outcome: "baseline" | "unchanged" | "changed"; at: string; exitCode?: number; workerPending?: boolean };
 }
 
 export interface DeferredWorkRun {
@@ -540,6 +545,8 @@ export interface Task {
   instructions?: string;
   notes: string;
   doneWhen?: string;
+  /** A playbook every chat of this task follows unless the chat picks its own. */
+  playbook?: string;
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
@@ -593,6 +600,7 @@ export interface TaskPatch {
   cwd?: Task["cwd"];
   groupId?: Task["groupId"];
   doneWhen?: Task["doneWhen"] | null;
+  playbook?: string | null;
   nextAction?: Task["nextAction"] | null;
   waitingOn?: Task["waitingOn"] | null;
   nextTouchAt?: Task["nextTouchAt"] | null;
@@ -850,6 +858,26 @@ export function fetchTaskOverview(signal?: AbortSignal): Promise<import("../shar
 export function fetchHomeInput(input: import("../shared/home").HomeInputSummary, signal?: AbortSignal): Promise<import("../shared/home").HomeInput> {
   return apiFetch(`/api/home/inputs/${encodeURIComponent(input.sessionId)}/${input.kind}/${encodeURIComponent(input.requestId)}`, undefined, { signal });
 }
+/** A chat where a defer or schedule ran turns since the user last wrote in it. */
+export interface UnattendedRun {
+  sessionId: string;
+  turnCount: number;
+  firstAt: string;
+  lastAt: string;
+  origins: Array<"defer" | "schedule">;
+  taskId?: string;
+  taskTitle?: string;
+  title?: string;
+}
+export function fetchUnattendedRuns(signal?: AbortSignal): Promise<{ runs: UnattendedRun[] }> {
+  return apiFetch("/api/unattended-runs", undefined, { signal });
+}
+export async function reviewUnattendedRun(sessionId: string): Promise<void> {
+  await apiFetch(`/api/unattended-runs/${encodeURIComponent(sessionId)}/review`, {});
+}
+export function dismissUnattendedRun(sessionId: string): Promise<void> {
+  return requestDelete(`/api/unattended-runs/${encodeURIComponent(sessionId)}`);
+}
 /** Fire-and-forget: report a client-side timing span to the server */
 export async function reportTiming(
   name: string,
@@ -1001,7 +1029,8 @@ export interface CreateSessionOptions {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
-  promptProfile?: PromptProfileId;
+  /** A playbook id or "none" for the direct path; unset lets the agent choose. */
+  playbook?: string;
   agent?: string;
 }
 
@@ -1010,7 +1039,7 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
     ...(options.model ? { model: options.model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.contextTier ? { contextTier: options.contextTier } : {}),
-    ...(options.promptProfile ? { promptProfile: options.promptProfile } : {}),
+    ...(options.playbook ? { playbook: options.playbook } : {}),
   });
   return data.sessionId;
 }
@@ -1037,8 +1066,8 @@ export interface SessionModelState {
   model?: string;
   reasoningEffort?: string;
   contextTier?: CopilotContextTier;
-  /** The chat's system prompt profile; the server always reports one. */
-  promptProfile?: PromptProfileId;
+  /** The chat's active playbook, when one is set. */
+  playbook?: SessionPlaybookView;
   source: SessionModelSource;
 }
 
@@ -1065,21 +1094,33 @@ export type SessionModelSwitchResult =
   | { status: "confirmation_required"; model: string; confirmation: SessionModelSwitchConfirmation }
   | { status: "cancelled"; model: string; warning?: string };
 
-/** Changes one chat's profile; the next turn starts with the new system prompt. */
-export async function patchSessionProfile(
-  sessionId: string,
-  promptProfile: PromptProfileId,
-): Promise<{ promptProfile: PromptProfileId }> {
-  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/profile`, {
-    method: "PATCH",
+export type { PlaybookInfo, SessionPlaybookView, SkillPackConfig, SkillPackStatus };
+
+export async function fetchPlaybooks(): Promise<PlaybookInfo[]> {
+  const data = await apiFetch<{ playbooks: PlaybookInfo[] }>("/api/playbooks");
+  return data.playbooks;
+}
+
+export async function fetchSessionPlaybook(sessionId: string): Promise<SessionPlaybookView | null> {
+  const data = await apiFetch<{ playbook: SessionPlaybookView | null }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/playbook`,
+  );
+  return data.playbook;
+}
+
+/** Picks the chat's playbook ("none" for the direct path); null returns to the task's pin. */
+export async function putSessionPlaybook(sessionId: string, playbook: string | null): Promise<SessionPlaybookView> {
+  const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/playbook`, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ promptProfile }),
+    body: JSON.stringify({ playbook }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    throw new ApiError(err.error || res.statusText, res.status);
   }
-  return res.json();
+  const data = await res.json() as { playbook: SessionPlaybookView };
+  return data.playbook;
 }
 
 /** Derive the current model / reasoning effort for a session on demand. */
@@ -1731,7 +1772,7 @@ export async function createTaskSession(
       ...(options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
       ...(options.contextTier ? { contextTier: options.contextTier } : {}),
-      ...(options.promptProfile ? { promptProfile: options.promptProfile } : {}),
+      ...(options.playbook ? { playbook: options.playbook } : {}),
       ...(options.agent ? { agent: options.agent } : {}),
     },
   );
@@ -1841,9 +1882,9 @@ export async function deleteMcpServer(id: string): Promise<void> {
   }
 }
 
-// ── Skill API (read + delete) ─────────────────────────────────────
+// ── Skill API ─────────────────────────────────────────────────────
 
-export type SkillSource = "home" | "bundled";
+export type SkillSource = "home" | "pack" | "bundled";
 
 export interface Skill {
   id: string;
@@ -1851,12 +1892,77 @@ export interface Skill {
   description: string;
   allowedTools: string[];
   source: SkillSource;
+  packId?: string;
+  packName?: string;
+  skillsDir: string;
   lastModified: string | null;
+  editable: boolean;
+  /** Lower-precedence sources this skill hides, such as a customized bundled playbook. */
+  overrides: SkillSource[];
+  kind?: SkillKind;
+  family?: PlaybookFamily;
+  label?: string;
+  evidence: string[];
+  comparePrevious: boolean;
+  roles: string[];
+  extends: string[];
+  useCount?: number;
+  lastUsedAt?: string;
 }
 
 export interface SkillDetail extends Skill {
   body: string;
   raw: string;
+}
+
+export interface SkillHistoryCommit {
+  hash: string;
+  at: string;
+  subject: string;
+}
+
+export interface SkillHistory {
+  commits: SkillHistoryCommit[];
+  /** False when the skill's folder is not a git repository. */
+  tracked: boolean;
+}
+
+async function sendSkillJson<T>(path: string, method: "PUT" | "POST", body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(err.error || res.statusText, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Saves a home skill's full SKILL.md; a 400 carries a readable validation sentence. */
+export async function saveSkill(id: string, raw: string): Promise<SkillDetail> {
+  const data = await sendSkillJson<{ skill: SkillDetail }>(`/api/skills/${encodeURIComponent(id)}`, "PUT", { raw });
+  return data.skill;
+}
+
+/** Copies a bundled or pack skill into the home folder, where it overrides the original. */
+export async function customizeSkill(id: string): Promise<SkillDetail> {
+  const data = await sendSkillJson<{ skill: SkillDetail }>(`/api/skills/${encodeURIComponent(id)}/customize`, "POST");
+  return data.skill;
+}
+
+export async function fetchSkillHistory(id: string): Promise<SkillHistory> {
+  return apiFetch<SkillHistory>(`/api/skills/${encodeURIComponent(id)}/history`);
+}
+
+export async function fetchSkillPacks(): Promise<{ packs: SkillPackConfig[]; statuses: SkillPackStatus[] }> {
+  return apiFetch<{ packs: SkillPackConfig[]; statuses: SkillPackStatus[] }>("/api/skill-packs");
+}
+
+export async function syncSkillPack(id: string): Promise<SkillPackStatus> {
+  const data = await sendSkillJson<{ status: SkillPackStatus }>(`/api/skill-packs/${encodeURIComponent(id)}/sync`, "POST");
+  return data.status;
 }
 
 export async function fetchSkills(): Promise<Skill[]> {
@@ -2399,8 +2505,8 @@ export interface AppSettings {
   identity?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
-  /** Default profile for new chats; unset means "auto". */
-  promptProfile?: PromptProfileSetting;
+  /** Skill sets synced from git or a folder; written as a whole list. */
+  skillPacks?: SkillPackConfig[];
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -2415,6 +2521,8 @@ export interface AppSettings {
   helm?: HelmSettings;
   imageBudget?: ImageBudgetSettings;
   experimental?: ExperimentalSettings;
+  /** Checks staging_deploy runs before it merges; unset runs none. */
+  deployGuards?: DeployGuardSettings;
 }
 
 export type AppSettingsUpdates = Partial<AppSettings>;
@@ -3059,7 +3167,7 @@ export interface Schedule {
   timezone?: string;
   /** Follows this tier's current model, effort and context; unset follows New chats. */
   modelTier?: ModelPresetSlot;
-  promptProfile?: PromptProfileId;
+  playbook?: string;
   enabled: boolean;
   lastSessionId?: string;
   createdAt: string;
@@ -3074,7 +3182,7 @@ export interface Schedule {
 
 export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
   Partial<Pick<Schedule,
-    "cron" | "runAt" | "timezone" | "modelTier" | "promptProfile"
+    "cron" | "runAt" | "timezone" | "modelTier" | "playbook"
     | "maxRuns" | "expiresAt" | "autoArchiveKeep"
   >>;
 
@@ -3082,7 +3190,7 @@ export type ScheduleUpdateInput = Partial<Pick<Schedule,
   "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
 >> & {
   modelTier?: ModelPresetSlot | null;
-  promptProfile?: PromptProfileId | null;
+  playbook?: string | null;
   autoArchiveKeep?: number | null;
 };
 

@@ -1,3 +1,4 @@
+import { isPlaybookName } from "../shared/workflow-vocabulary.js";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -44,6 +45,8 @@ export interface Task {
   notes: string;
   /** Standing rules for every session of this task, part of the system prompt. */
   instructions?: string;
+  /** The playbook every chat of this task follows unless the user or agent picks another. */
+  playbook?: string;
   doneWhen?: string;
   nextAction?: string;
   waitingOn?: string;
@@ -166,6 +169,7 @@ export const TASK_UPDATE_FIELDS = [
   "status",
   "notes",
   "instructions",
+  "playbook",
   "priority",
   "cwd",
   "groupId",
@@ -184,6 +188,7 @@ type TaskUpdate = {
   status?: Task["status"];
   notes?: string;
   instructions?: string;
+  playbook?: string | null;
   priority?: number;
   cwd?: string | null;
   groupId?: string | null;
@@ -476,6 +481,7 @@ export function createTaskStore(
       cwd: row.cwd ?? undefined,
       notes: row.notes,
       instructions: row.instructions ?? "",
+      ...(isPlaybookName(row.playbook) ? { playbook: row.playbook } : {}),
       doneWhen: normalizeOptionalText(row.doneWhen),
       nextAction: normalizeOptionalText(row.nextAction),
       waitingOn: normalizeOptionalText(row.waitingOn),
@@ -702,6 +708,14 @@ export function createTaskStore(
     if (shouldPersistStatus) { fields.push("status = ?"); values.push(targetStatus); }
     if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
     if (updates.instructions !== undefined) { fields.push("instructions = ?"); values.push(updates.instructions); }
+    if (updates.playbook !== undefined) {
+      const playbook = typeof updates.playbook === "string" ? updates.playbook.trim() : updates.playbook;
+      if (playbook !== null && playbook !== "" && !isPlaybookName(playbook)) {
+        throw new InvalidTaskUpdateError("playbook must be a playbook name or null");
+      }
+      fields.push("playbook = ?");
+      values.push(playbook || null);
+    }
     if (priority !== undefined) { fields.push("priority = ?"); values.push(priority); }
     if (updates.cwd !== undefined) { fields.push("cwd = ?"); values.push(updates.cwd || null); }
     if (groupId !== undefined) { fields.push("groupId = ?"); values.push(groupId); }

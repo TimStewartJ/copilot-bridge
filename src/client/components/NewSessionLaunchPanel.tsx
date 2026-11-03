@@ -7,10 +7,8 @@ import ModelPresetPicker from "./shared/ModelPresetPicker";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
-import {
-  PROMPT_PROFILES,
-  type PromptProfileId,
-} from "../../shared/prompt-profiles.js";
+import type { PlaybookInfo } from "../../shared/workflow-vocabulary.js";
+import PlaybookSelect from "./shared/PlaybookSelect";
 import { DS, cx } from "../design/tokens";
 import { FormRow, Select } from "../design/primitives";
 
@@ -26,7 +24,10 @@ interface NewSessionLaunchPanelProps {
   selectedReasoningEffort?: string;
   contextOptions: readonly LaunchOption<CopilotContextTier>[];
   selectedContextTier?: CopilotContextTier;
-  selectedPromptProfile: PromptProfileId;
+  playbooks: readonly PlaybookInfo[];
+  playbooksLoading?: boolean;
+  /** A playbook id, "none" for the direct path, or unset for Automatic. */
+  selectedPlaybook?: string;
   mode: SendMode;
   agentDefinitions?: readonly TaskAgentDefinitionSummary[];
   agentDefinitionsLoading?: boolean;
@@ -35,7 +36,7 @@ interface NewSessionLaunchPanelProps {
   onModelChange: (slot: ModelPresetSlot, modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort?: string) => void;
   onContextTierChange: (contextTier?: CopilotContextTier) => void;
-  onPromptProfileChange: (promptProfile: PromptProfileId) => void;
+  onPlaybookChange: (playbook?: string) => void;
   onModeChange: (mode: SendMode) => void;
   onAgentChange?: (agentName?: string) => void;
   /** Called after a preset or model is chosen so the composer can take focus. */
@@ -43,11 +44,6 @@ interface NewSessionLaunchPanelProps {
   /** Set when this chat's model, effort or context differ from its tier's. */
   tierChange?: { tierLabel: string; onReset: () => void; onSave: () => void };
 }
-
-const PROFILE_OPTIONS: LaunchOption<PromptProfileId>[] = PROMPT_PROFILES.map((profile) => ({
-  value: profile.id,
-  label: profile.label,
-}));
 
 const MODE_OPTIONS: LaunchOption<SendMode>[] = [
   { value: "interactive", label: "Interactive" },
@@ -66,7 +62,9 @@ export default function NewSessionLaunchPanel({
   selectedReasoningEffort,
   contextOptions,
   selectedContextTier,
-  selectedPromptProfile,
+  playbooks,
+  playbooksLoading,
+  selectedPlaybook,
   mode,
   agentDefinitions,
   agentDefinitionsLoading,
@@ -75,7 +73,7 @@ export default function NewSessionLaunchPanel({
   onModelChange,
   onReasoningEffortChange,
   onContextTierChange,
-  onPromptProfileChange,
+  onPlaybookChange,
   onModeChange,
   onAgentChange,
   onModelSelectionCommitted,
@@ -176,14 +174,15 @@ export default function NewSessionLaunchPanel({
             </div>
           )}
 
-          <FormRow label="Profile" hideLabel>
-            <LaunchOptionRow
-              ariaLabel="Profile for new session"
-              options={PROFILE_OPTIONS}
-              selectedValue={selectedPromptProfile}
-              onChange={(value) => {
-                if (value) onPromptProfileChange(value);
-              }}
+          <FormRow label="Playbook" htmlFor="new-session-playbook" hideLabel>
+            <PlaybookSelect
+              id="new-session-playbook"
+              playbooks={playbooks}
+              value={selectedPlaybook ?? ""}
+              disabled={playbooksLoading}
+              emptyLabel="Automatic playbook"
+              includeDirect
+              onValueChange={(value) => onPlaybookChange(value || undefined)}
             />
           </FormRow>
 

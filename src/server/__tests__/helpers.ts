@@ -6,6 +6,7 @@
 // into every file that touches this module, and most test files only
 // need `makeTestDir` or `setupTestDb`.
 
+import type { SessionPlaybookView } from "../../shared/workflow-vocabulary.js";
 import { afterEach, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -329,8 +330,9 @@ export function createMockSessionManager() {
       ...(contextTier ? { contextTier } : {}),
     }),
     getSessionModelState: async () => ({ source: "unknown" as const }),
-    getSessionPromptProfile: () => "engineer" as const,
-    setSessionPromptProfile: async (_id: string, promptProfile: string) => ({ promptProfile }),
+    getSessionPlaybook: (): SessionPlaybookView | undefined => ({}),
+    setSessionPlaybook: async (_id: string, playbook: string | null, source: "user" | "agent"): Promise<SessionPlaybookView> =>
+      (playbook ? { playbook, source } : {}),
     getMcpStatus: async () => [],
     getCachedMcpStatus: () => [],
     getSessionToolReadiness: () => undefined,

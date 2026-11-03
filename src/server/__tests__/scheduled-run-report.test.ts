@@ -1,23 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { isPromptProfileSetting, resolvePromptProfile } from "../../shared/prompt-profiles.js";
-import { formatPreviousRunReport, MAX_PREVIOUS_RUN_REPORT_LENGTH } from "../prompt-profiles.js";
+import { formatPreviousRunReport, MAX_PREVIOUS_RUN_REPORT_LENGTH } from "../scheduled-run-report.js";
+import { resolveSessionPlaybook } from "../session-playbook-store.js";
 import { readSessionLaunchContext, writeSessionLaunchContext } from "../session-launch-context.js";
 import { makeTestDir } from "./helpers.js";
 
-describe("prompt profile resolution", () => {
-  it("prefers the chat's choice, then a fixed default, then the folder rule", () => {
-    expect(resolvePromptProfile({ sessionProfile: "monitor", defaultSetting: "assistant", hasProjectFolder: true }))
-      .toEqual({ id: "monitor", source: "session" });
-    expect(resolvePromptProfile({ defaultSetting: "assistant", hasProjectFolder: true }))
-      .toEqual({ id: "assistant", source: "default" });
-    expect(resolvePromptProfile({ hasProjectFolder: true })).toEqual({ id: "engineer", source: "automatic" });
-    expect(resolvePromptProfile({ defaultSetting: "auto", hasProjectFolder: false }))
-      .toEqual({ id: "assistant", source: "automatic" });
-  });
-
-  it("accepts only known settings", () => {
-    expect(["auto", "engineer", "assistant", "monitor"].every(isPromptProfileSetting)).toBe(true);
-    expect([undefined, null, "", "Engineer", "wizard"].some(isPromptProfileSetting)).toBe(false);
+describe("session playbook resolution", () => {
+  it.each([
+    ["the user's choice over the task pin", { playbook: "research", source: "user" as const }, "bug-fix", { playbook: "research", source: "user" }],
+    ["the agent's choice over the task pin", { playbook: "write", source: "agent" as const }, "bug-fix", { playbook: "write", source: "agent" }],
+    ["the task pin over the schedule pin", { playbook: "watch", source: "schedule" as const }, "sweep", { playbook: "sweep", source: "task" }],
+    ["the schedule pin without a task pin", { playbook: "watch", source: "schedule" as const }, undefined, { playbook: "watch", source: "schedule" }],
+    ["nothing", undefined, undefined, undefined],
+  ])("prefers %s", (_label, stored, taskPin, expected) => {
+    expect(resolveSessionPlaybook(stored, taskPin)).toEqual(expected);
   });
 });
 

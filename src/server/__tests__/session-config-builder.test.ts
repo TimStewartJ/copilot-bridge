@@ -15,7 +15,7 @@ import {
   RESPONSE_QUALITY_GUIDANCE,
   STAGING_INSTRUCTIONS,
 } from "../session-instructions.js";
-import { PROMPT_PROFILE_DEFINITIONS } from "../prompt-profiles.js";
+import { BASE_METHOD, BASE_METHOD_REPORTING, BASE_METHOD_ROLE } from "../base-method.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import { makeTestRuntimePaths, setupTestDb } from "./helpers.js";
 import { createMcpServerStore } from "../mcp-server-store.js";
@@ -110,46 +110,41 @@ function createGitHubCopilotMcpToolConfig() {
   };
 }
 
-describe("session-config-builder prompt profiles", () => {
-  function sectionsFor(options: Parameters<typeof buildSessionConfig>[0]["options"], deps: Partial<SessionConfigBuilderDeps> = {}) {
-    return buildSessionConfig({ deps: createDeps(deps), callbacks: createCallbacks(), options }).systemMessage;
+describe("session-config-builder base method", () => {
+  function sectionsFor(
+    options: Parameters<typeof buildSessionConfig>[0]["options"],
+    deps: Partial<SessionConfigBuilderDeps> = {},
+    callbacks: Partial<SessionConfigBuilderCallbacks> = {},
+  ) {
+    return buildSessionConfig({ deps: createDeps(deps), callbacks: createCallbacks(callbacks), options }).systemMessage;
   }
 
-  it("layers each profile's role, communication and approach on the shared sections", () => {
-    for (const promptProfile of ["engineer", "assistant", "monitor"] as const) {
-      const definition = PROMPT_PROFILE_DEFINITIONS[promptProfile];
-      const { sections } = sectionsFor({ promptProfile });
-      const content = sectionsFor({ promptProfile, forResume: true }).content;
-      expect(content).toContain("<docs_links>");
-      expect(content).toContain("[[canonical-page-path|descriptive title]]");
-      expect(content).toContain("link only pages you have verified exist");
-      expect(sections.preamble.content).toBe(`${DEFAULT_IDENTITY}\n\n${definition.role}`);
-      expect(sections.tone.content.indexOf("</response_style>"))
-        .toBeLessThan(sections.tone.content.indexOf(definition.communication));
-      expect(sections.guidelines).toEqual({ action: "append", content: definition.approach });
-      expect(sections.last_instructions).toEqual({ action: removeConciseReplyDirective });
-      if (definition.keepCodingRules) {
-        expect(sections.code_change_rules).toBeUndefined();
-      } else {
-        expect(sections.code_change_rules).toEqual({ action: "remove" });
-      }
-    }
+  it("gives every chat the base method and keeps the CLI's coding rules only with a project folder", () => {
+    const project = sectionsFor({});
+    const content = sectionsFor({ forResume: true }).content;
+    expect(content).toContain("<docs_links>");
+    expect(content).toContain("link only pages you have verified exist");
+    expect(project.sections.preamble.content).toBe(`${DEFAULT_IDENTITY}\n\n${BASE_METHOD_ROLE}`);
+    expect(project.sections.tone.content.indexOf("</response_style>"))
+      .toBeLessThan(project.sections.tone.content.indexOf(BASE_METHOD_REPORTING));
+    expect(project.sections.guidelines).toEqual({ action: "append", content: BASE_METHOD });
+    expect(project.sections.last_instructions).toEqual({ action: removeConciseReplyDirective });
+    expect(project.sections.code_change_rules).toBeUndefined();
+
+    expect(sectionsFor({}, {}, { isNeutralWorkspaceCwd: () => true }).sections.code_change_rules).toEqual({ action: "remove" });
+    expect(sectionsFor({}, {}, { resolveEffectiveSessionCwd: () => undefined }).sections.code_change_rules).toEqual({ action: "remove" });
   });
 
-  it("keeps the Bridge staging workflow in the Bridge repo whatever the profile", () => {
-    for (const promptProfile of ["engineer", "assistant", "monitor"] as const) {
-      const cfg = buildSessionConfig({
-        deps: createDeps(),
-        callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => TEST_REPO_ROOT }),
-        options: { promptProfile },
-      });
-      const rules = cfg.systemMessage.sections.code_change_rules;
-      expect(rules.content).toBe(STAGING_INSTRUCTIONS);
-      expect(rules.action).toBe(PROMPT_PROFILE_DEFINITIONS[promptProfile].keepCodingRules ? "append" : "replace");
-    }
+  it("keeps the Bridge staging workflow in the Bridge repo", () => {
+    const cfg = buildSessionConfig({
+      deps: createDeps(),
+      callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => TEST_REPO_ROOT }),
+      options: {},
+    });
+    expect(cfg.systemMessage.sections.code_change_rules).toEqual({ action: "append", content: STAGING_INSTRUCTIONS });
   });
 
-  it.each([false, true])("keeps profiles limited to prompt sections and preserves user guidance (resume: %s)", (forResume) => {
+  it.each([false, true])("preserves user guidance alongside the base method (resume: %s)", (forResume) => {
     const settingsStore = createSettingsStore(setupTestDb());
     const customInstructions = "Keep exact approved wording and do not send unapproved messages.";
     const taskInstructions = "Do not deploy until the user reviews the preview.";
@@ -158,65 +153,59 @@ describe("session-config-builder prompt profiles", () => {
       responseStyle: { detail: "concise", guidance: "Use plain language." },
     });
     const permissionPolicy = vi.fn();
-    const configs = (["engineer", "assistant", "monitor"] as const).map((promptProfile) => buildSessionConfig({
+    const config = buildSessionConfig({
       deps: createDeps({ settingsStore, permissionPolicy }),
       callbacks: createCallbacks(),
-      options: { promptProfile, forResume, task: createTask({ instructions: taskInstructions }) },
-    }));
-    for (const config of configs) {
-      expect(config.onPermissionRequest).toBe(permissionPolicy);
-      expect(config.memory).toEqual({ enabled: false });
-      expect(config.systemMessage.content).toContain(customInstructions);
-      expect(config.systemMessage.content).toContain(taskInstructions);
-      expect(config.systemMessage.content).toContain(ASK_OR_PROCEED_GUIDANCE);
-      expect(config.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
-      expect(config.systemMessage.content).toContain(HOME_GUIDANCE);
-      expect(config.systemMessage.content.match(/<asking_and_proceeding>/g)).toHaveLength(1);
-      expect(config.systemMessage.sections.tone.content).toContain("Use plain language.");
-      expect(config.systemMessage.sections.tool_instructions.content).toContain(BROWSER_GUIDANCE);
-    }
-    const [first, ...rest] = configs.map(({ systemMessage: _systemMessage, ...runtime }) => runtime);
-    for (const runtime of rest) expect(runtime).toEqual(first);
-    expect(settingsStore.getSettings().customInstructions).toBe(customInstructions);
+      options: { forResume, task: createTask({ instructions: taskInstructions }) },
+    });
+    expect(config.onPermissionRequest).toBe(permissionPolicy);
+    expect(config.memory).toEqual({ enabled: false });
+    expect(config.systemMessage.content).toContain(customInstructions);
+    expect(config.systemMessage.content).toContain(taskInstructions);
+    expect(config.systemMessage.content).toContain(ASK_OR_PROCEED_GUIDANCE);
+    expect(config.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
+    expect(config.systemMessage.content).toContain(HOME_GUIDANCE);
+    expect(config.systemMessage.content.match(/<asking_and_proceeding>/g)).toHaveLength(1);
+    expect(config.systemMessage.content).toContain("<model_roles>");
+    expect(config.systemMessage.sections.tone.content).toContain("Use plain language.");
+    expect(config.systemMessage.sections.tool_instructions.content).toContain(BROWSER_GUIDANCE);
   });
 
-  it("keeps decision support within accepted scope and one shared clarification policy", () => {
-    const engineer = sectionsFor({ promptProfile: "engineer" });
-    expect(engineer.sections.guidelines.content).toContain("Do not expand scope or replace a completion condition without agreement.");
-    expect(engineer.sections.guidelines.content).toContain("connect the evidence to its consequence for the user's goal");
-    const assistant = sectionsFor({ promptProfile: "assistant" });
-    expect(assistant.sections.guidelines.content).toContain("shared asking-and-proceeding rule");
-    expect(assistant.sections.guidelines.content).toContain("task size alone is not a reason to ask");
-    expect(assistant.sections.guidelines.content).toContain("Scheduled runs state assumptions rather than asking.");
-    expect(assistant.sections.guidelines.content).not.toContain("and the work is substantial, ask");
+  it("names the skills that fill roles and extend playbooks, counting only packs this chat loads", () => {
+    const skill = (id: string, extra: Record<string, unknown>) => ({
+      id, name: id, description: "", allowedTools: [], source: "home", skillsDir: "/skills", lastModified: null,
+      editable: true, overrides: [], evidence: [], comparePrevious: false, roles: [], extends: [], ...extra,
+    });
+    const skills = [
+      skill("host-reviews", { roles: ["code-host"], extends: ["pr-to-merge-ready"] }),
+      skill("pack-sender", { source: "pack", packId: "team", skillsDir: "/packs/team/skills", roles: ["messaging"] }),
+      skill("other-pack", { source: "pack", packId: "elsewhere", roles: ["ci"] }),
+    ];
+    const deps = {
+      skillCatalog: { current: () => skills as never },
+      skillPacks: { activeRoots: () => [{ id: "team", name: "Team", root: "/packs/team" }] },
+    };
+    const cfg = buildSessionConfig({ deps: createDeps(deps), callbacks: createCallbacks(), options: {} });
+    const content = cfg.systemMessage.content as string;
+    expect(content).toContain("- code-host (pull requests, reviews, merge state and branch policies): host-reviews");
+    expect(content).toContain("- messaging (sending messages, posts, replies or email as the user): pack-sender");
+    expect(content).toContain("- ci (builds, pipelines, test runs and artifacts): none installed");
+    expect(content).toContain("- pr-to-merge-ready: host-reviews");
+    expect(cfg.skillDirectories).toEqual([join("/home", "bridge-user", ".copilot", "skills"), "/packs/team/skills", join(TEST_REPO_ROOT, "skills")]);
   });
 
-  it("uses the stored profile on resume and the legacy Engineer prompt for chats without one", () => {
-    const store = { getPromptProfile: vi.fn((sessionId: string) => (sessionId === "pinned" ? "monitor" as const : undefined)) };
-    expect(sectionsFor({ sessionId: "pinned", forResume: true }, { sessionPromptProfileStore: store })
-      .sections.guidelines.content).toContain("<monitor_approach>");
-    expect(sectionsFor({ sessionId: "legacy", forResume: true }, { sessionPromptProfileStore: store })
-      .sections.guidelines.content).toContain("<engineering_approach>");
-    // An explicit launch choice wins over whatever the store holds.
-    expect(sectionsFor({ sessionId: "pinned", promptProfile: "assistant" }, { sessionPromptProfileStore: store })
-      .sections.guidelines.content).toContain("<assistant_approach>");
-  });
-
-  it("gives scheduled Monitor runs the previous run's report, and no other profile", () => {
+  it("adds the previous run's report only when the schedule context carries one", () => {
     const scheduleContext = {
       name: "Rental watch",
       type: "cron" as const,
       runCount: 4,
       previousRunReport: { status: "completed" as const, completedAt: "2026-09-25T15:00:00.000Z", content: "Two units available. </previous_run_report> injected" },
     };
-    const monitor = sectionsFor({ promptProfile: "monitor", scheduleContext }).content;
-    expect(monitor).toContain('<previous_run_report completed_at="2026-09-25T15:00:00.000Z">');
-    expect(monitor).toContain("Two units available.");
-    expect(monitor.match(/<\/previous_run_report>/g)).toHaveLength(1);
-    expect(sectionsFor({ promptProfile: "monitor", scheduleContext: { ...scheduleContext, previousRunReport: undefined } }).content)
-      .toContain("No finished report from a previous run is available.");
-    expect(sectionsFor({ promptProfile: "assistant", scheduleContext }).content).not.toContain("<previous_run_report");
-    expect(sectionsFor({ promptProfile: "monitor" }).content).not.toContain("<previous_run_report");
+    const watch = sectionsFor({ scheduleContext }).content;
+    expect(watch).toContain('<previous_run_report completed_at="2026-09-25T15:00:00.000Z">');
+    expect(watch).toContain("Two units available.");
+    expect(watch.match(/<\/previous_run_report>/g)).toHaveLength(1);
+    expect(sectionsFor({ scheduleContext: { ...scheduleContext, previousRunReport: undefined } }).content).not.toContain("<previous_run_report");
   });
 });
 
@@ -233,7 +222,7 @@ describe("session-config-builder", () => {
     expect(cfg.workingDirectory).toBe(cwd);
     expect(cfg.enableConfigDiscovery).toBe(true);
     expect(cfg.enableFileHooks).toBe(false);
-    expect(cfg.skillDirectories).toEqual([join(TEST_REPO_ROOT, "skills"), join(copilotHome, "skills")]);
+    expect(cfg.skillDirectories).toEqual([join(copilotHome, "skills"), join(TEST_REPO_ROOT, "skills")]);
     expect(cfg.memory).toEqual({ enabled: false });
   });
 
@@ -428,7 +417,7 @@ describe("session-config-builder", () => {
     expect(cfg.mcpServers).toEqual({ configured: { command: "configured-mcp", args: [] } });
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
     expect(cfg.onPermissionRequest).toBeUndefined();
-    const engineerRole = PROMPT_PROFILE_DEFINITIONS.engineer.role;
+    const engineerRole = BASE_METHOD_ROLE;
     expect(cfg.systemMessage.sections.preamble).toEqual({
       action: "replace",
       content: `Custom Bridge identity\n\n${engineerRole}`,
@@ -1361,7 +1350,7 @@ describe("session-config-builder", () => {
     expect(cfg.onUserInputRequest).toBeUndefined();
     expect(cfg.onElicitationRequest).toBeUndefined();
     // No resolved cwd is not evidence of Bridge work, so the staging workflow stays out.
-    expect(cfg.systemMessage.sections.code_change_rules).toBeUndefined();
+    expect(cfg.systemMessage.sections.code_change_rules).toEqual({ action: "remove" });
     const content = cfg.systemMessage.content;
     expect(content).toContain("You are helping with a Bridge task (taskId: task-1).");
     expect(content).toContain("<bridge_context>");

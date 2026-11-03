@@ -3,10 +3,25 @@
 // and deploy only after validation passes.
 
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
-import { rmdir } from "node:fs/promises";
-import { join, dirname, basename, resolve } from "node:path";
+import { readFile, rmdir } from "node:fs/promises";
+import { join, dirname, basename, resolve, isAbsolute } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type express from "express";
 import { randomBytes } from "node:crypto";
+import {
+  COMMIT_LOG_FORMAT,
+  PATCH_LOG_ARGS,
+  PatchTermScanner,
+  checkCommits,
+  checkDeployMessage,
+  formatDeployGuardFailure,
+  hasDeployGuards,
+  parseCommitLog,
+  parseDenylist,
+  type DenylistTerm,
+  type DeployGuardFinding,
+  type DeployGuardSettings,
+} from "./deploy-guards.js";
 import {
   dependencySyncHash,
   preparePatchedPackagesForInstall,
@@ -1227,6 +1242,120 @@ export async function runStagingPreviewJob(
 export interface StagingDeployJobInput {
   stagingDir: string;
   message: string;
+  /** Snapshot of Settings › deployGuards taken when the deploy was queued. */
+  deployGuards?: DeployGuardSettings;
+}
+
+const DEPLOY_GUARD_GIT_TIMEOUT_MS = 120_000;
+const DEPLOY_GUARD_STDERR_LIMIT = 4_000;
+
+type DeployGuardStepResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Runs git and hands each stdout line to onLine as it arrives, so a large patch is never held in
+ * memory whole. Nothing is logged: the output may contain the very terms the guard looks for.
+ */
+async function streamGitLines(
+  args: readonly string[],
+  cwd: string,
+  onLine: (line: string) => void,
+): Promise<DeployGuardStepResult> {
+  const child = await getProcessHost().spawn("git", ["--no-pager", "-c", "core.quotePath=false", ...args], {
+    cwd,
+    env: withNonInteractiveCommandEnv(process.env),
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  return await new Promise((resolveStep) => {
+    const decoder = new StringDecoder("utf8");
+    let pending = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result: DeployGuardStepResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveStep(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ ok: false, error: `git ${args[0]} timed out after ${DEPLOY_GUARD_GIT_TIMEOUT_MS / 1_000} seconds` });
+    }, DEPLOY_GUARD_GIT_TIMEOUT_MS);
+    child.stdout?.on("data", (chunk: unknown) => {
+      pending += typeof chunk === "string" ? chunk : decoder.write(chunk as Buffer);
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) onLine(line);
+    });
+    child.stderr?.on("data", (chunk: unknown) => {
+      if (stderr.length < DEPLOY_GUARD_STDERR_LIMIT) stderr += String(chunk);
+    });
+    child.on("error", (error: Error) => finish({ ok: false, error: error.message }));
+    child.on("close", (code: number | null) => {
+      if (settled) return;
+      pending += decoder.end();
+      if (pending) onLine(pending);
+      finish(code === 0
+        ? { ok: true }
+        : { ok: false, error: stderr.trim().slice(0, DEPLOY_GUARD_STDERR_LIMIT) || `git ${args[0]} exited with code ${code}` });
+    });
+  });
+}
+
+interface LoadedDeployGuards {
+  patterns: string[];
+  terms: DenylistTerm[];
+  denylistFile?: string;
+}
+
+/** Reads the denylist. A configured file that cannot be read blocks the deploy rather than passing it. */
+async function loadDeployGuards(
+  settings: DeployGuardSettings,
+): Promise<{ ok: true; guards: LoadedDeployGuards } | { ok: false; detail: string }> {
+  const patterns = settings.blockedEmailPatterns ?? [];
+  const denylistFile = settings.denylistFile;
+  if (!denylistFile) return { ok: true, guards: { patterns, terms: [] } };
+  if (!isAbsolute(denylistFile)) {
+    return { ok: false, detail: `The deploy guard denylist path is not absolute: ${denylistFile}. Fix it in Settings › System, then call staging_deploy again.` };
+  }
+  try {
+    const text = await readFile(denylistFile, "utf8");
+    return { ok: true, guards: { patterns, terms: parseDenylist(text), denylistFile } };
+  } catch (error) {
+    const reason = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
+    return {
+      ok: false,
+      detail:
+        `The deploy guard denylist ${denylistFile} could not be read (${reason}), so the deploy was refused rather than sent unchecked. ` +
+        "Restore the file, or clear the denylist path in Settings › System, then call staging_deploy again. Nothing was committed, merged or pushed.",
+    };
+  }
+}
+
+/** Checks every commit in `range` (emails, messages) and every line those commits add. */
+async function checkDeployRange(
+  guards: LoadedDeployGuards,
+  cwd: string,
+  range: string,
+): Promise<{ ok: true; findings: DeployGuardFinding[]; omitted: number; commits: number } | { ok: false; error: string }> {
+  let logOutput = "";
+  const logResult = await streamGitLines(["log", `--format=${COMMIT_LOG_FORMAT}`, range], cwd, (line) => {
+    logOutput += `${line}\n`;
+  });
+  if (!logResult.ok) return logResult;
+  const commits = parseCommitLog(logOutput);
+  const findings = checkCommits(commits, guards.patterns, guards.terms);
+  if (guards.terms.length === 0) return { ok: true, findings, omitted: 0, commits: commits.length };
+  const scanner = new PatchTermScanner(guards.terms);
+  const patchResult = await streamGitLines([...PATCH_LOG_ARGS, range], cwd, (line) => scanner.push(line));
+  if (!patchResult.ok) return patchResult;
+  return {
+    ok: true,
+    findings: [...findings, ...scanner.findings],
+    omitted: scanner.total - scanner.findings.length,
+    commits: commits.length,
+  };
 }
 
 /**
@@ -1394,6 +1523,71 @@ async function runStagingDeployJobImpl(
   writeLog(`Deploying from ${stagingDir} (branch: ${branch})`);
   ensureNodeModulesIgnored(stagingDir);
 
+  let deployGuards: LoadedDeployGuards | null = null;
+  if (hasDeployGuards(args.deployGuards)) {
+    const loaded = await loadDeployGuards(args.deployGuards);
+    if (!loaded.ok) {
+      writeLog("Deploy guards could not load the denylist; deploy refused");
+      return stagingFailure("Deploy guards could not read the denylist file.", loaded.detail, {
+        toolTelemetry: { stagingDir, branch, deployGuard: "denylist-unreadable" },
+      });
+    }
+    deployGuards = loaded.guards;
+    // Checked before the commit is made, so a blocked message never lands even locally.
+    const messageFindings = checkDeployMessage(String(message ?? ""), deployGuards.terms);
+    if (messageFindings.length > 0) {
+      writeLog("Deploy guards refused the deploy message");
+      return stagingFailure(
+        "Deploy guards refused this deploy.",
+        formatDeployGuardFailure(messageFindings, { stagingDir, denylistFile: deployGuards.denylistFile }),
+        { toolTelemetry: { stagingDir, branch, deployGuard: "refused", findings: messageFindings.length } },
+      );
+    }
+  }
+
+  /**
+   * Refuses the deploy when a commit in prodBranch..branch has a blocked author or committer email,
+   * or a denylisted term in its message, an added line or an added file's path. Runs before the
+   * production stash and again after the rebase, which rewrites committers, and on every retry.
+   */
+  const runDeployGuards = async (prodBranch: string) => {
+    if (!deployGuards) return null;
+    const range = `${prodBranch}..${branch}`;
+    const checked = await checkDeployRange(deployGuards, stagingDir, range);
+    if (!checked.ok) {
+      writeLog("Deploy guards could not read the commits to deploy; deploy refused");
+      return stagingFailure(
+        "Deploy guards could not read the commits to deploy.",
+        `Deploy guards could not read ${range} in ${stagingDir}, so the deploy was refused rather than sent unchecked: ${checked.error}. ` +
+          "Nothing was merged or pushed; fix the git problem, then call staging_deploy again.",
+        { toolTelemetry: { stagingDir, branch, prodBranch, deployGuard: "git-failed" } },
+      );
+    }
+    if (checked.findings.length === 0) {
+      writeLog(`Deploy guards passed (${checked.commits} commit(s) checked)`);
+      return null;
+    }
+    writeLog(`Deploy guards refused the deploy (${checked.findings.length + checked.omitted} finding(s))`);
+    return stagingFailure(
+      "Deploy guards refused this deploy.",
+      formatDeployGuardFailure(checked.findings, {
+        prodBranch,
+        stagingDir,
+        denylistFile: deployGuards.denylistFile,
+        omitted: checked.omitted,
+      }),
+      {
+        toolTelemetry: {
+          stagingDir,
+          branch,
+          prodBranch,
+          deployGuard: "refused",
+          findings: checked.findings.length + checked.omitted,
+        },
+      },
+    );
+  };
+
   const addResult = await runCommand("git add -A", stagingDir);
   if (!addResult.ok) {
     return commandFailure(
@@ -1473,6 +1667,9 @@ async function runStagingDeployJobImpl(
       },
     );
   }
+
+  const earlyGuardFailure = await runDeployGuards(prodBranch);
+  if (earlyGuardFailure) return earlyGuardFailure;
 
   const stashMarker = `bridge-deploy-${prefix}-${randomBytes(4).toString("hex")}`;
   const stashCommand = `git stash push --include-untracked -m "${stashMarker}"`;
@@ -1585,6 +1782,13 @@ async function runStagingDeployJobImpl(
     );
   }
   writeLog("Staging branch rebased onto production");
+
+  // The rebase rewrote every commit's committer and may have changed what each adds.
+  const rebasedGuardFailure = await runDeployGuards(prodBranch);
+  if (rebasedGuardFailure) {
+    await unstashProduction();
+    return rebasedGuardFailure;
+  }
 
   const depsResult = await ensureStagingDeps(stagingDir, { runCommand, log: writeLog });
   if (!depsResult.ok) {
@@ -2196,9 +2400,11 @@ function enqueueStagingDeploy(ctx: AppContext, args: any, invocation?: BridgeToo
     return stagingFailure("Staging deploy could not be queued.", "Management job store is not available.");
   }
   try {
+    // Snapshot the guards now: the job runs in the management runner, which does not read settings.
+    const deployGuards = ctx.settingsStore?.getSettings().deployGuards;
     const job = store.enqueue(
       "staging_deploy",
-      { stagingDir, message },
+      { stagingDir, message, ...(deployGuards ? { deployGuards } : {}) },
       { originSessionId: managementJobOriginSessionId(invocation) },
     );
     ctx.stagingPreviewDiscovery?.watchJob(job);

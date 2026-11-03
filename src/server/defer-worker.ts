@@ -11,6 +11,7 @@ import {
   type DeferCheckpoint,
 } from "./defer-checkpoint.js";
 import { BRIDGE_RESTARTING_MESSAGE } from "./backend-availability.js";
+import { formatDeferCheckChange, type DeferCheckChange } from "./defer-check.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import type { Task } from "./task-store.js";
 import { selectHelperModel } from "./helper-model.js";
@@ -53,6 +54,8 @@ export interface DeferWorkerInput {
   intervalSeconds?: number;
   expiresAt?: string;
   checkpoint?: DeferCheckpoint;
+  /** The loop's check command printed something new; this occurrence runs because of it. */
+  check?: DeferCheckChange;
 }
 
 export interface DeferWorkerResult {
@@ -198,6 +201,7 @@ export function buildDeferWorkerPrompt(input: DeferWorkerInput): string {
   return [
     "Deferred work context (JSON data):",
     serializedContext,
+    ...(input.check ? ["", formatDeferCheckChange(input.check)] : []),
     "",
     input.prompt,
   ].join("\n");

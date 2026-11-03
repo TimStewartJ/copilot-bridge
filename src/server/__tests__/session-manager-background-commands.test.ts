@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
-import { createSessionPromptProfileStore } from "../session-prompt-profile-store.js";
+import { createSessionPlaybookStore } from "../session-playbook-store.js";
 import { createBackgroundCommandStore } from "../background-command-store.js";
 import { BACKGROUND_COMMAND_PROTECT_MS, queueStoppedCommandWake } from "../background-commands.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
@@ -56,7 +56,7 @@ function createManager() {
       getMcpServers: () => ({}),
       getSettings: () => ({ model: "claude-opus-4.7" }),
     } as any,
-    sessionPromptProfileStore: createSessionPromptProfileStore(db),
+    sessionPlaybookStore: createSessionPlaybookStore(db),
     backgroundCommandStore,
     onBackgroundCommandsStopped,
     config: { sessionMcpServers: {} },

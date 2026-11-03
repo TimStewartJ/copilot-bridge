@@ -5,7 +5,9 @@ import { useModelRolesQuery, useModelsQuery } from "../hooks/queries/useModels";
 import { useScheduleSessionsQuery } from "../hooks/queries/useScheduleSessions";
 import type { ScheduleSheetMode } from "../hooks/useScheduleDetail";
 import { timeAgo } from "../time";
-import { getPromptProfileInfo, PROMPT_PROFILES, type PromptProfileId } from "../../shared/prompt-profiles.js";
+import { usePlaybooksQuery } from "../hooks/queries/usePlaybooks";
+import { playbookIdLabel } from "../lib/playbooks";
+import PlaybookSelect from "./shared/PlaybookSelect";
 import { MODEL_PRESET_SLOTS, isModelPresetSlot, type ModelPresetSlot } from "../../shared/model-presets.js";
 import { MODEL_TIER_INFO, type ModelRolesView } from "../../shared/model-roles.js";
 import {
@@ -192,9 +194,8 @@ function ViewMode({
   const modelLabel = tier
     ? tier.model ? tier.label : `${tier.label}, runs as new chats`
     : SAME_AS_NEW_CHATS;
-  const promptProfileLabel = schedule.promptProfile
-    ? getPromptProfileInfo(schedule.promptProfile).label
-    : "Bridge default";
+  const playbooksQuery = usePlaybooksQuery({ enabled: Boolean(schedule.playbook) });
+  const playbookLabel = playbookIdLabel(schedule.playbook, playbooksQuery.data) ?? "None";
 
   const seenRunIds = new Set<number>();
   const sessions = (sessionData?.pages ?? [])
@@ -277,9 +278,9 @@ function ViewMode({
               </span>
             </div>
             <div>
-              <span className="text-text-faint block mb-0.5">Profile</span>
-              <span className="text-text-secondary" title={schedule.promptProfile}>
-                {promptProfileLabel}
+              <span className="text-text-faint block mb-0.5">Playbook</span>
+              <span className="text-text-secondary" title={schedule.playbook}>
+                {playbookLabel}
               </span>
             </div>
             {taskTitle && (
@@ -493,7 +494,8 @@ function EditMode({
   const [runAt, setRunAt] = useState(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
   const [timezone, setTimezone] = useState(schedule?.timezone ?? "");
   const [modelTier, setModelTier] = useState<"" | ModelPresetSlot>(schedule?.modelTier ?? "");
-  const [promptProfile, setPromptProfile] = useState<"" | PromptProfileId>(schedule?.promptProfile ?? "");
+  const [playbook, setPlaybook] = useState(schedule?.playbook ?? "");
+  const playbooksQuery = usePlaybooksQuery();
   const [maxRuns, setMaxRuns] = useState<string>(schedule?.maxRuns?.toString() ?? "");
   const [autoArchiveKeep, setAutoArchiveKeep] = useState<string>(schedule?.autoArchiveKeep?.toString() ?? "");
   const [saving, setSaving] = useState(false);
@@ -518,7 +520,7 @@ function EditMode({
     setRunAt(schedule?.runAt ? toDatetimeLocalValue(new Date(schedule.runAt)) : "");
     setTimezone(schedule?.timezone ?? "");
     setModelTier(schedule?.modelTier ?? "");
-    setPromptProfile(schedule?.promptProfile ?? "");
+    setPlaybook(schedule?.playbook ?? "");
     setMaxRuns(schedule?.maxRuns?.toString() ?? "");
     setAutoArchiveKeep(schedule?.autoArchiveKeep?.toString() ?? "");
   }, [schedule]);
@@ -556,7 +558,7 @@ function EditMode({
           ...(type === "cron" ? { cron: cronExpr.trim() } : { runAt: new Date(runAt).toISOString() }),
           ...(timezone ? { timezone } : {}),
           ...(modelTier ? { modelTier } : {}),
-          ...(promptProfile ? { promptProfile } : {}),
+          ...(playbook ? { playbook } : {}),
           ...(maxRuns ? { maxRuns: parseInt(maxRuns, 10) } : {}),
           ...(parsedAutoArchiveKeep !== null ? { autoArchiveKeep: parsedAutoArchiveKeep } : {}),
         };
@@ -569,7 +571,7 @@ function EditMode({
           runAt: type === "once" ? new Date(runAt).toISOString() : undefined,
           ...(timezone ? { timezone } : {}),
           modelTier: modelTier || null,
-          ...(promptProfile !== (schedule?.promptProfile ?? "") ? { promptProfile: promptProfile || null } : {}),
+          ...(playbook !== (schedule?.playbook ?? "") ? { playbook: playbook || null } : {}),
           maxRuns: maxRuns ? parseInt(maxRuns, 10) : undefined,
           autoArchiveKeep: parsedAutoArchiveKeep,
         });
@@ -698,23 +700,16 @@ function EditMode({
             </div>
 
             <div className="col-span-2">
-              <label className="text-text-faint block mb-1" htmlFor="schedule-prompt-profile-select">
-                Profile
+              <label className="text-text-faint block mb-1" htmlFor="schedule-playbook-select">
+                Playbook
               </label>
-              <select
-                id="schedule-prompt-profile-select"
-                className={cx(DS.field.input, DS.field.inputSize.md, DS.focus, "outline-none")}
-                value={promptProfile}
-                onChange={(e) => setPromptProfile(e.target.value as "" | PromptProfileId)}
-              >
-                <option value="">Bridge default</option>
-                {PROMPT_PROFILES.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.label}</option>
-                ))}
-              </select>
-              {promptProfile === "monitor" && <div className="text-[10px] text-text-faint mt-1">
-                Each run receives the previous run's report.
-              </div>}
+              <PlaybookSelect
+                id="schedule-playbook-select"
+                playbooks={playbooksQuery.data ?? []}
+                value={playbook}
+                onValueChange={setPlaybook}
+                emptyLabel="None"
+              />
             </div>
 
             {/* Max runs */}

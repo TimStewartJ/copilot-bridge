@@ -11,8 +11,13 @@ import type { ChatMessageIdStore } from "./chat-message-id-store.js";
 import type { UnsentMessageStore } from "./unsent-message-store.js";
 import type { BackgroundCommandStore } from "./background-command-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
-import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import type { SessionPlaybookStore } from "./session-playbook-store.js";
+import type { SkillCatalog } from "./skill-catalog.js";
+import type { SkillPackManager } from "./skill-packs.js";
+import type { SkillUsageStore } from "./skill-usage-store.js";
+import type { UnattendedRunStore } from "./unattended-run-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
+import type { CompletionReportStore } from "./completion-report-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
@@ -66,8 +71,16 @@ export interface AppContext {
   settingsStore: SettingsStore;
   sessionMetaStore: SessionMetaStore;
   sessionWorkspaceStore: SessionWorkspaceStore;
-  sessionPromptProfileStore?: SessionPromptProfileStore;
+  sessionPlaybookStore?: SessionPlaybookStore;
+  /** Cached scan of bundled, home and pack skills with their playbook metadata. */
+  skillCatalog?: SkillCatalog;
+  skillPacks?: SkillPackManager;
+  skillUsageStore?: SkillUsageStore;
+  /** Chats where defers or schedules ran turns since the user last wrote there. */
+  unattendedRunStore?: UnattendedRunStore;
   taskHistoryStore?: TaskHistoryStore;
+  /** Evidence reports recorded by verify_complete. */
+  completionReportStore?: CompletionReportStore;
   sessionTitles: SessionTitlesStore;
   bridgeSessionStateStore: BridgeSessionStateStore;
   cliSessionCatalog?: CopilotCliSessionCatalog;

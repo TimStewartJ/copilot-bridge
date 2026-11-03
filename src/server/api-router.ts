@@ -101,7 +101,7 @@ import {
   isCopilotContextTier,
   type CopilotContextTier,
 } from "../shared/copilot-context.js";
-import { isPromptProfileId } from "../shared/prompt-profiles.js";
+import { isPlaybookName, NO_PLAYBOOK } from "../shared/workflow-vocabulary.js";
 import { InvalidTaskHistoryEntryError } from "./task-history-store.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
@@ -643,7 +643,7 @@ const SCHEDULE_CREATE_FIELDS = [
   "runAt",
   "timezone",
   "modelTier",
-  "promptProfile",
+  "playbook",
   "maxRuns",
   "expiresAt",
   "autoArchiveKeep",
@@ -655,7 +655,7 @@ const SCHEDULE_UPDATE_FIELDS = [
   "runAt",
   "timezone",
   "modelTier",
-  "promptProfile",
+  "playbook",
   "enabled",
   "maxRuns",
   "expiresAt",
@@ -2233,11 +2233,11 @@ export function createApiRouter(
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
     try {
-      // A chat still being created has neither its model nor its profile yet; answer once it has.
+      // A chat still being created has neither its model nor its playbook yet; answer once it has.
       await ctx.sessionManager.waitForSessionCreation(sessionId, SESSION_CREATION_DETAIL_WAIT_MS);
       const result = await ctx.sessionManager.getSessionModelState(sessionId);
-      const promptProfile = ctx.sessionManager.getSessionPromptProfile(sessionId);
-      res.json({ ...result, ...(promptProfile ? { promptProfile } : {}) });
+      const playbook = ctx.sessionManager.getSessionPlaybook(sessionId);
+      res.json({ ...result, ...(playbook ? { playbook } : {}) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -2267,25 +2267,42 @@ export function createApiRouter(
     }
   });
 
-  // PATCH /sessions/:id/profile — change one chat's system prompt profile
-  router.patch("/sessions/:id/profile", async (req, res) => {
+  // GET /sessions/:id/playbook — the chat's active playbook and who chose it
+  router.get("/sessions/:id/playbook", (req, res) => {
     const sessionId = req.params.id;
     if (!isCanonicalSessionId(sessionId)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
     }
-    const promptProfile = req.body?.promptProfile;
-    if (!isPromptProfileId(promptProfile)) {
-      return res.status(400).json({ error: "promptProfile must be engineer, assistant, or monitor" });
+    res.json({ playbook: ctx.sessionManager.getSessionPlaybook(sessionId) ?? null });
+  });
+
+  // PUT /sessions/:id/playbook — the user picks a playbook (or "none"); null returns to the task's pin
+  router.put("/sessions/:id/playbook", async (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    const playbook = req.body?.playbook;
+    if (playbook !== null && playbook !== NO_PLAYBOOK && !isPlaybookName(playbook)) {
+      return res.status(400).json({ error: "playbook must be a playbook name, \"none\", or null" });
     }
     try {
-      const result = await ctx.sessionManager.setSessionPromptProfile(sessionId, promptProfile);
-      res.json(result);
+      res.json({ playbook: await ctx.sessionManager.setSessionPlaybook(sessionId, playbook, "user") });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (/not found/i.test(message)) return res.status(404).json({ error: message });
-      if (/busy|do not apply/i.test(message)) return res.status(409).json({ error: message });
+      if (/not installed|do not apply/i.test(message)) return res.status(409).json({ error: message });
       res.status(500).json({ error: message });
     }
+  });
+
+  // GET /sessions/:id/completion-reports — what verify_complete recorded in this chat, newest first
+  router.get("/sessions/:id/completion-reports", (req, res) => {
+    const sessionId = req.params.id;
+    if (!isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    res.json({ reports: ctx.completionReportStore?.listForSession(sessionId) ?? [] });
   });
 
   // PATCH /sessions/:id/model — explicitly switch the model for a single session
@@ -3474,6 +3491,7 @@ export function createApiRouter(
         completionAction: req.body?.completionAction,
         notes: req.body?.notes,
         instructions: req.body?.instructions,
+        playbook: req.body?.playbook,
         priority: req.body?.priority,
         cwd: req.body?.cwd,
         groupId: req.body?.groupId,
@@ -3560,6 +3578,12 @@ export function createApiRouter(
     if (!ctx.taskHistoryStore.deleteEntry(task.id, entryId)) return res.status(404).json({ error: "History entry not found" });
     ctx.globalBus.emit({ type: "task:changed", taskId: task.id });
     res.json({ ok: true });
+  });
+
+  router.get("/tasks/:id/completion-reports", (req, res) => {
+    const task = ctx.taskStore.getTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    res.json({ reports: ctx.completionReportStore?.listForTask(task.id) ?? [] });
   });
 
   router.get("/tasks/:id/deletion-preview", (req, res) => {
@@ -4100,7 +4124,7 @@ export function createApiRouter(
         runAt,
         timezone,
         modelTier: launchOptions.updates.modelTier ?? undefined,
-        promptProfile: launchOptions.updates.promptProfile ?? undefined,
+        playbook: launchOptions.updates.playbook ?? undefined,
         maxRuns,
         expiresAt,
         autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
@@ -4800,6 +4824,18 @@ export function createApiRouter(
       const prev = prepared.current;
       const updated = ctx.settingsStore.commitPreparedSettingsUpdate(prepared);
       clearProviderCache();
+
+      // New or changed packs are fetched in the background; removed git packs lose their checkout.
+      if (JSON.stringify(prev.skillPacks ?? []) !== JSON.stringify(updated.skillPacks ?? [])) {
+        const before = new Map((prev.skillPacks ?? []).map((pack) => [pack.id, JSON.stringify(pack.source)]));
+        const toSync = (updated.skillPacks ?? []).filter((pack) => pack.enabled !== false && before.get(pack.id) !== JSON.stringify(pack.source));
+        void (async () => {
+          for (const pack of toSync) await ctx.skillPacks?.sync(pack.id).catch(() => undefined);
+          await ctx.skillPacks?.pruneRemoved().catch(() => undefined);
+          await ctx.skillPacks?.listStatuses().catch(() => undefined);
+          await ctx.skillCatalog?.refresh().catch(() => undefined);
+        })();
+      }
 
       const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
       const imageGenerationChanged = isImageGenerationEnabled(prev) !== isImageGenerationEnabled(updated);

@@ -53,6 +53,8 @@ describe("DeferredWorkSheet", () => {
             lastError: "All 32 live Copilot contexts are currently in use.",
             canCancel: true,
             canReactivate: false,
+            check: { command: ["gh", "run", "view", "123"] },
+            lastCheck: { outcome: "unchanged", at: "2026-09-01T23:00:00.000Z", exitCode: 1 },
           },
           {
             deferId: "once_failed",
@@ -132,6 +134,8 @@ describe("DeferredWorkSheet", () => {
     expect(harness.dom.container.textContent).toContain("Deferred Work");
     expect(harness.dom.container.textContent).toContain("Build monitor");
     expect(harness.dom.container.textContent).toContain("Every 20m");
+    expect(harness.dom.container.textContent).toContain("Checkgh run view 123Unchanged");
+    expect(harness.dom.container.textContent).toContain("· exit 1");
     expect(harness.dom.container.textContent).toContain("Provider unavailable");
     // A defer that is still going shows why it is waiting or what its last check hit, as a warning.
     expect(harness.dom.container.textContent).toContain("All 32 live Copilot contexts are currently in use.");

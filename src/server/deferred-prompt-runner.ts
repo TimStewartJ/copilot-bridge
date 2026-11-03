@@ -139,6 +139,7 @@ export function createDeferredPromptRunner(
             const clientMessageId = chatMessageDeliveryClientId(id);
             await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, {
               completionAttention: true,
+              origin: "defer",
               ...(clientMessageId ? { clientMessageId } : {}),
             });
           }

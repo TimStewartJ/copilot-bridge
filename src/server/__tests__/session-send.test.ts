@@ -218,7 +218,7 @@ describe("session_send", () => {
       await vi.waitFor(() => expect(recoveredStore.get(DELIVERY_ID)?.status).toBe("completed"));
       expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledExactlyOnceWith(
         TARGET, "Continue the proposal.", undefined,
-        { completionAttention: true, clientMessageId: `session-send:${CALLER}:send-1` },
+        { completionAttention: true, origin: "defer", clientMessageId: `session-send:${CALLER}:send-1` },
       );
       expect(await call()).toMatchObject({ delivery: "accepted", deliveryId: DELIVERY_ID });
       expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce();

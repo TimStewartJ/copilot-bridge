@@ -16,13 +16,13 @@ function requiredProps() {
     selectedModelId: "",
     reasoningEffortOptions: [],
     contextOptions: [],
-    selectedPromptProfile: "engineer" as const,
+    playbooks: [],
     mode: "interactive" as const,
     onPresetChange: vi.fn(),
     onModelChange: vi.fn(),
     onReasoningEffortChange: vi.fn(),
     onContextTierChange: vi.fn(),
-    onPromptProfileChange: vi.fn(),
+    onPlaybookChange: vi.fn(),
     onModeChange: vi.fn(),
   };
 }
@@ -77,7 +77,7 @@ describe("NewSessionLaunchPanel", () => {
     const hiddenLabels = [...findAllByTag(container, "LABEL"), ...findAllByTag(container, "DIV")]
       .filter((element) => getReactProps(element)?.className === "sr-only")
       .map((element) => element.textContent);
-    expect(hiddenLabels).toEqual(["Agent", "Model", "Effort", "Context", "Profile", "Mode"]);
+    expect(hiddenLabels).toEqual(["Agent", "Playbook", "Model", "Effort", "Context", "Mode"]);
     const agentLabel = findAllByTag(container, "LABEL")[0];
     expect(getReactProps(agentLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
     const groupLabels = findAllByTag(container, "DIV")
@@ -87,32 +87,34 @@ describe("NewSessionLaunchPanel", () => {
       "Model presets",
       "Effort for new session",
       "Context for new session",
-      "Profile for new session",
       "Run mode for new session",
     ]);
-    for (const choice of ["Default Copilot agent", "GPT-5.6", "High", "Standard context", "Engineer", "Assistant", "Monitor", "Interactive", "Autopilot"]) {
+    for (const choice of ["Default Copilot agent", "GPT-5.6", "High", "Standard context", "Automatic playbook", "Interactive", "Autopilot"]) {
       expect(container.textContent).toContain(choice);
     }
   });
 
-  it("offers the three profiles and reports a choice", async () => {
-    const onPromptProfileChange = vi.fn();
+  it("lists playbooks by family with Direct, and reports Automatic as no choice", async () => {
+    const onPlaybookChange = vi.fn();
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
-      selectedPromptProfile: "assistant",
-      onPromptProfileChange,
+      playbooks: [
+        { id: "research", label: "Research", description: "Find out", family: "knowledge" as const, evidence: [], source: "bundled" as const },
+        { id: "bug-fix", label: "Bug fix", description: "Fix it", family: "code" as const, evidence: [], source: "bundled" as const },
+      ],
+      selectedPlaybook: "bug-fix",
+      onPlaybookChange,
     }));
-    const container = harness!.dom.container;
-    const profileGroup = findAllByTag(container, "DIV")
-      .find((element) => getReactProps(element)?.["aria-label"] === "Profile for new session");
-    const buttons = findAllByTag(profileGroup, "BUTTON");
-    expect(buttons.map((button) => button.textContent)).toEqual(["Engineer", "Assistant", "Monitor"]);
-    expect(buttons.map((button) => getReactProps(button)?.["aria-pressed"])).toEqual([false, true, false]);
+    const select = findAllByTag(harness!.dom.container, "SELECT")
+      .find((element) => getReactProps(element)?.id === "new-session-playbook");
+    expect(getReactProps(select)?.value).toBe("bug-fix");
+    expect(findAllByTag(select, "OPTGROUP").map((group) => getReactProps(group)?.label)).toEqual(["Code", "Knowledge work"]);
+    expect(findAllByTag(select, "OPTION").map((option) => getReactProps(option)?.value)).toEqual(["", "bug-fix", "research", "none"]);
 
     await harness!.act(() => {
-      getReactProps(buttons[2])?.onClick?.();
+      getReactProps(select)?.onChange?.({ target: { value: "" } });
     });
-    expect(onPromptProfileChange).toHaveBeenCalledWith("monitor");
+    expect(onPlaybookChange).toHaveBeenCalledWith(undefined);
   });
 
   it("starts the three presets with GPT, Claude, and Other defaults", async () => {

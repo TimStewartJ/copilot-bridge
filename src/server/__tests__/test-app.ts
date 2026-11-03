@@ -5,12 +5,17 @@
 // for every isolated test file. Only files that actually mount HTTP routes
 // should import from here; everything else uses ./helpers.ts.
 
+import { createSkillUsageStore } from "../skill-usage-store.js";
+import { createUnattendedRunStore } from "../unattended-run-store.js";
+import { createSkillPackManager } from "../skill-packs.js";
+import { createSkillCatalog } from "../skill-catalog.js";
 import express from "express";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createTaskStore } from "../task-store.js";
 import { createTaskHistoryStore } from "../task-history-store.js";
+import { createCompletionReportStore } from "../completion-report-store.js";
 import { createTaskAgentDefinitionStore } from "../task-agent-definition-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createScheduleStore } from "../schedule-store.js";
@@ -109,6 +114,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   const baseContext: Omit<AppContext, "voiceJobManager"> = {
     taskStore,
     taskHistoryStore: createTaskHistoryStore(db),
+    completionReportStore: createCompletionReportStore(db),
     taskAgentDefinitionStore,
     taskGroupStore,
     scheduleStore: createScheduleStore(db),
@@ -161,6 +167,16 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   });
   ctx.runtimePaths = runtimePaths;
   ctx.copilotHome ??= copilotHome;
+  ctx.skillUsageStore ??= createSkillUsageStore(db);
+  ctx.unattendedRunStore ??= createUnattendedRunStore(db);
+  ctx.skillPacks ??= createSkillPackManager({
+    dataDir: runtimePaths.dataDir,
+    getPacks: () => ctx.settingsStore.getSettings().skillPacks ?? [],
+  });
+  ctx.skillCatalog ??= createSkillCatalog({
+    getCopilotHome: () => ctx.copilotHome ?? copilotHome,
+    listPackRoots: () => ctx.skillPacks?.activeRoots(undefined, { ignoreTags: true }) ?? [],
+  });
   ctx.voiceJobManager ??= createVoiceJobManager({
     dataDir: runtimePaths.dataDir,
     store: createVoiceJobStore(db),

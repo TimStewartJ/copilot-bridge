@@ -1001,6 +1001,41 @@ function initSchema(db: DatabaseSync): void {
   addColumn("bridge_session_state", "promptProfile", "TEXT");
   addColumn("schedules", "promptProfile", "TEXT");
   addColumn("schedules", "modelTier", "TEXT");
+  // Playbooks replace prompt profiles: a chat's active playbook and who chose it, and the
+  // playbook a task or schedule pins for its chats. Monitor chats and schedules become Watch.
+  addColumn("bridge_session_state", "playbook", "TEXT");
+  addColumn("bridge_session_state", "playbookSource", "TEXT");
+  addColumn("schedules", "playbook", "TEXT");
+  addColumn("tasks", "playbook", "TEXT");
+  db.exec(`
+    UPDATE bridge_session_state SET playbook = 'watch', playbookSource = 'user'
+      WHERE promptProfile = 'monitor' AND playbook IS NULL;
+    UPDATE schedules SET playbook = 'watch' WHERE promptProfile = 'monitor' AND playbook IS NULL;
+    CREATE TABLE IF NOT EXISTS skill_usage (
+      skillName TEXT PRIMARY KEY,
+      useCount INTEGER NOT NULL DEFAULT 0,
+      lastUsedAt TEXT NOT NULL,
+      lastSessionId TEXT
+    );
+  `);
+  // What verify_complete recorded: the evidence a chat showed that its work was done.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS completion_reports (
+      id TEXT PRIMARY KEY,
+      sessionId TEXT NOT NULL,
+      taskId TEXT,
+      playbook TEXT,
+      playbookLabel TEXT,
+      status TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      evidenceJson TEXT NOT NULL,
+      unverifiedJson TEXT NOT NULL,
+      createdAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_completion_reports_session ON completion_reports(sessionId, createdAt);
+    CREATE INDEX IF NOT EXISTS idx_completion_reports_task ON completion_reports(taskId, createdAt);
+  `);
+  addColumn("completion_reports", "notesJson", "TEXT NOT NULL DEFAULT '[]'");
   // An event's ID in the calendar it was imported from, so a repeat import updates it in place.
   addColumn("calendar_events", "externalId", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");
@@ -1044,6 +1079,10 @@ function initSchema(db: DatabaseSync): void {
   );
   if (!deferLoopColumns.has("checkpoint")) {
     db.exec("ALTER TABLE defer_loops ADD COLUMN checkpoint TEXT");
+  }
+  // A recurring defer's check command and what its last run printed.
+  for (const column of ["checkSpec", "checkFingerprint", "checkOutput", "lastCheckAt", "lastCheckOutcome", "checkPending"]) {
+    if (!deferLoopColumns.has(column)) db.exec(`ALTER TABLE defer_loops ADD COLUMN ${column} TEXT`);
   }
 
   const backgroundCommandColumns = new Set(

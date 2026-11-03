@@ -92,6 +92,7 @@ vi.mock("./settings", () => {
       return null;
     },
     SystemPromptSection: EmptySection,
+    DeployGuardsSection: EmptySection,
     TagsSection: EmptySection,
     UpdatesSection: EmptySection,
     SpeechEngineSection: EmptySection,
@@ -106,6 +107,10 @@ vi.mock("./settings/McpServersSection", () => ({
 
 vi.mock("./settings/SkillsSection", () => ({
   SkillsSection: () => null,
+}));
+
+vi.mock("./settings/SkillPacksSection", () => ({
+  SkillPacksSection: () => null,
 }));
 
 vi.mock("./CopilotQuotaMenu", () => ({

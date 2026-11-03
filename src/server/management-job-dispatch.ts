@@ -1,5 +1,6 @@
 import { isToolErrorResult, getToolResultDisplayText } from "./tool-results.js";
 import { isRecord } from "../shared/is-record.js";
+import { parseDeployGuardSettings } from "./deploy-guards.js";
 import { runSelfUpdateJob } from "./self-update-job.js";
 import {
   runStagingDeployJob,
@@ -38,9 +39,12 @@ function stagingPreviewInput(value: unknown): StagingPreviewJobInput {
 
 function stagingDeployInput(value: unknown): StagingDeployJobInput {
   const record = asRecord(value);
+  // Invalid guards throw, so the job fails instead of deploying unchecked.
+  const deployGuards = parseDeployGuardSettings(record.deployGuards);
   return {
     stagingDir: String(record.stagingDir ?? ""),
     message: String(record.message ?? ""),
+    ...(deployGuards ? { deployGuards } : {}),
   };
 }
 

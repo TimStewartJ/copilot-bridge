@@ -51,14 +51,17 @@ import type { TaskStore } from "./task-store.js";
 import type { TaskAgentDefinitionStore } from "./task-agent-definition-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
-import type { SessionPromptProfileStore } from "./session-prompt-profile-store.js";
+import { resolveSessionPlaybook, toSessionPlaybookView, type SessionPlaybookStore } from "./session-playbook-store.js";
+import type { SkillCatalog } from "./skill-catalog.js";
+import type { UnattendedRunStore } from "./unattended-run-store.js";
+import type { SkillPackRoot } from "./skills-registry.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
-import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeContextBlock, type BridgeContextSectionName } from "./session-context-block.js";
-import { resolvePromptProfile, type PromptProfileId } from "../shared/prompt-profiles.js";
+import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeContextBlock, type BridgeContextSectionName, type PlaybookContext } from "./session-context-block.js";
+import { NO_PLAYBOOK, type PlaybookSource, type SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SendMode } from "../shared/send-mode.js";
 import { AUTOMATIC_ANSWERS, type AutomaticAnswerReason } from "../shared/automatic-answer.js";
-import { LEGACY_PROMPT_PROFILE, type PreviousRunReport } from "./prompt-profiles.js";
+import type { PreviousRunReport } from "./scheduled-run-report.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
 import type { ChatMessageIdStore } from "./chat-message-id-store.js";
@@ -568,7 +571,11 @@ export interface SessionManagerDeps {
   eventBusRegistry: EventBusRegistry;
   sessionTitles: SessionTitlesStore;
   sessionWorkspaceStore?: SessionWorkspaceStore;
-  sessionPromptProfileStore?: SessionPromptProfileStore;
+  sessionPlaybookStore?: SessionPlaybookStore;
+  skillCatalog?: Pick<SkillCatalog, "current" | "findPlaybook">;
+  skillPacks?: { activeRoots(taskTagNames?: readonly string[]): SkillPackRoot[] };
+  skillUsageStore?: { record(skillName: string, sessionId?: string): void };
+  unattendedRunStore?: Pick<UnattendedRunStore, "noteTurn" | "clear">;
   taskHistoryStore?: TaskHistoryStore;
   sessionMetaStore?: SessionMetaStore;
   interruptedRunStore?: Pick<InterruptedRunStore, "markAccepted" | "clear">;
@@ -649,7 +656,7 @@ export interface SessionConfigProfile {
    */
   expectedToolNames(bridgeToolNames: readonly string[]): readonly string[];
   /** Prompt choices for the ordinary config the profile starts from; they win over the chat's stored ones. */
-  configOptions?(): Pick<SessionConfigOptions, "promptProfile" | "promptRole" | "extraGuidance">;
+  configOptions?(): Pick<SessionConfigOptions, "promptRole" | "extraGuidance">;
   apply<T extends Record<string, unknown>>(config: T): T;
   /**
    * Reasoning effort for a turn that did not ask for one. Read at the start of each turn, so
@@ -752,7 +759,11 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     eventBusRegistry: ctx.eventBusRegistry,
     sessionTitles: ctx.sessionTitles,
     sessionWorkspaceStore: ctx.sessionWorkspaceStore,
-    sessionPromptProfileStore: ctx.sessionPromptProfileStore,
+    sessionPlaybookStore: ctx.sessionPlaybookStore,
+    skillCatalog: ctx.skillCatalog,
+    skillPacks: ctx.skillPacks,
+    skillUsageStore: ctx.skillUsageStore,
+    unattendedRunStore: ctx.unattendedRunStore,
     taskHistoryStore: ctx.taskHistoryStore,
     sessionMetaStore: ctx.sessionMetaStore,
     interruptedRunStore: ctx.interruptedRunStore,
@@ -1152,6 +1163,7 @@ export class SessionManager {
       unsentMessageStore: deps.unsentMessageStore,
       copilotHome: deps.copilotHome,
       modelDisplayName: (modelId) => this.modelMetadata?.find((model) => model.id === modelId)?.name,
+      onSkillUsed: (sessionId, skillName) => deps.skillUsageStore?.record(skillName, sessionId),
       isSessionBusy: (sessionId) => this.isSessionBusy(sessionId),
       hasPlan: (sessionId) => this.hasPlan(sessionId),
       getSessionStateDir: (sessionId) => this.getSessionStateDir(sessionId),
@@ -1334,7 +1346,7 @@ export class SessionManager {
     }
     this.mcpStatus.delete(sessionId);
     this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
-    this.deps.sessionPromptProfileStore?.clearPromptProfile(sessionId);
+    this.deps.sessionPlaybookStore?.clear(sessionId);
     this.deps.globalBus.emit({ type: "sessions:changed", sessionId });
   }
 
@@ -1371,7 +1383,8 @@ export class SessionManager {
     logMessage: (sessionId: string, duration: number) => string;
     cleanupLabel: string;
     launchContext?: SessionLaunchContext;
-    promptProfile?: PromptProfileId;
+    /** The playbook the chat starts with: the user's launch choice or its schedule's pin. */
+    playbook?: { playbook: string; source: PlaybookSource };
     onCreateStarting?: () => void;
   }): Promise<AgentSession> {
     const {
@@ -1406,9 +1419,8 @@ export class SessionManager {
         if (options.launchContext) {
           writeSessionLaunchContext(this.getSessionStateDir(session.sessionId), options.launchContext);
         }
-        // Pinned before the handle is cached so every resume rebuilds the same profile.
-        if (options.promptProfile) {
-          this.deps.sessionPromptProfileStore?.setPromptProfile(session.sessionId, options.promptProfile);
+        if (options.playbook) {
+          this.deps.sessionPlaybookStore?.set(session.sessionId, options.playbook.playbook, options.playbook.source);
         }
         await this.cacheSession(session.sessionId, session, sessionConfig, "create");
       } catch (error) {
@@ -2273,13 +2285,11 @@ export class SessionManager {
       launch = readSessionLaunchContext(directory);
     } catch { /* made again without its launch details */ }
     const persisted = this.readPersistedSessionModelState(sessionId);
-    const promptProfile = this.deps.sessionPromptProfileStore?.getPromptProfile(sessionId);
     const modelMetadata = this.modelMetadata;
     const build = (agent?: string) => this.buildSessionConfig({
       sessionId,
       task: this.findLinkedTask(sessionId),
       ...(launch.scheduleContext ? { scheduleContext: launch.scheduleContext } : {}),
-      ...(promptProfile ? { promptProfile } : {}),
       ...(persisted.model ? { modelOverride: persisted.model } : {}),
       ...(persisted.reasoningEffort ? { reasoningEffortOverride: persisted.reasoningEffort } : {}),
       ...(persisted.contextTier ? { contextTierOverride: persisted.contextTier } : {}),
@@ -2948,6 +2958,7 @@ export class SessionManager {
       callbacks: {
         resolveEffectiveSessionCwd: (cwdOpts) => this.resolveEffectiveSessionCwd(cwdOpts),
         getCopilotHome: () => this.getCopilotHome(),
+        isNeutralWorkspaceCwd: (cwd) => this.workspaceController.isNeutralWorkspaceCwd(cwd),
       },
     });
     return profile ? profile.apply(cfg) : cfg;
@@ -4680,7 +4691,8 @@ export class SessionManager {
     model?: string;
     reasoningEffort?: string;
     contextTier?: CopilotContextTier;
-    promptProfile?: PromptProfileId;
+    /** The user's launch choice: a playbook name, or NO_PLAYBOOK for the direct path. */
+    playbook?: string;
     expectedSessionId?: string;
     onCreateStarting?: () => void;
   } = {}): Promise<{ sessionId: string }> {
@@ -4698,13 +4710,11 @@ export class SessionManager {
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
-      const promptProfile = this.resolveNewSessionPromptProfile(options.promptProfile, bridgeSessionId);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
-        promptProfile,
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -4714,7 +4724,7 @@ export class SessionManager {
         sessionConfig,
         creationReservation,
         startedAt: t0,
-        promptProfile,
+        ...(options.playbook ? { playbook: { playbook: options.playbook, source: "user" as const } } : {}),
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
         cleanupLabel: "session",
@@ -4756,8 +4766,8 @@ export class SessionManager {
     const duration = Date.now() - t0;
     // Pin before the first resume so the fork starts in the source's effective workspace.
     this.persistSessionWorkspace(result.sessionId, sourceCwd);
-    const sourcePromptProfile = this.deps.sessionPromptProfileStore?.getPromptProfile(sourceSessionId);
-    if (sourcePromptProfile) this.deps.sessionPromptProfileStore?.setPromptProfile(result.sessionId, sourcePromptProfile);
+    const sourcePlaybook = this.deps.sessionPlaybookStore?.get(sourceSessionId);
+    if (sourcePlaybook) this.deps.sessionPlaybookStore?.set(result.sessionId, sourcePlaybook.playbook, sourcePlaybook.source);
     if (this.deps.bridgeToolsMcpServer && typeof backend.resumeSession === "function") {
       try {
         const forkResumeConfig = this.buildSessionConfig({
@@ -4773,7 +4783,7 @@ export class SessionManager {
         });
       } catch (error) {
         this.deps.sessionWorkspaceStore?.deleteWorkspace(result.sessionId);
-        this.deps.sessionPromptProfileStore?.clearPromptProfile(result.sessionId);
+        this.deps.sessionPlaybookStore?.clear(result.sessionId);
         try { await backend.deleteSession(result.sessionId); } catch { /* best-effort */ }
         throw error;
       }
@@ -4997,7 +5007,8 @@ export class SessionManager {
       model?: string;
       reasoningEffort?: string;
       contextTier?: CopilotContextTier;
-      promptProfile?: PromptProfileId;
+      /** The user's launch choice: a playbook name, or NO_PLAYBOOK for the direct path. */
+      playbook?: string;
       agent?: string;
       expectedSessionId?: string;
       onCreateStarting?: () => void;
@@ -5028,6 +5039,7 @@ export class SessionManager {
         cwd: fullTask?.cwd ?? cwd,
         notes: notes || "",
         instructions: fullTask?.instructions ?? "",
+        ...(fullTask?.playbook ? { playbook: fullTask.playbook } : {}),
         doneWhen: fullTask?.doneWhen,
         nextAction: fullTask?.nextAction,
         waitingOn: fullTask?.waitingOn,
@@ -5044,13 +5056,13 @@ export class SessionManager {
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
-      const promptProfile = this.resolveNewSessionPromptProfile(
-        options.promptProfile ?? scheduleContext?.promptProfile,
-        bridgeSessionId,
-        task,
-      );
-      // Only a Monitor run compares against the previous run, so only it reads that report.
-      const runScheduleContext = scheduleContext && promptProfile === "monitor"
+      const initialPlaybook = options.playbook
+        ? { playbook: options.playbook, source: "user" as const }
+        : scheduleContext?.playbook ? { playbook: scheduleContext.playbook, source: "schedule" as const } : undefined;
+      const effectivePlaybook = resolveSessionPlaybook(initialPlaybook, fullTask?.playbook);
+      // Only playbooks that compare runs (Watch, Sweep) read the previous run's report.
+      const comparesRuns = !!effectivePlaybook && this.deps.skillCatalog?.findPlaybook(effectivePlaybook.playbook)?.comparePrevious === true;
+      const runScheduleContext = scheduleContext && comparesRuns
         && scheduleContext.previousSessionId && !scheduleContext.previousRunReport
         ? {
           ...scheduleContext,
@@ -5060,7 +5072,6 @@ export class SessionManager {
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         task,
-        promptProfile,
         scheduleContext: runScheduleContext,
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
@@ -5084,7 +5095,7 @@ export class SessionManager {
           scheduleContext: runScheduleContext,
           ...(options.agent ? { agent: options.agent } : {}),
         },
-        promptProfile,
+        ...(initialPlaybook ? { playbook: initialPlaybook } : {}),
         onCreateStarting: options.onCreateStarting,
       });
       if (bridgeSessionId && (options.background || options.expectedSessionId)) {
@@ -5289,7 +5300,13 @@ export class SessionManager {
   }
 
   private noteUserPrompt(sessionId: string, options?: StartWorkOptions): void {
-    if (options?.promptSource === "system" || options?.attentionMode === "quiet") return;
+    try {
+      if (options?.origin) this.deps.unattendedRunStore?.noteTurn(sessionId, options.origin);
+      else if (options?.promptSource !== "system" && options?.attentionMode !== "quiet") this.deps.unattendedRunStore?.clear(sessionId);
+    } catch (error) {
+      console.warn(`[sdk] [${sessionId.slice(0, 8)}] Could not record unattended work:`, error instanceof Error ? error.message : error);
+    }
+    if (options?.origin || options?.promptSource === "system" || options?.attentionMode === "quiet") return;
     try {
       this.deps.onUserPrompt?.(sessionId);
     } catch (error) {
@@ -5629,7 +5646,15 @@ export class SessionManager {
     const profile = this.deps.resolveSessionProfile?.(sessionId);
     if (profile) return this.prepareProfileContext(sessionId, profile);
     const task = this.findLinkedTask(sessionId) ?? null;
-    const sections = buildBridgeContextSections(this.deps, task, this.lookupGroupNotes(task?.groupId));
+    const sections = buildBridgeContextSections(
+      this.deps,
+      task,
+      this.lookupGroupNotes(task?.groupId),
+      this.playbookContext(sessionId, task),
+      (this.deps.skillCatalog?.current() ?? [])
+        .filter((skill) => skill.kind === "playbook")
+        .map((skill) => ({ id: skill.id, ...(skill.label ? { label: skill.label } : {}), description: skill.description })),
+    );
     const delivered = this.deliveredTurnContext.get(sessionId) ?? { generation: 0, hashes: emptyBridgeContextHashes() };
     this.deliveredTurnContext.set(sessionId, delivered);
     const changed = sections.filter((section) => delivered.hashes.get(section.name) !== section.hash);
@@ -5720,45 +5745,55 @@ export class SessionManager {
     });
   }
 
+  private playbookContext(sessionId: string, task: Task | null): PlaybookContext | undefined {
+    const resolved = resolveSessionPlaybook(this.deps.sessionPlaybookStore?.get(sessionId), task?.playbook);
+    if (!resolved) return undefined;
+    const installed = resolved.playbook === NO_PLAYBOOK ? undefined : this.deps.skillCatalog?.findPlaybook(resolved.playbook);
+    const extensions = installed
+      ? (this.deps.skillCatalog?.current() ?? []).filter((skill) => skill.extends.includes(resolved.playbook)).map((skill) => skill.id)
+      : [];
+    return {
+      ...resolved,
+      ...(installed?.label ? { label: installed.label } : {}),
+      installed: resolved.playbook === NO_PLAYBOOK || !!installed,
+      extensions,
+    };
+  }
+
   /** The conversation may no longer contain the last block, so the next message resends everything. */
   resetTurnContext(sessionId: string): void {
     const current = this.deliveredTurnContext.get(sessionId);
     this.deliveredTurnContext.set(sessionId, { generation: (current?.generation ?? 0) + 1, hashes: emptyBridgeContextHashes() });
   }
 
-  /** A new chat's profile: the explicit choice, else the settings default for its working directory. */
-  private resolveNewSessionPromptProfile(
-    explicit: PromptProfileId | undefined,
-    sessionId: string | undefined,
-    task?: Pick<Task, "cwd"> | null,
-  ): PromptProfileId {
-    if (explicit) return explicit;
-    const cwd = this.resolveEffectiveSessionCwd({ sessionId, task });
-    return resolvePromptProfile({
-      defaultSetting: this.deps.settingsStore?.getSettings().promptProfile,
-      hasProjectFolder: !!cwd && !this.workspaceController.isNeutralWorkspaceCwd(cwd),
-    }).id;
-  }
-
-  /** Undefined for chats whose profile decides their prompt, such as Helm. */
-  getSessionPromptProfile(sessionId: string): PromptProfileId | undefined {
+  /** The playbook a chat follows and who chose it. Undefined for chats with their own instructions (Helm). */
+  getSessionPlaybook(sessionId: string): SessionPlaybookView | undefined {
     if (this.deps.resolveSessionProfile?.(sessionId)) return undefined;
-    return this.deps.sessionPromptProfileStore?.getPromptProfile(sessionId) ?? LEGACY_PROMPT_PROFILE;
+    const resolved = resolveSessionPlaybook(
+      this.deps.sessionPlaybookStore?.get(sessionId),
+      this.findLinkedTask(sessionId)?.playbook,
+    );
+    return toSessionPlaybookView(resolved, (name) => this.deps.skillCatalog?.findPlaybook(name)?.label);
   }
 
   /**
-   * Changes a chat's profile. The system prompt is rebuilt on resume, so the cached handle is
-   * evicted before this returns and the next turn starts with the new profile.
+   * Sets or clears a chat's playbook. It reaches the agent in the next message's bridge_context
+   * block, so the cached conversation is kept. Clearing returns the chat to its task's pin.
    */
-  async setSessionPromptProfile(sessionId: string, promptProfile: PromptProfileId): Promise<{ promptProfile: PromptProfileId }> {
-    const store = this.deps.sessionPromptProfileStore;
-    if (!store) throw new Error("Session profiles are not available");
+  async setSessionPlaybook(
+    sessionId: string,
+    playbook: string | null,
+    source: Extract<PlaybookSource, "user" | "agent">,
+  ): Promise<SessionPlaybookView> {
+    const store = this.deps.sessionPlaybookStore;
+    if (!store) throw new Error("Playbooks are not available");
     if (this.deps.resolveSessionProfile?.(sessionId)) {
-      throw new Error("This chat uses its own instructions, so profiles do not apply");
+      throw new Error("This chat uses its own instructions, so playbooks do not apply");
     }
-    if (this.isSessionBusy(sessionId)) throw new Error("Cannot change the profile of a busy session");
-    // Creation pins the launch profile; wait so this choice is not overwritten, and fail
-    // with the creation instead of storing a profile its cleanup would remove.
+    if (playbook !== null && playbook !== NO_PLAYBOOK && !this.deps.skillCatalog?.findPlaybook(playbook)) {
+      throw new Error(`Playbook "${playbook}" is not installed`);
+    }
+    // Creation stores the launch playbook; wait so this choice is not overwritten.
     const pendingCreation = this.pendingSessionCreations.get(sessionId);
     if (pendingCreation) {
       try {
@@ -5767,14 +5802,14 @@ export class SessionManager {
         throw new Error("Session not found: its creation failed");
       }
     }
-    await this.warmSessionPromises.get(sessionId)?.catch(() => undefined);
     const known = this.sessionObjects.has(sessionId)
       || await stat(this.getSessionStateDir(sessionId)).then(() => true, () => false);
     if (!known) throw new Error("Session not found");
-    if (this.isSessionBusy(sessionId)) throw new Error("Cannot change the profile of a busy session");
-    store.setPromptProfile(sessionId, promptProfile);
-    await this.evictCachedSession(sessionId, undefined, "prompt profile changed");
-    return { promptProfile };
+    if (playbook === null) store.clear(sessionId);
+    else store.set(sessionId, playbook, source);
+    const view = this.getSessionPlaybook(sessionId) ?? {};
+    this.deps.globalBus?.emit({ type: "session:playbook", sessionId, playbook: view });
+    return view;
   }
 
   /**

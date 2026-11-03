@@ -42,6 +42,7 @@ import TaskMomentumFields from "./TaskMomentumFields";
 import RevisitPrompt from "./RevisitPrompt";
 import TaskMomentumHistory from "./TaskMomentumHistory";
 import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "./TaskPanelSummaryRow";
+import TaskPlaybookRow from "./TaskPlaybookRow";
 import { describeTaskGitStatusSummary } from "../lib/task-git-status-summary";
 import { getTaskPanelDetailsExpanded, setTaskPanelDetailsExpanded } from "../task-panel-disclosure-state";
 import { TaskContextMenu } from "./task-list";
@@ -719,6 +720,7 @@ export default function TaskPanel({
                   icon={<ScrollText size={14} />}
                   emptyTitle="Add standing rules for agents"
                 />
+                <TaskPlaybookRow task={task} onTasksChanged={onTasksChanged} />
                 {hasNotesSummary && (
                   <TaskNotesSection
                     notes={task.notes || undefined}

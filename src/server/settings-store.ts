@@ -18,7 +18,15 @@ import {
 } from "../shared/model-presets.js";
 import { isRecord } from "../shared/is-record.js";
 import { isModelRole, isTierChoice, type ModelRoleChoice, type ModelRoles } from "../shared/model-roles.js";
-import { isPromptProfileSetting, type PromptProfileSetting } from "../shared/prompt-profiles.js";
+import {
+  MAX_SKILL_PACKS,
+  isAcceptableGitRef,
+  isAcceptableGitUrl,
+  isValidSkillPackId,
+  type SkillPackConfig,
+  type SkillPackSource,
+} from "../shared/skill-packs.js";
+import { isAbsolute } from "node:path";
 import {
   IMAGE_BUDGET_MAX_CEILING_MB,
   IMAGE_BUDGET_MODEL_PATTERN,
@@ -29,6 +37,7 @@ import {
   FUSION_CONTEXT_TOKENS_MIN,
   type ExperimentalSettings,
 } from "../shared/experimental-settings.js";
+import { parseDeployGuardSettings, type DeployGuardSettings } from "./deploy-guards.js";
 
 import {
   DEFAULT_RESPONSE_STYLE_GUIDANCE,
@@ -104,8 +113,8 @@ export interface AppSettings {
   identity?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
-  /** Default profile for new chats; unset is "auto". */
-  promptProfile?: PromptProfileSetting;
+  /** Skill sets added from git repositories or folders (Settings › Skills). */
+  skillPacks?: SkillPackConfig[];
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -131,6 +140,8 @@ export interface AppSettings {
   imageBudget?: ImageBudgetSettings;
   /** Opt-in features that may change or go away; unset is all off. */
   experimental?: ExperimentalSettings;
+  /** Checks staging_deploy runs before it merges; unset runs none. */
+  deployGuards?: DeployGuardSettings;
 }
 
 export type AppSettingsUpdates = Partial<AppSettings>;
@@ -351,6 +362,14 @@ function normalizeExperimentalSettings(value: unknown): ExperimentalSettings | u
     result.fusionContextTokens = tokens as number;
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizeDeployGuards(value: unknown): DeployGuardSettings | undefined {
+  try {
+    return parseDeployGuardSettings(value);
+  } catch (error) {
+    validationError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
@@ -666,6 +685,54 @@ function normalizeResponseStyle(value: unknown): ResponseStyleSettings | undefin
   return resolveResponseStyle({ detail, guidance: trimmed });
 }
 
+function normalizeSkillPacks(value: unknown): SkillPackConfig[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) validationError("skillPacks must be a list");
+  if (value.length > MAX_SKILL_PACKS) validationError(`skillPacks can hold at most ${MAX_SKILL_PACKS} packs`);
+  const seen = new Set<string>();
+  const packs = value.map((entry, index): SkillPackConfig => {
+    const at = `skillPacks[${index}]`;
+    if (!isRecord(entry)) validationError(`${at} must be an object`);
+    if (!isValidSkillPackId(entry.id)) validationError(`${at}.id must be lower-case letters, digits and hyphens`);
+    if (seen.has(entry.id)) validationError(`${at}.id "${entry.id}" is used twice`);
+    seen.add(entry.id);
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (!name || name.length > 80) validationError(`${at}.name must be 1 to 80 characters`);
+    const source = entry.source;
+    if (!isRecord(source)) validationError(`${at}.source must be an object`);
+    let normalizedSource: SkillPackSource;
+    if (source.kind === "git") {
+      const url = typeof source.url === "string" ? source.url.trim() : "";
+      if (!isAcceptableGitUrl(url)) validationError(`${at}.source.url must be an https, ssh or file git URL`);
+      const ref = typeof source.ref === "string" ? source.ref.trim() : "";
+      if (ref && !isAcceptableGitRef(ref)) validationError(`${at}.source.ref is not a valid branch or tag name`);
+      normalizedSource = { kind: "git", url, ...(ref ? { ref } : {}) };
+    } else if (source.kind === "folder") {
+      const path = typeof source.path === "string" ? source.path.trim() : "";
+      if (!path || !isAbsolute(path)) validationError(`${at}.source.path must be an absolute folder path`);
+      normalizedSource = { kind: "folder", path };
+    } else {
+      validationError(`${at}.source.kind must be git or folder`);
+    }
+    if (entry.enabled !== undefined && typeof entry.enabled !== "boolean") validationError(`${at}.enabled must be true or false`);
+    let tags: string[] | undefined;
+    if (entry.tags !== undefined && entry.tags !== null) {
+      if (!Array.isArray(entry.tags) || entry.tags.some((tag) => typeof tag !== "string")) {
+        validationError(`${at}.tags must be a list of tag names`);
+      }
+      tags = [...new Set((entry.tags as string[]).map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    }
+    return {
+      id: entry.id,
+      name,
+      source: normalizedSource,
+      ...(entry.enabled === false ? { enabled: false } : {}),
+      ...(tags?.length ? { tags } : {}),
+    };
+  });
+  return packs.length > 0 ? packs : undefined;
+}
+
 function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if (!isRecord(value)) validationError("settings must be an object");
   const normalized = structuredClone(base);
@@ -678,16 +745,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
     normalized.customInstructions = normalizeOptionalString(value.customInstructions, "customInstructions");
   }
   if ("responseStyle" in value) normalized.responseStyle = normalizeResponseStyle(value.responseStyle);
-  if ("promptProfile" in value) {
-    const promptProfile = value.promptProfile;
-    if (promptProfile === undefined || promptProfile === null || promptProfile === "") {
-      delete normalized.promptProfile;
-    } else if (isPromptProfileSetting(promptProfile)) {
-      normalized.promptProfile = promptProfile;
-    } else {
-      validationError("promptProfile must be auto, engineer, assistant, or monitor");
-    }
-  }
+  if ("skillPacks" in value) normalized.skillPacks = normalizeSkillPacks(value.skillPacks);
   if ("model" in value) {
     normalized.model = normalizeOptionalString(value.model, "model", { trim: true, emptyAsUndefined: true });
   }
@@ -723,6 +781,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
   if ("experimental" in value) normalized.experimental = normalizeExperimentalSettings(value.experimental);
+  if ("deployGuards" in value) normalized.deployGuards = normalizeDeployGuards(value.deployGuards);
   // Like every other settings object, a write sends the whole role map; a missing role is Automatic.
   if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
   reconcileModelRoles(base, normalized, value);

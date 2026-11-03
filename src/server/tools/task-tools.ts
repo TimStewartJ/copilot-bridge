@@ -128,7 +128,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_update", {
-    description: "Update a task's title, kind, muted state, priority, instructions, notes, working directory, group, definition of done, and/or tags. Only provided fields are changed. Instructions hold standing rules for every session of the task; notes hold the current state of the work; record what happened with task_history_add instead. Task completion and archival are controlled by the UI.",
+    description: "Update a task's title, kind, muted state, priority, instructions, notes, working directory, group, definition of done, pinned playbook, and/or tags. Only provided fields are changed. Instructions hold standing rules for every session of the task; notes hold the current state of the work; record what happened with task_history_add instead. Task completion and archival are controlled by the UI.",
     parameters: {
       type: "object",
       properties: {
@@ -142,6 +142,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Task group ID to assign to. Empty string or null ungroups the task." },
         doneWhen: { anyOf: [{ type: "string" }, { type: "null" }], description: "Definition of done for this task. Null clears it." },
+        playbook: { anyOf: [{ type: "string" }, { type: "null" }], description: "Playbook (skill name) every chat of this task follows unless the user or a chat picks another. Pin one only when the user asks or the task is plainly one kind of work. Null clears it." },
         tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." },
       },
       required: ["taskId"],
@@ -163,8 +164,14 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (args.cwd !== undefined) updates.cwd = args.cwd;
       if (args.groupId !== undefined) updates.groupId = args.groupId;
       if (args.doneWhen !== undefined) updates.doneWhen = args.doneWhen;
+      if (args.playbook !== undefined) {
+        if (args.playbook !== null && args.playbook !== "" && !ctx.skillCatalog?.findPlaybook(args.playbook)) {
+          return toolFailure(`"${args.playbook}" is not an installed playbook`);
+        }
+        updates.playbook = args.playbook;
+      }
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, instructions, notes, cwd, groupId, doneWhen, tags");
+      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, instructions, notes, cwd, groupId, doneWhen, playbook, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       let tagStore: TagStore | undefined;

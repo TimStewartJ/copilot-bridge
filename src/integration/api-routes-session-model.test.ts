@@ -47,12 +47,12 @@ describe("GET /api/sessions/:id/model route", () => {
           reasoningEffort: "high",
           source: "events" as const,
         }),
-        getSessionPromptProfile: () => "engineer",
+        getSessionPlaybook: () => ({ playbook: "bug-fix", source: "agent", label: "Bug fix" }),
       } as any,
     });
     const res = await request(app).get(`/api/sessions/${sessionId}/model`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events", promptProfile: "engineer" });
+    expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events", playbook: { playbook: "bug-fix", source: "agent", label: "Bug fix" } });
   });
 
   it("answers for a chat still being created once it is made, not with guesses", async () => {
@@ -64,11 +64,11 @@ describe("GET /api/sessions/:id/model route", () => {
         getSessionModelState: async () => (created
           ? { model: "model-picked", source: "live" as const }
           : { source: "unknown" as const }),
-        getSessionPromptProfile: () => (created ? "assistant" : "engineer"),
+        getSessionPlaybook: () => (created ? { playbook: "research", source: "user", label: "Research" } : {}),
       } as any,
     });
     const res = await request(app).get(`/api/sessions/${sessionId}/model`);
-    expect(res.body).toEqual({ model: "model-picked", source: "live", promptProfile: "assistant" });
+    expect(res.body).toEqual({ model: "model-picked", source: "live", playbook: { playbook: "research", source: "user", label: "Research" } });
   });
 
   it("returns 500 on internal error", async () => {

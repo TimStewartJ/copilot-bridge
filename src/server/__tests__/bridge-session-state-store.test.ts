@@ -25,19 +25,19 @@ describe("bridge session state store", () => {
     expect(store.getState("session-1")).toBeUndefined();
   });
 
-  it("keeps a chat's profile through other clears and prunes the row once it is the last field", () => {
+  it("keeps a chat's playbook through other clears and prunes the row once it is the last field", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
 
-    store.setPromptProfile("session-1", "monitor");
+    store.setPlaybook("session-1", "watch", "schedule");
     store.setTitleOverride("session-1", "Manual title");
     store.clearAllTitleOverrides();
     store.setPinnedCwd("session-1", "/repo");
     store.clearPinnedCwd("session-1");
-    expect(store.getState("session-1")?.promptProfile).toBe("monitor");
+    expect(store.getState("session-1")).toMatchObject({ playbook: "watch", playbookSource: "schedule" });
 
-    store.setPromptProfile("session-1", "assistant");
-    expect(store.getState("session-1")?.promptProfile).toBe("assistant");
-    store.clearPromptProfile("session-1");
+    store.setPlaybook("session-1", "research", "user");
+    expect(store.getState("session-1")).toMatchObject({ playbook: "research", playbookSource: "user" });
+    store.clearPlaybook("session-1");
     expect(store.getState("session-1")).toBeUndefined();
   });
 

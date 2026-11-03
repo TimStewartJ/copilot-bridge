@@ -4,11 +4,14 @@ import type { BackgroundAgentsSummary, DeferSummary } from "./api";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
+import type { SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 
 export type StatusEvent =
   | { type: "session:busy" | "session:stalled" | "session:idle"; sessionId?: string }
   | { type: "session:mode"; sessionId?: string; agentMode?: SendMode }
   | { type: "session:title"; sessionId?: string; title?: string }
+  | { type: "session:playbook"; sessionId?: string; playbook?: SessionPlaybookView }
+  | { type: "skills:changed" }
   | { type: "session:intent"; sessionId?: string; intent?: string }
   | { type: "session:archived"; sessionId?: string; sessionIds?: string[]; archived?: boolean }
   | { type: "session:agents"; sessionId?: string; backgroundAgents?: BackgroundAgentsSummary }

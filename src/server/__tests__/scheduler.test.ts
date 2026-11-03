@@ -186,7 +186,7 @@ describe("scheduler restart gating", () => {
       name: "Restart gated schedule",
       modelTier: "preset2",
     });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now", undefined, { origin: "schedule" });
   });
 
   it("uses the persisted cron slot for delayed cron triggers and watchdog dedupe", async () => {
@@ -306,7 +306,7 @@ describe("scheduler restart gating", () => {
     expect(result).toEqual({ sessionId: "new-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
     expect(sessionManager.isSessionBusy).not.toHaveBeenCalledWith("last-session");
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("new-session", "continue work");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("new-session", "continue work", undefined, { origin: "schedule" });
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("new-session");
     expect(ctx.sessionMetaStore.getMeta("new-session")).toMatchObject({
       triggeredBy: "schedule",
@@ -516,7 +516,7 @@ describe("scheduler restart gating", () => {
 
     expect(result).toEqual({ sessionId: "sched-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now", undefined, { origin: "schedule" });
   });
 
   it("keeps the cron cursor off slots skipped as too soon so the next allowed slot runs", async () => {
@@ -618,8 +618,8 @@ describe("scheduler restart gating", () => {
       scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: olderSlot }),
     ).resolves.toEqual({ sessionId: "slot-a-session" });
 
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenNthCalledWith(1, "slot-b-session", "run now");
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenNthCalledWith(2, "slot-a-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenNthCalledWith(1, "slot-b-session", "run now", undefined, { origin: "schedule" });
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenNthCalledWith(2, "slot-a-session", "run now", undefined, { origin: "schedule" });
   });
 
   it("skips disabled automatic schedules while still allowing manual trigger", async () => {
@@ -660,7 +660,7 @@ describe("scheduler restart gating", () => {
       scheduler.triggerSchedule(schedule.id, { source: "manual" }),
     ).resolves.toEqual({ sessionId: "sched-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now", undefined, { origin: "schedule" });
   });
 
   it("skips automatic runs that are already claimed for the same slot", async () => {
@@ -733,7 +733,7 @@ describe("scheduler restart gating", () => {
       await scheduler.triggerSchedule(schedule.id, { source: "once", scheduledFor: runAt }),
     ).toEqual({ sessionId: "fresh-one-shot-session" });
     expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("fresh-one-shot-session", "continue work");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("fresh-one-shot-session", "continue work", undefined, { origin: "schedule" });
   });
 
   it("re-arms a one-shot timer after a transient max-concurrent skip and emits schedule changes", async () => {
@@ -805,7 +805,7 @@ describe("scheduler restart gating", () => {
 
     await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-3", "run once");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-3", "run once", undefined, { origin: "schedule" });
     unsubscribe();
   });
 
@@ -885,7 +885,7 @@ describe("scheduler restart gating", () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(2);
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("retried-cron-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("retried-cron-session", "run now", undefined, { origin: "schedule" });
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.runCount).toBe(1);
   });
 
@@ -934,7 +934,7 @@ describe("scheduler restart gating", () => {
     await expect(
       scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: slot }),
     ).resolves.toEqual({ sessionId: "sched-session-2" });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-2", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session-2", "run now", undefined, { origin: "schedule" });
   });
 
   it("records a scheduled run only after asynchronous prompt delivery is accepted", async () => {
@@ -1146,7 +1146,7 @@ describe("scheduler restart gating", () => {
     const result = await scheduler.triggerSchedule(schedule.id, { source: "cron", scheduledFor: slot });
 
     expect(result).toEqual({ skipped: "This scheduled slot is already being processed" });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now", undefined, { origin: "schedule" });
     expect(sessionManager.abortSession).toHaveBeenCalledWith("sched-session");
     expect(sessionManager.deleteSession).toHaveBeenCalledWith("sched-session");
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).not.toContain("sched-session");
@@ -1230,7 +1230,7 @@ describe("scheduler startup recovery", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("one-shot-session", "run later");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("one-shot-session", "run later", undefined, { origin: "schedule" });
   });
 
   it("persists nextRunAt and uses the cursor for supported zero-second six-field crons", () => {
@@ -1339,7 +1339,7 @@ describe("scheduler startup recovery", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await scheduler.waitForMissedRunCatchUpForTests();
     expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("late-one-shot", "catch up late one-shot", undefined, { origin: "schedule" });
   });
 
   it("does not fire a one-shot scheduled beyond Node's max timeout until its real deadline", async () => {
@@ -1390,7 +1390,7 @@ describe("scheduler startup recovery", () => {
     await vi.waitFor(() => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("far-future-one-shot", "run far in the future");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("far-future-one-shot", "run far in the future", undefined, { origin: "schedule" });
   });
 
   it("retries a one-shot timer in-process after a transient pre-launch failure or after linkSession fails", async () => {
@@ -1436,7 +1436,7 @@ describe("scheduler startup recovery", () => {
 
       await vi.advanceTimersByTimeAsync(30_000);
       expect(sessionManager.createTaskSession, "pre-launch: retried").toHaveBeenCalledTimes(2);
-      expect(sessionManager.startWorkAndWaitForDelivery, "pre-launch: started on retry").toHaveBeenCalledWith("retried-one-shot-session", "run after retry");
+      expect(sessionManager.startWorkAndWaitForDelivery, "pre-launch: started on retry").toHaveBeenCalledWith("retried-one-shot-session", "run after retry", undefined, { origin: "schedule" });
 
       vi.useRealTimers();
     }
@@ -1483,7 +1483,7 @@ describe("scheduler startup recovery", () => {
 
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.waitFor(() => { expect(sessionManager.createTaskSession, "link-fail: retried").toHaveBeenCalledTimes(2); });
-      expect(sessionManager.startWorkAndWaitForDelivery, "link-fail: started on retry").toHaveBeenCalledWith("link-fail-session-2", "run after link retry");
+      expect(sessionManager.startWorkAndWaitForDelivery, "link-fail: started on retry").toHaveBeenCalledWith("link-fail-session-2", "run after link retry", undefined, { origin: "schedule" });
       linkSpy.mockRestore();
 
       vi.useRealTimers();
@@ -1638,7 +1638,7 @@ describe("scheduler startup recovery", () => {
     await vi.waitFor(() => {
       expect(sessionManager.createTaskSession).toHaveBeenCalledTimes(1);
     });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("watchdog-catch-up", "catch up from watchdog");
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("watchdog-catch-up", "catch up from watchdog", undefined, { origin: "schedule" });
     expect(ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({
       runCount: 2,
       lastSessionId: "watchdog-catch-up",

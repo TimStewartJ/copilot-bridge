@@ -7,6 +7,13 @@ import {
   serializeDeferCheckpoint,
   type DeferCheckpoint,
 } from "./defer-checkpoint.js";
+import {
+  parseDeferCheckSpecJson,
+  type DeferCheckOutcome,
+  type DeferCheckOutput,
+  type DeferCheckResult,
+  type DeferCheckSpec,
+} from "./defer-check.js";
 import { toIntervalDeferId } from "./defer-ids.js";
 import { normalizeDeferSummary } from "./defer-summary.js";
 import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
@@ -37,6 +44,23 @@ export interface DeferLoop {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  /** Command run each interval; the worker starts only when its output changes. */
+  check?: DeferCheckSpec;
+  /** The check's last settled result: the baseline the next check is compared with. */
+  lastCheck?: DeferLoopLastCheck;
+  /** A changed result waiting for its worker. */
+  checkPending?: DeferLoopPendingCheck;
+}
+
+export interface DeferLoopLastCheck {
+  at: string;
+  outcome: DeferCheckOutcome;
+  fingerprint?: string;
+  output?: DeferCheckOutput;
+}
+
+export interface DeferLoopPendingCheck extends DeferCheckResult {
+  at: string;
 }
 
 export interface DeferLoopCreate {
@@ -47,6 +71,7 @@ export interface DeferLoopCreate {
   nextRunAt: string;
   maxRuns?: number;
   expiresAt?: string;
+  check?: DeferCheckSpec;
 }
 
 export type DeferLoopOccurrenceStatus = "active" | "completed" | "expired";
@@ -69,8 +94,8 @@ export function createDeferLoopStore(db: DatabaseSync) {
   const insertRow = db.prepare(`
     INSERT INTO defer_loops
       (id, sessionId, name, prompt, intervalSeconds, nextRunAt, status, runCount,
-       maxRuns, expiresAt, attempts, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, 0, ?, ?)
+       maxRuns, expiresAt, attempts, createdAt, updatedAt, checkSpec)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, 0, ?, ?, ?)
   `);
 
   const selectById = db.prepare("SELECT * FROM defer_loops WHERE id = ?");
@@ -154,7 +179,17 @@ export function createDeferLoopStore(db: DatabaseSync) {
         claimToken = NULL,
         leaseExpiresAt = NULL,
         lastError = ?,
+        checkFingerprint = COALESCE(?, checkFingerprint),
+        checkOutput = COALESCE(?, checkOutput),
+        lastCheckAt = COALESCE(?, lastCheckAt),
+        lastCheckOutcome = COALESCE(?, lastCheckOutcome),
+        checkPending = NULL,
         updatedAt = ?
+    WHERE id = ? AND status = 'running' AND claimToken = ?
+  `);
+  const savePendingCheckStmt = db.prepare(`
+    UPDATE defer_loops
+    SET checkPending = ?, updatedAt = ?
     WHERE id = ? AND status = 'running' AND claimToken = ?
   `);
   const reactivateStmt = db.prepare(`
@@ -214,6 +249,37 @@ export function createDeferLoopStore(db: DatabaseSync) {
       createdAt: raw.createdAt,
       updatedAt: raw.updatedAt,
       lastError: raw.lastError ?? undefined,
+      ...checkFields(raw),
+    };
+  }
+
+  function parseJson<T>(json: string | null | undefined): T | undefined {
+    if (!json) return undefined;
+    try {
+      return JSON.parse(json) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function checkFields(raw: any): Pick<DeferLoop, "check" | "lastCheck" | "checkPending"> {
+    const check = raw.checkSpec ? parseDeferCheckSpecJson(raw.checkSpec) : undefined;
+    if (!check) return {};
+    const output = parseJson<DeferCheckOutput>(raw.checkOutput);
+    const checkPending = parseJson<DeferLoopPendingCheck>(raw.checkPending);
+    return {
+      check,
+      ...(raw.lastCheckAt && raw.lastCheckOutcome
+        ? {
+            lastCheck: {
+              at: raw.lastCheckAt,
+              outcome: raw.lastCheckOutcome as DeferCheckOutcome,
+              ...(raw.checkFingerprint ? { fingerprint: raw.checkFingerprint } : {}),
+              ...(output ? { output } : {}),
+            },
+          }
+        : {}),
+      ...(checkPending ? { checkPending } : {}),
     };
   }
 
@@ -231,6 +297,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
       input.expiresAt ?? null,
       now,
       now,
+      input.check ? JSON.stringify(input.check) : null,
     );
     return toRow(selectById.get(id));
   }
@@ -319,6 +386,8 @@ export function createDeferLoopStore(db: DatabaseSync) {
       delivery?: DeferredResultDelivery;
       checkpoint?: DeferCheckpoint;
       error?: string;
+      /** The check result this occurrence settles; becomes the baseline for the next check. */
+      check?: { result: DeferCheckResult; at: string; outcome: DeferCheckOutcome };
     } = {},
   ): DeferLoop | undefined {
     db.exec("BEGIN IMMEDIATE");
@@ -341,6 +410,16 @@ export function createDeferLoopStore(db: DatabaseSync) {
           : serializeDeferCheckpoint(options.checkpoint),
         error,
         error,
+        options.check?.result.fingerprint ?? null,
+        options.check
+          ? JSON.stringify({
+              exitCode: options.check.result.exitCode,
+              stdout: options.check.result.stdout,
+              stderr: options.check.result.stderr,
+            } satisfies DeferCheckOutput)
+          : null,
+        options.check?.at ?? null,
+        options.check?.outcome ?? null,
         now,
         id,
         claimToken,
@@ -356,6 +435,12 @@ export function createDeferLoopStore(db: DatabaseSync) {
       db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** Keep a changed check result for the worker that will be started for it. False when the claim was lost. */
+  function savePendingCheck(id: string, claimToken: string, pending: DeferLoopPendingCheck): boolean {
+    const result = savePendingCheckStmt.run(JSON.stringify(pending), new Date().toISOString(), id, claimToken);
+    return (result as any).changes > 0;
   }
 
   /** End a loop that is not running (run limit or expiry reached) and queue its final message for the chat. */
@@ -451,6 +536,7 @@ export function createDeferLoopStore(db: DatabaseSync) {
     release,
     noteWait,
     settleOccurrence,
+    savePendingCheck,
     markTerminalWithMessage,
     reactivate,
     cancelById,

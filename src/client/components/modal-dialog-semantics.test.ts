@@ -354,7 +354,7 @@ describe("SessionList change-model dialog", () => {
       const dialogs = findDialogElements(harness.dom.container);
       expect(dialogs).toHaveLength(1);
       expect(dialogs[0].getAttribute("aria-modal")).toBe("true");
-      expect(resolveAccessibleName(harness.dom.container, dialogs[0])).toBe("Change model and profile");
+      expect(resolveAccessibleName(harness.dom.container, dialogs[0])).toBe("Change model");
 
       await harness.act(async () => {
         keyEventDom.dispatchKeyDown("Escape");

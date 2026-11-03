@@ -3,6 +3,7 @@ import type { TranscriptAgentDirectory } from "../../shared/transcript-agents.js
 import type { ChatRenderSegment } from "./tool-call-tree";
 import { getOwnToolCallStatus, getToolCallStatus, type ToolCallStatus } from "./tool-call-status";
 import { isSettledAskUserCall } from "./ask-user-record";
+import { isRecordedCompletionCall } from "./verification-record";
 
 /**
  * Work done between two things the agent said: its thinking and its tool calls, in order, and what
@@ -46,9 +47,17 @@ export interface QuestionBlock {
   toolCall: ToolCall;
 }
 
+/** A recorded `verify_complete` report, lifted out of the steps so it reads as the work's outcome. */
+export interface VerificationBlock {
+  type: "verification";
+  key: string;
+  toolCall: ToolCall;
+}
+
 export type ChatRenderBlock =
   | ActivityBlock
   | QuestionBlock
+  | VerificationBlock
   | Exclude<ChatRenderSegment, { type: "tool-segment" } | { type: "reasoning-segment" }>;
 
 export interface GroupActivityOptions {
@@ -210,7 +219,10 @@ export function groupActivitySegments(
       .filter((toolCall) => isSettledAskUserCall(toolCall, options.includeUnfinishedQuestions === true))
       .map((toolCall) => toolCall.toolCallId),
   );
-  const emittedQuestionIds = new Set<string>();
+  const verificationIds = new Set(
+    [...latestToolCalls.values()].filter(isRecordedCompletionCall).map((toolCall) => toolCall.toolCallId),
+  );
+  const emittedLiftedIds = new Set<string>();
 
   /** The call that launched the agent the main agent delegated to, however deep `toolCall` is. */
   const topLevelAgentOf = (toolCall: ToolCall): string => {
@@ -259,23 +271,24 @@ export function groupActivitySegments(
     }
     if (segment.type === "tool-segment") {
       if (segment.entries.length === 0) return;
-      if (questionIds.size === 0) {
+      if (questionIds.size === 0 && verificationIds.size === 0) {
         pushTools(segment.entries, index, segment);
         return;
       }
       let pending: ChatToolEntry[] = [];
       for (const entry of segment.entries) {
         const id = entry.toolCall.toolCallId;
-        if (!questionIds.has(id)) {
+        const lifted = questionIds.has(id) ? "question" : verificationIds.has(id) ? "verification" : undefined;
+        if (!lifted) {
           pending.push(entry);
           continue;
         }
-        if (emittedQuestionIds.has(id)) continue;
-        emittedQuestionIds.add(id);
+        if (emittedLiftedIds.has(id)) continue;
+        emittedLiftedIds.add(id);
         pushTools(pending, index, segment);
         pending = [];
         flush();
-        blocks.push({ type: "question", key: `question:${id}`, toolCall: latestToolCalls.get(id) ?? entry.toolCall });
+        blocks.push({ type: lifted, key: `${lifted}:${id}`, toolCall: latestToolCalls.get(id) ?? entry.toolCall });
       }
       pushTools(pending, index, segment);
       return;

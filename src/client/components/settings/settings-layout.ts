@@ -5,6 +5,7 @@ export type CategoryId =
   | "appearance"
   | "device"
   | "integrations"
+  | "skills"
   | "tags"
   | "voice"
   | "system"
@@ -24,6 +25,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   { id: "appearance", label: "Appearance", group: "preferences" },
   { id: "device", label: "Notifications & device", group: "preferences" },
   { id: "integrations", label: "Integrations", group: "connections" },
+  { id: "skills", label: "Skills & playbooks", group: "connections" },
   { id: "tags", label: "Tags", group: "connections" },
   { id: "voice", label: "Voice", group: "connections" },
   { id: "system", label: "System", group: "host" },

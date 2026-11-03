@@ -15,6 +15,7 @@ import { useTaskOutcomes } from "../hooks/useTaskOutcomes";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import { useIsMobile } from "../useIsMobile";
 import HomeWeekStrip from "../calendar/HomeWeekStrip";
+import HomeUnattendedRuns from "../components/HomeUnattendedRuns";
 import {
   actOnItem, formatAgo, formatCredits, formatClock, formatDuration, itemFeedback, thinkNow, undoHandled, updateHelmMemory, useHelmBrief, useInvalidateHelm,
 } from "./thinker-api";
@@ -122,6 +123,8 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
         <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home?view=classic")}>See them</Button>
         {!data.running && <Button variant="ghost" size="sm" onClick={() => void think()}>Think again</Button>}
       </div>}
+
+      <HomeUnattendedRuns onSelectSession={onSelectSession} />
 
       {!data ? <EmptyHint>{query.error ? "Helm's brief is unavailable." : "Loading Helm's brief…"}</EmptyHint>
         : !brief ? <Section label="Helm hasn't written a brief yet" level="page" surface>
