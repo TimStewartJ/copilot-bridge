@@ -175,7 +175,9 @@ describe("Helm tools", () => {
   it("reads a reply without marking it read, and marks it when Helm tells the user", async () => {
     const { ctx } = createContext();
     const facade = createFacade();
-    await tool(ctx, facade, "read_session").run({ session: "tellus" });
+    const unread = await tool(ctx, facade, "list_sessions").run({ filter: "unread" });
+    expect(unread.sessions.map((entry: { ref: string }) => entry.ref)).toEqual(["aaaaaaaa"]);
+    await tool(ctx, facade, "read_session").run({ session: unread.sessions[0].ref });
     expect(facade.marked).toEqual([]);
     const result = await tool(ctx, facade, "read_session").run({ session: "tellus", history: 5, markRead: true });
     expect(result.latestReply).toBe("Fixed the quantization bug and added tests.");
