@@ -1165,8 +1165,10 @@ describe("defer-loop-runner check commands", () => {
     new HostExecError({ message: `Command failed with exit code ${code}`, code }, stdout, "");
 
   beforeEach(() => {
-    // With no PATH the Windows lookup has nothing to search, so the name reaches the start as written on any host.
-    vi.stubEnv("PATH", "");
+    // A Windows worker can have both Path and PATH; neither should start real file lookups under fake timers.
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase() === "PATH") vi.stubEnv(key, "");
+    }
   });
 
   afterEach(() => {
