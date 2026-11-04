@@ -233,6 +233,20 @@ describe("outbound attachments", () => {
     expect(readFileSync(join(outgoingDir(home), "notes.md"), "utf-8")).toBe("# Notes\n\nHello there.\n");
   });
 
+  it("rejects invalid HTML inputs before creating an outgoing directory", () => {
+    const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
+    tempDirs.push(home);
+
+    for (const displayName of ["page.html", "page.HtM/"]) {
+      const result = publishOutboundAttachment({ copilotHome: home, sessionId, displayName, content: "<p>Page</p>" });
+      expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/path/i) });
+    }
+    for (const sourcePath of [home, join(home, "missing.html")]) {
+      expect(publishOutboundAttachment({ copilotHome: home, sessionId, sourcePath, displayName: "page.html" }).ok).toBe(false);
+    }
+    expect(existsSync(outgoingDir(home))).toBe(false);
+  });
+
   it("deduplicates outgoing filenames", () => {
     const home = mkdtempSync(join(tmpdir(), "bridge-outgoing-"));
     tempDirs.push(home);

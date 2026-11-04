@@ -23,13 +23,14 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
       "Send the user a file. The chat shows images, Markdown, text and code, CSV, HTML, PDF, audio and video " +
       "as a preview the user can open and read in place; any file can be downloaded, and other formats only that. " +
       "Use this when the user asks you to send them a file, export, image, report, or other artifact. " +
-      "Provide exactly one of `path` or `content`. When using `path`, absolute paths work best and relative paths resolve from the bridge repository root. " +
+      "Provide exactly one of `path` or `content`. For HTML (.html or .htm), save the file and send its `path`, not its contents. To share an update, edit that file and send its path again; earlier copies stay unchanged. " +
+      "When using `path`, absolute paths work best and relative paths resolve from the bridge repository root. " +
       "After calling this tool, put the returned `markdown` snippet verbatim in your next assistant response, in a paragraph of its own, so the file appears in chat.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute or repository-relative path of an existing file to publish." },
-        content: { type: "string", description: "UTF-8 text content to write into a new attachment file." },
+        content: { type: "string", description: "UTF-8 text for a non-HTML attachment. For HTML files, use path." },
         displayName: { type: "string", description: "Optional filename to show the user. Required when using content." },
       },
     },

@@ -27,7 +27,6 @@ export const HTML_MIME_TYPE = "text/html";
  */
 export const HTML_SANDBOX_CSP =
   "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
-export const MAX_HTML_SOURCE_BYTES = 1_048_576; // 1 MB
 
 const MIME_TO_EXT: Record<string, string> = {
   "image/png": "png",
@@ -125,18 +124,18 @@ export interface PublishMermaidInput {
 
 export interface PublishedVisualArtifact {
   artifactId: string;
-  kind: "image" | "mermaid" | "vega-lite" | "html";
+  kind: "image" | "mermaid" | "vega-lite";
   title: string;
   displayName: string;
   mimeType: string;
   size: number;
-  /** URL for inline rendering (image) or source retrieval (mermaid/vega-lite/html) */
+  /** URL for inline rendering (image) or source retrieval (mermaid/vega-lite) */
   url: string;
   downloadUrl: string;
   metaUrl: string;
   caption?: string;
   altText?: string;
-  /** Mermaid/Vega-Lite/HTML source text (mermaid, vega-lite, and html kinds only) */
+  /** Source text for Mermaid and Vega-Lite visuals */
   source?: string;
 }
 
@@ -573,87 +572,5 @@ export function publishVegaLiteArtifact(input: PublishVegaLiteInput): Result<Pub
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return err(`Failed to publish Vega-Lite artifact: ${message}`);
-  }
-}
-
-export interface PublishHtmlInput {
-  copilotHome: string;
-  sessionId?: string;
-  owner?: VisualArtifactOwner;
-  title: string;
-  /** Plain text HTML content */
-  content: string;
-  displayName?: string;
-  caption?: string;
-  apiBasePath?: string;
-}
-
-export function publishHtmlArtifact(input: PublishHtmlInput): Result<PublishedVisualArtifact> {
-  const ownerResult = normalizeOwner(input);
-  if (!ownerResult.ok) return err(ownerResult.error);
-  const owner = ownerResult.value;
-
-  const title = input.title?.trim() ?? "";
-  if (!title) return err("title is required");
-
-  const content = typeof input.content === "string" ? input.content : "";
-  if (!content.trim()) return err("HTML content must not be empty");
-
-  const contentBytes = Buffer.byteLength(content, "utf-8");
-  if (contentBytes > MAX_HTML_SOURCE_BYTES) {
-    return err(`HTML content exceeds the ${(MAX_HTML_SOURCE_BYTES / (1024 * 1024)).toLocaleString()} MB size limit`);
-  }
-
-  const displayName = (typeof input.displayName === "string" && input.displayName.trim())
-    ? input.displayName.trim()
-    : `${title.replace(/[^a-z0-9_-]/gi, "_")}.html`;
-
-  const visualsDir = getVisualsDir(input.copilotHome, owner);
-
-  try {
-    mkdirSync(visualsDir, { recursive: true });
-
-    const artifactId = randomUUID();
-    const filePath = artifactFilePath(visualsDir, artifactId, "html");
-    const metaPath = artifactMetaPath(visualsDir, artifactId);
-
-    if (!isPathAtOrUnder(visualsDir, filePath)) {
-      return err("Artifact path is unsafe");
-    }
-
-    writeFileSync(filePath, content, "utf-8");
-    const size = Buffer.byteLength(content, "utf-8");
-
-    const meta: VisualArtifactMeta = {
-      artifactId,
-      kind: "html",
-      title,
-      displayName,
-      mimeType: HTML_MIME_TYPE,
-      size,
-      ext: "html",
-      source: content,
-      ...(input.caption?.trim() ? { caption: input.caption.trim() } : {}),
-      createdAt: new Date().toISOString(),
-    };
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf-8");
-
-    const apiBase = normalizeApiBase(input.apiBasePath);
-    return ok({
-      artifactId,
-      kind: "html",
-      title,
-      displayName,
-      mimeType: HTML_MIME_TYPE,
-      size,
-      url: buildVisualUrl(apiBase, owner, artifactId, ""),
-      downloadUrl: buildVisualUrl(apiBase, owner, artifactId, "/download"),
-      metaUrl: buildVisualUrl(apiBase, owner, artifactId, "/meta"),
-      source: content,
-      ...(meta.caption ? { caption: meta.caption } : {}),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return err(`Failed to publish HTML artifact: ${message}`);
   }
 }

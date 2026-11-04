@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { err, ok, type Result } from "./tool-results.js";
 import { isPathAtOrUnder } from "./path-utils.js";
@@ -77,15 +77,12 @@ function sanitizeAttachmentName(name: string): string {
   return safe;
 }
 
-function deduplicateFilename(dir: string, name: string): string {
-  const safe = sanitizeAttachmentName(name);
-  if (!existsSync(join(dir, safe))) return safe;
-  const dot = safe.lastIndexOf(".");
-  const stem = dot > 0 ? safe.slice(0, dot) : safe;
-  const ext = dot > 0 ? safe.slice(dot) : "";
-  let i = 1;
-  while (existsSync(join(dir, `${stem} (${i})${ext}`))) i++;
-  return `${stem} (${i})${ext}`;
+function numberedFilename(name: string, index: number): string {
+  if (index === 0) return name;
+  const dot = name.lastIndexOf(".");
+  return dot > 0
+    ? `${name.slice(0, dot)} (${index})${name.slice(dot)}`
+    : `${name} (${index})`;
 }
 
 export function inferOutboundAttachmentMimeType(fileName: string): string {
@@ -176,37 +173,41 @@ export function publishOutboundAttachment(input: PublishOutboundAttachmentInput)
     return err("displayName is required when content is provided");
   }
 
+  const name = sanitizeAttachmentName(requestedName);
+  if (hasContent && inferOutboundAttachmentMimeType(name) === MIME_TYPES_BY_EXTENSION.html) {
+    return err("Save the HTML to a file and send its path instead of content.");
+  }
+
   const outgoingDir = getOutboundAttachmentDir(input.copilotHome, input.sessionId);
   try {
+    if (hasSourcePath) {
+      const sourceStat = statSync(sourcePath, { throwIfNoEntry: false });
+      if (!sourceStat) return err(`Attachment path not found: ${sourcePath}`);
+      if (!sourceStat.isFile()) return err(`Attachment path is not a file: ${sourcePath}`);
+    }
     mkdirSync(outgoingDir, { recursive: true });
 
-    const storedName = deduplicateFilename(outgoingDir, requestedName);
-    const filePath = join(outgoingDir, storedName);
-    if (!isPathAtOrUnder(outgoingDir, filePath)) {
-      return err("Attachment filename is unsafe");
+    for (let index = 0; ; index++) {
+      const storedName = numberedFilename(name, index);
+      const filePath = join(outgoingDir, storedName);
+      if (!isPathAtOrUnder(outgoingDir, filePath)) return err("Attachment filename is unsafe");
+      try {
+        if (hasSourcePath) copyFileSync(sourcePath, filePath, constants.COPYFILE_EXCL);
+        else writeFileSync(filePath, input.content ?? "", { encoding: "utf-8", flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw error;
+      }
+      const mimeType = inferOutboundAttachmentMimeType(storedName);
+      return ok({
+        attachmentId: storedName,
+        displayName: storedName,
+        mimeType,
+        size: statSync(filePath).size,
+        filePath,
+        inline: isInlineRenderableAttachment(mimeType),
+      });
     }
-
-    if (hasSourcePath) {
-      if (!existsSync(sourcePath)) return err(`Attachment path not found: ${sourcePath}`);
-      const sourceStat = statSync(sourcePath);
-      if (!sourceStat.isFile()) return err(`Attachment path is not a file: ${sourcePath}`);
-      copyFileSync(sourcePath, filePath);
-    } else {
-      writeFileSync(filePath, input.content ?? "", "utf-8");
-    }
-
-    const { size } = statSync(filePath);
-    const mimeType = inferOutboundAttachmentMimeType(storedName);
-    const attachmentId = storedName;
-
-    return ok({
-      attachmentId,
-      displayName: storedName,
-      mimeType,
-      size,
-      filePath,
-      inline: isInlineRenderableAttachment(mimeType),
-    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return err(`Failed to publish attachment: ${message}`);

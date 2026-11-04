@@ -6,12 +6,10 @@ import {
   ALLOWED_IMAGE_MIME_TYPES,
   HTML_MIME_TYPE,
   MERMAID_MIME_TYPE,
-  MAX_HTML_SOURCE_BYTES,
   MAX_MERMAID_SOURCE_CHARS,
   isAllowedImageMime,
   isCanonicalArtifactId,
   loadVisualArtifactMetaForOwner,
-  publishHtmlArtifact,
   publishMermaidArtifact,
   publishVisualArtifact,
   resolveVisualArtifactForOwner,
@@ -222,6 +220,25 @@ describe("resolveVisualArtifactForOwner", () => {
     expect(unsafe.ok ? "" : unsafe.error).toContain("path is unsafe");
   });
 
+  it("opens HTML saved by the earlier visual publisher", () => {
+    const copilotHome = makeTmpDir();
+    const owner = sessionVisualOwner(SESSION_ID);
+    const artifactId = "550e8400-e29b-41d4-a716-446655440000";
+    const dir = join(copilotHome, "session-state", SESSION_ID, "files", "visuals");
+    const source = "<button>Previous page</button>";
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${artifactId}.html`), source);
+    writeFileSync(join(dir, `${artifactId}.meta.json`), JSON.stringify({
+      artifactId, kind: "html", title: "Earlier page", displayName: "page.html", mimeType: "text/html",
+      size: Buffer.byteLength(source), ext: "html", source, createdAt: "2026-01-01T00:00:00Z",
+    }));
+
+    const resolved = resolveVisualArtifactForOwner(copilotHome, owner, artifactId);
+    if (!resolved.ok) throw new Error(resolved.error);
+    expect(resolved.value.mimeType).toBe(HTML_MIME_TYPE);
+    expect(readFileSync(resolved.value.filePath, "utf-8")).toBe(source);
+  });
+
   it("returns error for non-existent artifact", () => {
     const copilotHome = makeTmpDir();
     const result = resolveVisualArtifactForOwner(
@@ -363,87 +380,6 @@ describe("publishMermaidArtifact", () => {
     if (!resolved.ok) return;
     expect(resolved.value.mimeType).toBe(MERMAID_MIME_TYPE);
     expect(resolved.value.displayName).toMatch(/\.mmd$/);
-  });
-
-});
-
-describe("publishHtmlArtifact", () => {
-  const tempDirs: string[] = [];
-
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  function makeTmpDir() {
-    const dir = mkdtempSync(join(tmpdir(), "bridge-html-test-"));
-    tempDirs.push(dir);
-    return dir;
-  }
-
-  it("publishes an HTML artifact and returns structured artifact", () => {
-    const copilotHome = makeTmpDir();
-    const content = "<html><body><h1>Hello</h1></body></html>";
-
-    const result = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "My Page",
-      content,
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.kind).toBe("html");
-    expect(result.value.title).toBe("My Page");
-    expect(result.value.mimeType).toBe(HTML_MIME_TYPE);
-    expect(result.value.source).toBe(content);
-    expect(result.value.size).toBeGreaterThan(0);
-    expect(result.value.url).toMatch(/\/visuals\//);
-    expect(result.value.downloadUrl).toMatch(/\/download/);
-    expect(result.value.metaUrl).toMatch(/\/meta/);
-    expect(isCanonicalArtifactId(result.value.artifactId)).toBe(true);
-  });
-
-  it("rejects empty content, oversized content, invalid sessionIds, and empty titles", () => {
-    const copilotHome = makeTmpDir();
-    const content = "<html></html>";
-    const cases: [Record<string, unknown>, RegExp][] = [
-      [{ copilotHome, sessionId: SESSION_ID, title: "Empty", content: "   " }, /empty/i],
-      [{ copilotHome, sessionId: SESSION_ID, title: "Huge", content: "A".repeat(MAX_HTML_SOURCE_BYTES + 1) }, /size limit|MB/i],
-      [{ copilotHome, sessionId: "bad-id", title: "T", content }, /sessionId/],
-      [{ copilotHome, sessionId: SESSION_ID, title: "   ", content }, /title/],
-    ];
-    for (const [input, expected] of cases) {
-      const result = publishHtmlArtifact(input as any);
-      expect(result.ok).toBe(false);
-      expect((result as any).error).toMatch(expected);
-    }
-  });
-
-  it("resolves a published HTML artifact via resolveVisualArtifactForOwner", () => {
-    const copilotHome = makeTmpDir();
-    const content = "<html><body>Hello</body></html>";
-
-    const published = publishHtmlArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Hello Page",
-      content,
-    });
-    expect(published.ok).toBe(true);
-    if (!published.ok) return;
-
-    const resolved = resolveVisualArtifactForOwner(
-      copilotHome,
-      sessionVisualOwner(SESSION_ID),
-      published.value.artifactId,
-    );
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.value.mimeType).toBe(HTML_MIME_TYPE);
-    expect(resolved.value.displayName).toMatch(/\.html$/);
   });
 
 });

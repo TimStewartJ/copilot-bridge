@@ -5,7 +5,6 @@ import { inferOutboundAttachmentMimeType } from "../outbound-attachments.js";
 import { resolvePublishableAttachmentSourcePath } from "../session-formatting.js";
 import { err, ok, type Result } from "../tool-results.js";
 import {
-  publishHtmlArtifact,
   publishMermaidArtifact,
   publishVegaLiteArtifact,
   publishVisualArtifact,
@@ -14,14 +13,9 @@ import {
 } from "../visual-artifacts.js";
 import { BRIDGE_TOOLS_REPO_ROOT, getAttachmentApiBasePath } from "./helpers.js";
 
-/**
- * Schema fragments for the visual payload this module publishes. `publish_visual`
- * and `feed_save` both feed `publishVisualFromToolArgs`, so they must declare the
- * same accepted shapes — a Vega-Lite spec may be a JSON string or an object.
- */
 export const VISUAL_KIND_SCHEMA = {
   type: "string" as const,
-  enum: ["image", "mermaid", "vega-lite", "html"],
+  enum: ["image", "mermaid", "vega-lite"],
 };
 
 export const VISUAL_CONTENT_TYPE_SCHEMA = {
@@ -44,9 +38,7 @@ export function visualPublishedToolResult(artifact: PublishedVisualArtifact) {
     ? "Mermaid diagram"
     : artifact.kind === "vega-lite"
       ? "Vega-Lite chart"
-      : artifact.kind === "html"
-        ? "HTML sandbox"
-        : "Visual artifact";
+      : "Visual artifact";
   return {
     __kind: "visual.published",
     success: true,
@@ -88,8 +80,8 @@ export async function publishVisualFromToolArgs(
   owner: VisualArtifactOwner,
   defaultTitle?: string,
 ): Promise<Result<PublishedVisualArtifact>> {
-  if (args.kind !== "image" && args.kind !== "mermaid" && args.kind !== "vega-lite" && args.kind !== "html") {
-    return err("kind must be \"image\", \"mermaid\", \"vega-lite\", or \"html\"");
+  if (args.kind !== "image" && args.kind !== "mermaid" && args.kind !== "vega-lite") {
+    return err("kind must be \"image\", \"mermaid\", or \"vega-lite\"");
   }
 
   const copilotHome = ctx.copilotHome ?? join(homedir(), ".copilot");
@@ -117,13 +109,6 @@ export async function publishVisualFromToolArgs(
       spec: typeof args.content === "string"
         ? args.content
         : (args.content !== null && typeof args.content === "object" ? args.content : ""),
-    });
-  }
-
-  if (args.kind === "html") {
-    return publishHtmlArtifact({
-      ...common,
-      content: typeof args.content === "string" ? args.content : "",
     });
   }
 

@@ -633,8 +633,10 @@ describe("Attachment routes", () => {
   it("GET /api/sessions/:id/attachments/:attachmentId serves a web page for the chat's frame only under the sandbox policy", async () => {
     const copilotHome = makeTestDir("route-home");
     const { app: attachmentApp } = createTestApp({ copilotHome });
-    for (const displayName of ["page.html", "logo.svg"]) {
-      const published = publishOutboundAttachment({ copilotHome, sessionId, content: "<script>alert(1)</script>", displayName });
+    for (const name of ["page.html", "logo.svg"]) {
+      const sourcePath = join(copilotHome, name);
+      writeFileSync(sourcePath, "<script>alert(1)</script>");
+      const published = publishOutboundAttachment({ copilotHome, sessionId, sourcePath });
       if (!published.ok) throw new Error(published.error);
     }
     const base = `/api/sessions/${sessionId}/attachments`;

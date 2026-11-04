@@ -118,13 +118,10 @@ describe("publish_visual tool", () => {
     const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
-    const result = await tool.handler(
-      { kind: "svg", title: "T", content: "", mimeType: "image/svg+xml" },
-      createInvocation(),
-    );
-
-    expect(String((result as any).textResultForLlm)).toContain("Invalid arguments for publish_visual");
-    expect(String((result as any).textResultForLlm)).toContain("kind must be one of");
+    for (const kind of ["svg", "html"]) {
+      const result = await tool.handler({ kind, title: "Page", content: "<p>Preview</p>" }, createInvocation());
+      expect(result).toMatchObject({ resultType: "failure", textResultForLlm: expect.stringMatching(/kind must be one of/) });
+    }
   });
 
   it("publishes a mermaid diagram and returns structured visual result", async () => {
@@ -333,78 +330,5 @@ describe("publish_visual tool", () => {
     );
 
     expect(result.success).toBe(true);
-  });
-});
-
-describe("publish_visual tool — html", () => {
-  const tempDirs: string[] = [];
-
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  function makeTmpDir() {
-    const dir = mkdtempSync(join(tmpdir(), "bridge-pub-html-"));
-    tempDirs.push(dir);
-    return dir;
-  }
-
-  it("publishes an HTML sandbox and returns structured visual result", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result: any = await tool.handler(
-      { kind: "html", title: "My Page", content: "<html><body><h1>Hello</h1></body></html>" },
-      createInvocation(),
-    );
-
-    expect(result.success).toBe(true);
-    expect(result.__kind).toBe("visual.published");
-    expect(result.kind).toBe("html");
-    expect(result.title).toBe("My Page");
-    expect(result.mimeType).toBe("text/html");
-    expect(result.source).toBeUndefined();
-    expect(result.message).toBeUndefined();
-    expect(result.content).toBe('HTML sandbox "My Page" published as a visual card.');
-    expect(result.url).toMatch(/\/visuals\//);
-    expect(result.downloadUrl).toMatch(/\/download/);
-    expect(typeof result.artifactId).toBe("string");
-    expect(result.artifactId).toMatch(/^[0-9a-f-]{36}$/i);
-  });
-
-  it("returns toolFailure for HTML with empty content", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result = await tool.handler(
-      { kind: "html", title: "Empty", content: "   " },
-      createInvocation(),
-    );
-
-    expect((result as any).resultType).toBe("failure");
-    expect((result as any).textResultForLlm).toMatch(/empty/i);
-  });
-
-  it("returns toolFailure for HTML with content exceeding the size limit", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const bigContent = "A".repeat(1_048_577); // > 1 MB
-
-    const result = await tool.handler(
-      { kind: "html", title: "Huge", content: bigContent },
-      createInvocation(),
-    );
-
-    expect((result as any).resultType).toBe("failure");
-    expect((result as any).textResultForLlm).toMatch(/size limit|MB/i);
   });
 });
