@@ -271,7 +271,8 @@ describe("HelmView", () => {
     expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.["data-setup"])).toBe(true);
   });
 
-  it("resets without deleting, and takes hands-free along to the new conversation", async () => {
+  it.each([false, true])("starts fresh from the header, keeping history and hands-free (phone: %s)", async (phone) => {
+    device.phone = phone;
     const current = conversation({});
     state.helm = helmState({ current });
     handsFree.active = true;
@@ -280,7 +281,8 @@ describe("HelmView", () => {
     api.createHelmConversation.mockResolvedValue(conversation({ sessionId: SESSION_B, turnCount: 0, title: null }));
     await render();
 
-    const reset = findButton(harness.dom.container, (buttonProps) => buttonProps["aria-label"] === "New conversation");
+    const header = findAllByTag(harness.dom.container, "HEADER")[0];
+    const reset = findButton(header, (buttonProps) => buttonProps["aria-label"] === (phone ? "New Helm chat" : "New conversation"));
     await harness.act(() => reset.onClick());
     await waitUntilAct(harness.act, () => handsFree.sessionId === SESSION_B);
 
@@ -309,17 +311,39 @@ describe("HelmView", () => {
     expect(findAllByTag(harness.dom.container, "DIV").some((div) => getReactProps(div)?.role === "alert")).toBe(false);
   });
 
-  it("sends a suggestion straight to Helm", async () => {
-    state.helm = helmState({ current: conversation({ turnCount: 0, title: null }) });
-    api.sendChatMessage.mockResolvedValue({ status: "accepted" });
+  it("marks the chosen starter until delivery, ignores repeat taps, and allows retry after refusal", async () => {
+    state.helm = helmState({ resumable: conversation({}) });
+    let finishCreating!: (value: HelmConversation) => void;
+    api.createHelmConversation.mockReturnValueOnce(new Promise<HelmConversation>((resolve) => { finishCreating = resolve; }));
+    let refuseSend!: (reason: Error) => void;
+    api.sendChatMessage.mockReturnValueOnce(new Promise<void>((_resolve, reject) => { refuseSend = reject; }))
+      .mockResolvedValueOnce({ status: "accepted" });
     await render();
-    const suggestion = findButton(harness.dom.container, (_props, text) => text === "What needs me right now?");
-    await harness.act(() => suggestion.onClick());
-    expect(api.sendChatMessage).toHaveBeenCalledWith(SESSION_A, "What needs me right now?", undefined, undefined, { waitForDelivery: true });
+    const prompt = "What needs me right now?";
+    const starter = () => findButton(harness.dom.container, (_props, text) => text.startsWith(prompt));
+    const other = () => findButton(harness.dom.container, (_props, text) => text.startsWith("What's running"));
+    await harness.act(() => { starter().onClick(); other().onClick(); });
+    expect(starter()).toMatchObject({ disabled: true, "aria-busy": true });
+    expect(other().disabled).toBe(true);
+    expect(findButton(harness.dom.container, (_props, text) => text.includes("Pick up where you left off")).disabled).toBe(true);
+    expect(state.chatViewProps!.newWorkDisabled).toBe(true);
+
+    await harness.act(() => finishCreating(conversation({ sessionId: SESSION_B, turnCount: 0 })));
+    expect(api.sendChatMessage).toHaveBeenCalledExactlyOnceWith(SESSION_B, prompt, undefined, undefined, { waitForDelivery: true });
+    expect(starter()["aria-busy"]).toBe(true);
+    await harness.act(() => refuseSend(new Error("Delivery refused")));
+    const alert = findAllByTag(harness.dom.container, "DIV").find((div) => getReactProps(div)?.role === "alert");
+    expect(alert?.textContent).toContain("Delivery refused");
+    expect(starter().disabled).toBe(false);
+    expect(state.chatViewProps!.newWorkDisabled).toBe(false);
+
+    await harness.act(() => starter().onClick());
+    expect(api.createHelmConversation).toHaveBeenCalledOnce();
+    expect(api.sendChatMessage).toHaveBeenLastCalledWith(SESSION_B, prompt, undefined, undefined, { waitForDelivery: true });
     expect(props.onMessageSent).toHaveBeenCalledOnce();
   });
 
-  it("on a phone, names the conversation in one line and moves its controls and status line into the menu", async () => {
+  it("on a phone, names the conversation in one line and keeps history and the status line in the menu", async () => {
     device.phone = true;
     const current = conversation({});
     state.helm = helmState({ current, recent: [conversation({ sessionId: SESSION_B })] });

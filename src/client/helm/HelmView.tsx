@@ -1,8 +1,8 @@
 // Helm: Bridge's orchestration manager. One conversation you can type to like any chat or
 // talk to hands-free, inside the normal app layout. The chat view, composer, drafts, chat mic,
 // model switcher and hands-free switch are the same ones every chat uses; Helm adds the header and
-// the conversation lifecycle (new, resume, keep, delete). On a phone the header is one line, and
-// the conversation's controls, its status line and Helm's links open from its menu.
+// the conversation lifecycle (new, resume, keep, delete). On a phone the header keeps New beside
+// the menu; the other controls, the status line and Helm's links open from the menu.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -57,7 +57,7 @@ export const HELM_DRAFT_COMPOSER_KEY = "draft:helm";
 const SUGGESTIONS = [
   "What needs me right now?",
   "What's running, and how is it going?",
-  "Summarize my unread replies",
+  "Review my oldest open Bridge tasks and help me close them out",
   "Tidy up: archive finished sessions I've already read",
 ];
 
@@ -191,12 +191,14 @@ function HelmWelcome({
   resumable,
   resuming,
   disabled,
+  pendingSuggestion,
   onResume,
   onSuggestion,
 }: {
   resumable: HelmConversation | null;
   resuming: boolean;
   disabled: boolean;
+  pendingSuggestion: string | null;
   onResume(conversation: HelmConversation): void;
   onSuggestion(prompt: string): void;
 }) {
@@ -212,7 +214,7 @@ function HelmWelcome({
           <button
             type="button"
             onClick={() => onResume(resumable)}
-            disabled={resuming}
+            disabled={resuming || disabled}
             className={cx(DS.row.base, DS.row.interactive, DS.choice.selected, DS.row.selected, "mt-5 w-full gap-3 border text-left disabled:opacity-60", DS.row.touch)}
           >
             {resuming ? <Loader2 size={16} className="shrink-0 animate-spin text-accent" /> : <RotateCcw size={16} aria-hidden="true" className="shrink-0 text-accent" />}
@@ -224,18 +226,26 @@ function HelmWelcome({
           </button>
         )}
         <div className="mt-5 grid gap-2 sm:grid-cols-2">
-          {SUGGESTIONS.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              onClick={() => onSuggestion(prompt)}
-              disabled={disabled}
-              className={cx(DS.row.stacked, DS.surface.inset, "disabled:opacity-50")}
-            >
-              {prompt}
-            </button>
-          ))}
+          {SUGGESTIONS.map((prompt) => {
+            const sending = pendingSuggestion === prompt;
+            return (
+              <button
+                key={prompt}
+                type="button"
+                onClick={() => onSuggestion(prompt)}
+                disabled={disabled}
+                aria-busy={sending || undefined}
+                className={cx(DS.row.stacked, sending ? cx("border", DS.choice.selected) : cx(DS.surface.inset, "disabled:opacity-50"))}
+              >
+                {prompt}
+                {sending && <span aria-hidden="true" className={cx(DS.text.sectionLabel, "mt-1 flex items-center gap-1.5")}>
+                  <StatusIcon kind="working" decorative />Sending to Helm…
+                </span>}
+              </button>
+            );
+          })}
         </div>
+        <span role="status" className="sr-only">{pendingSuggestion && `Sending to Helm: ${pendingSuggestion}`}</span>
       </div>
     </div>
   );
@@ -266,6 +276,8 @@ export default function HelmView({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
+  const [pendingSuggestion, setPendingSuggestion] = useState<string | null>(null);
+  const suggestionInFlight = useRef(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const creatingRef = useRef<Promise<HelmConversation> | null>(null);
   const phone = useIsMobile();
@@ -415,6 +427,9 @@ export default function HelmView({
   }, [ensureConversation, readDraft, releaseDraft, restoreDraft]);
 
   const handleSuggestion = useCallback(async (prompt: string) => {
+    if (suggestionInFlight.current) return;
+    suggestionInFlight.current = true;
+    setPendingSuggestion(prompt);
     setActionError(null);
     try {
       const target = await ensureConversation();
@@ -422,6 +437,9 @@ export default function HelmView({
       handleMessageSent();
     } catch (error) {
       reportError(error);
+    } finally {
+      suggestionInFlight.current = false;
+      setPendingSuggestion(null);
     }
   }, [ensureConversation, handleMessageSent]);
 
@@ -432,15 +450,19 @@ export default function HelmView({
   }, [ensureConversation, startBackgroundVoiceJob]);
 
   const showResumable = !current || current.turnCount === 0;
+  const sendingSuggestion = pendingSuggestion !== null;
+  const newWorkDisabled = switching || sendingSuggestion || helmQuery.isLoading;
+  const newChatDisabled = newWorkDisabled || showResumable;
   const emptyState = useMemo(() => (
     <HelmWelcome
       resumable={showResumable ? state?.resumable ?? state?.recent.find((entry) => entry.turnCount > 0) ?? null : null}
       resuming={pendingId !== null || switching}
-      disabled={switching}
+      disabled={newWorkDisabled}
+      pendingSuggestion={pendingSuggestion}
       onResume={handleResume}
-      onSuggestion={(prompt) => void handleSuggestion(prompt)}
+      onSuggestion={handleSuggestion}
     />
-  ), [handleResume, handleSuggestion, pendingId, showResumable, state?.recent, state?.resumable, switching]);
+  ), [handleResume, handleSuggestion, newWorkDisabled, pendingId, pendingSuggestion, showResumable, state?.recent, state?.resumable, switching]);
 
   const subtitle = current
     ? current.turnCount > 0 ? `${conversationLabel(current)} · ${describeConversation(current)}` : "New conversation"
@@ -458,6 +480,14 @@ export default function HelmView({
             <div className="truncate text-sm font-medium text-text-primary">{conversationTitle}</div>
             {conversationMeta && <div className="truncate text-xs tabular-nums text-text-muted">{conversationMeta}</div>}
           </div>
+          <IconButton
+            label="New Helm chat"
+            title="Start a new conversation. This one stays in history."
+            disabled={newChatDisabled}
+            onClick={() => void handleNewConversation()}
+          >
+            {switching && pendingId === null ? <StatusIcon kind="working" /> : <MessageSquarePlus size={18} aria-hidden="true" />}
+          </IconButton>
           <IconButton
             label={statusLineProblem ? "Helm menu, something needs a look" : "Helm menu"}
             aria-haspopup="dialog"
@@ -480,7 +510,7 @@ export default function HelmView({
           <button
             type="button"
             onClick={() => void handleNewConversation()}
-            disabled={switching || !current || current.turnCount === 0}
+            disabled={newChatDisabled}
             title="Start a new conversation. This one stays in history."
             aria-label="New conversation"
             className={HEADER_BUTTON}
@@ -488,7 +518,7 @@ export default function HelmView({
             {switching ? <Loader2 size={15} className="animate-spin" /> : <MessageSquarePlus size={15} />}
             <span className="hidden lg:inline">New</span>
           </button>
-          <button type="button" onClick={() => setHistoryOpen(true)} aria-label="Recent conversations" title="Recent conversations" className={HEADER_BUTTON}>
+          <button type="button" disabled={sendingSuggestion} onClick={() => setHistoryOpen(true)} aria-label="Recent conversations" title="Recent conversations" className={HEADER_BUTTON}>
             <History size={15} />
             {state && state.recent.length > 0 && <span className="tabular-nums text-text-faint">{state.recent.length}</span>}
           </button>
@@ -562,8 +592,8 @@ export default function HelmView({
         reloadToken={sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0}
         busySignal={sessionId ? sessionBusySignals[sessionId] ?? 0 : 0}
         historySignal={sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0}
-        newWorkDisabled={switching || helmQuery.isLoading}
-        newWorkDisabledHint={switching ? "Switching conversations…" : undefined}
+        newWorkDisabled={newWorkDisabled}
+        newWorkDisabledHint={sendingSuggestion ? "Sending to Helm…" : switching ? "Switching conversations…" : undefined}
         composerAccessory={chatHandsFree.accessory}
         composerTool={chatHandsFree.composerTool ?? undefined}
         hideVoiceInput={handsFree.active}
@@ -582,17 +612,7 @@ export default function HelmView({
           <button
             type="button"
             className={DS.menu.item}
-            disabled={switching || !current || current.turnCount === 0}
-            onClick={() => {
-              setMenuOpen(false);
-              void handleNewConversation();
-            }}
-          >
-            <MessageSquarePlus size={16} aria-hidden="true" />New conversation
-          </button>
-          <button
-            type="button"
-            className={DS.menu.item}
+            disabled={sendingSuggestion}
             onClick={() => {
               setMenuOpen(false);
               setHistoryOpen(true);
