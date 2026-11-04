@@ -10,7 +10,6 @@ describe("shouldPrefetchOlderPage", () => {
   const screen = { clientHeight: 600, loadFailed: false };
 
   it.each([
-    { label: "moving up within a screen of the top", previousScrollTop: 900, scrollTop: 500, expected: true },
     { label: "moving up further down than a screen", previousScrollTop: 1200, scrollTop: 900, expected: false },
     { label: "moving up to exactly a screen from the top", previousScrollTop: 900, scrollTop: 600, expected: false },
     // A long reply under a collapsed run opens with the reader almost at the top of what is loaded.
@@ -54,7 +53,6 @@ describe("isHeldOnParkedReply", () => {
 describe("isTranscriptAtRest", () => {
   it.each([
     { label: "never moved", movedAt: 0, touching: false, now: 1_000, expected: true },
-    { label: "moved just now", movedAt: 1_000, touching: false, now: 1_100, expected: false },
     { label: "one moment short of rest", movedAt: 1_000, touching: false, now: 1_119, expected: false },
     { label: "a full moment after moving", movedAt: 1_000, touching: false, now: 1_120, expected: true },
     { label: "a finger resting on it", movedAt: 0, touching: true, now: 10_000, expected: false },

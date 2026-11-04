@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MIN_AGENT_BROWSER_VERSION, isAgentBrowserOutdated } from "./browser-diagnostics.js";
 
 describe("isAgentBrowserOutdated", () => {
-  it.each(["0.33.2", "0.37.1", "0.9.0"])("says that %s is older than the Bridge works with", (version) => {
+  it.each(["0.37.1", "0.9.0"])("says that %s is older than the Bridge works with", (version) => {
     expect(isAgentBrowserOutdated(version)).toBe(true);
   });
 

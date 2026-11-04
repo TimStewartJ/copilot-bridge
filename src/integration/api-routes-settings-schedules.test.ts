@@ -285,56 +285,6 @@ describe("Settings routes", () => {
     expect(providers.getProvider("github")).not.toBe(cachedProvider);
   });
 
-  it("PATCH /api/settings persists deferred worker model settings without evicting sessions", async () => {
-    const sessionManager = createMockSessionManager();
-    const evictSpy = vi.fn();
-    const validateModelSelection = vi.fn().mockResolvedValue({
-      ok: false,
-      error: "Model is not available: gpt-5-mini",
-    });
-    sessionManager.evictAllCachedSessions = evictSpy;
-    sessionManager.validateModelSelection = validateModelSelection;
-    const local = createTestApp({ sessionManager });
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({
-        deferWorker: {
-          model: "gpt-5-mini",
-          reasoningEffort: "low",
-          contextTier: "default",
-        },
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.deferWorker).toEqual({
-      model: "gpt-5-mini",
-      reasoningEffort: "low",
-      contextTier: "default",
-    });
-    expect(evictSpy).not.toHaveBeenCalled();
-    expect(validateModelSelection).not.toHaveBeenCalled();
-  });
-
-  it("PATCH /api/settings rejects mixed invalid updates without runtime side effects", async () => {
-    const sessionManager = createMockSessionManager();
-    const evictSpy = vi.fn();
-    sessionManager.evictAllCachedSessions = evictSpy;
-    const local = createTestApp({ sessionManager });
-    local.ctx.settingsStore.updateSettings({ theme: "dark" });
-    const cachedProvider = providers.getProvider("github");
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({ theme: "light", contextTier: "invalid" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("contextTier must be default or long_context");
-    expect(local.ctx.settingsStore.getSettings().theme).toBe("dark");
-    expect(evictSpy).not.toHaveBeenCalled();
-    expect(providers.getProvider("github")).toBe(cachedProvider);
-  });
-
   it("GET /api/settings surfaces an unreadable persisted row", async () => {
     db.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run("{broken");
 
@@ -446,15 +396,6 @@ describe("Read state routes", () => {
     expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:03:00.000Z");
   });
 
-  it("POST /api/read-state/:sessionId rejects invalid read-through cursors", async () => {
-    const res = await request(app)
-      .post("/api/read-state/sess-1")
-      .send({ readThroughActivityAt: "not-a-date" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("readThroughActivityAt");
-  });
-
 });
 
 // ── Schedule CRUD ────────────────────────────────────────────────
@@ -508,28 +449,6 @@ describe("Schedule routes", () => {
       .send({ taskId, name: "X", prompt: "Y", type: "cron" });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/cron/);
-  });
-
-  it("POST /api/schedules creates a fresh-session schedule", async () => {
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Fresh schedule",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron: "0 0 * * *",
-        modelTier: "preset2",
-      });
-
-    expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({
-      taskId,
-      name: "Fresh schedule",
-      type: "cron",
-      modelTier: "preset2",
-    });
-    expect(ctx.scheduleStore.getSchedule(res.body.id)).toMatchObject({ modelTier: "preset2" });
   });
 
   it("POST /api/schedules accepts a zero-seconds six-field cron", async () => {
@@ -670,32 +589,6 @@ describe("Schedule routes", () => {
     }
   });
 
-  it("PATCH /api/schedules applies autoArchiveKeep retention immediately", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Apply retention",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "new-session", "2026-01-02T00:00:00.000Z");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "old-session", "2026-01-01T00:00:00.000Z");
-    ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "new-session", summary: "New run" } as any,
-      { sessionId: "old-session", summary: "Old run" } as any,
-    ];
-    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(false);
-
-    const res = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ autoArchiveKeep: 1 });
-
-    expect(res.status).toBe(200);
-    expect(res.body.autoArchiveKeep).toBe(1);
-    expect(ctx.sessionMetaStore.isArchived("new-session")).toBe(false);
-    expect(ctx.sessionMetaStore.isArchived("old-session")).toBe(true);
-  });
-
   it("GET /api/schedules/:id/sessions returns sessions for a schedule", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId, name: "Test Sched", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
@@ -735,51 +628,18 @@ describe("Schedule routes", () => {
     expect(res.status).toBe(404);
   });
 
-  it("GET /api/schedules/:id/sessions respects limit and offset params", async () => {
+  it.each([
+    ["offset", "-1", "offset must be a non-negative integer."],
+    ["limit", "0", "limit must be a positive integer."],
+  ] as const)("GET /api/schedules/:id/sessions rejects %s=%s", async (param, value, error) => {
     const schedule = ctx.scheduleStore.createSchedule({
-      taskId, name: "Paged", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
+      taskId, name: "Invalid page", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
     });
 
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1", "2026-01-01T00:00:00.000Z");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s2", "2026-01-02T00:00:00.000Z");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s3", "2026-01-03T00:00:00.000Z");
-
-    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=2&offset=1`);
-    expect(res.status).toBe(200);
-    expect(res.body.total).toBe(3);
-    expect(res.body.offset).toBe(1);
-    expect(res.body.limit).toBe(2);
-    expect(res.body.sessions).toHaveLength(2);
-    expect(res.body.sessions).toMatchObject([{ sessionId: "s2" }, { sessionId: "s1" }]);
+    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`).query({ [param]: value });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error });
   });
-
-  it.each(["-1", "1.5", "NaN", "Infinity", "9007199254740992"])(
-    "GET /api/schedules/:id/sessions rejects offset=%s",
-    async (offset) => {
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId, name: "Invalid offset", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
-      });
-
-      const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`).query({ offset });
-
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: "offset must be a non-negative integer." });
-    },
-  );
-
-  it.each(["0", "-1", "1.5", "NaN"])(
-    "GET /api/schedules/:id/sessions rejects limit=%s",
-    async (limit) => {
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId, name: "Invalid limit", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
-      });
-
-      const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`).query({ limit });
-
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: "limit must be a positive integer." });
-    },
-  );
 
   it("GET /api/schedules/:id/sessions accepts zero offset and clamps the limit", async () => {
     const schedule = ctx.scheduleStore.createSchedule({

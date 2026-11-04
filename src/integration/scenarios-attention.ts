@@ -52,6 +52,7 @@ export const attentionScenarios: IntegrationScenario[] = [
       await request(world.app).post("/api/read-state/session-safe").send({ readThroughActivityAt: "2026-08-01T10:00:00.000Z" });
       const rejected = await request(world.app).post("/api/read-state/session-safe").send({ readThroughActivityAt: "tomorrow" });
       expect(rejected.status).toBe(400);
+      expect(rejected.body.error).toContain("readThroughActivityAt");
       expect((await request(world.app).get("/api/read-state")).body["session-safe"]).toBe("2026-08-01T10:00:00.000Z");
     },
   },

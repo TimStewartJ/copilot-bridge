@@ -51,7 +51,7 @@ describe("resolveServerLaunchDistributionMode", () => {
   });
 
   describe("spawnLauncherChildIfRunning", () => {
-    it.each(["startup", "recovery"])("blocks a child spawn when shutdown begins during %s", () => {
+    it("does not spawn a child while the launcher is shutting down", () => {
       const spawn = vi.fn(() => ({ pid: 123 }));
 
       expect(spawnLauncherChildIfRunning(() => true, spawn)).toBeNull();

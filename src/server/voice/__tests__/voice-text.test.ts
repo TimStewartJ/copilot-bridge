@@ -3,9 +3,7 @@ import {
   classifyBargeIn,
   detectLocalCommand,
   matchWakePhrase,
-  ON_SCREEN_PHRASE,
   stripLeadingWakePhrase,
-  toSpeakableText,
 } from "../voice-text.js";
 
 // The speech-shaping rules are tested in src/packages/voice-agent-text. These tests cover the
@@ -64,11 +62,5 @@ describe("Bridge barge-in", () => {
     expect(classifyBargeIn("Really?", { speechMs: 400, final: true })).toBe("ignore");
     expect(classifyBargeIn("Wait", { speechMs: 300, final: false })).toBe("stop");
     expect(classifyBargeIn("", { speechMs: 400, final: false })).toBe("undecided");
-  });
-});
-
-describe("shared speech shaping", () => {
-  it("is re-exported through this module", () => {
-    expect(toSpeakableText("Here you go:\n```ts\nconst x = 1;\n```")).toBe(`Here you go: ${ON_SCREEN_PHRASE}`);
   });
 });

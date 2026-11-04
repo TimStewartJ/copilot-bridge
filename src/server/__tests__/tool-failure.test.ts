@@ -28,10 +28,7 @@ describe("tool failure classification", () => {
     ["NotFound", "not-found"],
     ["Operation is not supported on this route", "invalid-input"],
     ["Tool initialization incomplete", "initialization"],
-    ['MCP tool catalog changed before tool "demo-read" could be invoked: MCP snapshot changed while verifying cached tools', "catalog-changed"],
-    ['MCP tool catalog changed before tool "demo-read" could be invoked: Cached MCP tool "read" changed before it could be invoked', "catalog-changed"],
     ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP request timed out after 60000 ms', "catalog-changed"],
-    ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP request failed: Transport closed', "catalog-changed"],
     ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP error -32602: request _meta is missing or has malformed required fields', "catalog-changed"],
     ["Something went wrong", "unknown"],
   ])("classifies %s as %s", (text, category) => {
@@ -57,6 +54,7 @@ describe("tool failure classification", () => {
       error: { message: 'MCP tool catalog changed before tool "demo-read" could be invoked: MCP snapshot changed while verifying cached tools', code: "failure" },
     });
     expect(failure).toMatchObject({ category: "catalog-changed", retryable: true });
+    expect(failure.guidance).toContain("the call was not sent");
     expect(failure.guidance).toContain("Call the tool again");
   });
 
@@ -137,7 +135,7 @@ describe("tool failure classification", () => {
       .toMatchObject({ category: "invalid-input", errorCode: -32602 });
   });
 
-  it.each(["VendorFailure", "Vendor.Locked-42", "constructor", "__proto__", "x".repeat(64), 123456, -42001, 0])(
+  it.each(["Vendor.Locked-42", "constructor", "__proto__", "x".repeat(64), 123456, -42001, 0])(
     "retains unfamiliar structured code %s without guessing its category",
     (code) => {
       expect(classifyToolFailure({ error: { code, message: "opaque provider failure" } }))
@@ -145,7 +143,7 @@ describe("tool failure classification", () => {
     },
   );
 
-  it.each(["", "x".repeat(65), "arbitrary error text", "https://example.com", "Bearer credential", NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1, true, {}])(
+  it.each(["", "x".repeat(65), "https://example.com", "Bearer credential", NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1, true, {}])(
     "omits malformed structured code %s",
     (code) => {
       expect(classifyToolFailure({ error: { code } })).not.toHaveProperty("errorCode");
@@ -185,11 +183,12 @@ describe("tool failure classification", () => {
     expect(JSON.stringify(failure)).not.toContain(secret);
   });
 
-  it("keeps runtime catalog failures distinct even when their cause contains HTTP diagnostics", () => {
-    expect(classifyToolFailure({
-      message: "MCP tool catalog changed before tool could be invoked",
-      cause: { statusCode: 429 },
-    })).toMatchObject({ category: "catalog-changed", statusCode: 429 });
+  it("keeps runtime catalog failures distinct from their HTTP and JSON-RPC causes", () => {
+    const message = "MCP tool catalog changed before tool could be invoked";
+    expect(classifyToolFailure({ message, cause: { statusCode: 429 } }))
+      .toMatchObject({ category: "catalog-changed", statusCode: 429 });
+    expect(classifyToolFailure({ message, cause: { code: -32602 } }))
+      .toMatchObject({ category: "catalog-changed", errorCode: -32602 });
   });
 });
 

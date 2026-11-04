@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { BridgeToolsMcpServer, registerAllBridgeTools } from "../agent-tools-mcp/index.js";
 import { createDocsToolDefinitions } from "../tools/docs-tools.js";
 import { makeTestRuntimePaths } from "./helpers.js";
@@ -13,16 +12,6 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 describe("Bridge MCP tool definitions", () => {
-  it("provides compatibility access to MCP-backed self-admin and staging definitions", () => {
-    const { ctx } = createTestApp();
-    const toolNames = new Set(getBridgeToolDefinitions(ctx).map((tool) => tool.name));
-    expect(toolNames.has("self_restart")).toBe(true);
-    expect(toolNames.has("self_update")).toBe(true);
-    expect(toolNames.has("staging_init")).toBe(true);
-    expect(toolNames.has("staging_preview")).toBe(true);
-    expect(toolNames.has("staging_deploy")).toBe(true);
-  });
-
   it("docs_search retries with any word when no page has every word", async () => {
     const { ctx } = createTestApp();
     const page = ctx.docsStore!.writePage("helm/plan", "---\ntitle: Helm plan\ndescription: The phone app\n---\nHands-free runs through the hub.");

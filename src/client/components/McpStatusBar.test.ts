@@ -124,9 +124,7 @@ describe("McpStatusBar status ownership", () => {
       }));
       const toggle = findAllByTag(harness.dom.container, "BUTTON")
         .find((button) => getReactProps(button)?.["aria-label"] === "Session details");
-      expect(toggle?.textContent).toContain("Cost $0.03");
-      expect(toggle?.textContent).not.toContain("Chat title");
-      expect(toggle?.textContent).not.toContain("Plan");
+      expect(toggle?.textContent).toBe("Cost $0.03");
       await harness.act(async () => getReactProps(toggle)?.onClick?.());
       expect(getReactProps(toggle)?.["aria-expanded"]).toBe(true);
       expect(harness.dom.container.textContent).toContain("This sessionCost$0.03");
@@ -193,20 +191,6 @@ describe("McpStatusBar status ownership", () => {
       }));
       expect(harness.dom.container.textContent).toContain("MCP 1/1");
       expect(harness.dom.container.textContent).toContain("stale");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("shows the live session cost alongside MCP and context status", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(McpStatusBar, {
-        servers: [],
-        statusState: "ready",
-        sessionCostUsd: 0.025,
-      }));
-      expect(harness.dom.container.textContent).toBe("Cost $0.03");
     } finally {
       await harness.cleanup();
     }

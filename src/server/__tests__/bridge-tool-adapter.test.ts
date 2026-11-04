@@ -155,21 +155,6 @@ describe("defineSessionBridgeTool", () => {
   });
 });
 
-describe("session-scoped tool registration", () => {
-  it("every session-scoped tool goes through the shared guard", () => {
-    const { ctx } = createTestApp();
-    const server = new BridgeToolsMcpServer(ctx);
-    registerAllBridgeTools(server, ctx);
-
-    const sessionTools = server.getToolDefinitions("all").filter((tool) => tool.scope === "session");
-    expect(sessionTools.length).toBeGreaterThan(5);
-
-    for (const tool of sessionTools) {
-      expect(tool.scope).toBe("session");
-    }
-  });
-});
-
 describe("registry guards against unvalidated tools", () => {
   it("rejects a tool whose handler was not built by defineBridgeTool", () => {
     const { ctx } = createTestApp();
@@ -204,8 +189,8 @@ describe("registry guards against unvalidated tools", () => {
   });
 });
 
-describe("visual payload schemas", () => {
-  it("keeps native visual publishing and omits dashboard publishing tools", () => {
+describe("native tool catalog", () => {
+  it("keeps chat actions session-only and omits dashboard publishing tools", () => {
     const { ctx } = createTestApp();
     const server = new BridgeToolsMcpServer(ctx);
     registerAllBridgeTools(server, ctx);
@@ -214,6 +199,11 @@ describe("visual payload schemas", () => {
     const publishContent = (tools.get("publish_visual")!.inputSchema as any).properties.content;
     expect(publishContent.anyOf).toEqual(expect.any(Array));
     for (const retired of ["feed_save", "decision_save", "alert_save", "event_save", "focus_protection_current"]) expect(tools.has(retired)).toBe(false);
-    for (const native of ["task_update_momentum", "action_add", "schedule_create", "docs_read", "send_attachment"]) expect(tools.has(native)).toBe(true);
+    for (const native of ["task_update_momentum", "action_add", "schedule_create", "docs_read"]) expect(tools.has(native)).toBe(true);
+
+    const global = new Set(server.getToolNames("global"));
+    expect(server.getToolNames("session").filter((name) => !global.has(name))).toEqual(expect.arrayContaining([
+      "session_start", "session_send", "agent_stop", "defer_create", "send_attachment", "publish_visual",
+    ]));
   });
 });

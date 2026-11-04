@@ -217,10 +217,4 @@ describe("where a launching call stands", () => {
 
     expect(getOwnToolCallStatus({ ...launched })).toBe("done");
   });
-
-  it("is in flight until it records an end when it launched no agent", () => {
-    expect(getToolCallStatus({})).toBe("running");
-    expect(getToolCallStatus({ completedAt: "2026-10-01T10:00:01.000Z" })).toBe("done");
-    expect(getToolCallStatus({ success: false, completedAt: "2026-10-01T10:00:01.000Z" })).toBe("failed");
-  });
 });

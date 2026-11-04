@@ -112,22 +112,10 @@ async function clickCopy(harness: PullRequestHarness, index = 0) {
 // -- Tests ------------------------------------------------------------
 
 describe("PullRequestList - summary variant", () => {
-  it("multiple PRs are collapsed by default", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, (harness) => {
+  it("starts collapsed, expands both linked rows, and collapses on the next click", async () => {
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
 
-  it("clicking summary expands and reveals compact linked rows", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
-      await clickFirstSummaryButton(harness);
-
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
-    });
-  });
-
-  it("clicking summary again collapses", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
 

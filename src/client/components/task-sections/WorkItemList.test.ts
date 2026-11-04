@@ -111,22 +111,10 @@ async function clickCopy(harness: WorkItemHarness, index = 0) {
 // -- Tests ------------------------------------------------------------
 
 describe("WorkItemList - summary variant", () => {
-  it("multiple items are collapsed by default", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, (harness) => {
+  it("starts collapsed, expands both linked rows, and collapses on the next click", async () => {
+    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, async (harness) => {
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
 
-  it("clicking summary expands and reveals compact linked rows", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, async (harness) => {
-      await clickFirstSummaryButton(harness);
-
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
-    });
-  });
-
-  it("clicking summary again collapses", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
 

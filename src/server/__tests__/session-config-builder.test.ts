@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { buildSessionConfig, type SessionConfigBuilderCallbacks, type SessionConfigBuilderDeps } from "../session-config-builder.js";
 import type { Task } from "../task-store.js";
 import { createSettingsStore, type SettingsStore } from "../settings-store.js";
-import { DEFAULT_RESPONSE_STYLE_GUIDANCE, RESPONSE_DETAIL_OPTIONS } from "../../shared/response-style.js";
+import { DEFAULT_RESPONSE_STYLE_GUIDANCE } from "../../shared/response-style.js";
 import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
   BROWSER_GUIDANCE,
@@ -158,9 +158,12 @@ describe("session-config-builder base method", () => {
     expect(config.systemMessage.content).toContain(taskInstructions);
     expect(config.systemMessage.content).toContain(ASK_OR_PROCEED_GUIDANCE);
     expect(config.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
+    expect(config.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
+    expect(config.systemMessage.content).not.toContain("<response_style>");
     expect(config.systemMessage.content).toContain(HOME_GUIDANCE);
     expect(config.systemMessage.content.match(/<asking_and_proceeding>/g)).toHaveLength(1);
     expect(config.systemMessage.content).toContain("<model_roles>");
+    expect(config.systemMessage.sections.tone.content).toContain("Default detail: concise.");
     expect(config.systemMessage.sections.tone.content).toContain("Use plain language.");
     expect(config.systemMessage.sections.tool_instructions.content).toContain(BROWSER_GUIDANCE);
   });
@@ -248,23 +251,6 @@ describe("session-config-builder", () => {
     expect(content).not.toContain("Mutable task notes");
     expect(content.indexOf("<task_instructions>")).toBeGreaterThan(content.indexOf("</response_quality>"));
     expect(content).toContain("Standing rule");
-  });
-
-  it.each(RESPONSE_DETAIL_OPTIONS)("applies $value style on create and fresh resume without changing quality or custom instructions", ({ value }) => {
-    const settingsStore = createSettingsStore(setupTestDb());
-    settingsStore.updateSettings({
-      responseStyle: { detail: value, guidance: "Use plain prose with useful examples." },
-      customInstructions: "Prefer TypeScript.",
-    });
-    for (const forResume of [false, true]) {
-      const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks(), options: { forResume } });
-      expect(cfg.systemMessage.sections.tone.content).toContain(`Default detail: ${value}.`);
-      expect(cfg.systemMessage.sections.tone.content).toContain("Use plain prose with useful examples.");
-      expect(cfg.systemMessage.content).toContain("Prefer TypeScript.");
-      expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
-      expect(cfg.systemMessage.content.match(/<response_quality>/g)).toHaveLength(1);
-      expect(cfg.systemMessage.content).not.toContain("<response_style>");
-    }
   });
 
   it("keeps quality guidance present even with blank or conflicting presentation preferences", () => {

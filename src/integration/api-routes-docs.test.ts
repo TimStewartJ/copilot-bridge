@@ -21,37 +21,22 @@ const unsafeDocsRoutePaths = [
   ["UNC", "%5C%5Cserver%5Cshare"],
 ] as const;
 
-describe.each(["/api/docs/search", "/api/docs/db/incidents"])("%s pagination", (route) => {
-  it.each(["-1", "1.5", "NaN", "Infinity", "9007199254740992"])("rejects offset=%s", async (offset) => {
+describe.each([
+  ["/api/docs/search", ["-1", "1.5", "NaN", "Infinity", "9007199254740992"], ["0", "-1", "1.5", "NaN"]],
+  ["/api/docs/db/incidents", ["-1"], ["0"]],
+] as const)("%s pagination", (route, invalidOffsets, invalidLimits) => {
+  it.each(invalidOffsets)("rejects offset=%s", async (offset) => {
     const res = await request(app).get(route).query({ offset });
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "offset must be a non-negative integer." });
   });
 
-  it.each(["0", "-1", "1.5", "NaN"])("rejects limit=%s", async (limit) => {
+  it.each(invalidLimits)("rejects limit=%s", async (limit) => {
     const res = await request(app).get(route).query({ limit });
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "limit must be a positive integer." });
-  });
-});
-
-describe("Task group tag routes", () => {
-  it("PUT /api/task-groups/:id/tags assigns tags to a group", async () => {
-    const group = (await request(app).post("/api/task-groups").send({ name: "Tagged Group" })).body.group;
-    const tag = (await request(app).post("/api/tags").send({ name: "group-tag" })).body.tag;
-
-    const res = await request(app)
-      .put(`/api/task-groups/${group.id}/tags`)
-      .send({ tagIds: [tag.id] });
-    expect(res.status).toBe(200);
-
-    const list = await request(app).get("/api/task-groups");
-    const found = list.body.groups.find((g: any) => g.id === group.id);
-    expect(found.tags).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: "group-tag" })]),
-    );
   });
 });
 
@@ -70,16 +55,6 @@ describe("Docs routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("Invalid page path");
-  });
-
-  it("GET /api/docs/search finds indexed pages", async () => {
-    await request(app)
-      .put("/api/docs/pages/searchable")
-      .send({ content: "# Unique Keyword\n\nThis page has xylophone content" });
-
-    const res = await request(app).get("/api/docs/search?q=xylophone");
-    expect(res.status).toBe(200);
-    expect(res.body.results.length).toBeGreaterThan(0);
   });
 
   it.each([
@@ -187,30 +162,6 @@ describe("Docs routes", () => {
     expect(typeof res.body.indexed).toBe("number");
   });
 
-  it("DELETE /api/docs/pages creates a throttled pre-delete snapshot", async () => {
-    await request(app)
-      .put("/api/docs/pages/to-delete-with-snapshot")
-      .send({ content: "# Snapshot Before Delete" });
-    await request(app)
-      .put("/api/docs/pages/to-delete-with-same-snapshot")
-      .send({ content: "# Same Snapshot Window" });
-
-    const res = await request(app).delete("/api/docs/pages/to-delete-with-snapshot");
-    expect(res.status).toBe(200);
-    expect(res.body.deleted).toBe(true);
-
-    const preDeleteSnapshots = ctx.docsSnapshotStore!
-      .listSnapshots()
-      .filter((snapshot) => snapshot.reason === "pre-delete");
-    expect(preDeleteSnapshots).toHaveLength(1);
-
-    const secondDelete = await request(app).delete("/api/docs/pages/to-delete-with-same-snapshot");
-    expect(secondDelete.status).toBe(200);
-    expect(ctx.docsSnapshotStore!
-      .listSnapshots()
-      .filter((snapshot) => snapshot.reason === "pre-delete")).toHaveLength(1);
-  });
-
 });
 
 describe("Docs DB routes", () => {
@@ -253,21 +204,6 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain("Invalid folder");
   });
 
-  it("GET /api/docs/db queries entries", async () => {
-    await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Entry A", severity: "sev1" } });
-    await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Entry B", severity: "sev2" } });
-
-    const res = await request(app).get(`/api/docs/db/${folder}`);
-    expect(res.status).toBe(200);
-    expect(res.body.entries.length).toBe(2);
-    expect(typeof res.body.total).toBe("number");
-    expect(res.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
-  });
-
   it.each([
     { query: {}, limit: 10000, offset: 0 },
     { query: { limit: "10001", offset: "0" }, limit: 10000, offset: 0 },
@@ -283,17 +219,6 @@ describe("Docs DB routes", () => {
     } finally {
       queryByFolder.mockRestore();
     }
-  });
-
-  it("GET /api/docs/db can include markdown bodies", async () => {
-    await request(app)
-      .post(`/api/docs/db/${folder}`)
-      .send({ fields: { title: "Body entry", severity: "sev1" }, body: "Body text for query results." });
-
-    const res = await request(app).get(`/api/docs/db/${folder}?_includeBody=true`);
-    expect(res.status).toBe(200);
-    expect(res.body.entries).toHaveLength(1);
-    expect(res.body.entries[0].body).toBe("Body text for query results.");
   });
 
   it("POST /api/docs/db returns actionable guidance when no fields can be inferred", async () => {

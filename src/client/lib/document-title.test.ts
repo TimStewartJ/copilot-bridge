@@ -1,18 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { resolveDocumentTitle } from "./document-title";
+import { getMobileRouteMeta } from "./mobile-route-meta";
+
+function titleForPath(pathname: string) {
+  return resolveDocumentTitle({ route: getMobileRouteMeta(pathname).route, pathname });
+}
 
 describe("dashboard document titles", () => {
   it.each([
-    "/dashboard/focus",
+    "/dashboard/home",
     "/dashboard",
     "/dashboard/checklist",
-    "/dashboard/feed",
   ])("labels dashboard route %s as Home", (pathname) => {
-    expect(resolveDocumentTitle({ route: "dashboard", pathname })).toBe("Home - Copilot Bridge");
+    expect(titleForPath(pathname)).toBe("Home - Copilot Bridge");
   });
 
   it("keeps Work Map labeled separately", () => {
-    expect(resolveDocumentTitle({ route: "dashboard", pathname: "/dashboard/work-map" }))
-      .toBe("Work map - Copilot Bridge");
+    expect(titleForPath("/dashboard/work-map")).toBe("Work map - Copilot Bridge");
   });
 });

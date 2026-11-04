@@ -232,7 +232,8 @@ describe("ModelMoveDisclosure", () => {
     try {
       await openAndChoose(harness);
       await click(harness, "Move 12 chats");
-      await waitUntilAct(harness.act, () => text(harness).includes("Moved 12 of 12 chats"));
+      await waitUntilAct(harness.act, () => Boolean(button(harness, "Done")));
+      expect(text(harness)).toContain("Moved 12 of 12 chats from Old Model to New Model");
       expect(text(harness)).not.toContain("Left as they were");
       expect(button(harness, "Try the rest again")).toBeUndefined();
 
@@ -328,10 +329,5 @@ describe("model move result copy", () => {
     expect(describeMoveOutcome(stopped, "Old Model", "New Model"))
       .toBe("Stopped early. Moved 0 of 12 chats from Old Model to New Model");
     expect(describeMoveLeftovers(stopped, "New Model")).toEqual(["3 failed", "9 not tried"]);
-  });
-
-  it("lists nothing left behind for a clean move", () => {
-    const clean = job({ status: "completed", processed: 12, counts: { ...job().counts, moved: 12 } });
-    expect(describeMoveLeftovers(clean, "New Model")).toEqual([]);
   });
 });

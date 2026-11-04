@@ -8,13 +8,13 @@ import {
 describe("getModelFamily", () => {
   it("groups gpt model ids", () => {
     expect(getModelFamily("gpt-5.6-sol")).toBe("gpt");
-    expect(getModelFamily("gpt-5-mini")).toBe("gpt");
     expect(getModelFamily("gpt-5.3-codex")).toBe("gpt");
+    expect(getModelFamily("  GPT-5.5 ")).toBe("gpt");
   });
 
   it("groups claude model ids", () => {
-    expect(getModelFamily("claude-opus-5")).toBe("claude");
     expect(getModelFamily("claude-haiku-4.5")).toBe("claude");
+    expect(getModelFamily("Claude-Opus-5")).toBe("claude");
   });
 
   it("puts everything else in other", () => {
@@ -22,11 +22,6 @@ describe("getModelFamily", () => {
     expect(getModelFamily("grok-4.5")).toBe("other");
     expect(getModelFamily("preview-code-1-flash-picker")).toBe("other");
     expect(getModelFamily("auto")).toBe("other");
-  });
-
-  it("ignores case and surrounding whitespace", () => {
-    expect(getModelFamily("  GPT-5.5 ")).toBe("gpt");
-    expect(getModelFamily("Claude-Opus-5")).toBe("claude");
   });
 
   it("does not treat a bare prefix substring as a family match", () => {

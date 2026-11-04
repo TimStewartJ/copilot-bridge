@@ -513,7 +513,7 @@ describe("Task routes", () => {
     expect(ctx.taskStore.getTask(task.id)).toEqual(before);
   });
 
-  it("rejects missing task-group references on create and update", async () => {
+  it("rejects invalid task-group references on create", async () => {
     const invalidType = await request(app)
       .post("/api/tasks")
       .send({ title: "Invalid group type", groupId: 42 });
@@ -526,17 +526,7 @@ describe("Task routes", () => {
     expect(invalidCreate.status).toBe(400);
     expect(invalidCreate.body.error).toContain("Task group missing-group not found");
 
-    const group = ctx.taskGroupStore.createGroup("Valid group");
-    const task = ctx.taskStore.createTask("Grouped", group.id);
-    const before = ctx.taskStore.getTask(task.id);
-    const invalidUpdate = await request(app)
-      .patch(`/api/tasks/${task.id}`)
-      .send({ groupId: "missing-group" });
-
-    expect(invalidUpdate.status).toBe(400);
-    expect(invalidUpdate.body.error).toContain("Task group missing-group not found");
-    expect(ctx.taskStore.getTask(task.id)).toEqual(before);
-    expect(ctx.taskStore.listTasks().map((item) => item.title)).toEqual(["Grouped"]);
+    expect(ctx.taskStore.listTasks()).toEqual([]);
   });
 
   it("PATCH /api/tasks/:id rejects invalid priority values", async () => {
@@ -557,22 +547,6 @@ describe("Task routes", () => {
 // ── Task Group CRUD ──────────────────────────────────────────────
 
 describe("Task group routes", () => {
-  it("PATCH /api/task-groups/:id applies a full valid update", async () => {
-    const create = await request(app)
-      .post("/api/task-groups")
-      .send({ name: "Old Name" });
-    const id = create.body.group.id;
-
-    const res = await request(app)
-      .patch(`/api/task-groups/${id}`)
-      .send({ name: "Renamed", color: "purple", collapsed: true, notes: "hello" });
-    expect(res.status).toBe(200);
-    expect(res.body.group.name).toBe("Renamed");
-    expect(res.body.group.color).toBe("purple");
-    expect(res.body.group.collapsed).toBe(true);
-    expect(res.body.group.notes).toBe("hello");
-  });
-
   it("PATCH /api/task-groups/:id rejects unknown fields with 400", async () => {
     const create = await request(app)
       .post("/api/task-groups")
@@ -661,15 +635,6 @@ describe("Task group routes", () => {
     expect(ctx.taskGroupStore.getGroup(second.id)?.order).toBe(1);
   });
 
-  it("PUT /api/task-groups/reorder reorders groups", async () => {
-    const g1 = (await request(app).post("/api/task-groups").send({ name: "A" })).body.group;
-    const g2 = (await request(app).post("/api/task-groups").send({ name: "B" })).body.group;
-
-    const res = await request(app)
-      .put("/api/task-groups/reorder")
-      .send({ groupIds: [g2.id, g1.id] });
-    expect(res.status).toBe(200);
-  });
 });
 
 // ── Checklist CRUD ───────────────────────────────────────────────
@@ -733,37 +698,6 @@ describe("Checklist routes", () => {
     expect(res.body.error).toContain("Checklist item missing not found");
   });
 
-  it("POST /api/checklist-items creates a global checklist item", async () => {
-    const res = await request(app)
-      .post("/api/checklist-items")
-      .send({ text: "Global checklist item" });
-    expect(res.status).toBe(200);
-    expect(res.body.checklistItem.text).toBe("Global checklist item");
-    expect(res.body.checklistItem.taskId).toBeNull();
-  });
-
-  it("PUT /api/tasks/:taskId/checklist-items/reorder reorders checklist items", async () => {
-    const t1 = (await request(app).post(`/api/tasks/${taskId}/checklist-items`).send({ text: "First" })).body.checklistItem;
-    const t2 = (await request(app).post(`/api/tasks/${taskId}/checklist-items`).send({ text: "Second" })).body.checklistItem;
-
-    const res = await request(app)
-      .put(`/api/tasks/${taskId}/checklist-items/reorder`)
-      .send({ checklistItemIds: [t2.id, t1.id] });
-    expect(res.status).toBe(200);
-
-    const list = await request(app).get(`/api/tasks/${taskId}/checklist-items`);
-    expect(list.body.checklistItems[0].id).toBe(t2.id);
-    expect(list.body.checklistItems[1].id).toBe(t1.id);
-  });
-
-  it("POST /api/tasks/:taskId/checklist-items with deadline", async () => {
-    const res = await request(app)
-      .post(`/api/tasks/${taskId}/checklist-items`)
-      .send({ text: "Due soon", deadline: "2026-12-31" });
-    expect(res.status).toBe(200);
-    expect(res.body.checklistItem.deadline).toBe("2026-12-31");
-  });
-
 });
 
 // ── Tag CRUD ─────────────────────────────────────────────────────
@@ -773,28 +707,6 @@ describe("Tag routes", () => {
     const res = await request(app).get("/api/tags");
     expect(res.status).toBe(200);
     expect(res.body.tags).toEqual([]);
-  });
-
-  it("POST /api/tags creates a tag", async () => {
-    const res = await request(app)
-      .post("/api/tags")
-      .send({ name: "urgent", color: "rose" });
-    expect(res.status).toBe(200);
-    expect(res.body.tag.name).toBe("urgent");
-    expect(res.body.tag.color).toBe("rose");
-  });
-
-  it("PATCH /api/tags/:id updates a tag", async () => {
-    const create = await request(app)
-      .post("/api/tags")
-      .send({ name: "old" });
-    const id = create.body.tag.id;
-
-    const res = await request(app)
-      .patch(`/api/tags/${id}`)
-      .send({ name: "new", color: "blue" });
-    expect(res.status).toBe(200);
-    expect(res.body.tag.name).toBe("new");
   });
 
   it("DELETE /api/tags/:id removes the tag and evicts cached sessions once", async () => {
@@ -820,20 +732,6 @@ describe("Tag routes", () => {
     expect(res.status).toBe(200);
   });
 
-  it("PUT /api/tasks/:id/tags assigns tags to a task", async () => {
-    const task = (await request(app).post("/api/tasks").send({ title: "Tagged" })).body.task;
-    const tag = (await request(app).post("/api/tags").send({ name: "priority" })).body.tag;
-
-    const res = await request(app)
-      .put(`/api/tasks/${task.id}/tags`)
-      .send({ tagIds: [tag.id] });
-    expect(res.status).toBe(200);
-
-    const get = await request(app).get(`/api/tasks/${task.id}`);
-    expect(get.body.task.tags).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: tag.id, name: "priority" })]),
-    );
-  });
 });
 
 // ── Settings ─────────────────────────────────────────────────────

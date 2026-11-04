@@ -86,11 +86,16 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     id: "KNOW-08", title: "creates a pre-delete snapshot before removing user knowledge",
     async run(world) {
       await world.writePage("safety/delete-me", "# Safety Copy");
-      const before = world.ctx.docsSnapshotStore!.listSnapshots().length;
-      await request(world.app).delete("/api/docs/pages/safety/delete-me");
-      const snapshots = world.ctx.docsSnapshotStore!.listSnapshots();
-      expect(snapshots.length).toBe(before + 1);
+      const store = world.ctx.docsSnapshotStore!;
+      const before = store.listSnapshots().length;
+      const deleted = await request(world.app).delete("/api/docs/pages/safety/delete-me").expect(200);
+      expect(deleted.body.deleted).toBe(true);
+      const snapshots = store.listSnapshots();
+      expect(snapshots).toHaveLength(before + 1);
       expect(snapshots[0].reason).toBe("pre-delete");
+      await request(world.app).get("/api/docs/pages/safety/delete-me").expect(404);
+      store.restoreSnapshot(snapshots[0].id);
+      expect((await world.readPage("safety/delete-me")).body).toBe("# Safety Copy");
     },
   },
   {
@@ -98,10 +103,14 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     async run(world) {
       await world.writePage("cleanup/one", "# One");
       await world.writePage("cleanup/two", "# Two");
-      await request(world.app).delete("/api/docs/pages/cleanup/one");
-      await request(world.app).delete("/api/docs/pages/cleanup/two");
-      const snapshots = world.ctx.docsSnapshotStore!.listSnapshots().filter((item) => item.reason === "pre-delete");
+      const preDeleteSnapshots = () => world.ctx.docsSnapshotStore!.listSnapshots().filter((item) => item.reason === "pre-delete");
+      const first = await request(world.app).delete("/api/docs/pages/cleanup/one").expect(200);
+      expect(first.body.deleted).toBe(true);
+      const snapshots = preDeleteSnapshots();
       expect(snapshots).toHaveLength(1);
+      const second = await request(world.app).delete("/api/docs/pages/cleanup/two").expect(200);
+      expect(second.body.deleted).toBe(true);
+      expect(preDeleteSnapshots()).toEqual(snapshots);
     },
   },
   {
@@ -132,7 +141,10 @@ export const knowledgeScenarios: IntegrationScenario[] = [
       await world.addCollectionEntry("records/counts", { title: "Second", status: "closed", priority: 2 });
       const schema = await request(world.app).get("/api/docs/schema/records/counts");
       expect(schema.body.entryCount).toBe(2);
-      expect((await request(world.app).get("/api/docs/db/records/counts")).body.total).toBe(2);
+      const listed = await request(world.app).get("/api/docs/db/records/counts").expect(200);
+      expect(listed.body.total).toBe(2);
+      expect(listed.body.entries).toHaveLength(2);
+      expect(listed.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
     },
   },
   {
@@ -176,10 +188,10 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     async run(world) {
       await world.createCollection("records/body");
       await world.addCollectionEntry("records/body", { title: "Body record", status: "open", priority: 1 }, "# Detailed notes");
-      const compact = await request(world.app).get("/api/docs/db/records/body");
-      expect(compact.body.entries[0].body).toBeUndefined();
-      const expanded = await request(world.app).get("/api/docs/db/records/body?_includeBody=true");
-      expect(expanded.body.entries[0].body).toBe("# Detailed notes");
+      const compact = await request(world.app).get("/api/docs/db/records/body").expect(200);
+      expect(compact.body.entries[0]).not.toHaveProperty("body");
+      const expanded = await request(world.app).get("/api/docs/db/records/body?_includeBody=true").expect(200);
+      expect(expanded.body.entries).toMatchObject([{ title: "Body record", body: "# Detailed notes" }]);
     },
   },
   {

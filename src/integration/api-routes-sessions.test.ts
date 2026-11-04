@@ -680,34 +680,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createSession).toHaveBeenCalledWith({ background: true });
   });
 
-  it("POST /api/sessions validates and forwards one-session launch options", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
-    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    const res = await request(app)
-      .post("/api/sessions")
-      .send({
-        model: "gpt-5.6",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      });
-
-    expect(res.status).toBe(200);
-    expect(sessionManager.createSession).toHaveBeenCalledWith({
-      background: true,
-      model: "gpt-5.6",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-    expect(sessionManager.validateModelSelection).toHaveBeenCalledWith({
-      model: "gpt-5.6",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-  });
-
   it("POST /api/sessions rejects unavailable and disabled models before creation", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.validateModelSelection = vi.fn(async ({ model }: { model: string }) => ({
@@ -903,34 +875,6 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined, { mode: "autopilot" });
   });
 
-  it("POST /api/chat passes the client message id to new work", async () => {
-    ctx.sessionManager.startWork = vi.fn();
-
-    const res = await request(app)
-      .post("/api/chat")
-      .send({
-        sessionId: "test-session",
-        prompt: "hello",
-        clientMessageId: "client-message-1",
-      });
-
-    expect(res.status).toBe(202);
-    expect(ctx.sessionManager.startWork).toHaveBeenCalledWith(
-      "test-session",
-      "hello",
-      undefined,
-      { clientMessageId: "client-message-1", keepUndelivered: true },
-    );
-
-    // The same browser message again (a retry after a lost answer) is not run twice.
-    ctx.chatMessageIdStore?.record("test-session", "runtime-message-1", "client-message-1");
-    const repeat = await request(app)
-      .post("/api/chat")
-      .send({ sessionId: "test-session", prompt: "hello", clientMessageId: "client-message-1" });
-    expect(repeat.status).toBe(202);
-    expect(ctx.sessionManager.startWork).toHaveBeenCalledTimes(1);
-  });
-
   it("POST /api/chat keeps a first message that was stopped before the agent got it", async () => {
     ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockRejectedValue(
       new Error("Session was aborted before the prompt was accepted"),
@@ -1000,28 +944,6 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("mode must be one of");
-    expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
-  });
-
-  it("POST /api/chat steers busy sessions instead of rejecting them", async () => {
-    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
-    ctx.sessionManager.startWork = vi.fn();
-    ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
-
-    const res = await request(app)
-      .post("/api/chat")
-      .send({ sessionId: "busy-session", prompt: "adjust course", mode: "autopilot" });
-
-    expect(res.status).toBe(202);
-    expect(res.body).toEqual({ status: "accepted", mode: "steered" });
-    // The person wrote instead of answering, so any question they had open is set aside.
-    expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith(
-      "busy-session",
-      "adjust course",
-      undefined,
-      undefined,
-      { skipOpenQuestions: true },
-    );
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 

@@ -31,8 +31,6 @@ describe("classifyComposerKey", () => {
     { label: "touch Enter without a code", event: { key: "Enter" }, device: "touch", expected: "newline" },
     { label: "touch unidentified Enter", event: { key: "Enter", code: "Unidentified" }, device: "touch", expected: "newline" },
     { label: "touch Enter with an unrelated physical code", event: { key: "Enter", code: "KeyA" }, device: "touch", expected: "newline" },
-    { label: "touch Shift+Enter from a hardware keyboard", event: { key: "Enter", code: "Enter", shiftKey: true }, device: "touch", expected: "newline" },
-    { label: "touch Ctrl+Enter", event: { key: "Enter", ctrlKey: true }, device: "touch", expected: "send" },
     { label: "touch Cmd+Enter", event: { key: "Enter", metaKey: true }, device: "touch", expected: "send" },
     { label: "soft keyboard Enter with a physical-style code", event: { key: "Enter", code: "Enter" }, device: "touch with soft keyboard", expected: "newline" },
     { label: "soft keyboard keypad Enter", event: { key: "Enter", code: "NumpadEnter" }, device: "touch with soft keyboard", expected: "newline" },

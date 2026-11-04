@@ -11,12 +11,14 @@ export const taskScenarios: IntegrationScenario[] = [
       await world.assignGroupTags(group.id, [groupTag.id]);
       const task = await world.createTask("Ship release", { groupId: group.id });
       const taskTag = await world.createTag("urgent", { color: "rose" });
+      expect(taskTag).toMatchObject({ name: "urgent", color: "rose" });
       await world.assignTaskTags(task.id, [taskTag.id]);
       const detail = await world.getTask(task.id);
       expect(detail.groupId).toBe(group.id);
-      expect(detail.tags.map((tag: any) => tag.name)).toEqual(["urgent"]);
-      const groups = await request(world.app).get("/api/task-groups");
-      expect(groups.body.groups.find((item: any) => item.id === group.id).tags[0].name).toBe("portfolio");
+      expect(detail.tags).toMatchObject([{ id: taskTag.id, name: "urgent" }]);
+      const groups = await request(world.app).get("/api/task-groups").expect(200);
+      const organized = groups.body.groups.find((item: any) => item.id === group.id);
+      expect(organized.tags).toMatchObject([{ id: groupTag.id, name: "portfolio" }]);
     },
   },
   {
@@ -43,6 +45,7 @@ export const taskScenarios: IntegrationScenario[] = [
       await world.assignTaskTags(task.id, [tag.id]);
       const update = await request(world.app).patch(`/api/tags/${tag.id}`).send({ name: "sev1", color: "rose" });
       expect(update.status).toBe(200);
+      expect(update.body.tag).toMatchObject({ id: tag.id, name: "sev1", color: "rose" });
       expect((await world.getTask(task.id)).tags).toEqual([expect.objectContaining({ id: tag.id, name: "sev1" })]);
     },
   },
@@ -118,7 +121,7 @@ export const taskScenarios: IntegrationScenario[] = [
       const task = await world.createTask("Grouped work", { groupId: first.id });
       const reordered = await request(world.app).put("/api/task-groups/reorder").send({ groupIds: [second.id, first.id] });
       expect(reordered.status).toBe(200);
-      const listed = await request(world.app).get("/api/task-groups");
+      const listed = await request(world.app).get("/api/task-groups").expect(200);
       expect(listed.body.groups.map((item: any) => item.id)).toEqual([second.id, first.id]);
       expect((await world.getTask(task.id)).groupId).toBe(first.id);
     },
@@ -170,6 +173,7 @@ export const taskScenarios: IntegrationScenario[] = [
     async run(world) {
       const task = await world.createTask("Prepare review");
       const item = await world.createChecklistItem(task.id, "Draft", "2026-10-01");
+      expect(item.deadline).toBe("2026-10-01");
       const edited = await request(world.app).patch(`/api/checklist-items/${item.id}`).send({ text: "Publish", deadline: "2026-10-05" });
       expect(edited.status).toBe(200);
       await request(world.app).patch(`/api/checklist-items/${item.id}`).send({ done: true });
@@ -187,7 +191,7 @@ export const taskScenarios: IntegrationScenario[] = [
       await request(world.app).patch(`/api/checklist-items/${second.id}`).send({ done: true });
       const reordered = await request(world.app).put(`/api/tasks/${task.id}/checklist-items/reorder`).send({ checklistItemIds: [third.id, second.id, first.id] });
       expect(reordered.status).toBe(200);
-      const list = await request(world.app).get(`/api/tasks/${task.id}/checklist-items`);
+      const list = await request(world.app).get(`/api/tasks/${task.id}/checklist-items`).expect(200);
       expect(list.body.checklistItems.map((item: any) => item.id)).toEqual([third.id, second.id, first.id]);
       expect(list.body.checklistItems[1].done).toBe(true);
     },
@@ -212,6 +216,7 @@ export const taskScenarios: IntegrationScenario[] = [
       const owned = await world.createChecklistItem(task.id, "Task item");
       const global = await request(world.app).post("/api/checklist-items").send({ text: "Global item" });
       expect(global.status).toBe(200);
+      expect(global.body.checklistItem).toMatchObject({ text: "Global item", taskId: null });
       const open = await request(world.app).get("/api/checklist-items/open");
       expect(open.body.checklistItems).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: owned.id, taskId: task.id }),
@@ -239,10 +244,13 @@ export const taskScenarios: IntegrationScenario[] = [
     async run(world) {
       const group = await world.createGroup("Valid home");
       const task = await world.createTask("Stay put", { groupId: group.id });
-      const rejected = await request(world.app).patch(`/api/tasks/${task.id}`).send({ groupId: "missing" });
-      expect(rejected.status).toBe(400);
+      const before = world.ctx.taskStore.getTask(task.id);
+      const rejected = await request(world.app).patch(`/api/tasks/${task.id}`).send({ groupId: "missing-group" }).expect(400);
+      expect(rejected.body.error).toContain("Task group missing-group not found");
+      expect(world.ctx.taskStore.getTask(task.id)).toEqual(before);
       expect((await world.getTask(task.id)).groupId).toBe(group.id);
-      expect((await request(world.app).get("/api/tasks")).body.tasks).toHaveLength(1);
+      const listed = await request(world.app).get("/api/tasks").expect(200);
+      expect(listed.body.tasks).toMatchObject([{ id: task.id, title: "Stay put" }]);
     },
   },
   {
@@ -299,10 +307,11 @@ export const taskScenarios: IntegrationScenario[] = [
     async run(world) {
       const group = await world.createGroup("Program");
       const task = await world.createTask("Member", { groupId: group.id });
-      const updated = await request(world.app).patch(`/api/task-groups/${group.id}`).send({ name: "Renamed program", color: "cyan", collapsed: true, notes: "Program notes" });
-      expect(updated.status).toBe(200);
-      const listed = await request(world.app).get("/api/task-groups");
-      expect(listed.body.groups[0]).toMatchObject({ name: "Renamed program", color: "cyan", collapsed: true, notes: "Program notes" });
+      const changes = { name: "Renamed program", color: "cyan", collapsed: true, notes: "Program notes" };
+      const updated = await request(world.app).patch(`/api/task-groups/${group.id}`).send(changes).expect(200);
+      expect(updated.body.group).toMatchObject(changes);
+      const listed = await request(world.app).get("/api/task-groups").expect(200);
+      expect(listed.body.groups[0]).toMatchObject(changes);
       expect((await world.getTask(task.id)).groupId).toBe(group.id);
     },
   },

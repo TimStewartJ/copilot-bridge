@@ -83,23 +83,3 @@ describe("tag tools mirror the REST no-op rules", () => {
     expect(evict, "no evict on missing delete").not.toHaveBeenCalled();
   });
 });
-
-describe("bulk tag MCP assignment still works", () => {
-  it("PUT /api/tags/:id/mcp-servers replaces the selection and evicts once", async () => {
-    const tag = ctx.tagStore!.createTag("release");
-    const server = ctx.mcpServerStore!.createMcpServer({
-      name: "linear",
-      config: { command: "linear-mcp", args: [] },
-    });
-    const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
-
-    const res = await request(app)
-      .put(`/api/tags/${tag.id}/mcp-servers`)
-      .send({ serverIds: [server.id] });
-
-    expect(res.status).toBe(200);
-    expect(res.body.servers.map((entry: any) => entry.serverName)).toContain("linear");
-    expect(ctx.tagStore!.getTagMcpServers(tag.id).map((entry: any) => entry.serverName)).toContain("linear");
-    expect(evict).toHaveBeenCalledTimes(1);
-  });
-});

@@ -106,7 +106,11 @@ describe("MCP server registry routes", () => {
     expect(refCount(alpha.id)).toBe(1);
 
     const legacyRead = await request(app).get(`/api/tags/${tag.id}/mcp`);
-    expect(legacyRead.body.servers.map((server: any) => server.serverId)).toEqual([alpha.id, beta.id]);
+    expect(legacyRead.status).toBe(200);
+    expect(legacyRead.body.servers).toMatchObject([
+      { serverId: alpha.id, serverName: "Alpha" },
+      { serverId: beta.id, serverName: "Beta" },
+    ]);
 
     evictSpy.mockClear();
     const deleted = await request(app).delete(`/api/mcp-servers/${alpha.id}`);

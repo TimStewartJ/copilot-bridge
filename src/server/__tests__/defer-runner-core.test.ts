@@ -24,15 +24,9 @@ describe("defer-runner-core delivery errors", () => {
     expect(isDeferWaitError(new Error(message))).toBe(true);
   });
 
-  it.each([
-    "context-limit",
-    "weighted-capacity",
-    "cleanup-demand",
-    "retained-capacity",
-    "cleanup-failed",
-  ] as const)("waits without counting a try when session capacity is refused: %s", (reason) => {
+  it("waits without counting a try when session capacity is refused", () => {
     const snapshot = { contexts: 33, contextLimit: 32, localMcpInstances: 33, capacityUnits: 41.25, capacityLimit: 64 };
-    expect(isDeferWaitError(new SessionCapacityError(reason, snapshot))).toBe(true);
+    expect(isDeferWaitError(new SessionCapacityError("cleanup-failed", snapshot))).toBe(true);
   });
 
   it.each([

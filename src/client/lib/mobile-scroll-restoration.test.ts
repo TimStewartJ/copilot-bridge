@@ -9,10 +9,8 @@ import {
 
 describe("getMobileScrollRestorationPolicy", () => {
   it.each([
-    ["/dashboard", "mobile:dashboard"],
+    ["/dashboard/home", "mobile:dashboard"],
     ["/dashboard/focus", "mobile:dashboard"],
-    ["/dashboard/checklist", "mobile:dashboard"],
-    ["/dashboard/feed", "mobile:dashboard"],
     ["/dashboard/work-map", "mobile:dashboard"],
     ["/", "mobile:tasks:list"],
     ["/chats", "mobile:chats:list"],

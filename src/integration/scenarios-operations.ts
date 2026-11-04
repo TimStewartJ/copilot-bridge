@@ -1,5 +1,5 @@
 import { expect, vi } from "vitest";
-import { request } from "../test-support/api-routes.js";
+import { providers, request } from "../test-support/api-routes.js";
 import type { IntegrationScenario } from "./scenario-types.js";
 
 export const operationScenarios: IntegrationScenario[] = [
@@ -26,11 +26,16 @@ export const operationScenarios: IntegrationScenario[] = [
   {
     id: "OPS-03", title: "persists deferred worker launch configuration",
     async run(world) {
-      const updated = await request(world.app).patch("/api/settings").send({ deferWorker: { model: "gpt-5-mini", reasoningEffort: "low", contextTier: "default" } });
-      expect(updated.status).toBe(200);
-      const read = await request(world.app).get("/api/settings");
-      expect(read.body.deferWorker).toEqual({ model: "gpt-5-mini", reasoningEffort: "low", contextTier: "default" });
-      expect(world.ctx.settingsStore.getSettings().deferWorker?.model).toBe("gpt-5-mini");
+      const worker = { model: "gpt-5-mini", reasoningEffort: "low", contextTier: "default" };
+      const evict = vi.spyOn(world.ctx.sessionManager, "evictAllCachedSessions");
+      const validate = vi.spyOn(world.ctx.sessionManager, "validateModelSelection").mockResolvedValue({ ok: false, error: "Model is not available: gpt-5-mini" });
+      const updated = await request(world.app).patch("/api/settings").send({ deferWorker: worker }).expect(200);
+      expect(updated.body.deferWorker).toEqual(worker);
+      const read = await request(world.app).get("/api/settings").expect(200);
+      expect(read.body.deferWorker).toEqual(worker);
+      expect(world.ctx.settingsStore.getSettings().deferWorker).toEqual(worker);
+      expect(validate).not.toHaveBeenCalled();
+      expect(evict).not.toHaveBeenCalled();
     },
   },
   {
@@ -46,11 +51,19 @@ export const operationScenarios: IntegrationScenario[] = [
   {
     id: "OPS-05", title: "rejects a mixed invalid settings update atomically",
     async run(world) {
-      await request(world.app).patch("/api/settings").send({ theme: "dark" });
-      const rejected = await request(world.app).patch("/api/settings").send({ theme: "light", contextTier: "enormous" });
-      expect(rejected.status).toBe(400);
-      expect((await request(world.app).get("/api/settings")).body.theme).toBe("dark");
-      expect(world.ctx.settingsStore.getSettings().theme).toBe("dark");
+      await request(world.app).patch("/api/settings").send({ theme: "dark" }).expect(200);
+      const evict = vi.spyOn(world.ctx.sessionManager, "evictAllCachedSessions");
+      const cachedProvider = providers.getProvider("github");
+      try {
+        const rejected = await request(world.app).patch("/api/settings").send({ theme: "light", contextTier: "enormous" }).expect(400);
+        expect(rejected.body.error).toContain("contextTier must be default or long_context");
+        expect((await request(world.app).get("/api/settings")).body.theme).toBe("dark");
+        expect(world.ctx.settingsStore.getSettings().theme).toBe("dark");
+        expect(evict).not.toHaveBeenCalled();
+        expect(providers.getProvider("github")).toBe(cachedProvider);
+      } finally {
+        providers.clearProviderCache();
+      }
     },
   },
   {
@@ -73,7 +86,7 @@ export const operationScenarios: IntegrationScenario[] = [
       const schedule = await world.createSchedule(task.id, "Old schedule");
       const updated = await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC" });
       expect(updated.status).toBe(200);
-      expect(updated.body).toMatchObject({ name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC" });
+      expect(updated.body).toMatchObject({ id: schedule.id, name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC" });
       expect(world.ctx.scheduleStore.getSchedule(schedule.id)?.name).toBe("New schedule");
     },
   },
@@ -135,7 +148,10 @@ export const operationScenarios: IntegrationScenario[] = [
       world.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "same-session", "2026-09-02T10:00:00.000Z");
       const history = await request(world.app).get(`/api/schedules/${schedule.id}/sessions`);
       expect(history.status).toBe(200);
-      expect(history.body.sessions).toHaveLength(2);
+      expect(history.body.sessions).toMatchObject([
+        { sessionId: "same-session", recordedAt: "2026-09-02T10:00:00.000Z", missing: true },
+        { sessionId: "same-session", recordedAt: "2026-09-01T10:00:00.000Z", missing: true },
+      ]);
       expect(new Set(history.body.sessions.map((item: any) => item.runId)).size).toBe(2);
     },
   },
@@ -145,10 +161,15 @@ export const operationScenarios: IntegrationScenario[] = [
       const task = await world.createTask("Paged history");
       world.initializeScheduler();
       const schedule = await world.createSchedule(task.id, "Paged schedule");
-      for (const id of ["run-one", "run-two", "run-three"]) world.ctx.sessionMetaStore.recordScheduleRun(schedule.id, id);
-      const page = await request(world.app).get(`/api/schedules/${schedule.id}/sessions?limit=1&offset=1`);
-      expect(page.body).toMatchObject({ total: 3, limit: 1, offset: 1 });
-      expect(page.body.sessions).toHaveLength(1);
+      const runs = world.ctx.sessionMetaStore;
+      runs.recordScheduleRun(schedule.id, "run-one", "2026-01-01T00:00:00.000Z");
+      runs.recordScheduleRun(schedule.id, "run-two", "2026-01-02T00:00:00.000Z");
+      runs.recordScheduleRun(schedule.id, "run-three", "2026-01-03T00:00:00.000Z");
+      const history = `/api/schedules/${schedule.id}/sessions`;
+      const page = await request(world.app).get(history).query({ limit: 2, offset: 1 }).expect(200);
+      expect(page.body).toMatchObject({ total: 3, limit: 2, offset: 1, sessions: [{ sessionId: "run-two" }, { sessionId: "run-one" }] });
+      const single = await request(world.app).get(history).query({ limit: 1, offset: 1 }).expect(200);
+      expect(single.body).toMatchObject({ total: 3, limit: 1, offset: 1, sessions: [{ sessionId: "run-two" }] });
     },
   },
   {
@@ -162,6 +183,7 @@ export const operationScenarios: IntegrationScenario[] = [
       world.ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "new-run", summary: "New" }, { sessionId: "old-run", summary: "Old" }] as any;
       const updated = await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ autoArchiveKeep: 1 });
       expect(updated.status).toBe(200);
+      expect(updated.body.autoArchiveKeep).toBe(1);
       expect(world.ctx.sessionMetaStore.isArchived("new-run")).toBe(false);
       expect(world.ctx.sessionMetaStore.isArchived("old-run")).toBe(true);
     },
@@ -172,19 +194,20 @@ export const operationScenarios: IntegrationScenario[] = [
       const task = await world.createTask("Model schedule");
       world.initializeScheduler();
       const schedule = await world.createSchedule(task.id, "Model-aware", { modelTier: "preset2" });
-      expect(schedule).toMatchObject({ modelTier: "preset2" });
+      expect(schedule).toMatchObject({ taskId: task.id, name: "Model-aware", type: "cron", modelTier: "preset2" });
       expect(world.ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ modelTier: "preset2" });
     },
   },
   {
     id: "OPS-20", title: "creates a global session with validated model launch options",
     async run(world) {
-      vi.spyOn(world.ctx.sessionManager, "listModels").mockResolvedValue([{ id: "gpt-test", name: "GPT Test", policy: { state: "enabled" }, supportedReasoningEfforts: ["high"] }] as any);
+      const selection = { model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" };
+      const validate = vi.spyOn(world.ctx.sessionManager, "validateModelSelection");
       const create = vi.spyOn(world.ctx.sessionManager, "createSession").mockResolvedValue({ sessionId: "global-session" });
-      const response = await request(world.app).post("/api/sessions").send({ model: "gpt-test", reasoningEffort: "high" });
-      expect(response.status).toBe(200);
+      const response = await request(world.app).post("/api/sessions").send(selection).expect(200);
       expect(response.body.sessionId).toBe("global-session");
-      expect(create).toHaveBeenCalledWith(expect.objectContaining({ background: true, model: "gpt-test", reasoningEffort: "high" }));
+      expect(validate).toHaveBeenCalledWith(selection);
+      expect(create).toHaveBeenCalledWith({ background: true, ...selection });
     },
   },
   {
@@ -203,10 +226,15 @@ export const operationScenarios: IntegrationScenario[] = [
     id: "OPS-22", title: "submits new chat work through the session manager",
     async run(world) {
       const start = vi.spyOn(world.ctx.sessionManager, "startWork");
-      const response = await request(world.app).post("/api/chat").send({ sessionId: "chat-session", prompt: "Investigate the failure", clientMessageId: "client-message-1" });
-      expect(response.status).toBe(202);
+      const send = () => request(world.app).post("/api/chat").send({ sessionId: "chat-session", prompt: "Investigate the failure", clientMessageId: "client-message-1" });
+      const response = await send().expect(202);
       expect(start).toHaveBeenCalledWith("chat-session", "Investigate the failure", undefined, { clientMessageId: "client-message-1", keepUndelivered: true });
       expect(response.body).toMatchObject({ status: "accepted" });
+
+      // A browser retry of an already delivered message must not start work again.
+      world.ctx.chatMessageIdStore!.record("chat-session", "runtime-message-1", "client-message-1");
+      await send().expect(202);
+      expect(start).toHaveBeenCalledTimes(1);
     },
   },
   {
@@ -217,6 +245,7 @@ export const operationScenarios: IntegrationScenario[] = [
       const start = vi.spyOn(world.ctx.sessionManager, "startWork");
       const response = await request(world.app).post("/api/chat").send({ sessionId: "busy-session", prompt: "Change direction", mode: "autopilot" });
       expect(response.status).toBe(202);
+      expect(response.body).toEqual({ status: "accepted", mode: "steered" });
       expect(steer).toHaveBeenCalledWith("busy-session", "Change direction", undefined, undefined, { skipOpenQuestions: true });
       expect(start).not.toHaveBeenCalled();
     },

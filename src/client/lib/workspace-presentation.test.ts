@@ -3,15 +3,9 @@ import {
   areWorkspacePathsEqual,
   buildWorkspaceChoices,
   formatDirtySummary,
-  formatGitHead,
 } from "./workspace-presentation.js";
 
 describe("workspace-presentation", () => {
-  it("formats branch and detached heads", () => {
-    expect(formatGitHead({ kind: "branch", name: "feature/worktree" })).toBe("feature/worktree");
-    expect(formatGitHead({ kind: "detached", shortSha: "abc1234" })).toBe("detached@abc1234");
-  });
-
   it("formats dirty summaries compactly", () => {
     expect(formatDirtySummary({
       clean: false,

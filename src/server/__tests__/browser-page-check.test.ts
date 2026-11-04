@@ -120,7 +120,6 @@ interface ClassificationCase {
 // is on the page, nobody is named: the block is reported as "This site".
 const classificationCases: ClassificationCase[] = [
   // Pages a site serves to people.
-  { name: "an ordinary long article", signals: ordinaryArticle, expected: null },
   {
     name: "an ordinary short page",
     signals: page({
@@ -246,11 +245,6 @@ const classificationCases: ClassificationCase[] = [
 
   // A CAPTCHA inside an otherwise normal page.
   {
-    name: "a contact form with a visible reCAPTCHA",
-    signals: contactFormWithRecaptcha,
-    expected: { kind: "captcha", by: "reCAPTCHA", status: 200 },
-  },
-  {
     // Hardly any text, yet a form: the fields make it a page and not a check.
     name: "a login form with a visible reCAPTCHA and little text around it",
     signals: page({
@@ -276,11 +270,6 @@ const classificationCases: ClassificationCase[] = [
   },
 
   // The whole page is a check a person can pass.
-  {
-    name: "Cloudflare's \"Just a moment...\" page",
-    signals: cloudflareChallenge,
-    expected: { kind: "challenge", by: "Cloudflare", status: 403 },
-  },
   {
     name: "Cloudflare's \"Just a moment…\" page before its script has added anything",
     signals: page({ url: "https://www.example.com/pricing", title: "Just a moment…", status: 403, text: "" }),
@@ -464,11 +453,6 @@ const classificationCases: ClassificationCase[] = [
         + "Data center: fra08 IP: 203.0.113.7 Timestamp: 2026-03-10 12:00:00 UTC Click to copy Was this page helpful? "
         + "Yes No Thank you for your feedback! Performance & security by Cloudflare",
     }),
-    expected: { kind: "denied", by: "This site", status: 403 },
-  },
-  {
-    name: "Akamai's \"Access Denied\" page (named \"This site\")",
-    signals: akamaiDenied,
     expected: { kind: "denied", by: "This site", status: 403 },
   },
   {

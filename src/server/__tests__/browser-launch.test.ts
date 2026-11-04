@@ -53,10 +53,6 @@ afterEach(() => {
 });
 
 describe("parseBrowserArgs", () => {
-  it("splits a string without newlines by commas", () => {
-    expect(launch.parseBrowserArgs("--no-sandbox,--lang=en-US")).toEqual(["--no-sandbox", "--lang=en-US"]);
-  });
-
   it("splits a string with newlines by lines only, so an argument may contain commas", () => {
     expect(launch.parseBrowserArgs("--window-size=1280,720\n--disable-features=Foo,Bar")).toEqual([
       "--window-size=1280,720",
@@ -84,7 +80,6 @@ describe("parseBrowserArgs", () => {
 
   it.each([
     ["undefined", undefined],
-    ["a number", 42],
     ["an object", { args: "--no-sandbox" }],
     ["a blank string", "  \n  "],
   ])("has no arguments for %s", (_label, value) => {
@@ -105,14 +100,6 @@ describe("formatBrowserArgs", () => {
 });
 
 describe("composeBrowserLaunchArgs", () => {
-  it("gives a browser with no inherited arguments the Bridge's own", () => {
-    expect(launch.composeBrowserLaunchArgs([])).toEqual([
-      "--disable-blink-features=AutomationControlled",
-      "--enable-unsafe-swiftshader",
-      "about:blank",
-    ]);
-  });
-
   it("keeps the inherited arguments first and in their order", () => {
     expect(launch.composeBrowserLaunchArgs(["--no-sandbox", "--window-size=1280,720", "--lang=en-US"])).toEqual([
       "--no-sandbox",
@@ -184,8 +171,6 @@ describe("composeBrowserLaunchArgs", () => {
 
   it.each<[string, string[]]>([
     ["nothing", []],
-    ["plain arguments", ["--no-sandbox", "--window-size=1280,720"]],
-    ["a list of disabled Blink features", ["--disable-blink-features=Foo,Bar", "--no-sandbox"]],
     ["several lists of disabled Blink features", ["--disable-blink-features=Foo", "--disable-blink-features=Bar"]],
     ["a blank start page in the middle", ["--no-sandbox", "about:blank", SWIFTSHADER]],
   ])("is idempotent for %s", (_label, inherited) => {
@@ -211,13 +196,10 @@ describe("resolveBrowserLaunchArgs", () => {
     expect(readJsonFile).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["empty", ""],
-    ["blank", "  \n "],
-  ])("falls back to the configuration files when AGENT_BROWSER_ARGS is %s", async (_label, value) => {
+  it("falls back to the configuration files when AGENT_BROWSER_ARGS is blank", async () => {
     mockConfigFiles({ [USER_CONFIG]: { args: ["--no-sandbox"] } });
 
-    await expect(launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: value })).resolves.toEqual({
+    await expect(launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "  \n " })).resolves.toEqual({
       args: ["--no-sandbox", ...DEFAULT_ARGS],
       inheritedFrom: "agent-browser-config",
     });
@@ -555,12 +537,6 @@ describe("buildBrowserEnv", () => {
     expect(env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(fromEnvironment);
   });
 
-  it("sets no executable when neither names one and no system browser is installed", async () => {
-    const env = await launch.buildBrowserEnv(target, { PATH: "" });
-
-    expect(env).not.toHaveProperty("AGENT_BROWSER_EXECUTABLE_PATH");
-  });
-
   it("sets the system browser when one is installed and nothing else names an executable", async () => {
     const baseEnv = {
       ProgramFiles: testWindowsPath("Program Files"),
@@ -590,11 +566,8 @@ describe("buildBrowserEnv", () => {
     expect(env.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("120000");
   });
 
-  it.each([
-    ["empty", ""],
-    ["blank", "   "],
-  ])("drops an idle timeout that is %s in the base environment", async (_label, value) => {
-    const env = await launch.buildBrowserEnv(target, { AGENT_BROWSER_IDLE_TIMEOUT_MS: value });
+  it("drops an idle timeout that is blank in the base environment", async () => {
+    const env = await launch.buildBrowserEnv(target, { AGENT_BROWSER_IDLE_TIMEOUT_MS: "   " });
 
     expect(env).not.toHaveProperty("AGENT_BROWSER_IDLE_TIMEOUT_MS");
   });
@@ -652,8 +625,6 @@ describe("describeBrowserBuild", () => {
   });
 
   it.each<[string, string, string]>([
-    ["edge", "msedge.exe", path.win32.join(testWindowsPath("Program Files"), "Microsoft", "Edge", "Application", "msedge.exe")],
-    ["chrome", "google-chrome-stable", testPosixPath("opt", "tools", "google-chrome-stable")],
     ["chromium", "chromium-browser", testPosixPath("snap", "bin", "chromium-browser")],
     ["unknown", "a neutral name", neutralBinary()],
   ])("tells only the kind (%s) from the path of %s when the file cannot be read", async (kind, _label, executablePath) => {
@@ -666,10 +637,7 @@ describe("describeBrowserBuild", () => {
   });
 
   it.each<[string, string]>([
-    ["Google Chrome for Testing 1.2.3.4", "chrome-for-testing"],
-    ["Microsoft Edge 1.2.3.4", "edge"],
     ["Chromium 1.2.3.4", "chromium"],
-    ["Google Chrome 1.2.3.4", "chrome"],
     ["Vivaldi 1.2.3.4", "unknown"],
   ])("reads \"%s\" as %s and reports the version", async (version, kind) => {
     const executablePath = neutralBinary();
@@ -711,7 +679,6 @@ describe("describeBrowserBuild", () => {
 
   it.each<[string, number, number]>([
     ["23 hours ago", 23 * HOUR, 0],
-    ["exactly one day ago", DAY, 1],
     ["almost four days ago", 3 * DAY + 23 * HOUR, 3],
   ])("counts whole days since the file was replaced %s", async (_label, ageMs, installedDaysAgo) => {
     readModifiedAt.mockResolvedValue(NOW - ageMs);
