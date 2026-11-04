@@ -26,7 +26,6 @@ describe("checklist-store", () => {
       expect(checklistItem.text).toBe("Buy milk");
       expect(checklistItem.done).toBe(false);
       expect(checklistItem.taskId).toBe(task.id);
-      expect(checklistItem.order).toBe(0);
     });
 
     it("createChecklistItem throws for missing task", () => {

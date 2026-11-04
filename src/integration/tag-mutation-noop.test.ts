@@ -59,16 +59,6 @@ describe("tag mutations reject silent no-ops", () => {
     expect(res.status).toBe(404);
     expect(evict).not.toHaveBeenCalled();
   });
-
-  it("DELETE /api/tags/:id evicts exactly once for a real deletion", async () => {
-    const tag = ctx.tagStore!.createTag("release");
-    const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
-
-    await request(app).delete(`/api/tags/${tag.id}`).expect(200);
-
-    expect(evict).toHaveBeenCalledTimes(1);
-    expect(ctx.tagStore!.getTag(tag.id)).toBeUndefined();
-  });
 });
 
 describe("tag tools mirror the REST no-op rules", () => {

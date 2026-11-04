@@ -810,16 +810,15 @@ describe("Tag routes", () => {
     expect(res.body.tag.name).toBe("new");
   });
 
-  it("DELETE /api/tags/:id deletes a tag", async () => {
-    const create = await request(app)
-      .post("/api/tags")
-      .send({ name: "temp" });
+  it("DELETE /api/tags/:id removes the tag and evicts cached sessions once", async () => {
+    const create = await request(app).post("/api/tags").send({ name: "temp" });
     const id = create.body.tag.id;
+    const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
 
-    const del = await request(app).delete(`/api/tags/${id}`);
-    expect(del.status).toBe(200);
+    const del = await request(app).delete(`/api/tags/${id}`).expect(200);
     expect(del.body.success).toBe(true);
-
+    expect(evict).toHaveBeenCalledTimes(1);
+    expect(ctx.tagStore!.getTag(id)).toBeUndefined();
     const list = await request(app).get("/api/tags");
     expect(list.body.tags).toEqual([]);
   });

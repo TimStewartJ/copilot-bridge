@@ -818,32 +818,21 @@ describe("task-store", () => {
   });
 
   describe("link/unlink work items", () => {
-    it("linkWorkItem adds work item ref", () => {
-      const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, "12345");
-      const found = store.getTask(task.id)!;
-      expect(found.workItems).toEqual([{ id: "12345", provider: "ado" }]);
-    });
+    it("links work items once per provider and unlinks only that provider's item", () => {
+      const { id } = store.createTask("WI task");
+      const links = () => store.getTask(id)!.workItems;
+      const ado = { id: "100", provider: "ado" };
+      store.linkWorkItem(id, "100");
+      expect(links()).toEqual([ado]);
+      store.linkWorkItem(id, "100", "ado");
+      expect(links()).toEqual([ado]);
+      store.linkWorkItem(id, "100", "github");
+      expect(links()).toHaveLength(2);
 
-    it("linkWorkItem is idempotent for same id+provider", () => {
-      const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, "100");
-      store.linkWorkItem(task.id, "100");
-      expect(store.getTask(task.id)!.workItems).toHaveLength(1);
-    });
-
-    it("linkWorkItem allows same id with different provider", () => {
-      const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, "100", "ado");
-      store.linkWorkItem(task.id, "100", "github");
-      expect(store.getTask(task.id)!.workItems).toHaveLength(2);
-    });
-
-    it("unlinkWorkItem removes by id and provider", () => {
-      const task = store.createTask("WI task");
-      store.linkWorkItem(task.id, "100", "ado");
-      expect(store.unlinkWorkItem(task.id, "100", "ado").removed).toBe(true);
-      expect(store.getTask(task.id)!.workItems).toHaveLength(0);
+      expect(store.unlinkWorkItem(id, "100", "ado").removed).toBe(true);
+      expect(links()).toEqual([{ id: "100", provider: "github" }]);
+      expect(store.unlinkWorkItem(id, "100", "github").removed).toBe(true);
+      expect(links()).toEqual([]);
     });
 
     it("unlinkWorkItem reports a no-op instead of a false success", () => {
