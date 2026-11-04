@@ -276,7 +276,7 @@ describe("SessionManager stale cached session recovery", () => {
     };
     manager.sessionObjects.set("session-1", cachedSession);
 
-    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
+    await expect(manager._doWork("session-1", "hello", bus, undefined, undefined, { attentionMode: "quiet" })).resolves.toBeUndefined();
 
     expect(cachedSession.send).toHaveBeenCalledTimes(1);
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
@@ -288,21 +288,6 @@ describe("SessionManager stale cached session recovery", () => {
       type: "done",
       content: "Recovered on a fresh session.",
     }));
-  });
-
-  it("follows a later runtime turn on the fresh session with the recovered run's attention mode", async () => {
-    const { manager, eventBusRegistry } = createManager();
-    const cachedSession = createSession(async () => {
-      throw createConnectionClosedError();
-    });
-    const freshSession = createSession((emit) => {
-      queueMicrotask(() => emit({ type: "session.idle", data: {}, timestamp: "2026-05-13T20:00:01.000Z" }));
-    });
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(freshSession) };
-    manager.sessionObjects.set("session-1", cachedSession);
-
-    await manager._doWork("session-1", "check quietly", eventBusRegistry.getOrCreateBus("session-1"), undefined, undefined, { attentionMode: "quiet" });
-    expect(manager.sessionObjects.get("session-1")).toBe(freshSession);
 
     const [watchHandler] = freshSession.on.mock.calls[0];
     watchHandler({ type: "assistant.turn_start", data: { turnId: "2" }, timestamp: "2026-05-13T20:01:00.000Z" });

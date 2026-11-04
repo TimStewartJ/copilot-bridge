@@ -144,6 +144,7 @@ describe("VoiceConversation", () => {
 
   it("detects the end of a turn, asks the agent and speaks the reply", async () => {
     const ctx = setup();
+    expect(ctx.conversation.lastReply()).toBeUndefined();
     await speakTurn(ctx, "What's unread?");
     expect(ctx.conversation.state).toBe("thinking");
     expect(ctx.agent.last.input).toEqual({ kind: "user", text: "What's unread?" });
@@ -157,8 +158,10 @@ describe("VoiceConversation", () => {
 
     ctx.agent.last.listener.onDone({ aborted: false });
     await advance(10);
+    expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: false });
     ctx.conversation.onPlaybackIdle(ctx.sink.audio[0]!.genId);
     expect(ctx.conversation.state).toBe("listening");
+    expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: true });
     expect(ctx.sink.has("metrics")).toBe(true);
   });
 
@@ -192,18 +195,6 @@ describe("VoiceConversation", () => {
     ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
     await speakTurn(ctx, "Thanks, what else?");
     expect(ctx.agent.last.input).toEqual({ kind: "user", text: "Thanks, what else?" });
-  });
-
-  it("remembers the last reply and whether it played to the end", async () => {
-    const ctx = setup();
-    expect(ctx.conversation.lastReply()).toBeUndefined();
-    await speakTurn(ctx, "What's unread?");
-    ctx.agent.last.listener.onDelta("Two sessions finished. ");
-    ctx.agent.last.listener.onDone({ aborted: false });
-    await advance(10);
-    expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: false });
-    ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
-    expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: true });
   });
 
   it("waits through a hesitation until the fallback timer", async () => {
@@ -258,13 +249,18 @@ describe("VoiceConversation", () => {
     await advance(200);
     expect(ctx.engine.synthCalls[0]!.text).toBe("One sec.");
     expect(ctx.conversation.state).toBe("speaking");
+    await advance(1_900);
     ctx.agent.last.listener.onDelta("Nothing is waiting on you. ");
     ctx.agent.last.listener.onDone({ aborted: false });
     await advance(10);
     expect(ctx.engine.synthCalls[1]!.text).toBe("Nothing is waiting on you.");
+    expect(ctx.sink.audio).toHaveLength(2);
+    expect(ctx.conversation.state).toBe("speaking");
     const metrics = ctx.sink.events.find((event) => event.type === "metrics") as { metrics: Record<string, number> } | undefined;
     expect(metrics?.metrics.fillerMs).toBeTypeOf("number");
     expect(metrics?.metrics.speechEndToFirstAudioMs).toBeTypeOf("number");
+    await advance(1_400);
+    expect(ctx.conversation.state).toBe("listening");
   });
 
   it("says it is still working when a lookup stays silent, at growing gaps, until the reply comes", async () => {
@@ -312,19 +308,6 @@ describe("VoiceConversation", () => {
     quick.agent.last.listener.onDone({ aborted: false });
     await advance(30_000);
     expect(quick.engine.synthCalls.map((call) => call.text)).toEqual(["Two sessions finished."]);
-  });
-
-  it("stays in speaking until a reply that came long after its lead-in has played", async () => {
-    const ctx = setup();
-    await speakTurn(ctx, "What's going on?");
-    await advance(5_000);
-    ctx.agent.last.listener.onDelta("Nothing is waiting on you. ");
-    ctx.agent.last.listener.onDone({ aborted: false });
-    await advance(10);
-    expect(ctx.sink.audio).toHaveLength(2);
-    expect(ctx.conversation.state).toBe("speaking");
-    await advance(1_400);
-    expect(ctx.conversation.state).toBe("listening");
   });
 
   it("holds an answer while the user keeps talking and merges the continuation", async () => {

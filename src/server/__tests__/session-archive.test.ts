@@ -83,7 +83,8 @@ describe("session_archive tool", () => {
   }
 
   it("archives many sessions with one announcement and leaves the ones in use alone", async () => {
-    const { call, addSession, deferredPromptStore } = createHarness({ busy: [ID(3)], waiting: [ID(4)] });
+    const busy = [ID(3)];
+    const { call, addSession, deferredPromptStore } = createHarness({ busy, waiting: [ID(4)] });
     for (const n of [1, 2, 3, 4, 5, 6, 8]) addSession(ID(n));
     deferredPromptStore.create(ID(5), "Later", new Date(Date.now() + 60_000).toISOString());
     deferredPromptStore.enqueueDelivery(createReturnedDeferDelivery(
@@ -117,19 +118,13 @@ describe("session_archive tool", () => {
     // No row for a session that does not exist, and an archived chat keeps its place in the archive.
     expect(sessionMetaStore.getMeta(ID(7))).toBeUndefined();
     expect(sessionMetaStore.getMeta(ID(6))?.archivedAt).toBe(archivedAt);
-  });
 
-  it("restores sessions whatever they are doing", async () => {
-    const { call, addSession } = createHarness({ busy: [ID(1)] });
-    addSession(ID(1));
-    addSession(ID(2));
-    sessionMetaStore.setArchived(ID(1), true);
-    sessionMetaStore.setArchived(ID(2), true);
-
-    const result = await call({ sessionIds: [ID(1), ID(2)], archived: false });
-
-    expect(result).toMatchObject({ success: true, archived: false, changed: 2, skipped: [] });
-    expect(events).toEqual([{ type: "session:archived", sessionIds: [ID(1), ID(2)], archived: false }]);
+    const justArchived = archivedEventSessionIds(events[0]!);
+    busy.push(ID(1));
+    const restored = await call({ sessionIds: justArchived, archived: false });
+    expect(restored).toMatchObject({ success: true, archived: false, changed: 2, skipped: [] });
+    expect(events.slice(1)).toEqual([{ type: "session:archived", sessionIds: justArchived, archived: false }]);
+    expect(justArchived.map((id) => sessionMetaStore.isArchived(id))).toEqual([false, false]);
   });
 
   it("refuses a call without sessions or with too many", async () => {

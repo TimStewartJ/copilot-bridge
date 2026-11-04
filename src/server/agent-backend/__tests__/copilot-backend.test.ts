@@ -140,7 +140,8 @@ describe("CopilotBackend wrap fidelity", () => {
 
   it("reloads discovered agents only when resuming a discovery-enabled session", async () => {
     const reload = vi.fn(async () => ({ agents: [] }));
-    const client = createFakeClient(createFakeSession({ agent: { reload } }));
+    const updateSubagentSettings = vi.fn(async () => ({}));
+    const client = createFakeClient(createFakeSession({ agent: { reload }, tools: { updateSubagentSettings } }));
     const backend = new CopilotBackend(client as any);
     const config = {
       enableConfigDiscovery: true,
@@ -156,6 +157,7 @@ describe("CopilotBackend wrap fidelity", () => {
     await backend.resumeSession("helper", { enableConfigDiscovery: false });
     await backend.resumeSession("legacy", {});
     expect(reload).toHaveBeenCalledOnce();
+    expect(updateSubagentSettings).not.toHaveBeenCalled();
   });
 
   it("disconnects a resumed session and surfaces a failed discovered-agent reload", async () => {
@@ -185,28 +187,6 @@ describe("CopilotBackend wrap fidelity", () => {
   };
   const withSecondOpinion = (model: string) => ({ subagents: { agents: { ...subagentPlan.agents, "rubber-duck": model === "claude" ? { model: "gpt-6.1-sol", effortLevel: "max" } : { model: "claude-opus-5.5", effortLevel: "high" } } } });
 
-  it.each(["create", "resume"] as const)("applies Bridge sub-agent settings for the session's model after %s without forwarding them to the SDK", async (operation) => {
-    const calls: string[] = [];
-    const updateSubagentSettings = vi.fn(async () => { calls.push("update"); return {}; });
-    // A resume takes the session's model from the runtime; a create knows it.
-    const getCurrent = vi.fn(async () => ({ modelId: "claude-opus-5.5" }));
-    const session = createFakeSession({ tools: { updateSubagentSettings }, model: { getCurrent } });
-    const client = createFakeClient(session);
-    client.createSession.mockImplementation(async () => { calls.push("create"); return session; });
-    client.resumeSession.mockImplementation(async () => { calls.push("resume"); return session; });
-    const backend = new CopilotBackend(client as any);
-    const config = { model: "gpt-6-luna", subagents: subagentPlan };
-
-    if (operation === "create") await backend.createSession(config);
-    else await backend.resumeSession("existing", config);
-
-    const expected = { model: "gpt-6-luna", toolSearch: { enabled: true } };
-    if (operation === "create") expect(client.createSession).toHaveBeenCalledWith(expected);
-    else expect(client.resumeSession).toHaveBeenCalledWith("existing", expected);
-    expect(updateSubagentSettings).toHaveBeenCalledWith(withSecondOpinion(operation === "create" ? "gpt" : "claude"));
-    expect(calls).toEqual([operation, "update"]);
-  });
-
   it("re-applies rubber-duck's model when the session's own model changes, not a sub-agent's", async () => {
     const updateSubagentSettings = vi.fn(async () => ({}));
     const session = createFakeSession({ tools: { updateSubagentSettings } });
@@ -224,15 +204,6 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(updateSubagentSettings).toHaveBeenLastCalledWith(withSecondOpinion("gpt"));
   });
 
-  it("does not call the sub-agent override when Bridge has no sub-agent settings", async () => {
-    const updateSubagentSettings = vi.fn(async () => ({}));
-    const client = createFakeClient(createFakeSession({ tools: { updateSubagentSettings } }));
-    const backend = new CopilotBackend(client as any);
-    await backend.createSession({ model: "gpt-6-luna" });
-    await backend.resumeSession("existing", {});
-    expect(updateSubagentSettings).not.toHaveBeenCalled();
-  });
-
   it.each([
     ["missing", undefined],
     ["failing", vi.fn(async () => { throw new Error("rpc exploded"); })],
@@ -246,10 +217,17 @@ describe("CopilotBackend wrap fidelity", () => {
   });
 
   it.each(["create", "resume"] as const)("asks for tool search on %s and keeps MCP servers loaded without changing tool restrictions or caller config", async (operation) => {
-    const client = createFakeClient();
+    const calls: string[] = [];
+    const updateSubagentSettings = vi.fn(async () => { calls.push("update"); return {}; });
+    // A resume takes the session's model from the runtime; a create knows it.
+    const getCurrent = vi.fn(async () => ({ modelId: "claude-opus-5.5" }));
+    const session = createFakeSession({ tools: { updateSubagentSettings }, model: { getCurrent } });
+    const client = createFakeClient(session);
+    client.createSession.mockImplementation(async () => { calls.push("create"); return session; });
+    client.resumeSession.mockImplementation(async () => { calls.push("resume"); return session; });
     const backend = new CopilotBackend(client as any);
     const config = {
-      model: "gpt-5-mini",
+      model: "gpt-6-luna",
       toolSearch: { enabled: false, deferThreshold: 1 },
       availableTools: ["view", "demo-read"],
       excludedTools: ["edit"],
@@ -259,8 +237,9 @@ describe("CopilotBackend wrap fidelity", () => {
         chosen: { type: "http", url: "http://localhost/other", tools: ["*"], deferTools: "auto" },
       },
     };
-    if (operation === "create") await backend.createSession(config);
-    else await backend.resumeSession("existing", config);
+    const planned = { ...config, subagents: subagentPlan };
+    if (operation === "create") await backend.createSession(planned);
+    else await backend.resumeSession("existing", planned);
     const expected = {
       ...config,
       toolSearch: { enabled: true },
@@ -273,6 +252,8 @@ describe("CopilotBackend wrap fidelity", () => {
     else expect(client.resumeSession).toHaveBeenCalledWith("existing", expected);
     expect(config.toolSearch).toEqual({ enabled: false, deferThreshold: 1 });
     expect(config.mcpServers.demo).not.toHaveProperty("deferTools");
+    expect(updateSubagentSettings).toHaveBeenCalledWith(withSecondOpinion(operation === "create" ? "gpt" : "claude"));
+    expect(calls).toEqual([operation, "update"]);
   });
 
   it("starts Copilot Fusion sessions on their level as the Auto tier, and the retired preview on Fusion High", async () => {
@@ -628,7 +609,9 @@ describe("CopilotAgentSession wrap fidelity", () => {
     const unsub = vi.fn();
     const on = vi.fn(() => unsub);
     const session = { ...createFakeSession(), on };
-    const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
+    const client = createFakeClient(session as any);
+    const backend = new CopilotBackend(client as any);
+    const wrapped = await backend.createSession({} as any);
     expect(wrapped.sessionId).toBe("fake-session-id");
 
     const sendArgs = { prompt: "hi", attachments: [{ kind: "image" }], mode: "immediate" as const };
@@ -646,6 +629,8 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(unsub).toHaveBeenCalledOnce();
     await wrapped.disconnect?.();
     expect(session.disconnect).toHaveBeenCalledOnce();
+    await backend.deleteSession(wrapped.sessionId);
+    expect(client.deleteSession).toHaveBeenCalledExactlyOnceWith("fake-session-id");
   });
 
   it("returns the runtime switchTo result so callers can see the compaction preflight", async () => {

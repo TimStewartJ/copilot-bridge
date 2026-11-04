@@ -93,25 +93,6 @@ afterEach(() => {
 });
 
 describe("session model mover", () => {
-  it("counts chats by model, most used first, and says which are busy or unreadable", async () => {
-    const { mover } = createHarness({
-      a: { model: OLD },
-      b: { model: OLD, busy: true },
-      c: { model: NEW },
-      d: {},
-    });
-
-    await expect(mover.getUsage()).resolves.toEqual({
-      scannedAt: "2026-10-05T12:00:00.000Z",
-      sessionCount: 4,
-      unknownCount: 1,
-      models: [
-        { model: OLD, sessionCount: 2, busyCount: 1 },
-        { model: NEW, sessionCount: 1, busyCount: 0 },
-      ],
-    });
-  });
-
   it("counts a chat whose model cannot be read as unknown instead of failing the count", async () => {
     const { mover, getSessionModelState } = createHarness({ a: { model: OLD }, b: { model: OLD } });
     getSessionModelState.mockRejectedValueOnce(new Error("events.jsonl is locked"));
@@ -149,6 +130,17 @@ describe("session model mover", () => {
       a: { model: OLD, title: "First", reasoningEffort: "high" },
       b: { model: NEW },
       c: { model: OLD, busy: true },
+      d: {},
+    });
+
+    await expect(mover.getUsage()).resolves.toEqual({
+      scannedAt: "2026-10-05T12:00:00.000Z",
+      sessionCount: 4,
+      unknownCount: 1,
+      models: [
+        { model: OLD, sessionCount: 2, busyCount: 1 },
+        { model: NEW, sessionCount: 1, busyCount: 0 },
+      ],
     });
 
     await expect(mover.plan({ fromModel: OLD, toModel: NEW })).resolves.toEqual({
@@ -166,26 +158,34 @@ describe("session model mover", () => {
 
   it("moves every chat on the old model and leaves the others alone", async () => {
     const sessions: Record<string, FakeSession> = {
-      a: { model: OLD, title: "First", reasoningEffort: "high" },
+      a: { model: OLD, title: "First", reasoningEffort: "medium", contextTier: "long_context" },
       b: { model: "model-other" },
-      c: { model: OLD },
+      d: { model: OLD, reasoningEffort: "xhigh", contextTier: "default" },
+      c: { model: OLD, loaded: true },
     };
-    const { mover, setSessionModel, runMove } = createHarness(sessions);
+    const { mover, setSessionModel, unloadSession, runMove } = createHarness(sessions);
 
     const started = await mover.start({ fromModel: OLD, toModel: NEW });
-    expect(started).toMatchObject({ id: "move-1", status: "running", total: 2, processed: 0, compact: false });
+    expect(started).toMatchObject({ id: "move-1", status: "running", total: 3, processed: 0, compact: false });
 
     await runMove();
 
-    expect(setSessionModel.mock.calls.map(([sessionId]) => sessionId)).toEqual(["a", "c"]);
+    expect(setSessionModel.mock.calls).toEqual([
+      ["a", NEW, "medium", "long_context"],
+      ["d", NEW, "high", undefined],
+      ["c", NEW, undefined, undefined],
+    ]);
+    expect(unloadSession.mock.calls).toEqual([["a"], ["d"]]);
+    expect(sessions.c!.loaded).toBe(true);
     expect(sessions.b!.model).toBe("model-other");
     expect(mover.getJob()).toMatchObject({
       status: "completed",
-      processed: 2,
+      processed: 3,
       completedAt: "2026-10-05T12:00:00.000Z",
-      counts: { moved: 2, busy: 0, "needs-compaction": 0, changed: 0, failed: 0 },
+      counts: { moved: 3, busy: 0, "needs-compaction": 0, changed: 0, failed: 0 },
       results: [
-        { sessionId: "a", title: "First", outcome: "moved", previousReasoningEffort: "high" },
+        { sessionId: "a", title: "First", outcome: "moved", previousReasoningEffort: "medium" },
+        { sessionId: "d", outcome: "moved", previousReasoningEffort: "xhigh" },
         { sessionId: "c", outcome: "moved" },
       ],
     });
@@ -203,23 +203,6 @@ describe("session model mover", () => {
     expect(setSessionModel).not.toHaveBeenCalled();
   });
 
-  it("keeps each chat's effort and long context when the new model has them", async () => {
-    const { mover, setSessionModel, runMove } = createHarness({
-      kept: { model: OLD, reasoningEffort: "medium", contextTier: "long_context" },
-      lowered: { model: OLD, reasoningEffort: "xhigh", contextTier: "default" },
-      plain: { model: OLD },
-    });
-
-    await mover.start({ fromModel: OLD, toModel: NEW });
-    await runMove();
-
-    expect(setSessionModel.mock.calls).toEqual([
-      ["kept", NEW, "medium", "long_context"],
-      ["lowered", NEW, "high", undefined],
-      ["plain", NEW, undefined, undefined],
-    ]);
-  });
-
   it("applies the effort and context the request names to every chat", async () => {
     const { mover, setSessionModel, runMove } = createHarness({
       a: { model: OLD, reasoningEffort: "high", contextTier: "long_context" },
@@ -234,20 +217,6 @@ describe("session model mover", () => {
       contextTier: "default",
       results: [{ outcome: "moved", previousReasoningEffort: "high", previousContextTier: "long_context" }],
     });
-  });
-
-  it("unloads the chats it loaded and leaves loaded chats loaded", async () => {
-    const sessions: Record<string, FakeSession> = {
-      cold: { model: OLD },
-      open: { model: OLD, loaded: true },
-    };
-    const { mover, unloadSession, runMove } = createHarness(sessions);
-
-    await mover.start({ fromModel: OLD, toModel: NEW });
-    await runMove();
-
-    expect(unloadSession.mock.calls).toEqual([["cold"]]);
-    expect(sessions.open!.loaded).toBe(true);
   });
 
   it("still finishes the chat when unloading it fails", async () => {

@@ -27,32 +27,6 @@ describe("SessionAgentRegistry", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("projects background tasks and emits counts on change", async () => {
-    const { bus, events } = makeBus();
-    const session = fakeSession(async () => ({
-      tasks: [
-        agentTask({ id: "a", status: "running" }),
-        agentTask({ id: "b", status: "idle" }),
-        agentTask({ id: "shell", status: "running", kind: "shell" }),
-      ],
-    }));
-    const registry = new SessionAgentRegistry({
-      globalBus: bus,
-      getLiveSession: () => session,
-    });
-
-    await registry.refresh("s1", "test");
-    const summary = registry.getSummary("s1");
-    expect(summary).toMatchObject({ running: 1, idle: 1, total: 2, source: "live" });
-    // shell task is excluded
-    expect(registry.getSnapshot("s1").tasks.map((t) => t.id).sort()).toEqual(["a", "b"]);
-
-    const agentEvents = events.filter((e) => e.type === "session:agents");
-    expect(agentEvents).toHaveLength(1);
-    expect(agentEvents[0].backgroundAgents).toMatchObject({ running: 1, idle: 1, source: "live" });
-    registry.dispose();
-  });
-
   it("reports tracked weight and running protection, notifying only on task changes", async () => {
     const { bus, events } = makeBus();
     let status = "running";
@@ -60,7 +34,9 @@ describe("SessionAgentRegistry", () => {
     const session = fakeSession(async () => ({
       tasks: [
         agentTask({ id: "a", status }),
-        agentTask({ id: "b", status: "completed" }),
+        agentTask({ id: "b", status: "idle" }),
+        agentTask({ id: "done", status: "completed" }),
+        agentTask({ id: "shell", status: "running", kind: "shell" }),
       ],
     }));
     const registry = new SessionAgentRegistry({
@@ -70,7 +46,12 @@ describe("SessionAgentRegistry", () => {
     });
 
     await registry.refresh("s1", "first");
-    expect(registry.getTrackedAgentCount("s1")).toBe(2);
+    expect(registry.getTrackedAgentCount("s1")).toBe(3);
+    expect(registry.getSummary("s1")).toMatchObject({ running: 1, idle: 1, total: 3, source: "live" });
+    expect(registry.getSnapshot("s1").tasks.map((task) => task.id).sort()).toEqual(["a", "b", "done"]);
+    expect(events.filter((event) => event.type === "session:agents")).toMatchObject([
+      { backgroundAgents: { running: 1, idle: 1, source: "live" } },
+    ]);
     expect(registry.hasRunningAgents("s1")).toBe(true);
     expect(onTasksChanged).toHaveBeenCalledTimes(1);
 

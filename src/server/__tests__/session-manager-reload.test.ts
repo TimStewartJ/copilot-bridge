@@ -930,31 +930,6 @@ describe("SessionManager warmSession", () => {
     expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
   });
 
-  it("suppresses only the passive Copilot resume event when the switch is  TRUE ", async () => {
-    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: " TRUE " });
-    const session = makeAgentSessionStub({ setModel: vi.fn() });
-    const resume = vi.fn().mockResolvedValue(session);
-    const record = vi.spyOn(manager, "recordSpan");
-    manager.backend = { id: "copilot", resumeSession: resume };
-
-    await manager.warmSession("passive-enabled", { source: "chat-open" });
-
-    expect(resume.mock.calls[0][1]).toMatchObject({
-      suppressResumeEvent: true,
-      pendingInteractionEvents: true,
-      streaming: true,
-      memory: { enabled: false },
-    });
-    expect(resume.mock.calls[0][1]).not.toHaveProperty("model");
-    expect(resume.mock.calls[0][1]).not.toHaveProperty("reasoningEffort");
-    expect(resume.mock.calls[0][1]).not.toHaveProperty("continuePendingWork");
-    expect(session.setModel).not.toHaveBeenCalled();
-    expect(manager.isSessionWarm("passive-enabled")).toBe(true);
-    expect(record).toHaveBeenCalledWith("session.warm.coldResume", expect.any(Number), "passive-enabled", {
-      source: "chat-open", resumeEventSuppressed: true,
-    });
-  });
-
   it("warns and leaves suppression disabled for invalid switch 1", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "1" });
@@ -999,16 +974,31 @@ describe("SessionManager warmSession", () => {
   });
 
   it("restores normal resume events on explicit reload after a suppressed warmup", async () => {
-    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "true" });
-    const session = makeAgentSessionStub({ disconnect: vi.fn(), listMcpServers: vi.fn().mockResolvedValue({ servers: [] }) });
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: " TRUE " });
+    const session = makeAgentSessionStub({ disconnect: vi.fn(), setModel: vi.fn(), listMcpServers: vi.fn().mockResolvedValue({ servers: [] }) });
     const reloaded = makeAgentSessionStub({ listMcpServers: vi.fn().mockResolvedValue({ servers: [] }) });
     const resume = vi.fn().mockResolvedValueOnce(session).mockResolvedValueOnce(reloaded);
     manager.backend = { id: "copilot", resumeSession: resume };
 
+    const record = vi.spyOn(manager, "recordSpan");
     await manager.warmSession("passive-reload", { source: "chat-open" });
+    expect(resume.mock.calls[0][1]).toMatchObject({
+      suppressResumeEvent: true,
+      pendingInteractionEvents: true,
+      streaming: true,
+      memory: { enabled: false },
+    });
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("model");
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("reasoningEffort");
+    expect(resume.mock.calls[0][1]).not.toHaveProperty("continuePendingWork");
+    expect(session.setModel).not.toHaveBeenCalled();
+    expect(manager.isSessionWarm("passive-reload")).toBe(true);
+    expect(record).toHaveBeenCalledWith("session.warm.coldResume", expect.any(Number), "passive-reload", {
+      source: "chat-open", resumeEventSuppressed: true,
+    });
+
     await manager.reloadSession("passive-reload");
 
-    expect(resume.mock.calls[0][1]).toHaveProperty("suppressResumeEvent", true);
     expect(resume.mock.calls[1][1]).not.toHaveProperty("suppressResumeEvent");
     expect(session.disconnect).toHaveBeenCalledOnce();
   });

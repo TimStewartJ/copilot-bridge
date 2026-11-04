@@ -48,17 +48,13 @@ describe("BrowserLogins", () => {
     expect(await logins.forPage("https://accounts.example.com/other/page")).toEqual(login);
     expect(await logins.forPage("https://www.example.com/")).toBeUndefined();
     expect(await logins.forPage("not an address")).toBeUndefined();
-  });
 
-  it("replaces the login of a site and clears that it was refused", async () => {
-    const { logins } = createLogins();
-    const first = await logins.save(FORM, TARGET);
-    await logins.markFailed(first!.id);
+    await logins.markFailed(login!.id);
     expect((await logins.list())[0].failedAt).toBeTruthy();
 
     const second = await logins.save({ ...FORM, username: "other@example.com", password: "new" }, TARGET);
 
-    expect(second!.id).toBe(first!.id);
+    expect(second!.id).toBe(login!.id);
     expect(await logins.list()).toEqual([second]);
     expect(second!.failedAt).toBeUndefined();
   });
@@ -135,7 +131,7 @@ describe("LoginWatch", () => {
   }
 
   it("offers what was typed, once two reads of the form agree", async () => {
-    const { watch, reads, last } = createWatch();
+    const { watch, reads, logins, told, last } = createWatch();
     // The first read overtook the last characters on their way to the page.
     const read = reads({ ...FORM, password: "correct ho" }, FORM, FORM);
     watch.keyPressed();
@@ -145,21 +141,6 @@ describe("LoginWatch", () => {
     expect(read).toHaveBeenCalledTimes(3);
     expect(last()).toEqual({ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" });
     expect(JSON.stringify(last())).not.toContain("correct");
-  });
-
-  it("offers nothing for a form with an empty field or no form at all", async () => {
-    const { watch, reads, told } = createWatch();
-    for (const form of [undefined, { ...FORM, password: "" }, { ...FORM, username: "" }]) {
-      watch.keyPressed();
-      await watch.submitting(reads(form));
-    }
-    expect(told).toEqual([]);
-  });
-
-  it("saves the offer when asked, says so, and does not offer the same sign-in again", async () => {
-    const { watch, reads, logins, told, last } = createWatch();
-    watch.keyPressed();
-    await watch.submitting(reads(FORM));
 
     await watch.save(TARGET);
 
@@ -171,6 +152,15 @@ describe("LoginWatch", () => {
     watch.keyPressed();
     await watch.submitting(reads(FORM));
     expect(told).toHaveLength(before);
+  });
+
+  it("offers nothing for a form with an empty field or no form at all", async () => {
+    const { watch, reads, told } = createWatch();
+    for (const form of [undefined, { ...FORM, password: "" }, { ...FORM, username: "" }]) {
+      watch.keyPressed();
+      await watch.submitting(reads(form));
+    }
+    expect(told).toEqual([]);
   });
 
   it("offers a kept sign-in again once it was removed or the site refused it", async () => {
@@ -224,8 +214,13 @@ describe("LoginWatch", () => {
     const { watch, reads, last, told } = createWatch();
     watch.keyPressed();
     await watch.submitting(reads(FORM));
+    const later: BrowserLiveLoginMessage[] = [];
+    const stop = watch.watch((message) => later.push(message));
+    expect(later).toEqual([{ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" }]);
+    stop();
     watch.dismiss();
     expect(last()).toEqual({ type: "login", state: "none" });
+    expect(later).toHaveLength(1);
     const before = told.length;
     watch.keyPressed();
     await watch.submitting(reads(FORM));
@@ -279,17 +274,4 @@ describe("LoginWatch", () => {
     expect(last()).toEqual({ type: "login", state: "none" });
   });
 
-  it("tells a view that connects later what is on offer", async () => {
-    const { watch, reads } = createWatch();
-    watch.keyPressed();
-    await watch.submitting(reads(FORM));
-    const later: BrowserLiveLoginMessage[] = [];
-
-    const stop = watch.watch((message) => later.push(message));
-
-    expect(later).toEqual([{ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" }]);
-    stop();
-    watch.dismiss();
-    expect(later).toHaveLength(1);
-  });
 });

@@ -57,8 +57,15 @@ describe("session_send", () => {
     taskStore.linkSession(targetTask.id, TARGET);
     const before = taskStore.getTask(targetTask.id);
     const recordUserMessage = vi.spyOn(taskStore, "recordUserMessage");
-    const result = await call({ sessionId: ` ${TARGET} `, message: "  Continue the proposal.  " });
-    expect(result).toMatchObject({
+    let accept!: () => void;
+    const promise = new Promise<void>((resolve) => { accept = resolve; });
+    sessionManager.startWorkAndWaitForDelivery = vi.fn(() => promise);
+    let settled = false;
+    const result = call({ sessionId: ` ${TARGET} `, message: "  Continue the proposal.  " }).then((value) => { settled = true; return value; });
+    await vi.waitFor(() => expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    accept();
+    expect(await result).toMatchObject({
       success: true, delivery: "accepted", sessionId: TARGET,
       link: `bridge://session/${TARGET}`, markdown: `[Open the target chat](bridge://session/${TARGET})`,
     });
@@ -80,19 +87,6 @@ describe("session_send", () => {
       TARGET, "Continue the proposal.", undefined, `session-send:${CALLER}:send-1`,
     );
     expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
-  });
-
-  it("does not return accepted until delivery resolves", async () => {
-    const { call, sessionManager } = fixture();
-    let accept!: () => void;
-    const promise = new Promise<void>((resolve) => { accept = resolve; });
-    sessionManager.startWorkAndWaitForDelivery = vi.fn(() => promise);
-    let settled = false;
-    const result = call().then((value) => { settled = true; return value; });
-    await vi.waitFor(() => expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce());
-    expect(settled).toBe(false);
-    accept();
-    expect(await result).toMatchObject({ delivery: "accepted" });
   });
 
   it("restores an archived target before sending and announces restoration once", async () => {

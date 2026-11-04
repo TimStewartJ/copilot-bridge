@@ -415,55 +415,6 @@ describe("session name autogenerator", () => {
       { result: "skipped_no_title", model: "gpt-6-luna", reply: "json" });
   });
 
-  it("creates the title helper session with the shared session-name helper base config", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
-    tempDirs.push(copilotHome);
-    const createSession = vi.fn(async () => ({
-      sendAndWait: vi.fn(async () => ({ data: { content: '{"title":"Concise Session Title"}' } })),
-      disconnect: vi.fn(),
-    }));
-    const generator = createSessionNameAutogenerator({
-      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 }, supportedReasoningEfforts: ["none", "low"] }] as any,
-      createSession,
-      deleteSession: vi.fn(async () => {}),
-      getCopilotHome: () => copilotHome,
-      getSessionName: vi.fn(async () => undefined),
-      getSessionNameMetadata: () => undefined,
-      setSessionName: vi.fn(async () => {}),
-    });
-
-    await (generator as any).generateSessionName(["Please fix this complicated issue"]);
-
-    expect(createSession).toHaveBeenCalledTimes(1);
-    const config = (createSession.mock.calls[0] as unknown as [Record<string, unknown>])[0];
-
-    const base = buildSessionNameHelperBaseConfig();
-    for (const [key, value] of Object.entries(base)) {
-      expect(config[key]).toEqual(value);
-    }
-
-    expect(config).not.toHaveProperty("tools");
-    expect(config).not.toHaveProperty("excludedTools");
-    expect(config.availableTools).toEqual([]);
-    for (const [key, value] of Object.entries(config)) {
-      if (!/tool/i.test(key)) continue;
-      if (Array.isArray(value)) expect(value).not.toContain("*");
-      else if (typeof value === "string") expect(value).not.toBe("*");
-    }
-
-    expect(config.clientName).toBe("Copilot Bridge Title Helper");
-    expect(config.model).toBe("gpt-5-mini");
-    expect(config.reasoningEffort).toBe("none");
-    expect(config.infiniteSessions).toEqual({ enabled: false });
-    expect(config.enableSessionTelemetry).toBe(false);
-    expect(config.enableSessionStore).toBe(false);
-    expect((config.systemMessage as { mode?: string } | undefined)?.mode).toBe("replace");
-    expect(typeof config.sessionId).toBe("string");
-
-    expect(config).not.toHaveProperty("suppressResumeEvent");
-    expect(config).not.toHaveProperty("continuePendingWork");
-  });
-
   it("removes legacy session-store rows after helper persistence completes", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-autogen-"));
     tempDirs.push(copilotHome);
@@ -499,7 +450,7 @@ describe("session name autogenerator", () => {
       };
     });
     const generator = createSessionNameAutogenerator({
-      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 } }] as any,
+      listModels: async () => [{ id: "gpt-5-mini", billing: { multiplier: 0 }, supportedReasoningEfforts: ["none", "low"] }] as any,
       createSession,
       deleteSession,
       getCopilotHome: () => copilotHome,
@@ -509,6 +460,25 @@ describe("session name autogenerator", () => {
     });
 
     await (generator as any).generateSessionName(["Please fix this complicated issue"]);
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const config = createSession.mock.calls[0]![0];
+    expect(config).toMatchObject({
+      ...buildSessionNameHelperBaseConfig(),
+      clientName: "Copilot Bridge Title Helper", model: "gpt-5-mini", reasoningEffort: "none",
+      systemMessage: { mode: "replace" }, infiniteSessions: { enabled: false },
+      enableSessionTelemetry: false, enableSessionStore: false, sessionId: expect.any(String),
+    });
+    expect(config).not.toHaveProperty("tools");
+    expect(config).not.toHaveProperty("excludedTools");
+    expect(config.availableTools).toEqual([]);
+    for (const [key, value] of Object.entries(config)) {
+      if (!/tool/i.test(key)) continue;
+      if (Array.isArray(value)) expect(value).not.toContain("*");
+      else if (typeof value === "string") expect(value).not.toBe("*");
+    }
+    expect(config).not.toHaveProperty("suppressResumeEvent");
+    expect(config).not.toHaveProperty("continuePendingWork");
 
     expect(disconnect).toHaveBeenCalledOnce();
     expect(deleteSession).toHaveBeenCalledOnce();

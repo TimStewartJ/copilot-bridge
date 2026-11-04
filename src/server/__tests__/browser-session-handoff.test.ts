@@ -305,17 +305,6 @@ describe("browser_session_handoff", () => {
 
   describe("the request to the user", () => {
 
-    it("shows a reason of the greatest length, without the whitespace around it", async () => {
-      const reason = "x".repeat(500);
-      const { form, fieldName, result, runtime, browserSessionId } = await openHandoff({ reason: `  ${reason}\n` });
-
-      expect(form.request.message.endsWith(`: ${reason}`)).toBe(true);
-      expect(runtime.sessions.matchHandoff("copilot-a", [fieldName])).toEqual({ browserSessionId, reason });
-
-      form.respond({ action: "cancel" });
-      await result;
-    });
-
     it.each([
       ["an empty reason", "   \n"],
       ["a reason longer than a few sentences", "x".repeat(501)],
@@ -339,12 +328,13 @@ describe("browser_session_handoff", () => {
       const { normalizePendingElicitationRequest, validateElicitationResponse } = await import(
         "../pending-interaction-validation.js"
       );
-      const { form, fieldName, result, runtime, browserSessionId } = await openHandoff();
+      const reason = "x".repeat(500);
+      const { form, fieldName, result, runtime, browserSessionId } = await openHandoff({ reason: `  ${reason}\n` });
 
       const view = normalizePendingElicitationRequest({ requestId: "request-1", ...form.request });
 
       expect(form.sessionId).toBe("copilot-a");
-      expect(view.message).toContain(REASON);
+      expect(view.message.endsWith(`: ${reason}`)).toBe(true);
       expect(Object.keys(view.requestedSchema?.properties ?? {})).toEqual([fieldName]);
       expect(view.requestedSchema).toMatchObject({
         properties: { [fieldName]: { type: "string", enum: ["done", "not_done"] } },
@@ -352,7 +342,7 @@ describe("browser_session_handoff", () => {
       });
       expect(runtime.sessions.matchHandoff("copilot-a", Object.keys(view.requestedSchema?.properties ?? {}))).toEqual({
         browserSessionId,
-        reason: REASON,
+        reason,
       });
       for (const answer of [BROWSER_HANDOFF_ANSWERS.done, BROWSER_HANDOFF_ANSWERS.notDone]) {
         expect(validateElicitationResponse(view, { action: "accept", content: { [fieldName]: answer } })).toEqual({

@@ -77,32 +77,24 @@ describe("SessionManager and commands left running in a session's shell", () => 
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-  it("keeps the session loaded and holds restarts while a recently started command runs", async () => {
-    const { manager, db } = createManager();
-    const waiting = sessionWithCommand("waiting", 0);
+  it("releases a command-protected session after the command finishes and its notice window ends", async () => {
+    const { manager, db, backgroundCommandStore, onBackgroundCommandsStopped } = createManager();
+    const session = sessionWithCommand("s1", 0);
     const idle = makeAgentSessionStub({ sessionId: "idle", disconnect: vi.fn().mockResolvedValue(undefined) });
-    await manager.cacheResumedSession("waiting", waiting);
+    await manager.cacheResumedSession("s1", session);
     await manager.cacheResumedSession("idle", idle);
 
     expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-    await manager.agentRegistry.refresh("waiting", "test");
+    await manager.agentRegistry.refresh("s1", "test");
 
     expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
-    expect(manager.getLifecycleBlockingSessionIds()).toEqual(["waiting"]);
+    expect(manager.getLifecycleBlockingSessionIds()).toEqual(["s1"]);
     expect(manager.getActiveSessions()).toEqual([]);
-    expect(runningMarkers(db, "waiting")).toBe(1);
+    expect(runningMarkers(db, "s1")).toBe(1);
 
     await expect(manager.evictIdleCachedSessions()).resolves.toEqual({ evictedSessions: 1, protectedSessions: 1 });
-    expect(waiting.disconnect).not.toHaveBeenCalled();
+    expect(session.disconnect).not.toHaveBeenCalled();
     expect(idle.disconnect).toHaveBeenCalledTimes(1);
-  });
-
-  it("lets go once the command finishes, with nothing to report", async () => {
-    const { manager, db, backgroundCommandStore, onBackgroundCommandsStopped } = createManager();
-    const session = sessionWithCommand("s1", 0);
-    await manager.cacheResumedSession("s1", session);
-    await manager.agentRegistry.refresh("s1", "started");
-    expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
 
     session.setCommand("completed");
     await manager.agentRegistry.refresh("s1", "finished");

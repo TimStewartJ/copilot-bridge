@@ -60,7 +60,19 @@ describe("SessionManager SDK-owned user input", () => {
     const events: unknown[] = [];
     eventBusRegistry.getOrCreateBus("session-1").subscribe((event) => events.push(event));
 
-    await expect(manager.submitUserInputResponse("session-1", "request-1", {
+    const snapshot = await manager.hydratePendingInteractions("session-1");
+    expect(snapshot).toEqual({
+      pendingUserInputs: [{
+        requestId: "request-1",
+        question: "Continue?",
+        choices: ["yes", "no"],
+        allowFreeform: false,
+        toolCallId: "tool-1",
+      }],
+      pendingElicitations: [],
+    });
+
+    await expect(manager.submitUserInputResponse("session-1", snapshot.pendingUserInputs[0]!.requestId, {
       answer: "yes",
       wasFreeform: false,
     })).resolves.toMatchObject({
@@ -103,21 +115,6 @@ describe("SessionManager SDK-owned user input", () => {
       statusCode: 404,
       message: "Pending user input request not found",
     } satisfies Partial<PendingInteractionError>);
-  });
-
-  it("hydrates reconnect snapshots from the listing index", async () => {
-    const { manager } = createManager([pendingRequest()]);
-
-    await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
-      pendingUserInputs: [{
-        requestId: "request-1",
-        question: "Continue?",
-        choices: ["yes", "no"],
-        allowFreeform: false,
-        toolCallId: "tool-1",
-      }],
-      pendingElicitations: [],
-    });
   });
 
   it("emits synchronous pending status before snapshot reconciliation completes", () => {

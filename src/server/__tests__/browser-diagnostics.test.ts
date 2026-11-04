@@ -220,6 +220,8 @@ describe("browser diagnostics", () => {
 
   it("surfaces an inherited agent-browser executable environment override", async () => {
     vi.stubEnv("AGENT_BROWSER_EXECUTABLE_PATH", process.execPath);
+    vi.stubEnv("AGENT_BROWSER_ARGS", "--no-sandbox,--lang=en-US");
+    readJsonFile.mockResolvedValue({ args: ["--from-config"] });
     const { ctx } = createContext({ copilotHome: testPath(".copilot") });
 
     const mod = await import("../browser-diagnostics.js");
@@ -231,6 +233,10 @@ describe("browser diagnostics", () => {
       executablePathConfigured: true,
       executablePathExists: true,
       headed: false,
+    });
+    expect(result.config.launch).toEqual({
+      args: ["--no-sandbox", "--lang=en-US", BLINK_DEFAULT, SWIFTSHADER, BLANK],
+      inheritedFrom: "environment",
     });
   });
 
@@ -298,6 +304,8 @@ describe("browser diagnostics", () => {
       const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
       const result = await getBrowserDiagnostics(ctx);
 
+      expect(result.issues).toEqual([]);
+      expect(result.summary).toMatchObject({ tone: "warning", label: "Functional check required" });
       expect(result.config).toMatchObject({
         executablePathSource: "auto-detect",
         executablePathConfigured: false,
@@ -309,24 +317,6 @@ describe("browser diagnostics", () => {
       expect(readModifiedAt).not.toHaveBeenCalled();
       expect(readBrowserVersion).not.toHaveBeenCalled();
     });
-  });
-
-  describe("launch arguments", () => {
-    it("shows the arguments inherited from AGENT_BROWSER_ARGS", async () => {
-      vi.stubEnv("AGENT_BROWSER_ARGS", "--no-sandbox,--lang=en-US");
-      // The environment replaces agent-browser's configuration file, as it does in agent-browser.
-      readJsonFile.mockResolvedValue({ args: ["--from-config"] });
-      const { ctx } = createContext();
-
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const result = await getBrowserDiagnostics(ctx);
-
-      expect(result.config.launch).toEqual({
-        args: ["--no-sandbox", "--lang=en-US", BLINK_DEFAULT, SWIFTSHADER, BLANK],
-        inheritedFrom: "environment",
-      });
-    });
-
   });
 
   describe("agent-browser version", () => {
@@ -410,30 +400,6 @@ describe("browser diagnostics", () => {
       return profileRoot;
     }
 
-    it("counts the profiles on disk and the ones a browser is using", async () => {
-      const { ctx, copilotHome } = createContext();
-      const profileRoot = seedPublicProfiles(copilotHome);
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const { getBrowserRuntime } = await import("../browser-runtime.js");
-      const broker = getBrowserRuntime(ctx).broker;
-
-      expect((await getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({
-        context: "public",
-        profileRoot,
-        profiles: 3,
-        profilesInUse: 0,
-        concurrencyLimit: 5,
-      });
-
-      const lease = await broker.createSessionTarget("public");
-      expect(lease.browserTarget.profileDir).toBe(path.join(profileRoot, "slot-1"));
-      expect((await getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({ profiles: 3, profilesInUse: 1 });
-
-      await broker.disposeSessionTarget(lease, { toolName: "test", browserOpId: "op-1" });
-      // The profile stays for the next browser.
-      expect((await getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({ profiles: 3, profilesInUse: 0 });
-    });
-
     it("still answers, with no profiles counted, when their folder cannot be read", async () => {
       const { ctx, copilotHome } = createContext();
       // A file where the folder belongs.
@@ -463,8 +429,17 @@ describe("browser diagnostics", () => {
       const { getBrowserRuntime } = await import("../browser-runtime.js");
       const broker = getBrowserRuntime(ctx).broker;
       expect(broker.getAuthenticatedTarget().profileDir).toBe(path.dirname(authenticatedCookies));
+      expect((await mod.getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({
+        context: "public",
+        profileRoot,
+        profiles: 3,
+        profilesInUse: 0,
+        concurrencyLimit: 5,
+      });
       const lease = await broker.createSessionTarget("public");
 
+      expect(lease.browserTarget.profileDir).toBe(path.join(profileRoot, "slot-1"));
+      expect((await mod.getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({ profiles: 3, profilesInUse: 1 });
       await expect(mod.resetPublicBrowserProfiles(ctx)).resolves.toEqual({ ok: true, cleared: 2, inUse: 1 });
 
       expect(existsSync(path.join(profileRoot, "slot-1", "Cookies"))).toBe(true);
@@ -478,6 +453,7 @@ describe("browser diagnostics", () => {
       expect((await mod.getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({ profiles: 1, profilesInUse: 1 });
 
       await broker.disposeSessionTarget(lease, { toolName: "test", browserOpId: "op-1" });
+      expect((await mod.getBrowserDiagnostics(ctx)).contexts.public).toMatchObject({ profiles: 1, profilesInUse: 0 });
       await expect(mod.resetPublicBrowserProfiles(ctx)).resolves.toEqual({ ok: true, cleared: 1, inUse: 0 });
       expect(existsSync(path.join(profileRoot, "slot-1"))).toBe(false);
       await expect(mod.resetPublicBrowserProfiles(ctx)).resolves.toEqual({ ok: true, cleared: 0, inUse: 0 });
@@ -486,16 +462,6 @@ describe("browser diagnostics", () => {
   });
 
   describe("issues", () => {
-    it("lists none when nothing went wrong", async () => {
-      const { ctx } = createContext();
-
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const result = await getBrowserDiagnostics(ctx);
-
-      expect(result.issues).toEqual([]);
-      expect(result.summary).toMatchObject({ tone: "warning", label: "Functional check required" });
-    });
-
     it("counts each kind of failure from its own telemetry and ignores what is not a failure", async () => {
       const { ctx, telemetryStore } = createContext();
       const record = (name: string, metadata: Record<string, unknown>, times = 1) => {
@@ -529,16 +495,6 @@ describe("browser diagnostics", () => {
       expect(result.summary).toMatchObject({ tone: "warning", label: "Search challenges detected" });
       // All three engines' challenges together, and the window they were counted in.
       expect(result.summary.detail).toMatch(/\b6\b.*\b24 hours\b/);
-    });
-
-    it("says so when recovery was the only trouble", async () => {
-      const { ctx, telemetryStore } = createContext();
-      telemetryStore.recordSpan({ name: "browser.recovery.detected", duration: 0, source: "server" });
-
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const result = await getBrowserDiagnostics(ctx);
-
-      expect(result.summary).toMatchObject({ tone: "warning", label: "Browser recovery used" });
     });
 
     it("groups blocked pages by the product that blocked them, or by site when none was recognised", async () => {
@@ -611,6 +567,7 @@ describe("browser diagnostics", () => {
       const result = await getBrowserDiagnostics(ctx);
 
       expect(result.issues.map((issue) => issue.code)).toEqual(["browser.recovery.detected", "page.blocked.aws_waf"]);
+      expect(result.summary).toMatchObject({ tone: "warning", label: "Browser recovery used" });
     });
 
     it("tells what to do when the host refuses Chrome its sandbox", async ({ signal }) => {

@@ -593,7 +593,7 @@ describe("SessionManager run state", () => {
     ]));
   });
 
-  it("tracks the run's autopilot mode for the session list and the live stream", async () => {
+  it("announces the mode at each run start and tracks a runtime change in the list and live stream", async () => {
     const { manager, globalBus, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
@@ -611,6 +611,16 @@ describe("SessionManager run state", () => {
     expect(modeEvents).toEqual([{ type: "session:mode", sessionId: "session-1", agentMode: "autopilot" }]);
     expect(eventBusRegistry.getBus("session-1")?.getSnapshot().runMode).toBe("autopilot");
 
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:00.000Z" });
+    await flushMicrotasks();
+
+    manager.startWork("session-1", "second", undefined, { mode: "autopilot" });
+    await flushMicrotasks();
+
+    expect(modeEvents.filter((event) => event.agentMode === "autopilot")).toHaveLength(2);
+
     // The CLI can change the mode on its own; the stream and the list follow it.
     getHandler()?.({
       type: "session.mode_changed",
@@ -621,34 +631,6 @@ describe("SessionManager run state", () => {
     expect(eventBusRegistry.getBus("session-1")?.getSnapshot().runMode).toBe("interactive");
     expect(modeEvents.at(-1)).toEqual({ type: "session:mode", sessionId: "session-1", agentMode: "interactive" });
 
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
-    await flushMicrotasks();
-  });
-
-  it("announces the mode again when the next run uses the same mode", async () => {
-    const { manager, globalBus } = createManager();
-    const { session, getHandler, getReleaseSend } = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-    };
-    const modeEvents: any[] = [];
-    globalBus.subscribe((event: any) => {
-      if (event.type === "session:mode") modeEvents.push(event);
-    });
-
-    manager.startWork("session-1", "first", undefined, { mode: "autopilot" });
-    await flushMicrotasks();
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:00.000Z" });
-    await flushMicrotasks();
-
-    manager.startWork("session-1", "second", undefined, { mode: "autopilot" });
-    await flushMicrotasks();
-
-    expect(modeEvents.filter((event) => event.agentMode === "autopilot")).toHaveLength(2);
     getReleaseSend()?.();
     await flushMicrotasks();
     getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
@@ -1583,6 +1565,8 @@ describe("SessionManager run state", () => {
     expect(manager.isSessionBusy("session-1")).toBe(true);
     expect(manager.getActiveSessions()).toContain("session-1");
     expect(manager.getSessionRunState("session-1")).toBe("idle");
+
+    await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("busy but not accepting steering");
 
     resolveResume(resumedSession);
     await warming;
@@ -2765,55 +2749,16 @@ describe("SessionManager run state", () => {
     });
   });
 
-  it("includes the final assistant message preview on normal idle events", async () => {
-    const { manager, globalBus } = createManager();
-    let idleEvent: any;
-    globalBus.subscribe((event) => {
-      if (event.type === "session:idle" && event.sessionId === "session-1") {
-        idleEvent = event;
-      }
-    });
-
-    const { session, getHandler, getReleaseSend } = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-    };
-
-    manager.startWork("session-1", "hello");
-    await flushMicrotasks();
-
-    getHandler()?.({
-      type: "assistant.message",
-      data: {
-        content: "**Done.** Here's the `fix`:\n\n```ts\nconst noisy = true;\n```\n\nSecond paragraph should not be in the preview.",
-      },
-      timestamp: new Date().toISOString(),
-    });
-    await flushMicrotasks();
-
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date().toISOString(),
-    });
-    await flushMicrotasks();
-
-    expect(idleEvent).toMatchObject({
-      type: "session:idle",
-      sessionId: "session-1",
-      assistantPreview: "Done. Here's the fix:",
-    });
-  });
-
   it("projects the final assistant message identity through terminal events and snapshots", async () => {
-    const { manager, eventBusRegistry } = createManager();
+    const { manager, globalBus, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
     manager.backend = {
       resumeSession: vi.fn().mockResolvedValue(session),
     };
 
+    const idleEvents: unknown[] = [];
+    globalBus.subscribe((event) => { if (event.type === "session:idle") idleEvents.push(event); });
+    const final = "**Done.** Here's the `fix`:\n\n```ts\nconst noisy = true;\n```\n\nSecond paragraph should not be in the preview.";
     const bus = eventBusRegistry.getOrCreateBus("session-1");
     const received: any[] = [];
     bus.subscribe((event) => received.push(event));
@@ -2838,7 +2783,7 @@ describe("SessionManager run state", () => {
     getHandler()?.({
       id: "assistant-event-1",
       type: "assistant.message",
-      data: { content: "Final answer" },
+      data: { content: final },
       timestamp: "2026-07-22T16:00:01.000Z",
     });
     await flushMicrotasks();
@@ -2860,7 +2805,7 @@ describe("SessionManager run state", () => {
           sourceEventId: "assistant-event-1",
           turnId: "provider-turn-1",
           turnInstanceId: "turn-start-event",
-          content: "Final answer",
+          content: final,
         },
       ],
     });
@@ -2875,17 +2820,20 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
+    expect(idleEvents).toContainEqual(expect.objectContaining({
+      sessionId: "session-1", assistantPreview: "Done. Here's the fix:",
+    }));
     expect(bus.getTerminalState()).toMatchObject({
       complete: true,
       terminalEventId: "terminal-event-1",
       terminalAssistantEventId: "assistant-event-1",
-      finalContent: "Final answer",
+      finalContent: final,
     });
     expect(received).toContainEqual(expect.objectContaining({
       type: "done",
       sourceEventId: "terminal-event-1",
       assistantSourceEventId: "assistant-event-1",
-      content: "Final answer",
+      content: final,
     }));
   });
 

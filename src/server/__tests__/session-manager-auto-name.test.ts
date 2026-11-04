@@ -41,6 +41,9 @@ describe("SessionManager fork auto-name requests", () => {
     const session = {};
     sessionMetaStore.setPendingAutoName("fork-session", "Fork of Original session");
 
+    expect(sessionMetaStore.getMeta("fork-session")).toBeUndefined();
+    expect(bridgeSessionStateStore.getState("fork-session")).toMatchObject({ pendingAutoName: true, pendingAutoNameReplaceTitle: "Fork of Original session" });
+
     manager.maybeAutoNameSession("fork-session", {
       session,
       userMessages: ["Investigate the new failure mode"],

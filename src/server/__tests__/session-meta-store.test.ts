@@ -25,31 +25,14 @@ describe("session-meta-store", () => {
     expect(bridgeSessionState.getState("session-1")?.titleOverride).toBe("Manual title");
   });
 
-  it("deleteMeta removes entry", () => {
-    store.setArchived("session-1", true);
-    store.deleteMeta("session-1");
-    expect(store.getMeta("session-1")).toBeUndefined();
-  });
-
   it("setScheduleMeta preserves existing archive state", () => {
     store.setArchived("session-1", true);
     store.setScheduleMeta("session-1", "sched-1", "Test");
     const meta = store.getMeta("session-1");
     expect(meta).toMatchObject({ archived: true, triggeredBy: "schedule", scheduleId: "sched-1", scheduleName: "Test" });
-  });
 
-  it("listMetaFor returns the sessions asked for, and tells an archived session from one with no row", () => {
-    store.setArchived("archived", true);
-    store.setLastVisibleActivityAt("active", "2026-05-07T21:00:00.000Z");
-    store.setArchived("other", true);
-
-    const meta = store.listMetaFor(["archived", "active", "no-row"]);
-
-    expect(Object.keys(meta).sort()).toEqual(["active", "archived"]);
-    expect(meta.archived).toMatchObject({ archived: true, archivedAt: expect.stringMatching(/^20/) });
-    expect(meta.active).toMatchObject({ archived: false, archivedAt: "", lastVisibleActivityAt: "2026-05-07T21:00:00.000Z" });
-    expect(meta["no-row"]).toBeUndefined();
-    expect(store.listMetaFor([])).toEqual({});
+    store.deleteMeta("session-1");
+    expect(store.getMeta("session-1")).toBeUndefined();
   });
 
   it("listArchivedSessionIds returns ids of archived sessions only", () => {
@@ -58,7 +41,15 @@ describe("session-meta-store", () => {
     store.setArchived("restored", false);
     store.setLastVisibleActivityAt("active", "2026-05-07T21:00:00.000Z");
 
-    expect(store.listArchivedSessionIds()).toEqual(["archived"]);
+    store.setArchived("other", true);
+    expect(store.listArchivedSessionIds().sort()).toEqual(["archived", "other"]);
+    const meta = store.listMetaFor(["archived", "active", "no-row"]);
+
+    expect(Object.keys(meta).sort()).toEqual(["active", "archived"]);
+    expect(meta.archived).toMatchObject({ archived: true, archivedAt: expect.stringMatching(/^20/) });
+    expect(meta.active).toMatchObject({ archived: false, archivedAt: "", lastVisibleActivityAt: "2026-05-07T21:00:00.000Z" });
+    expect(meta["no-row"]).toBeUndefined();
+    expect(store.listMetaFor([])).toEqual({});
   });
 
   it("omits title-only and workspace-only overlay rows from meta reads", () => {
@@ -79,23 +70,6 @@ describe("session-meta-store", () => {
       lastAttentionAt: "2026-05-07T10:00:00.000Z",
     });
     expect(store.listMeta()["session-1"]?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
-  });
-
-  it("persists and consumes fork auto-name requests outside public session meta", () => {
-    const bridgeSessionState = createBridgeSessionStateStore(db);
-
-    store.setPendingAutoName("session-1", "Fork of Original session");
-
-    expect(store.getMeta("session-1")).toBeUndefined();
-    expect(bridgeSessionState.getState("session-1")).toMatchObject({
-      pendingAutoName: true,
-      pendingAutoNameReplaceTitle: "Fork of Original session",
-    });
-    expect(store.consumePendingAutoName("session-1")).toEqual({
-      replaceTitle: "Fork of Original session",
-    });
-    expect(store.consumePendingAutoName("session-1")).toBeUndefined();
-    expect(bridgeSessionState.getState("session-1")).toBeUndefined();
   });
 
   it("persists and clears bridge-synthesized terminal overlays", () => {
@@ -124,23 +98,16 @@ describe("session-meta-store", () => {
   it("listSessionIdsBySchedule returns sessions for a schedule", () => {
     store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
     store.recordScheduleRun("sched-a", "s2", "2026-01-02T00:00:00.000Z");
+    store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
     store.recordScheduleRun("sched-b", "s3");
 
     const result = store.listSessionIdsBySchedule("sched-a");
-    expect(result).toHaveLength(2);
-    expect(result).toContain("s1");
-    expect(result).toContain("s2");
+    expect(result).toEqual(["s2", "s1", "s1"]);
     expect(store.listScheduleRuns("sched-a")).toMatchObject([
       { sessionId: "s2", recordedAt: "2026-01-02T00:00:00.000Z" },
       { sessionId: "s1", recordedAt: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "s1", recordedAt: "2026-01-01T00:00:00.000Z" },
     ]);
-  });
-
-  it("listSessionIdsBySchedule preserves repeated runs of the same session", () => {
-    store.recordScheduleRun("sched-a", "shared");
-    store.recordScheduleRun("sched-a", "shared");
-
-    expect(store.listSessionIdsBySchedule("sched-a")).toEqual(["shared", "shared"]);
   });
 
   it("listScheduleRuns normalizes and sorts mixed timestamp formats", () => {
@@ -181,7 +148,7 @@ function seedRuns(store: SessionMetaStore, scheduleId: string, count: number): s
 }
 
 describe("pruneScheduleRuns", () => {
-  it("keeps the newest N rows, prunes older ones, and preserves ordering", () => {
+  it("prunes only the oldest runs of this schedule and is a no-op once it is within the limit", () => {
     const ids = seedRuns(store, "sched-a", 6); // s0 (oldest) … s5 (newest)
     store.recordScheduleRun("other", "other-1");
 
@@ -189,22 +156,11 @@ describe("pruneScheduleRuns", () => {
 
     expect(deleted).toBe(3);
     expect(store.listSessionIdsBySchedule("sched-a")).toEqual([ids[5], ids[4], ids[3]]);
+    expect(store.pruneScheduleRuns("sched-a", 3)).toBe(0);
+    expect(store.pruneScheduleRuns("sched-a", 5)).toBe(0);
+    expect(store.listScheduleRuns("sched-a")).toHaveLength(3);
     // Unrelated schedules are untouched.
     expect(store.listSessionIdsBySchedule("other")).toEqual(["other-1"]);
-  });
-
-  it("is idempotent and a no-op at or below the cap", () => {
-    seedRuns(store, "sched-a", 3);
-
-    expect(store.pruneScheduleRuns("sched-a", 5)).toBe(0);
-    expect(store.pruneScheduleRuns("sched-a", 3)).toBe(0);
-    expect(store.listScheduleRuns("sched-a")).toHaveLength(3);
-
-    // First prune trims, second prune is a no-op.
-    seedRuns(store, "sched-b", 5);
-    expect(store.pruneScheduleRuns("sched-b", 2)).toBe(3);
-    expect(store.pruneScheduleRuns("sched-b", 2)).toBe(0);
-    expect(store.listScheduleRuns("sched-b")).toHaveLength(2);
   });
 
   it("never prunes rows for retained session ids even when older than the cap", () => {

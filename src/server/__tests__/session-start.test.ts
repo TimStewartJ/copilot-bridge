@@ -39,7 +39,14 @@ describe("session_start", () => {
     const task = taskStore.createTask("Caller task");
     taskStore.linkSession(task.id, CALLER_ID);
 
-    const result = await call({ prompt: "  Prepare a proposal in this separate chat.  " });
+    let accept!: () => void;
+    const accepted = new Promise<void>((resolve) => { accept = resolve; });
+    sessionManager.startWorkAndWaitForDelivery = vi.fn(() => accepted);
+    let settled = false;
+    const result = call({ prompt: "  Prepare a proposal in this separate chat.  " }).then((value) => { settled = true; return value; });
+    await vi.waitFor(() => expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    accept();
 
     expect(sessionManager.createSession).toHaveBeenCalledWith({});
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
@@ -48,7 +55,7 @@ describe("session_start", () => {
       SESSION_ID, "Prepare a proposal in this separate chat.",
     );
     expect(taskStore.getTask(task.id)?.sessionIds).toEqual([CALLER_ID]);
-    expect(result).toMatchObject({
+    expect(await result).toMatchObject({
       success: true, sessionId: SESSION_ID, link: `bridge://session/${SESSION_ID}`, status: "prompt_accepted",
       markdown: `[Open the new chat](bridge://session/${SESSION_ID})`,
     });
@@ -70,19 +77,6 @@ describe("session_start", () => {
     );
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(result).toMatchObject({ success: true, taskId: task.id, taskLinked: true });
-  });
-
-  it("waits for prompt acceptance but not for the new chat to finish", async () => {
-    const { call, sessionManager } = createHarness();
-    let accept!: () => void;
-    const accepted = new Promise<void>((resolve) => { accept = resolve; });
-    sessionManager.startWorkAndWaitForDelivery = vi.fn(() => accepted);
-    let settled = false;
-    const result = call({ prompt: "Work independently." }).then((value) => { settled = true; return value; });
-    await vi.waitFor(() => expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledOnce());
-    expect(settled).toBe(false);
-    accept();
-    expect(await result).toMatchObject({ success: true, status: "prompt_accepted" });
   });
 
   it("validates explicit settings and forwards only the overrides", async () => {

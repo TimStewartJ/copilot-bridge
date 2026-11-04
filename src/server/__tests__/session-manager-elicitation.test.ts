@@ -179,9 +179,12 @@ describe("SessionManager elicitation responses", () => {
     } satisfies Partial<PendingInteractionError>);
   });
 
-  it("hydrates a reconnect from the listing index", async () => {
-    const { manager } = createManager([pendingRequest()]);
+});
 
+describe("SessionManager elicitation terminal cleanup", () => {
+  it("holds reconnect hydration until terminal cancellation settles", async () => {
+    const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
+    recordPendingElicitation(manager);
     await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
       pendingUserInputs: [],
       pendingElicitations: [{
@@ -192,13 +195,7 @@ describe("SessionManager elicitation responses", () => {
         requestedSchema: pendingRequest().requestedSchema,
       }],
     });
-  });
-});
 
-describe("SessionManager elicitation terminal cleanup", () => {
-  it("holds reconnect hydration until terminal cancellation settles", async () => {
-    const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
-    recordPendingElicitation(manager);
     let releaseCancel!: () => void;
     tryRespondToElicitation.mockImplementationOnce(
       () => new Promise<boolean>((resolve) => {

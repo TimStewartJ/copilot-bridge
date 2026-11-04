@@ -76,6 +76,11 @@ describe("UserBrowserSession.openLiveView", () => {
     await expect(user.sessions.closeSession(ticket.browserSessionId, "chat-session-1", true)).resolves.toMatchObject({ ok: false });
     expect(use).not.toHaveBeenCalled();
     expect(user.sessions.getSession(ticket.browserSessionId)).toBeDefined();
+
+    await expect(user.expire()).resolves.toBe(1);
+    const next = await user.userSession.openLiveView();
+    expect(next.browserSessionId).not.toBe(ticket.browserSessionId);
+    expect(user.sessions.getSession(next.browserSessionId)).toBeDefined();
   });
 
   it("makes one session for two requests at once, and gives later requests the same one", async () => {
@@ -88,17 +93,6 @@ describe("UserBrowserSession.openLiveView", () => {
     expect(third.browserSessionId).toBe(first.browserSessionId);
     // Each request gets a ticket of its own.
     expect(new Set([first.token, second.token, third.token]).size).toBe(3);
-  });
-
-  it("makes a new session after the store closed the one it had", async () => {
-    const user = createUserBrowser();
-    const first = await user.userSession.openLiveView();
-    await expect(user.expire()).resolves.toBe(1);
-
-    const second = await user.userSession.openLiveView();
-
-    expect(second.browserSessionId).not.toBe(first.browserSessionId);
-    expect(user.sessions.getSession(second.browserSessionId)).toBeDefined();
   });
 
   it("refuses while an agent has handed the signed-in browser to the user, and says what for", async () => {

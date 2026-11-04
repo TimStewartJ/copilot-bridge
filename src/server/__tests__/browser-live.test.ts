@@ -751,8 +751,14 @@ describe("BrowserLiveGateway.checkStream", () => {
     const view = await h.openView(session.id);
     expect(h.gateway.getLastCheck()).toBe(failed);
 
-    send(view.upstream, FRAME);
-    await view.client.inbox.next();
+    send(view.upstream, {
+      type: "frame",
+      seq: 7,
+      data: "anBlZw==",
+      metadata: { deviceWidth: 1280, deviceHeight: 720, pageScaleFactor: 1, offsetTop: 0, scrollOffsetX: 0, scrollOffsetY: 0, timestamp: 1 },
+    });
+
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 7, data: "anBlZw==" });
     const passed = h.gateway.getLastCheck();
     expect(passed).toStrictEqual({ ok: true, checkedAt: expect.any(String) });
 
@@ -812,6 +818,12 @@ describe("BrowserLiveGateway file choosers", () => {
     await expect(stat(photo)).resolves.toBeTruthy();
     await expect(h.gateway.claimFileChooser(asked.id)).resolves.toBeUndefined();
     await expect(h.gateway.chooseFiles(asked.id, [photo])).resolves.toEqual({ ok: false, error: GONE });
+
+    // The browser can also close in the middle of the next upload.
+    const pending = await h.gateway.claimFileChooser((await choose()).id);
+    await writeFile(join(pending!.folder, "pending.jpg"), "partial");
+    await h.store.closeSession(session.id, OWNER);
+    await vi.waitFor(async () => expect(await readdir(filesDir)).toEqual([]));
   });
 
   it("leaves a chooser open when its files did not arrive, and ends it when the page would not take them", async () => {
@@ -853,16 +865,6 @@ describe("BrowserLiveGateway file choosers", () => {
     await chrome.disconnected();
     expect(chrome.sent("Page.setInterceptFileChooserDialog", (params) => params.enabled).filter((sent) => sent.endsWith("false")))
       .toEqual(["page:false", "frame:false", "popup:false"]);
-  });
-
-  it("removes a session's files when the session closes", async () => {
-    const { h, session, filesDir, choose } = await openFileView();
-    const claim = await h.gateway.claimFileChooser((await choose()).id);
-    await writeFile(join(claim!.folder, "photo.jpg"), "photo");
-
-    await h.store.closeSession(session.id, OWNER);
-
-    await vi.waitFor(async () => expect(await readdir(filesDir)).toEqual([]));
   });
 
   it("counts a view as in use while files for its chooser are being received", async () => {
@@ -925,23 +927,6 @@ describe("BrowserLiveGateway tickets", () => {
     expect(h.journal).toEqual([]);
   });
 
-  it("gives a ticket for the session's browser that is valid for 60 seconds", async () => {
-    const h = await createHarness();
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(T0);
-    const session = await h.createSession();
-
-    const ticket = await h.gateway.createTicket(session.id);
-    const second = await h.gateway.createTicket(session.id);
-
-    expect(ticket).toEqual({
-      browserSessionId: session.id,
-      token: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
-      expiresAt: new Date(T0 + 60_000).toISOString(),
-    });
-    expect(second.token).not.toBe(ticket.token);
-  });
-
   it("upgrades under a path prefix, as a staged preview serves it", async () => {
     const { h, ticket } = await createTicketHarness();
 
@@ -952,14 +937,6 @@ describe("BrowserLiveGateway tickets", () => {
     expect(h.handled).toEqual([true]);
   });
 
-  it("answers 403 when a ticket is used a second time", async () => {
-    const { h, ticket } = await createTicketHarness();
-    await h.openWithTicket(ticket);
-
-    await expect(h.connect(h.liveUrl(ticket))).resolves.toEqual({ status: 403 });
-    expect(h.handled).toEqual([true, true]);
-  });
-
   it("accepts a ticket until its 60 seconds are over, and answers 403 after that", async () => {
     const h = await createHarness();
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -968,8 +945,20 @@ describe("BrowserLiveGateway tickets", () => {
     const ticket = await h.gateway.createTicket(session.id);
     const late = await h.gateway.createTicket(session.id);
 
+    expect(ticket).toEqual({
+      browserSessionId: session.id,
+      token: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+      expiresAt: new Date(T0 + 60_000).toISOString(),
+    });
+    expect(late.token).not.toBe(ticket.token);
+
     vi.setSystemTime(T0 + 59_999);
-    await expect(h.connect(h.liveUrl(ticket))).resolves.toHaveProperty("socket");
+    const view = await h.openWithTicket(ticket);
+    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
+
+    // It is spent as soon as the connection opens, even before the clock reaches expiry.
+    await expect(h.connect(h.liveUrl(ticket))).resolves.toEqual({ status: 403 });
+    expect(h.handled).toEqual([true, true]);
 
     vi.setSystemTime(T0 + 60_000);
     await expect(h.connect(h.liveUrl(late))).resolves.toEqual({ status: 403 });
@@ -1178,32 +1167,6 @@ describe("BrowserLiveGateway connection limit", () => {
 });
 
 describe("BrowserLiveGateway relay to the client", () => {
-  it("forwards a frame without its metadata", async () => {
-    const h = await createHarness();
-    const view = await h.openView((await h.createSession()).id);
-
-    send(view.upstream, {
-      type: "frame",
-      seq: 7,
-      data: "anBlZw==",
-      metadata: { deviceWidth: 1280, deviceHeight: 720, pageScaleFactor: 1, offsetTop: 0, scrollOffsetX: 0, scrollOffsetY: 0, timestamp: 1 },
-    });
-
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 7, data: "anBlZw==" });
-  });
-
-  it("forwards the page's address when the browser navigates, once per address", async () => {
-    const h = await createHarness();
-    const view = await h.openView((await h.createSession()).id);
-
-    send(view.upstream, { type: "url", url: "https://example.com/next", title: "Next" });
-    send(view.upstream, { type: "url", url: "https://example.com/next" });
-    send(view.upstream, { type: "frame", seq: 1, data: "QQ==" });
-
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/next" });
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
-  });
-
   it("drops every other message of the stream, and malformed ones", async () => {
     const h = await createHarness();
     const view = await h.openView((await h.createSession()).id);
@@ -1276,34 +1239,20 @@ describe("BrowserLiveGateway relay to the browser", () => {
     expect(await view.upstream.inbox.next()).toStrictEqual({ type: "ack", seq: 9 });
   });
 
-  it("hands typed text to the browser one code point at a time, carrying its modifiers and nothing else", async () => {
-    const h = await createHarness();
-    const view = await h.openView((await h.createSession()).id);
-
-    // A character and the accent combined with it are two code points; a surrogate pair is one.
-    send(view.client, typed({ text: "he\u0301\u{1f600}", key: "h", code: "KeyH", windowsVirtualKeyCode: 72, modifiers: 8 }));
-    // Empty text is nothing to type; a char event without text goes on as it came.
-    send(view.client, typed({ text: "" }));
-    send(view.client, typed({ key: "a" }));
-    send(view.client, typed({ text: "!" }));
-
-    for (const text of ["h", "e", "\u0301", "\u{1f600}"]) {
-      expect(await view.upstream.inbox.next()).toStrictEqual(typed({ text, modifiers: 8 }));
-    }
-    expect(await view.upstream.inbox.next()).toStrictEqual(typed({ key: "a" }));
-    expect(await view.upstream.inbox.next()).toStrictEqual(typed({ text: "!" }));
-  });
-
   it("forwards a long text whole and in order, ahead of the input that came after it", async () => {
     const h = await createHarness();
     const view = await h.openView((await h.createSession()).id);
-    const characters = Array.from({ length: 200 }, (_unused, index) => String.fromCodePoint(0x100 + index));
+    // Each code point is one keystroke, including a combining mark and a surrogate pair.
+    const characters = ["h", "e", "\u0301", "\u{1f600}", ...Array.from({ length: 200 }, (_unused, i) => String.fromCodePoint(0x100 + i))];
 
-    send(view.client, typed({ text: characters.join(""), modifiers: 8 }));
+    send(view.client, typed({ text: characters.join(""), key: "h", code: "KeyH", windowsVirtualKeyCode: 72, modifiers: 8 }));
+    send(view.client, typed({ text: "" }));
+    send(view.client, typed({ key: "a" }));
     send(view.client, mouse());
     send(view.client, { type: "ack", seq: 1 });
 
     for (const text of characters) expect(await view.upstream.inbox.next()).toStrictEqual(typed({ text, modifiers: 8 }));
+    expect(await view.upstream.inbox.next()).toStrictEqual(typed({ key: "a" }));
     expect(await view.upstream.inbox.next()).toStrictEqual(mouse());
     expect(await view.upstream.inbox.next()).toStrictEqual({ type: "ack", seq: 1 });
   });
@@ -1440,6 +1389,9 @@ describe("BrowserLiveGateway saved logins", () => {
     expect(waitingAtRead).toBe(0);
     // Reads of a password are recorded nowhere.
     expect(h.cli.calls.filter((call) => readsSignInForm(call.command)).every((call) => call.options.telemetryStore === undefined)).toBe(true);
+
+    send(view.client, { type: "navigate", url: "https://example.com/" });
+    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "none" });
   });
 
   it("keeps the offered sign-in when the viewer asks for it, through the session's own browser", async () => {
@@ -1469,20 +1421,6 @@ describe("BrowserLiveGateway saved logins", () => {
 
     expect(await view.upstream.inbox.next()).toStrictEqual(click);
     expect(formReads(h)).toBe(0);
-  });
-
-  it("forgets the offer when the viewer opens another address", async () => {
-    const { logins } = createLogins();
-    const h = await createHarness({ logins });
-    const view = await h.openView((await h.createSession()).id);
-    h.cli.answers.signInForm = () => formRead(FORM);
-    send(view.client, typed("pw"));
-    send(view.client, ENTER);
-    await nextLogin(view);
-
-    send(view.client, { type: "navigate", url: "https://example.com/" });
-
-    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "none" });
   });
 
   it("offers the saved login of a page that shows its form, and signs in with it when asked", async () => {
@@ -1662,6 +1600,7 @@ describe("BrowserLiveGateway page size and address", () => {
     expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 800, height: 600 });
 
     h.cli.answers.page = () => page(800, 600, "https://example.com/other");
+    send(view.upstream, { type: "url", url: "https://example.com/other", title: "Other" });
     send(view.upstream, { type: "url", url: "https://example.com/other" });
     expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/other" });
     await h.cli.called("eval", 3);
@@ -1773,17 +1712,6 @@ describe("BrowserLiveGateway page size and address", () => {
     expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
   });
 
-  it("records no telemetry span for its reads of the page, which are too frequent for one each", async () => {
-    const telemetryStore = {} as TelemetryStore;
-    const h = await createHarness({ telemetryStore });
-    const view = await h.openView((await h.createSession()).id);
-
-    send(view.client, { type: "reload" });
-    await h.cli.called("eval", 2);
-
-    expect(h.cli.telemetryOf("reload")).toEqual([telemetryStore]);
-    expect(h.cli.telemetryOf("eval")).toEqual([undefined, undefined]);
-  });
 });
 
 describe("BrowserLiveGateway reading the page over time", () => {
@@ -1959,7 +1887,8 @@ describe("BrowserLiveGateway toolbar", () => {
   });
 
   it("runs a command while the browser is the user's, when an agent's own operations are refused", async () => {
-    const h = await createHarness();
+    const telemetryStore = {} as TelemetryStore;
+    const h = await createHarness({ telemetryStore });
     const session = await h.createSession();
     const handBack = h.broker.holdTarget(leaseOf(session), "Sign in to the store");
     const view = await h.openView(session.id);
@@ -1968,6 +1897,8 @@ describe("BrowserLiveGateway toolbar", () => {
     await h.cli.called("eval", 2);
 
     expect(h.cli.toolbarCommands()).toEqual(["reload"]);
+    expect(h.cli.telemetryOf("reload")).toEqual([telemetryStore]);
+    expect(h.cli.telemetryOf("eval")).toEqual([undefined, undefined]);
     handBack();
   });
 

@@ -34,46 +34,6 @@ describe("persistAndRouteAttachments", () => {
     }
   });
 
-  it("resolves uploaded image attachment as blob type", () => {
-    const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
-    tempDirs.push(home);
-    const dir = filesDir(home);
-    mkdirSync(dir, { recursive: true });
-    const imgData = Buffer.from("fake-png-data");
-    writeFileSync(join(dir, "photo.png"), imgData);
-
-    const mgr = createManager(home);
-    const result = mgr.persistAndRouteAttachments(sessionId, [
-      { type: "uploaded", displayName: "photo.png", mimeType: "image/png" },
-    ]);
-
-    expect(result).toHaveLength(1);
-    expect(result![0]).toMatchObject({
-      type: "blob",
-      mimeType: "image/png",
-      displayName: "photo.png",
-      data: imgData.toString("base64"),
-    });
-  });
-
-  it("saves blob attachment to disk and returns file type for non-images", () => {
-    const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
-    tempDirs.push(home);
-    const mgr = createManager(home);
-    const content = Buffer.from("notebook content");
-
-    const result = mgr.persistAndRouteAttachments(sessionId, [
-      { type: "blob", data: content.toString("base64"), mimeType: "application/json", displayName: "notebook.ipynb" },
-    ]);
-
-    expect(result).toHaveLength(1);
-    expect(result![0]).toMatchObject({ type: "file", displayName: "notebook.ipynb" });
-    // File should be written to disk
-    const dir = filesDir(home);
-    expect(existsSync(join(dir, "notebook.ipynb"))).toBe(true);
-    expect(readFileSync(join(dir, "notebook.ipynb")).toString()).toBe("notebook content");
-  });
-
   it("rejects path traversal in uploaded displayName", () => {
     const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
     tempDirs.push(home);
@@ -105,45 +65,29 @@ describe("persistAndRouteAttachments", () => {
     expect(result![0].type).toBe("file"); // non-image
   });
 
-  it("path guard works with platform-native separators", () => {
-    // This is the core regression test for the Windows bug:
-    // resolve() returns native separators, so the guard must use path.sep, not "/"
-    const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
-    tempDirs.push(home);
-    const dir = filesDir(home);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "sample report (2).txt"), "content");
-
-    const mgr = createManager(home);
-    const result = mgr.persistAndRouteAttachments(sessionId, [
-      { type: "uploaded", displayName: "sample report (2).txt", mimeType: "text/plain" },
-    ]);
-
-    // On ALL platforms (Linux, macOS, Windows), a legitimate file should pass the guard
-    expect(result).toHaveLength(1);
-    expect(result![0]).toMatchObject({
-      type: "file", displayName: "sample report (2).txt", path: join(dir, "sample report (2).txt"),
-    });
-  });
-
   it("handles multiple attachments of mixed types", () => {
     const home = mkdtempSync(join(tmpdir(), "bridge-att-"));
     tempDirs.push(home);
     const dir = filesDir(home);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "doc.pdf"), "pdf-content");
+    writeFileSync(join(dir, "sample report (2).pdf"), "pdf-content");
 
+    const imgData = Buffer.from("fake-png-data");
+    writeFileSync(join(dir, "upload.png"), imgData);
     const mgr = createManager(home);
     const result = mgr.persistAndRouteAttachments(sessionId, [
-      { type: "uploaded", displayName: "doc.pdf", mimeType: "application/pdf" },
+      { type: "uploaded", displayName: "sample report (2).pdf", mimeType: "application/pdf" },
       { type: "blob", data: Buffer.from("csv-data").toString("base64"), mimeType: "text/csv", displayName: "data.csv" },
+      { type: "uploaded", displayName: "upload.png", mimeType: "image/png" },
       { type: "blob", data: "AAAA", mimeType: "image/jpeg", displayName: "photo.jpg" },
     ]);
 
-    expect(result).toHaveLength(3);
-    expect(result![0]).toMatchObject({ type: "file", displayName: "doc.pdf" });
+    expect(result).toHaveLength(4);
+    expect(result![0]).toMatchObject({ type: "file", displayName: "sample report (2).pdf", path: join(dir, "sample report (2).pdf") });
     expect(result![1]).toMatchObject({ type: "file", displayName: "data.csv" });
-    expect(result![2]).toMatchObject({ type: "blob", mimeType: "image/jpeg" });
+    expect(readFileSync(join(dir, "data.csv"), "utf8")).toBe("csv-data");
+    expect(result![2]).toMatchObject({ type: "blob", displayName: "upload.png", mimeType: "image/png", data: imgData.toString("base64") });
+    expect(result![3]).toMatchObject({ type: "blob", mimeType: "image/jpeg" });
   });
 });
 

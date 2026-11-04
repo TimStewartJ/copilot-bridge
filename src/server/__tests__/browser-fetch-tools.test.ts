@@ -345,10 +345,15 @@ describe("browser_fetch tool", () => {
   });
 
   it("closes the public browser after each fetch and uses the same profile for the next", async () => {
-    const calls = mockAgentBrowser();
+    const calls = mockAgentBrowser((call) => (call.command === "eval"
+      ? evalOutput(pageSignals({ url: "https://example.com/articles/42", title: "Article 42" }))
+      : undefined));
     const { tool } = await loadBrowserFetch();
 
-    await tool.handler({ url: "https://example.com/first" }, {} as any);
+    const first = await tool.handler({ url: "https://example.com/first" }, {} as any);
+    expect(first).toEqual({ url: "https://example.com/articles/42", title: "Article 42", snapshot: "snapshot", context: "public" });
+    expect(fromOpen(calls)).not.toContain("get url");
+    expect(fromOpen(calls)).not.toContain("get title");
     const firstFetchCalls = calls.length;
     await tool.handler({ url: "https://example.com/second" }, {} as any);
 
@@ -364,26 +369,6 @@ describe("browser_fetch tool", () => {
   });
 
   describe("page check", () => {
-    it("takes the address and title from the page check and asks the browser for neither", async () => {
-      const calls = mockAgentBrowser((call) => (call.command === "eval"
-        ? evalOutput(pageSignals({ url: "https://example.com/articles/42", title: "Article 42" }))
-        : undefined));
-      const { tool } = await loadBrowserFetch();
-
-      const result = await tool.handler({ url: "https://example.com/a/42" }, {} as any) as any;
-
-      // The address is the one the page ended up on, which the request only redirected to.
-      expect(result).toEqual({
-        url: "https://example.com/articles/42",
-        title: "Article 42",
-        snapshot: "snapshot",
-        context: "public",
-      });
-      const afterOpen = fromOpen(calls);
-      expect(afterOpen).not.toContain("get url");
-      expect(afterOpen).not.toContain("get title");
-    });
-
     it("asks the browser for the address and title when the page cannot be checked", async () => {
       let opened = false;
       mockAgentBrowser((call) => {

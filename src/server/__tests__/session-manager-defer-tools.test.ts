@@ -22,27 +22,6 @@ function expectFailure(result: unknown): string {
 }
 
 describe("unified defer tools", () => {
-  it("creates a one-shot defer with a public once_ deferId", async () => {
-    const { ctx } = createTestApp();
-    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
-
-    const result = await createTool.handler(
-      { prompt: "check on the build", delaySeconds: 60 },
-      makeInvocation("session-abc"),
-    ) as any;
-
-    expect(result).toMatchObject({ success: true, kind: "once", sessionId: "session-abc" });
-    expect(result.deferId).toMatch(/^once_/);
-    expect(parseDeferId(result.deferId)).toMatchObject({ kind: "once" });
-    const delta = new Date(result.nextRunAt).getTime() - Date.now();
-    expect(delta).toBeGreaterThan(55_000);
-    expect(delta).toBeLessThan(65_000);
-
-    const parsed = parseDeferId(result.deferId)!;
-    const stored = ctx.deferredPromptStore!.get(parsed.id);
-    expect(stored).toMatchObject({ sessionId: "session-abc", status: "pending", deferId: result.deferId });
-  });
-
   it("creates a one-shot defer from runAt with a public once_ deferId", async () => {
     const { ctx } = createTestApp();
     const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
@@ -64,46 +43,24 @@ describe("unified defer tools", () => {
     expect(parseDeferId(result.deferId)).toMatchObject({ kind: "once" });
   });
 
-  it("creates a recurring interval defer with a public interval_ deferId", async () => {
+  it("lists the latest private checkpoint and check state for a recurring defer", async () => {
     const { ctx } = createTestApp();
     const pokeSpy = vi.fn();
     ctx.deferLoopRunner = { start: vi.fn(), poke: pokeSpy, shutdown: vi.fn() } as any;
-    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
-
-    const result = await createTool.handler(
-      { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3, name: "deploy poller" },
-      makeInvocation("session-abc"),
-    ) as any;
-
-    expect(result).toMatchObject({
-      success: true,
-      kind: "interval",
-      sessionId: "session-abc",
-      intervalSeconds: 300,
-      maxRuns: 3,
-    });
-    expect(result.deferId).toMatch(/^interval_/);
-    const parsed = parseDeferId(result.deferId)!;
-    expect(parsed.kind).toBe("interval");
-    expect(ctx.deferLoopStore!.get(parsed.id)).toMatchObject({
-      name: "deploy poller",
-      status: "active",
-      runCount: 0,
-    });
-    expect(pokeSpy).toHaveBeenCalled();
-  });
-
-  it("lists the latest private checkpoint and check state for a recurring defer", async () => {
-    const { ctx } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
     const createTool = findTool(tools, "defer_create");
     const listTool = findTool(tools, "defer_list");
     const created = await createTool.handler(
-      { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3, check: { command: ["gh", "pr", "checks", "7"] } },
+      { prompt: "poll the deployment", intervalSeconds: 300, maxRuns: 3, name: "deploy poller", check: { command: ["gh", "pr", "checks", "7"] } },
       makeInvocation("session-abc"),
     ) as any;
     const parsed = parseDeferId(created.deferId)!;
     const loop = ctx.deferLoopStore!.get(parsed.id)!;
+    expect(created).toMatchObject({ success: true, kind: "interval", sessionId: "session-abc", intervalSeconds: 300, maxRuns: 3 });
+    expect(created.deferId).toMatch(/^interval_/);
+    expect(parsed.kind).toBe("interval");
+    expect(loop).toMatchObject({ name: "deploy poller", status: "active", runCount: 0 });
+    expect(pokeSpy).toHaveBeenCalled();
     const claimed = ctx.deferLoopStore!.claimDue(
       loop.id,
       60_000,
@@ -179,27 +136,6 @@ describe("unified defer tools", () => {
       .resolves.toEqual(toolFailure("maxRuns must be an integer between 1 and 10000."));
   });
 
-  it("lists active one-shot and recurring defers without legacy IDs", async () => {
-    const { ctx } = createTestApp();
-    const tools = getBridgeToolDefinitions(ctx);
-    const createTool = findTool(tools, "defer_create");
-    const listTool = findTool(tools, "defer_list");
-
-    await createTool.handler({ prompt: "one", delaySeconds: 120 }, makeInvocation("session-A"));
-    await createTool.handler({ prompt: "loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A"));
-    await createTool.handler({ prompt: "other", delaySeconds: 120 }, makeInvocation("session-B"));
-
-    const result = await listTool.handler({}, makeInvocation("session-A")) as any;
-    expect(result.deferrals).toHaveLength(2);
-    expect(result.deferrals.map((d: any) => d.kind).sort()).toEqual(["interval", "once"]);
-    for (const item of result.deferrals) {
-      expect(item.deferId).toMatch(/^(once|interval)_/);
-      expect(item.deferredPromptId).toBeUndefined();
-      expect(item.loopId).toBeUndefined();
-      expect(item.sessionId).toBe("session-A");
-    }
-  });
-
   it("lists inactive defers when requested", async () => {
     const { ctx, db } = createTestApp();
     const tools = getBridgeToolDefinitions(ctx);
@@ -208,6 +144,7 @@ describe("unified defer tools", () => {
 
     await createTool.handler({ prompt: "active once", delaySeconds: 120 }, makeInvocation("session-A"));
     await createTool.handler({ prompt: "active loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A"));
+    await createTool.handler({ prompt: "other", delaySeconds: 120 }, makeInvocation("session-B"));
     const cancelled = await createTool.handler({ prompt: "cancelled once", delaySeconds: 120 }, makeInvocation("session-A")) as any;
     const failed = await createTool.handler({ prompt: "failed loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("session-A")) as any;
     ctx.deferredPromptStore!.cancelById(parseDeferId(cancelled.deferId)!.id);
@@ -215,6 +152,14 @@ describe("unified defer tools", () => {
 
     const defaultResult = await listTool.handler({}, makeInvocation("session-A")) as any;
     expect(defaultResult.deferrals.map((item: any) => item.status).sort()).toEqual(["active", "pending"]);
+    expect(defaultResult.deferrals).toHaveLength(2);
+    expect(defaultResult.deferrals.map((d: any) => d.kind).sort()).toEqual(["interval", "once"]);
+    for (const item of defaultResult.deferrals) {
+      expect(item.deferId).toMatch(/^(once|interval)_/);
+      expect(item.deferredPromptId).toBeUndefined();
+      expect(item.loopId).toBeUndefined();
+      expect(item.sessionId).toBe("session-A");
+    }
     expect(defaultResult.warning).toBeUndefined();
 
     const result = await listTool.handler({ includeInactive: true }, makeInvocation("session-A")) as any;
@@ -243,6 +188,14 @@ describe("unified defer tools", () => {
     });
 
     const once = await createTool.handler({ prompt: "cancel me", delaySeconds: 60 }, makeInvocation("session-A")) as any;
+    expect(once).toMatchObject({ success: true, kind: "once", sessionId: "session-A" });
+    expect(once.deferId).toMatch(/^once_/);
+    const parsedOnce = parseDeferId(once.deferId)!;
+    expect(parsedOnce.kind).toBe("once");
+    const delta = new Date(once.nextRunAt).getTime() - Date.now();
+    expect(delta).toBeGreaterThan(55_000);
+    expect(delta).toBeLessThan(65_000);
+    expect(ctx.deferredPromptStore!.get(parsedOnce.id)).toMatchObject({ sessionId: "session-A", status: "pending", deferId: once.deferId });
     const interval = await createTool.handler({ prompt: "cancel loop", intervalSeconds: 300 }, makeInvocation("session-A")) as any;
 
     await expect(cancelTool.handler({ deferId: once.deferId }, makeInvocation("session-A")))
@@ -250,7 +203,7 @@ describe("unified defer tools", () => {
     await expect(cancelTool.handler({ deferId: interval.deferId }, makeInvocation("session-A")))
       .resolves.toMatchObject({ success: true, kind: "interval" });
 
-    expect(ctx.deferredPromptStore!.get(parseDeferId(once.deferId)!.id)!.status).toBe("cancelled");
+    expect(ctx.deferredPromptStore!.get(parsedOnce.id)!.status).toBe("cancelled");
     expect(ctx.deferLoopStore!.get(parseDeferId(interval.deferId)!.id)!.status).toBe("cancelled");
     expect(markAttention).toHaveBeenCalledTimes(1);
     expect(markAttention).toHaveBeenCalledWith("session-A");

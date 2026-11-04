@@ -541,30 +541,17 @@ describe("browser session store", () => {
       expect(store.matchHandoff("copilot-a", [`${handoff.fieldName}_other`])).toBeUndefined();
       expect(store.matchHandoff("copilot-b", [handoff.fieldName])).toBeUndefined();
 
-      handoff.end();
-      await store.closeAll();
-    });
-
-    it("forgets a handoff once it has ended, and ending it again changes nothing", async () => {
-      const store = new BrowserSessionStore({ browserBroker: createFakeBroker() as any });
-      const ended = store.beginHandoff("copilot-a", "bs_one", "Sign in");
       const pending = store.beginHandoff("copilot-a", "bs_one", "Approve the prompt");
-
-      ended.end();
-
-      expect(store.matchHandoff("copilot-a", [ended.fieldName])).toBeUndefined();
-      expect(store.matchHandoff("copilot-a", [pending.fieldName])).toEqual({
-        browserSessionId: "bs_one",
-        reason: "Approve the prompt",
-      });
-
-      expect(() => ended.end()).not.toThrow();
-      expect(store.matchHandoff("copilot-a", [ended.fieldName])).toBeUndefined();
+      handoff.end();
+      expect(store.matchHandoff("copilot-a", [handoff.fieldName])).toBeUndefined();
+      expect(store.matchHandoff("copilot-a", [pending.fieldName])).toEqual({ browserSessionId: "bs_one", reason: "Approve the prompt" });
+      expect(() => handoff.end()).not.toThrow();
+      expect(store.matchHandoff("copilot-a", [handoff.fieldName])).toBeUndefined();
       expect(store.matchHandoff("copilot-a", [pending.fieldName])).toBeDefined();
-
       pending.end();
       expect(store.matchHandoff("copilot-a", [pending.fieldName])).toBeUndefined();
       await store.closeAll();
     });
+
   });
 });

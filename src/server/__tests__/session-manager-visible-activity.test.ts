@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "../session-manager.js";
 import { setupTestDb, createTestBus, makeTestDir } from "./helpers.js";
@@ -70,37 +70,6 @@ describe("SessionManager visible activity cache", () => {
     return fileReadMock.mock.calls.filter(([readPath]) => readPath === path).length;
   }
 
-  it("uses persisted visible activity without reading the event log", async () => {
-    const eventsPath = writeSession([
-      { type: "assistant.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Done" } },
-      { type: "assistant.message", timestamp: "2026-04-10T10:05:00.000Z", data: { content: "Newer log activity" } },
-    ]);
-    const { manager, sessionMetaStore } = createManager();
-    sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-04-10T10:00:00.000Z");
-
-    const sessions = await manager.listSessionsFromDisk();
-
-    expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:00:00.000Z");
-    expect(sessions[0]?.modifiedTime).toBe("2026-04-10T10:00:00.000Z");
-    expect(sessions[0]?.eventLogSizeBytes).toBe(statSync(eventsPath).size);
-    expect(countReads(eventsPath)).toBe(0);
-  });
-
-  it("falls back to cheap workspace metadata when visible activity is not persisted", async () => {
-    const eventsPath = writeSession([
-      { type: "assistant.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Done" } },
-      { type: "assistant.message", timestamp: "2026-04-10T10:05:00.000Z", data: { content: "Ignored by list path" } },
-    ]);
-    const { manager } = createManager();
-
-    const sessions = await manager.listSessionsFromDisk();
-
-    expect(sessions[0]?.lastVisibleActivityAt).toBeUndefined();
-    expect(sessions[0]?.modifiedTime).toBe("2026-04-10T09:59:00.000Z");
-    expect(sessions[0]?.eventLogSizeBytes).toBe(statSync(eventsPath).size);
-    expect(countReads(eventsPath)).toBe(0);
-  });
-
   it("persists visible activity when readMessagesFromDisk parses the event log", async () => {
     const eventsPath = writeSession([
       { type: "user.message", timestamp: "2026-04-10T09:59:30.000Z", data: { content: "Hello" } },
@@ -110,13 +79,23 @@ describe("SessionManager visible activity cache", () => {
     ]);
     const { manager, sessionMetaStore } = createManager();
 
+    const [cold] = await manager.listSessionsFromDisk();
+    expect(cold?.lastVisibleActivityAt).toBeUndefined();
+    expect(cold?.modifiedTime).toBe("2026-04-10T09:59:00.000Z");
+    expect(cold?.eventLogSizeBytes).toBe(statSync(eventsPath).size);
+    expect(countReads(eventsPath)).toBe(0);
+
     const result = await manager.readMessagesFromDisk("session-1");
     expect(result.total).toBe(3);
     expect(countReads(eventsPath)).toBe(1);
     expect(sessionMetaStore.getMeta("session-1")?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
 
+    // A list uses the activity it already knows rather than parsing a newer transcript.
+    appendFileSync(eventsPath, JSON.stringify({ type: "assistant.message", timestamp: "2026-04-10T10:15:00.000Z", data: { content: "Newer log activity" } }) + "\n");
     fileReadMock.mockReset();
     const sessions = await manager.listSessionsFromDisk();
+    expect(sessions[0]?.modifiedTime).toBe("2026-04-10T10:05:00.000Z");
+    expect(sessions[0]?.eventLogSizeBytes).toBe(statSync(eventsPath).size);
     expect(sessions[0]?.lastVisibleActivityAt).toBe("2026-04-10T10:05:00.000Z");
     expect(countReads(eventsPath)).toBe(0);
   });

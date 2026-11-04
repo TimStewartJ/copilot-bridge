@@ -84,6 +84,7 @@ describe("deriveModelStateFromEventsContent", () => {
     const lines = [
       "not json at all {{{",
       JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-4.7" } }),
+      JSON.stringify({ type: "session.start", data: { reasoningEffort: "high" } }),
       "{ broken",
     ];
     expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
@@ -401,26 +402,6 @@ describe("SessionManager.getSessionUsageMetrics", () => {
     });
   });
 
-  it("converts live nano-AIU metrics to AI credits and USD", async () => {
-    const manager = createManager(makeTestDir("usage-metrics-live"));
-    manager.sessionObjects.set("live-session", makeAgentSessionStub({
-      getUsageMetrics: vi.fn().mockResolvedValue({
-        totalNanoAiu: 2_500_000_000,
-        totalPremiumRequestCost: 1.5,
-        totalUserRequests: 2,
-      }),
-    }));
-
-    await expect(manager.getSessionUsageMetrics("live-session")).resolves.toEqual({
-      available: true,
-      totalNanoAiu: 2_500_000_000,
-      aiCredits: 2.5,
-      costUsd: 0.025,
-      totalPremiumRequestCost: 1.5,
-      totalUserRequests: 2,
-    });
-  });
-
   it("reports when the chat's budget last changed: another model, or a handle with another Fusion limit", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -474,11 +455,19 @@ describe("SessionManager.getSessionUsageMetrics", () => {
     };
     const getContextInfo = vi.fn().mockResolvedValue(contextInfo);
     manager.sessionObjects.set("live-session", makeAgentSessionStub({
-      getUsageMetrics: vi.fn().mockResolvedValue({ totalPremiumRequestCost: 0, totalUserRequests: 0 }),
+      getUsageMetrics: vi.fn().mockResolvedValue({ totalNanoAiu: 2_500_000_000, totalPremiumRequestCost: 1.5, totalUserRequests: 2 }),
       getContextInfo,
     }));
 
-    await expect(manager.getSessionUsageMetrics("live-session")).resolves.toMatchObject({ contextInfo });
+    await expect(manager.getSessionUsageMetrics("live-session")).resolves.toEqual({
+      contextInfo,
+      available: true,
+      totalNanoAiu: 2_500_000_000,
+      aiCredits: 2.5,
+      costUsd: 0.025,
+      totalPremiumRequestCost: 1.5,
+      totalUserRequests: 2,
+    });
 
     expect(getContextInfo).toHaveBeenCalledExactlyOnceWith();
     expect(getSummary).not.toHaveBeenCalled();

@@ -261,32 +261,6 @@ describe("session context telemetry store", () => {
     });
   });
 
-  it("stores truncation as a session-scoped marker with nullable turn identity", () => {
-    const store = createSessionContextStore(setupTestDb());
-    const summary = store.recordContextEvent({
-      sessionId: "session-1",
-      provider: "copilot",
-      providerSessionId: "session-1",
-      attribution: "session_overhead",
-      bridgeTurnId: null,
-      type: "truncation",
-      occurredAt: "2026-05-01T11:00:00.000Z",
-      metadata: { eventId: "event-1", eventsRemoved: 3 },
-      dedupeKey: "truncation:event-1:3",
-    });
-
-    expect(summary).toMatchObject({ truncationCount: 1 });
-    const context = store.getSessionContext("session-1");
-    expect(context.capabilities.truncation).toBe("marker");
-    expect(context.events).toHaveLength(1);
-    expect(context.events[0]).toMatchObject({
-      type: "truncation",
-      attribution: "session_overhead",
-      bridgeTurnId: null,
-      metadata: { eventId: "event-1", eventsRemoved: 3 },
-    });
-  });
-
   it("does not leave a summary that disagrees with its own event history", () => {
     const db = setupTestDb();
     const store = createSessionContextStore(db);
@@ -329,6 +303,15 @@ describe("session context telemetry store", () => {
 
     // A later record still works normally.
     expect(store.recordContextEvent(event)).toMatchObject({ truncationCount: 1 });
+    const recovered = store.getSessionContext("session-1");
+    expect(recovered.capabilities.truncation).toBe("marker");
+    expect(recovered.events).toHaveLength(1);
+    expect(recovered.events[0]).toMatchObject({
+      type: "truncation",
+      attribution: "session_overhead",
+      bridgeTurnId: null,
+      metadata: { eventId: "event-1", eventsRemoved: 3 },
+    });
   });
 
   it("backfills persisted shutdown and compaction markers idempotently", () => {

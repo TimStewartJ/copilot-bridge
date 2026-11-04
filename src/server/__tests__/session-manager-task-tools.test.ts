@@ -328,6 +328,15 @@ describe("session manager task tools", () => {
       nextTouchAt: "2026-05-02T10:00:00.000Z",
     }));
 
+    const stored = { nextAction: "Check the release dashboard", waitingOn: "Customer validation", nextTouchAt: "2026-05-02T10:00:00.000Z" };
+    await expect(tool.handler({
+      taskId: task.id, nextAction: stored.nextAction, waitingOn: stored.waitingOn,
+      followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
+    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      success: true, changed: false, message: "Task momentum is already current; no changes were applied.", ...stored,
+    });
+    expect(ctx.taskStore.getTask(task.id)).toMatchObject(stored);
+
     await expect(tool.handler({
       taskId: task.id,
       nextAction: null,
@@ -345,22 +354,11 @@ describe("session manager task tools", () => {
       waitingOn: undefined,
       nextTouchAt: undefined,
     }));
-  });
 
-  it("task_update_momentum reports 'values that match the stored momentum' as an unchanged success", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Momentum no-op");
-    const stored = { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" };
-    ctx.taskStore.updateTask(task.id, stored);
-    const tool = getTool(ctx, "task_update_momentum");
-
-    await expect(tool.handler({
-      taskId: task.id, nextAction: stored.nextAction, waitingOn: stored.waitingOn,
-      followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
-    }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
-      success: true, changed: false, message: "Task momentum is already current; no changes were applied.", ...stored,
+    await expect(tool.handler({ taskId: task.id, nextAction: null, waitingOn: null, followUp: { mode: "clear" } },
+      createInvocation("task_update_momentum"))).resolves.toMatchObject({
+      success: true, changed: false, nextAction: null, waitingOn: null, nextTouchAt: null,
     });
-    expect(ctx.taskStore.getTask(task.id)).toMatchObject(stored);
   });
 
   it("task_history_add records attributed entries that task_history_list pages and searches", async () => {
@@ -412,15 +410,18 @@ describe("session manager task tools", () => {
     expect(ctx.taskHistoryStore!.countEntries(task.id)).toBe(0);
   });
 
-  it("task_get_info includes momentum fields", async () => {
+  it("task_get_info reports momentum and the newest linked sessions as the task grows", async () => {
     const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Momentum info");
+    const task = ctx.taskStore.createTask("Short session info");
     ctx.taskStore.updateTask(task.id, {
       doneWhen: "QA signs off",
       nextAction: "Message QA",
       waitingOn: "QA sign-off",
       nextTouchAt: "2026-05-03T11:00:00.000Z",
     });
+    const sessionIds = Array.from({ length: 12 }, (_unused, i) => `session-${String(i + 1).padStart(2, "0")}`);
+    const firstTwo = sessionIds.slice(0, 2);
+    for (const sessionId of firstTwo) ctx.taskStore.linkSession(task.id, sessionId);
 
     const tool = getTool(ctx, "task_get_info");
     const result = await tool.handler({ taskId: task.id }, createInvocation("task_get_info"));
@@ -431,41 +432,14 @@ describe("session manager task tools", () => {
       nextAction: "Message QA",
       waitingOn: "QA sign-off",
       nextTouchAt: "2026-05-03T11:00:00.000Z",
-    }));
-  });
-
-  it("task_get_info includes complete session metadata for short linked session lists", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Short session info");
-    const sessionIds = ["session-1", "session-2"];
-    for (const sessionId of sessionIds) ctx.taskStore.linkSession(task.id, sessionId);
-
-    const tool = getTool(ctx, "task_get_info");
-    const result = await tool.handler({ taskId: task.id }, createInvocation("task_get_info"));
-
-    expect(result).toEqual(expect.objectContaining({
-      id: task.id,
-      sessionIds,
-      sessionCount: sessionIds.length,
+      sessionIds: firstTwo,
+      sessionCount: 2,
       omittedSessionCount: 0,
     }));
-  });
 
-  it("task_get_info compacts long linked session lists", async () => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Long session info");
-    const sessionIds = Array.from({ length: 12 }, (_, index) => `session-${String(index + 1).padStart(2, "0")}`);
-    for (const sessionId of sessionIds) ctx.taskStore.linkSession(task.id, sessionId);
-
-    const tool = getTool(ctx, "task_get_info");
-    const result = await tool.handler({ taskId: task.id }, createInvocation("task_get_info"));
-
-    expect(result).toEqual(expect.objectContaining({
-      id: task.id,
-      sessionIds: sessionIds.slice(2),
-      sessionCount: sessionIds.length,
-      omittedSessionCount: 2,
-    }));
+    for (const sessionId of sessionIds.slice(2)) ctx.taskStore.linkSession(task.id, sessionId);
+    const expanded = await tool.handler({ taskId: task.id }, createInvocation("task_get_info"));
+    expect(expanded).toMatchObject({ id: task.id, sessionIds: sessionIds.slice(2), sessionCount: 12, omittedSessionCount: 2 });
   });
 
   it("task_update_momentum rejects invalid follow-up inputs", async () => {

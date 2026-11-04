@@ -137,30 +137,6 @@ describe("composeBrowserLaunchArgs", () => {
 
 describe("resolveBrowserLaunchArgs", () => {
 
-  it("falls back to the configuration files when AGENT_BROWSER_ARGS is blank", async () => {
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--no-sandbox"] } });
-
-    await expect(launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "  \n " })).resolves.toEqual({
-      args: ["--no-sandbox", ...DEFAULT_ARGS],
-      inheritedFrom: "agent-browser-config",
-    });
-  });
-
-  it("reads only the file AGENT_BROWSER_CONFIG names", async () => {
-    const explicit = testPath("agent-browser", "custom.json");
-    mockConfigFiles({
-      [explicit]: { args: ["--from-explicit"] },
-      [USER_CONFIG]: { args: ["--from-user-config"] },
-      [PROJECT_CONFIG]: { args: ["--from-project"] },
-    });
-
-    await expect(launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_CONFIG: `  ${explicit}  ` })).resolves.toEqual({
-      args: ["--from-explicit", ...DEFAULT_ARGS],
-      inheritedFrom: "agent-browser-config",
-    });
-    expect(readJsonFile.mock.calls).toEqual([[explicit]]);
-  });
-
   it("has no inherited arguments when the file AGENT_BROWSER_CONFIG names is missing", async () => {
     const explicit = testPath("agent-browser", "missing.json");
     mockConfigFiles({ [USER_CONFIG]: { args: ["--from-user-config"] } });
@@ -172,28 +148,10 @@ describe("resolveBrowserLaunchArgs", () => {
     expect(readJsonFile.mock.calls).toEqual([[explicit]]);
   });
 
-  it("lets the project's arguments replace the user's", async () => {
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--from-user-config"] }, [PROJECT_CONFIG]: { args: ["--from-project"] } });
+  it("inherits the user config arguments when both the environment and project leave them unset", async () => {
+    mockConfigFiles({ [USER_CONFIG]: { args: "--no-sandbox, --lang=en-US" }, [PROJECT_CONFIG]: { headed: true } });
 
-    await expect(launch.resolveBrowserLaunchArgs({})).resolves.toEqual({
-      args: ["--from-project", ...DEFAULT_ARGS],
-      inheritedFrom: "agent-browser-config",
-    });
-  });
-
-  it("keeps the user's arguments when the project's file sets none", async () => {
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--from-user-config"] }, [PROJECT_CONFIG]: { headed: true } });
-
-    await expect(launch.resolveBrowserLaunchArgs({})).resolves.toEqual({
-      args: ["--from-user-config", ...DEFAULT_ARGS],
-      inheritedFrom: "agent-browser-config",
-    });
-  });
-
-  it("accepts `args` as a comma-separated string", async () => {
-    mockConfigFiles({ [USER_CONFIG]: { args: "--no-sandbox, --lang=en-US" } });
-
-    await expect(launch.resolveBrowserLaunchArgs({})).resolves.toEqual({
+    await expect(launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "  \n " })).resolves.toEqual({
       args: ["--no-sandbox", "--lang=en-US", ...DEFAULT_ARGS],
       inheritedFrom: "agent-browser-config",
     });
@@ -213,14 +171,20 @@ describe("resolveBrowserLaunchArgs", () => {
 
   it("does not answer a different environment from the cache", async () => {
     const explicit = testPath("agent-browser", "custom.json");
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--from-user-config"] }, [explicit]: { args: ["--from-explicit"] } });
+    mockConfigFiles({
+      [USER_CONFIG]: { args: ["--from-user-config"] },
+      [PROJECT_CONFIG]: { args: ["--from-project"] },
+      [explicit]: { args: ["--from-explicit"] },
+    });
 
     const fromFiles = await launch.resolveBrowserLaunchArgs({});
-    const fromExplicit = await launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_CONFIG: explicit });
+    expect(fromFiles).toEqual({ args: ["--from-project", ...DEFAULT_ARGS], inheritedFrom: "agent-browser-config" });
+    readJsonFile.mockClear();
+    const fromExplicit = await launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_CONFIG: `  ${explicit}  ` });
+    expect(readJsonFile.mock.calls).toEqual([[explicit]]);
     const fromEnvironment = await launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "--from-environment" });
 
-    expect(fromFiles.args).toEqual(["--from-user-config", ...DEFAULT_ARGS]);
-    expect(fromExplicit.args).toEqual(["--from-explicit", ...DEFAULT_ARGS]);
+    expect(fromExplicit).toEqual({ args: ["--from-explicit", ...DEFAULT_ARGS], inheritedFrom: "agent-browser-config" });
     expect(fromEnvironment).toEqual({ args: ["--from-environment", ...DEFAULT_ARGS], inheritedFrom: "environment" });
   });
 
@@ -358,51 +322,52 @@ describe("buildBrowserEnv", () => {
     profileDir: testPath("browser-profiles", "public-3"),
   };
 
-  it("replaces a namespace, session and profile inherited from the base environment", async () => {
-    const env = await launch.buildBrowserEnv(target, {
+  it("builds an isolated headless launch environment using the target's settings", async () => {
+    const executablePath = testPath("browsers", "chrome");
+    const baseEnv = Object.freeze({
       KEEP_ME: "1",
       AGENT_BROWSER_HEADED: "1",
       AGENT_BROWSER_NAMESPACE: "someone-else",
       AGENT_BROWSER_SESSION: "default",
       AGENT_BROWSER_PROFILE: testPath("another-profile"),
+      AGENT_BROWSER_EXECUTABLE_PATH: testPath("browsers", "from-env"),
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "5000",
+      AGENT_BROWSER_ARGS: "--no-sandbox,--lang=en-US",
     });
+    const before = { ...baseEnv };
+    const env = await launch.buildBrowserEnv({ ...target, headed: false, executablePath, idleTimeoutMs: 90_000 }, baseEnv);
 
-    expect(env).not.toHaveProperty("AGENT_BROWSER_HEADED");
     expect(env).toMatchObject({
       KEEP_ME: "1",
       AGENT_BROWSER_NAMESPACE: "copilot-bridge",
       AGENT_BROWSER_SESSION: "bridge-public-3",
       AGENT_BROWSER_PROFILE: target.profileDir,
+      AGENT_BROWSER_EXECUTABLE_PATH: executablePath,
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "90000",
+      AGENT_BROWSER_ARGS: ["--no-sandbox", "--lang=en-US", ...DEFAULT_ARGS].join("\n"),
     });
+    expect(env).not.toHaveProperty("AGENT_BROWSER_HEADED");
+    expect(env).not.toBe(baseEnv);
+    expect(baseEnv).toStrictEqual(before);
   });
 
-  it("carries the arguments of AGENT_BROWSER_ARGS over, newline-separated, ahead of the Bridge's own", async () => {
-    const env = await launch.buildBrowserEnv(target, { AGENT_BROWSER_ARGS: "--no-sandbox,--lang=en-US" });
-
-    expect(env.AGENT_BROWSER_ARGS).toBe(["--no-sandbox", "--lang=en-US", ...DEFAULT_ARGS].join("\n"));
-  });
-
-  it("prefers the target's executable to the base environment's", async () => {
-    const configured = testPath("browsers", "chrome");
-
-    const env = await launch.buildBrowserEnv(
-      { ...target, executablePath: configured },
-      { AGENT_BROWSER_EXECUTABLE_PATH: testPath("browsers", "from-env") },
-    );
-
-    expect(env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(configured);
-  });
-
-  it("keeps the base environment's executable when the target has none", async () => {
+  it("inherits the executable and idle timeout when neither is set on the target", async () => {
     const fromEnvironment = testPath("browsers", "from-env");
 
-    const env = await launch.buildBrowserEnv(target, { AGENT_BROWSER_EXECUTABLE_PATH: fromEnvironment });
+    const env = await launch.buildBrowserEnv(target, {
+      AGENT_BROWSER_EXECUTABLE_PATH: fromEnvironment,
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "120000",
+      AGENT_BROWSER_HEADED: "1",
+    });
 
+    expect(env.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("120000");
+    expect(env).not.toHaveProperty("AGENT_BROWSER_HEADED");
     expect(env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(fromEnvironment);
   });
 
   it("sets the system browser when one is installed and nothing else names an executable", async () => {
     const baseEnv = {
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "   ",
       ProgramFiles: testWindowsPath("Program Files"),
       PATH: testPosixPath("opt", "tools", "bin"),
     };
@@ -411,55 +376,11 @@ describe("buildBrowserEnv", () => {
 
     const env = await launch.buildBrowserEnv(target, baseEnv);
 
+    expect(env).not.toHaveProperty("AGENT_BROWSER_IDLE_TIMEOUT_MS");
     expect(firstCandidate).toBeTruthy();
     expect(env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(firstCandidate);
   });
 
-  it("sets the idle timeout of the target, over one in the base environment", async () => {
-    const env = await launch.buildBrowserEnv(
-      { ...target, idleTimeoutMs: 90_000 },
-      { AGENT_BROWSER_IDLE_TIMEOUT_MS: "5000" },
-    );
-
-    expect(env.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("90000");
-  });
-
-  it("keeps a real idle timeout from the base environment when the target has none", async () => {
-    const env = await launch.buildBrowserEnv(target, { AGENT_BROWSER_IDLE_TIMEOUT_MS: "120000" });
-
-    expect(env.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("120000");
-  });
-
-  it("drops an idle timeout that is blank in the base environment", async () => {
-    const env = await launch.buildBrowserEnv(target, { AGENT_BROWSER_IDLE_TIMEOUT_MS: "   " });
-
-    expect(env).not.toHaveProperty("AGENT_BROWSER_IDLE_TIMEOUT_MS");
-  });
-
-  it("removes AGENT_BROWSER_HEADED from the base environment when the target is not headed", async () => {
-    const env = await launch.buildBrowserEnv({ ...target, headed: false }, { AGENT_BROWSER_HEADED: "1" });
-
-    expect(env).not.toHaveProperty("AGENT_BROWSER_HEADED");
-  });
-
-  it("does not change the base environment", async () => {
-    const baseEnv: NodeJS.ProcessEnv = Object.freeze({
-      KEEP_ME: "1",
-      AGENT_BROWSER_HEADED: "1",
-      AGENT_BROWSER_IDLE_TIMEOUT_MS: " ",
-      AGENT_BROWSER_ARGS: "--no-sandbox",
-      AGENT_BROWSER_SESSION: "default",
-    });
-    const before = { ...baseEnv };
-
-    const env = await launch.buildBrowserEnv(
-      { ...target, executablePath: testPath("browsers", "chrome"), idleTimeoutMs: 1_000 },
-      baseEnv,
-    );
-
-    expect(env).not.toBe(baseEnv);
-    expect(baseEnv).toStrictEqual(before);
-  });
 });
 
 describe("describeBrowserBuild", () => {
@@ -531,7 +452,7 @@ describe("describeBrowserBuild", () => {
     expect(build.installedDaysAgo).toBe(0);
   });
 
-  it("asks the browser for its version once while the file stays the same", async () => {
+  it("reuses the version until the executable is replaced but calculates its age on every read", async () => {
     const executable = { path: neutralBinary(), source: "system" as const };
     readModifiedAt.mockResolvedValue(NOW - DAY);
     readBrowserVersion.mockResolvedValue("Google Chrome 1.2.3.4");
@@ -544,17 +465,9 @@ describe("describeBrowserBuild", () => {
     expect(first).toStrictEqual({ kind: "chrome", version: "Google Chrome 1.2.3.4", installedDaysAgo: 1 });
     // The age is worked out on every call; only the version is remembered.
     expect(second).toStrictEqual({ kind: "chrome", version: "Google Chrome 1.2.3.4", installedDaysAgo: 3 });
-  });
 
-  it("asks again when the file has been replaced", async () => {
-    const executable = { path: neutralBinary(), source: "system" as const };
-    readModifiedAt.mockResolvedValue(NOW - 30 * DAY);
-    readBrowserVersion.mockResolvedValue("Google Chrome 1.2.3.4");
-    await launch.describeBrowserBuild(executable);
-
-    readModifiedAt.mockResolvedValue(NOW - HOUR);
+    readModifiedAt.mockResolvedValue(Date.now() - HOUR);
     readBrowserVersion.mockResolvedValue("Google Chrome 1.2.3.5");
-
     await expect(launch.describeBrowserBuild(executable))
       .resolves.toStrictEqual({ kind: "chrome", version: "Google Chrome 1.2.3.5", installedDaysAgo: 0 });
     expect(readBrowserVersion).toHaveBeenCalledTimes(2);

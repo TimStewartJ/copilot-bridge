@@ -487,23 +487,13 @@ describe("checkPage", () => {
       expect(check.block).toStrictEqual(classifyPage(ticketsGateSignals));
     });
 
-    it("returns only the beginning of a long page's text, with its full length", async () => {
+    it("counts the form fields that are laid out, the links, the scripts, and a CAPTCHA that holds an answer", async () => {
       const script = await issuedScript();
       const innerText = `Overnight  sourdough\n\n${"flour water salt\n".repeat(400)}`;
       const collapsed = innerText.replace(/\s+/g, " ").trim();
-
-      const signals = JSON.parse(await runPageScript(script, { ...ticketsGate, innerText }) as string);
-
-      expect(collapsed.length).toBeGreaterThan(TEXT_SAMPLE_LENGTH);
-      expect(signals.textLength).toBe(collapsed.length);
-      expect(signals.text).toBe(collapsed.slice(0, TEXT_SAMPLE_LENGTH));
-    });
-
-    it("counts the form fields that are laid out, the links, the scripts, and a CAPTCHA that holds an answer", async () => {
-      const script = await issuedScript();
       const contactForm: FakePage = {
         href: "https://www.example.com/contact",
-        innerText: "Contact us",
+        innerText,
         fields: [true, false, true, true],
         links: 41,
         scripts: 17,
@@ -514,6 +504,9 @@ describe("checkPage", () => {
       const signals = JSON.parse(await runPageScript(script, contactForm) as string);
       const unanswered = JSON.parse(await runPageScript(script, { ...contactForm, captchaAnswers: ["", ""] }) as string);
 
+      expect(collapsed.length).toBeGreaterThan(TEXT_SAMPLE_LENGTH);
+      expect(signals.textLength).toBe(collapsed.length);
+      expect(signals.text).toBe(collapsed.slice(0, TEXT_SAMPLE_LENGTH));
       expect(signals).toMatchObject({ inputs: 3, links: 41, scripts: 17, captchaSolved: true, markers: ["recaptcha"] });
       expect(unanswered.captchaSolved).toBe(false);
     });

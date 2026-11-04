@@ -221,6 +221,13 @@ describe("SessionManager.setSessionModel", () => {
     expect(result.model).toBe("gpt-5.5");
     // Should cache the resumed session
     expect(manager.sessionObjects.get("cold-session")).toBe(session);
+    expect(manager.isSessionWarm("cold-session")).toBe(true);
+
+    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(true);
+
+    expect(manager.isSessionWarm("cold-session")).toBe(false);
+    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(false);
+    expect(session.disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("restores a legacy tier on resume without replaying calculated capability overrides", async () => {
@@ -420,7 +427,7 @@ describe("SessionManager.setSessionModel", () => {
     expect(manager.sessionObjects.has("cold-session")).toBe(false);
   });
 
-  it("preserves existing reasoningEffort when a switch omits reasoningEffort", async () => {
+  it("preserves effort from the journal when the runtime cannot report the current model", async () => {
     const copilotHome = makeTestDir("model-switch-preserve-reasoning");
     const sessionDir = join(copilotHome, "session-state", "session-1");
     mkdirSync(sessionDir, { recursive: true });
@@ -431,7 +438,7 @@ describe("SessionManager.setSessionModel", () => {
     const manager = createManager(copilotHome);
     const session = createMockSession("claude-opus-4.7");
     session.getCurrentModel
-      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "high" })
+      .mockRejectedValueOnce(new Error("Live model unavailable"))
       .mockResolvedValueOnce({ modelId: "claude-opus-4.7", reasoningEffort: "high" });
     manager.backend = {};
     manager.sessionObjects.set("session-1", session);
@@ -586,20 +593,6 @@ describe("SessionManager.setSessionModel", () => {
 });
 
 describe("SessionManager.unloadIdleSession", () => {
-  it("unloads a session a cold model switch loaded and releases its handle", async () => {
-    const manager = createManager();
-    const session = createMockSession("previous-model");
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
-    await manager.setSessionModel("cold-session", "gpt-5.5");
-    expect(manager.isSessionWarm("cold-session")).toBe(true);
-
-    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(true);
-
-    expect(manager.isSessionWarm("cold-session")).toBe(false);
-    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(false);
-    expect(session.disconnect).toHaveBeenCalledTimes(1);
-  });
-
   it("leaves a session loaded while Bridge holds it", async () => {
     const manager = createManager();
     const session = createMockSession("gpt-5.5");

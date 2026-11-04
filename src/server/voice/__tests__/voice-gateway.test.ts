@@ -218,17 +218,12 @@ describe("VoiceGateway and chats", () => {
     await gateway.shutdown();
   });
 
-  it("greets locally without a message to the chat", async () => {
-    const { gateway, sink, sessionManager } = await startConversation();
+  it("sends a typed message to the chat like its composer, keeping its identity", async () => {
+    vi.mocked(sendChatMessage).mockClear();
+    const { gateway, conversationId, token, sink, ctx, sessionManager } = await startConversation();
     await vi.waitFor(() => expect(sink.events).toContainEqual(expect.objectContaining({ type: "assistant_done", text: expect.stringMatching(/^Listening\./) })));
     expect(sessionManager.startWork).not.toHaveBeenCalled();
     expect(sendChatMessage).not.toHaveBeenCalled();
-    await gateway.shutdown();
-  });
-
-  it("sends a typed message to the chat like its composer, keeping its identity", async () => {
-    vi.mocked(sendChatMessage).mockClear();
-    const { gateway, conversationId, token, sink, ctx } = await startConversation();
     gateway.acceptHttpControl(conversationId, token, { type: "text", text: "what's new?" });
     await vi.waitFor(() => expect(sendChatMessage).toHaveBeenCalledWith(ctx, CHAT_SESSION_ID, "what's new?", {}));
     expect(ctx.taskStore.recordUserMessage).toHaveBeenCalledWith(CHAT_SESSION_ID);

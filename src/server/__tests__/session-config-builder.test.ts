@@ -232,6 +232,7 @@ describe("session-config-builder", () => {
     expect(cfg.workingDirectory).toBeUndefined();
     expect(cfg.enableConfigDiscovery).toBe(false);
     expect(cfg.enableFileHooks).toBe(false);
+    expect(cfg).not.toHaveProperty("subagents");
   });
 
   it("renders default style as the tone section and quality guidance ahead of task instructions", () => {
@@ -370,9 +371,6 @@ describe("session-config-builder", () => {
       }
     });
 
-    it("sends no sub-agent plan without Bridge settings", () => {
-      expect(build(undefined)).not.toHaveProperty("subagents");
-    });
   });
 
   describe("computer use", () => {
@@ -521,7 +519,8 @@ describe("session-config-builder", () => {
   it("lets an explicit launch model override schedule and global models", () => {
     const settingsStore = {
       getSettings: () => ({
-        model: "gpt-5.5",
+        model: "global-model",
+        modelPresets: { preset1: { model: "scheduled-model" } },
         reasoningEffort: "low",
         contextTier: "default",
       }),
@@ -532,10 +531,11 @@ describe("session-config-builder", () => {
     const cfg = buildSessionConfig({
       deps: createDeps({ settingsStore }),
       options: {
+        scheduleContext: { name: "Daily review", type: "cron", runCount: 1, modelTier: "preset1" },
         modelOverride: "gpt-5.5",
         reasoningEffortOverride: "high",
         contextTierOverride: "long_context",
-        modelMetadata: [GPT_55_TIERED_MODEL],
+        modelMetadata: [GPT_55_TIERED_MODEL, { id: "scheduled-model" }, { id: "global-model" }],
       },
       callbacks: createCallbacks(),
     });
@@ -629,30 +629,6 @@ describe("session-config-builder", () => {
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
   });
 
-  it("adds CLI-hosted GitHub Copilot web search MCP when the Bridge Copilot token is configured", () => {
-    const cfg = buildSessionConfig({
-      deps: createDeps({
-        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "  token-123  " },
-      }),
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.mcpServers).toEqual({
-      [GITHUB_COPILOT_MCP_SERVER_NAME]: {
-        type: "http",
-        url: GITHUB_COPILOT_MCP_READONLY_URL,
-        headers: {
-          Authorization: "Bearer token-123",
-          "X-MCP-Host": "copilot-bridge",
-          "X-MCP-Readonly": "true",
-          "X-MCP-Tools": GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
-        },
-        tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
-      },
-    });
-    expect(cfg.githubMcpToolConfig).toBeUndefined();
-  });
-
   it("injects Bridge-owned MCP servers and prevents user config from overriding them", () => {
     const bridgeMcp = {
       type: "stdio" as const,
@@ -725,7 +701,7 @@ describe("session-config-builder", () => {
 
     const cfg = buildSessionConfig({
       deps: createDeps({
-        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "copilot-account-token" },
+        clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "  token-123  " },
         mcpServerStore,
       }),
       callbacks: createCallbacks(),
@@ -739,8 +715,17 @@ describe("session-config-builder", () => {
         "X-MCP-Toolsets": "repos,pull_requests",
       },
     });
-    expect(cfg.mcpServers[GITHUB_COPILOT_MCP_SERVER_NAME].headers.Authorization)
-      .toBe("Bearer copilot-account-token");
+    expect(cfg.mcpServers[GITHUB_COPILOT_MCP_SERVER_NAME]).toEqual({
+      type: "http",
+      url: GITHUB_COPILOT_MCP_READONLY_URL,
+      headers: {
+        Authorization: "Bearer token-123",
+        "X-MCP-Host": "copilot-bridge",
+        "X-MCP-Readonly": "true",
+        "X-MCP-Tools": GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL,
+      },
+      tools: [GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL],
+    });
     expect(cfg.githubMcpToolConfig).toBeUndefined();
   });
 
@@ -993,11 +978,12 @@ describe("session-config-builder", () => {
   });
 
   it("keeps changing task state out of the system prompt and renders stable task context", async () => {
+    let checklistText = "Finish extraction";
     const checklistStore = {
       listChecklistItems: () => [{
         id: "check-1",
         taskId: "task-1",
-        text: "Finish extraction",
+        text: checklistText,
         done: false,
         order: 0,
         createdAt: "2026-04-01T00:00:00.000Z",
@@ -1011,11 +997,11 @@ describe("session-config-builder", () => {
       pullRequests: [{ repoId: "repo-id", repoName: "owner/repo", prId: 42, provider: "github" }],
     });
 
-    const cfg = buildSessionConfig({
+    const build = (currentTask: Task) => buildSessionConfig({
       deps: createDeps({ checklistStore }),
       options: {
         sessionId: "session-1",
-        task,
+        task: currentTask,
         scheduleContext: { name: "Daily check", type: "cron", runCount: 2 },
       },
       callbacks: createCallbacks({
@@ -1023,6 +1009,7 @@ describe("session-config-builder", () => {
       }),
     });
 
+    const cfg = build(task);
     expect(cfg.pendingInteractionEvents).toBe(true);
     expect(cfg.onUserInputRequest).toBeUndefined();
     expect(cfg.onElicitationRequest).toBeUndefined();
@@ -1042,26 +1029,11 @@ describe("session-config-builder", () => {
     expect(content).not.toContain("Finish extraction");
     expect(cfg.systemMessage.sections.tone).toMatchObject({ action: "replace" });
     expect((cfg.systemMessage.sections.tone as { content: string }).content).toContain("<writing>");
+
+    checklistText = "Updated checklist item";
+    const changedTask = { ...task, notes: "Changed notes", nextAction: "Call back", workItems: [] };
+    expect(build(changedTask).systemMessage.content).toBe(content);
+    expect(build({ ...changedTask, instructions: "Changed rule" }).systemMessage.content).not.toBe(content);
   });
 
-  it("produces the same system prompt when only notes, checklist or links change", () => {
-    const build = (task: Task, checklistText: string) => buildSessionConfig({
-      deps: createDeps({
-        checklistStore: {
-          listChecklistItems: () => [{ id: "c", taskId: task.id, text: checklistText, done: false, order: 0, createdAt: "2026-04-01T00:00:00.000Z" }],
-        } as unknown as ChecklistStore,
-      }),
-      options: { sessionId: "session-1", task },
-      callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => undefined }),
-    }).systemMessage.content;
-
-    const before = build(createTask({ notes: "first", nextAction: "Do A" }), "one");
-    const after = build(createTask({
-      notes: "second",
-      nextAction: "Do B",
-      workItems: [{ id: "NEW-1", provider: "linear" }],
-    }), "two");
-    expect(after).toBe(before);
-    expect(build(createTask({ instructions: "Rule" }), "one")).not.toBe(before);
-  });
 });
