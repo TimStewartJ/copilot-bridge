@@ -464,6 +464,13 @@ async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectSt
 
 type Harness = Awaited<ReturnType<typeof createHarness>>;
 
+async function createTicketHarness() {
+  const h = await createHarness();
+  const session = await h.createSession();
+  const ticket = await h.gateway.createTicket(session.id);
+  return { h, session, ticket };
+}
+
 /** A gateway with only a fake CLI behind it, for what needs no sockets. */
 function createCliGateway(options: Pick<BrowserLiveGatewayOptions, "connectStream"> = {}) {
   const cli = createFakeCli(9223);
@@ -965,9 +972,7 @@ describe("BrowserLiveGateway tickets", () => {
   });
 
   it("upgrades with a valid ticket and opens the browser's stream with paced frames", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
 
     const view = await h.openWithTicket(ticket);
 
@@ -977,19 +982,16 @@ describe("BrowserLiveGateway tickets", () => {
   });
 
   it("upgrades under a path prefix, as a staged preview serves it", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
+    const { h, ticket } = await createTicketHarness();
 
-    const view = await h.openWithTicket(await h.gateway.createTicket(session.id), undefined, "/staging/41728153");
+    const view = await h.openWithTicket(ticket, undefined, "/staging/41728153");
 
     expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
     expect(h.handled).toEqual([true]);
   });
 
   it("answers 403 when a ticket is used a second time", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
     await h.openWithTicket(ticket);
 
     await expect(h.connect(h.liveUrl(ticket))).resolves.toEqual({ status: 403 });
@@ -1012,9 +1014,7 @@ describe("BrowserLiveGateway tickets", () => {
   });
 
   it("answers 403 for a made-up ticket and for no ticket", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    await h.gateway.createTicket(session.id);
+    const { h, session } = await createTicketHarness();
 
     await expect(h.connect(h.liveUrl({ browserSessionId: session.id, token: "x".repeat(32) }))).resolves.toEqual({ status: 403 });
     await expect(h.connect(`${BROWSER_LIVE_WS_PATH}?browserSessionId=${session.id}`)).resolves.toEqual({ status: 403 });
@@ -1034,9 +1034,7 @@ describe("BrowserLiveGateway tickets", () => {
   });
 
   it("does not handle an upgrade for another path, and leaves the ticket usable", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
     const query = h.liveUrl(ticket).slice(BROWSER_LIVE_WS_PATH.length);
 
     await expect(h.connect(`/api/voice/ws${query}`)).resolves.toEqual({ status: 404 });
@@ -1089,9 +1087,7 @@ describe("BrowserLiveGateway and the session's browser", () => {
   });
 
   it("refuses a ticket, and ends a view opened with an earlier one, while the session is being closed", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, session, ticket } = await createTicketHarness();
     const commands = h.journal.length;
     const browserMayClose = deferred();
     h.browsers.answers.shutdown = async () => {
@@ -1129,9 +1125,7 @@ describe("BrowserLiveGateway and the session's browser", () => {
   });
 
   it("closes the view as unavailable, in the broker's words, when the session's browser no longer starts", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
     const statusCalls = h.cli.count("stream status");
     h.browsers.answers.ready = () => ({ ok: false, output: "Chrome exited early" });
 
@@ -1181,18 +1175,14 @@ describe("BrowserLiveGateway origin check", () => {
     ["this host on another port", "http://127.0.0.1:1"],
     ["an opaque origin", "null"],
   ])("answers 403 for an Origin that is %s, and the attempt spends the ticket", async (_name, origin) => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
 
     await expect(h.connect(h.liveUrl(ticket), { origin })).resolves.toEqual({ status: 403 });
     await expect(h.connect(h.liveUrl(ticket), { origin: `http://${h.host}` })).resolves.toEqual({ status: 403 });
   });
 
   it("answers 403 for a foreign Origin even when the proxy forwards the Bridge's own host", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
 
     await expect(h.connect(h.liveUrl(ticket), {
       origin: "https://evil.example",
@@ -1376,9 +1366,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
   });
 
   it("drops input, and what the toolbar asks for, that arrives before the browser's stream is open", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
     const answer = h.cli.answers.status;
     let releaseStatus!: () => void;
     h.cli.answers.status = () => new Promise((resolve) => {
@@ -2347,9 +2335,7 @@ describe("BrowserLiveGateway closing", () => {
   });
 
   it("tells the view that the stream ended when the browser's stream cannot be opened", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
     h.refuseUpstream();
 
     const client = await h.open(h.liveUrl(ticket));
@@ -2377,9 +2363,7 @@ describe("BrowserLiveGateway closing", () => {
   });
 
   it("closes the view as unavailable when the browser can no longer stream once the socket is open", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, ticket } = await createTicketHarness();
     h.cli.answers.status = () => ({ ok: false, output: "error: unrecognized subcommand 'stream'" });
 
     const client = await h.open(h.liveUrl(ticket));
@@ -2394,9 +2378,7 @@ describe("BrowserLiveGateway closing", () => {
   });
 
   it("closes the view as ended when the session was closed between the ticket and the socket, and ignores what its client sent meanwhile", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const ticket = await h.gateway.createTicket(session.id);
+    const { h, session, ticket } = await createTicketHarness();
     await h.store.closeSession(session.id, OWNER);
     const statusCalls = h.cli.count("stream status");
 
