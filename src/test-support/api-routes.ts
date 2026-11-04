@@ -32,12 +32,13 @@ const TRANSCRIPTION_ENV_KEYS = [
   "BRIDGE_VOICE_DIR",
 ] as const;
 
-export function installApiRouteTestHooks(assign: (state: ApiRouteTestState) => void): void {
+/** Omit the callback when each test creates its own app; the environment and cleanup hooks still apply. */
+export function installApiRouteTestHooks(assign?: (state: ApiRouteTestState) => void): void {
   beforeEach(() => {
     for (const key of TRANSCRIPTION_ENV_KEYS) {
       vi.stubEnv(key, undefined);
     }
-    assign(createTestApp());
+    assign?.(createTestApp());
   });
 
   afterEach(() => {

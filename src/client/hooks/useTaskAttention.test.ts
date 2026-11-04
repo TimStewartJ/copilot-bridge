@@ -85,22 +85,15 @@ describe("task attention source gaps", () => {
     expect(reading.activityDescriptions.get("copy")).toBe("");
   });
 
-  it("reserves individual unknown badges for task-specific problems", async () => {
-    await render(["broken", "healthy"].map(id => task(id)), overview([
-      row("broken", { activity: createTaskActivity({
-        known: false, sessionIndexKnown: false,
-        unavailable: { scope: "task", reason: "A linked conversation is missing." },
-      }) }), row("healthy"),
-    ]));
-    expect(reading.taskSignals.get("broken")).toMatchObject({ kind: "status-unknown", status: "unknown", detail: "A linked conversation is missing." });
-    expect(reading.taskSignals.get("healthy")).toMatchObject({ kind: "needs-look", status: "review" });
-  });
-
-  it("keeps healthy review, explicit questions and saved waits distinct within a partially unavailable task list", async () => {
-    await render([task("wait", { waitingOn: "Reviewer" }), task("work"), task("question"), task("copy-a"), task("copy-b"), task("healthy")], overview([
+  it("marks only task-specific problems as unknown alongside healthy tasks and shared source gaps", async () => {
+    await render([task("wait", { waitingOn: "Reviewer" }), task("work"), task("question"), task("copy-a"), task("copy-b"), task("broken"), task("healthy")], overview([
       row("copy-a", { activity: sourceGap() }), row("copy-b", { activity: sourceGap() }), row("healthy"),
       row("wait", { activity: sourceGap() }), row("work", { activity: sourceGap() }),
       row("question", { activity: sourceGap(), inputCount: 1 }),
+      row("broken", { activity: createTaskActivity({
+        known: false, sessionIndexKnown: false,
+        unavailable: { scope: "task", reason: "A linked conversation is missing." },
+      }) }),
     ]), new Map([["work", indicator({ busy: true, busyCount: 1, sessionStateKnown: false, readStateKnown: false })]]));
     expect(reading.taskSignals.get("wait")).toBeNull();
     expect(reading.taskSignals.get("work")).toBeNull();
@@ -108,7 +101,8 @@ describe("task attention source gaps", () => {
     expect(reading.activityDescriptions.get("wait")).toBe("Waiting for: Reviewer");
     expect(reading.taskSignals.get("copy-a")).toBeNull();
     expect(reading.taskSignals.get("copy-b")).toBeNull();
-    expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
+    expect(reading.taskSignals.get("broken")).toMatchObject({ kind: "status-unknown", status: "unknown", detail: "A linked conversation is missing." });
+    expect(reading.taskSignals.get("healthy")).toMatchObject({ kind: "needs-look", status: "review" });
   });
 
   it("distinguishes read-state loading, initial failure and failed refresh", async () => {

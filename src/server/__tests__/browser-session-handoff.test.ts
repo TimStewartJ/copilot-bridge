@@ -229,12 +229,6 @@ async function openHandoff(options: {
 const ACCEPT_DONE = (fieldName: string): AgentElicitationResponse =>
   ({ action: "accept", content: { [fieldName]: BROWSER_HANDOFF_ANSWERS.done } });
 
-/** The ways a question to the user ends: with an answer, or with the runtime's error. */
-const WAYS_THE_QUESTION_ENDS: Array<[string, (fieldName: string) => AgentElicitationResponse | Error]> = [
-  ["done", (fieldName) => ACCEPT_DONE(fieldName)],
-  ["a question that could not be asked", () => new Error("The runtime dropped the question")],
-];
-
 /** What the broker says to anything else that wants a browser the user was asked to act in. */
 const userHasBrowser = (reason: string = REASON): string =>
   `The user has this browser right now (${reason}). Try again after they hand it back.`;
@@ -263,6 +257,20 @@ async function expectBrowserWithUser(
   expect(exec).toMatchObject({ resultType: "failure" });
   expect(exec.textResultForLlm).toContain(userHasBrowser(reason));
   expect(exec).not.toHaveProperty("steps");
+}
+
+type OpenHandoff = Awaited<ReturnType<typeof openHandoff>>;
+
+async function expectHandoffHeld({ runtime, fieldName, browserSessionId, tools }: OpenHandoff) {
+  expect(runtime.sessions.matchHandoff("copilot-a", [fieldName])).toEqual({ browserSessionId, reason: REASON });
+  expect(runtime.sessions.matchHandoff("copilot-b", [fieldName])).toBeUndefined();
+  await expectBrowserWithUser(tools, browserSessionId);
+}
+
+async function expectHandoffReleased({ runtime, fieldName, browserSessionId, tools }: OpenHandoff) {
+  expect(runtime.sessions.matchHandoff("copilot-a", [fieldName])).toBeUndefined();
+  expect(runtime.sessions.getSession(browserSessionId)).toMatchObject({ activeCount: 0 });
+  await expectBrowserUsable(tools, browserSessionId);
 }
 
 describe("browser_session_handoff", () => {
@@ -364,25 +372,10 @@ describe("browser_session_handoff", () => {
   });
 
   describe("the answer", () => {
-    it("done: returns the page as the user left it", async () => {
-      const { form, fieldName, result, browser, browserSessionId } = await openHandoff();
-
-      browser.page = PRICING_PAGE;
-      form.respond(ACCEPT_DONE(fieldName));
-
-      await expect(result).resolves.toEqual({
-        browserSessionId,
-        handoff: "completed",
-        state: {
-          url: { ok: true, output: "https://www.example.com/pricing" },
-          title: { ok: true, output: "Pricing – Example" },
-          snapshot: { ok: true, output: '- heading "Pricing – Example" [ref=e1]' },
-        },
-      });
-    });
-
     it("done, with the check still on the page: says so", async () => {
-      const { form, fieldName, result, browserSessionId } = await openHandoff();
+      const handoff = await openHandoff();
+      const { form, fieldName, result, browserSessionId } = handoff;
+      await expectHandoffHeld(handoff);
 
       form.respond(ACCEPT_DONE(fieldName));
       const handedBack = await result;
@@ -395,6 +388,7 @@ describe("browser_session_handoff", () => {
       });
       expect(handedBack.blocked.guidance).toContain("browser_session_handoff");
       expect(handedBack.blocked.guidance).toContain(browserSessionId);
+      await expectHandoffReleased(handoff);
     });
 
     it("not done: says the user could not do it, with the page as it is", async () => {
@@ -485,7 +479,9 @@ describe("browser_session_handoff", () => {
     });
 
     it("fails with the runtime's error when the question cannot be asked", async () => {
-      const { form, result, browserSessionId, tools } = await openHandoff();
+      const handoff = await openHandoff();
+      const { form, result, browserSessionId, tools } = handoff;
+      await expectHandoffHeld(handoff);
 
       form.fail(new Error("This chat cannot ask its user a question right now."));
       const failure = await result;
@@ -493,6 +489,7 @@ describe("browser_session_handoff", () => {
       expect(failure.resultType).toBe("failure");
       expect(failure.textResultForLlm).toContain("This chat cannot ask its user a question right now.");
       expect(failure).not.toHaveProperty("handoff");
+      await expectHandoffReleased(handoff);
       // The session is not left in use.
       await expect(tools.browser_session_close.handler({ browserSessionId }, OWNER)).resolves.toEqual({
         success: true,
@@ -530,9 +527,14 @@ describe("browser_session_handoff", () => {
 
         browser.page = PRICING_PAGE;
         form.respond(ACCEPT_DONE(fieldName));
-        await expect(result).resolves.toMatchObject({
+        await expect(result).resolves.toEqual({
+          browserSessionId,
           handoff: "completed",
-          state: { title: { ok: true, output: "Pricing – Example" } },
+          state: {
+            url: { ok: true, output: "https://www.example.com/pricing" },
+            title: { ok: true, output: "Pricing – Example" },
+            snapshot: { ok: true, output: '- heading "Pricing – Example" [ref=e1]' },
+          },
         });
 
         const after = await tools.browser_session_exec.handler({
@@ -542,39 +544,6 @@ describe("browser_session_handoff", () => {
         expect(after.steps).toMatchObject([{ command: "get", ok: true, output: "Pricing – Example" }]);
       },
     );
-
-    it.each(WAYS_THE_QUESTION_ENDS)(
-      "the form is marked as a handoff, and both the mark and the hold end after %s",
-      async (_name, outcome) => {
-        const { form, fieldName, result, tools, runtime, browserSessionId } = await openHandoff();
-
-        expect(runtime.sessions.matchHandoff("copilot-a", [fieldName])).toEqual({ browserSessionId, reason: REASON });
-        expect(runtime.sessions.matchHandoff("copilot-b", [fieldName])).toBeUndefined();
-        await expectBrowserWithUser(tools, browserSessionId);
-
-        const answer = outcome(fieldName);
-        if (answer instanceof Error) form.fail(answer);
-        else form.respond(answer);
-        await result;
-
-        expect(runtime.sessions.matchHandoff("copilot-a", [fieldName])).toBeUndefined();
-        expect(runtime.sessions.getSession(browserSessionId)).toMatchObject({ activeCount: 0 });
-        await expectBrowserUsable(tools, browserSessionId);
-      },
-    );
-
-    it("lets the live view work in the authenticated browser the user has", async () => {
-      const { form, result, runtime, browserSessionId } = await openHandoff({ context: "authenticated" });
-
-      // What the client asks for when the user opens the view.
-      await expect(runtime.live.createTicket(browserSessionId)).resolves.toMatchObject({
-        browserSessionId,
-        token: expect.any(String),
-      });
-
-      form.respond({ action: "cancel" });
-      await result;
-    });
 
     it("leaves every other browser usable while the user has a public one", async () => {
       const { form, result, tools, runtime, browserSessionId } = await openHandoff();
@@ -603,6 +572,11 @@ describe("browser_session_handoff", () => {
       const sameChat = await startSession(tools, "authenticated");
       const otherChat = await startSession(tools, "authenticated", OTHER_CHAT);
       const publicSession = await startSession(tools);
+      // The viewer still gets a ticket to this browser while the agents are kept out.
+      await expect(runtime.live.createTicket(browserSessionId)).resolves.toMatchObject({
+        browserSessionId,
+        token: expect.any(String),
+      });
       const usedBeforeCalls = browser.calls.length;
 
       await expectBrowserWithUser(tools, browserSessionId);

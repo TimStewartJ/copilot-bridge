@@ -12,14 +12,9 @@ import {
 } from "../test-support/api-routes.js";
 import { SessionCapacityError, SessionHistoryUndoError } from "../server/session-manager.js";
 
-let app: ApiRouteTestState["app"];
-let ctx: ApiRouteTestState["ctx"];
+installApiRouteTestHooks();
 
-installApiRouteTestHooks((state) => {
-  ({ app, ctx } = state);
-});
-
-async function waitForForkJob(jobId: string) {
+async function waitForForkJob(app: ApiRouteTestState["app"], jobId: string) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const response = await request(app).get(`/api/session-forks/${jobId}`);
     if (response.body.status === "succeeded" || response.body.status === "failed") {
@@ -34,6 +29,7 @@ async function waitForForkJob(jobId: string) {
 
 describe("Session manager routes", () => {
   it("POST /api/sessions/:id/warm identifies passive chat navigation", async () => {
+    const { app, ctx } = createTestApp();
     const warm = vi.spyOn(ctx.sessionManager, "warmSession").mockResolvedValue(undefined);
 
     const res = await request(app).post("/api/sessions/test-id/warm");
@@ -47,7 +43,7 @@ describe("Session manager routes", () => {
     const sessionManager = createMockSessionManager();
     sessionManager.getSessionActivity = vi.fn().mockReturnValue([]);
     sessionManager.getLifecycleBlockingSessionCount = vi.fn().mockReturnValue(1);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).get("/api/busy");
 
@@ -65,6 +61,7 @@ describe("Session manager routes", () => {
   });
 
   it("restores a failed run notice from storage without an event bus or runtime resume", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionMetaStore.setTerminalOverlay("failed-chat", {
       type: "error",
       runId: "failed-run",
@@ -88,6 +85,7 @@ describe("Session manager routes", () => {
   });
 
   it("does not restore an obsolete failure while the session is busy", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionMetaStore.setTerminalOverlay("test-id", {
       type: "error", runId: "old-run", notice: { kind: "error", message: "old error" },
     });
@@ -98,6 +96,7 @@ describe("Session manager routes", () => {
   });
 
   it("keeps the saved failure visible while passive warming holds the session", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionMetaStore.setTerminalOverlay("test-id", {
       type: "error", runId: "failed-run", terminalSourceEventId: "saved-error",
       notice: { kind: "error", message: "upstream failed" },
@@ -109,6 +108,7 @@ describe("Session manager routes", () => {
   });
 
   it("retries the latest failure as an interactive system continuation and refuses duplicate retries", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionMetaStore.setTerminalOverlay("test-id", {
       type: "error", runId: "failed-run", terminalSourceEventId: "saved-error",
       notice: { kind: "error", message: "upstream failed" },
@@ -130,6 +130,7 @@ describe("Session manager routes", () => {
   });
 
   it.each(["", 42, "x".repeat(201)])("rejects an invalid failed run ID: %s", async (runId) => {
+    const { app, ctx } = createTestApp();
     vi.spyOn(ctx.sessionManager, "startWork");
     const response = await request(app).post("/api/sessions/test-id/retry").send({ runId });
     expect(response.status).toBe(400);
@@ -137,6 +138,7 @@ describe("Session manager routes", () => {
   });
 
   it.each(["newer", "done", "busy", "stalled"])("rejects a %s retry without sending work", async (kind) => {
+    const { app, ctx } = createTestApp();
     vi.spyOn(ctx.sessionManager, "startWork");
     ctx.sessionMetaStore.setTerminalOverlay("test-id", {
       type: kind === "done" ? "done" : "error",
@@ -152,6 +154,7 @@ describe("Session manager routes", () => {
   });
 
   it("keeps the failure available if a retry cannot start", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionMetaStore.setTerminalOverlay("test-id", {
       type: "error", runId: "failed-run", terminalSourceEventId: "saved-error",
       notice: { kind: "error", message: "upstream failed" },
@@ -164,6 +167,7 @@ describe("Session manager routes", () => {
   });
 
   it("does not offer a response retry when the prompt never reached the runtime", async () => {
+    const { app, ctx } = createTestApp();
     vi.spyOn(ctx.sessionManager, "startWork");
     ctx.sessionMetaStore.setTerminalOverlay("test-id", {
       type: "error", runId: "failed-run", notice: { kind: "error", message: "initialization failed" },
@@ -177,6 +181,7 @@ describe("Session manager routes", () => {
   });
 
   it("GET /api/sessions/:id/messages-fast carries the session's agents with whichever messages it returns", async () => {
+    const { app, ctx } = createTestApp();
     const moves = {
       toolCallId: "task-moves",
       agentId: "agent-moves",
@@ -211,6 +216,7 @@ describe("Session manager routes", () => {
   });
 
   it("GET /api/sessions/:id/stream returns a complete ephemeral snapshot", async () => {
+    const { app, ctx } = createTestApp();
     const bus = ctx.eventBusRegistry.getOrCreateBus("stream-complete");
     bus.reset();
     bus.emit({ type: "thinking", turnId: "provider-turn-1" });
@@ -229,6 +235,7 @@ describe("Session manager routes", () => {
   });
 
   it("GET /api/sessions/:id/stream restores a persisted synthetic terminal overlay", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionMetaStore.setTerminalOverlay("synthetic-terminal", {
       type: "aborted",
       runId: "run-synthetic",
@@ -245,6 +252,7 @@ describe("Session manager routes", () => {
   });
 
   it("GET /api/sessions/:id/stream follows a hold instead of reporting the session finished", async () => {
+    const { app, ctx } = createTestApp();
     let hold: "image-compaction" | undefined = "image-compaction";
     ctx.sessionManager.getSessionHold = vi.fn(() => hold) as any;
     ctx.sessionManager.subscribeSessionHold = vi.fn((_sessionId: string, listener: () => void) => {
@@ -273,6 +281,7 @@ describe("Session manager routes", () => {
   });
 
   it("GET /api/sessions/:id/stream continues into the turn that starts when a hold ends", async () => {
+    const { app, ctx } = createTestApp();
     let hold: "image-compaction" | undefined = "image-compaction";
     ctx.sessionManager.getSessionHold = vi.fn(() => hold) as any;
     ctx.sessionManager.subscribeSessionHold = vi.fn((sessionId: string, listener: () => void) => {
@@ -317,7 +326,7 @@ describe("Session manager routes", () => {
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/sessions/test-id/fork")
@@ -334,7 +343,7 @@ describe("Session manager routes", () => {
     });
 
     resolveFork?.({ sessionId: "bounded-fork" });
-    const completed = await waitForForkJob(res.body.job.id);
+    const completed = await waitForForkJob(app, res.body.job.id);
 
     expect(completed.body).toMatchObject({
       status: "succeeded",
@@ -351,7 +360,7 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/fork rejects empty event boundaries", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.forkSession = vi.fn();
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/sessions/test-id/fork")
@@ -364,10 +373,10 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/fork reports unforkable sessions as a client error", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.forkSession = vi.fn().mockRejectedValue(new Error("Session test-id not found or has no persisted events"));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/test-id/fork");
-    const completed = await waitForForkJob(res.body.job.id);
+    const completed = await waitForForkJob(app, res.body.job.id);
 
     expect(res.status).toBe(202);
     expect(completed.body).toMatchObject({
@@ -403,7 +412,7 @@ describe("Session manager routes", () => {
     sessionManager.listSessionsFromDisk = vi.fn(async () => {
       throw new Error("source title should come from CLI catalog");
     });
-    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
+    const { app, ctx } = createTestApp({ copilotHome, sessionManager });
 
     const taskA = ctx.taskStore.createTask("Task A");
     const taskB = ctx.taskStore.createTask("Task B");
@@ -415,7 +424,7 @@ describe("Session manager routes", () => {
     });
 
     const res = await request(app).post("/api/sessions/test-id/fork");
-    const completed = await waitForForkJob(res.body.job.id);
+    const completed = await waitForForkJob(app, res.body.job.id);
 
     expect(res.status).toBe(202);
     expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
@@ -446,7 +455,7 @@ describe("Session manager routes", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      ({ app, ctx } = createTestApp({ sessionManager }));
+      const { app, ctx } = createTestApp({ sessionManager });
       const task = ctx.taskStore.createTask("Linked task");
       ctx.taskStore.linkSession(task.id, "test-id");
       const events: any[] = [];
@@ -454,7 +463,7 @@ describe("Session manager routes", () => {
 
       try {
         const res = await request(app).post("/api/sessions/test-id/fork");
-        const completed = await waitForForkJob(res.body.job.id);
+        const completed = await waitForForkJob(app, res.body.job.id);
 
         expect(res.status).toBe(202);
         expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
@@ -494,12 +503,12 @@ describe("Session manager routes", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      ({ app, ctx } = createTestApp({ sessionManager }));
+      const { app, ctx } = createTestApp({ sessionManager });
       const task = ctx.taskStore.createTask("Linked task");
       ctx.taskStore.linkSession(task.id, "test-id");
 
       const res = await request(app).post("/api/sessions/test-id/fork");
-      const completed = await waitForForkJob(res.body.job.id);
+      const completed = await waitForForkJob(app, res.body.job.id);
 
       expect(res.status).toBe(202);
       expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
@@ -523,6 +532,7 @@ describe("Session manager routes", () => {
   });
 
   it("GET /api/session-forks/:id returns 404 for an unknown job", async () => {
+    const { app } = createTestApp();
     const res = await request(app).get("/api/session-forks/missing-job");
 
     expect(res.status).toBe(404);
@@ -535,7 +545,7 @@ describe("Session manager routes", () => {
       eventsRemoved: 4,
       lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
     });
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/sessions/test-id/undo")
@@ -554,7 +564,7 @@ describe("Session manager routes", () => {
     sessionManager.undoSessionTurn = vi.fn().mockRejectedValue(
       new SessionHistoryUndoError("stale-boundary", "This turn is no longer available to undo."),
     );
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const empty = await request(app)
       .post("/api/sessions/test-id/undo")
@@ -575,7 +585,7 @@ describe("Session manager routes", () => {
     sessionManager.undoSessionTurn = vi.fn().mockRejectedValue(
       new SessionHistoryUndoError("unsupported", "Session history undo is not available in this agent backend"),
     );
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/sessions/test-id/undo")
@@ -590,7 +600,7 @@ describe("Session manager routes", () => {
     sessionManager.reloadSession = vi.fn().mockResolvedValue([
       { name: "demo", status: "connected", source: "settings" },
     ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/test-id/reload");
 
@@ -605,7 +615,7 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/reload rejects busy sessions", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/test-id/reload");
 
@@ -616,7 +626,7 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/reload maps late busy errors to 409", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.reloadSession = vi.fn().mockRejectedValue(new Error("Cannot reload a busy session"));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/test-id/reload");
 
@@ -631,7 +641,7 @@ describe("Session manager routes", () => {
       authorizationUrl: "https://login.example.test",
       servers: [{ name: "ado", status: "needs-auth" }],
     });
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/sessions/test-id/mcp-login")
@@ -647,6 +657,7 @@ describe("Session manager routes", () => {
   });
 
   it("POST /api/sessions/:id/mcp-login validates the request body", async () => {
+    const { app } = createTestApp();
     const res = await request(app)
       .post("/api/sessions/test-id/mcp-login")
       .send({ forceReauth: true });
@@ -658,7 +669,7 @@ describe("Session manager routes", () => {
   it("POST /api/sessions/:id/mcp-login maps busy sessions to 409", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.loginMcpServer = vi.fn().mockRejectedValue(new Error("Cannot authenticate MCP server for a busy session"));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/sessions/test-id/mcp-login")
@@ -667,7 +678,6 @@ describe("Session manager routes", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Cannot authenticate MCP server for a busy session");
   });
-
 
   it("POST /api/tasks/:id/session leaves the task unchanged when capacity stays full", async () => {
     const sessionManager = createMockSessionManager();
@@ -680,7 +690,7 @@ describe("Session manager routes", () => {
         capacityLimit: 64,
       }),
     );
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     const task = (await request(app).post("/api/tasks").send({ title: "Queued task" })).body.task;
 
     const res = await request(app).post(`/api/tasks/${task.id}/session`);

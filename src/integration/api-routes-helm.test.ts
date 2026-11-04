@@ -1,14 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import { createMockSessionManager, createTestApp, installApiRouteTestHooks, request } from "../test-support/api-routes.js";
 import type { BridgeNativeTool } from "../server/bridge-native-tools.js";
 
-let app: ApiRouteTestState["app"];
-let ctx: ApiRouteTestState["ctx"];
-
-installApiRouteTestHooks((state) => {
-  ({ app, ctx } = state);
-});
+installApiRouteTestHooks();
 
 describe("Helm routes", () => {
   it.each(["idle", "busy"])("keeps Helm's existing %s send behavior through the shared delivery helper", async (state) => {
@@ -20,7 +14,7 @@ describe("Helm routes", () => {
     sessionManager.isSessionBusy = () => state === "busy";
     sessionManager.startWork = vi.fn();
     sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { ctx } = createTestApp({ sessionManager });
     ctx.sessionMetaStore.setArchived(targetId, true);
     const config = ctx.helm!.getSessionProfile().apply({ tools: [] as BridgeNativeTool[] });
     const tool = config.tools.find((candidate) => candidate.name === "send_to_session");
@@ -37,6 +31,7 @@ describe("Helm routes", () => {
   });
 
   it("starts empty and explains its retention policy", async () => {
+    const { app } = createTestApp();
     const res = await request(app).get("/api/helm");
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ current: null, resumable: null, recent: [] });
@@ -44,6 +39,7 @@ describe("Helm routes", () => {
   });
 
   it("takes a model and effort of Helm's own in the Helm role", async () => {
+    const { app } = createTestApp();
     const patched = await request(app).patch("/api/settings").send({ modelRoles: { helm: { model: "claude-opus-5", reasoningEffort: "high" } } });
     expect(patched.status).toBe(200);
     expect(patched.body.modelRoles.helm).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
@@ -54,7 +50,7 @@ describe("Helm routes", () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn(async (options: { expectedSessionId?: string }) => ({ sessionId: options.expectedSessionId! }));
     sessionManager.deleteSession = vi.fn(async () => undefined);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
 
     // A per-conversation effort is no longer a thing: each turn asks for its mode's effort.
     const created = await request(app).post("/api/helm/conversations").send({ model: "gpt-5-mini", reasoningEffort: "none" });
@@ -92,7 +88,7 @@ describe("Helm routes", () => {
   it("refuses to delete a conversation that is still replying", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn(async (options: { expectedSessionId?: string }) => ({ sessionId: options.expectedSessionId! }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     const { body } = await request(app).post("/api/helm/conversations").send({});
     sessionManager.isSessionBusy = () => true;
     const res = await request(app).delete(`/api/helm/conversations/${body.sessionId}`);
@@ -103,7 +99,7 @@ describe("Helm routes", () => {
   it("keeps Helm conversations out of the chat lists", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn(async (options: { expectedSessionId?: string }) => ({ sessionId: options.expectedSessionId! }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
     const { body } = await request(app).post("/api/helm/conversations").send({});
     const now = new Date().toISOString();
     sessionManager.listSessionsFromDisk = async () => [
@@ -119,7 +115,7 @@ describe("Helm routes", () => {
     const sessionManager = createMockSessionManager();
     sessionManager.createSession = vi.fn(async (options: { expectedSessionId?: string }) => ({ sessionId: options.expectedSessionId! }));
     sessionManager.startWork = vi.fn();
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
     const { body } = await request(app).post("/api/helm/conversations").send({});
     const res = await request(app).post("/api/chat").send({ sessionId: body.sessionId, prompt: "what needs me?", clientMessageId: "client-1" });
     expect(res.status).toBe(202);
@@ -131,6 +127,7 @@ describe("Helm routes", () => {
   });
 
   it("starts hands-free only once the speech engine is installed", async () => {
+    const { app } = createTestApp();
     const res = await request(app).post("/api/voice/conversations").send({ helmSessionId: "11111111-2222-4333-8444-555555555555" });
     // The speech engine is not installed in tests, which is reported before anything else.
     expect([404, 409]).toContain(res.status);

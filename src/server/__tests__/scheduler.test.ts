@@ -9,10 +9,28 @@ import {
   matchesField,
   validateSupportedCronExpression,
 } from "../scheduler.js";
-import { createTestApp } from "./test-app.js";
-import { sessionsOnDisk, setupTestDb } from "./helpers.js";
+import { createDeferLoopStore } from "../defer-loop-store.js";
+import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createHelmThinkerStore } from "../helm/thinker/store.js";
-import { resolveScheduleRunsKeep } from "../session-meta-store.js";
+import { createScheduleStore } from "../schedule-store.js";
+import { createSessionMetaStore, resolveScheduleRunsKeep } from "../session-meta-store.js";
+import { createTaskStore } from "../task-store.js";
+import { createTestBus, registerTestAppCleanup, sessionsOnDisk, setupTestDb } from "./helpers.js";
+import { createTestApp } from "./test-app.js";
+
+function schedulerStores() {
+  const db = setupTestDb();
+  const globalBus = createTestBus();
+  registerTestAppCleanup(async () => { db.close(); });
+  return {
+    db, globalBus,
+    scheduleStore: createScheduleStore(db),
+    taskStore: createTaskStore(db, globalBus),
+    sessionMetaStore: createSessionMetaStore(db),
+    deferredPromptStore: createDeferredPromptStore(db),
+    deferLoopStore: createDeferLoopStore(db),
+  };
+}
 
 afterEach(() => {
 
@@ -153,48 +171,12 @@ describe("scheduler restart gating", () => {
     scheduler.shutdown();
   });
 
-  it("triggers schedules while restart is pending", async () => {
-    const { ctx } = createTestApp();
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWorkAndWaitForDelivery: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
-
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Restart gated schedule",
-      prompt: "run now",
-      type: "cron",
-      cron: "0 0 * * *",
-      modelTier: "preset2",
-    });
-
-    const result = await scheduler.triggerSchedule(schedule.id);
-
-    expect(result).toEqual({ sessionId: "sched-session" });
-    expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.createTaskSession.mock.calls[0][5]).toMatchObject({
-      name: "Restart gated schedule",
-      modelTier: "preset2",
-    });
-    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("sched-session", "run now", undefined, { origin: "schedule" });
-  });
-
   it("uses the persisted cron slot for delayed cron triggers and watchdog dedupe", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:31:00.000Z"));
 
-    const { ctx, db } = createTestApp();
+    const ctx = schedulerStores();
+    const { db } = ctx;
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-slot-session" }),
@@ -242,7 +224,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("rolls back a newly created schedule session if restart pending flips before startWorkAndWaitForDelivery", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
@@ -276,7 +258,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("creates a fresh session even when a schedule has previous run metadata", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockImplementation((sessionId: string) => sessionId === "last-session"),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
@@ -317,7 +299,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("links before the scheduled turn runs and attributes its early work and announcement", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const task = ctx.taskStore.createTask("Scheduled Task");
     const triggered = vi.fn();
     const unsubscribe = ctx.globalBus.subscribe((event) => { if (event.type === "schedule:triggered") triggered(event); });
@@ -337,12 +319,15 @@ describe("scheduler restart gating", () => {
       globalBus: ctx.globalBus,
     });
     const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id, name: "Fast schedule", prompt: "go", type: "cron", cron: "0 0 * * *",
+      taskId: task.id, name: "Fast schedule", prompt: "go", type: "cron", cron: "0 0 * * *", modelTier: "preset2",
     });
 
     await expect(scheduler.triggerSchedule(schedule.id)).resolves.toEqual({ sessionId: "fast-session" });
 
     unsubscribe();
+    expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
+    expect(sessionManager.createTaskSession.mock.calls[0][5]).toMatchObject({ name: "Fast schedule", modelTier: "preset2" });
+    expect(sessionManager.startWorkAndWaitForDelivery).toHaveBeenCalledWith("fast-session", "go", undefined, { origin: "schedule" });
     expect(triggered).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       type: "schedule:triggered", scheduleId: schedule.id, sessionId: "fast-session", taskId: task.id,
     }));
@@ -353,7 +338,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("prunes run history after retention, preserving retryable sessions", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn((id: string) => id === "busy-old"),
       readSessionsFromDisk: sessionsOnDisk(vi.fn().mockResolvedValue([
@@ -402,7 +387,7 @@ describe("scheduler restart gating", () => {
 
   it("bounds run history to the configured cap on trigger", async () => {
     vi.stubEnv("BRIDGE_SCHEDULE_RUNS_KEEP", "3");
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       readSessionsFromDisk: sessionsOnDisk(vi.fn().mockResolvedValue([])),
@@ -447,7 +432,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("allows manual triggers even when the last run was recent", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
@@ -483,7 +468,8 @@ describe("scheduler restart gating", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T19:10:31.000Z"));
 
-    const { ctx, db } = createTestApp();
+    const ctx = schedulerStores();
+    const { db } = ctx;
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn()
@@ -542,7 +528,7 @@ describe("scheduler restart gating", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T15:01:00.000Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn()
@@ -583,7 +569,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("skips disabled automatic schedules while still allowing manual trigger", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
@@ -624,7 +610,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("skips automatic runs that are already claimed for the same slot", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
@@ -663,7 +649,7 @@ describe("scheduler restart gating", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(true),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "fresh-one-shot-session" }),
@@ -700,7 +686,7 @@ describe("scheduler restart gating", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const events: Array<{ type: string; scheduleId?: string }> = [];
     const unsubscribe = ctx.globalBus.subscribe((event) => {
       if (event.type === "schedule:changed") {
@@ -770,7 +756,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("releases an automatic claim if creating the session fails before launch", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockRejectedValueOnce(new Error("create failed"))
@@ -809,7 +795,7 @@ describe("scheduler restart gating", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T15:00:00.000Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn()
@@ -850,7 +836,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("deletes a newly created session and releases the slot if task linking fails before launch", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn()
@@ -898,7 +884,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("records a scheduled run only after asynchronous prompt delivery is accepted", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     let accept!: () => void;
     const delivery = new Promise<void>((resolve) => { accept = resolve; });
     const sessionManager = {
@@ -935,7 +921,7 @@ describe("scheduler restart gating", () => {
   it("rolls back rejected asynchronous delivery and retries the unconsumed cron slot", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T15:00:00.000Z"));
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValueOnce({ sessionId: "failed-session" })
@@ -966,7 +952,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("rolls back a newly created schedule session when startWorkAndWaitForDelivery throws synchronously", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
@@ -999,7 +985,7 @@ describe("scheduler restart gating", () => {
 
     // When the rollback itself fails, the error is surfaced and the session stays
     // linked to the task so the orphan is visible rather than silently dropped.
-    const { ctx: failCtx } = createTestApp();
+    const failCtx = schedulerStores();
     const failingManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
@@ -1032,7 +1018,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("aborts and deletes a newly created session if an automatic claim is lost after launch", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const task = ctx.taskStore.createTask("Scheduled Task");
     let sessionBusy = false;
     const sessionManager = {
@@ -1080,7 +1066,7 @@ describe("scheduler restart gating", () => {
   });
 
   it("surfaces a cleanup failure if a lost-claim rollback cannot stop the launched run", async () => {
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const task = ctx.taskStore.createTask("Scheduled Task");
     let sessionBusy = false;
     const sessionManager = {
@@ -1120,7 +1106,6 @@ describe("scheduler restart gating", () => {
     );
     expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("sched-session");
   });
-
 });
 
 describe("scheduler startup recovery", () => {
@@ -1128,7 +1113,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "one-shot-session" }),
@@ -1162,7 +1147,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T17:31:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-session" }),
@@ -1196,7 +1181,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T17:31:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "cron-session" }),
@@ -1273,7 +1258,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "late-one-shot" }),
@@ -1311,7 +1296,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "far-future-one-shot" }),
@@ -1364,7 +1349,7 @@ describe("scheduler startup recovery", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-      const { ctx } = createTestApp();
+      const ctx = schedulerStores();
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn()
@@ -1411,7 +1396,7 @@ describe("scheduler startup recovery", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-      const { ctx } = createTestApp();
+      const ctx = schedulerStores();
       const sessionManager = {
         isSessionBusy: vi.fn().mockReturnValue(false),
         createTaskSession: vi.fn()
@@ -1459,7 +1444,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "catch-up-session" }),
@@ -1496,7 +1481,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn(),
@@ -1530,7 +1515,7 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T16:00:00Z"));
 
-    const { ctx } = createTestApp();
+    const ctx = schedulerStores();
     let nextId = 0;
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
@@ -1567,7 +1552,8 @@ describe("scheduler startup recovery", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T15:20:00Z"));
 
-    const { ctx, db } = createTestApp();
+    const ctx = schedulerStores();
+    const { db } = ctx;
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "watchdog-catch-up" }),

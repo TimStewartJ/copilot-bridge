@@ -48,8 +48,8 @@ async function waitForMoveToFinish(app: ReturnType<typeof createMoveApp>["app"])
 
 describe("session model move routes", () => {
 
-  it("answers a dry run with the chats that would move and changes nothing", async () => {
-    const { app, setSessionModel } = createMoveApp();
+  it("previews a model move without edits, then moves only those chats and unloads them", async () => {
+    const { app, models, setSessionModel, unloadIdleSession } = createMoveApp();
 
     const res = await request(app).post("/api/session-model-move").send({ fromModel: OLD, toModel: NEW, dryRun: true });
 
@@ -64,10 +64,6 @@ describe("session model move routes", () => {
       ],
     });
     expect(setSessionModel).not.toHaveBeenCalled();
-  });
-
-  it("moves the chats on the old model, leaves archived and other chats, and unloads what it loaded", async () => {
-    const { app, models, setSessionModel, unloadIdleSession } = createMoveApp();
 
     const started = await request(app).post("/api/session-model-move").send({ fromModel: OLD, toModel: NEW });
     expect(started.status).toBe(202);

@@ -170,11 +170,19 @@ describe("Home within native Bridge", () => {
     await harness.act(async () => { getReactProps(form)!.onSubmit({ preventDefault() {} }); await waitTick(); });
     expect(api.submitUserInputResponse).not.toHaveBeenCalled();
   });
-  it("does not turn a failed initial read into a reassuring empty state", async () => {
-    api.fetchHome.mockRejectedValue(new Error("Offline"));
+  it("shows an initial Home failure and only reports nothing to do after a successful refresh", async () => {
+    api.fetchHome.mockRejectedValueOnce(new Error("Offline"));
     await render();
-    expect(harness.dom.container.textContent).toContain("Home is unavailable. Try refreshing.");
-    expect(harness.dom.container.textContent).not.toContain("No questions on this page");
+    const text = () => harness.dom.container.textContent ?? "";
+    expect(text()).toContain("Home is unavailable. Try refreshing.");
+    expect(text()).not.toContain("No questions on this page");
+    expect(text()).not.toContain("Nothing needs you right now.");
+
+    await click("Refresh Home");
+    expect(text()).not.toContain("Home is unavailable.");
+    expect(text()).toContain("Nothing needs you right now.");
+    expect(text()).toContain("Nothing in motion this week.");
+    expect(text()).not.toContain("Worth a look");
   });
   it("keeps a completed item in place with an Undo that reopens it, then lets it go", async () => {
     const snapshot = empty();
@@ -241,12 +249,5 @@ describe("Home within native Bridge", () => {
     const text = harness.dom.container.textContent ?? "";
     expect(text.match(/Shared task/g)).toHaveLength(1);
     expect(text).not.toContain("from Shared task");
-  });
-  it("says plainly when nothing needs attention without inventing work", async () => {
-    await render();
-    const text = harness.dom.container.textContent ?? "";
-    expect(text).toContain("Nothing needs you right now.");
-    expect(text).toContain("Nothing in motion this week.");
-    expect(text).not.toContain("Worth a look");
   });
 });

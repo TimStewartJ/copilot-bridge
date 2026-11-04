@@ -85,6 +85,7 @@ describe("SessionManager fork auto-name requests", () => {
     const {
       manager,
       sessionMetaStore,
+      bridgeSessionStateStore,
       maybeAutoNameSession,
     } = createHarness();
     sessionMetaStore.setPendingAutoName("fork-session");
@@ -100,5 +101,6 @@ describe("SessionManager fork auto-name requests", () => {
       includeHistory: false,
       replaceExistingName: true,
     });
+    expect(bridgeSessionStateStore.getState("fork-session")).toBeUndefined();
   });
 });

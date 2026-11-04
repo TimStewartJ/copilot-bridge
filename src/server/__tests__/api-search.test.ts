@@ -98,6 +98,7 @@ describe("messages-fast exact context API", () => {
       .expect(200);
 
     expect(response.body).toMatchObject({
+      messages: ["event-1", "event-2", "event-3", "event-4"].map((sourceEventId) => ({ sourceEventId })),
       aroundEventId: "event-3",
       total: 8,
       targetOffset: 3,

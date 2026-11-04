@@ -903,28 +903,6 @@ describe("liveFileName", () => {
 });
 
 describe("BrowserLiveGateway tickets", () => {
-  it("refuses a ticket for a session that does not exist or has been closed", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    await h.store.closeSession(session.id, OWNER);
-
-    await expect(h.gateway.createTicket("bs_missing")).rejects.toBeInstanceOf(BrowserLiveSessionNotFoundError);
-    await expect(h.gateway.createTicket("bs_missing")).rejects.toThrow("Browser session bs_missing has ended.");
-    await expect(h.gateway.createTicket(session.id)).rejects.toBeInstanceOf(BrowserLiveSessionNotFoundError);
-    // Neither the broker nor the gateway ran a command for them.
-    expect(h.journal).toEqual([]);
-  });
-
-  it("upgrades under a path prefix, as a staged preview serves it", async () => {
-    const { h, ticket } = await createTicketHarness();
-
-    const view = await h.openWithTicket(ticket, undefined, "/staging/41728153");
-
-    expect(view.upstream.url).toBe("/?pacing=ack&maxFps=15");
-    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
-    expect(h.handled).toEqual([true]);
-  });
-
   it("accepts a ticket until its 60 seconds are over, and answers 403 after that", async () => {
     const h = await createHarness();
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -978,9 +956,11 @@ describe("BrowserLiveGateway tickets", () => {
 
     await expect(h.connect(`/api/voice/ws${query}`)).resolves.toEqual({ status: 404 });
     await expect(h.connect(`${BROWSER_LIVE_WS_PATH}/extra${query}`)).resolves.toEqual({ status: 404 });
-    expect(h.handled).toEqual([false, false]);
-
-    await expect(h.connect(h.liveUrl(ticket))).resolves.toHaveProperty("socket");
+    // Neither request spent the ticket; a preview prefix still leads to the live view.
+    const view = await h.openWithTicket(ticket, undefined, "/staging/41728153");
+    expect(view.upstream.url).toBe("/?pacing=ack&maxFps=15");
+    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
+    expect(h.handled).toEqual([false, false, true]);
   });
 });
 
@@ -1008,21 +988,6 @@ describe("BrowserLiveGateway and the session's browser", () => {
     await expect(ticket).resolves.toMatchObject({ browserSessionId: session.id });
     expect(h.store.getSession(session.id)?.activeCount).toBe(0);
     expect(h.broker.getSnapshot().public.activeOperations).toBe(0);
-  });
-
-  it("gives a ticket and shows the browser while the user holds it, when the agent's own operations are refused", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const handBack = h.broker.holdTarget(leaseOf(session), "Solve the puzzle");
-    await expect(
-      h.broker.withTarget(leaseOf(session), { toolName: "browser_session_exec", browserOpId: "op-1" }, async () => "ran"),
-    ).rejects.toThrow("The user has this browser right now (Solve the puzzle). Try again after they hand it back.");
-
-    const view = await h.openView(session.id);
-
-    send(view.upstream, { type: "frame", seq: 1, data: "QQ==" });
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
-    handBack();
   });
 
   it("refuses a ticket, and ends a view opened with an earlier one, while the session is being closed", async () => {
@@ -1388,27 +1353,21 @@ describe("BrowserLiveGateway saved logins", () => {
     const session = await h.createSession();
     const view = await h.openView(session.id);
     h.cli.answers.signInForm = () => formRead(FORM);
+    const click = { type: "input_mouse", eventType: "mousePressed", x: 10, y: 20, button: "left" };
+    send(view.client, click);
+    expect(await view.upstream.inbox.next()).toStrictEqual(click);
+    expect(formReads(h)).toBe(0);
+
     send(view.client, typed("pw"));
-    send(view.client, { type: "input_mouse", eventType: "mousePressed", x: 10, y: 20, button: "left" });
-    await nextLogin(view);
+    send(view.client, click);
+    expect(await nextLogin(view)).toMatchObject({ state: "save" });
+    expect(vault.save).not.toHaveBeenCalled();
 
     send(view.client, { type: "login", action: "save" });
 
     expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "saved", host: "accounts.example.com", username: "tim@example.com" });
     expect(vault.save).toHaveBeenCalledWith(expect.any(String), { ...FORM, url: "https://accounts.example.com/" }, session.browserTarget);
     expect(await logins.forPage(FORM.url)).toMatchObject({ username: "tim@example.com" });
-  });
-
-  it("reads no form for a click or a key when nothing was typed", async () => {
-    const { logins } = createLogins();
-    const h = await createHarness({ logins });
-    const view = await h.openView((await h.createSession()).id);
-    const click = { type: "input_mouse", eventType: "mousePressed", x: 10, y: 20, button: "left" };
-
-    send(view.client, click);
-
-    expect(await view.upstream.inbox.next()).toStrictEqual(click);
-    expect(formReads(h)).toBe(0);
   });
 
   it("offers the saved login of a page that shows its form, and signs in with it when asked", async () => {
@@ -1879,7 +1838,13 @@ describe("BrowserLiveGateway toolbar", () => {
     const h = await createHarness({ telemetryStore });
     const session = await h.createSession();
     const handBack = h.broker.holdTarget(leaseOf(session), "Sign in to the store");
+    await expect(
+      h.broker.withTarget(leaseOf(session), { toolName: "browser_session_exec", browserOpId: "op-1" }, async () => "ran"),
+    ).rejects.toThrow("The user has this browser right now (Sign in to the store). Try again after they hand it back.");
+
     const view = await h.openView(session.id);
+    send(view.upstream, { type: "frame", seq: 1, data: "QQ==" });
+    expect(await view.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
 
     send(view.client, { type: "reload" });
     await h.cli.called("eval", 2);
@@ -2093,31 +2058,13 @@ describe("BrowserLiveGateway.onViewersChanged", () => {
 });
 
 describe("BrowserLiveGateway closing", () => {
-  it("tells every view of a session that the session ended when the store closes it, then closes them", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    const other = await h.createSession();
-    const first = await h.openView(session.id);
-    const second = await h.openView(session.id);
-    const unrelated = await h.openView(other.id);
-
-    await expect(h.store.closeSession(session.id, OWNER)).resolves.toEqual({ ok: true });
-
-    for (const view of [first, second]) {
-      expect(await view.client.inbox.next()).toStrictEqual(closed("session_ended", "The browser session has ended."));
-      expect(await view.client.inbox.closed).toEqual({ code: 1000, reason: "session_ended" });
-      expect(view.client.inbox.unread).toBe(0);
-      await view.upstream.inbox.closed;
-    }
-    send(unrelated.upstream, { type: "frame", seq: 1, data: "QQ==" });
-    expect(await unrelated.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
-  });
-
   it("ends a session's views before its browser is closed, when its chat closes it", async () => {
     const { streams, connectStream } = recordingStreams();
     const h = await createHarness({ connectStream });
     const session = await h.createSession();
-    const view = await h.openView(session.id);
+    const other = await h.createSession();
+    const views = [await h.openView(session.id), await h.openView(session.id)];
+    const unrelated = await h.openView(other.id);
     const browserMayClose = deferred();
     /** The gateway's end of each stream at the moment the browser is told to close. */
     const streamStatesAtClose = deferred<number[]>();
@@ -2129,15 +2076,21 @@ describe("BrowserLiveGateway closing", () => {
 
     const closing = h.store.closeSession(session.id, OWNER);
 
-    expect(await streamStatesAtClose.promise).toEqual([WebSocket.CLOSING]);
-    // The view is told, and closed, while the browser is still open.
-    expect(await view.client.inbox.next()).toStrictEqual(closed("session_ended", "The browser session has ended."));
-    expect(await view.client.inbox.closed).toEqual({ code: 1000, reason: "session_ended" });
-    await view.upstream.inbox.closed;
-    expect(h.store.getSession(session.id)).toBeDefined();
-
-    browserMayClose.resolve();
-    await closing;
+    try {
+      expect(await streamStatesAtClose.promise).toEqual([WebSocket.CLOSING, WebSocket.CLOSING, WebSocket.OPEN]);
+      for (const view of views) {
+        expect(await view.client.inbox.next()).toStrictEqual(closed("session_ended", "The browser session has ended."));
+        expect(await view.client.inbox.closed).toEqual({ code: 1000, reason: "session_ended" });
+        expect(view.client.inbox.unread).toBe(0);
+        await view.upstream.inbox.closed;
+      }
+      expect(h.store.getSession(session.id)).toBeDefined();
+    } finally {
+      browserMayClose.resolve();
+      await expect(closing).resolves.toEqual({ ok: true });
+    }
+    send(unrelated.upstream, { type: "frame", seq: 1, data: "QQ==" });
+    expect(await unrelated.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
     expect(h.store.getSession(session.id)).toBeUndefined();
     expect(h.browsers.shutdowns.at(-1)).toBe(session.browserTarget.sessionName);
   });
@@ -2199,7 +2152,12 @@ describe("BrowserLiveGateway closing", () => {
   it("closes the view as ended when the session was closed between the ticket and the socket, and ignores what its client sent meanwhile", async () => {
     const { h, session, ticket } = await createTicketHarness();
     await h.store.closeSession(session.id, OWNER);
-    const statusCalls = h.cli.count("stream status");
+    const commands = h.journal.length;
+    const missing = h.gateway.createTicket("bs_missing");
+    await expect(missing).rejects.toBeInstanceOf(BrowserLiveSessionNotFoundError);
+    await expect(missing).rejects.toThrow("Browser session bs_missing has ended.");
+    await expect(h.gateway.createTicket(session.id)).rejects.toBeInstanceOf(BrowserLiveSessionNotFoundError);
+    expect(h.journal).toHaveLength(commands);
 
     const client = await h.open(h.liveUrl(ticket));
     // What the client sent before it heard is ignored. A listener that throws on it is an
@@ -2209,8 +2167,7 @@ describe("BrowserLiveGateway closing", () => {
 
     expect(await client.inbox.next()).toStrictEqual(closed("session_ended", "The browser session has ended."));
     expect(await client.inbox.closed).toEqual({ code: 1000, reason: "session_ended" });
-    expect(h.cli.count("stream status")).toBe(statusCalls);
-    expect(h.cli.toolbarCommands()).toEqual([]);
+    expect(h.journal).toHaveLength(commands);
     expect(h.upstreamConnections.size).toBe(0);
   });
 });

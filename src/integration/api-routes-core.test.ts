@@ -439,8 +439,7 @@ describe("Attachment routes", () => {
   const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
   it("GET /api/sessions/:id/attachments/:attachmentId downloads non-inline attachments", async () => {
-    const copilotHome = join(makeTestDir("route-home"), ".copilot");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     const published = publishOutboundAttachment({
       copilotHome,
       sessionId,
@@ -449,7 +448,7 @@ describe("Attachment routes", () => {
     });
     if (!published.ok) throw new Error(published.error);
 
-    const res = await request(attachmentApp)
+    const res = await request(app)
       .get(`/api/sessions/${sessionId}/attachments/${encodeURIComponent(published.value.attachmentId)}`);
 
     expect(res.status).toBe(200);
@@ -458,8 +457,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId serves raster images inline", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     const published = publishOutboundAttachment({
       copilotHome,
       sessionId,
@@ -468,7 +466,7 @@ describe("Attachment routes", () => {
     });
     if (!published.ok) throw new Error(published.error);
 
-    const res = await request(attachmentApp)
+    const res = await request(app)
       .get(`/api/sessions/${sessionId}/attachments/${encodeURIComponent(published.value.attachmentId)}`);
 
     expect(res.status).toBe(200);
@@ -477,8 +475,7 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId serves a web page for the chat's frame only under the sandbox policy", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     for (const name of ["page.html", "logo.svg"]) {
       const sourcePath = join(copilotHome, name);
       writeFileSync(sourcePath, "<script>alert(1)</script>");
@@ -488,7 +485,7 @@ describe("Attachment routes", () => {
     const base = `/api/sessions/${sessionId}/attachments`;
 
     for (const [name, type] of [["page.html", /^text\/html/], ["logo.svg", /^image\/svg\+xml/]] as const) {
-      const framed = await request(attachmentApp).get(`${base}/${name}?inline=1`);
+      const framed = await request(app).get(`${base}/${name}?inline=1`);
       expect(framed.status, name).toBe(200);
       expect(framed.headers["content-type"], name).toMatch(type);
       expect(framed.headers["content-disposition"], name).toBeUndefined();
@@ -498,7 +495,7 @@ describe("Attachment routes", () => {
     }
 
     for (const path of [`${base}/page.html`, `${base}/page.html?inline=1&download=1`, `${base}/logo.svg`]) {
-      const downloaded = await request(attachmentApp).get(path);
+      const downloaded = await request(app).get(path);
       expect(downloaded.status, path).toBe(200);
       expect(downloaded.headers["content-disposition"], path).toContain("attachment;");
       expect(downloaded.headers["x-content-type-options"], path).toBe("nosniff");
@@ -532,26 +529,24 @@ describe("Attachment routes", () => {
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId serves the start of a file for a preview", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     for (const [displayName, content] of [["notes.md", "0123456789".repeat(200)], ["empty.txt", ""]]) {
       const published = publishOutboundAttachment({ copilotHome, sessionId, content, displayName });
       if (!published.ok) throw new Error(published.error);
     }
     const base = `/api/sessions/${sessionId}/attachments`;
 
-    const start = await request(attachmentApp).get(`${base}/notes.md`).set("Range", "bytes=0-1499");
+    const start = await request(app).get(`${base}/notes.md`).set("Range", "bytes=0-1499");
     expect(start.status).toBe(206);
     expect(start.headers["content-range"]).toBe("bytes 0-1499/2000");
     expect(start.text).toBe("0123456789".repeat(150));
 
-    const empty = await request(attachmentApp).get(`${base}/empty.txt`).set("Range", "bytes=0-1499");
+    const empty = await request(app).get(`${base}/empty.txt`).set("Range", "bytes=0-1499");
     expect(empty.status).toBe(416);
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId rejects unsafe ids and reports missing files", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     const victimSessionId = "11111111-1111-1111-1111-111111111111";
     const published = publishOutboundAttachment({
       copilotHome,
@@ -570,15 +565,14 @@ describe("Attachment routes", () => {
     ];
 
     for (const [label, path, status, errorFragment] of cases) {
-      const res = await request(attachmentApp).get(path);
+      const res = await request(app).get(path);
       expect(res.status, label).toBe(status);
       expect(res.body.error, label).toContain(errorFragment);
     }
   });
 
   it("GET /api/sessions/:id/files/:fileName serves sent images inline and other files as downloads", async () => {
-    const copilotHome = makeTestDir("route-home");
-    const { app: filesApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     const filesDir = join(copilotHome, "session-state", sessionId, "files");
     mkdirSync(join(filesDir, "outgoing"), { recursive: true });
     writeFileSync(join(filesDir, "photo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -586,25 +580,25 @@ describe("Attachment routes", () => {
     writeFileSync(join(filesDir, "page.html"), "<script>alert(1)</script>");
     writeFileSync(join(filesDir, "outgoing", "nested.txt"), "nested");
 
-    const image = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png`);
+    const image = await request(app).get(`/api/sessions/${sessionId}/files/photo.png`);
     expect(image.status).toBe(200);
     expect(image.headers["content-type"]).toMatch(/^image\/png/);
     expect(image.headers["content-disposition"]).toBeUndefined();
     expect(image.headers["cache-control"]).toBe("private, max-age=3600");
 
-    const csv = await request(filesApp).get(`/api/sessions/${sessionId}/files/notes.csv`);
+    const csv = await request(app).get(`/api/sessions/${sessionId}/files/notes.csv`);
     expect(csv.status).toBe(200);
     expect(csv.headers["content-disposition"]).toContain("attachment;");
     expect(csv.headers["x-content-type-options"]).toBe("nosniff");
 
     // A web page the user attached is untrusted too: shown only under the sandbox policy.
-    const page = await request(filesApp).get(`/api/sessions/${sessionId}/files/page.html`);
+    const page = await request(app).get(`/api/sessions/${sessionId}/files/page.html`);
     expect(page.headers["content-disposition"]).toContain("attachment;");
-    const framed = await request(filesApp).get(`/api/sessions/${sessionId}/files/page.html?inline=1`);
+    const framed = await request(app).get(`/api/sessions/${sessionId}/files/page.html?inline=1`);
     expect(framed.headers["content-disposition"]).toBeUndefined();
     expect(framed.headers["content-security-policy"]).toContain("sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;");
 
-    const forcedDownload = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png?download=1`);
+    const forcedDownload = await request(app).get(`/api/sessions/${sessionId}/files/photo.png?download=1`);
     expect(forcedDownload.headers["content-disposition"]).toContain("attachment;");
 
     const cases: [string, string, number][] = [
@@ -615,24 +609,23 @@ describe("Attachment routes", () => {
       ["missing file", `/api/sessions/${sessionId}/files/missing.png`, 404],
     ];
     for (const [label, path, status] of cases) {
-      const res = await request(filesApp).get(path);
+      const res = await request(app).get(path);
       expect(res.status, label).toBe(status);
     }
   });
 
   it("GET /api/sessions/:id/images/:fileName serves the runtime's generated images and nothing else", async () => {
-    const copilotHome = makeTestDir("route-generated-images");
-    const { app: imagesApp } = createTestApp({ copilotHome });
+    const copilotHome = ctx.copilotHome!;
     const imagesDir = join(copilotHome, "session-state", sessionId, "images");
     mkdirSync(imagesDir, { recursive: true });
     writeFileSync(join(imagesDir, "image-0a1b.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     writeFileSync(join(imagesDir, "notes.txt"), "not an image");
 
-    const image = await request(imagesApp).get(`/api/sessions/${sessionId}/images/image-0a1b.png`);
+    const image = await request(app).get(`/api/sessions/${sessionId}/images/image-0a1b.png`);
     expect(image.status).toBe(200);
     expect(image.headers["content-type"]).toMatch(/^image\/png/);
     expect(image.headers["content-disposition"]).toBeUndefined();
-    const download = await request(imagesApp).get(`/api/sessions/${sessionId}/images/image-0a1b.png?download`);
+    const download = await request(app).get(`/api/sessions/${sessionId}/images/image-0a1b.png?download`);
     expect(download.headers["content-disposition"]).toContain("attachment;");
 
     const cases: [string, string, number][] = [
@@ -642,7 +635,7 @@ describe("Attachment routes", () => {
       ["missing image", `/api/sessions/${sessionId}/images/image-ffff.png`, 404],
     ];
     for (const [label, path, status] of cases) {
-      const res = await request(imagesApp).get(path);
+      const res = await request(app).get(path);
       expect(res.status, label).toBe(status);
     }
   });

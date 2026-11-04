@@ -206,8 +206,7 @@ describe("VoiceGateway HTTP transport", () => {
 });
 
 describe("VoiceGateway and chats", () => {
-  async function startConversation(sessionId = CHAT_SESSION_ID) {
-    const harness = createGateway();
+  async function startConversation(sessionId = CHAT_SESSION_ID, harness = createGateway()) {
     const { conversationId, token } = await harness.gateway.createConversation(sessionId, {});
     const sink = new CollectingSink();
     harness.gateway.attachHttpEvents(conversationId, token, sink);
@@ -243,24 +242,23 @@ describe("VoiceGateway and chats", () => {
     await gateway.shutdown();
   });
 
-  it("leaves the chat's work running when hands-free ends, and marks Helm's conversation in use meanwhile", async () => {
-    const { gateway, conversationId, token, sink, sessionManager, bound } = await startConversation(HELM_SESSION_ID);
-    expect(bound.has(HELM_SESSION_ID)).toBe(true);
-    gateway.acceptHttpControl(conversationId, token, { type: "control", action: "end" });
-    await vi.waitFor(() => expect(sink.closed).toBe(true));
-    expect(sessionManager.abortSession).not.toHaveBeenCalled();
-    expect(bound.has(HELM_SESSION_ID)).toBe(false);
-    await gateway.shutdown();
-  });
-
   it("lets only one hands-free conversation speak for a chat, leaving other chats alone", async () => {
-    const { gateway, sink } = await startConversation();
-    const other = await gateway.createConversation(HELM_SESSION_ID, {});
-    expect(sink.closed).toBe(false);
+    const harness = createGateway();
+    const { gateway, bound, sessionManager } = harness;
+    const chat = await startConversation(CHAT_SESSION_ID, harness);
+    const helm = await startConversation(HELM_SESSION_ID, harness);
+    expect(helm.conversationId).toEqual(expect.any(String));
+    expect(chat.sink.closed).toBe(false);
     await gateway.createConversation(CHAT_SESSION_ID, {});
-    await vi.waitFor(() => expect(sink.events).toContainEqual({ type: "ended", reason: "hands-free started somewhere else" }));
+    await vi.waitFor(() => expect(chat.sink.events).toContainEqual({ type: "ended", reason: "hands-free started somewhere else" }));
     expect(gateway.getStatus().activeConversations).toBe(2);
-    expect(other.conversationId).toEqual(expect.any(String));
+    expect(helm.sink.closed).toBe(false);
+    expect(bound.has(HELM_SESSION_ID)).toBe(true);
+
+    gateway.acceptHttpControl(helm.conversationId, helm.token, { type: "control", action: "end" });
+    await vi.waitFor(() => expect(helm.sink.closed).toBe(true));
+    expect(bound.has(HELM_SESSION_ID)).toBe(false);
+    expect(sessionManager.abortSession).not.toHaveBeenCalled();
     await gateway.shutdown();
   });
 });

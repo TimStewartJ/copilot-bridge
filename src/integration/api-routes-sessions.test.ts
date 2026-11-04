@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
   createMockSessionManager,
   createTestApp,
@@ -9,13 +8,7 @@ import {
 import { BRIDGE_RESTARTING_MESSAGE } from "../server/backend-availability.js";
 import { SessionCapacityError } from "../server/session-manager.js";
 
-let app: ApiRouteTestState["app"];
-let ctx: ApiRouteTestState["ctx"];
-let db: ApiRouteTestState["db"];
-
-installApiRouteTestHooks((state) => {
-  ({ app, ctx, db } = state);
-});
+installApiRouteTestHooks();
 
 describe("Session routes (mocked)", () => {
   it("POST /api/sessions/external-use passes valid IDs to the session manager", async () => {
@@ -23,7 +16,7 @@ describe("Session routes (mocked)", () => {
     const result = { status: "available" as const, inUse: [sessionId], checkedAt: "2026-08-26T20:00:00.000Z" };
     const sessionManager = createMockSessionManager();
     sessionManager.getExternalSessionUse = vi.fn(async () => result);
-    ({ app } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/external-use").send({ sessionIds: [sessionId] });
 
@@ -33,6 +26,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/sessions/external-use rejects invalid session IDs", async () => {
+    const { app } = createTestApp();
     const res = await request(app)
       .post("/api/sessions/external-use")
       .send({ sessionIds: ["not-a-session-id"] });
@@ -52,7 +46,7 @@ describe("Session routes (mocked)", () => {
         lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
       },
     ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
 
     const idleRes = await request(app).get("/api/sessions");
     expect(idleRes.status).toBe(200);
@@ -87,7 +81,7 @@ describe("Session routes (mocked)", () => {
       refreshedAt: "2026-04-16T12:00:00.000Z",
     }));
     sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({ running: 1, idle: 1, failed: 0, total: 2, source: "live" as const }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const list = await request(app).get("/api/sessions/agents-host/agents").expect(200);
     expect(list.body).toMatchObject({ source: "live", backgroundAgents: { running: 1, source: "live" } });
@@ -110,7 +104,7 @@ describe("Session routes (mocked)", () => {
   it("GET /api/sessions/:id/agents/:agentId says when the runtime no longer tracks the agent", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionAgents = vi.fn(async () => ({ tasks: [], source: "unknown" as const }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).get("/api/sessions/agents-host/agents/agent-gone");
 
@@ -121,7 +115,7 @@ describe("Session routes (mocked)", () => {
   it("POST /api/sessions/:id/agents/:agentId/cancel returns 409 when unavailable", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.cancelSessionAgent = vi.fn(async () => undefined);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/s1/agents/explore-docs/cancel").send({});
     expect(res.status).toBe(409);
@@ -130,7 +124,7 @@ describe("Session routes (mocked)", () => {
   it("POST /api/sessions/:id/agents/:agentId/cancel delegates to the session manager", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.cancelSessionAgent = vi.fn(async () => ({ cancelled: true }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/s1/agents/explore-docs/cancel").send({});
     expect(res.status).toBe(200);
@@ -141,7 +135,7 @@ describe("Session routes (mocked)", () => {
   it("POST /api/sessions/:id/agents/:agentId/dismiss dismisses through the session manager", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.dismissSessionAgent = vi.fn(async () => ({ dismissed: true as const }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions/s1/agents/explore-docs/dismiss").send({});
     expect(res.status).toBe(200);
@@ -159,7 +153,7 @@ describe("Session routes (mocked)", () => {
     let reason: (typeof cases)[number][0] = "unavailable";
     const sessionManager = createMockSessionManager();
     sessionManager.dismissSessionAgent = vi.fn(async () => ({ dismissed: false as const, reason }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     for (const [refusal, status, message] of cases) {
       reason = refusal;
@@ -186,7 +180,7 @@ describe("Session routes (mocked)", () => {
         lastVisibleActivityAt: "2026-04-16T13:00:00.000Z",
       },
     ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     const archivedTask = ctx.taskStore.createTask("Archived parent task");
     ctx.taskStore.linkSession(archivedTask.id, "archived-task-session");
     ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
@@ -217,7 +211,7 @@ describe("Session routes (mocked)", () => {
       { sessionId: "archived-new", summary: "New", modifiedTime: "2026-04-16T14:00:00.000Z" },
       { sessionId: "archived-elsewhere", summary: "Other task", modifiedTime: "2026-04-16T16:00:00.000Z" },
     ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Busy task");
     const other = ctx.taskStore.createTask("Other task");
     for (const id of ["active-linked", "archived-old", "archived-mid", "archived-new"]) ctx.taskStore.linkSession(task.id, id);
@@ -242,7 +236,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("task routes send active session IDs and counts, never the full link list", async () => {
-    ({ app, ctx } = createTestApp());
+    const { app, ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Scheduled task");
     ctx.taskStore.createTask("Empty task");
     for (const id of ["run-1", "run-2", "run-3"]) ctx.taskStore.linkSession(task.id, id);
@@ -275,6 +269,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("GET /api/sessions orders attention and visible activity and reports each chat’s runtime status", async () => {
+    const { app, ctx, db } = createTestApp();
     ctx.sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "attention-session",
@@ -328,7 +323,7 @@ describe("Session routes (mocked)", () => {
         capacityLimit: 32,
       }),
     );
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app).post("/api/sessions");
 
@@ -359,7 +354,7 @@ describe("Session routes (mocked)", () => {
     }));
     sessionManager.createSession = vi.fn();
     sessionManager.createTaskSession = vi.fn();
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Invalid model task");
 
     const unavailable = await request(app)
@@ -386,7 +381,7 @@ describe("Session routes (mocked)", () => {
     const sessionManager = createMockSessionManager();
     sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
     sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     ctx.settingsStore.updateSettings({ model: "default-model" });
 
     const res = await request(app)
@@ -414,7 +409,7 @@ describe("Session routes (mocked)", () => {
     sessionManager.startWorkAndWaitForDelivery = vi.fn()
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("offline"));
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
     const task = ctx.taskStore.createTask("Selling");
 
     const started = await request(app).post(`/api/tasks/${task.id}/tidy`);
@@ -430,6 +425,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat requires sessionId and prompt", async () => {
+    const { app } = createTestApp();
     const res = await request(app)
       .post("/api/chat")
       .send({});
@@ -437,6 +433,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat records Tim's message for task states only once delivery is accepted", async () => {
+    const { app, ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Linked");
     ctx.taskStore.linkSession(task.id, "test-session");
     ctx.sessionManager.startWork = vi.fn(() => { throw new Error("offline"); });
@@ -448,6 +445,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat keeps a first message that was stopped before the agent got it", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockRejectedValue(
       new Error("Session was aborted before the prompt was accepted"),
     );
@@ -461,6 +459,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("resends a not-sent message once, from whichever device asks first", async () => {
+    const { app, ctx } = createTestApp();
     const store = ctx.unsentMessageStore!;
     store.recordPending({ sessionId: "test-session", id: "client-old", content: "hello again" });
     store.markUndelivered("test-session", "client-old", "stopped");
@@ -485,6 +484,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat waits for first-prompt delivery when requested", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
     ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockResolvedValue(undefined);
 
@@ -508,6 +508,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat rejects unsupported send modes", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
 
     const res = await request(app)
@@ -520,6 +521,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat passes the client message id to busy-session steering", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
     const start = vi.spyOn(ctx.sessionManager, "startWork");
@@ -546,6 +548,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat routes busy slash commands through command steering", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.startWork = vi.fn();
     ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
@@ -561,6 +564,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat keeps a message a busy session cannot take yet and sends it later", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));
     const poke = vi.fn();
@@ -587,6 +591,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat still rejects what it cannot keep for later", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockRejectedValue(new Error("Session is still reconnecting; try again shortly"));
 
@@ -607,7 +612,7 @@ describe("Session routes (mocked)", () => {
     sessionManager.startWork = vi.fn(() => {
       throw new Error("Agent backend is reconnecting; try again shortly.");
     });
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app, ctx } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/chat")
@@ -621,6 +626,7 @@ describe("Session routes (mocked)", () => {
   });
 
   it("POST /api/chat rejects invalid client message ids", async () => {
+    const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
 
     const res = await request(app)
@@ -637,7 +643,7 @@ describe("Session routes (mocked)", () => {
     sessionManager.startWork = vi.fn(() => {
       throw new Error(BRIDGE_RESTARTING_MESSAGE);
     });
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/chat")
@@ -652,7 +658,7 @@ describe("Session routes (mocked)", () => {
     sessionManager.startWork = vi.fn(() => {
       throw new Error(BRIDGE_RESTARTING_MESSAGE);
     });
-    ({ app, ctx } = createTestApp({ sessionManager }));
+    const { app } = createTestApp({ sessionManager });
 
     const res = await request(app)
       .post("/api/chat")

@@ -62,6 +62,12 @@ function createDeps(copilotHome: string) {
   return { deps, spans, persistLastVisibleActivityAt };
 }
 
+// These traces move earlier events past a byte window, not a record-count limit.
+function tracePadding({ lines = 48, bytesPerPayload = 32 * 1024, timestamp = "2026-04-30T10:00:00.000Z" } = {}) {
+  const payload = "x".repeat(bytesPerPayload);
+  return Array.from({ length: lines }, (_, index) => ({ type: "internal.trace", timestamp, data: { index, payload } }));
+}
+
 function writeSessionFiles(copilotHome: string, sessionId: string, opts: {
   workspace?: string;
   events?: unknown[];
@@ -419,11 +425,7 @@ describe("readMessagesFromDisk latest-page path", () => {
 
   it("preserves the active turn instance when the bounded tail starts mid-turn", async () => {
     const copilotHome = makeTestDir("session-disk-reader-tail-turn-instance");
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding();
     writeSessionFiles(copilotHome, "tail-turn-instance", {
       events: [
         {
@@ -466,11 +468,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       timestamp: `2026-04-30T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
       data: { content: `old-${index}` },
     }));
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding();
     writeSessionFiles(copilotHome, "completion-tail", {
       events: [
         ...oldMessages,
@@ -519,11 +517,7 @@ describe("readMessagesFromDisk latest-page path", () => {
         data: { content: `old-reply-${index}`, reasoningText: `old-thinking-${index}` },
       },
     ])).flat();
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding();
     writeSessionFiles(copilotHome, "reasoning-tail", {
       events: [
         ...oldTurns,
@@ -592,11 +586,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       timestamp: `2026-04-30T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
       data: { content: `old-${index}` },
     }));
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding();
     writeSessionFiles(copilotHome, "completion-tail-fallback", {
       events: [
         ...oldMessages,
@@ -651,11 +641,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       timestamp: `2026-04-30T09:${String(index % 60).padStart(2, "0")}:00.000Z`,
       data: { content: `old-${index}` },
     }));
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding();
     writeSessionFiles(copilotHome, "completion-tail-abort", {
       events: [
         ...oldMessages,
@@ -725,11 +711,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       { type: "assistant.turn_start", id: "moves-turn-0", agentId: moves.agentId, timestamp: at(0, 3), data: { parentToolCallId: moves.toolCallId } },
       { type: "assistant.turn_end", timestamp: at(0, 4), data: { turnId: "provider-main-0" } },
     ];
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: at(1),
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding({ timestamp: at(1) });
     const agentSteps = Array.from({ length: 60 }, (_, index) => [
       {
         type: "tool.execution_start",
@@ -818,14 +800,10 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect((await readMessagesFromDisk(deps, sessionId, { limit: 50 })).agents).toEqual(afterReport.agents);
   });
 
-  it("resumes the event-log stats fold from the last scanned offset after an append", async () => {
+  it("resumes the event-log stats fold after an append and fully rescans after an explicit clear", async () => {
     const copilotHome = makeTestDir("session-disk-reader-stats-cache");
     const sessionId = "stats-cache";
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding();
     const turns = Array.from({ length: 12 }, (_, index) => [
       { type: "assistant.turn_start", data: { turnId: `provider-turn-${index}` } },
       { type: "assistant.message", data: { content: `reply ${index}` } },
@@ -857,6 +835,8 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect(afterAppend.messages.at(-1)).toMatchObject({ sourceEventId: "assistant-open", turnId: "provider-turn-open", content: "open reply" });
     clearEventLogStatsCache(sessionId);
     const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+    expect(spans.filter((span) => span.name === "session.readFromDisk.stats").at(-1)?.metadata)
+      .toMatchObject({ cacheResult: "miss", resumedFromOffset: 0 });
     expect(rescanned.total).toBe(afterAppend.total);
     expect(rescanned.lastVisibleActivityAt).toBe(afterAppend.lastVisibleActivityAt);
     expect(rescanned.coverage).toEqual(afterAppend.coverage);
@@ -930,35 +910,6 @@ describe("readMessagesFromDisk latest-page path", () => {
     expect(after.total).toBe(60);
     expect(after.messages.map((message) => (message as { content?: string }).content))
       .toEqual(rewritten.map((event) => event.data.content));
-  });
-
-  it("clears cached event-log stats for a specific session", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-stats-cache-clear");
-    const sessionId = "stats-cache-clear";
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
-    const recentMessages = Array.from({ length: 60 }, (_, index) => ({
-      type: "user.message",
-      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
-      data: { content: `recent-${index}` },
-    }));
-    writeSessionFiles(copilotHome, sessionId, {
-      events: [...padding, ...recentMessages],
-    });
-    const { deps, spans } = createDeps(copilotHome);
-
-    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
-    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
-    clearEventLogStatsCache(sessionId);
-    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
-
-    expect(spans
-      .filter((span) => span.name === "session.readFromDisk.stats")
-      .map((span) => span.metadata?.cacheResult))
-      .toEqual(["miss", "hit", "miss"]);
   });
 
   it("does not count sub-agent instructions as user transcript entries", async () => {
@@ -1191,11 +1142,7 @@ describe("readMessagesFromDisk latest-page path", () => {
   it("keeps agent-scoped errors nonterminal across the bounded-tail boundary", async () => {
     const copilotHome = makeTestDir("session-disk-reader-subagent-error-tail");
     const sessionId = "subagent-error-tail";
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-07-24T17:59:30.500Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+    const padding = tracePadding({ timestamp: "2026-07-24T17:59:30.500Z" });
     writeSessionFiles(copilotHome, sessionId, {
       events: [
         {
@@ -1540,13 +1487,7 @@ describe("event-log stats fold persistence and scan scheduling", () => {
     setEventLogStatsPersistence(undefined);
   });
 
-  function writeLargeLog(copilotHome: string, sessionId: string, lineCount: number): string {
-    // Each padding line is ~260 bytes; 20k lines is ~5 MB, above the scan gate threshold.
-    const padding = Array.from({ length: lineCount }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
+  function writeLargeLog(copilotHome: string, sessionId: string, padding: ReturnType<typeof tracePadding>): string {
     const recent = Array.from({ length: 60 }, (_, index) => ({
       type: "user.message",
       timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
@@ -1559,7 +1500,7 @@ describe("event-log stats fold persistence and scan scheduling", () => {
   it("resumes from the durable fold after the in-memory cache is lost", async () => {
     const copilotHome = makeTestDir("session-disk-reader-fold-persist");
     const sessionId = "fold-persist";
-    const eventsPath = writeLargeLog(copilotHome, sessionId, 6_000);
+    const eventsPath = writeLargeLog(copilotHome, sessionId, tracePadding({ lines: 6_000, bytesPerPayload: 220 }));
     const db = setupTestDb();
     const store = createEventLogStatsFoldStore(db);
     setEventLogStatsPersistence(store);
@@ -1643,10 +1584,10 @@ describe("event-log stats fold persistence and scan scheduling", () => {
   it("limits concurrent large cold scans and lets small reads through", async () => {
     const copilotHome = makeTestDir("session-disk-reader-scan-gate");
     const ids = ["gate-a", "gate-b", "gate-c", "gate-d"];
-    const heldEnds = new Set(ids.map((id) => statSync(writeLargeLog(copilotHome, id, 20_000)).size));
-    // ~1 MB: past the tail read, so it takes the stats scan, but under the gate threshold.
+    const heldEnds = new Set(ids.map((id) => statSync(writeLargeLog(copilotHome, id, tracePadding({ lines: 160 }))).size));
+    // Past the whole-file read limit, so it takes the stats scan, but under the scan gate.
     const smallId = "gate-small";
-    expect(heldEnds.has(statSync(writeLargeLog(copilotHome, smallId, 4_000)).size)).toBe(false);
+    expect(heldEnds.has(statSync(writeLargeLog(copilotHome, smallId, tracePadding())).size)).toBe(false);
     const { deps, spans } = createDeps(copilotHome);
 
     // Hold every admitted large scan until the other two have reached the gate; otherwise a slow
@@ -1700,7 +1641,7 @@ describe("event-log stats fold persistence and scan scheduling", () => {
   it("yields to the event loop while scanning a large log", async () => {
     const copilotHome = makeTestDir("session-disk-reader-scan-yield");
     const sessionId = "yield";
-    writeLargeLog(copilotHome, sessionId, 40_000);
+    writeLargeLog(copilotHome, sessionId, tracePadding({ lines: 40_000, bytesPerPayload: 220 }));
     const { deps } = createDeps(copilotHome);
 
     let now = 0;

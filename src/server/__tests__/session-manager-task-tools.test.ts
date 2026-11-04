@@ -3,17 +3,13 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 import type { AppContext } from "../app-context.js";
 import { validateToolArguments } from "../agent-tools-mcp/validate-args.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
-import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { buildBridgeContextSections } from "../session-context-block.js";
 import { TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 
 function getTool(ctx: AppContext, name: string) {
-  const tool = [
-    ...getBridgeToolDefinitions(ctx),
-    ...createTaskToolDefinitions(ctx),
-  ].find((candidate) => candidate.name === name);
+  const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool not found`);
   return tool as any;
 }
@@ -100,11 +96,14 @@ describe("session manager task tools", () => {
       ],
     });
 
+    const taggedTask = ctx.taskStore.createTask("Tagged info");
+    const tag = ctx.tagStore!.createTag("release", "purple");
+    ctx.tagStore!.setEntityTags("task", taggedTask.id, [tag.id]);
+    const taggedInfo = await infoTool.handler({ taskId: taggedTask.id }, createInvocation("task_get_info"));
+    expect(taggedInfo.tags).toEqual([{ id: tag.id, name: "release", color: "purple" }]);
+
     const info = await infoTool.handler({ taskId: created.taskId }, createInvocation("task_get_info"));
-    expect(info).toEqual(expect.objectContaining({
-      id: created.taskId,
-      kind: "ongoing",
-    }));
+    expect(info).toMatchObject({ id: created.taskId, kind: "ongoing", tags: [] });
   });
 
   it.each(["task", "group"] as const)("only replaces long %s notes for an agent that read them to the end", async (source) => {
@@ -190,31 +189,6 @@ describe("session manager task tools", () => {
     ctx.taskStore.updateTask(task.id, { notes: "Keep this context. ".repeat(1000) });
     const { notesWriteToken } = await getTool(ctx, "task_get_info").handler({ taskId: task.id }, createInvocation("task_get_info"));
     expect(await getTool(ctx, "task_update").handler({ taskId: task.id, notes: "New", notesWriteToken }, createInvocation("task_update"))).toMatchObject({ success: true });
-  });
-
-  it("task_get_info includes direct task tag summaries and an empty list when untagged", async () => {
-    const { ctx } = createTestApp();
-    const taggedTask = ctx.taskStore.createTask("Tagged info");
-    const untaggedTask = ctx.taskStore.createTask("Untagged info");
-    const tag = ctx.tagStore!.createTag("release", "purple");
-    ctx.tagStore!.setEntityTags("task", taggedTask.id, [tag.id]);
-    const infoTool = getTool(ctx, "task_get_info");
-
-    const taggedInfo = await infoTool.handler(
-      { taskId: taggedTask.id },
-      createInvocation("task_get_info"),
-    ) as any;
-    const untaggedInfo = await infoTool.handler(
-      { taskId: untaggedTask.id },
-      createInvocation("task_get_info"),
-    ) as any;
-
-    expect(taggedInfo.tags).toEqual([{
-      id: tag.id,
-      name: "release",
-      color: "purple",
-    }]);
-    expect(untaggedInfo.tags).toEqual([]);
   });
 
   it("pages the current task or group notes without returning unrelated notes or task details", async () => {

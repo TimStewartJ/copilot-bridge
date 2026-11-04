@@ -41,13 +41,6 @@ describe("native task deferral dialog", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["dashboard"] });
     expect(harness.dom.container.textContent).toContain("Sessions, schedules and deferred jobs keep running");
   });
-  it("records an optional local revisit time as an absolute instant", async () => {
-    await render();
-    const instant = new Date(2030, 4, 2, 10, 30);
-    await change(toDateTimeInputValue(instant.toISOString()));
-    await submit();
-    expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: true, nextTouchAt: instant.toISOString() });
-  });
   it("preserves an existing timestamp exactly unless the user changes it", async () => {
     await render({ ...task, nextTouchAt: "2030-01-01T10:30:42.123Z" });
     await submit();
@@ -83,18 +76,21 @@ describe("native task deferral dialog", () => {
     await submit();
     expect(patch).toHaveBeenCalledExactlyOnceWith("task", { deferred: true });
   });
-  it("keeps a failed save's date draft and permits retry", async () => {
+  it("sends the local revisit as an absolute instant and keeps the same date to retry a failed save", async () => {
     patch.mockRejectedValueOnce(new Error("Storage unavailable"));
     await render();
-    const date = toDateTimeInputValue(new Date(2030, 4, 2, 10, 30).toISOString());
+    const instant = new Date(2030, 4, 2, 10, 30).toISOString();
+    const date = toDateTimeInputValue(instant);
+    const update = { deferred: true, nextTouchAt: instant };
     await change(date); await submit();
+    expect(patch).toHaveBeenCalledExactlyOnceWith("task", update);
     expect(harness.dom.container.textContent).toContain("The change was not saved");
     expect(harness.dom.container.textContent).toContain("Storage unavailable");
     expect(getReactProps(input())!.value).toBe(date);
     expect(close).not.toHaveBeenCalled();
     await submit();
     expect(close).toHaveBeenCalledOnce();
-    expect(patch).toHaveBeenCalledTimes(2);
+    expect(patch.mock.calls).toEqual([["task", update], ["task", update]]);
   });
   it("retains a draft but stops a known stale deferral/revisit edit", async () => {
     await render();

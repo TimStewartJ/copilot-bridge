@@ -23,7 +23,7 @@ function writeEvents(copilotHome: string, sessionId: string, events: unknown[]):
   writeFileSync(join(dir, "events.jsonl"), `${events.map((item) => JSON.stringify(item)).join("\n")}\n`);
 }
 
-function fixture() {
+function fixture(yieldControl?: () => Promise<void>) {
   const db = setupTestDb();
   const copilotHome = makeTestDir("search-index");
   const taskStore = createTaskStore(db, createTestBus());
@@ -42,6 +42,7 @@ function fixture() {
     sessionMetaStore,
     sessionTitles,
     docsIndex,
+    yieldControl,
     listSessions: async () => sessions,
   });
   return { db, copilotHome, docsIndex, docsStore, index, sessionMetaStore, sessions, taskStore };
@@ -58,41 +59,18 @@ const request = {
 };
 
 describe("global search index", () => {
-  it("stops refreshing without restarting failed sweeps", async () => {
-    const { db, copilotHome, index, sessions } = fixture();
-    const dir = join(copilotHome, "session-state", sessions[0]!.sessionId);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "events.jsonl"), '{"broken":');
-    await index.search(request);
-    await index.waitForIdle();
-    const cursor = db.prepare("SELECT value FROM search_index_state WHERE key = 'sessionCursor'").get();
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await index.search({ ...request, refreshOnly: true });
-      expect(result.coverage).toMatchObject({ state: "partial", reconciling: false, indexedSessions: 1 });
-      expect(result.coverage.errors).toHaveLength(1);
-      expect(result.coverage.errors[0]).toContain("malformed event JSON at line 1");
-      expect(db.prepare("SELECT value FROM search_index_state WHERE key = 'sessionCursor'").get()).toEqual(cursor);
-    }
-    await index.shutdown();
-  });
-
   it("reports partial coverage as reconciling while the last batch is still writing", async () => {
-    const { db, copilotHome, index: unusedIndex, sessions, taskStore, sessionMetaStore } = fixture();
-    await unusedIndex.shutdown();
-    writeEvents(copilotHome, sessions[0]!.sessionId, []);
-    writeFileSync(join(copilotHome, "session-state", sessions[0]!.sessionId, "events.jsonl"), '{"broken":');
-    writeEvents(copilotHome, sessions[1]!.sessionId, Array.from({ length: 600 }, (_, i) =>
-      event("user.message", `message-${i}`, "needle", "2026-09-01T10:00:00.000Z")));
     let release!: () => void;
     let reached!: () => void;
     const paused = new Promise<void>((resolve) => { release = resolve; });
     const reachedPause = new Promise<void>((resolve) => { reached = resolve; });
-    const index = createSearchIndex(db, {
-      copilotHome, taskStore, sessionMetaStore, sessionTitles: createSessionTitlesStore(db),
-      listSessions: async () => sessions,
-      yieldControl: async () => { reached(); await paused; },
-    });
-    const write = index.reconcile(request);
+    const { db, copilotHome, index, sessions } = fixture(async () => { reached(); await paused; });
+    sessions.push({ sessionId: "33333333-3333-4333-8333-333333333333", summary: "Chat without a log" });
+    writeEvents(copilotHome, sessions[0]!.sessionId, []);
+    writeFileSync(join(copilotHome, "session-state", sessions[0]!.sessionId, "events.jsonl"), '{"broken":');
+    writeEvents(copilotHome, sessions[1]!.sessionId, Array.from({ length: 600 }, (_, i) =>
+      event("user.message", `message-${i}`, "ordinary text", "2026-09-01T10:00:00.000Z")));
+    const write = index.search(request);
     await reachedPause;
     try {
       const result = await index.search({ ...request, kind: "task", refreshOnly: true });
@@ -103,8 +81,15 @@ describe("global search index", () => {
       await write;
       await index.waitForIdle();
     }
-    const complete = await index.search({ ...request, refreshOnly: true });
-    expect(complete.coverage).toMatchObject({ state: "partial", reconciling: false });
+    const cursor = db.prepare("SELECT value FROM search_index_state WHERE key = 'sessionCursor'").get();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await index.search({ ...request, refreshOnly: true });
+      expect(result.coverage).toMatchObject({ state: "partial", reconciling: false, indexedSessions: 2 });
+      expect(result.coverage.errors).toHaveLength(1);
+      expect(result.chats.total).toBe(0);
+      expect(result.coverage.errors[0]).toContain("malformed event JSON at line 1");
+      expect(db.prepare("SELECT value FROM search_index_state WHERE key = 'sessionCursor'").get()).toEqual(cursor);
+    }
     await index.shutdown();
   });
 

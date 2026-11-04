@@ -216,6 +216,10 @@ describe("browser broker", () => {
     await Promise.all([first, second]);
 
     expect(order).toEqual(["first-start", "first-end", "second"]);
+    // Neither operation checked that the browser was ready.
+    const health = broker.getSnapshot().authenticated;
+    expect(health.status).toBe("starting");
+    expect(health).not.toHaveProperty("lastProbeAt");
   });
 
   it("bounds concurrent public operations, each on a profile of its own, and holds none for one that waits", async () => {
@@ -356,17 +360,6 @@ describe("browser broker", () => {
     // Diagnostics counts these.
     expect(spansNamed("browser.broker.readiness"))
       .toEqual([expect.objectContaining({ success: false, browserContext: "authenticated" })]);
-  });
-
-  it("does not treat a skip-readiness launch as a completed functional probe", async () => {
-    const root = makeTestDir("browser-broker-unverified-launch");
-    const broker = new BrowserBroker({ copilotHome: root });
-
-    await broker.withEphemeralContext("authenticated", QUIET, async () => undefined);
-
-    const snapshot = broker.getSnapshot().authenticated;
-    expect(snapshot.status).toBe("starting");
-    expect(snapshot).not.toHaveProperty("lastProbeAt");
   });
 
   it("drains active authenticated work, rejects queued work, then shuts down", async () => {
@@ -1304,17 +1297,19 @@ describe("public profile statistics and reset", () => {
     expect(await readdir(next.browserTarget.profileDir)).toEqual([]);
   });
 
-  it("checks a profile for a leftover browser before clearing it and counts one it cannot stop as in use", async () => {
+  it("checks a profile for a leftover browser before clearing it and keeps any it cannot confirm is free", async () => {
     const root = makeTestDir("browser-broker-reset-leftover");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await mkdir(join(root, "browser-profile"), { recursive: true });
     await writeFile(join(root, "browser-profile", "Cookies"), "signed in");
-    for (const slot of [1, 2, 3]) {
+    for (const slot of [1, 2, 3, 4]) {
       await mkdir(slotDir(root, slot), { recursive: true });
       await writeFile(join(slotDir(root, slot), "Cookies"), `slot ${slot}`);
     }
     const events: string[] = [];
     const shutdownTarget = vi.fn<ShutdownTarget>(async (target) => {
       events.push(`close ${target.sessionName.replace(/^copilot-bridge-public-[a-f0-9]{8}-/, "public slot ")}`);
+      if (slotOf(target) === 3) throw new Error("process list unavailable");
       return slotOf(target) === 2 ? shutdownLeaving(555) : successfulShutdown();
     });
     const removeProfile = vi.fn<RemoveProfile>(async (profileDir) => {
@@ -1324,52 +1319,37 @@ describe("public profile statistics and reset", () => {
     // A server that has just started: it knows nothing about the profiles on disk.
     const broker = new BrowserBroker({ copilotHome: root, shutdownTarget, removeProfile });
 
-    await expect(broker.resetPublicProfiles()).resolves.toEqual({ cleared: 2, inUse: 1 });
+    await expect(broker.resetPublicProfiles()).resolves.toEqual({ cleared: 2, inUse: 2 });
 
-    // Only public browsers are closed and only public profiles are removed.
+    // Neither a known live browser nor an unknown process list is permission to remove its profile.
     expect(events).toEqual([
       "close public slot 1",
       "remove browser-public/slot-1",
       "close public slot 2",
       "close public slot 3",
-      "remove browser-public/slot-3",
+      "close public slot 4",
+      "remove browser-public/slot-4",
     ]);
-    expect(await readdir(publicRoot(root))).toEqual(["slot-2"]);
+    expect((await readdir(publicRoot(root))).sort()).toEqual(["slot-2", "slot-3"]);
     await expect(readFile(join(slotDir(root, 2), "Cookies"), "utf-8")).resolves.toBe("slot 2");
+    await expect(readFile(join(slotDir(root, 3), "Cookies"), "utf-8")).resolves.toBe("slot 3");
     await expect(readFile(join(root, "browser-profile", "Cookies"), "utf-8")).resolves.toBe("signed in");
-    // The profile it could not clear is not held: a lease still passes it over while its browser lives.
-    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
+    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 2, inUse: 0 });
     expect((await broker.createSessionTarget("public")).publicSlot).toBe(1);
   });
 
-  it("tries again to remove a public profile whose files are still open", async () => {
-    const root = makeTestDir("browser-broker-remove-retry");
-    await mkdir(slotDir(root, 1), { recursive: true });
-    const stillOpen = Object.assign(new Error("EBUSY: resource busy or locked, unlink 'lockfile'"), { code: "EBUSY" });
-    const removeProfile = vi.fn<RemoveProfile>()
-      .mockRejectedValueOnce(stillOpen)
-      .mockRejectedValueOnce(stillOpen)
-      .mockResolvedValue(undefined);
-    const broker = new BrowserBroker({
-      copilotHome: root,
-      shutdownTarget: mockShutdown(),
-      removeProfile,
-      profileRemoveRetryDelaysMs: [0, 0, 0],
-    });
-
-    await expect(broker.resetPublicProfiles()).resolves.toEqual({ cleared: 1, inUse: 0 });
-
-    expect(removeProfile).toHaveBeenCalledTimes(3);
-    expect(removeProfile).toHaveBeenCalledWith(slotDir(root, 1));
-  });
-
-  it("counts a public profile it could not remove after the last attempt as in use, and clears the others", async () => {
-    const root = makeTestDir("browser-broker-remove-gives-up");
+  it("retries busy profiles, counting only a profile still locked after the last attempt as in use", async () => {
+    const root = makeTestDir("browser-broker-remove-busy");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await mkdir(slotDir(root, 1), { recursive: true });
-    await mkdir(slotDir(root, 2));
+    const locked = slotDir(root, 1);
+    const freesUp = slotDir(root, 2);
+    const free = slotDir(root, 3);
+    await mkdir(locked, { recursive: true });
+    await mkdir(freesUp);
+    await mkdir(free);
+    let busyAttempts = 0;
     const removeProfile = vi.fn<RemoveProfile>(async (profileDir) => {
-      if (profileDir === slotDir(root, 1)) {
+      if (profileDir === locked || (profileDir === freesUp && ++busyAttempts < 3)) {
         throw Object.assign(new Error("EBUSY: resource busy or locked, unlink 'lockfile'"), { code: "EBUSY" });
       }
       await rm(profileDir, { recursive: true, force: true });
@@ -1381,36 +1361,17 @@ describe("public profile statistics and reset", () => {
       profileRemoveRetryDelaysMs: [0, 0],
     });
 
-    await expect(broker.resetPublicProfiles()).resolves.toEqual({ cleared: 1, inUse: 1 });
+    await expect(broker.resetPublicProfiles()).resolves.toEqual({ cleared: 2, inUse: 1 });
 
     expect(removeProfile.mock.calls).toEqual([
-      [slotDir(root, 1)],
-      [slotDir(root, 1)],
-      [slotDir(root, 1)],
-      [slotDir(root, 2)],
+      [locked], [locked], [locked],
+      [freesUp], [freesUp], [freesUp],
+      [free],
     ]);
     expect(await readdir(publicRoot(root))).toEqual(["slot-1"]);
     // The profile is not left held by the reset that could not remove it.
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
     expect((await broker.createSessionTarget("public")).publicSlot).toBe(1);
-  });
-
-  it("counts a public profile it could not check for a leftover browser as in use, and clears the others", async () => {
-    const root = makeTestDir("browser-broker-reset-check-throws");
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await mkdir(slotDir(root, 1), { recursive: true });
-    await mkdir(slotDir(root, 2));
-    const shutdownTarget = mockShutdown();
-    shutdownTarget.mockRejectedValueOnce(new Error("process list unavailable"));
-    const removeProfile = mockRemoveProfile();
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget, removeProfile });
-
-    await expect(broker.resetPublicProfiles()).resolves.toEqual({ cleared: 1, inUse: 1 });
-
-    expect(closedSlots(shutdownTarget)).toEqual([1, 2]);
-    expect(removeProfile.mock.calls).toEqual([[slotDir(root, 2)]]);
-    expect(await readdir(publicRoot(root))).toEqual(["slot-1"]);
-    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
   });
 });
 

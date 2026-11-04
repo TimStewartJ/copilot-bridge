@@ -8,22 +8,13 @@ import { createBridgeSessionStateStore } from "../bridge-session-state-store.js"
 let db: DatabaseSync;
 let store: SessionMetaStore;
 
-beforeEach(() => {
+function setUpStore() {
   db = setupTestDb();
   store = createSessionMetaStore(db);
-});
+}
 
 describe("session-meta-store", () => {
-  it("setArchived(false) preserves unrelated overlay fields", () => {
-    const bridgeSessionState = createBridgeSessionStateStore(db);
-    bridgeSessionState.setTitleOverride("session-1", "Manual title");
-
-    store.setArchived("session-1", true);
-    store.setArchived("session-1", false);
-
-    expect(store.getMeta("session-1")).toBeUndefined();
-    expect(bridgeSessionState.getState("session-1")?.titleOverride).toBe("Manual title");
-  });
+  beforeEach(setUpStore);
 
   it("setScheduleMeta preserves existing archive state", () => {
     store.setArchived("session-1", true);
@@ -36,9 +27,13 @@ describe("session-meta-store", () => {
   });
 
   it("listArchivedSessionIds returns ids of archived sessions only", () => {
+    const overlays = createBridgeSessionStateStore(db);
+    overlays.setTitleOverride("restored", "Manual title");
     store.setArchived("archived", true);
     store.setArchived("restored", true);
     store.setArchived("restored", false);
+    expect(store.getMeta("restored")).toBeUndefined();
+    expect(overlays.getState("restored")?.titleOverride).toBe("Manual title");
     store.setLastVisibleActivityAt("active", "2026-05-07T21:00:00.000Z");
 
     store.setArchived("other", true);
@@ -133,6 +128,8 @@ function seedRuns(store: SessionMetaStore, scheduleId: string, count: number): s
 }
 
 describe("pruneScheduleRuns", () => {
+  beforeEach(setUpStore);
+
   it("prunes only the oldest runs of this schedule and is a no-op once it is within the limit", () => {
     const ids = seedRuns(store, "sched-a", 6); // s0 (oldest) … s5 (newest)
     store.recordScheduleRun("other", "other-1");

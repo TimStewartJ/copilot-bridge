@@ -4,7 +4,6 @@ import {
   BACKGROUND_COMMAND_PROTECT_MS,
   BACKGROUND_COMMAND_WAKE_COOLDOWN_MS,
   buildStoppedCommandsNotice,
-  buildStoppedCommandsWakePrompt,
   queueStoppedCommandWake,
   recoverBackgroundCommandsOnBoot,
 } from "../background-commands.js";
@@ -24,11 +23,11 @@ let db: DatabaseSync;
 let store: BackgroundCommandStore;
 let prompts: DeferredPromptStore;
 
-beforeEach(() => {
+function setUpStores() {
   db = setupTestDb();
   store = createBackgroundCommandStore(db);
   prompts = createDeferredPromptStore(db);
-});
+}
 
 function runningCount(sessionId: string): number {
   return Number((db.prepare(
@@ -37,6 +36,8 @@ function runningCount(sessionId: string): number {
 }
 
 describe("background command store", () => {
+  beforeEach(setUpStores);
+
   it("follows the running set and forgets a command that finished on its own", () => {
     store.syncRunning("s1", [build, server]);
     expect(runningCount("s1")).toBe(2);
@@ -199,16 +200,11 @@ describe("stopped command notice", () => {
     expect(notice).toContain("- and 5 more");
     expect(notice.length).toBeLessThan(6_000);
   });
-
-  it("is an automated message of its own when it has to wake the agent", () => {
-    const prompt = buildStoppedCommandsWakePrompt(stopped);
-
-    expect(prompt.startsWith("<bridge_notice>\n")).toBe(true);
-    expect(prompt).toContain("Continue the work that was waiting on these commands.");
-  });
 });
 
 describe("waking an agent whose commands were stopped", () => {
+  beforeEach(setUpStores);
+
   function deps(overrides: Partial<Parameters<typeof queueStoppedCommandWake>[0]> = {}) {
     const poke = vi.fn();
     return {
@@ -228,14 +224,19 @@ describe("waking an agent whose commands were stopped", () => {
   }
 
   it("sends the notice as a message of its own and takes the loss with it", () => {
-    stop("s1", build, at(10));
+    store.syncRunning("s1", [{ ...build, pid: 4242 }]);
+    store.markSessionStopped("s1", "restart", at(10));
+    stop("s1", server, at(70));
     const { deps: wakeDeps, poke } = deps();
 
-    expect(queueStoppedCommandWake(wakeDeps, "s1", at(10))).toBe("queued");
+    expect(queueStoppedCommandWake(wakeDeps, "s1", at(70))).toBe("queued");
 
     const [delivery] = prompts.listDeliveriesForSession("s1");
     expect(delivery).toMatchObject({ sessionId: "s1", purpose: "delivery", status: "pending", sourceId: "background-commands:s1" });
+    expect(delivery?.prompt.startsWith("<bridge_notice>\n")).toBe(true);
     expect(delivery?.prompt).toContain('shellId 3 "Test refresh"');
+    expect(delivery?.prompt).toContain('shellId 4 "Dev server"');
+    expect(delivery?.prompt).toContain("Continue the work that was waiting on these commands.");
     expect(poke).toHaveBeenCalledTimes(1);
     // The next message does not repeat it.
     expect(store.listStopped("s1")).toEqual([]);
@@ -287,6 +288,8 @@ describe("waking an agent whose commands were stopped", () => {
 });
 
 describe("boot recovery of background commands", () => {
+  beforeEach(setUpStores);
+
   it("wakes the sessions whose recent commands the last server exit cut off", () => {
     store.syncRunning("recent", [{ ...build, pid: 4242 }]);
     store.syncRunning("old", [{ ...server, startedAt: at(-120).toISOString() }]);

@@ -85,13 +85,4 @@ describe("bridge session state store", () => {
       lastAttentionAt: "2026-05-07T10:00:00.000Z",
     });
   });
-
-  it("prunes a pending fork auto-name-only row when it is cleared", () => {
-    const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setPendingAutoName("session-1");
-    store.clearPendingAutoName("session-1");
-
-    expect(store.getState("session-1")).toBeUndefined();
-  });
 });

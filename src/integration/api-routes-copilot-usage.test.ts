@@ -22,10 +22,10 @@ import {
   writeFileSync,
 } from "../test-support/api-routes.js";
 
-let app: ApiRouteTestState["app"];
 type CopilotUsageApiBody = ReturnType<typeof serializeCopilotUsageSummary>;
 
 async function requestUsageUntil(
+  app: ApiRouteTestState["app"],
   predicate: (body: CopilotUsageApiBody) => boolean,
   path = "/api/copilot-usage",
 ): Promise<{ status: number; body: CopilotUsageApiBody }> {
@@ -39,9 +39,7 @@ async function requestUsageUntil(
   return latest!;
 }
 
-installApiRouteTestHooks((state) => {
-  ({ app } = state);
-});
+installApiRouteTestHooks();
 
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 
@@ -144,9 +142,9 @@ describe("Copilot usage routes", () => {
         { totalNanoAiu: 300_000_000_000 },
       ),
     ]);
-    ({ app } = createTestApp({ copilotHome }));
+    const { app } = createTestApp({ copilotHome });
 
-    const res = await requestUsageUntil((body) => body.index.state === "idle");
+    const res = await requestUsageUntil(app, (body) => body.index.state === "idle");
     const unattributed = res.body.models.find((row) => row.model === COPILOT_USAGE_UNATTRIBUTED_MODEL);
 
     expect(res.body.totals.meteredAiCredits).toBe(300);
@@ -196,15 +194,15 @@ describe("Copilot usage routes", () => {
         details: { trace: "secret-event-details" },
       },
     ]);
-    ({ app } = createTestApp({
+    const { app } = createTestApp({
       copilotHome,
       sessionManager: {
         ...createMockSessionManager(),
         listModels: vi.fn(async () => [sdkPriceableModel("gpt-5.4", { input: 2.5, output: 15, cache: 0.25 }, "GPT-5.4")]),
       },
-    }));
+    });
 
-    const res = await requestUsageUntil((body) => (
+    const res = await requestUsageUntil(app, (body) => (
       body.index.state === "idle"
       && body.models[0]?.pricingStatus === "exact"
     ));
@@ -391,10 +389,9 @@ describe("Copilot usage routes", () => {
     });
     copilotUsageStore.upsertEntries([await cachedEntry("task-session"), await cachedEntry("other-session")]);
     copilotUsageStore.setLastCompletedAt(new Date().toISOString());
-    const state = createTestApp({ copilotHome, copilotUsageStore });
-    app = state.app;
-    const task = state.ctx.taskStore.createTask("Usage task");
-    state.ctx.taskStore.linkSession(task.id, "task-session");
+    const { app, ctx } = createTestApp({ copilotHome, copilotUsageStore });
+    const task = ctx.taskStore.createTask("Usage task");
+    ctx.taskStore.linkSession(task.id, "task-session");
 
     const settingsRes = await request(app).get("/api/copilot-usage?sessions=none");
     expect(settingsRes.status).toBe(200);
@@ -433,12 +430,12 @@ describe("Copilot usage routes", () => {
       },
       sdkPriceableModel("claude-opus-4.7", { input: 5, output: 25, cache: 0.5 }, "Claude Opus 4.7"),
     ]);
-    ({ app } = createTestApp({
+    const { app } = createTestApp({
       copilotHome,
       sessionManager: { ...createMockSessionManager(), listModels },
-    }));
+    });
 
-    const res = await requestUsageUntil((body) => (
+    const res = await requestUsageUntil(app, (body) => (
       body.index.state === "idle"
       && body.models[0]?.pricingStatus === "sdk-name"
     ));
@@ -471,12 +468,12 @@ describe("Copilot usage routes", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      ({ app } = createTestApp({
+      const { app } = createTestApp({
         copilotHome,
         sessionManager: { ...createMockSessionManager(), listModels },
-      }));
+      });
 
-      const first = await requestUsageUntil((body) => (
+      const first = await requestUsageUntil(app, (body) => (
         body.index.state === "idle"
         && body.models[0]?.pricingStatus === "exact"
       ));
@@ -487,7 +484,7 @@ describe("Copilot usage routes", () => {
 
       // Force a fresh read; live metadata now fails but the cached price persists.
       await request(app).get("/api/copilot-usage?refresh=1");
-      const second = await requestUsageUntil((body) => (
+      const second = await requestUsageUntil(app, (body) => (
         calls >= 2
         && body.index.state === "idle"
         && body.models[0]?.pricingStatus === "exact"
@@ -515,12 +512,12 @@ describe("Copilot usage routes", () => {
     const listModels = vi.fn(() => new Promise<unknown[]>((resolve) => {
       resolveModels = resolve;
     }));
-    ({ app } = createTestApp({
+    const { app } = createTestApp({
       copilotHome,
       copilotUsageStore,
       copilotModelPriceStore,
       sessionManager: { ...createMockSessionManager(), listModels },
-    }));
+    });
 
     try {
       const initial = await request(app).get("/api/copilot-usage");
@@ -558,9 +555,9 @@ describe("Copilot usage routes", () => {
   it("returns cached staging usage immediately while refresh=1 scans and publishes updates progressively", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeUsageShutdown(copilotHome, "2026-05-01T12:00:00.000Z", { "gpt-4o": usageMetric(1, { inputTokens: 5, outputTokens: 4 }) });
-    ({ app } = createTestApp({ copilotHome, isStaging: true }));
+    const { app } = createTestApp({ copilotHome, isStaging: true });
 
-    const initial = await requestUsageUntil((body) => (
+    const initial = await requestUsageUntil(app, (body) => (
       body.index.state === "idle"
       && body.totals.totalTokens === 9
     ));
@@ -578,7 +575,7 @@ describe("Copilot usage routes", () => {
     expect(refreshed.body.index.state).toBe("scanning");
     expect(refreshed.body.totals.totalTokens).toBe(9);
 
-    const completed = await requestUsageUntil((body) => (
+    const completed = await requestUsageUntil(app, (body) => (
       body.index.state === "idle"
       && body.totals.totalTokens === 30
     ));
@@ -588,11 +585,11 @@ describe("Copilot usage routes", () => {
   it("GET /api/copilot-usage reports unreadable session-state as a safe background index error", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeFileSync(join(copilotHome, "session-state"), "not a directory");
-    ({ app } = createTestApp({ copilotHome }));
+    const { app } = createTestApp({ copilotHome });
 
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const res = await requestUsageUntil((body) => body.index.state === "error");
+      const res = await requestUsageUntil(app, (body) => body.index.state === "error");
 
       expect(res.status).toBe(200);
       expect(res.body.index.error).toBe("Local Copilot usage indexing failed. Cached results are still available.");
@@ -624,13 +621,14 @@ describe("Copilot usage range filtering", () => {
         usageShutdown(localIso(2026, 1, 10), { "gpt-5.4": usageMetric(1, { inputTokens: 300 }) }),
         usageShutdown(localIso(2026, 4, 12), { "gpt-5.4": usageMetric(1, { inputTokens: 1_500 }) }),
       ]);
-      ({ app } = createTestApp({ copilotHome }));
+      const { app } = createTestApp({ copilotHome });
 
-      const all = await requestUsageUntil((body) => body.index.state === "idle");
+      const all = await requestUsageUntil(app, (body) => body.index.state === "idle");
       expect(all.body.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
       expect(all.body.totals.inputTokens).toBe(1_500);
 
       const mtd = await requestUsageUntil(
+        app,
         (body) => body.index.state === "idle",
         "/api/copilot-usage?range=mtd",
       );
@@ -642,6 +640,7 @@ describe("Copilot usage range filtering", () => {
       ]);
 
       const bogus = await requestUsageUntil(
+        app,
         (body) => body.index.state === "idle",
         "/api/copilot-usage?range=not-a-range",
       );
@@ -694,9 +693,9 @@ describe("Copilot quota route", () => {
   it("GET /api/copilot-usage/quota normalizes the live counter", async () => {
     const getAccountQuota = vi.fn(async () => quotaPayload);
     const getAccountAuth = vi.fn(async () => authPayload);
-    ({ app } = createTestApp({
+    const { app } = createTestApp({
       sessionManager: { ...createMockSessionManager(), getAccountQuota, getAccountAuth } as never,
-    }));
+    });
 
     const res = await request(app).get("/api/copilot-usage/quota");
 
@@ -730,10 +729,10 @@ describe("Copilot quota route", () => {
 
   it("GET /api/copilot-usage/quota degrades instead of failing when the RPC is missing", async () => {
     const getAccountQuota = vi.fn().mockRejectedValue(new Error("Quota RPC unsupported by this backend"));
-    ({ app } = createTestApp({ sessionManager: {
+    const { app } = createTestApp({ sessionManager: {
       ...createMockSessionManager(), getAccountQuota,
       getAccountAuth: async () => undefined, fetchAccountCopilotUser: async () => undefined,
-    } as never }));
+    } as never });
 
     const res = await request(app).get("/api/copilot-usage/quota").expect(200);
     expect(res.body).toMatchObject({
@@ -751,9 +750,9 @@ describe("Copilot account routes", () => {
   };
 
   it("GET /api/copilot-accounts returns the accounts", async () => {
-    ({ app } = createTestApp({
+    const { app } = createTestApp({
       sessionManager: { ...createMockSessionManager(), listCopilotAccounts: vi.fn(async () => status) } as never,
-    }));
+    });
 
     const res = await request(app).get("/api/copilot-accounts");
 
@@ -766,9 +765,9 @@ describe("Copilot account routes", () => {
     ["a refused switch", { id: "sel-2" }, new CopilotAccountSwitchError("Switch after the running chat finishes.", 409, 1), 409],
   ])("POST /api/copilot-accounts/switch answers %s", async (_case, body, error, expected) => {
     const switchCopilotAccount = vi.fn(async () => { if (error) throw error; return status; });
-    ({ app } = createTestApp({
+    const { app } = createTestApp({
       sessionManager: { ...createMockSessionManager(), switchCopilotAccount } as never,
-    }));
+    });
 
     const res = await request(app).post("/api/copilot-accounts/switch").send(body);
 

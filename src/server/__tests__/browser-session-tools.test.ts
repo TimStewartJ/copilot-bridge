@@ -277,6 +277,17 @@ describe("browser session tools", () => {
 
     const started = await tools.browser_session_start.handler({ context: "public", purpose: "Read an article" }, invocation) as any;
     const record = runtime.sessions.getSession(started.browserSessionId);
+    const beforeOtherChat = browser.calls.length;
+    const refused = await tools.browser_session_exec.handler({
+      browserSessionId: started.browserSessionId,
+      commands: [{ command: "get", args: ["title"] }],
+    }, { sessionId: "copilot-b" } as any);
+    expect(refused).toMatchObject({
+      resultType: "failure",
+      textResultForLlm: "Browser session belongs to a different Copilot session",
+    });
+    expect(browser.calls).toHaveLength(beforeOtherChat);
+
     const first = await tools.browser_session_exec.handler({
       browserSessionId: started.browserSessionId,
       commands: [{ command: "open", args: ["https://example.com"] }],
@@ -316,24 +327,6 @@ describe("browser session tools", () => {
       publicSlot: 1,
       browserTarget: record?.browserTarget,
     });
-  });
-
-  it("rejects access from a different Copilot session", async () => {
-    const browser = fakeAgentBrowser();
-    const { tools } = await loadBrowserSessionTools();
-
-    const started = await tools.browser_session_start.handler({ context: "public" }, invocation) as any;
-    browser.calls.length = 0;
-    const result = await tools.browser_session_exec.handler({
-      browserSessionId: started.browserSessionId,
-      commands: [{ command: "get", args: ["title"] }],
-    }, { sessionId: "copilot-b" } as any);
-
-    expect(result).toMatchObject({
-      resultType: "failure",
-      textResultForLlm: "Browser session belongs to a different Copilot session",
-    });
-    expect(browser.calls).toEqual([]);
   });
 
   describe("page check", () => {

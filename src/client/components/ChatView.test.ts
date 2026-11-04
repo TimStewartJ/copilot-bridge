@@ -1826,36 +1826,28 @@ describe("ChatView history pagination", () => {
     }
   });
 
-  it("reads only the newest page while the run is still going", async () => {
-    const view = await renderPagedBackSession(undefined, true);
-
-    try {
-      await view.render({ streamOverrides: { historyEpoch: 1 } });
-      await waitUntilAct(view.act, () => newestReads().length > 0);
-      // A run in flight only rewrites its newest entries, however far back the reader has loaded.
-      expect(newestReads()).toEqual([{ limit: 50 }]);
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("reaches further back when more arrived than the newest page covers", async () => {
+  it("reads only the newest page during a run, reaching back when a later advance leaves a gap", async () => {
+    vi.useFakeTimers();
     const view = await renderPagedBackSession(undefined, true);
 
     try {
       const { dom, act, render } = view;
-      // 110 entries were committed since the last read, so the newest 50 leave a hole after entry-299.
+      await render({ streamOverrides: { historyEpoch: 1 } });
+      await waitUntilAct(act, () => newestReads().length > 0);
+      expect(newestReads()).toEqual([{ limit: 50 }]);
+
+      // 110 entries were committed since that read, so the newest 50 leave a hole after entry-299.
       fetchMessagesFastMock.mockImplementation((_sessionId: string, request: { limit: number }) => Promise.resolve({
         messages: createMessages(410 - request.limit, 410),
         runState: "busy",
         total: 410,
         warm: true,
       }));
-
-      await render({ streamOverrides: { historyEpoch: 1 } });
+      await render({ streamOverrides: { historyEpoch: 2 } });
+      await advanceTimersByTimeAct(act, 250);
       await waitUntilAct(act, () => dom.container.textContent?.includes("entry-409") ?? false);
 
-      expect(newestReads()).toEqual([{ limit: 50 }, { limit: 200 }]);
+      expect(newestReads()).toEqual([{ limit: 50 }, { limit: 50 }, { limit: 200 }]);
       expect(dom.container.textContent).toContain("entry-300");
       expect(dom.container.textContent).toContain("entry-50");
     } finally {
@@ -4306,74 +4298,33 @@ describe("ChatView message actions", () => {
     }
   });
 
-  it("offers undo on user messages but does not call the API when confirmation is canceled", async () => {
-    const { dom, act, cleanup } = await renderChatView({
+  it("leaves the user turn intact when undo is canceled and when the confirmed request fails", async () => {
+    const { dom, act, cleanup, dropFinishedRunOutputMock } = await renderChatView({
       fetchMessagesFastResult: {
-        messages: [
-          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
-        ],
-        runState: "idle",
-        total: 1,
-        warm: true,
-        hasMore: false,
+        messages: [{ id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" }],
+        runState: "idle", total: 1, warm: true, hasMore: false,
       },
       streamOverrides: { isStreaming: false },
     });
     const confirm = stubWindowConfirm(false);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const undo = async () => {
+      const wrapper = findMessageWrapperByAnchorKey(dom.container, "user-1");
+      await act(async () => clickButton(findButtonByAriaLabel(wrapper, "Open message actions")));
+      await act(async () => clickButton(findButtonByText(dom.container, "Undo turn from here")));
+    };
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("first") ?? false);
-      const wrapper = findMessageWrapperByAnchorKey(dom.container, "user-1");
-      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
-        getReactProps(button)?.["aria-label"] === "Open message actions"
-      ));
-
-      await act(async () => {
-        clickButton(menuButton);
-      });
-      await act(async () => {
-        clickButton(findButtonByText(dom.container, "Undo turn from here"));
-      });
-
-      expect(confirm).toHaveBeenCalled();
+      await undo();
+      expect(confirm).toHaveBeenCalledOnce();
       expect(undoSessionTurnMock).not.toHaveBeenCalled();
       expect(dom.container.textContent).toContain("first");
-    } finally {
-      await cleanup();
-    }
-  });
 
-  it("surfaces undo failures without mutating the visible transcript", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    undoSessionTurnMock.mockRejectedValueOnce(new Error("This turn is no longer available to undo."));
-    const { dom, act, cleanup, dropFinishedRunOutputMock } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [
-          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
-        ],
-        runState: "idle",
-        total: 1,
-        warm: true,
-        hasMore: false,
-      },
-      streamOverrides: { isStreaming: false },
-    });
-    const confirm = stubWindowConfirm(true);
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("first") ?? false);
-      const wrapper = findMessageWrapperByAnchorKey(dom.container, "user-1");
-      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
-        getReactProps(button)?.["aria-label"] === "Open message actions"
-      ));
-      await act(async () => {
-        clickButton(menuButton);
-      });
-      await act(async () => {
-        clickButton(findButtonByText(dom.container, "Undo turn from here"));
-        await waitTick();
-      });
-
+      confirm.mockReturnValue(true);
+      undoSessionTurnMock.mockRejectedValueOnce(new Error("This turn is no longer available to undo."));
+      await undo();
+      expect(undoSessionTurnMock).toHaveBeenCalledExactlyOnceWith("session-1", "user-event-1");
       expect(dom.container.textContent).toContain("Undo failed: This turn is no longer available to undo.");
       expect(dom.container.textContent).toContain("first");
       expect(dropFinishedRunOutputMock).not.toHaveBeenCalled();
@@ -4385,100 +4336,54 @@ describe("ChatView message actions", () => {
 });
 
 describe("ChatView user input question cards", () => {
-  it("renders choice and freeform controls and submits through the user input API", async () => {
-    // Case 1: choice submission
-    const choiceRequest: PendingUserInputRequestView = {
+  it("submits the chosen option through the user input API instead of sending a message", async () => {
+    const { dom, act, cleanup, sendMessageMock } = await renderChatView([{
       requestId: "request-1",
       question: "Pick a deploy target",
       choices: ["staging", "production"],
       allowFreeform: true,
       requestedAt: "2026-04-29T12:00:00.000Z",
-    };
-    {
-      const { dom, act, cleanup, sendMessageMock } = await renderChatView([choiceRequest]);
-      try {
-        expect(dom.container.textContent).toContain("Pick a deploy target");
-        expect(findInputByPlaceholder(dom.container, "Or type a response...")).toBeDefined();
-
-        await act(async () => {
-          getReactProps(findButtonByText(dom.container, "staging"))?.onClick?.();
-        });
-        await waitUntilAct(act, () => submitUserInputResponseMock.mock.calls.length === 1);
-
-        expect(submitUserInputResponseMock).toHaveBeenCalledWith(
-          "session-1",
-          "request-1",
-          { answer: "staging", wasFreeform: false },
-        );
-        expect(sendMessageMock).not.toHaveBeenCalled();
-      } finally {
-        await cleanup();
-      }
-    }
-
-    submitUserInputResponseMock.mockReset();
-    submitUserInputResponseMock.mockResolvedValue(undefined);
-
-    // Case 2: freeform submission
-    const freeformRequest: PendingUserInputRequestView = {
-      requestId: "request-freeform",
-      question: "What should Copilot do next?",
-      allowFreeform: true,
-    };
-    {
-      const { dom, act, cleanup, sendMessageMock } = await renderChatView([freeformRequest]);
-      try {
-        const input = findInputByPlaceholder(dom.container, "Type a response...");
-        const form = findAllByTag(dom.container, "FORM")[0];
-
-        await act(async () => {
-          getReactProps(input)?.onChange?.({ target: { value: "Run the focused tests" } });
-        });
-        await act(async () => {
-          getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
-        });
-        await waitUntilAct(act, () => submitUserInputResponseMock.mock.calls.length === 1);
-
-        expect(submitUserInputResponseMock).toHaveBeenCalledWith(
-          "session-1",
-          "request-freeform",
-          { answer: "Run the focused tests", wasFreeform: true },
-        );
-        expect(sendMessageMock).not.toHaveBeenCalled();
-      } finally {
-        await cleanup();
-      }
+    }]);
+    try {
+      expect(dom.container.textContent).toContain("Pick a deploy target");
+      expect(findInputByPlaceholder(dom.container, "Or type a response...")).toBeDefined();
+      await act(async () => { clickButton(findButtonByText(dom.container, "staging")); });
+      expect(submitUserInputResponseMock).toHaveBeenCalledExactlyOnceWith(
+        "session-1", "request-1", { answer: "staging", wasFreeform: false },
+      );
+      expect(sendMessageMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
     }
   });
 
-  it("shows inline validation and submission errors", async () => {
-    const request: PendingUserInputRequestView = {
-      requestId: "request-error",
-      question: "Explain the change",
-      allowFreeform: true,
-    };
-    const { dom, act, cleanup } = await renderChatView([request]);
-
+  it("validates the freeform answer and lets the user correct a rejected submission", async () => {
+    const { dom, act, cleanup, sendMessageMock } = await renderChatView([{
+      requestId: "request-freeform", question: "What should Copilot do next?", allowFreeform: true,
+    }]);
     try {
       const input = findInputByPlaceholder(dom.container, "Type a response...");
       const form = findAllByTag(dom.container, "FORM")[0];
+      const type = (value: string) => act(async () => getReactProps(input)!.onChange({ target: { value } }));
+      const submit = () => act(async () => getReactProps(form)!.onSubmit({ preventDefault: vi.fn() }));
 
-      await act(async () => {
-        getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
-      });
+      await submit();
       expect(dom.container.textContent).toContain("Enter a response before submitting.");
       expect(submitUserInputResponseMock).not.toHaveBeenCalled();
 
       submitUserInputResponseMock.mockRejectedValueOnce(new Error("Server rejected answer"));
-      await act(async () => {
-        getReactProps(input)?.onChange?.({ target: { value: "Try this answer" } });
-      });
-      await act(async () => {
-        getReactProps(form)?.onSubmit?.({ preventDefault: vi.fn() });
-      });
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Server rejected answer") ?? false);
-
+      await type("Try this answer");
+      await submit();
       expect(dom.container.textContent).toContain("Server rejected answer");
+
+      await type("Run the focused tests");
+      await submit();
+      expect(submitUserInputResponseMock.mock.calls).toEqual([
+        ["session-1", "request-freeform", { answer: "Try this answer", wasFreeform: true }],
+        ["session-1", "request-freeform", { answer: "Run the focused tests", wasFreeform: true }],
+      ]);
+      expect(dom.container.textContent).toContain("Response submitted");
+      expect(sendMessageMock).not.toHaveBeenCalled();
     } finally {
       await cleanup();
     }

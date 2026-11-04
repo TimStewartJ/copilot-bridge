@@ -296,22 +296,7 @@ describe("SessionManager workspace resolution", () => {
     expect(manager.sessionObjects.has("session-1")).toBe(false);
   });
 
-  it("session_set_workspace requires taskId when resetting a multi-task session", async () => {
-    const { ctx, taskStore, sessionWorkspaceStore } = createToolContext();
-    const taskA = taskStore.createTask("Task A");
-    taskStore.updateTask(taskA.id, { cwd: "/task/a" });
-    taskStore.linkSession(taskA.id, "session-1");
-    const taskB = taskStore.createTask("Task B");
-    taskStore.updateTask(taskB.id, { cwd: "/task/b" });
-    taskStore.linkSession(taskB.id, "session-1");
-    sessionWorkspaceStore.setWorkspace("session-1", "/override/worktree");
-    const tool = getTool(ctx, "session_set_workspace");
-
-    await expect(tool.handler({ reset: true }, createInvocation("session_set_workspace")))
-      .resolves.toEqual(toolFailure("Session is linked to multiple tasks; provide taskId when resetting workspace"));
-  });
-
-  it("session_set_workspace resets to the selected task default for multi-task sessions", async () => {
+  function multiTaskWorkspace() {
     const { ctx, manager, taskStore, sessionWorkspaceStore } = createToolContext();
     const taskA = taskStore.createTask("Task A");
     taskStore.updateTask(taskA.id, { cwd: "/task/a" });
@@ -322,18 +307,29 @@ describe("SessionManager workspace resolution", () => {
     sessionWorkspaceStore.setWorkspace("session-1", "/override/worktree");
     const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
     manager.sessionObjects.set("session-1", cachedSession);
-    const tool = getTool(ctx, "session_set_workspace");
+    return { tool: getTool(ctx, "session_set_workspace"), manager, sessionWorkspaceStore, cachedSession, taskA, taskB };
+  }
 
-    await expect(tool.handler({ reset: true, taskId: taskB.id }, createInvocation("session_set_workspace")))
-      .resolves.toMatchObject({
-        success: true,
-        sessionId: "session-1",
-        cwd: "/task/b",
-        source: "task-default",
-      });
-    expect(sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({ cwd: "/task/b" });
+  it("session_set_workspace requires taskId when resetting a multi-task session", async () => {
+    const { tool, sessionWorkspaceStore, cachedSession } = multiTaskWorkspace();
+    await expect(tool.handler({ reset: true }, createInvocation("session_set_workspace")))
+      .resolves.toEqual(toolFailure("Session is linked to multiple tasks; provide taskId when resetting workspace"));
+    expect(sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({ cwd: "/override/worktree" });
+    expect(cachedSession.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("session_set_workspace resets to the selected task default for multi-task sessions", async () => {
+    const { tool, manager, sessionWorkspaceStore, cachedSession, taskA, taskB } = multiTaskWorkspace();
+    const resetTo = (taskId: string) => tool.handler({ reset: true, taskId }, createInvocation("session_set_workspace"));
+    await expect(resetTo(taskA.id)).resolves.toMatchObject({
+      success: true, sessionId: "session-1", cwd: "/task/a", source: "task-default",
+    });
+    expect(sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({ cwd: "/task/a" });
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
     expect(manager.sessionObjects.has("session-1")).toBe(false);
+
+    await expect(resetTo(taskB.id)).resolves.toMatchObject({ success: true, cwd: "/task/b" });
+    expect(sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({ cwd: "/task/b" });
   });
 
   it("session_set_workspace allows the invoking busy session to set an explicit workspace for future turns", async () => {

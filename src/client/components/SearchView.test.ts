@@ -520,8 +520,8 @@ describe("SearchView", () => {
     expect(rendered.dom.container.textContent).not.toContain("message=");
   });
 
-  it("discloses partial coverage and source errors separately from no matches", async () => {
-    searchBridgeMock.mockResolvedValue(response({
+  it("distinguishes a failed search from partial coverage with no matches after retry", async () => {
+    searchBridgeMock.mockRejectedValueOnce(new Error("search service failed")).mockResolvedValue(response({
       coverage: {
         state: "partial",
         indexedSessions: 2,
@@ -529,21 +529,18 @@ describe("SearchView", () => {
         errors: ["Docs index unavailable"],
       },
     }));
-    const rendered = await render("/search?q=missing");
-    await waitUntilAct(rendered.act, () => rendered.dom.container.textContent?.includes("coverage is partial") ?? false);
-
-    expect(rendered.dom.container.textContent).toContain("2 of 5 chats indexed");
-    expect(rendered.dom.container.textContent).toContain("Docs index unavailable");
-    expect(rendered.dom.container.textContent).toContain("No matches.");
-  });
-
-  it("shows request failures as errors instead of empty results", async () => {
-    searchBridgeMock.mockRejectedValue(new Error("search service failed"));
     const rendered = await render("/search?q=needle");
-    await waitUntilAct(rendered.act, () => rendered.dom.container.textContent?.includes("search service failed") ?? false);
+    const { container } = rendered.dom;
+    await waitUntilAct(rendered.act, () => container.textContent?.includes("search service failed") ?? false);
+    expect(findAllByTag(container, "DIV").some((node) => getReactProps(node)?.role === "alert")).toBe(true);
+    expect(container.textContent).not.toContain("No matches.");
 
-    expect(findAllByTag(rendered.dom.container, "DIV").some((node) => getReactProps(node)?.role === "alert")).toBe(true);
-    expect(rendered.dom.container.textContent).not.toContain("No matches.");
+    await rendered.act(async () => { getReactProps(findButton(container, "Retry"))!.onClick(); });
+    await waitUntilAct(rendered.act, () => container.textContent?.includes("coverage is partial") ?? false);
+    expect(container.textContent).not.toContain("search service failed");
+    expect(container.textContent).toContain("2 of 5 chats indexed");
+    expect(container.textContent).toContain("Docs index unavailable");
+    expect(container.textContent).toContain("No matches.");
   });
 
   it("refreshes indexing coverage at low frequency while preserving results and stops when ready", async () => {

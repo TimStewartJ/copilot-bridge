@@ -511,20 +511,6 @@ describe("Schedule routes", () => {
     expect(res.body).toEqual({ error });
   });
 
-  it("GET /api/schedules/:id/sessions accepts zero offset and clamps the limit", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId, name: "Capped page", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
-    });
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "s1");
-
-    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions?limit=101&offset=0`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      total: 1, offset: 0, limit: 100, sessions: [{ sessionId: "s1" }],
-    });
-  });
-
   it("GET /api/schedules/:id/sessions accepts the maximum safe offset as an empty page", async () => {
     const schedule = ctx.scheduleStore.createSchedule({
       taskId, name: "Empty page", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
@@ -538,7 +524,7 @@ describe("Schedule routes", () => {
     expect(res.body).toEqual({ sessions: [], total: 1, offset: Number.MAX_SAFE_INTEGER, limit: 20 });
   });
 
-  it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {
+  it("GET /api/schedules/:id/sessions caps the first page without merging repeated runs", async () => {
     const measureSession = vi.fn<SessionStorageReader["measureSession"]>().mockResolvedValue({
       status: "complete",
       diskSizeBytes: 17,
@@ -553,23 +539,25 @@ describe("Schedule routes", () => {
       { sessionId: "shared-session", summary: "Shared session" } as any,
     ];
 
-    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
-    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
+    const earlier = "2026-01-05T10:00:00.000Z";
+    const later = "2026-01-06T10:00:00.000Z";
+    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session", earlier);
+    local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session", later);
 
     local.ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
     local.ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
 
-    const res = await request(local.app).get(`/api/schedules/${schedule.id}/sessions`);
+    const res = await request(local.app).get(`/api/schedules/${schedule.id}/sessions?limit=101&offset=0`);
     expect(res.status).toBe(200);
-    expect(res.body.total).toBe(2);
+    expect(res.body).toMatchObject({ total: 2, offset: 0, limit: 100 });
     expect(res.body.sessions).toHaveLength(2);
     expect(res.body.sessions[0]).toMatchObject({ sessionId: "shared-session", runState: "stalled" });
     expect(res.body.sessions[1].sessionId).toBe("shared-session");
     expect(res.body.sessions[0].diskSizeBytes).toBe(17);
     expect(res.body.sessions[1].diskSizeBytes).toBe(17);
     expect(res.body.sessions[0].runId).not.toBe(res.body.sessions[1].runId);
-    expect(res.body.sessions[0].recordedAt).toEqual(expect.any(String));
-    expect(res.body.sessions[1].recordedAt).toEqual(expect.any(String));
+    expect(res.body.sessions[0].recordedAt).toBe(later);
+    expect(res.body.sessions[1].recordedAt).toBe(earlier);
     expect(measureSession).toHaveBeenCalledTimes(1);
     expect(measureSession).toHaveBeenCalledWith("shared-session");
   });

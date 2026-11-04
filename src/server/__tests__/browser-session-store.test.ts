@@ -4,20 +4,22 @@ import type { BrowserContext } from "../browser-broker.js";
 import { BrowserSessionStore } from "../browser-session-store.js";
 import { testPath } from "./test-paths.js";
 
-const PUBLIC_SLOT = 3;
 const IDLE_TIMEOUT_MS = 60_000;
 
 function createFakeBroker() {
-  const createSessionTarget = vi.fn(async (context: BrowserContext) => ({
-    context,
-    browserTarget: {
-      sessionName: context === "authenticated" ? "bridge-authenticated" : `bridge-public-${PUBLIC_SLOT}`,
-      profileDir: context === "authenticated"
-        ? testPath("browser-authenticated")
-        : testPath("browser-public", `slot-${PUBLIC_SLOT}`),
-    },
-    ...(context === "public" ? { publicSlot: PUBLIC_SLOT } : {}),
-  }));
+  let nextPublicSlot = 1;
+  const createSessionTarget = vi.fn(async (context: BrowserContext) => {
+    if (context === "authenticated") return {
+      context,
+      browserTarget: { sessionName: "bridge-authenticated", profileDir: testPath("browser-authenticated") },
+    };
+    const publicSlot = nextPublicSlot++;
+    return {
+      context,
+      publicSlot,
+      browserTarget: { sessionName: `bridge-public-${publicSlot}`, profileDir: testPath("browser-public", `slot-${publicSlot}`) },
+    };
+  });
   const disposeSessionTarget = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
   return {
     createSessionTarget,
@@ -42,19 +44,6 @@ describe("browser session store", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-  });
-
-  it("reuses the authenticated target without disposing it", async () => {
-    const browserBroker = createFakeBroker();
-    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
-
-    const session = await store.createSession("copilot-a", "authenticated");
-
-    expect(session.context).toBe("authenticated");
-    expect(session.publicSlot).toBeUndefined();
-    await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
-    expect(browserBroker.disposeSessionTarget).not.toHaveBeenCalled();
-    await store.closeAll();
   });
 
   it("does not expire a session that becomes active while the sweep closes another", async () => {
@@ -97,34 +86,6 @@ describe("browser session store", () => {
     await store.closeAll();
   });
 
-  it("blocks use and duplicate close while disposal is active", async () => {
-    const browserBroker = createFakeBroker();
-    let finishDispose!: () => void;
-    browserBroker.disposeSessionTarget.mockImplementationOnce(
-      () => new Promise<void>((resolve) => {
-        finishDispose = resolve;
-      }),
-    );
-    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
-    const session = await store.createSession("copilot-a", "public");
-
-    const closing = store.closeSession(session.id, "copilot-a");
-    await Promise.resolve();
-
-    await expect(store.useSession(session.id, "copilot-a", async () => "unused")).resolves.toMatchObject({
-      ok: false,
-      error: "Browser session is closing",
-    });
-    await expect(store.closeSession(session.id, "copilot-a")).resolves.toMatchObject({
-      ok: false,
-      error: "Browser session is already closing",
-    });
-
-    finishDispose();
-    await expect(closing).resolves.toEqual({ ok: true });
-    await store.closeAll();
-  });
-
   it("rejects use and close from another Copilot session", async () => {
     const browserBroker = createFakeBroker();
     const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
@@ -139,6 +100,11 @@ describe("browser session store", () => {
       error: "Browser session belongs to a different Copilot session",
     });
 
+    // Its owner can close the handle without taking down the shared signed-in browser.
+    expect(session.context).toBe("authenticated");
+    expect(session.publicSlot).toBeUndefined();
+    await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
+    expect(browserBroker.disposeSessionTarget).not.toHaveBeenCalled();
     await store.closeAll();
   });
 
@@ -288,30 +254,10 @@ describe("browser session store", () => {
       const order = recordCloseOrder(store, browserBroker);
       const publicSession = await store.createSession("copilot-a", "public");
       const authenticatedSession = await store.createSession("copilot-b", "authenticated");
-
-      await store.closeAll();
-
-      expect(order).toEqual([
-        `listener told of ${publicSession.id}`,
-        "browser closed",
-        `listener told of ${authenticatedSession.id}`,
-      ]);
-      expect(store.getSession(publicSession.id)).toBeUndefined();
-      expect(store.getSession(authenticatedSession.id)).toBeUndefined();
-
-      await store.closeAll();
-      expect(order).toHaveLength(3);
-    });
-
-    // This is the case the listener is for: the Bridge shuts down while a person is in the browser.
-    it("tells of a session that closeAll ends while something still uses it", async () => {
-      const browserBroker = createFakeBroker();
-      const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
-      const order = recordCloseOrder(store, browserBroker);
-      const session = await store.createSession("copilot-a", "public");
+      const held = await store.createSession("copilot-a", "public");
       const started = deferred();
       const release = deferred();
-      const holding = store.holdSession(session.id, async () => {
+      const holding = store.holdSession(held.id, async () => {
         started.resolve();
         await release.promise;
         return "shown";
@@ -320,12 +266,25 @@ describe("browser session store", () => {
 
       await store.closeAll();
 
-      expect(order).toEqual([`listener told of ${session.id}`, "browser closed"]);
-      expect(store.getSession(session.id)).toBeUndefined();
-
+      expect(order).toEqual([
+        `listener told of ${publicSession.id}`,
+        "browser closed",
+        `listener told of ${authenticatedSession.id}`,
+        `listener told of ${held.id}`,
+        "browser closed",
+      ]);
+      expect(browserBroker.disposeSessionTarget.mock.calls.map(([lease]) => lease)).toMatchObject([
+        { browserTarget: publicSession.browserTarget }, { browserTarget: held.browserTarget },
+      ]);
+      expect(store.getSession(publicSession.id)).toBeUndefined();
+      expect(store.getSession(authenticatedSession.id)).toBeUndefined();
+      expect(store.getSession(held.id)).toBeUndefined();
       release.resolve();
       await expect(holding).resolves.toMatchObject({ ok: true, value: "shown" });
-      expect(store.getSession(session.id)).toBeUndefined();
+      expect(store.getSession(held.id)).toBeUndefined();
+
+      await store.closeAll();
+      expect(order).toHaveLength(5);
     });
 
     // The listener is told before the attempt, when nobody knows yet whether it will succeed.
@@ -487,7 +446,7 @@ describe("browser session store", () => {
       await store.closeAll();
     });
 
-    it("finds no session under an id it does not know, or one that is closing or closed", async () => {
+    it("refuses use, hold and duplicate close during disposal, and no longer finds the closed session", async () => {
       const browserBroker = createFakeBroker();
       const finishDispose = deferred();
       browserBroker.disposeSessionTarget.mockImplementationOnce(() => finishDispose.promise);
@@ -504,6 +463,14 @@ describe("browser session store", () => {
       await Promise.resolve();
       // The record is still there until the browser is gone; nothing new may start on it.
       expect(store.getSession(session.id)).toBeDefined();
+      await expect(store.useSession(session.id, "copilot-a", show)).resolves.toMatchObject({
+        ok: false,
+        error: "Browser session is closing",
+      });
+      await expect(store.closeSession(session.id, "copilot-a")).resolves.toMatchObject({
+        ok: false,
+        error: "Browser session is already closing",
+      });
       await expect(store.holdSession(session.id, show)).resolves.toEqual({
         ok: false,
         error: `Browser session not found: ${session.id}`,

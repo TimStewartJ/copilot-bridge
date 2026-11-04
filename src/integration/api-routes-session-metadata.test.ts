@@ -76,9 +76,14 @@ describe("Session metadata routes", () => {
   });
 
   it("POST /api/sessions/batch marks sessions read", async () => {
-    const res = await request(app)
-      .post("/api/sessions/batch")
-      .send({ sessionIds: ["s1"], action: "markRead" });
-    expect(res.status).toBe(200);
+    const first = "2026-01-05T10:00:00.000Z";
+    const second = "2026-01-06T10:00:00.000Z";
+    ctx.sessionMetaStore.setLastVisibleActivityAt("s1", first);
+    ctx.sessionMetaStore.setLastVisibleActivityAt("s2", second);
+    ctx.sessionMetaStore.setLastVisibleActivityAt("unselected", first);
+
+    await request(app).post("/api/sessions/batch").send({ sessionIds: ["s1", "s2"], action: "markRead" }).expect(200);
+    const saved = await request(app).get("/api/read-state").expect(200);
+    expect(saved.body).toEqual({ s1: first, s2: second });
   });
 });
