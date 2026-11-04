@@ -193,12 +193,11 @@ describe("design audit", () => {
       "src/client/components/Deleted.tsx",
     ]);
     expect(formatDesignAuditResult(result)).toContain("Remove them from the list");
-  });
+    expect(result.pendingFiles).toBe(2);
 
-  it("passes on this repository", () => {
-    const result = auditDesignSystem();
-    expect(formatDesignAuditResult(result)).toContain("Design system audit passed");
-    expect(result.pendingFiles).toBe(DESIGN_AUDIT_PENDING.length);
+    const migrated = auditDesignSystem(rootDir, []);
+    expect(migrated.pendingFiles).toBe(0);
+    expect(formatDesignAuditResult(migrated)).toContain("Design system audit passed");
   });
 
   it("holds every runtime screen to the design system without grandfathered exceptions", () => {

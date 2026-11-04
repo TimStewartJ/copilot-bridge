@@ -526,7 +526,7 @@ during it), `session.enrichedList.invalidate` (reason and which lists), `session
 
 Every client screen is built from `src/client/design/`: `tokens.ts` holds the class recipes, `primitives.tsx` the components, and its `README.md` the rules. Opaque canvas, pane, group, inset, selection and overlay roles make loaded task lists and views distinguishable. Use one neutral group per logical region, divided unboxed rows and values, and insets for controls/raw details; never nest same-level groups or Panels. Layout and type carry hierarchy without illegibly faint text. Shadows stay on overlays, accent is never an action fill, and each screen has one primary action.
 
-- `npm run test:design-audit` runs in `check:fast`, `check:client` and `check:pr`. Every runtime client screen is held to it: the migration backlog is empty and the legacy token module is retired.
+- `npm run test:design-audit` scans the client source in `check:fast`, `check:client` and `check:pr`. Plain `npm test` checks the audit rules on fixtures, not the entire tree. Every runtime client screen is held to the audit; the migration backlog is empty.
 - Never add a file to `src/client/design/audit-pending.ts`; the tests require it to remain empty. Surface tests require enabled text/state roles to reach 4.5:1, composed badge tints to remain readable, and input boundaries to reach 3:1 in both themes.
 - `npx tsx src/client/design/audit.ts --explain <file>` lists what a file still breaks.
 
