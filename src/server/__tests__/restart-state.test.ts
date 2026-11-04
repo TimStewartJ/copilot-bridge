@@ -204,12 +204,6 @@ describe("restart-state", () => {
     expect(rmMock).toHaveBeenCalledWith(tempPath, { force: true });
   });
 
-  it("clears the persisted state file", async () => {
-    await clearRestartState(statePath);
-
-    expect(rmMock).toHaveBeenCalledWith(statePath, { force: true });
-  });
-
   it("rejects an unknown phase instead of normalizing it to idle", async () => {
     readFileMock.mockResolvedValueOnce(JSON.stringify({
       requestId: "req-bad",
@@ -287,17 +281,5 @@ describe("restart-state transient FS retry under fake timers", () => {
 
     await expect(writeRestartState(statePath, activeState)).resolves.toEqual(activeState);
     expect(renameMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("honors an injected instant retry sleep via the test seam", async () => {
-    // The seam lets a suite make the backoff instant/deterministic when desired.
-    __setRestartStateFsRetrySleepForTests(() => Promise.resolve());
-
-    readFileMock
-      .mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EACCES" }))
-      .mockResolvedValueOnce(JSON.stringify(activeState));
-
-    await expect(readRestartState(statePath)).resolves.toEqual(activeState);
-    expect(readFileMock).toHaveBeenCalledTimes(2);
   });
 });

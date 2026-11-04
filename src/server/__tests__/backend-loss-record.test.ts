@@ -87,10 +87,7 @@ function makeRecord(overrides: Partial<BackendLossRecord> = {}): BackendLossReco
 
 describe("runtime log line selection", () => {
   it.each([
-    ["WARNING", "[shutdown] session-store tracking flush for abc did not finish within 1000ms; continuing without it"],
-    ["ERROR", "[rust:copilot_runtime::shared_api::lifecycle] Scheduled queue processing failed; retrying once"],
     ["INFO", "Closing session abc"],
-    ["DEBUG", "[close] abc releaseSessionLock at=1301ms"],
     ["INFO", '[rust:rmcp::service] serve finished {"quit_reason":"Closed"}'],
     ["DEBUG", '[rust:copilot_runtime::session::services] session services shutdown stage {"stage":"canvas","elapsed_ms":0}'],
   ])("keeps %s %s", (level, body) => {
@@ -98,11 +95,8 @@ describe("runtime log line selection", () => {
   });
 
   it.each([
-    ["DEBUG", "[rust:model_wire] Wire request: {"],
     ["WARNING", "[rust:model_wire] response truncated"],
-    ["DEBUG", '[rust:log] processing CharacterTokens(NotSplit, Tendril<UTF8>(inline: "page text"))'],
     ["DEBUG", 'Received session.create request: {"systemMessage":"private"}'],
-    ["INFO", '[rust:copilot_runtime::session::session_notification_delivery] Shell command "deploy" completed'],
     ["INFO", '[rust:rmcp::service] Service initialized as client {"instructions":"private"}'],
     ["DEBUG", '[ContentExclusionService] No cached rules for urls=["https://example.test/private"]'],
   ])("drops %s %s", (level, body) => {

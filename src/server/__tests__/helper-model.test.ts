@@ -9,17 +9,9 @@ describe("selectHelperModel", () => {
   it("picks the cheapest model that can skip reasoning and runs it at none", () => {
     expect(selectHelperModel([
       { id: "cheapest-reasoner", billing: priced(5, 20), supportedReasoningEfforts: ["low", "medium"] },
-      { id: "fast-b", billing: priced(20, 120), supportedReasoningEfforts: ["none", "low"] },
-      { id: "fast-a", billing: priced(10, 50), supportedReasoningEfforts: ["none", "low", "high"] },
-    ] as any)).toEqual({ model: "fast-a", reasoningEffort: "none" });
-  });
-
-  it("gives names no weight", () => {
-    expect(selectHelperModel([
-      { id: "small-mini", billing: priced(75, 450), supportedReasoningEfforts: ["none"] },
-      { id: "tiny-haiku", billing: priced(100, 500) },
-      { id: "plain", billing: priced(10, 50), supportedReasoningEfforts: ["none"] },
-    ] as any)?.model).toBe("plain");
+      { id: "small-mini", billing: priced(20, 120), supportedReasoningEfforts: ["none", "low"] },
+      { id: "plain", billing: priced(10, 50), supportedReasoningEfforts: ["none", "low", "high"] },
+    ] as any)).toEqual({ model: "plain", reasoningEffort: "none" });
   });
 
   it("falls back to the cheapest priced model at its lowest effort when none can skip reasoning", () => {

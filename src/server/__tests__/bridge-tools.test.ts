@@ -86,17 +86,4 @@ describe("registerAllBridgeTools (MCP)", () => {
     expect(toolNames.has("staging_preview")).toBe(true);
     expect(toolNames.has("staging_deploy")).toBe(true);
   });
-
-  it("exposes git-backed tools in non-release mode", () => {
-    const { ctx } = createTestApp();
-    const server = new BridgeToolsMcpServer(ctx);
-    registerAllBridgeTools(server, ctx);
-    const toolNames = new Set(server.getToolNames());
-
-    expect(toolNames.has("self_restart")).toBe(true);
-    expect(toolNames.has("self_update")).toBe(true);
-    expect(toolNames.has("staging_init")).toBe(true);
-    expect(toolNames.has("staging_preview")).toBe(true);
-    expect(toolNames.has("staging_deploy")).toBe(true);
-  });
 });

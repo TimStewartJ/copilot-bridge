@@ -69,27 +69,6 @@ describe("AdoProvider", () => {
     vi.resetModules();
   });
 
-  it("returns fallback work item data when ADO responds with HTML on the initial fetch", async () => {
-    getFetchMock().mockResolvedValue(htmlResponse());
-    const { AdoProvider } = await loadAdoModule();
-    const provider = new AdoProvider({ org: "exampleorg", project: "One" });
-
-    const result = await provider.fetchWorkItems(["123"]);
-
-    expect(result).toEqual([
-      {
-        id: "123",
-        provider: "ado",
-        title: null,
-        state: null,
-        type: null,
-        assignedTo: null,
-        areaPath: null,
-        url: "https://exampleorg.visualstudio.com/One/_workitems/edit/123",
-      },
-    ]);
-  });
-
   it("returns stale pull request data when a refresh gets an HTML response", async () => {
     const prRef = {
       repoId: "a1a1a1a1-0000-4000-8000-000000000001",

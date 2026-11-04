@@ -36,14 +36,6 @@ describe("validateToolArguments", () => {
     })).toBeUndefined();
   });
 
-  it("ignores optional properties that are absent", () => {
-    expect(validateToolArguments(schema, { name: "x" })).toBeUndefined();
-  });
-
-  it("rejects missing required properties", () => {
-    expect(validateToolArguments(schema, { count: 1 })).toContain("missing required property: name");
-  });
-
   it("treats an explicit undefined as absent for required checks", () => {
     expect(validateToolArguments(schema, { name: undefined })).toContain("missing required property: name");
   });

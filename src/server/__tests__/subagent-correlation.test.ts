@@ -197,16 +197,6 @@ describe("SubagentCorrelator sealing", () => {
     expect(correlator.isTrackedAgent(AGENT_INSTANCE)).toBe(false);
   });
 
-  it("maps a distinct agent instance id back to its spawning tool call", () => {
-    const correlator = new SubagentCorrelator();
-    correlator.startSubagent(AGENT_TOOL_CALL, AGENT_INSTANCE, { agentName: "explore" });
-    correlator.recordAgentError(AGENT_INSTANCE, "child request failed");
-
-    expect(correlator.resolve(AGENT_TOOL_CALL).error).toBe("child request failed");
-    expect(correlator.isTrackedAgent(AGENT_INSTANCE)).toBe(true);
-    expect(correlator.isTrackedAgent("never-seen")).toBe(false);
-  });
-
   it("resolves a sub-agent failure into the user-visible outcome", () => {
     const correlator = new SubagentCorrelator();
     correlator.startSubagent(AGENT_TOOL_CALL, AGENT_INSTANCE, { agentDisplayName: "Explore Agent" });
@@ -230,22 +220,12 @@ describe("SubagentCorrelator sealing", () => {
 describe("shared tool visibility", () => {
   // These inputs used to disagree between the server replay fold and the client live fold, so a
   // self-rename rendered live and then vanished on reload.
-  it("hides a self-rename whose target id is padded or blank", () => {
-    expect(isHiddenTool("session_rename", { sessionId: "  abc  " }, "abc")).toBe(true);
-    expect(isHiddenTool("session_rename", { sessionId: "" }, "abc")).toBe(true);
-    expect(isHiddenTool("session_rename", {}, "abc")).toBe(true);
-    expect(isHiddenTool("session_rename", undefined, "abc")).toBe(true);
-  });
 
   it("normalizes the target id the same way the session_rename handler does", () => {
     // The handler runs the id through normalizeSessionTitle, which also strips surrounding
     // quotes and collapses whitespace, so visibility must use the same normalization.
     expect(isHiddenTool("session_rename", { sessionId: "\"abc\"" }, "abc")).toBe(true);
     expect(isHiddenTool("session_rename", { sessionId: "'abc'" }, "abc")).toBe(true);
-  });
-
-  it("keeps a cross-session rename visible", () => {
-    expect(isHiddenTool("session_rename", { sessionId: "other" }, "abc")).toBe(false);
   });
 
   it("always hides bridge control-flow tools", () => {

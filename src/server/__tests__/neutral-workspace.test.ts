@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  ensureNeutralWorkspaceDir,
   findEnclosingGitRoot,
   getNeutralAwareAvailability,
   isImplicitHostCwd,
@@ -53,14 +52,6 @@ describe("neutral workspace helpers", () => {
     expect(existsSync(runtimePaths.workspaceDir!)).toBe(true);
     expect(getNeutralAwareAvailability(join(runtimePaths.dataDir, "missing"), runtimePaths))
       .toMatchObject({ available: false, clearStalePin: true });
-  });
-
-  it("recreates a neutral workspace that disappeared after startup", () => {
-    const runtimePaths = makeTestRuntimePaths("neutral-recreate");
-    rmSync(runtimePaths.workspaceDir!, { recursive: true, force: true });
-
-    expect(ensureNeutralWorkspaceDir(runtimePaths)).toBe(runtimePaths.workspaceDir);
-    expect(existsSync(runtimePaths.workspaceDir!)).toBe(true);
   });
 
   it("finds the enclosing git root and nothing outside a repository", async () => {

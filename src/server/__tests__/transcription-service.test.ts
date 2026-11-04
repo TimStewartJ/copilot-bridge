@@ -139,7 +139,7 @@ describe("transcription service", () => {
   });
 
   it("reports in-flight transcription until it settles, including a failure", async () => {
-    const { engine } = createEngine();
+    const { engine, release } = createEngine();
     let reject!: (error: Error) => void;
     engine.transcribeFile.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
     const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
@@ -148,16 +148,8 @@ describe("transcription service", () => {
     expect(service.getActiveCount?.()).toBe(1);
     reject(new Error("failed"));
     await expect(transcription).rejects.toThrow("failed");
-    expect(service.getActiveCount?.()).toBe(0);
-  });
-
-  it("releases the engine when transcription fails", async () => {
-    const { engine, release } = createEngine();
-    engine.transcribeFile.mockRejectedValueOnce(new Error("Speech engine exited (1)"));
-    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
-
-    await expect(service.transcribe({ filePath: "clip.wav" })).rejects.toThrow("Speech engine exited");
     expect(release).toHaveBeenCalledOnce();
+    expect(service.getActiveCount?.()).toBe(0);
   });
 
   it("does not start the engine when the speech engine is not installed", async () => {

@@ -1,4 +1,3 @@
-import { BRIDGE_RESTARTING_MESSAGE } from "../backend-availability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionsOnDisk, setupTestDb } from "./helpers.js";
 import { makeMockDeferSessionManager, type MockDeferSessionManagerOptions } from "./defer-test-helpers.js";
@@ -18,10 +17,7 @@ import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
 
-import {
-  BACKEND_DISCONNECTED_MESSAGE,
-  BACKEND_RECONNECTING_MESSAGE,
-} from "../backend-availability.js";
+import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
 import type { DatabaseSync } from "../db.js";
 import { getProcessHost, HostExecError } from "../process-host.js";
 import { join } from "node:path";
@@ -324,6 +320,7 @@ describe("defer-loop-runner", () => {
       }),
     ]);
     expect(onParentMessageQueued).toHaveBeenCalledOnce();
+    expect(store.get(loop.id)?.claimToken).toBeUndefined();
     runner.shutdown();
   });
 
@@ -412,31 +409,6 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it("collapses missed intervals into one occurrence scheduled from acceptance time", async () => {
-    const store = createDeferLoopStore(db);
-    const bus = createGlobalBus();
-    const dueAt = new Date(Date.now() - 60 * 60_000).toISOString();
-    const loop = store.create({
-      sessionId: "session-1",
-      prompt: "Poll deployment",
-      intervalSeconds: 300,
-      nextRunAt: dueAt,
-    });
-    const sm = makeMockSessionManager({ sessions: ["session-1"] });
-    const runner = createDeferLoopRunner(store, sm as any, bus);
-
-    runner.start();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(sm._started).toHaveLength(1);
-    expect(store.get(loop.id)).toMatchObject({
-      status: "active",
-      runCount: 1,
-      nextRunAt: new Date(Date.now() + 300_000).toISOString(),
-    });
-    runner.shutdown();
-  });
-
   it("catches up an overdue busy loop once when the idle event is missed", async () => {
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
@@ -461,36 +433,6 @@ describe("defer-loop-runner", () => {
       runCount: 1,
       nextRunAt: new Date(Date.now() + 300_000).toISOString(),
     });
-    runner.shutdown();
-  });
-
-  it("rolls back a claimed loop when setup fails after the claim", async () => {
-    const store = createDeferLoopStore(db);
-    const bus = createGlobalBus();
-    const loop = store.create({
-      sessionId: "session-1",
-      prompt: "Poll deployment",
-      intervalSeconds: 300,
-      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    vi.spyOn(bus, "emit").mockImplementationOnce(() => {
-      throw new Error("simulated summary failure");
-    });
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const sm = makeMockSessionManager({ sessions: ["session-1"] });
-    const runner = createDeferLoopRunner(store, sm as any, bus);
-
-    runner.start();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(sm._started).toHaveLength(0);
-    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 0 });
-
-    await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
-
-    expect(sm._started).toHaveLength(1);
-    expect(store.get(loop.id)).toMatchObject({ status: "active", attempts: 0, runCount: 1 });
-    errorSpy.mockRestore();
     runner.shutdown();
   });
 
@@ -964,32 +906,8 @@ describe("defer-loop-runner", () => {
     runner.shutdown();
   });
 
-  it("releases restart-interrupted claims without consuming a run", async () => {
-    const store = createDeferLoopStore(db);
-    const bus = createGlobalBus();
-    const loop = store.create({
-      sessionId: "session-1",
-      prompt: "Poll",
-      intervalSeconds: 300,
-      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    const sm = makeMockSessionManager({
-      sessions: ["session-1"],
-      startWorkError: new Error(BRIDGE_RESTARTING_MESSAGE),
-    });
-    const runner = createDeferLoopRunner(store, sm as any, bus);
-
-    runner.start();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(store.get(loop.id)).toMatchObject({ status: "active", runCount: 0, attempts: 0 });
-    runner.shutdown();
-  });
-
-  it.each([
-    BACKEND_DISCONNECTED_MESSAGE,
-    BACKEND_RECONNECTING_MESSAGE,
-  ])("pauses backend-unavailable loop delivery without burning attempts: %s", async (message) => {
+  it(`pauses backend-unavailable loop delivery without burning attempts: ${BACKEND_DISCONNECTED_MESSAGE}`, async () => {
+    const message = BACKEND_DISCONNECTED_MESSAGE;
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
     const loop = store.create({

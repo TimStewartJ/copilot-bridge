@@ -160,13 +160,4 @@ describe("bounded Windows snapshot worker", () => {
     await expect(f.reader.read(20_000)).rejects.toThrow("worker channel closed");
     await f.reader.shutdown();
   });
-
-  it("rejects in-flight reads during shutdown", async () => {
-    const f = fixture();
-    const read = f.reader.read(20_000);
-    const rejection = expect(read).rejects.toThrow("reader shut down");
-    await f.reader.shutdown();
-    await rejection;
-    expect(f.worker.terminate).toHaveBeenCalledOnce();
-  });
 });

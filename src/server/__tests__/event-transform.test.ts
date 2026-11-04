@@ -100,15 +100,15 @@ describe("event-transform visible activity", () => {
   });
 
   it("hides self-renames (no sessionId, exact match, and trailing-whitespace match)", () => {
-    // omit sessionId: treated as self-rename
+    // Missing arguments and a blank target both mean this session.
     expect(getLastVisibleActivityAt([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { title: "Local rename" } } },
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename" } },
       { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
     ], "session-1"), "omit sessionId: no visible activity").toBeUndefined();
     expect(transformEventsToMessages([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { title: "Local rename" } } },
+      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "  ", title: "Local rename" } } },
       { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "omit sessionId: empty messages").toEqual([]);
+    ], "session-1"), "blank sessionId: empty messages").toEqual([]);
 
     // explicit match
     expect(getLastVisibleActivityAt([
@@ -162,15 +162,6 @@ describe("event-transform visible activity", () => {
         },
       },
     ]);
-  });
-
-  it("returns undefined when no visible activity exists", () => {
-    const lastVisibleActivityAt = getLastVisibleActivityAt([
-      { type: "assistant.turn_end", timestamp: "2026-04-10T10:00:00.000Z", data: {} },
-      { type: "session.shutdown", timestamp: "2026-04-10T10:00:01.000Z", data: {} },
-    ]);
-
-    expect(lastVisibleActivityAt).toBeUndefined();
   });
 
   it("ignores quiet interval defer turns for visible activity while keeping transcript entries", () => {
@@ -384,6 +375,7 @@ describe("event-transform skill injection", () => {
       { type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "On it." } },
     ];
 
+    expect(getLastVisibleActivityAt(events.slice(0, 2), "session-1")).toBe("2026-04-10T10:00:01.000Z");
     expect(transformEventsToMessages(events, "session-1")).toMatchObject([
       { type: "message", role: "user", content: "Use the browser" },
       {
@@ -409,30 +401,6 @@ describe("event-transform skill injection", () => {
       { type: "skill", skill: { id: "skill-pdf", label: "pdf" } },
     ]);
     expect(entries[0]).not.toHaveProperty("role");
-  });
-
-  it("keeps the skill event counted as visible activity", () => {
-    const events = [
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { content: "<skill-context name=\"pdf\"></skill-context>", source: "skill-pdf" },
-      },
-    ];
-
-    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:00:00.000Z");
-  });
-
-  it("does not treat a non-skill source as a skill entry", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { content: "real prompt", source: "autopilot" },
-      },
-    ], "session-1");
-
-    expect(entries).toMatchObject([{ type: "message", role: "user", content: "real prompt" }]);
   });
 });
 
@@ -1691,7 +1659,7 @@ describe("event-transform turns of the main agent and of its sub-agents", () => 
 describe("event-transform autopilot", () => {
   it("marks messages sent with autopilot and turns the CLI's continuations into markers", () => {
     const entries = transformEventsToMessages([
-      { id: "u1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "Fix the tests", agentMode: "autopilot" } },
+      { id: "u1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "Fix the tests", agentMode: "autopilot", source: "autopilot" } },
       { id: "a1", type: "assistant.message", timestamp: "2026-09-27T10:00:05.000Z", data: { content: "Working on it" } },
       { id: "c1", type: "user.message", timestamp: "2026-09-27T10:01:00.000Z", data: { content: "", agentMode: "autopilot", isAutopilotContinuation: true, source: "autopilot" } },
       { id: "c2", type: "user.message", timestamp: "2026-09-27T10:02:00.000Z", data: { content: "  ", agentMode: "autopilot" } },

@@ -78,6 +78,7 @@ describe("tag-store MCP server references", () => {
     expect(mcpStore.getMcpServer(server.id)).toBeUndefined();
     // Raw junction rows for the deleted server are gone (cascade), not merely hidden by the registry JOIN.
     expect(serverRefCount(server.id)).toBe(0);
+    mcpStore.deleteMcpServer("missing-server");
     // Refs to other servers survive.
     expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([survivor.id]);
     expect(tagRefCount(tag.id)).toBe(1);
@@ -85,19 +86,5 @@ describe("tag-store MCP server references", () => {
     // The other tag loses its only ref.
     expect(tagStore.getTagMcpServers(otherTag.id)).toEqual([]);
     expect(tagRefCount(otherTag.id)).toBe(0);
-  });
-
-  it("preserves tag refs when deleting an unrelated or missing registry server", () => {
-    const tag = tagStore.createTag("Stable");
-    const kept = mcpStore.createMcpServer({ name: "Kept MCP", config: { command: "kept", args: [] } });
-    const unrelated = mcpStore.createMcpServer({ name: "Unrelated MCP", config: { command: "unrelated", args: [] } });
-    tagStore.addTagMcpServerRef(tag.id, kept.id);
-
-    mcpStore.deleteMcpServer(unrelated.id);
-    mcpStore.deleteMcpServer("missing-server");
-
-    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([kept.id]);
-    expect(tagRefCount(tag.id)).toBe(1);
-    expect(serverRefCount(kept.id)).toBe(1);
   });
 });

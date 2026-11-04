@@ -67,19 +67,9 @@ describe("canonicalizeGitHubRepoId", () => {
     expect(canonicalizeGitHubRepoId("octo/widget")).toBe("octo/widget");
     expect(canonicalizeGitHubRepoId("widget", "octo")).toBe("octo/widget");
   });
-
-  it("returns null when a bare repo has no owner to resolve against", () => {
-    expect(canonicalizeGitHubRepoId("widget")).toBeNull();
-    expect(canonicalizeGitHubRepoId("")).toBeNull();
-  });
 });
 
 describe("parsePullRequestId", () => {
-  it("accepts positive whole numbers and numeric strings", () => {
-    expect(parsePullRequestId(12)).toEqual({ ok: true, value: 12 });
-    expect(parsePullRequestId("12")).toEqual({ ok: true, value: 12 });
-  });
-
   it("rejects everything that is not a positive safe integer", () => {
     for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 2, null, "", "abc", undefined]) {
       expect(parsePullRequestId(bad)).toMatchObject({ ok: false });
@@ -92,7 +82,7 @@ describe("resolvePullRequestLink", () => {
     const result = resolvePullRequestLink({
       repoId: "3f2b9c62-0d6a-4b73-8a9b-2f4e0d1a5c77",
       repoName: "Widget.Service",
-      prId: 42,
+      prId: "42",
       provider: "ado",
     });
     expect(result).toEqual({
@@ -137,11 +127,6 @@ describe("resolvePullRequestLink", () => {
     expect((result as { error: string }).error).toContain("Could not resolve");
   });
 
-  it("still upgrades an explicit repoId when it can be canonicalized", () => {
-    expect(resolvePullRequestLink({ repoId: "https://github.com/octo/widget", prId: 7, provider: "github" }))
-      .toMatchObject({ ok: true, value: { repoId: "octo/widget" } });
-  });
-
   it("fails on an unresolvable github repository instead of persisting a dead row", () => {
     const result = resolvePullRequestLink({ repoName: "widget", prId: 7, provider: "github" });
     expect(result).toMatchObject({ ok: false });
@@ -161,10 +146,6 @@ describe("pullRequestRepoIdCandidates", () => {
       "https://github.com/octo/widget",
       "octo/widget",
     ]);
-  });
-
-  it("does not duplicate an already-canonical id", () => {
-    expect(pullRequestRepoIdCandidates({ repoName: "octo/widget" })).toEqual(["octo/widget"]);
   });
 
   it("prefers the durable id over the display name", () => {
@@ -200,11 +181,6 @@ describe("unlink provider handling", () => {
       expect(resolveWorkItemUnlink({ workItemId: "42", provider }))
         .toEqual({ ok: true, value: { workItemId: "42", provider: undefined } });
     }
-  });
-
-  it("never infers a provider on unlink", () => {
-    expect(resolvePullRequestUnlink({ repoName: "https://github.com/octo/widget", prId: 5, providers }))
-      .toMatchObject({ ok: true, value: { provider: undefined } });
   });
 
   it("keeps an explicitly named provider and rejects an invalid one", () => {

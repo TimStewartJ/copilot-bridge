@@ -13,29 +13,6 @@ afterEach(() => {
 });
 
 describe("storage maintenance", () => {
-  it("keeps sweeping on the interval rather than only at startup", async () => {
-    const pruneTelemetrySpans = vi.fn();
-    const pruneLogArtifacts = vi.fn(async () => {});
-    const maintenance = createStorageMaintenance({
-      pruneTelemetrySpans,
-      pruneLogArtifacts,
-      intervalMs: 1000,
-    });
-
-    await maintenance.runOnce();
-    expect(pruneTelemetrySpans).toHaveBeenCalledTimes(1);
-    expect(pruneLogArtifacts).toHaveBeenCalledTimes(1);
-
-    maintenance.start();
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(pruneTelemetrySpans).toHaveBeenCalledTimes(4);
-    expect(pruneLogArtifacts).toHaveBeenCalledTimes(4);
-
-    maintenance.stop();
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(pruneTelemetrySpans).toHaveBeenCalledTimes(4);
-  });
-
   it("unrefs its timer so it cannot hold the process open", () => {
     const unref = vi.fn();
     const fakeTimer = { unref } as unknown as ReturnType<typeof setInterval>;
@@ -71,6 +48,8 @@ describe("storage maintenance", () => {
     expect(pruneTelemetrySpans).toHaveBeenCalledTimes(3);
     expect(pruneLogArtifacts).toHaveBeenCalledTimes(3);
     maintenance.stop();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(pruneTelemetrySpans).toHaveBeenCalledTimes(3);
   });
 
   it("does not stack sweeps when one is still running", async () => {

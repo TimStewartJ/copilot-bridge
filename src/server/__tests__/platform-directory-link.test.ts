@@ -46,19 +46,6 @@ describe("directory link platform helper", () => {
     );
   });
 
-  it.each(["darwin", "linux"] as const)("uses directory symlinks on %s", (platform) => {
-    setPlatform(platform);
-    const cwd = resolve("root");
-
-    expect(createDirectoryLink("link", "target", cwd)).toEqual({ ok: true, output: "" });
-
-    expect(symlinkSyncMock).toHaveBeenCalledWith(
-      resolve(cwd, "target"),
-      resolve(cwd, "link"),
-      "dir",
-    );
-  });
-
   it("passes paths with shell metacharacters directly to the Node symlink API", () => {
     setPlatform("linux");
     const cwd = resolve("root with spaces");

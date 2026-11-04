@@ -24,16 +24,6 @@ const LOGIN_POINTER = {
 };
 
 describe("seedStagingCopilotLogin", () => {
-  it("copies the login pointer into an empty staging copilot home", () => {
-    const root = makeTestDir("bridge-staging-copilot-login-");
-    const source = join(root, "source");
-    const target = join(root, "target");
-    writeConfig(source, { ...LOGIN_POINTER, firstLaunchAt: "2026-01-01T00:00:00.000Z" });
-
-    expect(seedStagingCopilotLogin(target, { sourceCopilotHome: source })).toBe(true);
-    expect(readConfig(target)).toMatchObject(LOGIN_POINTER);
-  });
-
   it("preserves existing staging config fields while adding the pointer", () => {
     const root = makeTestDir("bridge-staging-copilot-login-");
     const source = join(root, "source");

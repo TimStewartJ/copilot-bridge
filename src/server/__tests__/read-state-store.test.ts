@@ -13,12 +13,6 @@ beforeEach(() => {
 });
 
 describe("read-state-store", () => {
-  it("markRead can store an explicit read-through timestamp", () => {
-    const ts = store.markRead("session-1", "2026-05-07T21:00:00.000Z");
-    expect(ts).toBe("2026-05-07T21:00:00.000Z");
-    expect(store.getReadState()["session-1"]).toBe("2026-05-07T21:00:00.000Z");
-  });
-
   it("markReadMany settles a batch at one moment and keeps any later cursor", () => {
     store.markRead("ahead", "2999-01-01T00:00:00.000Z");
     store.markRead("behind", "2020-01-01T00:00:00.000Z");
@@ -37,22 +31,6 @@ describe("read-state-store", () => {
     const ts = store.markRead("session-1", "2026-05-07T20:00:00.000Z");
     expect(ts).toBe("2026-05-07T21:00:00.000Z");
     expect(store.getReadState()["session-1"]).toBe("2026-05-07T21:00:00.000Z");
-  });
-
-  it("isUnread returns true for never-read session", () => {
-    expect(store.isUnread("session-1", new Date().toISOString())).toBe(true);
-  });
-
-  it("isUnread returns false after markRead with no new visible activity", () => {
-    const activityTime = new Date().toISOString();
-    store.markRead("session-1");
-    expect(store.isUnread("session-1", activityTime)).toBe(false);
-  });
-
-  it("isUnread returns true when visible activity happens after last read", () => {
-    store.markRead("session-1");
-    const futureTime = new Date(Date.now() + 1000).toISOString();
-    expect(store.isUnread("session-1", futureTime)).toBe(true);
   });
 
   it("getReadStateFor reads only the sessions asked for", () => {

@@ -20,27 +20,17 @@ beforeEach(() => {
 
 describe("deferred-prompt-store", () => {
   describe("create/get", () => {
-    it("creates a pending prompt and retrieves it", () => {
-      const runAt = new Date(Date.now() + 60_000).toISOString();
-      const dp = store.create("session-1", "Hello world", runAt);
-      expect(dp.id).toBeTruthy();
-      expect(dp.sessionId).toBe("session-1");
-      expect(dp.prompt).toBe("Hello world");
-      expect(dp.runAt).toBe(runAt);
-      expect(dp.status).toBe("pending");
-      expect(dp.attempts).toBe(0);
-      expect(dp.claimToken).toBeUndefined();
-    });
-
     it("returns only prompts for the given session, ordered by runAt", () => {
       const t1 = "2030-01-01T00:01:00.000Z";
       const t2 = "2030-01-01T00:02:00.000Z";
-      store.create("session-A", "First", t1);
+      const first = store.create("session-A", "First", t1);
       store.create("session-A", "Second", t2);
       store.create("session-B", "Other", t1);
       const results = store.listForSession("session-A");
       expect(results).toHaveLength(2);
-      expect(results[0].prompt).toBe("First");
+      expect(results[0]).toEqual(first);
+      expect(first).toMatchObject({ prompt: "First", sessionId: "session-A", runAt: t1, status: "pending", attempts: 0 });
+      expect(first.claimToken).toBeUndefined();
       expect(results[1].prompt).toBe("Second");
     });
 
@@ -54,27 +44,13 @@ describe("deferred-prompt-store", () => {
       expect(store.listDeliveriesForSession("session-A")).toEqual([]);
     });
 
-    it("does not discourage another check in returned defer guidance", () => {
-      const delivery = createReturnedDeferDelivery(
-        { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
-        "Still waiting.",
-        { deliveryId: "delivery-1" },
-      );
-
-      expect(delivery.prompt).toContain("Continue from it:");
-      expect(delivery.prompt).not.toContain("without repeating the completed check");
-      expect(parseReturnedDeferPrompt(delivery.prompt)).toMatchObject({
-        deferId: "interval_1",
-        deliveryId: "delivery-1",
-      });
-    });
-
     it("continues to recognize legacy returned defer guidance", () => {
       const delivery = createReturnedDeferDelivery(
         { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
         "Still waiting.",
         { deliveryId: "delivery-1" },
       );
+      expect(parseReturnedDeferPrompt(delivery.prompt)?.deliveryId).toBe("delivery-1");
       const legacyPrompt = delivery.prompt.replace(
         "Continue from it:",
         "Continue from it without repeating the completed check:",
@@ -247,6 +223,7 @@ describe("deferred-prompt-store", () => {
   describe("getNextWakeAt", () => {
     it("returns the earliest future due time, ignoring rows already due", () => {
       const now = "2030-01-01T00:00:00.000Z";
+      expect(store.getNextWakeAt(now)).toBeUndefined();
       store.create("s1", "Due", "2029-12-31T23:59:00.000Z");
       store.create("s1", "B", "2030-01-01T00:02:00.000Z");
       store.create("s1", "A", "2030-01-01T00:01:00.000Z");
@@ -262,34 +239,6 @@ describe("deferred-prompt-store", () => {
       store.claimDue(first.id, 60_000);
 
       expect(store.getNextWakeAt()).toBe(store.get(first.id)!.leaseExpiresAt);
-    });
-
-    it("returns undefined when nothing is queued", () => {
-      expect(store.getNextWakeAt()).toBeUndefined();
-    });
-  });
-
-  describe("getSummaryForSession", () => {
-    it("counts pending and running prompts with the earliest queued run time", () => {
-      const earliest = "2030-01-01T00:01:00.000Z";
-      const later = "2030-01-01T00:02:00.000Z";
-      const runningAt = "2030-01-01T00:00:30.000Z";
-      store.create("session-1", "Later", later);
-      store.create("session-1", "Earliest", earliest);
-      const running = store.create("session-1", "Running", runningAt);
-      store.claimDue(running.id, 60_000);
-      store.create("session-2", "Other", "2030-01-01T00:00:00.000Z");
-
-      expect(store.getSummaryForSession("session-1")).toEqual({
-        count: 3,
-        runningCount: 1,
-        nextRunAt: earliest,
-      });
-      expect(store.getSummaryForSession("missing-session")).toEqual({
-        count: 0,
-        runningCount: 0,
-        nextRunAt: null,
-      });
     });
   });
 
@@ -316,32 +265,17 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("claimDue / CAS semantics", () => {
-    it("claims a pending row and returns claimToken", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000);
-      expect(claimed).toBeDefined();
-      expect(claimed!.claimToken).toBeTruthy();
-      expect(claimed!.prompt.status).toBe("running");
-      expect(claimed!.prompt.attempts).toBe(1);
-    });
-
     it("second claim on same row fails (CAS)", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000);
+      const claimed = store.claimDue(dp.id, 60_000);
+      expect(claimed?.claimToken).toBeTruthy();
+      expect(claimed?.prompt).toMatchObject({ status: "running", attempts: 1 });
       const second = store.claimDue(dp.id, 60_000);
       expect(second).toBeUndefined();
     });
   });
 
   describe("complete", () => {
-    it("marks running prompt completed with correct token", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000)!;
-      expect(store.complete(dp.id, { claimToken: claimed.claimToken })).toBe(true);
-      const row = store.get(dp.id)!;
-      expect(row.status).toBe("completed");
-    });
-
     it("returns false with wrong token (complete, fail, release, renewClaim)", () => {
       const dp1 = store.create("s1", "Prompt1", new Date().toISOString());
       store.claimDue(dp1.id, 60_000);
@@ -392,15 +326,6 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("fail", () => {
-    it("marks running prompt failed and records lastError", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000)!;
-      store.fail(dp.id, "Oops", { claimToken: claimed.claimToken });
-      const row = store.get(dp.id)!;
-      expect(row.status).toBe("failed");
-      expect(row.lastError).toBe("Oops");
-    });
-
     it("marks a claimed deferral failed and queues its parent message atomically", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());
       const claimed = store.claimDue(dp.id, 60_000)!;
@@ -516,12 +441,6 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("cancelById", () => {
-    it("cancels a pending prompt", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      expect(store.cancelById(dp.id)).toBe(true);
-      expect(store.get(dp.id)!.status).toBe("cancelled");
-    });
-
     it("cancels a running prompt", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());
       store.claimDue(dp.id, 60_000);

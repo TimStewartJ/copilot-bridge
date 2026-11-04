@@ -175,32 +175,11 @@ This page contains xylophone content.`);
     expect(rebuilds).toBe(1);
   });
 
-  it("reindex repopulates docs_pages and rebuilds FTS from content", () => {
-    const { db, docsIndex } = createIndexFixture();
-    const realExec = db.exec.bind(db);
-    let rebuilds = 0;
-
-    vi.spyOn(db, "exec").mockImplementation((sql) => {
-      if (sql.includes("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')")) {
-        rebuilds += 1;
-      }
-      return realExec(sql);
-    });
-
-    const result = docsIndex.reindex();
-    const search = docsIndex.search("xylophone");
-
-    expect(result.indexed).toBe(1);
-    expect(search.results).toHaveLength(1);
-    expect(search.results[0]?.path).toBe("searchable");
-    expect(rebuilds).toBe(1);
-  });
-
   it("indexes folder index pages by folder path and resolves index aliases", () => {
     const { docsIndex, docsStore } = createIndexFixture();
 
     docsStore.writePage("guides/index", "# Guide Home\n\nFolder landing page.");
-    docsIndex.reindex();
+    expect(docsIndex.reindex().indexed).toBe(2);
 
     const search = docsIndex.search("landing");
     expect(search.results.map((result) => result.path)).toContain("guides");

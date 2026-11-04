@@ -85,12 +85,6 @@ function savedHandoff(): unknown {
 }
 
 describe("hibernate handoff across a server restart", () => {
-  it("writes nothing when no hibernation is pending", async () => {
-    expect(await saveHibernateHandoff(dataDir)).toBe(false);
-    expect(existsSync(handoffFile())).toBe(false);
-    expect(await restore()).toEqual({ restored: false, reason: "none" });
-  });
-
   it("re-arms the idle watcher in the next server and hibernates once sessions are idle", async () => {
     vi.useFakeTimers({ toFake: [...TIMERS], now: new Date("2026-06-06T00:00:00.000Z") });
     activeSessions = 1;
@@ -384,5 +378,6 @@ describe("a pending hibernation is kept on disk while the server runs", () => {
     writeHandoff({ version: 1, writtenAt: Date.now(), onIdleGraceMs: GRACE_MS, scheduledAt: null });
     expect(await saveHibernateHandoff(dataDir)).toBe(false);
     expect(existsSync(handoffFile())).toBe(false);
+    expect(await restore()).toEqual({ restored: false, reason: "none" });
   });
 });

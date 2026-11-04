@@ -72,7 +72,8 @@ describe("task continuation evidence", () => {
     const prompt = ctx.deferredPromptStore.create("conversation", "Check", "2026-10-20T22:00:00Z");
     ctx.scheduleStore.createSchedule({ taskId: task.id, name: "Daily", prompt: "Check", type: "cron", cron: "0 9 * * *" });
     expect(read().activity).toMatchObject({ deferredCount: 1, scheduledCount: 1 });
-    ctx.deferredPromptStore.cancelById(prompt.id);
+    expect(ctx.deferredPromptStore.cancelById(prompt.id)).toBe(true);
+    expect(ctx.deferredPromptStore.get(prompt.id)?.status).toBe("cancelled");
     expect(read().activity?.deferredCount).toBe(0);
     const schedule = ctx.scheduleStore.listSchedules(task.id)[0];
     ctx.scheduleStore.updateSchedule(schedule.id, { enabled: false });

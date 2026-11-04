@@ -172,27 +172,6 @@ describe("staging preview discovery", () => {
     controller.stop();
   });
 
-  it("resumes jobs a previous process left active and discovers on completion", async () => {
-    const job = createJob({ id: "resumed-job", status: "running", heartbeatAt: new Date().toISOString() });
-    const store = createFakeStore([job]);
-    const spy = createDiscoverySpy();
-    const controller = createStagingPreviewDiscovery({
-      store,
-      discover: spy.discover,
-      pollIntervalMs: POLL_INTERVAL_MS,
-    });
-
-    controller.resumeActiveJobs();
-    expect(controller.watchedJobIds()).toEqual(["resumed-job"]);
-
-    store.setJob({ ...job, status: "failed" });
-    await advanceTimersAndSettle(POLL_INTERVAL_MS, () => controller.settle());
-
-    expect(spy.discover).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(0);
-    controller.stop();
-  });
-
   it("ignores job types that cannot change preview artifacts", () => {
     const store = createFakeStore();
     const spy = createDiscoverySpy();

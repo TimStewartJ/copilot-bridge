@@ -83,13 +83,9 @@ describe("sweepStaleRestartStateTempFiles", () => {
 });
 
 describe("isRestartPending", () => {
-  it("returns false for a clean data dir (no signals, idle state)", () => {
-    const dataDir = freshDataDir();
-    expect(isRestartPending(dataDir)).toBe(false);
-  });
-
   it("returns true when the queued restart signal file or the in-progress marker is present", () => {
     const dataDir1 = freshDataDir();
+    expect(isRestartPending(dataDir1)).toBe(false);
     writeFileSync(join(dataDir1, "restart.signal"), "{}", "utf8");
     expect(isRestartPending(dataDir1), "signal file").toBe(true);
 

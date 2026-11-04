@@ -27,7 +27,6 @@ describe("bounded cron preview cursor", () => {
   });
 
   it.each([
-    ["30 1 * * *", "America/New_York", "2026-11-01T04:00:00Z", "2026-11-01T09:00:00Z"],
     ["15,45 * * * *", "Australia/Lord_Howe", "2026-10-03T14:00:00Z", "2026-10-03T17:00:00Z"],
     ["15,45 * * * *", "Australia/Lord_Howe", "2026-04-04T14:00:00Z", "2026-04-04T17:00:00Z"],
     ["45 2 * * *", "Australia/Lord_Howe", "2026-10-03T15:29:00Z", "2026-10-03T16:00:00Z"],

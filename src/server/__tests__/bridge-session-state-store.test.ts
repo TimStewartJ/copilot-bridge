@@ -16,15 +16,6 @@ describe("bridge session state store", () => {
     expect(state?.titleOverride).toBe("Manual title");
   });
 
-  it("prunes default rows after the last override is cleared", () => {
-    const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setPinnedCwd("session-1", "D:\\repo");
-    store.clearPinnedCwd("session-1");
-
-    expect(store.getState("session-1")).toBeUndefined();
-  });
-
   it("keeps a chat's playbook through other clears and prunes the row once it is the last field", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
 

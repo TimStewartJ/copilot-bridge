@@ -29,6 +29,7 @@ describe("archiving a task settles its conversations", () => {
     ctx.sessionMetaStore.setArchived("filed", true);
     ctx.readStateStore.markRead("already-read", "2999-01-01T00:00:00.000Z");
 
+    expect(ctx.readStateStore.isUnread("own", BEFORE)).toBe(true);
     const started = Date.now();
     await request(app).patch(`/api/tasks/${closing.id}`).send({ status: "archived" }).expect(200);
 
@@ -40,6 +41,7 @@ describe("archiving a task settles its conversations", () => {
     expect(events.filter((event) => event.type === "readstate:changed")).toHaveLength(1);
     // Something that arrives after the archive is unread again.
     expect(ctx.readStateStore.isUnread("own", new Date(Date.now() + 60_000).toISOString())).toBe(true);
+    expect(ctx.readStateStore.isUnread("own", read.own)).toBe(false);
     expect(ctx.readStateStore.isUnread("own", BEFORE)).toBe(false);
   });
 

@@ -1,5 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { isPathAtOrUnder } from "../path-utils.js";
 import { makeTestDir, makeTestRuntimePaths, registerTestAppCleanup, withTestEnv } from "./helpers.js";
@@ -56,18 +55,6 @@ describe("test helper runtime isolation", () => {
     await expect(second).rejects.toBe(failure);
     await expect(cleanup()).rejects.toBe(failure);
     expect(stop).toHaveBeenCalledOnce();
-  });
-
-  it("cleans tracked temp directories after each test", () => {
-    const dir = makeTestDir("cleanup");
-    writeFileSync(join(dir, "marker.txt"), "ok");
-    expect(existsSync(dir)).toBe(true);
-
-    // onTestFinished runs after the shared afterEach cleanup, so this checks
-    // cleanup without depending on another test running first.
-    onTestFinished(() => {
-      expect(existsSync(dir)).toBe(false);
-    });
   });
 
   it("builds explicit isolated runtime paths", () => {

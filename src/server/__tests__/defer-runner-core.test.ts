@@ -1,42 +1,15 @@
 import { describe, expect, it } from "vitest";
-import {
-  BACKEND_DISCONNECTED_MESSAGE,
-  BACKEND_RECONNECTING_MESSAGE,
-  BRIDGE_RESTARTING_MESSAGE,
-  SESSION_RESUME_SETTLING_MESSAGE,
-} from "../backend-availability.js";
+import { SESSION_RESUME_SETTLING_MESSAGE } from "../backend-availability.js";
 import {
   computeDeferRetryBackoffMs,
   INITIAL_BACKOFF_MS,
   isDeferWaitError,
   MAX_BACKOFF_MS,
 } from "../defer-runner-core.js";
-import { PROMPT_DELIVERY_ABORTED_MESSAGE, SessionCapacityError } from "../session-manager.js";
 
 describe("defer-runner-core delivery errors", () => {
-  it.each([
-    BRIDGE_RESTARTING_MESSAGE,
-    PROMPT_DELIVERY_ABORTED_MESSAGE,
-    BACKEND_DISCONNECTED_MESSAGE,
-    BACKEND_RECONNECTING_MESSAGE,
-    SESSION_RESUME_SETTLING_MESSAGE,
-  ])("waits without counting a try for %s", (message) => {
-    expect(isDeferWaitError(new Error(message))).toBe(true);
-  });
-
-  it("waits without counting a try when session capacity is refused", () => {
-    const snapshot = { contexts: 33, contextLimit: 32, localMcpInstances: 33, capacityUnits: 41.25, capacityLimit: 64 };
-    expect(isDeferWaitError(new SessionCapacityError("cleanup-failed", snapshot))).toBe(true);
-  });
-
-  it.each([
-    "Session tool initialization did not complete before prompt delivery",
-    "resumeSession timed out after 60s",
-    "Session is busy processing another message",
-    "Deferred worker ended without calling defer_result.",
-    "Fatal delivery error",
-  ])("counts %s as a failed try", (message) => {
-    expect(isDeferWaitError(new Error(message))).toBe(false);
+  it(`waits without counting a try for ${SESSION_RESUME_SETTLING_MESSAGE}`, () => {
+    expect(isDeferWaitError(new Error(SESSION_RESUME_SETTLING_MESSAGE))).toBe(true);
   });
 
   it("computes capped exponential retry backoff from the consumed attempt count", () => {

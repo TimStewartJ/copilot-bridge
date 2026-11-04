@@ -12,11 +12,8 @@ afterEach(async () => {
 });
 
 describe("Bridge process host", () => {
-  it("creates processes on the calling thread in test suites, which mock node:child_process there", () => {
-    expect(getProcessHost().mode).toBe("inline");
-  });
-
   it("lets BRIDGE_PROCESS_HOST choose the backend and ignores any other value", async () => {
+    expect(getProcessHost().mode).toBe("inline");
     for (const [configured, expected] of [["worker", "worker"], ["inline", "inline"], ["threads", "inline"]] as const) {
       await resetProcessHostForTests();
       vi.stubEnv("BRIDGE_PROCESS_HOST", configured);

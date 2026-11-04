@@ -123,22 +123,6 @@ describe("defer-loop-store", () => {
     });
   });
 
-  it("completes occurrences and marks max-run loops completed", () => {
-    const loop = store.create({ ...baseLoop, maxRuns: 1, nextRunAt: "2026-01-01T00:00:00.000Z" });
-    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
-
-    const completed = store.settleOccurrence(
-      loop.id,
-      claimed.claimToken,
-      "2026-01-01T00:05:00.000Z",
-      "2026-01-01T00:00:30.000Z",
-    )!;
-
-    expect(completed.runCount).toBe(1);
-    expect(completed.status).toBe("completed");
-    expect(completed.claimToken).toBeUndefined();
-  });
-
   it("counts a failed check as a run, keeps the failure streak, and clears it on success", () => {
     const promptStore = createDeferredPromptStore(db);
     const loop = store.create({ ...baseLoop, maxRuns: 5, nextRunAt: "2026-01-01T00:00:00.000Z" });

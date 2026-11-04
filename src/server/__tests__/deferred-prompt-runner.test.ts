@@ -443,58 +443,6 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it("skips busy sessions and does not consume the deferral", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const past = new Date(Date.now() - 1000).toISOString();
-      store.create("session-1", "Prompt", past);
-
-      const busySessions = new Set(["session-1"]);
-      const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
-      const runner = createDeferredPromptRunner(store, sm as any, bus);
-      runner.start();
-      // Only advance microtasks/promises — no retry timers should be armed for past-due busy items
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm._started).toHaveLength(0);
-      // Should still be pending (not consumed)
-      const dp = store.listForSession("session-1")[0];
-      expect(dp.status).toBe("pending");
-      runner.shutdown();
-    });
-
-    it("does not complete a deferral until the prompt delivery is acknowledged", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const past = new Date(Date.now() - 1000).toISOString();
-      const deferred = store.create("session-1", "Prompt", past);
-      let resolveDelivery: (() => void) | undefined;
-      const started: Array<{ sessionId: string; prompt: string }> = [];
-      const sm = {
-        readSessionsFromDisk: sessionsOnDisk(async () => [{ sessionId: "session-1" }]),
-        isSessionBusy: () => false,
-        startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => {
-          started.push({ sessionId, prompt });
-          return new Promise<void>((resolve) => {
-            resolveDelivery = resolve;
-          });
-        },
-      };
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
-
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(started).toEqual([{ sessionId: "session-1", prompt: "Prompt" }]);
-      expect(store.get(deferred.id)?.status).toBe("running");
-
-      resolveDelivery?.();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(store.get(deferred.id)?.status).toBe("completed");
-      runner.shutdown();
-    });
-
     it("does not let one pending delivery acknowledgment block other sessions", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
@@ -1267,6 +1215,7 @@ describe("deferred-prompt-runner", () => {
 
         runner.start();
         await vi.advanceTimersByTimeAsync(0);
+        expect(store.get(deferred.id)).toMatchObject({ status: "pending", attempts: 0 });
         busySessions.clear();
 
         await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS - 1);

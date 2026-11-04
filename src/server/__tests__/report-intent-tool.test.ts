@@ -61,26 +61,13 @@ describe("registerReportIntentTool (MCP)", () => {
     const globalEvents: unknown[] = [];
     ctx.globalBus.subscribe((e) => globalEvents.push(e));
 
-    await getTool(ctx).handler({ intent: "Exploring codebase" }, makeHandlerExtra("session-a"));
+    await getTool(ctx).handler({ intent: "  Exploring codebase  " }, makeHandlerExtra("session-a"));
 
     expect(busA.getSnapshot().intentText).toBe("Exploring codebase");
     expect(busB.getSnapshot().intentText).toBeFalsy();
     expect(globalEvents.filter((event: any) => event.type === "session:intent")).toEqual([
       { type: "session:intent", sessionId: "session-a", intent: "Exploring codebase" },
     ]);
-  });
-
-  it("keeps concurrent sessions isolated from each other", async () => {
-    const ctx = createAppWithActiveSessions(["session-a", "session-b"]);
-    const busA = ctx.eventBusRegistry.getOrCreateBus("session-a");
-    const busB = ctx.eventBusRegistry.getOrCreateBus("session-b");
-    const tool = getTool(ctx);
-
-    await tool.handler({ intent: "Running checks" }, makeHandlerExtra("session-a"));
-    await tool.handler({ intent: "Reading docs" }, makeHandlerExtra("session-b"));
-
-    expect(busA.getSnapshot().intentText).toBe("Running checks");
-    expect(busB.getSnapshot().intentText).toBe("Reading docs");
   });
 
   it("fails when the invocation carries no session id", async () => {
@@ -98,14 +85,5 @@ describe("registerReportIntentTool (MCP)", () => {
     const result = await getTool(ctx).handler({ intent: "Running checks" }, makeHandlerExtra("session-z"));
     expect(result).toMatchObject({ content: [{ type: "text", text: "Intent logged" }] });
     expect(result.isError).toBeFalsy();
-  });
-
-  it("trims whitespace from intent before emitting", async () => {
-    const ctx = createAppWithActiveSessions(["session-c"]);
-    const bus = ctx.eventBusRegistry.getOrCreateBus("session-c");
-
-    await getTool(ctx).handler({ intent: "  writing tests  " }, makeHandlerExtra("session-c"));
-
-    expect(bus.getSnapshot().intentText).toBe("writing tests");
   });
 });

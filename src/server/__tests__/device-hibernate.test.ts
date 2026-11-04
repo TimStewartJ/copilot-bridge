@@ -37,11 +37,8 @@ afterEach(() => {
 });
 
 describe("device-hibernate scheduler", () => {
-  it("reports no pending hibernation initially", () => {
-    expect(getHibernateStatus()).toEqual({ pending: false, scheduledAt: null, delayMs: null });
-  });
-
   it("schedules, exposes status, and fires after the delay", async () => {
+    expect(getHibernateStatus()).toEqual({ pending: false, scheduledAt: null, delayMs: null });
     const status = scheduleHibernate(command, 60_000);
     expect(status).toEqual({ pending: true, scheduledAt: Date.now() + 60_000, delayMs: 60_000 });
     expect(getHibernateStatus().pending).toBe(true);
@@ -112,19 +109,12 @@ describe("device-hibernate idle watcher", () => {
     });
   }
 
-  it("reports a disarmed watcher initially", () => {
-    expect(getHibernateOnIdleStatus()).toEqual({
-      armed: false,
-      armedAt: null,
-      graceMs: null,
-      activeSessions: 0,
-      idleSince: null,
-      hibernateAt: null,
-      blockedReason: null,
-    });
-  });
-
   it("waits for the idle grace window before hibernating", async () => {
+    const initial = getHibernateOnIdleStatus();
+    expect(initial).toEqual({
+      armed: false, armedAt: null, graceMs: null, activeSessions: 0,
+      idleSince: null, hibernateAt: null, blockedReason: null,
+    });
     const status = arm(() => 0);
     expect(status).toEqual({
       armed: true,
@@ -145,7 +135,7 @@ describe("device-hibernate idle watcher", () => {
     expect(requestDeviceHibernateMock).toHaveBeenCalledOnce();
     expect(requestDeviceHibernateMock).toHaveBeenCalledWith(command);
     // The watcher disarms itself so waking the device does not hibernate again.
-    expect(getHibernateOnIdleStatus().armed).toBe(false);
+    expect(getHibernateOnIdleStatus()).toEqual(initial);
   });
 
   it("restarts the idle window when a session becomes active", async () => {
@@ -283,10 +273,6 @@ describe("device-hibernate idle watcher", () => {
 });
 
 describe("device-hibernate handoff", () => {
-  it("reports nothing to hand off while nothing is pending", () => {
-    expect(handOffHibernateIntent()).toBeNull();
-  });
-
   it("returns what is pending and a later arm or schedule is live again", async () => {
     const { scheduledAt } = scheduleHibernate(command, 30_000);
     armHibernateOnIdle({ command, graceMs: 60_000, getActiveSessionCount: () => 0 });

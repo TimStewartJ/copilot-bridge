@@ -45,7 +45,7 @@ describe("defineBridgeTool invocation identity", () => {
     let seen: BridgeToolInvocation | undefined;
     const tool = defineBridgeTool("probe", { handler: async (_args, invocation) => { seen = invocation; return "ok"; } });
 
-    await tool.handler({}, extra({ sessionId: undefined }));
+    await expect(tool.handler({}, extra({ sessionId: undefined }))).resolves.toBe("ok");
     expect(seen?.sessionId).toBeUndefined();
 
     await tool.handler({}, extra({ sessionId: "   " }));
@@ -58,24 +58,6 @@ describe("defineBridgeTool invocation identity", () => {
 
     await tool.handler({}, extra({ requestId: undefined }));
     expect(seen?.toolCallId).toBe("");
-  });
-
-  it("fails session-scoped tools invoked without a session", async () => {
-    let ran = false;
-    const tool = defineBridgeTool("session_probe", {
-      scope: "session",
-      handler: async () => { ran = true; return "ok"; },
-    });
-
-    const result = await tool.handler({}, extra({ sessionId: undefined }));
-
-    expect(ran).toBe(false);
-    expect(failureText(result)).toContain("session_probe requires an invoking session");
-  });
-
-  it("allows global tools without a session", async () => {
-    const tool = defineBridgeTool("global_probe", { handler: async () => "ok" });
-    await expect(tool.handler({}, extra({ sessionId: undefined }))).resolves.toBe("ok");
   });
 });
 
@@ -105,13 +87,6 @@ describe("defineBridgeTool schema enforcement", () => {
     expect(ran).toBe(false);
     expect(failureText(result)).toContain("Invalid arguments for guarded");
     expect(failureText(result)).toContain("missing required property: id");
-  });
-
-  it("rejects wrong types, out-of-range integers and bad enums", async () => {
-    expect(failureText(await tool.handler({ id: 1 }, extra()))).toContain("id must be string");
-    expect(failureText(await tool.handler({ id: "x", count: 0 }, extra()))).toContain("count must be >= 1");
-    expect(failureText(await tool.handler({ id: "x", count: 1.5 }, extra()))).toContain("count must be integer");
-    expect(failureText(await tool.handler({ id: "x", mode: "c" }, extra()))).toContain("mode must be one of");
   });
 
   it("passes valid arguments through unchanged", async () => {

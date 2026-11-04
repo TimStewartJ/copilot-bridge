@@ -21,19 +21,6 @@ afterEach(() => {
 });
 
 describe("loadBridgeEnv", () => {
-  it("loads values from an explicit .env path", () => {
-    const dir = mkdtempSync(join(tmpdir(), "bridge-env-"));
-    try {
-      const envPath = join(dir, ".env");
-      writeFileSync(envPath, "BRIDGE_TEST_ENV_ONLY=loaded-from-file\n");
-
-      expect(loadBridgeEnv(envPath)).toEqual(["BRIDGE_TEST_ENV_ONLY"]);
-      expect(process.env.BRIDGE_TEST_ENV_ONLY).toBe("loaded-from-file");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it("keeps existing environment variables over file values", () => {
     const dir = mkdtempSync(join(tmpdir(), "bridge-env-"));
     try {
@@ -65,6 +52,7 @@ describe("loadBridgeEnv", () => {
 
       const launcherEnv1: NodeJS.ProcessEnv = {};
       const managedKeys1 = loadBridgeEnv(envPath1, launcherEnv1);
+      expect(managedKeys1).toEqual(["BRIDGE_TEST_ENV_REFRESH"]);
       expect(launcherEnv1.BRIDGE_TEST_ENV_REFRESH).toBe("from-file-one");
 
       writeFileSync(envPath1, "BRIDGE_TEST_ENV_REFRESH=from-file-two\n");

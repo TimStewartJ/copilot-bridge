@@ -232,6 +232,8 @@ describe("readCopilotUsageSummary", () => {
         cacheWriteTokens: 2,
         reasoningTokens: 1,
         totalTokens: 32,
+        meteredAiCredits: 0,
+        meteredTokens: 0,
       },
       coverage: {
         sessionsSeen: 2,
@@ -642,18 +644,6 @@ describe("readCopilotUsageSummary", () => {
 
     expect(summary.totals.meteredAiCredits).toBe(0);
     expect(summary.totals.meteredTokens).toBe(110);
-  });
-
-  it("reports zero metered credits for sessions logged before the field existed", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
-      shutdownEvent("2026-01-05T10:00:00.000Z", { "gpt-5.5": { usage: { inputTokens: 100, outputTokens: 10 } } }),
-    ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals.meteredAiCredits).toBe(0);
-    expect(summary.totals.meteredTokens).toBe(0);
   });
 
   it("uses SDK long-context pricing when Bridge recorded a long context tier", async () => {

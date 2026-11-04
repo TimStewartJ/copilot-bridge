@@ -60,8 +60,12 @@ describe("event-transform: visual entries", () => {
     expect(visualEntries).toHaveLength(1);
 
     const v = visualEntries[0];
+    const tool = entries.find((entry) => entry.type === "tool");
+    expect(tool?.toolCall).toMatchObject({ name: "publish_visual", success: true });
+    expect(entries.indexOf(v)).toBeGreaterThan(entries.indexOf(tool!));
     expect(v.visual?.artifactId).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(v.visual?.kind).toBe("image");
+    expect(v.visual?.source).toBeUndefined();
     expect(v.visual?.title).toBe("My Chart");
     expect(v.visual?.mimeType).toBe("image/png");
     expect(v.visual?.url).toMatch(/\/visuals\//);
@@ -89,16 +93,6 @@ describe("event-transform: visual entries", () => {
       SESSION_ID,
     );
     expect(entriesWrapped.filter((e) => e.type === "visual")[0].visual?.artifactId, "content-wrapped form").toBe("550e8400-e29b-41d4-a716-446655440000");
-  });
-
-  it("emits the publish_visual tool entry before its visual entry", () => {
-    const entries = transformEventsToMessages(makePublishVisualEvents(), SESSION_ID);
-
-    const toolEntries = entries.filter((e) => e.type === "tool");
-    expect(toolEntries).toHaveLength(1);
-    expect(toolEntries[0].toolCall?.name).toBe("publish_visual");
-    expect(toolEntries[0].toolCall?.success).toBe(true);
-    expect(entries.findIndex((e) => e.type === "visual")).toBeGreaterThan(entries.indexOf(toolEntries[0]));
   });
 
   it("does not emit a visual entry when publish_visual fails", () => {
@@ -315,40 +309,6 @@ describe("event-transform: mermaid visual entries", () => {
     expect(hv.visual?.kind, "html kind").toBe("html");
     expect(hv.visual?.mimeType, "html mimeType").toBe("text/html");
     expect(hv.visual?.source, "html no source").toBeUndefined();
-  });
-
-  it("does not include source field for image entries", () => {
-    const events = [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tc-img", toolName: "publish_visual", arguments: {} },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: {
-          toolCallId: "tc-img",
-          success: true,
-          result: {
-            __kind: "visual.published",
-            artifactId: "880e8400-e29b-41d4-a716-446655440000",
-            kind: "image",
-            title: "Photo",
-            displayName: "photo.png",
-            mimeType: "image/png",
-            size: 512,
-            url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/880e8400-e29b-41d4-a716-446655440000",
-            downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/880e8400-e29b-41d4-a716-446655440000/download",
-          },
-        },
-      },
-    ];
-    const entries = transformEventsToMessages(events, SESSION_ID);
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
-    expect(visualEntries[0].visual?.kind).toBe("image");
-    expect(visualEntries[0].visual?.source).toBeUndefined();
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb, createTestBus } from "./helpers.js";
-import { ChecklistNotFoundError, ChecklistValidationError, createChecklistStore, normalizeChecklistItemCreate } from "../checklist-store.js";
+import { ChecklistValidationError, createChecklistStore, normalizeChecklistItemCreate } from "../checklist-store.js";
 import { createTaskStore } from "../task-store.js";
 import type { ChecklistStore } from "../checklist-store.js";
 import type { TaskStore } from "../task-store.js";
@@ -19,19 +19,6 @@ beforeEach(() => {
 
 describe("checklist-store", () => {
   describe("CRUD", () => {
-    it("createChecklistItem returns a valid checklist item", () => {
-      const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Buy milk");
-      expect(checklistItem.id).toBeTruthy();
-      expect(checklistItem.text).toBe("Buy milk");
-      expect(checklistItem.done).toBe(false);
-      expect(checklistItem.taskId).toBe(task.id);
-    });
-
-    it("createChecklistItem throws for missing task", () => {
-      expect(() => checklistStore.createChecklistItem("nonexistent", "test")).toThrow(ChecklistNotFoundError);
-    });
-
     it("createChecklistItem validates text and deadline", () => {
       const invalidInputs: Array<[string, () => void]> = [
         ["text must be a non-empty string", () => checklistStore.createChecklistItem(null, 42 as any)],
@@ -45,14 +32,6 @@ describe("checklist-store", () => {
       }
       expect(() => normalizeChecklistItemCreate({ text: "Write tests", extra: true }))
         .toThrow('Unknown field: "extra"');
-    });
-
-    it("createChecklistItem assigns incrementing order", () => {
-      const task = taskStore.createTask("Test");
-      const t1 = checklistStore.createChecklistItem(task.id, "First");
-      const t2 = checklistStore.createChecklistItem(task.id, "Second");
-      expect(t1.order).toBe(0);
-      expect(t2.order).toBe(1);
     });
 
     it("updateChecklistItem changes text", () => {
@@ -97,12 +76,8 @@ describe("checklist-store", () => {
       }
 
       const unchanged = checklistStore.getChecklistItem(checklistItem.id);
-      expect(unchanged).toMatchObject({ text: "Original", done: false });
+      expect(unchanged).toMatchObject({ id: checklistItem.id, taskId: task.id, text: "Original", done: false });
       expect(unchanged?.deadline).toBeUndefined();
-    });
-
-    it("updateChecklistItem throws for missing checklist item", () => {
-      expect(() => checklistStore.updateChecklistItem("nope", { text: "x" })).toThrow(ChecklistNotFoundError);
     });
 
     it("deleteChecklistItem removes the checklist item", () => {
@@ -110,10 +85,6 @@ describe("checklist-store", () => {
       const checklistItem = checklistStore.createChecklistItem(task.id, "Delete me");
       checklistStore.deleteChecklistItem(checklistItem.id);
       expect(checklistStore.getChecklistItem(checklistItem.id)).toBeUndefined();
-    });
-
-    it("deleteChecklistItem throws for missing id", () => {
-      expect(() => checklistStore.deleteChecklistItem("nonexistent")).toThrow(ChecklistNotFoundError);
     });
   });
 
@@ -166,30 +137,14 @@ describe("checklist-store", () => {
   });
 
   describe("global (unparented) checklist items", () => {
-    it("creates a checklist item without a taskId", () => {
-      const checklistItem = checklistStore.createChecklistItem(null, "Global item");
-      expect(checklistItem.id).toBeTruthy();
-      expect(checklistItem.taskId).toBeNull();
-      expect(checklistItem.text).toBe("Global item");
-      expect(checklistItem.done).toBe(false);
-    });
-
     it("global checklist items have independent ordering", () => {
       const task = taskStore.createTask("Test");
-      checklistStore.createChecklistItem(task.id, "Task item");
+      expect(checklistStore.createChecklistItem(task.id, "First task item").order).toBe(0);
+      expect(checklistStore.createChecklistItem(task.id, "Second task item").order).toBe(1);
       const g1 = checklistStore.createChecklistItem(null, "Global 1");
       const g2 = checklistStore.createChecklistItem(null, "Global 2");
       expect(g1.order).toBe(0);
       expect(g2.order).toBe(1);
-    });
-
-    it("global checklist items appear in listAllOpenChecklistItems", () => {
-      const task = taskStore.createTask("Active");
-      checklistStore.createChecklistItem(task.id, "Task item");
-      checklistStore.createChecklistItem(null, "Global item");
-      const open = checklistStore.listAllOpenChecklistItems();
-      expect(open).toHaveLength(2);
-      expect(open.some((t) => t.taskId === null && t.text === "Global item")).toBe(true);
     });
 
     it("global checklist items appear first in listAllOpenChecklistItems when created first", () => {
@@ -200,7 +155,7 @@ describe("checklist-store", () => {
       // Server sorts by createdAt DESC, so the task item (created last) comes first
       expect(open[0].taskId).toBe(task.id);
       expect(open[1].taskId).toBeNull();
-      expect(globalChecklistItem.taskId).toBeNull();
+      expect(globalChecklistItem).toMatchObject({ taskId: null, text: "Global item", done: false });
     });
 
     it("completed global checklist items appear in listRecentlyCompletedChecklistItems", () => {

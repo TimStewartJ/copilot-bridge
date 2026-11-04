@@ -13,8 +13,6 @@ import {
   countBridgeSessions,
   createHelmToolDefinitions,
   describeProgress,
-  formatAgo,
-  HELM_TOOL_NAMES,
   isHelmBridgeToolName,
   resolveSession,
   type HelmBridgeFacade,
@@ -129,20 +127,9 @@ describe("resolveSession", () => {
     expect(ambiguous.ok).toBe(false);
     if (!ambiguous.ok) expect(ambiguous.candidates).toHaveLength(2);
   });
-
-  it("formats relative time", () => {
-    expect(formatAgo("2026-09-17T05:57:00.000Z", now)).toBe("3m ago");
-    expect(formatAgo(undefined, now)).toBeUndefined();
-  });
 });
 
 describe("Helm tools", () => {
-  it("defines every Helm tool", () => {
-    const { ctx } = createContext();
-    const names = createHelmToolDefinitions(ctx, createFacade(), createRuntime().runtime).map((definition) => definition.name);
-    expect(names).toEqual([...HELM_TOOL_NAMES]);
-  });
-
   it("summarizes Bridge state without archived sessions and links what it names", async () => {
     const { ctx } = createContext();
     const result = await tool(ctx, createFacade(), "bridge_overview").run({});

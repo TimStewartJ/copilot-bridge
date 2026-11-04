@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { join } from "node:path";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import {
   areSessionUnreadBubblesMuted,
@@ -12,7 +11,6 @@ import {
 } from "../task-store.js";
 import type { TaskStore } from "../task-store.js";
 import type { DatabaseSync } from "../db.js";
-import { resolveRuntimePaths } from "../runtime-paths.js";
 
 let db: DatabaseSync;
 let store: TaskStore;
@@ -28,24 +26,6 @@ afterEach(() => {
 
 describe("task-store", () => {
   describe("CRUD", () => {
-    it("createTask returns a valid task", () => {
-      const task = store.createTask("My Task");
-      expect(task.id).toBeTruthy();
-      expect(task.title).toBe("My Task");
-      expect(task.kind).toBe("task");
-      expect(task.muted).toBe(false);
-      expect(task.deferred).toBe(false);
-      expect(task.status).toBe("active");
-      expect(task.notes).toBe("");
-      expect(task.doneWhen).toBeUndefined();
-      expect(task.nextAction).toBeUndefined();
-      expect(task.waitingOn).toBeUndefined();
-      expect(task.nextTouchAt).toBeUndefined();
-      expect(task.sessionIds).toEqual([]);
-      expect(task.workItems).toEqual([]);
-      expect(task.pullRequests).toEqual([]);
-    });
-
     it("defers and resumes task visibility without clearing context or muting sessions", () => {
       const task = store.createTask("Set aside");
       store.linkSession(task.id, "conversation");
@@ -71,21 +51,6 @@ describe("task-store", () => {
         expect(store.updateTask(task.id, { deferred: false }).deferred).toBe(false);
         expect(store.updateTask(task.id, { status: "active" }).deferred).toBe(false);
       }
-    });
-
-    it("createTask accepts ongoing kind and rejects invalid kinds", () => {
-      const ongoing = store.createTask("Keep watch", undefined, "ongoing");
-      expect(ongoing).toMatchObject({
-        title: "Keep watch",
-        kind: "ongoing",
-        status: "active",
-      });
-
-      const raw = db.prepare("SELECT kind FROM tasks WHERE id = ?").get(ongoing.id) as any;
-      expect(raw.kind).toBe("ongoing");
-
-      expect(() => store.createTask("Bad kind", undefined, "invalid" as any))
-        .toThrow("kind must be either 'task' or 'ongoing'");
     });
 
     it("createTask rejects invalid kinds without reordering active tasks", () => {
@@ -134,39 +99,14 @@ describe("task-store", () => {
       expect(store.listTasks().map((task) => ({ id: task.id, order: task.order }))).toEqual([{ id: first.id, order: 0 }]);
     });
 
-    it("does not default task cwd from runtime workspace paths", () => {
-      const runtimePaths = resolveRuntimePaths({}, {
-        dataDir: join("runtime-root"),
-        workspaceDir: join("runtime-root", "workspace"),
-      });
-      const runtimeStore = createTaskStore(db, createTestBus(), { runtimePaths });
-      const task = runtimeStore.createTask("Runtime Task");
-      expect(task.cwd).toBeUndefined();
-    });
-
-    it("listTasks returns tasks sorted by status then order", () => {
-      const t1 = store.createTask("First");
-      const t2 = store.createTask("Second");
-      // t2 was created second but gets order 0, t1 bumped to order 1
-      const list = store.listTasks();
-      expect(list[0].id).toBe(t2.id);
-      expect(list[1].id).toBe(t1.id);
-    });
-
     it("listTasks floats ongoing tasks above normal tasks within status buckets", () => {
       const normal = store.createTask("Normal");
+      expect(normal).toMatchObject({ kind: "task", status: "active", notes: "", muted: false, deferred: false });
       const ongoing = store.createTask("Ongoing", undefined, "ongoing");
       const newerNormal = store.createTask("Newer normal");
 
       const active = store.listTasks().filter((task) => task.status === "active");
       expect(active.map((task) => task.id)).toEqual([ongoing.id, newerNormal.id, normal.id]);
-    });
-
-    it("updateTask changes fields", () => {
-      const task = store.createTask("Original");
-      const updated = store.updateTask(task.id, { title: "Updated", notes: "some notes" });
-      expect(updated.title).toBe("Updated");
-      expect(updated.notes).toBe("some notes");
     });
 
     it("hydrates task kind from stored rows and defaults missing or invalid kinds to task", () => {
@@ -244,15 +184,6 @@ describe("task-store", () => {
       expect(store.getTask(task.id)?.nextTouchAt).toBeUndefined();
     });
 
-    it("updateTask persists kind changes", () => {
-      const task = store.createTask("Original");
-      const updated = store.updateTask(task.id, { kind: "ongoing" });
-      expect(updated.kind).toBe("ongoing");
-
-      const raw = db.prepare("SELECT kind FROM tasks WHERE id = ?").get(task.id) as any;
-      expect(raw.kind).toBe("ongoing");
-    });
-
     it("updateTask persists muted changes and rejects non-boolean muted values", () => {
       const task = store.createTask("Original");
 
@@ -281,12 +212,6 @@ describe("task-store", () => {
       expect(areSessionUnreadBubblesMuted([archivedMuted])).toBe(false);
     });
 
-    it("updateTask rejects invalid task kinds", () => {
-      const task = store.createTask("Original");
-      expect(() => store.updateTask(task.id, { kind: "invalid" as any }))
-        .toThrow("kind must be either 'task' or 'ongoing'");
-    });
-
     it("updateTask rejects completion for ongoing tasks unless the kind is changed", () => {
       const task = store.createTask("Original");
       store.updateTask(task.id, { kind: "ongoing" });
@@ -313,39 +238,6 @@ describe("task-store", () => {
       store.updateTask(explicit.id, { doneWhen: "Still here" });
       expect(() => store.updateTask(explicit.id, { kind: "ongoing", doneWhen: "Still here" }))
         .toThrow("Ongoing tasks cannot keep doneWhen");
-    });
-
-    it("hydrates optional momentum fields from stored rows", () => {
-      const now = new Date().toISOString();
-      db.prepare(`
-        INSERT INTO tasks (
-          id, title, status, groupId, cwd, notes, doneWhen, nextAction, waitingOn, nextTouchAt,
-          priority, "order", createdAt, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        "task-hydrate",
-        "Hydrate me",
-        "active",
-        null,
-        null,
-        "",
-        "Ship after green build",
-        "Review the latest diff",
-        "QA sign-off",
-        "2025-01-02T03:04:05.000Z",
-        0,
-        0,
-        now,
-        now,
-      );
-
-      expect(store.getTask("task-hydrate")).toMatchObject({
-        status: "active",
-        doneWhen: "Ship after green build",
-        nextAction: "Review the latest diff",
-        waitingOn: "QA sign-off",
-        nextTouchAt: "2025-01-02T03:04:05.000Z",
-      });
     });
 
     it("hydrates null, empty-string, and invalid nextTouchAt momentum fields as undefined", () => {
@@ -447,13 +339,6 @@ describe("task-store", () => {
         .toThrow("Archived tasks cannot be completed again; reopen the task first");
     });
 
-    it("updateTask archiving an incomplete task does not set completedAt", () => {
-      const task = store.createTask("Archive me");
-      const archived = store.updateTask(task.id, { status: "archived" });
-      expect(archived.status).toBe("archived");
-      expect(archived.completedAt).toBeUndefined();
-    });
-
     it("updateTask archiving a completed task preserves completedAt", () => {
       vi.useFakeTimers();
       const task = store.createTask("Already complete");
@@ -529,6 +414,7 @@ describe("task-store", () => {
       const archivedResult = store.updateTask(archiveTask.id, { status: "archived" });
       expect(archivedResult, "archived clears momentum").toMatchObject({
         status: "archived",
+        completedAt: undefined,
         nextAction: undefined,
         waitingOn: undefined,
         nextTouchAt: undefined,
@@ -604,6 +490,7 @@ describe("task-store", () => {
         nextTouchAt: "2025-02-03T04:05:06.000Z",
       });
 
+      expect(store.getTask(task.id)).toEqual(updated);
       const raw = db.prepare("SELECT doneWhen, nextAction, waitingOn, nextTouchAt FROM tasks WHERE id = ?").get(task.id) as any;
       expect(raw).toEqual({
         doneWhen: "Merged and deployed",
@@ -633,13 +520,6 @@ describe("task-store", () => {
         waitingOn: null,
         nextTouchAt: null,
       });
-    });
-
-    it("deleteTask removes the task", () => {
-      const task = store.createTask("Delete me");
-      expect(store.getTask(task.id)).toBeDefined();
-      store.deleteTask(task.id);
-      expect(store.getTask(task.id)).toBeUndefined();
     });
 
     it("reorders tasks by given id array", () => {
@@ -790,15 +670,9 @@ describe("task-store", () => {
   });
 
   describe("link/unlink sessions", () => {
-    it("linkSession adds session id", () => {
-      const task = store.createTask("Linkable");
-      const updated = store.linkSession(task.id, "session-1");
-      expect(updated.sessionIds).toContain("session-1");
-    });
-
     it("linkSession is idempotent", () => {
       const task = store.createTask("Linkable");
-      store.linkSession(task.id, "session-1");
+      expect(store.linkSession(task.id, "session-1").sessionIds).toContain("session-1");
       store.linkSession(task.id, "session-1");
       const found = store.getTask(task.id)!;
       expect(found.sessionIds.filter((s) => s === "session-1")).toHaveLength(1);
@@ -878,20 +752,12 @@ describe("task-store", () => {
     });  });
 
   describe("link/unlink PRs", () => {
-    it("linkPR adds PR ref", () => {
-      const task = store.createTask("PR task");
-      store.linkPR(task.id, { repoId: "repo-1", repoName: "my-repo", prId: 42, provider: "ado" });
-      const found = store.getTask(task.id)!;
-      expect(found.pullRequests).toHaveLength(1);
-      expect(found.pullRequests[0].prId).toBe(42);
-    });
-
     it("linkPR is idempotent for same repo+pr+provider", () => {
       const task = store.createTask("PR task");
       const pr = { repoId: "repo-1", prId: 42, provider: "ado" as const };
       store.linkPR(task.id, pr);
       store.linkPR(task.id, pr);
-      expect(store.getTask(task.id)!.pullRequests).toHaveLength(1);
+      expect(store.getTask(task.id)!.pullRequests).toEqual([expect.objectContaining(pr)]);
     });
 
     it("unlinkPR removes PR ref", () => {

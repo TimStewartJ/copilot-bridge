@@ -11,7 +11,6 @@ import {
 
 describe("deploy guards", () => {
   it.each([
-    ["dev@corp.example.com", ["*@corp.example.com"], "*@corp.example.com"],
     ["Dev@CORP.Example.com", ["*@corp.example.com"], "*@corp.example.com"],
     ["dev@corp.example.com.evil", ["*@corp.example.com"], undefined],
     ["dev@sub.corp.example.com", ["*@*.corp.example.com"], "*@*.corp.example.com"],

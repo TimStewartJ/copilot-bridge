@@ -50,7 +50,7 @@ function statusTool(store: ManagementJobStore, prompts: ReturnType<typeof create
 
 describe("management job result delivery", () => {
   it("queues one result for the origin session when a job fails, even if the failure is written twice", () => {
-    const { db, store, dataDir } = setup("fail");
+    const { db, store, dataDir, prompts } = setup("fail");
     const stagingDir = join(dataDir, "worktree");
     const job = store.enqueue("staging_preview", { stagingDir, validate: true }, { originSessionId: SESSION });
     expect(store.get(job.id)?.originSessionId).toBe(SESSION);
@@ -63,6 +63,7 @@ describe("management job result delivery", () => {
 
     const rows = deliveryRows(db);
     expect(rows).toHaveLength(1);
+    expect(listDeferActivityDeliveries(prompts, SESSION)).toEqual([]);
     expect(rows[0]).toMatchObject({
       id: managementJobDeliveryId(job.id),
       sourceId: managementJobDeliveryId(job.id),
@@ -204,14 +205,6 @@ describe("management job result delivery", () => {
     db.exec("DROP TABLE deferred_prompts");
     expect(store.fail(job.id, "failed").status).toBe("failed");
     expect(store.get(job.id)?.status).toBe("failed");
-  });
-
-  it("keeps job results out of defer activity", () => {
-    const { store, prompts } = setup("activity");
-    const job = store.enqueue("staging_preview", { stagingDir: "x" }, { originSessionId: SESSION });
-    store.fail(job.id, "failed");
-    expect(prompts.listDeliveriesForSession(SESSION)).toHaveLength(1);
-    expect(listDeferActivityDeliveries(prompts, SESSION)).toEqual([]);
   });
 
   it("writes the result from a second connection, as the runner process does", () => {

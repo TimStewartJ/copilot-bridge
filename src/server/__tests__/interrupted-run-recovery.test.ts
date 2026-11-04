@@ -35,22 +35,9 @@ function pendingRecoveryPrompts(sessionId: string): number {
 }
 
 describe("interrupted-run-store", () => {
-  it("records, lists, and clears an accepted run", () => {
-    markers.markAccepted("session-1", "normal", new Date("2026-01-01T00:00:00.000Z"));
-    expect(markers.list()).toEqual([{
-      sessionId: "session-1",
-      attentionMode: "normal",
-      acceptedAt: "2026-01-01T00:00:00.000Z",
-      lastResumedAt: null,
-      retryScheduled: false,
-    }]);
-
-    expect(markers.clear("session-1")).toBe(false);
-    expect(markers.list()).toEqual([]);
-  });
-
   it("keeps the resume stamp when the resumed run is accepted again", () => {
     markers.markAccepted("session-1", "normal", new Date("2026-01-01T00:00:00.000Z"));
+    expect(markers.list()[0]).toMatchObject({ acceptedAt: "2026-01-01T00:00:00.000Z", lastResumedAt: null, retryScheduled: false });
     markers.markResumed("session-1", new Date("2026-01-01T00:05:00.000Z"));
     markers.markAccepted("session-1", "normal", new Date("2026-01-01T00:05:01.000Z"));
 
@@ -238,18 +225,9 @@ describe("queueBootRecoveryPrompts", () => {
     expect(recoveryPrompts("session-1").filter((prompt) => prompt.status === "pending").map((prompt) => prompt.runAt))
       .toEqual([resumeAt]);
     expect(prompts.listDue(secondBoot.toISOString())).toEqual([]);
+    expect(prompts.listDue(resumeAt).map((prompt) => prompt.sessionId)).toEqual(["session-1"]);
     expect(markers.list()[0]).toMatchObject({ lastResumedAt: resumeAt, retryScheduled: true });
     expect(announced).toEqual([["session-1", expect.stringContaining("resume it in about 8 minutes")]]);
-  });
-
-  it("makes the put-off resume when its time has come", () => {
-    markers.markAccepted("session-1", "normal");
-    queueBootRecoveryPrompts(deps(), markers, now);
-    deliverAndCutOff("session-1");
-    queueBootRecoveryPrompts(deps(), markers, after(92_000));
-
-    expect(prompts.listDue(after(BOOT_RESUME_COOLDOWN_MS).toISOString()).map((prompt) => prompt.sessionId))
-      .toEqual(["session-1"]);
   });
 
   it("leaves the run for the user when it is cut off again soon after the put-off resume", () => {

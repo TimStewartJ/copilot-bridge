@@ -81,20 +81,6 @@ describe("response transport", () => {
     expect(String(res.body)).toMatch(/^data: \{"sessions"/);
   });
 
-  it("lets GET API reads revalidate and answers matching If-None-Match with 304", async () => {
-    const app = createApp();
-    const first = await request(app).get("/api/sessions").set("Accept-Encoding", "gzip");
-    expect(first.headers["cache-control"]).toBe(API_GET_CACHE_CONTROL);
-    expect(first.headers.etag).toBeTruthy();
-
-    const revalidated = await request(app)
-      .get("/api/sessions")
-      .set("Accept-Encoding", "gzip")
-      .set("If-None-Match", first.headers.etag);
-    expect(revalidated.status).toBe(304);
-    expect(revalidated.text ?? "").toBe("");
-  });
-
   it("keeps mutations uncacheable", async () => {
     const res = await request(createApp()).post("/api/chat").send({ prompt: "hi" });
     expect(res.headers["cache-control"]).toBe(API_MUTATION_CACHE_CONTROL);
@@ -103,6 +89,7 @@ describe("response transport", () => {
   it("still answers 304 when a browser adds Cache-Control: no-cache to a script-set conditional request", async () => {
     const app = createApp();
     const first = await request(app).get("/api/sessions").set("Accept-Encoding", "br, gzip");
+    expect(first.headers["cache-control"]).toBe(API_GET_CACHE_CONTROL);
     const etag = first.headers.etag;
     expect(etag).toBeTruthy();
 
@@ -115,6 +102,7 @@ describe("response transport", () => {
       .set("Cache-Control", "no-cache")
       .set("Pragma", "no-cache");
     expect(revalidated.status).toBe(304);
+    expect(revalidated.text ?? "").toBe("");
 
     // A changed body still wins over the validator.
     const stale = await request(app)

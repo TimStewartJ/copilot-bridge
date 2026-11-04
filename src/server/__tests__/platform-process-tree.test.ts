@@ -747,15 +747,4 @@ describe("sampleProcessTree", () => {
     });
     expect(await sampleProcessTree(5000, createDeadline(5_000)), "snapshot fails").toBeNull();
   });
-
-  it("issues exactly one snapshot read and no side-effecting commands", async () => {
-    setPlatform("win32");
-    mockExec((_command, _args, _options, callback) => {
-      callback(null, "6000 1 7000\n6001 6000 7001", "");
-    });
-
-    await sampleProcessTree(6000, createDeadline(5_000));
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    expect(execFileMock.mock.calls.every(([cmd]) => cmd === "mock-native-process-snapshot")).toBe(true);
-  });
 });

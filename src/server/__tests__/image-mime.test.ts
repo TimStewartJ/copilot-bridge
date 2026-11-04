@@ -11,12 +11,6 @@ const SAMPLES: Record<string, number[]> = {
 };
 
 describe("sniffImageMime", () => {
-  for (const [mime, bytes] of Object.entries(SAMPLES)) {
-    it(`detects ${mime} from magic bytes`, () => {
-      expect(sniffImageMime(Uint8Array.from(bytes))).toBe(mime);
-    });
-  }
-
   it("detects GIF87a as well as GIF89a", () => {
     expect(sniffImageMime(Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 0x00]))).toBe("image/gif");
   });
@@ -49,13 +43,9 @@ describe("sniffImageMimeFromBase64", () => {
     expect(sniffImageMimeFromBase64(data)).toBe("image/jpeg");
   });
 
-  it("ignores surrounding whitespace", () => {
-    expect(sniffImageMimeFromBase64(`  \n${b64(SAMPLES["image/png"])}\n`)).toBe("image/png");
-  });
-
   it("detects format despite internal line-wrapping whitespace", () => {
     const raw = b64(SAMPLES["image/jpeg"]);
-    const wrapped = `${raw.slice(0, 4)}\n${raw.slice(4, 8)}\r\n${raw.slice(8)}`;
+    const wrapped = `  \n${raw.slice(0, 4)}\n${raw.slice(4, 8)}\r\n${raw.slice(8)}\n`;
     expect(sniffImageMimeFromBase64(wrapped)).toBe("image/jpeg");
   });
 

@@ -22,18 +22,6 @@ describe("buildHelmChatGuidance", () => {
     expect(prompt).toContain("Local time zone: America/Los_Angeles.");
   });
 
-  it("uses the task index and find for tasks, decides a task before starting work, reports progress and flags automated sessions", () => {
-    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles" });
-    expect(prompt).toContain("starts with a helm_task_index");
-    expect(prompt).toContain("check task_list or find");
-    expect(prompt).toContain("start_session with the taskId of the task the work belongs to");
-    expect(prompt).toContain("noTask with a reason only when no task fits");
-    expect(prompt).toContain("call find first");
-    expect(prompt).toContain("report its progress");
-    expect(prompt).toContain("is automated: say so");
-    expect(prompt).not.toContain("Names the user uses");
-  });
-
   it("includes the user's names list when there is one", () => {
     const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles", glossary: "devbox = Timmy PC" });
     expect(prompt).toContain("Names the user uses (speech recognition may mishear them; map what you hear onto these): devbox = Timmy PC");

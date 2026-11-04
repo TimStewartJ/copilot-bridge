@@ -27,16 +27,11 @@ function createBuildFixture(): string {
 }
 
 describe("build stamps", () => {
-  it("verifies unchanged inputs and outputs", () => {
+  it("rejects changed build inputs", () => {
     const rootDir = createBuildFixture();
     const stamp = writeBuildStamp(rootDir, "commit-a");
 
     expect(verifyBuildStamp(rootDir, "commit-a")).toEqual(stamp);
-  });
-
-  it("rejects changed build inputs", () => {
-    const rootDir = createBuildFixture();
-    writeBuildStamp(rootDir, "commit-a");
     writeFileSync(join(rootDir, "src", "index.ts"), "export const value = 2;\n");
 
     expect(() => verifyBuildStamp(rootDir, "commit-a")).toThrow("Build inputs changed");

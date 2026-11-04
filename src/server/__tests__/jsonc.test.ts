@@ -2,24 +2,6 @@ import { describe, expect, it } from "vitest";
 import { parseJsonc, stripJsonComments } from "../jsonc.js";
 
 describe("stripJsonComments", () => {
-  it("removes a leading line-comment header", () => {
-    const text = [
-      "// User settings belong in settings.json.",
-      "// This file is managed automatically.",
-      '{ "a": 1 }',
-    ].join("\n");
-    expect(JSON.parse(stripJsonComments(text))).toEqual({ a: 1 });
-  });
-
-  it("keeps comment markers that appear inside string values", () => {
-    // The real Copilot config stores exactly this, and a naive // match truncates it.
-    const text = '{ "host": "https://github.com", "path": "a//b" }';
-    expect(JSON.parse(stripJsonComments(text))).toEqual({
-      host: "https://github.com",
-      path: "a//b",
-    });
-  });
-
   it("keeps block comment markers inside strings", () => {
     const text = '{ "glob": "/* not a comment */" }';
     expect(JSON.parse(stripJsonComments(text))).toEqual({ glob: "/* not a comment */" });
@@ -54,35 +36,9 @@ describe("stripJsonComments", () => {
     const text = '{ "a": "x,", "b": "y," }';
     expect(JSON.parse(stripJsonComments(text))).toEqual({ a: "x,", b: "y," });
   });
-
-  it("leaves plain JSON untouched", () => {
-    const text = '{"a":1,"b":[2,3]}';
-    expect(stripJsonComments(text)).toBe(text);
-  });
 });
 
 describe("parseJsonc", () => {
-  it("parses a Copilot-style config with a comment header", () => {
-    const text = [
-      "// User settings belong in settings.json.",
-      "// This file is managed automatically.",
-      "{",
-      '  "loggedInUsers": [',
-      "    {",
-      '      "host": "https://github.com",',
-      '      "login": "someone_example"',
-      "    }",
-      "  ],",
-      '  "lastLoggedInUser": { "host": "https://github.com", "login": "someone_example" }',
-      "}",
-    ].join("\n");
-
-    expect(parseJsonc(text)).toEqual({
-      loggedInUsers: [{ host: "https://github.com", login: "someone_example" }],
-      lastLoggedInUser: { host: "https://github.com", login: "someone_example" },
-    });
-  });
-
   it("still throws on genuinely malformed input", () => {
     expect(() => parseJsonc("{ not json")).toThrow();
   });

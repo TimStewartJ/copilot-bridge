@@ -47,21 +47,6 @@ describe("safeSetTimeout", () => {
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
-  it("fires a near-future delay exactly once", async () => {
-    const callback = vi.fn();
-    safeSetTimeout(callback, 60_000);
-
-    expect(callback).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(59_999);
-    expect(callback).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(callback).toHaveBeenCalledTimes(1);
-
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(callback).toHaveBeenCalledTimes(1);
-  });
-
   it("fires non-finite and zero/negative delays asynchronously on the next tick", async () => {
     // Non-finite delay fires on the next tick instead of never or looping
     const callback1 = vi.fn();

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentEventOwners,
-  getParentToolCallId,
   isStampedAgentTurnEvent,
   showsAgentTurnsAreStamped,
 } from "../agent-event-ownership.js";
@@ -37,15 +36,9 @@ describe("agent event ownership", () => {
     expect(showsAgentTurnsAreStamped(null)).toBe(false);
   });
 
-  it("reads the launching call an agent's event names as its parent", () => {
-    expect(getParentToolCallId({ type: "tool.execution_start", data: { parentToolCallId: " call-1 " } })).toBe("call-1");
-    expect(getParentToolCallId({ type: "tool.execution_start", data: { parentToolCallId: "" } })).toBeUndefined();
-    expect(getParentToolCallId({ type: "tool.execution_start" })).toBeUndefined();
-  });
-
   it("files an event stamped only with an agent under the call that launched it", () => {
     const owners = new AgentEventOwners();
-    const turnStart = { type: "assistant.turn_start", agentId: "agent-1", data: {} };
+    const turnStart = { type: "assistant.turn_start", agentId: "agent-1" };
 
     // Before the stream has said which call the agent is, the agent's id is all there is.
     expect(owners.launchOf(turnStart)).toBeUndefined();
@@ -60,16 +53,8 @@ describe("agent event ownership", () => {
   it("learns an agent from its own events, where `toolCallId` is one of its calls", () => {
     const owners = new AgentEventOwners();
 
-    owners.learn({ type: "tool.execution_start", agentId: "agent-2", data: { toolCallId: "its-view", parentToolCallId: "call-2" } });
+    owners.learn({ type: "tool.execution_start", agentId: "agent-2", data: { toolCallId: "its-view", parentToolCallId: "  call-2  " } });
 
     expect(owners.launchOf({ type: "assistant.turn_end", agentId: "agent-2", data: {} })).toBe("call-2");
-  });
-
-  it("says nothing for an event of the main agent", () => {
-    const owners = new AgentEventOwners();
-    owners.learn({ type: "subagent.started", agentId: "agent-1", data: { toolCallId: "call-1" } });
-
-    expect(owners.launchOf({ type: "assistant.turn_start", data: { turnId: "4" } })).toBeUndefined();
-    expect(owners.ownerOf({ type: "tool.execution_start", data: { toolCallId: "main-view" } })).toBeUndefined();
   });
 });

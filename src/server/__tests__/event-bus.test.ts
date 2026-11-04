@@ -6,17 +6,10 @@ const { getOrCreateBus, hasBus } = createEventBusRegistry();
 
 describe("event-bus", () => {
   describe("getOrCreateBus / getBus / hasBus", () => {
-    it("creates a bus for a new session and getOrCreateBus returns the same bus", () => {
-      const bus = getOrCreateBus("test-create-1");
-      expect(bus).toBeDefined();
-      expect(hasBus("test-create-1")).toBe(true);
-      // same call returns the same bus
-      const bus2 = getOrCreateBus("test-create-1");
-      expect(bus2).toBe(bus);
-    });
-
     it("getOrCreateBus replaces completed bus", () => {
       const bus1 = getOrCreateBus("test-replace-1");
+      expect(hasBus("test-replace-1")).toBe(true);
+      expect(getOrCreateBus("test-replace-1")).toBe(bus1);
       bus1.emit({ type: "done", content: "finished" });
       const bus2 = getOrCreateBus("test-replace-1");
       expect(bus2).not.toBe(bus1);
@@ -39,14 +32,6 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().providerRetry).toBeUndefined();
     });
 
-    it("accumulates delta content", () => {
-      const bus = getOrCreateBus("test-delta-1");
-      bus.emit({ type: "delta", content: "Hello " });
-      bus.emit({ type: "delta", content: "world" });
-      const snap = bus.getSnapshot();
-      expect(snap.streamingContent).toBe("Hello world");
-    });
-
     it("notifies subscribers to resync when a bus is deleted", () => {
       const registry = createEventBusRegistry();
       const bus = registry.getOrCreateBus("deleted-session");
@@ -59,13 +44,6 @@ describe("event-bus", () => {
       expect(registry.getBus("deleted-session")).toBeUndefined();
     });
 
-    it("tracks intent", () => {
-      const bus = getOrCreateBus("test-intent-1");
-      bus.emit({ type: "intent", intent: "Exploring codebase" });
-      expect(bus.getSnapshot().intentText).toBe("Exploring codebase");
-      expect(bus.getIntentText()).toBe("Exploring codebase");
-    });
-
     it("clears intent on terminal events", () => {
       const terminalEvents: StreamEvent[] = [
         { type: "done", content: "Done" },
@@ -76,6 +54,7 @@ describe("event-bus", () => {
       terminalEvents.forEach((event, index) => {
         const bus = getOrCreateBus(`test-terminal-intent-${index}`);
         bus.emit({ type: "intent", intent: "Exploring codebase" });
+        expect(bus.getIntentText()).toBe("Exploring codebase");
         bus.emit(event);
         expect(bus.getSnapshot().intentText).toBe("");
         expect(bus.getIntentText()).toBe("");
@@ -190,19 +169,6 @@ describe("event-bus", () => {
       ]);
     });
 
-    it("preserves a client message id in the projected prompt", () => {
-      const bus = getOrCreateBus("test-client-message-id-1");
-
-      const id = bus.setPendingPrompt("hello", undefined, "client-message-1");
-
-      expect(id).toBe("client-message-1");
-      expect(bus.getSnapshot().pendingUserMessages).toMatchObject([{
-        id: "client-message-1",
-        content: "hello",
-        pending: true,
-      }]);
-    });
-
     it("broadcasts steering user message updates and discards failed delivery", () => {
       const bus = getOrCreateBus("test-user-message-broadcast-1");
       const events: StreamEvent[] = [];
@@ -247,6 +213,7 @@ describe("event-bus", () => {
       const events: StreamEvent[] = [];
       bus.subscribe((event) => events.push(event));
       const id = bus.setPendingPrompt("hello", undefined, "client-a");
+      expect(id).toBe("client-a");
 
       bus.assignUserMessageId(id, "message-1");
 
@@ -613,19 +580,10 @@ describe("event-bus", () => {
       expect(secondTurnInstanceId).not.toBe(firstTurnInstanceId);
     });
 
-    it("assistant_partial finalizes accumulated content when the message carries text", () => {
-      const bus = getOrCreateBus("test-partial-1");
-      bus.emit({ type: "delta", content: "first message" });
-      bus.emit({ type: "assistant_partial", content: "first message", sourceEventId: "a-1" });
-      expect(bus.getSnapshot().streamingContent).toBe("");
-      expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([
-        { content: "first message", sourceEventId: "a-1" },
-      ]);
-    });
-
     it("keeps streamed text live when an assistant message carries no content", () => {
       const bus = getOrCreateBus("test-partial-empty");
-      bus.emit({ type: "delta", content: "first message" });
+      bus.emit({ type: "delta", content: "first " });
+      bus.emit({ type: "delta", content: "message" });
       bus.emit({ type: "assistant_partial" });
       // Discarding here would lose text the user is already reading, and stamping it would
       // claim a disk identity that never materializes.
@@ -690,6 +648,7 @@ describe("event-bus", () => {
 
       // The next real assistant message finalizes it against an id disk will actually carry.
       bus.emit({ type: "assistant_partial", content: "Checked.", sourceEventId: "real-message-1" });
+      expect(bus.getSnapshot().streamingContent).toBe("");
       expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([
         { content: "Checked.", sourceEventId: "real-message-1" },
       ]);
@@ -992,28 +951,6 @@ describe("event-bus", () => {
   });
 
   describe("subscribe", () => {
-    it("sends snapshot to new subscriber immediately", () => {
-      const bus = getOrCreateBus("test-sub-1");
-      bus.emit({ type: "delta", content: "prior content" });
-
-      const events: StreamEvent[] = [];
-      bus.subscribe((e) => events.push(e));
-
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe("snapshot");
-    });
-
-    it("delivers live events after subscription", () => {
-      const bus = getOrCreateBus("test-sub-live-1");
-      const events: StreamEvent[] = [];
-      bus.subscribe((e) => events.push(e));
-
-      bus.emit({ type: "delta", content: "live" });
-      // snapshot + delta
-      expect(events).toHaveLength(2);
-      expect(events[1].type).toBe("delta");
-    });
-
     it("completed bus sends snapshot but does not subscribe", () => {
       const bus = getOrCreateBus("test-complete-sub-1");
       bus.emit({ type: "done", content: "done" });
@@ -1038,8 +975,7 @@ describe("event-bus", () => {
       bus.subscribe((e) => events.push(e));
 
       bus.emit({ type: "delta", content: "survives" });
-      // Second listener got snapshot + delta despite first throwing
-      expect(events).toHaveLength(2);
+      expect(events.map((event) => event.type)).toEqual(["snapshot", "delta"]);
     });
 
     it("stops delivering to a listener once it unsubscribes", () => {

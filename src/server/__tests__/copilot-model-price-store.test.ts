@@ -14,17 +14,6 @@ function priceable(id: string, inputPrice: number): CopilotModelMetadataForPrici
 }
 
 describe("createCopilotModelPriceStore", () => {
-  it("persists and lists priceable models", () => {
-    const db = openMemoryDatabase();
-    const store = createCopilotModelPriceStore(db);
-
-    store.upsertModelPrices([priceable("model-a", 300), priceable("model-b", 100)]);
-
-    const listed = store.listModelPrices().sort((l, r) => l.id.localeCompare(r.id));
-    expect(listed.map((m) => m.id)).toEqual(["model-a", "model-b"]);
-    expect(listed[0]?.billing?.tokenPrices?.inputPrice).toBe(300);
-  });
-
   it("skips models without usable token prices", () => {
     const db = openMemoryDatabase();
     const store = createCopilotModelPriceStore(db);
@@ -33,9 +22,12 @@ describe("createCopilotModelPriceStore", () => {
       { id: "auto", name: "Auto" },
       { id: "multiplier-only", billing: { multiplier: 1 } },
       priceable("model-a", 300),
+      priceable("model-b", 100),
     ]);
 
-    expect(store.listModelPrices().map((m) => m.id)).toEqual(["model-a"]);
+    const listed = store.listModelPrices().sort((a, b) => a.id.localeCompare(b.id));
+    expect(listed.map((model) => [model.id, model.billing?.tokenPrices?.inputPrice]))
+      .toEqual([["model-a", 300], ["model-b", 100]]);
   });
 
   it("overwrites an existing entry on conflict with the newer prices", () => {

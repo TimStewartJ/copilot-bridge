@@ -277,24 +277,6 @@ describe("createCopilotQuotaReader", () => {
     expect(status.identity?.login).toBe("timstewart_microsoft");
   });
 
-  it("falls back to the backend copy when the live fetch fails", async () => {
-    const onLiveUserError = vi.fn();
-    const reader = createCopilotQuotaReader({
-      getQuota: async () => quotaResult(),
-      getAuth: async () => authResult(),
-      getLiveUser: async () => {
-        throw new Error("HTTP 502");
-      },
-      onLiveUserError,
-    });
-
-    const status = await reader.read();
-
-    expect(status.available).toBe(true);
-    expect(status.primary?.remaining).toBe(9_920_606.1);
-    expect(onLiveUserError).toHaveBeenCalledWith("HTTP 502");
-  });
-
   it("reports a repeated live-fetch failure once, and again after a success", async () => {
     const onLiveUserError = vi.fn();
     const outcomes: Array<Error | null> = [new Error("HTTP 502"), new Error("HTTP 502"), null, new Error("HTTP 502")];
@@ -309,7 +291,10 @@ describe("createCopilotQuotaReader", () => {
       onLiveUserError,
     });
 
-    for (let i = 0; i < 4; i += 1) await reader.read({ refresh: true });
+    const fallback = await reader.read({ refresh: true });
+    expect(fallback).toMatchObject({ available: true, primary: { remaining: 9_920_606.1 } });
+    expect(onLiveUserError).toHaveBeenCalledWith("HTTP 502");
+    for (let i = 1; i < 4; i += 1) await reader.read({ refresh: true });
 
     expect(onLiveUserError).toHaveBeenCalledTimes(2);
   });

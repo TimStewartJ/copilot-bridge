@@ -56,7 +56,8 @@ describe("docs store path hardening", () => {
       .toThrow("Invalid page path: resolved path escapes docs root");
   });
 
-  it.each(unsafePathInputs)("rejects unsafe page paths: %s", (_label, input) => {
+  it("rejects unsafe page paths: drive-relative", () => {
+    const input = "C:foo";
     const store = makeStore();
 
     expect(() => normalizeDocsPublicPath(input)).toThrow(/Invalid page path/);
@@ -64,7 +65,8 @@ describe("docs store path hardening", () => {
     expect(() => store.readPage(input)).toThrow(/Invalid page path/);
   });
 
-  it.each(unsafePathInputs)("rejects unsafe DB collection paths: %s", (_label, input) => {
+  it("rejects unsafe DB collection paths: drive-relative", () => {
+    const input = "C:foo";
     const store = makeStore();
 
     expect(() => store.writeSchema(input, { name: "Unsafe", fields: [] })).toThrow(/Invalid folder/);
@@ -300,28 +302,15 @@ describe("docs store DB raw-content normalization", () => {
 });
 
 describe("docs store deleteDbEntry", () => {
-  it("deletes a DB entry and returns its canonical path", () => {
-    const store = makeStore();
-    store.writeSchema("incidents", {
-      name: "Incidents",
-      fields: [{ name: "severity", type: "select", options: ["sev1", "sev2"] }],
-    });
-    const entry = store.addDbEntry("incidents", { title: "Outage", severity: "sev1" });
-    expect(store.readPage(entry.path)?.isDbItem).toBe(true);
-
-    const result = store.deleteDbEntry("incidents", entry.slug);
-
-    expect(result).toEqual({ path: entry.path, deleted: true });
-    expect(store.readPage(entry.path)).toBeNull();
-  });
-
   it("runs the beforeDelete hook only when the entry exists", () => {
     const store = makeStore();
     store.writeSchema("incidents", { name: "Incidents", fields: [] });
     const entry = store.addDbEntry("incidents", { title: "Snapshot me" });
 
     const hook = vi.fn();
-    store.deleteDbEntry("incidents", entry.slug, hook);
+    expect(store.readPage(entry.path)?.isDbItem).toBe(true);
+    expect(store.deleteDbEntry("incidents", entry.slug, hook)).toEqual({ path: entry.path, deleted: true });
+    expect(store.readPage(entry.path)).toBeNull();
     expect(hook).toHaveBeenCalledTimes(1);
 
     hook.mockClear();

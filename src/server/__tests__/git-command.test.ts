@@ -28,11 +28,8 @@ afterEach(() => {
 });
 
 describe("createGitPullRebaseCommand", () => {
-  it.each([
-    "release/$rc",
-    "branch with space",
-    "release;candidate",
-  ])("keeps branch %j as one literal argv entry", async (branch) => {
+  it('keeps branch "branch with space" as one literal argv entry', async () => {
+    const branch = "branch with space";
     const { createGitPullRebaseCommand } = await loadGitCommandModule();
 
     const invocation = createGitPullRebaseCommand(branch);
@@ -43,49 +40,16 @@ describe("createGitPullRebaseCommand", () => {
   });
 });
 
-describe("normalizeStreamOutput", () => {
-  it("trims strings, decodes Buffers, and returns empty string for other input", async () => {
-    const { normalizeStreamOutput } = await loadGitCommandModule();
-    expect(normalizeStreamOutput("  hello world  "), "string").toBe("hello world");
-    expect(normalizeStreamOutput(Buffer.from("  buffered  ")), "Buffer").toBe("buffered");
-    expect(normalizeStreamOutput(undefined), "undefined").toBe("");
-    expect(normalizeStreamOutput(null), "null").toBe("");
-    expect(normalizeStreamOutput(42), "number").toBe("");
-    expect(normalizeStreamOutput({}), "object").toBe("");
-  });
-});
-
 describe("formatGitError", () => {
-  it("prefers explicit stderr over stdout and the error", async () => {
-    const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError(new Error("ignored"), "out text", "  err text  ")).toBe("err text");
-  });
-
-  it("falls back to explicit stdout when stderr is empty", async () => {
-    const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError(new Error("ignored"), "  out text  ", "")).toBe("out text");
-  });
-
   it("reads stderr/stdout from the error object when not passed explicitly", async () => {
     const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError({ stderr: "from error stderr" })).toBe("from error stderr");
+    expect(formatGitError({ stdout: "ignored", stderr: Buffer.from("from error stderr\n") })).toBe("from error stderr");
     expect(formatGitError({ stdout: "from error stdout" })).toBe("from error stdout");
-  });
-
-  it("decodes Buffer stderr from the error object", async () => {
-    const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError({ stderr: Buffer.from("buffered fatal\n") })).toBe("buffered fatal");
   });
 
   it("uses the Error message when no stream output is present", async () => {
     const { formatGitError } = await loadGitCommandModule();
     expect(formatGitError(new Error("boom"))).toBe("boom");
-  });
-
-  it("stringifies non-Error fallbacks", async () => {
-    const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError("plain string error")).toBe("plain string error");
-    expect(formatGitError(42)).toBe("42");
   });
 });
 

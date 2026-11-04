@@ -27,11 +27,6 @@ function makeRegistry(): BridgeToolsMcpServer {
 }
 
 describe("BridgeToolsMcpServer registry", () => {
-  it("registers tools and lists names with the default global scope", () => {
-    const server = makeRegistry();
-    expect(server.getToolNames().sort()).toEqual(["both_tool", "global_tool"]);
-  });
-
   it("rejects duplicate tool registration", () => {
     const server = makeRegistry();
     expect(() =>
@@ -45,6 +40,7 @@ describe("BridgeToolsMcpServer registry", () => {
 
   it("filters definitions by scope and exposes everything for the native surface", () => {
     const server = makeRegistry();
+    expect(server.getToolNames().sort()).toEqual(["both_tool", "global_tool"]);
     expect(server.getToolDefinitions("global").map((tool) => tool.name).sort()).toEqual([
       "both_tool",
       "global_tool",

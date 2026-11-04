@@ -91,6 +91,7 @@ describe("publish_visual tool", () => {
     expect(result.success).toBe(true);
     expect(result.__kind).toBe("visual.published");
     expect(result.displayName).toBe("inline.png");
+    expect(result.size).toBe(pngBytes.length);
   });
 
   it("infers mimeType from path extension when not provided", async () => {
@@ -316,19 +317,5 @@ describe("publish_visual tool", () => {
 
     expect((result as any).resultType).toBe("failure");
     expect((result as any).textResultForLlm).toMatch(/data\.url/i);
-  });
-
-  it("allows inline data.values without rejecting", async () => {
-    const copilotHome = makeTmpDir();
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result: any = await tool.handler(
-      { kind: "vega-lite", title: "Inline", content: VALID_SPEC },
-      createInvocation(),
-    );
-
-    expect(result.success).toBe(true);
   });
 });

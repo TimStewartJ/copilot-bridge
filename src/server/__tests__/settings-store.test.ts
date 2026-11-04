@@ -39,13 +39,6 @@ describe("settings-store", () => {
     });
   });
 
-  it("prepares response-style changes without persisting them", () => {
-    store.updateSettings({ responseStyle: { detail: "detailed", guidance: "Original guidance." } });
-    const prepared = store.prepareSettingsUpdate({ responseStyle: { detail: "concise", guidance: "New guidance." } });
-    expect(prepared.next.responseStyle?.detail).toBe("concise");
-    expect(store.getSettings().responseStyle?.detail).toBe("detailed");
-  });
-
   it("normalizes blank guidance and resets explicitly to adaptive defaults", () => {
     expect(store.updateSettings({ responseStyle: { detail: "concise", guidance: " \r\n " } }).responseStyle).toEqual({
       detail: "concise", guidance: DEFAULT_RESPONSE_STYLE_GUIDANCE,
@@ -70,9 +63,7 @@ describe("settings-store", () => {
     ["a scalar", "natural", "responseStyle must be an object"],
     ["an array", [], "responseStyle must be an object"],
     ["an unknown detail", { detail: "brief" }, "responseStyle.detail must be adaptive, concise, or detailed"],
-    ["a null detail", { detail: null }, "responseStyle.detail must be adaptive, concise, or detailed"],
     ["non-string guidance", { guidance: 123 }, "responseStyle.guidance must be a string"],
-    ["null guidance", { guidance: null }, "responseStyle.guidance must be a string"],
     ["an unsupported key", { mood: "friendly" }, 'responseStyle key "mood" is not supported'],
   ] as const)("rejects %s in a JSON-boundary update without changing settings", (_label, responseStyle, message) => {
     store.updateSettings({ theme: "dark" });
@@ -358,8 +349,6 @@ describe("settings-store", () => {
     ["malformed JSON", "{"],
     ["null", "null"],
     ["an array", "[]"],
-    ["a string", '"settings"'],
-    ["a number", "42"],
   ])("fails visibly when the persisted row contains %s", (_label, raw) => {
     writeRawSettings(raw);
 

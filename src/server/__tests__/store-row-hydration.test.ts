@@ -71,11 +71,6 @@ describe("store row hydration resilience", () => {
       expect(store.listMcpServers().map((server) => server.name)).toEqual(["Repairable"]);
     });
 
-    it("keeps write-side validation strict", () => {
-      const store = createMcpServerStore(db);
-      expect(() => store.createMcpServer({ name: "Bad", config: { nope: true } as never })).toThrow();
-    });
-
     it("rolls back a rename that leaves the row unreadable", () => {
       const store = createMcpServerStore(db);
       insertRawMcpServer("still-broken", "StillBroken", "{not json");

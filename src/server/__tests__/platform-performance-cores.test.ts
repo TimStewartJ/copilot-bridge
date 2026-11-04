@@ -82,10 +82,6 @@ describe("parseCpuSetInformation", () => {
 });
 
 describe("selectPerformanceCoreMask", () => {
-  it("selects both threads of every performance core and no efficiency core", () => {
-    expect(selectPerformanceCoreMask(hybridProcessors())).toBe(0xffffn);
-  });
-
   it("keeps the last cores when fewer are wanted", () => {
     expect(selectPerformanceCoreMask(hybridProcessors(), 6)).toBe(0xfff0n);
     expect(selectPerformanceCoreMask(hybridProcessors(), 1)).toBe(0xc000n);
@@ -157,13 +153,6 @@ describe("runOnPerformanceCores", () => {
     expect(api.setProcessAffinityMask).toHaveBeenCalledWith("handle", 0xffffn);
   });
 
-  it("uses only as many cores as the setting allows", async () => {
-    const api = processorApi(hybridProcessors());
-    const result = await runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "4" }, loadApi: async () => api });
-    expect(result).toEqual({ applied: true, detail: "8 of 20 logical processors (mask 0xff00)" });
-    expect(api.setProcessAffinityMask).toHaveBeenCalledWith("handle", 0xff00n);
-  });
-
   it("leaves the process alone when switched off or misconfigured, without loading the native API", async () => {
     const loadApi = vi.fn(async () => processorApi(hybridProcessors()));
     await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "off" }, loadApi }))
@@ -186,9 +175,11 @@ describe("runOnPerformanceCores", () => {
     const all = processorApi(fewPerformanceCores());
     await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "all" }, loadApi: async () => all }))
       .resolves.toEqual({ applied: true, detail: "4 of 12 logical processors (mask 0xf)" });
+    expect(all.setProcessAffinityMask).toHaveBeenCalledWith("handle", 0xfn);
     const one = processorApi(fewPerformanceCores());
     await expect(runOnPerformanceCores({ platform: "win32", env: { BRIDGE_PERFORMANCE_CORES: "1" }, loadApi: async () => one }))
       .resolves.toEqual({ applied: true, detail: "2 of 12 logical processors (mask 0xc)" });
+    expect(one.setProcessAffinityMask).toHaveBeenCalledWith("handle", 0xcn);
   });
 
   it("leaves a CPU with one kind of core alone", async () => {

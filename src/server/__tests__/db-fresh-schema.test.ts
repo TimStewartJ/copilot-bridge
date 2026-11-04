@@ -22,19 +22,12 @@ function schemaObjects(db: DatabaseSync): string[] {
 }
 
 describe("fresh database schema", () => {
-  it("leaves no foreign key violations", () => {
-    const fresh = openMemoryDatabase();
-
-    expect(fresh.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-
-    fresh.close();
-  });
-
   it("matches the persistent fresh-database bootstrap and reopens unchanged", () => {
     const fresh = openMemoryDatabase();
     const dataDir = makeTestDir("db-fresh-parity");
     const persistent = openDatabase(dataDir);
     const expected = schemaObjects(fresh);
+    expect(fresh.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 
     expect(schemaObjects(persistent)).toEqual(expected);
     persistent.close();

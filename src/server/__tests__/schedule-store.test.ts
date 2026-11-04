@@ -69,18 +69,11 @@ describe("schedule-store", () => {
       expect(store.listDueSchedules("2026-01-01T08:30:00.000Z").map((item) => item.id)).not.toContain(missingNextRun.id);
     });
 
-    it("updateSchedule changes fields", () => {
-      const s = store.createSchedule(baseCron);
-      const updated = store.updateSchedule(s.id, { name: "Renamed", enabled: false });
-      expect(updated.name).toBe("Renamed");
-      expect(updated.enabled).toBe(false);
-    });
-
     it("stores, changes and clears a schedule's playbook", () => {
       const created = store.createSchedule({ ...baseCron, playbook: "watch" });
       expect(created.playbook).toBe("watch");
       expect(store.updateSchedule(created.id, { playbook: "sweep" }).playbook).toBe("sweep");
-      expect(store.updateSchedule(created.id, { name: "Renamed" }).playbook).toBe("sweep");
+      expect(store.updateSchedule(created.id, { name: "Renamed" })).toMatchObject({ name: "Renamed", playbook: "sweep" });
       expect(store.updateSchedule(created.id, { playbook: null }).playbook).toBeUndefined();
       expect(store.createSchedule(baseCron).playbook).toBeUndefined();
     });
@@ -104,15 +97,6 @@ describe("schedule-store", () => {
   });
 
   describe("run tracking", () => {
-    it("recordRun increments runCount and sets lastRunAt", () => {
-      const s = store.createSchedule(baseCron);
-      store.recordRun(s.id, "session-abc");
-      const updated = store.getSchedule(s.id)!;
-      expect(updated.runCount).toBe(1);
-      expect(updated.lastRunAt).toBeTruthy();
-      expect(updated.lastSessionId).toBe("session-abc");
-    });
-
     it("recordRun auto-disables one-shot schedules and schedules reaching maxRuns", () => {
       // one-shot: disabled after first run
       const oneShot = store.createSchedule({
@@ -166,6 +150,7 @@ describe("schedule-store", () => {
       expect(store.getSchedule(s.id)).toMatchObject({
         runCount: 1,
         lastSessionId: "session-abc",
+        lastRunAt: expect.any(String),
       });
       const claim = db.prepare(
         "SELECT status, sessionId FROM schedule_run_claims WHERE scheduleId = ? AND runKey = ?",
