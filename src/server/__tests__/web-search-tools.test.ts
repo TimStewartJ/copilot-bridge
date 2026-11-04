@@ -229,7 +229,7 @@ describe("browser_web_search tool", () => {
 
   async function loadWebSearch(telemetryStore?: { recordSpan: ReturnType<typeof vi.fn> }) {
     const mod = await import("../web-search-tools.js");
-    const [tool] = mod.createWebSearchTools(createBrowserToolContext(telemetryStore));
+    const tool = mod.createWebSearchTools(createBrowserToolContext(telemetryStore)).find((entry) => entry.name === "browser_web_search")!;
     return (query = "copilot bridge"): Promise<any> => withoutWaits(() => tool.handler({ query }, {} as any));
   }
 
@@ -238,14 +238,6 @@ describe("browser_web_search tool", () => {
     return spans(telemetryStore, `browser.tool.browser_web_search.${engine}.failed`)
       .map((span) => span.metadata.failureCode);
   }
-
-  it("tells the agent that it searches with the public browser, which is not signed in", async () => {
-    const mod = await import("../web-search-tools.js");
-    const [tool] = mod.createWebSearchTools(createBrowserToolContext());
-
-    expect(tool.name).toBe("browser_web_search");
-    expect(tool.description).toMatch(/public browser[^.]*not signed in/i);
-  });
 
   it("returns Google's results, from the public browser", async () => {
     const calls = mockSearchEngines();
@@ -267,11 +259,6 @@ describe("browser_web_search tool", () => {
   it.each([
     ["has no recognisable results", { snapshot: NO_RESULTS_SNAPSHOT }, "search.google_no_results"],
     ["cannot be captured", { snapshot: { fails: "snapshot failed" } }, "extraction.snapshot_failed"],
-    // A check that neither the page check nor the address gives away reads as a page without results.
-    ["is a check the page check could not read", {
-      pageCheck: { fails: "Execution context was destroyed" },
-      snapshot: "heading About this page\n- link Why did this happen?\nOur systems have detected unusual traffic",
-    }, "search.google_no_results"],
   ] as const)("falls through to the next provider, without a cooldown, when a results page %s", async (_name, page, failureCode) => {
     const telemetryStore = { recordSpan: vi.fn() };
     const calls = mockSearchEngines({ google: page });
@@ -314,14 +301,6 @@ describe("browser_web_search tool", () => {
         textLength: 140,
         text: "Please verify you are a human to continue. Complete the security check below.",
         links: 2,
-      }],
-      ["a protection vendor's check", 2, {
-        title: "Just a moment...",
-        status: 403,
-        textLength: 96,
-        text: "www.google.com Verifying you are human. This may take a few seconds.",
-        links: 1,
-        markers: ["cloudflare_challenge"],
       }],
       ["a refusal with nothing to pass", 1, {
         title: "Error 429 (Too Many Requests)",

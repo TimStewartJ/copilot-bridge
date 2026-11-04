@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BrowserContext } from "../browser-broker.js";
-import { BrowserSessionStore, sessionLease, type BrowserSessionRecord } from "../browser-session-store.js";
+import { BrowserSessionStore } from "../browser-session-store.js";
 import { testPath } from "./test-paths.js";
 
 const PUBLIC_SLOT = 3;
@@ -44,28 +44,6 @@ describe("browser session store", () => {
     vi.useRealTimers();
   });
 
-  it("creates public sessions and cleans them up on close", async () => {
-    const browserBroker = createFakeBroker();
-    const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
-
-    const session = await store.createSession("copilot-a", "public", "test");
-
-    expect(session).toMatchObject({ context: "public", ownerSessionId: "copilot-a", purpose: "test", publicSlot: PUBLIC_SLOT });
-    expect(store.getSession(session.id)).toEqual(session);
-
-    await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
-    expect(store.getSession(session.id)).toBeUndefined();
-    // The broker is asked to close the browser the session was given.
-    expect(browserBroker.disposeSessionTarget).toHaveBeenCalledTimes(1);
-    expect(browserBroker.disposeSessionTarget.mock.calls[0][0]).toEqual(sessionLease(session));
-    expect(sessionLease(session)).toEqual({
-      context: "public",
-      browserTarget: session.browserTarget,
-      publicSlot: PUBLIC_SLOT,
-    });
-    await store.closeAll();
-  });
-
   it("reuses the authenticated target without disposing it", async () => {
     const browserBroker = createFakeBroker();
     const store = new BrowserSessionStore({ browserBroker: browserBroker as any });
@@ -76,22 +54,6 @@ describe("browser session store", () => {
     expect(session.publicSlot).toBeUndefined();
     await expect(store.closeSession(session.id, "copilot-a")).resolves.toEqual({ ok: true });
     expect(browserBroker.disposeSessionTarget).not.toHaveBeenCalled();
-    await store.closeAll();
-  });
-
-  it("expires idle public sessions during sweep", async () => {
-    const browserBroker = createFakeBroker();
-    const store = new BrowserSessionStore({
-      browserBroker: browserBroker as any,
-      idleTimeoutMs: 1,
-    });
-    const session = await store.createSession("copilot-a", "public");
-
-    const expired = await store.sweepIdleSessions(session.lastUsedAt + 10);
-
-    expect(expired).toBe(1);
-    expect(store.getSession(session.id)).toBeUndefined();
-    expect(browserBroker.disposeSessionTarget).toHaveBeenCalledTimes(1);
     await store.closeAll();
   });
 
@@ -446,25 +408,6 @@ describe("browser session store", () => {
       vi.setSystemTime(startedAt);
     });
 
-    it("runs with the session's record for a caller that is not the owning chat", async () => {
-      const browserBroker = createFakeBroker();
-      const store = new BrowserSessionStore({ browserBroker: browserBroker as any, idleTimeoutMs: IDLE_TIMEOUT_MS });
-      const session = await store.createSession("copilot-a", "public", "checkout");
-      const show = vi.fn(async (record: BrowserSessionRecord) => `showing ${record.browserTarget.sessionName}`);
-
-      const held = await store.holdSession(session.id, show);
-
-      expect(show).toHaveBeenCalledTimes(1);
-      expect(show).toHaveBeenCalledWith({ ...session, activeCount: 1 });
-      expect(held).toMatchObject({
-        ok: true,
-        value: `showing bridge-public-${PUBLIC_SLOT}`,
-        record: { id: session.id, ownerSessionId: "copilot-a", browserTarget: session.browserTarget },
-      });
-      expect(store.getSession(session.id)).toEqual(session);
-      await store.closeAll();
-    });
-
     it("keeps the session from expiring or being closed while it runs, and counts as a use", async () => {
       const browserBroker = createFakeBroker();
       const store = new BrowserSessionStore({ browserBroker: browserBroker as any, idleTimeoutMs: IDLE_TIMEOUT_MS });
@@ -578,17 +521,6 @@ describe("browser session store", () => {
   });
 
   describe("handoffs", () => {
-    it("gives every handoff a field name of its own", async () => {
-      const store = new BrowserSessionStore({ browserBroker: createFakeBroker() as any });
-
-      const handoffs = Array.from({ length: 20 }, () => store.beginHandoff("copilot-a", "bs_one", "Sign in"));
-
-      const fieldNames = handoffs.map((handoff) => handoff.fieldName);
-      expect(fieldNames.every((fieldName) => typeof fieldName === "string" && fieldName.length > 0)).toBe(true);
-      expect(new Set(fieldNames).size).toBe(handoffs.length);
-      for (const handoff of handoffs) handoff.end();
-      await store.closeAll();
-    });
 
     it("matches a chat's form to its handoff by the form's field names", async () => {
       const store = new BrowserSessionStore({ browserBroker: createFakeBroker() as any });

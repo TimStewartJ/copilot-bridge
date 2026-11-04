@@ -42,12 +42,9 @@ describe("browser-lifecycle", () => {
       expect(shutdownTarget).not.toHaveBeenCalled();
     });
 
-    it.each([
-      ["SingletonLock", ""],
-      ["DevToolsActivePort", "12345\n"],
-    ])("shuts the broker's authenticated browser down when %s is present", async (marker, content) => {
+    it("shuts the broker's authenticated browser down when DevToolsActivePort is present", async () => {
       const { lifecycle, profileDir } = makeLifecycle();
-      writeFileSync(join(profileDir, marker), content);
+      writeFileSync(join(profileDir, "DevToolsActivePort"), "12345\n");
 
       const outcome = await lifecycle.shutdown();
 

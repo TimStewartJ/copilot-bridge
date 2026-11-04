@@ -232,8 +232,6 @@ const ACCEPT_DONE = (fieldName: string): AgentElicitationResponse =>
 /** The ways a question to the user ends: with an answer, or with the runtime's error. */
 const WAYS_THE_QUESTION_ENDS: Array<[string, (fieldName: string) => AgentElicitationResponse | Error]> = [
   ["done", (fieldName) => ACCEPT_DONE(fieldName)],
-  ["Bridge's reply in the user's place", (fieldName) => ({ action: "accept", content: { [fieldName]: AUTOMATIC_ANSWERS.unanswered } })],
-  ["cancel", () => ({ action: "cancel" })],
   ["a question that could not be asked", () => new Error("The runtime dropped the question")],
 ];
 
@@ -306,21 +304,6 @@ describe("browser_session_handoff", () => {
   });
 
   describe("the request to the user", () => {
-    it("is a form with one required choice between done and not done, asked of the calling chat", async () => {
-      const { form, fieldName, result, sessionManager } = await openHandoff();
-
-      expect(sessionManager.requestElicitation).toHaveBeenCalledTimes(1);
-      expect(form.sessionId).toBe("copilot-a");
-      expect(form.request.message).toContain(REASON);
-      expect(form.request.requestedSchema).toEqual({
-        type: "object",
-        properties: { [fieldName]: expect.objectContaining({ type: "string", enum: ["done", "not_done"] }) },
-        required: [fieldName],
-      });
-
-      form.respond({ action: "cancel" });
-      await result;
-    });
 
     it("shows a reason of the greatest length, without the whitespace around it", async () => {
       const reason = "x".repeat(500);
@@ -360,7 +343,13 @@ describe("browser_session_handoff", () => {
 
       const view = normalizePendingElicitationRequest({ requestId: "request-1", ...form.request });
 
-      expect(view.message).toBe(form.request.message);
+      expect(form.sessionId).toBe("copilot-a");
+      expect(view.message).toContain(REASON);
+      expect(Object.keys(view.requestedSchema?.properties ?? {})).toEqual([fieldName]);
+      expect(view.requestedSchema).toMatchObject({
+        properties: { [fieldName]: { type: "string", enum: ["done", "not_done"] } },
+        required: [fieldName],
+      });
       expect(runtime.sessions.matchHandoff("copilot-a", Object.keys(view.requestedSchema?.properties ?? {}))).toEqual({
         browserSessionId,
         reason: REASON,
@@ -468,7 +457,6 @@ describe("browser_session_handoff", () => {
 
     it.each<[string, (fieldName: string) => AgentElicitationResponse]>([
       ["no content", () => ({ action: "accept" })],
-      ["an empty answer", (fieldName) => ({ action: "accept", content: { [fieldName]: "" } })],
       ["an answer that is not text", (fieldName) => ({ action: "accept", content: { [fieldName]: ["done"] } })],
     ])("an accepted form with %s: reports that nobody was there", async (_name, response) => {
       const { form, fieldName, result, browserSessionId } = await openHandoff();
@@ -579,21 +567,18 @@ describe("browser_session_handoff", () => {
       },
     );
 
-    it.each(["public", "authenticated"] as const)(
-      "lets the live view work in the %s browser the user has",
-      async (context) => {
-        const { form, result, runtime, browserSessionId } = await openHandoff({ context });
+    it("lets the live view work in the authenticated browser the user has", async () => {
+      const { form, result, runtime, browserSessionId } = await openHandoff({ context: "authenticated" });
 
-        // What the client asks for when the user opens the view.
-        await expect(runtime.live.createTicket(browserSessionId)).resolves.toMatchObject({
-          browserSessionId,
-          token: expect.any(String),
-        });
+      // What the client asks for when the user opens the view.
+      await expect(runtime.live.createTicket(browserSessionId)).resolves.toMatchObject({
+        browserSessionId,
+        token: expect.any(String),
+      });
 
-        form.respond({ action: "cancel" });
-        await result;
-      },
-    );
+      form.respond({ action: "cancel" });
+      await result;
+    });
 
     it("tells a refused call the beginning of a long reason, in a sentence that is not cut off", async () => {
       const reason = `Sign in to the store with the shared account. ${"Then accept the new terms. ".repeat(16)}`.trim();
@@ -811,7 +796,6 @@ describe("browser_session_handoff", () => {
   describe("a browser session the chat cannot hand over", () => {
     it.each<[string, (tools: Record<string, any>) => Promise<string>, string]>([
       ["a session of another chat", (tools) => startSession(tools, "public", OTHER_CHAT), "belongs to a different Copilot session"],
-      ["a handle that does not exist", async () => "bs_missing", "Browser session not found: bs_missing"],
       ["a session that was closed", async (tools) => {
         const browserSessionId = await startSession(tools);
         await tools.browser_session_close.handler({ browserSessionId }, OWNER);

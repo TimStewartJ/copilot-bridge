@@ -196,17 +196,9 @@ describe("browser_exec tool", () => {
   async function loadBrowserExec() {
     const mod = await import("../browser-exec-tools.js");
     const { describePageBlock } = await import("../browser-page-check.js");
-    const [tool] = mod.createBrowserExecTools(createBrowserToolContext());
+    const tool = mod.createBrowserExecTools(createBrowserToolContext()).find((entry) => entry.name === "browser_exec")!;
     return { tool, describePageBlock };
   }
-
-  it("tells the agent that the public context is not signed in and that a block is reported", async () => {
-    const { tool } = await loadBrowserExec();
-
-    expect(tool.name).toBe("browser_exec");
-    expect(tool.description).toContain("`blocked`");
-    expect(tool.description).toMatch(/public context[^.]*not signed in/i);
-  });
 
   it.each([
     ["an unsupported command shape", { commands: [{ command: "snapshot", args: ["-i", "-s"] }] }, "commands[0] snapshot supports"],

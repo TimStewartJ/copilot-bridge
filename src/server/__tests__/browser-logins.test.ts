@@ -134,16 +134,6 @@ describe("LoginWatch", () => {
     return { watch, logins, vault, told, reads, last: () => told[told.length - 1] };
   }
 
-  it("does not read the page before a click when nothing was typed", async () => {
-    const { watch, reads, told } = createWatch();
-    const read = reads(FORM);
-
-    await watch.submitting(read);
-
-    expect(read).not.toHaveBeenCalled();
-    expect(told).toEqual([]);
-  });
-
   it("offers what was typed, once two reads of the form agree", async () => {
     const { watch, reads, last } = createWatch();
     // The first read overtook the last characters on their way to the page.

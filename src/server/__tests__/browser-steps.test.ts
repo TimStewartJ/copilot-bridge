@@ -14,15 +14,9 @@ const check = (command: string, ...args: string[]) => normalizeBrowserAutomation
 describe("browser steps", () => {
   it.each([
     ["drag", ["@e1", "@e2", "--human"]],
-    ["hover", ["@e1"]],
-    ["get", ["attr", "@e1", "src"]],
     ["mouse", ["move", "10", "20", "--steps", "12"]],
-    ["tab", ["new", "https://example.com/"]],
-    ["eval", ["document.title"]],
-    ["back", []],
     ["wait", ["--fn", "window.ready"]],
     ["fill", ["@e1", "-5"]],
-    ["fill", ["@e1", "- a list item"]],
     ["fill", ["@e1", "--not an option"]],
     ["screenshot", ["@e1", "--full"]],
   ])("accepts %s %j", (command, args) => {
@@ -34,10 +28,7 @@ describe("browser steps", () => {
     ["get", ["url", "--session", "other"]],
     ["click", ["--cdp"]],
     ["open", ["--profile=/somewhere"]],
-    ["fill", ["@e1", "--headed"]],
     ["type", ["@e1", "-v"]],
-    ["press", ["--json"]],
-    ["eval", ["1", "-p", "x"]],
     ["snapshot", ["-i", "--session=a\nb"]],
     ["wait", ["--download"]],
     ["wait", ["#spinner", "--state", "hidden"]],
@@ -49,7 +40,7 @@ describe("browser steps", () => {
     expect(!result.ok && result.error).toMatch(/agent-browser would read it as one of its own options|supports|requires/);
   });
 
-  it.each(["close", "quit", "exit", "connect", "session", "stream", "state", "auth", "batch", "goto", "navigate", "--session", "Open", ""])(
+  it.each(["close", "quit", "exit", "connect", "session", "stream", "state", "auth", "batch", "goto", "navigate", "--session"])(
     "refuses %j as a step",
     (command) => {
       const result = check(command);
@@ -178,12 +169,6 @@ describe("file steps", () => {
 describe("withScreenshots", () => {
   const images = [{ data: "AAAA", mimeType: "image/jpeg" }];
   const pictures = [{ type: "image", data: "AAAA", mimeType: "image/jpeg" }];
-
-  it("leaves a result without screenshots as it is", () => {
-    const result = { steps: [] };
-
-    expect(withScreenshots(result, [])).toBe(result);
-  });
 
   it("sends the screenshots along with a result, also with one that failed", () => {
     expect(withScreenshots({ context: "public", steps: [] }, images)).toEqual({

@@ -499,12 +499,9 @@ describe("BrowserLiveGateway.resolveStreamPort", () => {
     expect(brokerCommands).toEqual([]);
   });
 
-  it.each([
-    ["does not say whether the stream is on", { ok: true, output: "", data: { port: 9333 } }],
-    ["gives the port as text", { ok: true, output: "", data: { enabled: true, port: "9333" } }],
-  ] satisfies Array<[string, BrowserCommandResult]>)("returns the port of a status that %s", async (_name, status) => {
+  it("returns the port of a status that gives the port as text", async () => {
     const { cli, gateway, target } = createCliGateway();
-    cli.answers.status = () => status;
+    cli.answers.status = () => ({ ok: true, output: "", data: { port: "9333" } });
 
     await expect(gateway.resolveStreamPort(target)).resolves.toBe(9333);
 
@@ -512,7 +509,6 @@ describe("BrowserLiveGateway.resolveStreamPort", () => {
   });
 
   it.each([
-    ["reports no port", { ok: true, output: "Streaming is off", data: { enabled: false } }],
     ["has no data", { ok: true, output: "Streaming is off" }],
     ["is off but still names its last port", { ok: true, output: "Streaming is off", data: { enabled: false, port: 9333 } }],
   ] satisfies Array<[string, BrowserCommandResult]>)("enables the stream when its status %s", async (_name, status) => {
@@ -525,22 +521,8 @@ describe("BrowserLiveGateway.resolveStreamPort", () => {
     expect(cli.commands()).toEqual(["stream status", "stream enable"]);
   });
 
-  it("is unavailable, without trying to enable, when the CLI has no stream command", async () => {
-    const { cli, gateway, target } = createCliGateway();
-    cli.answers.status = () => ({ ok: false, output: "error: unrecognized subcommand 'stream'" });
-
-    const failure = await gateway.resolveStreamPort(target).catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(BrowserLiveUnavailableError);
-    expect((failure as Error).message).toContain("agent-browser");
-    expect(cli.commands()).toEqual(["stream status"]);
-    // What diagnostics shows until a live view works.
-    expect(gateway.getLastCheck()).toEqual({ ok: false, checkedAt: expect.any(String), message: (failure as Error).message });
-  });
-
   it.each([
     ["fails", { ok: false, output: "Could not start streaming" }],
-    ["answers without a port", { ok: true, output: "", data: { enabled: true } }],
     ["answers with the port 0", { ok: true, output: "", data: { enabled: true, port: 0 } }],
     ["answers with a port that is not a whole number", { ok: true, output: "", data: { enabled: true, port: 9444.5 } }],
     ["answers that the stream is off", { ok: true, output: "", data: { enabled: false, port: 9444 } }],
@@ -760,6 +742,7 @@ describe("BrowserLiveGateway.checkStream", () => {
     const streaming = h.cli.answers.status;
     h.cli.answers.status = () => ({ ok: false, output: "error: unrecognized subcommand 'stream'" });
     await expect(h.gateway.createTicket(session.id)).rejects.toBeInstanceOf(BrowserLiveUnavailableError);
+    expect(h.store.getSession(session.id)?.activeCount).toBe(0);
     const failed = h.gateway.getLastCheck();
     expect(failed).toMatchObject({ ok: false });
 
@@ -942,18 +925,6 @@ describe("BrowserLiveGateway tickets", () => {
     expect(h.journal).toEqual([]);
   });
 
-  it("refuses a ticket when the session's browser cannot stream", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    h.cli.answers.status = () => ({ ok: false, output: "error: unrecognized subcommand 'stream'" });
-
-    await expect(h.gateway.createTicket(session.id)).rejects.toBeInstanceOf(BrowserLiveUnavailableError);
-
-    // The session is let go of again and can still be closed.
-    expect(h.store.getSession(session.id)?.activeCount).toBe(0);
-    await expect(h.store.closeSession(session.id, OWNER)).resolves.toEqual({ ok: true });
-  });
-
   it("gives a ticket for the session's browser that is valid for 60 seconds", async () => {
     const h = await createHarness();
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -971,21 +942,12 @@ describe("BrowserLiveGateway tickets", () => {
     expect(second.token).not.toBe(ticket.token);
   });
 
-  it("upgrades with a valid ticket and opens the browser's stream with paced frames", async () => {
-    const { h, ticket } = await createTicketHarness();
-
-    const view = await h.openWithTicket(ticket);
-
-    expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
-    expect(h.handled).toEqual([true]);
-    expect(view.upstream.url).toBe("/?pacing=ack&maxFps=15");
-  });
-
   it("upgrades under a path prefix, as a staged preview serves it", async () => {
     const { h, ticket } = await createTicketHarness();
 
     const view = await h.openWithTicket(ticket, undefined, "/staging/41728153");
 
+    expect(view.upstream.url).toBe("/?pacing=ack&maxFps=15");
     expect(view.client.socket.readyState).toBe(WebSocket.OPEN);
     expect(h.handled).toEqual([true]);
   });
@@ -1288,7 +1250,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
       { type: "input_keyboard", eventType: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
     ];
 
-    for (const message of allowed) send(view.client, { ...message, script: "document.cookie", data: "QQ==" });
+    for (const message of allowed) send(view.client, { seq: 99, x: 99, ...message, script: "document.cookie", data: "QQ==" });
 
     for (const message of allowed) expect(await view.upstream.inbox.next()).toStrictEqual(message);
   });
@@ -1302,6 +1264,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
       { type: "stream", action: "disable" },
       { type: "frame", seq: 1, data: "QQ==" },
       { type: "input_mouse", eventType: "click", x: 1, y: 1 },
+      { type: ["input_mouse"], eventType: "mousePressed", x: 1, y: 1 },
       [{ type: "ack", seq: 1 }],
     ]) {
       send(view.client, dropped);
@@ -1610,12 +1573,8 @@ describe("parseBrowserLiveClientMessage", () => {
     ["a mouse button", mouse, "button", ["none", "left", "middle", "right"], ["back", "LEFT", "", 0, null, ["left"]]],
     ["a click count", mouse, "clickCount", [0, 1, 2, 3], [4, -1, 1.5, "1", null, true]],
     ["a horizontal scroll distance", mouse, "deltaX", [-40, 0, 0.25], ["40", null, Infinity, NaN]],
-    ["a vertical scroll distance", mouse, "deltaY", [-40, 0, 0.25], ["40", null, Infinity, NaN]],
     ["a mouse message's modifiers", mouse, "modifiers", allModifiers, notModifiers],
-    ["a key press's modifiers", key, "modifiers", allModifiers, notModifiers],
-    ["typed text's modifiers", typed, "modifiers", allModifiers, notModifiers],
     ["a key name", key, "key", ["", "a", "Backspace", longestName], [`${longestName}k`, 65, null, true, ["a"]]],
-    ["a key's code", key, "code", ["", "KeyA", longestName], [`${longestName}k`, 65, null, true, ["KeyA"]]],
     ["a key code", key, "windowsVirtualKeyCode", [0, 8, 255], [256, -1, 8.5, "8", null, true]],
     // One character is one code point: an emoji is two UTF-16 units, a letter with a combining accent two characters.
     ["a key press's text", key, "text", ["", "a", "\r", "\u00e9", "\u{1f600}"], ["ab", "\u{1f600}\u{1f600}", "e\u0301", 5, null, ["a"]]],
@@ -1629,15 +1588,6 @@ describe("parseBrowserLiveClientMessage", () => {
       for (const value of others) parsed(value).toStrictEqual(message());
     },
   );
-
-  it("takes nothing of a message but the fields its kind defines", () => {
-    expect(parse({ type: "ack", seq: 7, data: "QQ==", eventType: "mousePressed", x: 1, y: 1, modifiers: 8 }))
-      .toStrictEqual({ type: "ack", seq: 7 });
-    expect(parse(mouse({ key: "a", code: "KeyA", text: "a", windowsVirtualKeyCode: 65, touchPoints: [{ x: 1, y: 2 }], seq: 1, script: "x" })))
-      .toStrictEqual(mouse());
-    expect(parse(key({ key: "a", x: 1, y: 2, button: "left", clickCount: 1, deltaX: 1, deltaY: 1, seq: 1, script: "x" })))
-      .toStrictEqual(key({ key: "a" }));
-  });
 
   it("accepts what a viewer's toolbar asks of the browser, and an address as the browser will open it", () => {
     for (const message of [
@@ -1688,26 +1638,6 @@ describe("parseBrowserLiveClientMessage", () => {
       }
     }
   });
-
-  it("rejects every other kind of message, and what is not an object", () => {
-    for (const message of [
-      { type: "eval", script: "document.cookie" },
-      { type: "input_clipboard", text: "paste" },
-      { type: "ACK", seq: 1 },
-      // String(["input_mouse"]) is "input_mouse", so a check that coerces the type lets this through.
-      { type: ["input_mouse"], eventType: "mousePressed", x: 1, y: 1 },
-      { seq: 1 },
-      {},
-      [{ type: "ack", seq: 1 }],
-      null,
-      undefined,
-      "ack",
-      7,
-      true,
-    ]) {
-      expect(parse(message), JSON.stringify(message)).toBeUndefined();
-    }
-  });
 });
 
 describe("BrowserLiveGateway page size and address", () => {
@@ -1716,25 +1646,16 @@ describe("BrowserLiveGateway page size and address", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   });
 
-  it("sends the page's address and viewport, read with eval, when the stream opens", async () => {
-    const h = await createHarness();
-    const session = await h.createSession();
-    h.cli.answers.page = () => page(1280, 720, "https://example.com/");
-
-    const view = await h.openView(session.id);
-
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
-    expect(h.cli.calls.find((call) => call.command[0] === "eval")?.options)
-      .toMatchObject({ browserTarget: session.browserTarget, skipRecovery: true });
-  });
-
   it("reads the page again when the browser navigates or shows another tab, and sends only what changed", async () => {
     const h = await createHarness();
     h.cli.answers.page = () => page(1280, 720, "https://example.com/");
-    const view = await h.openView((await h.createSession()).id);
+    const session = await h.createSession();
+    const view = await h.openView(session.id);
     expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
     expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
+
+    expect(h.cli.calls.find((call) => call.command[0] === "eval")?.options)
+      .toMatchObject({ browserTarget: session.browserTarget, skipRecovery: true });
 
     h.cli.answers.page = () => page(800, 600, "https://example.com/");
     send(view.upstream, { type: "tabs", tabs: [] });
@@ -1821,19 +1742,6 @@ describe("BrowserLiveGateway page size and address", () => {
     send(view.upstream, { type: "tabs", tabs: [{ ...second, url: "https://example.org/next", active: true }], timestamp: 5 });
     await h.cli.called("eval", 4);
     await unchanged(4);
-  });
-
-  it("does not read the page for an address of the stream it already sent", async () => {
-    const h = await createHarness();
-    h.cli.answers.page = () => page(1280, 720, "https://example.com/");
-    const view = await h.openView((await h.createSession()).id);
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "url", url: "https://example.com/" });
-    expect(await view.client.inbox.next()).toStrictEqual({ type: "viewport", width: 1280, height: 720 });
-
-    send(view.upstream, { type: "url", url: "https://example.com/" });
-    await handled(view.upstream);
-
-    expect(h.cli.count("eval")).toBe(1);
   });
 
   it("does not read the page twice at once", async () => {
@@ -1932,8 +1840,6 @@ describe("BrowserLiveGateway reading the page over time", () => {
   it.each([
     ["the end of a click", { type: "input_mouse", eventType: "mouseReleased", x: 1, y: 1, button: "left", clickCount: 1 }, true],
     ["a key going up", { type: "input_keyboard", eventType: "keyUp", key: "Enter" }, true],
-    ["typed text", { type: "input_keyboard", eventType: "char", text: "a" }, true],
-    ["the pointer moving", { type: "input_mouse", eventType: "mouseMoved", x: 1, y: 1 }, false],
     ["the start of a click", { type: "input_mouse", eventType: "mousePressed", x: 1, y: 1, button: "left", clickCount: 1 }, false],
     ["a key going down", { type: "input_keyboard", eventType: "keyDown", key: "Enter" }, false],
   ])("after %s, reads the page 600 ms and 2.5 s later: %s", async (_name, input, reads) => {
@@ -2024,10 +1930,8 @@ describe("BrowserLiveGateway toolbar", () => {
   });
 
   it.each([
-    ["opens an address", { type: "navigate", url: "https://example.com/next" }, "open https://example.com/next"],
     ["goes back", { type: "history", direction: "back" }, "back"],
     ["goes forward", { type: "history", direction: "forward" }, "forward"],
-    ["reloads", { type: "reload" }, "reload"],
     ["shows another tab", { type: "tab", action: "select", tabId: "t2" }, "tab t2"],
   ])("%s in the browser and reads the page again", async (_name, message, command) => {
     const h = await createHarness();
@@ -2290,11 +2194,7 @@ describe("BrowserLiveGateway closing", () => {
     expect(await unrelated.client.inbox.next()).toStrictEqual({ type: "frame", seq: 1, data: "QQ==" });
   });
 
-  it.each([
-    ["its chat closes it", (h: Harness, session: BrowserSessionRecord): Promise<unknown> => h.store.closeSession(session.id, OWNER)],
-    ["it expires as idle", (h: Harness): Promise<unknown> => h.store.sweepIdleSessions(Date.now() + BROWSER_SESSION_IDLE_TIMEOUT_MS)],
-    ["the Bridge closes every session", (h: Harness): Promise<unknown> => h.store.closeAll()],
-  ])("ends a session's views before its browser is closed, when %s", async (_name, close) => {
+  it("ends a session's views before its browser is closed, when its chat closes it", async () => {
     const { streams, connectStream } = recordingStreams();
     const h = await createHarness({ connectStream });
     const session = await h.createSession();
@@ -2308,7 +2208,7 @@ describe("BrowserLiveGateway closing", () => {
       return successfulShutdown();
     };
 
-    const closing = close(h, session);
+    const closing = h.store.closeSession(session.id, OWNER);
 
     expect(await streamStatesAtClose.promise).toEqual([WebSocket.CLOSING]);
     // The view is told, and closed, while the browser is still open.

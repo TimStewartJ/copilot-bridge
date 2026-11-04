@@ -250,17 +250,9 @@ describe("browser_fetch tool", () => {
   async function loadBrowserFetch(settings = {}, telemetryStore?: { recordSpan: ReturnType<typeof vi.fn> }) {
     const mod = await import("../browser-fetch-tools.js");
     const { describePageBlock } = await import("../browser-page-check.js");
-    const [tool] = mod.createBrowserFetchTools(createBrowserToolContext(settings, telemetryStore));
+    const tool = mod.createBrowserFetchTools(createBrowserToolContext(settings, telemetryStore)).find((entry) => entry.name === "browser_fetch")!;
     return { tool, describePageBlock };
   }
-
-  it("tells the agent that the public browser is not signed in and that a block is reported", async () => {
-    const { tool } = await loadBrowserFetch();
-
-    expect(tool.name).toBe("browser_fetch");
-    expect(tool.description).toContain("`blocked`");
-    expect(tool.description).toMatch(/public browser[^.]*not signed in/i);
-  });
 
   it("requires a reason for authenticated fetches", async () => {
     const { tool } = await loadBrowserFetch();

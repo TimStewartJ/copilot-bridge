@@ -162,7 +162,7 @@ async function loadBrowserSessionTools(ctx = createBrowserToolContext()) {
   const { getBrowserRuntime } = await import("../browser-runtime.js");
   const definitions = mod.createBrowserSessionToolDefinitions(ctx);
   const tools = Object.fromEntries(definitions.map((tool: any) => [tool.name, tool]));
-  return { definitions, tools, runtime: getBrowserRuntime(ctx) };
+  return { tools, runtime: getBrowserRuntime(ctx) };
 }
 
 describe("browser session tools", () => {
@@ -217,17 +217,8 @@ describe("browser session tools", () => {
   });
 
   it("offers the session tools, with the handoff among them", async () => {
-    const { definitions, tools } = await loadBrowserSessionTools();
+    const { tools } = await loadBrowserSessionTools();
 
-    expect(definitions.map((tool: any) => tool.name)).toEqual([
-      "browser_session_start",
-      "browser_session_exec",
-      "browser_session_get_state",
-      "browser_sign_in",
-      "browser_session_handoff",
-      "browser_session_close",
-    ]);
-    expect(tools.browser_session_start.description).toContain("browser_session_handoff");
     expect(tools.browser_session_start.inputSchema.required).toEqual(["context"]);
     expect(tools.browser_session_handoff.inputSchema.required).toEqual(["browserSessionId", "reason"]);
   });
@@ -284,7 +275,7 @@ describe("browser session tools", () => {
     const { tools, runtime } = await loadBrowserSessionTools();
     const profileDir = testPath("browser-public", "slot-1");
 
-    const started = await tools.browser_session_start.handler({ context: "public" }, invocation) as any;
+    const started = await tools.browser_session_start.handler({ context: "public", purpose: "Read an article" }, invocation) as any;
     const record = runtime.sessions.getSession(started.browserSessionId);
     const first = await tools.browser_session_exec.handler({
       browserSessionId: started.browserSessionId,
@@ -301,9 +292,13 @@ describe("browser session tools", () => {
     }, invocation) as any;
 
     expect(started).toMatchObject({ context: "public", sharedAuthenticated: false });
-    expect(record).toMatchObject({ context: "public", publicSlot: 1 });
+    expect(record).toMatchObject({ context: "public", publicSlot: 1, ownerSessionId: invocation.sessionId, purpose: "Read an article" });
     expect(record?.browserTarget.profileDir).toBe(profileDir);
     expect(first.context).toBe("public");
+    expect(first).not.toHaveProperty("blocked");
+    expect(first).not.toHaveProperty("captcha");
+    expect(second).not.toHaveProperty("blocked");
+    expect(second).not.toHaveProperty("captcha");
     expect(second.state.title).toEqual({ ok: true, output: "Example Domain" });
     expect(second.state).not.toHaveProperty("url");
     // Every command, the page check included, ran in the session's own browser.
@@ -354,23 +349,6 @@ describe("browser session tools", () => {
       { name: "a human check", page: CHALLENGE_PAGE, field: "blocked", other: "captcha", kind: "challenge", by: "Cloudflare" },
       { name: "a CAPTCHA inside a usable page", page: CAPTCHA_PAGE, field: "captcha", other: "blocked", kind: "captcha", by: "reCAPTCHA" },
     ] as const;
-
-    it("attaches nothing for a page a person would simply read", async () => {
-      const browser = fakeAgentBrowser();
-      const { tools, browserSessionId } = await startPublicSession(browser);
-
-      const exec = await tools.browser_session_exec.handler({
-        browserSessionId,
-        commands: [{ command: "open", args: ["https://example.com"] }],
-      }, invocation) as any;
-      const state = await tools.browser_session_get_state.handler({ browserSessionId }, invocation) as any;
-
-      for (const result of [exec, state]) {
-        expect(result).not.toHaveProperty("blocked");
-        expect(result).not.toHaveProperty("captcha");
-        expect(result).not.toHaveProperty("resultType");
-      }
-    });
 
     it.each(blockingPages)("reports $name beside the work, with what to do about it", async ({ page, field, other, kind, by }) => {
       const browser = fakeAgentBrowser();

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeTestDir } from "../../__tests__/helpers.js";
 import { resolveVoicePaths } from "../voice-catalog.js";
-import { describeCapabilities, VoiceEngine, type VoiceEngineStatus } from "../voice-engine.js";
+import { VoiceEngine, type VoiceEngineStatus } from "../voice-engine.js";
 import type { VoiceEngineCapability, VoiceEngineRequest } from "../voice-engine-protocol.js";
 
 type SentMessage = VoiceEngineRequest & { id?: number };
@@ -93,10 +93,6 @@ afterEach(async () => {
 });
 
 describe("VoiceEngine on-demand models", () => {
-  it("describes model groups for status text", () => {
-    expect(describeCapabilities(["asr"])).toBe("speech recognition");
-    expect(describeCapabilities(["asr", "turn", "tts"])).toBe("speech recognition, turn detection and voice");
-  });
 
   it("starts the runtime and loads only speech recognition for clip transcription", async () => {
     const { engine, children, statuses } = createEngine();

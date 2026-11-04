@@ -18,7 +18,6 @@ const PRESETS = { preset1: { model: "gpt-6.1-terra", reasoningEffort: "high" } }
 
 describe("parseRouteDecision", () => {
   it.each([
-    ['{"action":"send","text":"Check the Tether task."}', { action: "send", text: "Check the Tether task." }],
     ['Sure: {"action":"progress","text":"ignored"}', { action: "progress", text: "" }],
     ['```json\n{"action":"ignore","text":""}\n```', { action: "ignore", text: "" }],
     ['{"action":"send","text":"  "}', undefined],

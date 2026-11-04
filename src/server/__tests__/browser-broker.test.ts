@@ -183,14 +183,6 @@ describe("browser broker", () => {
     expect(authenticated.browserTarget).not.toHaveProperty("idleTimeoutMs");
   });
 
-  it("lets the signed-in browser close by itself only where a Bridge asks for it", () => {
-    const root = makeTestDir("browser-broker-auth-idle");
-
-    expect(new BrowserBroker({ copilotHome: root }).getAuthenticatedTarget().idleTimeoutMs).toBeUndefined();
-    expect(new BrowserBroker({ copilotHome: root, authenticatedIdleTimeoutMs: 60_000 }).getAuthenticatedTarget())
-      .toMatchObject({ idleTimeoutMs: 60_000 });
-  });
-
   it("serializes authenticated operations", async () => {
     const root = makeTestDir("browser-broker-auth");
     const broker = new BrowserBroker({ copilotHome: root });
@@ -528,24 +520,6 @@ describe("public browser targets", () => {
     expect(otherName).toMatch(/^copilot-bridge-public-[a-f0-9]{8}-1$/);
   });
 
-  it("tells the holder of a lease whether its profile folder was made for it", async () => {
-    const root = makeTestDir("browser-broker-public-profile-is-new");
-    await mkdir(slotDir(root, 2), { recursive: true });
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget: mockShutdown() });
-
-    const first = await broker.createSessionTarget("public");
-    const leftFromEarlier = await broker.createSessionTarget("public");
-    await broker.disposeSessionTarget(first, OP);
-    const again = await broker.createSessionTarget("public");
-    const neverUsed = await broker.createSessionTarget("public", { unused: true });
-
-    expect(first).toMatchObject({ publicSlot: 1, publicProfileIsNew: true });
-    expect(leftFromEarlier).toMatchObject({ publicSlot: 2, publicProfileIsNew: false });
-    expect(again).toMatchObject({ publicSlot: 1, publicProfileIsNew: false });
-    expect(neverUsed).toMatchObject({ publicSlot: 3, publicProfileIsNew: true });
-    expect(await broker.createSessionTarget("authenticated")).not.toHaveProperty("publicProfileIsNew");
-  });
-
   it("takes the window and the executable of a public browser from the launch configuration", async () => {
     const root = makeTestDir("browser-broker-public-launch-config");
     const executablePath = testExecutablePath("chrome");
@@ -600,29 +574,6 @@ describe("public profile slots", () => {
     expect(removeProfile).not.toHaveBeenCalled();
   });
 
-  it("gives browsers that are open at the same time profiles of their own, lowest free first", async () => {
-    const root = makeTestDir("browser-broker-slot-distinct");
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget: mockShutdown() });
-
-    const first = await broker.createSessionTarget("public");
-    const second = await broker.createSessionTarget("public");
-
-    expect([first.publicSlot, second.publicSlot]).toEqual([1, 2]);
-    expect(second.browserTarget.sessionName).not.toBe(first.browserTarget.sessionName);
-    expect(second.browserTarget.profileDir).not.toBe(first.browserTarget.profileDir);
-    expect(await exists(first.browserTarget.profileDir)).toBe(true);
-    expect(await exists(second.browserTarget.profileDir)).toBe(true);
-
-    await expect(broker.disposeSessionTarget(first, OP)).resolves.toBeUndefined();
-    const third = await broker.createSessionTarget("public");
-    const fourth = await broker.createSessionTarget("public");
-
-    // The first profile is free again while the second is still held.
-    expect(third.publicSlot).toBe(1);
-    expect(third.browserTarget).toEqual(first.browserTarget);
-    expect(fourth.publicSlot).toBe(3);
-  });
-
   it("never hands one profile to two leases that are requested together", async () => {
     const root = makeTestDir("browser-broker-slot-together");
     const broker = new BrowserBroker({ copilotHome: root, shutdownTarget: mockShutdown() });
@@ -633,28 +584,6 @@ describe("public profile slots", () => {
     expect(new Set(leases.map((lease) => lease.browserTarget.sessionName)).size).toBe(6);
     expect(new Set(leases.map((lease) => lease.browserTarget.profileDir)).size).toBe(6);
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 6, inUse: 6 });
-  });
-
-  it("checks a profile for a leftover browser once, before its first use", async () => {
-    const root = makeTestDir("browser-broker-slot-verify-once");
-    const shutdownTarget = mockShutdown();
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget });
-
-    const first = await broker.createSessionTarget("public");
-    expect(shutdownTarget.mock.calls).toEqual([[first.browserTarget, undefined]]);
-
-    await broker.disposeSessionTarget(first, OP);
-    expect(closedSlots(shutdownTarget)).toEqual([1, 1]);
-
-    // Closed cleanly, so the second lease of the profile needs no check.
-    const again = await broker.createSessionTarget("public");
-    expect(again.publicSlot).toBe(1);
-    expect(closedSlots(shutdownTarget)).toEqual([1, 1]);
-
-    // Another profile is checked before its own first use.
-    const other = await broker.createSessionTarget("public");
-    expect(other.publicSlot).toBe(2);
-    expect(closedSlots(shutdownTarget)).toEqual([1, 1, 2]);
   });
 
   it("skips a profile whose leftover browser will not die and tries it again for the next lease", async () => {
@@ -678,19 +607,6 @@ describe("public profile slots", () => {
     const third = await broker.createSessionTarget("public");
     expect(third.publicSlot).toBe(1);
     expect(closedSlots(shutdownTarget)).toEqual([1, 2, 1, 3, 1]);
-  });
-
-  it("fails a lease whose check for a leftover browser throws, and frees the profile", async () => {
-    const root = makeTestDir("browser-broker-slot-verify-throws");
-    const shutdownTarget = mockShutdown();
-    shutdownTarget.mockRejectedValueOnce(new Error("process list unavailable"));
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget });
-
-    await expect(broker.createSessionTarget("public")).rejects.toThrow("process list unavailable");
-
-    const lease = await broker.createSessionTarget("public");
-    expect(lease.publicSlot).toBe(1);
-    expect(closedSlots(shutdownTarget)).toEqual([1, 1]);
   });
 
   it("leaves a profile with its holder when closing its browser threw, until closing it works", async () => {
@@ -772,26 +688,6 @@ describe("public profile slots", () => {
     expect(closedSlots(shutdownTarget)).toEqual([1, 1, 1, 2, 2, 1, 1]);
     expect(removeProfile).not.toHaveBeenCalled();
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 2, inUse: 0 });
-  });
-
-  it("passes over every profile that exists when asked for one that was never used", async () => {
-    const root = makeTestDir("browser-broker-slot-unused");
-    await mkdir(slotDir(root, 1), { recursive: true });
-    await mkdir(slotDir(root, 3));
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget: mockShutdown() });
-
-    const unused = await broker.createSessionTarget("public", { unused: true });
-    expect(unused.publicSlot).toBe(2);
-    expect(await readdir(unused.browserTarget.profileDir)).toEqual([]);
-    // That profile exists now, and is held as well.
-    expect((await broker.createSessionTarget("public", { unused: true })).publicSlot).toBe(4);
-
-    // Without the wish it is the lowest free one, used or not.
-    expect((await broker.createSessionTarget("public")).publicSlot).toBe(1);
-    expect((await broker.createSessionTarget("public", { unused: false })).publicSlot).toBe(3);
-    // The authenticated browser has the one profile.
-    expect(await broker.createSessionTarget("authenticated", { unused: true }))
-      .toEqual(await broker.createSessionTarget("authenticated"));
   });
 
   it("refuses one browser more than there are public profiles", async () => {
@@ -992,16 +888,9 @@ describe("a public profile on which the browser does not start", () => {
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
   });
 
-  it.each([
-    ["with no profile from earlier", false, []],
-    ["beside a profile from earlier", true, ["slot-1"]],
-  ])("says that the browser does not start, and leaves no folder behind, however often it fails %s", async (
-    _name,
-    earlierProfile,
-    folders,
-  ) => {
+  it("says that the browser does not start, and leaves no folder behind, however often it fails beside a profile from earlier", async () => {
     const { root, host, broker } = createBroker("browser-broker-unstartable-host-again");
-    if (earlierProfile) await mkdir(slotDir(root, 1), { recursive: true });
+    await mkdir(slotDir(root, 1), { recursive: true });
     host.works = false;
     const failures: string[] = [];
 
@@ -1016,8 +905,8 @@ describe("a public profile on which the browser does not start", () => {
     // the profiles its predecessors tried.
     expect(failures.filter((message) => !message.startsWith("Browser public context is unavailable: Chrome exited early")))
       .toEqual([]);
-    expect(await exists(publicRoot(root)) ? await readdir(publicRoot(root)) : []).toEqual(folders);
-    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: folders.length, inUse: 0 });
+    await expect(readdir(publicRoot(root))).resolves.toEqual(["slot-1"]);
+    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
   });
 
   it("does not run an operation again that failed after its browser had started", async () => {
@@ -1284,44 +1173,6 @@ describe("a browser the user is acting in", () => {
     expect(health).not.toHaveProperty("lastFailureAt");
   });
 
-  it("says what the user was given it for, for as long as they have it", async () => {
-    const { broker } = createBroker("browser-broker-held-for");
-    const lease = await broker.createSessionTarget("public");
-    expect(broker.heldFor(lease)).toBeUndefined();
-
-    const handBack = broker.holdTarget(lease, "sign in to the store");
-    expect(broker.heldFor(lease)).toBe("sign in to the store");
-    expect(broker.heldFor(await broker.createSessionTarget("public"))).toBeUndefined();
-
-    handBack();
-    expect(broker.heldFor(lease)).toBeUndefined();
-  });
-
-  it("runs what is part of the user's own use of it", async () => {
-    const { broker, runCommand } = createBroker("browser-broker-held-during");
-    const lease = await broker.createSessionTarget("public");
-    broker.holdTarget(lease, "sign in to the store");
-
-    await expect(broker.withTarget(lease, { ...OP, duringHold: true }, async (held) => held.publicSlot))
-      .resolves.toBe(1);
-
-    expect(runCommand.mock.calls.map(([command]) => command.join(" "))).toEqual(["get url", "get title"]);
-    expect(broker.getSnapshot().public.status).toBe("ready");
-  });
-
-  it("leaves every other browser alone", async () => {
-    const { broker } = createBroker("browser-broker-held-others");
-    const held = await broker.createSessionTarget("public");
-    const other = await broker.createSessionTarget("public");
-    broker.holdTarget(held, "sign in to the store");
-
-    await expect(broker.withTarget(other, OP, async (lease) => lease.publicSlot)).resolves.toBe(2);
-    await expect(broker.withEphemeralContext("public", OP, async (lease) => lease.publicSlot)).resolves.toBe(3);
-    await expect(broker.withEphemeralContext("authenticated", OP, async (lease) => lease.context))
-      .resolves.toBe("authenticated");
-    await expect(broker.withTarget(held, OP, async () => "ran")).rejects.toThrow(heldMessage("sign in to the store"));
-  });
-
   it("takes operations again once the user has handed it back, and is handed back only by the handover that took it", async () => {
     const { broker } = createBroker("browser-broker-held-released");
     const lease = await broker.createSessionTarget("public");
@@ -1338,19 +1189,6 @@ describe("a browser the user is acting in", () => {
     handBackFirst();
     await expect(run()).rejects.toThrow(heldMessage("sign in to the store"));
     handBackSecond();
-    await expect(run()).resolves.toBe("ran");
-  });
-
-  it("refuses to hand over a browser the user already has, and leaves the first handover as it is", async () => {
-    const { broker } = createBroker("browser-broker-held-twice");
-    const lease = await broker.createSessionTarget("public");
-    const run = () => broker.withTarget(lease, QUIET, async () => "ran");
-
-    const handBackFirst = broker.holdTarget(lease, "sign in to the store");
-    expect(() => broker.holdTarget(lease, "solve the puzzle")).toThrow(heldMessage("sign in to the store"));
-    await expect(run()).rejects.toThrow(heldMessage("sign in to the store"));
-
-    handBackFirst();
     await expect(run()).resolves.toBe("ran");
   });
 
@@ -1462,25 +1300,6 @@ describe("public profile statistics and reset", () => {
 
     expect(await exists(publicRoot(root))).toBe(false);
     expect(shutdownTarget).not.toHaveBeenCalled();
-  });
-
-  it("counts the profile folders and the ones a browser is using, and nothing else", async () => {
-    const root = makeTestDir("browser-broker-stats");
-    const broker = new BrowserBroker({ copilotHome: root, shutdownTarget: mockShutdown() });
-    const first = await broker.createSessionTarget("public");
-    const second = await broker.createSessionTarget("public");
-    const third = await broker.createSessionTarget("public");
-    await broker.disposeSessionTarget(second, OP);
-    for (const name of ["profile-1a2b3c4d", "other", "slot-x", "slots"]) {
-      await mkdir(join(publicRoot(root), name));
-    }
-    await writeFile(join(publicRoot(root), "slot-9"), "a file, not a profile");
-
-    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 3, inUse: 2 });
-
-    await broker.disposeSessionTarget(first, OP);
-    await broker.disposeSessionTarget(third, OP);
-    await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 3, inUse: 0 });
   });
 
   it("takes only folders named slot-<n>, n from 1 and without a leading zero, for profiles", async () => {

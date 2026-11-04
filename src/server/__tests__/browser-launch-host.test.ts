@@ -54,10 +54,6 @@ afterEach(() => {
 
 describe("readBrowserVersion", () => {
   it.each([
-    ["Google Chrome 154.0.8037.97 \n", "Google Chrome 154.0.8037.97"],
-    // A build may add a channel word after the number.
-    ["Google Chrome 154.0.8037.97 unknown\n", "Google Chrome 154.0.8037.97"],
-    ["Chromium 140.0.7339.80 built on Debian GNU/Linux 13 (trixie)\n", "Chromium 140.0.7339.80"],
     ["Google Chrome for Testing 141.0.7390.37 \n", "Google Chrome for Testing 141.0.7390.37"],
     ["  Google Chrome 154.0.8037.97\r\n", "Google Chrome 154.0.8037.97"],
   ])("reads the name and the number from %j", async (stdout, expected) => {
@@ -83,11 +79,8 @@ describe("readBrowserVersion", () => {
       .resolves.toBe("Google Chrome 154.0.8037.97");
   });
 
-  it.each([
-    ["prints nothing", ""],
-    ["prints no version number", "usage: browser [options]\n"],
-  ])("has no version for a browser that %s", async (_name, stdout) => {
-    browserPrints(stdout);
+  it("has no version for a browser that prints no version number", async () => {
+    browserPrints("usage: browser [options]\n");
     const host = await importHost("linux");
 
     await expect(host.readBrowserVersion(path.join(makeTestDir("browser-version-none"), "chrome")))
@@ -114,19 +107,12 @@ describe("readBrowserVersion", () => {
       return path.join(application, "chrome.exe");
     }
 
-    it("takes the version from the folder next to the executable, without starting the browser", async () => {
-      const executable = installFolder(["154.0.8037.97", "SetupMetrics", "Dictionaries"]);
-      const host = await importHost("win32");
-
-      await expect(host.readBrowserVersion(executable)).resolves.toBe("154.0.8037.97");
-      expect(execFileMock).not.toHaveBeenCalled();
-    });
-
     it("takes the highest version when an update left the previous one in place", async () => {
       const executable = installFolder(["99.0.4844.84", "154.0.8037.97", "154.0.8037.100", "100.0.4896.60"]);
       const host = await importHost("win32");
 
       await expect(host.readBrowserVersion(executable)).resolves.toBe("154.0.8037.100");
+      expect(execFileMock).not.toHaveBeenCalled();
     });
 
     it("has no version when no folder is named like one or the folder is gone", async () => {

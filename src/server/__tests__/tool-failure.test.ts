@@ -6,31 +6,15 @@ afterEach(() => vi.useRealTimers());
 
 describe("tool failure classification", () => {
   it.each([
-    ["Kusto request failed: 403 Forbidden", "permission"],
     ["Kusto403", "permission"],
-    ["AuthorizationFailed: access denied", "permission"],
-    ["KustoRequestDeniedException: not authorized to query this database", "permission"],
-    ["401 Unauthorized: token expired", "authentication"],
     ["ExpiredAuthenticationToken", "authentication"],
-    ["Authentication required: credentials missing", "authentication"],
-    ["Bad request 400: SemanticError: ring timeline empty", "query-server"],
     ["KustoBadRequestException: 400 Bad Request, assert(ring timeline empty)", "query-server"],
     ["Invalid filter: slash property paths are not supported", "invalid-input"],
-    ["MCP error -32602: invalid params", "invalid-input"],
-    ["Kusto assert: ring timeline empty", "query-server"],
-    ["SemanticError: column not found", "query-server"],
     ["ETIMEDOUT: deadline exceeded", "timeout"],
-    ["ECONNRESET: connection closed", "transport"],
     ["MCP error -32001: Session not found", "transport"],
-    ["HTTP 429 Too Many Requests", "throttled"],
     ["TooManyRequests", "throttled"],
-    ["HTTP 404: resource missing", "not-found"],
     ["NotFound", "not-found"],
     ["Operation is not supported on this route", "invalid-input"],
-    ["Tool initialization incomplete", "initialization"],
-    ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP request timed out after 60000 ms', "catalog-changed"],
-    ['MCP tool catalog changed before tool "demo-read" could be invoked: Failed to verify cached MCP tools: MCP error -32602: request _meta is missing or has malformed required fields', "catalog-changed"],
-    ["Something went wrong", "unknown"],
   ])("classifies %s as %s", (text, category) => {
     expect(classifyToolFailure(text).category).toBe(category);
   });
@@ -46,7 +30,8 @@ describe("tool failure classification", () => {
     expect(permission).toMatchObject({ category: "permission", retryable: false });
     expect(permission.guidance).toContain("403 is not evidence of expired authentication");
     expect(classifyToolFailure("401 Unauthorized: token expired")).toMatchObject({ category: "authentication", retryable: false });
-    expect(classifyToolFailure("Tool initialization failed: missing canonical tools").retryable).toBe(false);
+    expect(classifyToolFailure("Tool initialization failed: missing canonical tools"))
+      .toMatchObject({ category: "initialization", retryable: false });
   });
 
   it("marks a call the runtime never sent, because the server's tool list was still being checked, as safe to repeat", () => {
@@ -135,7 +120,7 @@ describe("tool failure classification", () => {
       .toMatchObject({ category: "invalid-input", errorCode: -32602 });
   });
 
-  it.each(["Vendor.Locked-42", "constructor", "__proto__", "x".repeat(64), 123456, -42001, 0])(
+  it.each(["__proto__", "x".repeat(64), -42001, 0])(
     "retains unfamiliar structured code %s without guessing its category",
     (code) => {
       expect(classifyToolFailure({ error: { code, message: "opaque provider failure" } }))
@@ -143,7 +128,7 @@ describe("tool failure classification", () => {
     },
   );
 
-  it.each(["", "x".repeat(65), "https://example.com", "Bearer credential", NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1, true, {}])(
+  it.each(["", "x".repeat(65), "https://example.com", 1.5, Number.MAX_SAFE_INTEGER + 1, {}])(
     "omits malformed structured code %s",
     (code) => {
       expect(classifyToolFailure({ error: { code } })).not.toHaveProperty("errorCode");

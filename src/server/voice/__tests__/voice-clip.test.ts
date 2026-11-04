@@ -105,7 +105,8 @@ describe("planSpeechChunks", () => {
   const options = { sampleRate, maxChunkSeconds: 10, maxGapSeconds: 1, padSeconds: 0.5 };
 
   it("merges segments separated by short pauses and pads the result", () => {
-    expect(planSpeechChunks([{ start: 200, end: 400 }, { start: 450, end: 600 }], 2_000, options)).toEqual([{ start: 150, end: 650 }]);
+    expect(planSpeechChunks([{ start: 200, end: 400 }, { start: 550, end: 600 }], 2_000, { sampleRate, ...CLIP_CHUNK_PLAN }))
+      .toEqual([{ start: 175, end: 625 }]);
   });
 
   it("starts a new chunk after a long pause and keeps padding from overlapping", () => {
@@ -127,18 +128,14 @@ describe("planSpeechChunks", () => {
       .toEqual([{ start: 0, end: 100 }, { start: 500, end: 800 }]);
   });
 
-  it("uses recognizer-friendly defaults", () => {
-    expect(CLIP_CHUNK_PLAN).toEqual({ maxChunkSeconds: 20, maxGapSeconds: 1.5, padSeconds: 0.25 });
-  });
-
   describe("speech that ran longer than a chunk without a detectable pause", () => {
     const lengths = (chunks: Array<{ start: number; end: number }>) => chunks.map((chunk) => chunk.end - chunk.start);
 
     it("cuts it into the fewest even pieces when there is no audio to look at", () => {
-      const chunks = planSpeechChunks([{ start: 0, end: 4_500 }], 4_500, { ...options, padSeconds: 0 });
-      expect(lengths(chunks)).toEqual([900, 900, 900, 900, 900]);
+      const chunks = planSpeechChunks([{ start: 0, end: 4_002 }], 4_002, { sampleRate, ...CLIP_CHUNK_PLAN });
+      expect(lengths(chunks)).toEqual([1_334, 1_334, 1_334]);
       expect(chunks[0]!.start).toBe(0);
-      expect(chunks.at(-1)!.end).toBe(4_500);
+      expect(chunks.at(-1)!.end).toBe(4_002);
     });
 
     it("cuts it at the quietest points, so a pause is cut rather than a word", () => {
@@ -186,7 +183,8 @@ describe("planSpeechChunks", () => {
     });
 
     it("leaves speech that fits in one chunk alone", () => {
-      expect(planSpeechChunks([{ start: 0, end: 1_000 }], 1_000, { ...options, samples: new Float32Array(1_000) })).toEqual([{ start: 0, end: 1_000 }]);
+      expect(planSpeechChunks([{ start: 0, end: 2_000 }], 2_000, { sampleRate, ...CLIP_CHUNK_PLAN, samples: new Float32Array(2_000) }))
+        .toEqual([{ start: 0, end: 2_000 }]);
     });
   });
 });

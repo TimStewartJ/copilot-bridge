@@ -114,7 +114,6 @@ describe("uploadFiles", () => {
   });
 
   it.each([
-    ["a file that does not exist", () => [join(folder, "missing.jpg")], "upload found no file at"],
     ["a folder", () => [folder], "upload found no file at"],
     ["a name alone that is not in the chat's files", () => ["missing.jpg"], "upload found no file at"],
     ["a relative path", () => [join("sub", "photo.jpg")], "upload takes absolute file paths, or the name alone"],

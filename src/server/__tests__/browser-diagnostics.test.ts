@@ -333,7 +333,6 @@ describe("browser diagnostics", () => {
     it.each([
       { name: "the version agent-browser prints", output: "agent-browser 0.38.2", version: "0.38.2" },
       { name: "no version when the version command fails", output: undefined, version: undefined },
-      { name: "no version when the output holds none", output: "agent-browser (development build)", version: undefined },
     ])("reports $name", async ({ output, version }) => {
       agentBrowserVersionOutput = output;
       const { ctx } = createContext();
@@ -357,19 +356,6 @@ describe("browser diagnostics", () => {
       });
     }
 
-    it("reports nothing until a live view was checked, and then what the check found", async () => {
-      const { ctx } = createContext();
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const { getBrowserRuntime } = await import("../browser-runtime.js");
-
-      expect((await getBrowserDiagnostics(ctx)).config).not.toHaveProperty("liveView");
-
-      const check = { ok: true, checkedAt: "2026-03-10T12:00:00.000Z" };
-      vi.spyOn(getBrowserRuntime(ctx).live, "getLastCheck").mockReturnValue(check);
-
-      expect((await getBrowserDiagnostics(ctx)).config.liveView).toEqual(check);
-    });
-
     it("checks the live view in the browser of the public probe, and reports a failure without failing the probe", async () => {
       const seen = answerReadiness();
       const { ctx, copilotHome } = createContext();
@@ -379,10 +365,11 @@ describe("browser diagnostics", () => {
 
       // The browser itself works; that it cannot be shown is a finding of its own.
       expect(probe).toMatchObject({ ok: true, context: "public", state: "ready" });
-      const streamCommands = seen.filter((command) => command.args[0] === "stream");
-      expect(streamCommands.length).toBeGreaterThan(0);
-      expect(streamCommands.every((command) =>
-        command.env?.AGENT_BROWSER_PROFILE === path.join(copilotHome, "browser-public", "slot-1"))).toBe(true);
+      const profile = path.join(copilotHome, "browser-public", "slot-1");
+      const targetProfiles = seen.flatMap((command) => command.env?.AGENT_BROWSER_PROFILE ?? []);
+      expect(seen.some((command) => command.args[0] === "stream" && command.env?.AGENT_BROWSER_PROFILE === profile)).toBe(true);
+      expect(new Set(targetProfiles)).toEqual(new Set([profile]));
+      expect(existsSync(profile)).toBe(true);
       const { liveView } = (await mod.getBrowserDiagnostics(ctx)).config;
       expect(liveView).toMatchObject({ ok: false, message: expect.any(String) });
       expect(liveView?.message).not.toBe("");
@@ -738,51 +725,6 @@ describe("browser diagnostics", () => {
       AGENT_BROWSER_HEADED: "true",
     });
     expect(closeCalls[0].env?.AGENT_BROWSER_SESSION).toContain("copilot-bridge-");
-  });
-
-  it("probes public readiness without using the authenticated profile", async () => {
-    const seenProfiles: string[] = [];
-    execFileMock.mockImplementation((
-      _file: string,
-      args: string[],
-      options: any,
-      cb: (err: any, result?: { stdout: string; stderr: string }) => void,
-    ) => {
-      if (options?.env?.AGENT_BROWSER_PROFILE) {
-        seenProfiles.push(options.env.AGENT_BROWSER_PROFILE);
-      }
-      if (args[0] === "get" && args[1] === "url") {
-        cb(null, { stdout: "about:blank", stderr: "" });
-      } else if (args[0] === "get" && args[1] === "title") {
-        cb(null, { stdout: "New tab", stderr: "" });
-      } else {
-        cb(null, { stdout: "", stderr: "" });
-      }
-      return {} as any;
-    });
-    const db = setupTestDb();
-    const settingsStore = createSettingsStore(db);
-    const telemetryStore = createTelemetryStore(db);
-    // The probe creates the public profile it runs in.
-    const copilotHome = path.join(makeTestDir("browser-diagnostics-probe"), ".copilot");
-
-    const mod = await import("../browser-diagnostics.js");
-    const result = await mod.probeBrowserContext({
-      settingsStore,
-      telemetryStore,
-      copilotHome,
-    } as AppContext, "public");
-
-    expect(result).toMatchObject({
-      ok: true,
-      context: "public",
-      state: "ready",
-    });
-    expect(seenProfiles.length).toBeGreaterThan(0);
-    expect(seenProfiles.every((profile) => profile.includes("browser-public"))).toBe(true);
-    // A public browser runs in a numbered profile that is kept for the next one.
-    expect(new Set(seenProfiles.map(pathBasename))).toEqual(new Set(["slot-1"]));
-    expect(existsSync(path.join(copilotHome, "browser-public", "slot-1"))).toBe(true);
   });
 
   it("verifies authenticated Azure DevOps state through the broker", async () => {

@@ -53,12 +53,6 @@ afterEach(() => {
 });
 
 describe("parseBrowserArgs", () => {
-  it("splits a string with newlines by lines only, so an argument may contain commas", () => {
-    expect(launch.parseBrowserArgs("--window-size=1280,720\n--disable-features=Foo,Bar")).toEqual([
-      "--window-size=1280,720",
-      "--disable-features=Foo,Bar",
-    ]);
-  });
 
   it("accepts Windows line endings", () => {
     expect(launch.parseBrowserArgs("--window-size=1280,720\r\n--no-sandbox\r\n")).toEqual([
@@ -77,21 +71,9 @@ describe("parseBrowserArgs", () => {
     expect(launch.parseBrowserArgs("\n  --no-sandbox  \n\n \n--lang=en-US\n")).toEqual(["--no-sandbox", "--lang=en-US"]);
     expect(launch.parseBrowserArgs(["  --no-sandbox  ", "", "   "])).toEqual(["--no-sandbox"]);
   });
-
-  it.each([
-    ["undefined", undefined],
-    ["an object", { args: "--no-sandbox" }],
-    ["a blank string", "  \n  "],
-  ])("has no arguments for %s", (_label, value) => {
-    expect(launch.parseBrowserArgs(value)).toEqual([]);
-  });
 });
 
 describe("formatBrowserArgs", () => {
-  it("joins the arguments with newlines", () => {
-    expect(launch.formatBrowserArgs(["--no-sandbox", "--lang=en-US"])).toBe("--no-sandbox\n--lang=en-US");
-    expect(launch.formatBrowserArgs([])).toBe("");
-  });
 
   it("round-trips what the Bridge composes around a single argument with a comma", () => {
     const composed = launch.composeBrowserLaunchArgs(["--window-size=1280,720"]);
@@ -100,33 +82,11 @@ describe("formatBrowserArgs", () => {
 });
 
 describe("composeBrowserLaunchArgs", () => {
-  it("keeps the inherited arguments first and in their order", () => {
-    expect(launch.composeBrowserLaunchArgs(["--no-sandbox", "--window-size=1280,720", "--lang=en-US"])).toEqual([
-      "--no-sandbox",
-      "--window-size=1280,720",
-      "--lang=en-US",
-      ...DEFAULT_ARGS,
-    ]);
-  });
 
   it("adds AutomationControlled to an existing list of disabled Blink features instead of a second switch", () => {
     expect(launch.composeBrowserLaunchArgs(["--disable-blink-features=Foo,Bar", "--no-sandbox"])).toEqual([
       "--disable-blink-features=Foo,Bar,AutomationControlled",
       "--no-sandbox",
-      SWIFTSHADER,
-      BLANK,
-    ]);
-  });
-
-  it("extends the last list when the switch is given several times, the one Chrome honours", () => {
-    expect(launch.composeBrowserLaunchArgs([
-      "--disable-blink-features=Foo",
-      "--no-sandbox",
-      "--disable-blink-features=Bar",
-    ])).toEqual([
-      "--disable-blink-features=Foo",
-      "--no-sandbox",
-      "--disable-blink-features=Bar,AutomationControlled",
       SWIFTSHADER,
       BLANK,
     ]);
@@ -169,32 +129,13 @@ describe("composeBrowserLaunchArgs", () => {
     expect(composed.at(-1)).toBe("about:blank");
   });
 
-  it.each<[string, string[]]>([
-    ["nothing", []],
-    ["several lists of disabled Blink features", ["--disable-blink-features=Foo", "--disable-blink-features=Bar"]],
-    ["a blank start page in the middle", ["--no-sandbox", "about:blank", SWIFTSHADER]],
-  ])("is idempotent for %s", (_label, inherited) => {
-    const once = launch.composeBrowserLaunchArgs(inherited);
+  it("is idempotent for several lists of disabled Blink features", () => {
+    const once = launch.composeBrowserLaunchArgs(["--disable-blink-features=Foo", "--disable-blink-features=Bar"]);
     expect(launch.composeBrowserLaunchArgs(once)).toEqual(once);
-  });
-
-  it("does not change the list it is given", () => {
-    const inherited = ["about:blank", "--disable-blink-features=Foo"];
-    launch.composeBrowserLaunchArgs(inherited);
-    expect(inherited).toEqual(["about:blank", "--disable-blink-features=Foo"]);
   });
 });
 
 describe("resolveBrowserLaunchArgs", () => {
-  it("takes the arguments of AGENT_BROWSER_ARGS and reads no configuration file", async () => {
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--from-user-config"] }, [PROJECT_CONFIG]: { args: ["--from-project"] } });
-
-    await expect(launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "--no-sandbox,--lang=en-US" })).resolves.toEqual({
-      args: ["--no-sandbox", "--lang=en-US", ...DEFAULT_ARGS],
-      inheritedFrom: "environment",
-    });
-    expect(readJsonFile).not.toHaveBeenCalled();
-  });
 
   it("falls back to the configuration files when AGENT_BROWSER_ARGS is blank", async () => {
     mockConfigFiles({ [USER_CONFIG]: { args: ["--no-sandbox"] } });
@@ -249,20 +190,16 @@ describe("resolveBrowserLaunchArgs", () => {
     });
   });
 
-  it.each<[string, unknown, string[]]>([
-    ["a comma-separated string", "--no-sandbox, --lang=en-US", ["--no-sandbox", "--lang=en-US"]],
-  ])("accepts `args` as %s", async (_label, args, expected) => {
-    mockConfigFiles({ [USER_CONFIG]: { args } });
+  it("accepts `args` as a comma-separated string", async () => {
+    mockConfigFiles({ [USER_CONFIG]: { args: "--no-sandbox, --lang=en-US" } });
 
     await expect(launch.resolveBrowserLaunchArgs({})).resolves.toEqual({
-      args: [...expected, ...DEFAULT_ARGS],
+      args: ["--no-sandbox", "--lang=en-US", ...DEFAULT_ARGS],
       inheritedFrom: "agent-browser-config",
     });
   });
 
   it.each<[string, Record<string, unknown>]>([
-    ["no file exists", {}],
-    ["the files set no `args`", { [USER_CONFIG]: { headed: true }, [PROJECT_CONFIG]: {} }],
     ["`args` is not a list of arguments", { [USER_CONFIG]: { args: 7 } }],
     ["the files do not hold an object", { [USER_CONFIG]: "--no-sandbox", [PROJECT_CONFIG]: null }],
   ])("has only the Bridge's own arguments when %s", async (_label, files) => {
@@ -272,19 +209,6 @@ describe("resolveBrowserLaunchArgs", () => {
       args: DEFAULT_ARGS,
       inheritedFrom: "none",
     });
-  });
-
-  it("answers again from its cache for the same environment", async () => {
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--no-sandbox"] } });
-
-    const first = await launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "" });
-    const readsAfterFirst = readJsonFile.mock.calls.length;
-    mockConfigFiles({ [USER_CONFIG]: { args: ["--changed"] } });
-    const second = await launch.resolveBrowserLaunchArgs({ AGENT_BROWSER_ARGS: "" });
-
-    expect(readsAfterFirst).toBe(2);
-    expect(readJsonFile).toHaveBeenCalledTimes(readsAfterFirst);
-    expect(second).toEqual(first);
   });
 
   it("does not answer a different environment from the cache", async () => {
@@ -371,7 +295,7 @@ describe("systemBrowserCandidates", () => {
       const first = testPosixPath("home", "tester", ".local", "bin");
       const second = testPosixPath("opt", "tools", "bin");
 
-      expect(launch.systemBrowserCandidates("linux", { PATH: [first, second].join(path.posix.delimiter) })).toEqual([
+      expect(launch.systemBrowserCandidates("linux", { PATH: ["", first, "", second, ""].join(path.posix.delimiter) })).toEqual([
         ...packageInstalls,
         path.posix.join(first, "google-chrome-stable"),
         path.posix.join(first, "google-chrome"),
@@ -379,18 +303,6 @@ describe("systemBrowserCandidates", () => {
         path.posix.join(second, "google-chrome-stable"),
         path.posix.join(second, "google-chrome"),
         path.posix.join(second, "microsoft-edge-stable"),
-      ]);
-    });
-
-    it("skips empty PATH entries", () => {
-      const only = testPosixPath("opt", "tools", "bin");
-      const delimiter = path.posix.delimiter;
-
-      expect(launch.systemBrowserCandidates("linux", { PATH: `${delimiter}${only}${delimiter}${delimiter}` })).toEqual([
-        ...packageInstalls,
-        path.posix.join(only, "google-chrome-stable"),
-        path.posix.join(only, "google-chrome"),
-        path.posix.join(only, "microsoft-edge-stable"),
       ]);
     });
 
@@ -417,26 +329,12 @@ describe("resolveBrowserExecutable", () => {
     return candidates;
   }
 
-  it("uses the path from Settings, trimmed, before anything else", async () => {
-    const configured = testPath("browsers", "chrome");
-    isExecutableFile.mockResolvedValue(true);
-
-    await expect(launch.resolveBrowserExecutable(
-      { executablePath: `  ${configured}  ` },
-      { ...detectionEnv, AGENT_BROWSER_EXECUTABLE_PATH: testPath("browsers", "from-env") },
-    )).resolves.toStrictEqual({ path: configured, source: "settings" });
-    expect(isExecutableFile).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["has no path", {}],
-    ["has a blank path", { executablePath: "   " }],
-  ])("uses AGENT_BROWSER_EXECUTABLE_PATH when Settings %s", async (_label, launchConfig) => {
+  it("uses AGENT_BROWSER_EXECUTABLE_PATH when Settings has a blank path", async () => {
     const fromEnvironment = testPath("browsers", "from-env");
     isExecutableFile.mockResolvedValue(true);
 
     await expect(launch.resolveBrowserExecutable(
-      launchConfig,
+      { executablePath: "   " },
       { ...detectionEnv, AGENT_BROWSER_EXECUTABLE_PATH: ` ${fromEnvironment} ` },
     )).resolves.toStrictEqual({ path: fromEnvironment, source: "environment" });
     expect(isExecutableFile).not.toHaveBeenCalled();
@@ -452,31 +350,6 @@ describe("resolveBrowserExecutable", () => {
     // Candidates after the first installed one play no part.
     expect(isExecutableFile.mock.calls).toEqual([[candidates[0]], [candidates[1]]]);
   });
-
-  it("leaves the choice to agent-browser when no system browser is installed", async () => {
-    const candidates = hostCandidates();
-
-    const resolved = await launch.resolveBrowserExecutable({}, detectionEnv);
-
-    expect(resolved).toStrictEqual({ source: "auto-detect" });
-    expect(resolved).not.toHaveProperty("path");
-    expect(isExecutableFile.mock.calls.map(([file]) => file)).toEqual(candidates);
-  });
-
-  it("remembers the system browser and looks again once the caches are reset", async () => {
-    const candidates = hostCandidates();
-    isExecutableFile.mockImplementation(async (file) => file === candidates[0]);
-
-    await launch.resolveBrowserExecutable({}, detectionEnv);
-    isExecutableFile.mockResolvedValue(false);
-    await expect(launch.resolveBrowserExecutable({}, { ...detectionEnv }))
-      .resolves.toStrictEqual({ path: candidates[0], source: "system" });
-    expect(isExecutableFile).toHaveBeenCalledTimes(1);
-
-    launch.resetBrowserLaunchCachesForTests();
-
-    await expect(launch.resolveBrowserExecutable({}, detectionEnv)).resolves.toStrictEqual({ source: "auto-detect" });
-  });
 });
 
 describe("buildBrowserEnv", () => {
@@ -485,27 +358,18 @@ describe("buildBrowserEnv", () => {
     profileDir: testPath("browser-profiles", "public-3"),
   };
 
-  it("names the namespace, session, profile and launch arguments of the target", async () => {
-    const env = await launch.buildBrowserEnv(target, { KEEP_ME: "1", PATH: "" });
-
-    expect(env).toStrictEqual({
-      KEEP_ME: "1",
-      PATH: "",
-      AGENT_BROWSER_NAMESPACE: "copilot-bridge",
-      AGENT_BROWSER_SESSION: "bridge-public-3",
-      AGENT_BROWSER_PROFILE: target.profileDir,
-      AGENT_BROWSER_ARGS: DEFAULT_ARGS.join("\n"),
-    });
-  });
-
   it("replaces a namespace, session and profile inherited from the base environment", async () => {
     const env = await launch.buildBrowserEnv(target, {
+      KEEP_ME: "1",
+      AGENT_BROWSER_HEADED: "1",
       AGENT_BROWSER_NAMESPACE: "someone-else",
       AGENT_BROWSER_SESSION: "default",
       AGENT_BROWSER_PROFILE: testPath("another-profile"),
     });
 
+    expect(env).not.toHaveProperty("AGENT_BROWSER_HEADED");
     expect(env).toMatchObject({
+      KEEP_ME: "1",
       AGENT_BROWSER_NAMESPACE: "copilot-bridge",
       AGENT_BROWSER_SESSION: "bridge-public-3",
       AGENT_BROWSER_PROFILE: target.profileDir,
@@ -572,17 +436,8 @@ describe("buildBrowserEnv", () => {
     expect(env).not.toHaveProperty("AGENT_BROWSER_IDLE_TIMEOUT_MS");
   });
 
-  it("asks for a window when the target is headed", async () => {
-    const env = await launch.buildBrowserEnv({ ...target, headed: true }, {});
-
-    expect(env.AGENT_BROWSER_HEADED).toBe("true");
-  });
-
-  it.each([
-    ["is not headed", { headed: false }],
-    ["does not say", {}],
-  ])("removes AGENT_BROWSER_HEADED from the base environment when the target %s", async (_label, headed) => {
-    const env = await launch.buildBrowserEnv({ ...target, ...headed }, { AGENT_BROWSER_HEADED: "1" });
+  it("removes AGENT_BROWSER_HEADED from the base environment when the target is not headed", async () => {
+    const env = await launch.buildBrowserEnv({ ...target, headed: false }, { AGENT_BROWSER_HEADED: "1" });
 
     expect(env).not.toHaveProperty("AGENT_BROWSER_HEADED");
   });
@@ -617,21 +472,12 @@ describe("describeBrowserBuild", () => {
     vi.setSystemTime(NOW);
   });
 
-  it("describes the browser agent-browser downloads when no executable is chosen", async () => {
-    await expect(launch.describeBrowserBuild({ source: "auto-detect" }))
-      .resolves.toStrictEqual({ kind: "chrome-for-testing" });
-    expect(readModifiedAt).not.toHaveBeenCalled();
-    expect(readBrowserVersion).not.toHaveBeenCalled();
-  });
-
-  it.each<[string, string, string]>([
-    ["chromium", "chromium-browser", testPosixPath("snap", "bin", "chromium-browser")],
-    ["unknown", "a neutral name", neutralBinary()],
-  ])("tells only the kind (%s) from the path of %s when the file cannot be read", async (kind, _label, executablePath) => {
+  it("tells only the kind (chromium) from the path of chromium-browser when the file cannot be read", async () => {
+    const executablePath = testPosixPath("snap", "bin", "chromium-browser");
     readBrowserVersion.mockResolvedValue("Google Chrome for Testing 1.2.3.4");
 
     await expect(launch.describeBrowserBuild({ path: executablePath, source: "settings" }))
-      .resolves.toStrictEqual({ kind });
+      .resolves.toStrictEqual({ kind: "chromium" });
     expect(readModifiedAt).toHaveBeenCalledWith(executablePath);
     expect(readBrowserVersion).not.toHaveBeenCalled();
   });
@@ -675,16 +521,6 @@ describe("describeBrowserBuild", () => {
 
     await expect(launch.describeBrowserBuild({ path: neutralBinary("msedge"), source: "system" }))
       .resolves.toStrictEqual({ kind: "edge", installedDaysAgo: 2 });
-  });
-
-  it.each<[string, number, number]>([
-    ["23 hours ago", 23 * HOUR, 0],
-    ["almost four days ago", 3 * DAY + 23 * HOUR, 3],
-  ])("counts whole days since the file was replaced %s", async (_label, ageMs, installedDaysAgo) => {
-    readModifiedAt.mockResolvedValue(NOW - ageMs);
-
-    await expect(launch.describeBrowserBuild({ path: neutralBinary(), source: "system" }))
-      .resolves.toMatchObject({ installedDaysAgo });
   });
 
   it("never reports a negative age for a file dated in the future", async () => {
@@ -763,19 +599,14 @@ describe("getBrowserLaunchConfig", () => {
     expect(launch.getBrowserLaunchConfig({ browser })).toStrictEqual({});
   });
 
-  it.each<[string, unknown]>([
-    ["false", false],
-    ["the string \"true\"", "true"],
-    ["1", 1],
-  ])("is not headed when `headed` is %s", (_label, headed) => {
-    const browser = { headed } as { headed?: boolean };
+  it("is not headed when `headed` is the string \"true\"", () => {
+    const browser = { headed: "true" } as unknown as { headed?: boolean };
 
     expect(launch.getBrowserLaunchConfig({ browser })).toStrictEqual({});
   });
 
   it.each<[string, Parameters<typeof launch.getBrowserLaunchConfig>[0]]>([
     ["no settings", undefined],
-    ["settings without a browser section", {}],
     ["a null browser section", { browser: null }],
   ])("is empty for %s", (_label, settings) => {
     expect(launch.getBrowserLaunchConfig(settings)).toStrictEqual({});

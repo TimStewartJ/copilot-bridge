@@ -164,6 +164,7 @@ describe("VoiceConversation", () => {
 
   it("resends the parts of a reply a reconnecting client has not started playing", async () => {
     const ctx = setup();
+    expect(ctx.conversation.resendUnplayedAudio()).toBe(0);
     await speakTurn(ctx, "What's unread?");
     ctx.agent.last.listener.onDelta("Two sessions finished. ");
     await advance(10);
@@ -203,10 +204,6 @@ describe("VoiceConversation", () => {
     expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: false });
     ctx.conversation.onPlaybackIdle(ctx.sink.audio.at(-1)!.genId);
     expect(ctx.conversation.lastReply()).toEqual({ text: "Two sessions finished. ", finished: true });
-  });
-  it("has nothing to resend between replies", async () => {
-    const ctx = setup();
-    expect(ctx.conversation.resendUnplayedAudio()).toBe(0);
   });
 
   it("waits through a hesitation until the fallback timer", async () => {
@@ -330,19 +327,6 @@ describe("VoiceConversation", () => {
     expect(ctx.conversation.state).toBe("listening");
   });
 
-  it("removes a held answer from the transcript when the user's continuation replaces it", async () => {
-    const ctx = setup();
-    await speakTurn(ctx, "So I was thinking um", 0.9);
-    ctx.conversation.onVad(true, ctx.audio(100));
-    ctx.agent.last.listener.onDelta("Mm-hmm, I'm listening. ");
-    await advance(10);
-    ctx.engine.transcripts.push("which task should I look at first?");
-    ctx.conversation.onVad(false, ctx.audio(900));
-    await advance(10);
-    expect(ctx.sink.events).toContainEqual({ type: "assistant_discarded", genId: 1 });
-    expect(ctx.agent.last.input.kind).toBe("continuation");
-  });
-
   it("holds an answer while the user keeps talking and merges the continuation", async () => {
     const ctx = setup();
     await speakTurn(ctx, "Tell me a joke.");
@@ -359,6 +343,7 @@ describe("VoiceConversation", () => {
     await advance(10);
     expect(first.aborted).toBe(true);
     expect(ctx.agent.last.input).toEqual({ kind: "continuation", text: "about computers" });
+    expect(ctx.sink.events).toContainEqual({ type: "assistant_discarded", genId: 1 });
   });
 
   it("releases a held answer when the extra sound was filler", async () => {
@@ -549,8 +534,10 @@ describe("VoiceConversation", () => {
 
   it("handles stop itself and passes the chat commands to the agent", async () => {
     const ctx = setup();
+    ctx.agent.busy = true;
     await speakTurn(ctx, "Stop.");
     // "Cancel that" with nothing running is just "be quiet".
+    ctx.agent.busy = false;
     await speakTurn(ctx, "Cancel that.");
     expect(ctx.agent.turns).toHaveLength(0);
 

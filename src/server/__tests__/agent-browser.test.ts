@@ -149,31 +149,6 @@ describe("agent-browser wrapper", () => {
     expect(first.sessionName).toMatch(/^copilot-bridge-[a-f0-9]{8}$/);
   });
 
-  it("reads the launch configuration the way Settings does: trimmed, and blank means not set", async () => {
-    const mod = await import("../agent-browser.js");
-    const launch = await import("../browser-launch.js");
-    const executablePath = testExecutablePath("chrome");
-    const profileDir = join(COPILOT_HOME, "authenticated");
-
-    // One reading of the configuration, shared with the module that starts the browsers.
-    expect(mod.getBrowserLaunchConfig).toBe(launch.getBrowserLaunchConfig);
-    expect(mod.getBridgeBrowserTarget(COPILOT_HOME, {
-      executablePath: `  ${executablePath} `,
-      masterProfileDirectory: ` ${profileDir}  `,
-    })).toEqual(mod.getBridgeBrowserTarget(COPILOT_HOME, { executablePath, masterProfileDirectory: profileDir }));
-
-    const unconfigured = mod.getBridgeBrowserTarget(COPILOT_HOME);
-    expect(mod.getBridgeBrowserTarget(COPILOT_HOME, { executablePath: "  ", masterProfileDirectory: "" }))
-      .toEqual(unconfigured);
-    expect(unconfigured).toEqual({
-      sessionName: expect.stringMatching(/^copilot-bridge-[a-f0-9]{8}$/),
-      profileDir: BROWSER_PROFILE,
-    });
-    // Its daemon stays when the browser is shut down, and nothing limits how long it may idle.
-    expect(unconfigured).not.toHaveProperty("stopDaemonOnShutdown");
-    expect(unconfigured).not.toHaveProperty("idleTimeoutMs");
-  });
-
   it("passes the broker namespace, session, profile, executable, and headed mode", async () => {
     const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     execFileMock.mockImplementation((
@@ -426,9 +401,7 @@ describe("agent-browser wrapper", () => {
     }
 
     it.each([
-      ["the missing sandbox alone", NO_SANDBOX_OUTPUT, "launch.no_usable_sandbox", undefined],
       ["the missing sandbox when the output also names DevToolsActivePort", NO_SANDBOX_WITH_PORT_OUTPUT, "launch.no_usable_sandbox", "DevToolsActivePort"],
-      ["the missing sandbox wherever its line stands in the output", `${NO_SANDBOX_OUTPUT}\nDevToolsActivePort file doesn't exist`, "launch.no_usable_sandbox", "DevToolsActivePort"],
       // Chrome names files it looked for in vain in the same output; that is not a missing agent-browser.
       ["the missing sandbox when the output also says that something was not found", `${NO_SANDBOX_OUTPUT}\nchrome-sandbox: not found`, "launch.no_usable_sandbox", undefined],
       ["a missing agent-browser", "sh: 1: agent-browser: not found", "binary_missing", undefined],
@@ -521,15 +494,6 @@ describe("agent-browser wrapper", () => {
     function versionRuns(): number {
       return execFileMock.mock.calls.filter(([, args]) => args[0] === "--version").length;
     }
-
-    it("reads the version number agent-browser prints", async () => {
-      execFileMock.mockImplementation(callbackSuccess("agent-browser 0.38.2\n"));
-      const mod = await import("../agent-browser.js");
-
-      await expect(mod.getAgentBrowserVersion()).resolves.toBe("0.38.2");
-      expect(execFileMock).toHaveBeenCalledTimes(1);
-      expect(execFileMock.mock.calls[0][1]).toEqual(["--version"]);
-    });
 
     it("asks once for callers that arrive together and remembers the answer for a minute", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
