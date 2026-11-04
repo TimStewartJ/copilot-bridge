@@ -73,19 +73,15 @@ function summaryWith(models: ReturnType<typeof modelRow>[]): CopilotUsageSummary
 }
 
 describe("serializeCopilotUsageSummary", () => {
-  it("keeps the context tier so per-tier rows of one model can be told apart", () => {
-    const body = serializeCopilotUsageSummary(summaryWith([modelRow("long_context"), modelRow("default")]));
+  it("preserves explicit context tiers and omits absent tier fields within the same report", () => {
+    const body = serializeCopilotUsageSummary(summaryWith([modelRow("long_context"), modelRow("default"), modelRow()]));
 
     expect(body.models.map((row) => [row.model, row.contextTier, row.contextTierLabel])).toEqual([
       ["gpt-6-luna", "long_context", "Long context"],
       ["gpt-6-luna", "default", "Standard context"],
+      ["gpt-6-luna", undefined, undefined],
     ]);
-  });
-
-  it("omits the tier fields for rows recorded before tiers existed", () => {
-    const body = serializeCopilotUsageSummary(summaryWith([modelRow()]));
-
-    expect(body.models[0]).not.toHaveProperty("contextTier");
-    expect(body.models[0]).not.toHaveProperty("contextTierLabel");
+    expect(body.models[2]).not.toHaveProperty("contextTier");
+    expect(body.models[2]).not.toHaveProperty("contextTierLabel");
   });
 });

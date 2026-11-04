@@ -274,12 +274,10 @@ describe("Session routes (mocked)", () => {
     expect(linked.body.task).not.toHaveProperty("sessionIds");
   });
 
-  it("GET /api/sessions uses attention activity for unread inclusion and ordering", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
+  it("GET /api/sessions orders attention and visible activity and reports each chat’s runtime status", async () => {
+    ctx.sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
       {
         sessionId: "attention-session",
-        summary: "Attention session",
         modifiedTime: "2026-04-16T12:00:00.000Z",
       },
       {
@@ -288,8 +286,15 @@ describe("Session routes (mocked)", () => {
         modifiedTime: "2026-04-16T11:00:00.000Z",
         lastVisibleActivityAt: "2026-04-16T12:30:00.000Z",
       },
+      { sessionId: "waiting", startTime: "2026-04-16T10:00:00.000Z" },
+      { sessionId: "stalled", startTime: "2026-04-16T09:00:00.000Z" },
     ]);
-    ({ app, ctx, db } = createTestApp({ sessionManager }));
+    ctx.sessionManager.getSessionRunState = (id) => id === "stalled" ? "stalled" : id === "waiting" ? "busy" : "idle";
+    ctx.sessionManager.isSessionBusy = (id) => id === "waiting" || id === "stalled";
+    ctx.sessionManager.getPendingUserInputCount = (id) => id === "waiting" ? 1 : 0;
+    ctx.sessionManager.getBackgroundAgentsSummary = (id) => id === "waiting"
+      ? { running: 1, idle: 1, failed: 0, total: 2, source: "live" }
+      : { running: 0, idle: 0, failed: 0, total: 0, source: "live" };
     ctx.sessionMetaStore.setLastAttentionAt("attention-session", "2026-04-16T13:00:00.000Z");
     db.prepare("INSERT INTO read_state (sessionId, lastReadAt) VALUES (?, ?)")
       .run("attention-session", "2026-04-16T12:59:00.000Z");
@@ -297,50 +302,19 @@ describe("Session routes (mocked)", () => {
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
-    expect(res.body.sessions.map((session: any) => session.sessionId)).toEqual([
-      "attention-session",
-      "visible-session",
+    expect(res.body.sessions).toMatchObject([
+      {
+        sessionId: "attention-session", runState: "idle", pendingUserInputCount: 0, needsUserInput: false,
+        lastAttentionAt: "2026-04-16T13:00:00.000Z", lastActivityAt: "2026-04-16T13:00:00.000Z",
+        modifiedTime: "2026-04-16T13:00:00.000Z", backgroundAgents: { total: 0 },
+      },
+      { sessionId: "visible-session", runState: "idle" },
+      {
+        sessionId: "waiting", runState: "busy", pendingUserInputCount: 1, needsUserInput: true,
+        backgroundAgents: { running: 1, idle: 1, failed: 0, total: 2, source: "live" },
+      },
+      { sessionId: "stalled", runState: "stalled", pendingUserInputCount: 0, needsUserInput: false },
     ]);
-    expect(res.body.sessions[0]).toMatchObject({
-      sessionId: "attention-session",
-      lastAttentionAt: "2026-04-16T13:00:00.000Z",
-      lastActivityAt: "2026-04-16T13:00:00.000Z",
-      modifiedTime: "2026-04-16T13:00:00.000Z",
-    });
-  });
-
-  it("GET /api/sessions reports stalled sessions through runState", async () => {
-    ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
-    ];
-    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
-    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions[0]).toMatchObject({ sessionId: "s1", runState: "stalled" });
-  });
-
-  it("GET /api/sessions includes input-required status for sessions waiting on answers", async () => {
-    ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z" } as any,
-    ];
-    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
-    ctx.sessionManager.getPendingUserInputCount = vi.fn().mockReturnValue(1);
-
-    ctx.sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({ running: 1, idle: 1, failed: 0, total: 2, source: "live" as const }));
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions[0]).toMatchObject({
-      sessionId: "s1",
-      runState: "busy",
-      pendingUserInputCount: 1,
-      needsUserInput: true,
-      backgroundAgents: { running: 1, idle: 1, total: 2, source: "live" },
-    });
   });
 
   it("POST /api/sessions reports saturated weighted capacity as retryable", async () => {

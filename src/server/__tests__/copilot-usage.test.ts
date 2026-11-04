@@ -429,69 +429,27 @@ describe("readCopilotUsageSummary", () => {
     expect(session.models[0].estimatedCostUsd).toBeCloseTo(22.05);
   });
 
-  it("prefers the reported uncached input count over subtracting cache tokens", async () => {
+  it("reconciles uncached input for each model before adding the usage totals", async () => {
     const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
-      shutdownEvent("2026-01-05T10:00:00.000Z", {
-        "gpt-5.5": {
-          usage: { inputTokens: 2_000_000, outputTokens: 10, cacheReadTokens: 1_500_000, cacheWriteTokens: 400_000 },
-          tokenDetails: {
-            input: { tokenCount: 100_000 },
-            cache_read: { tokenCount: 1_500_000 },
-            cache_write: { tokenCount: 400_000 },
-            output: { tokenCount: 10 },
-          },
-        },
-      }),
-    ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals.uncachedInputTokens).toBe(100_000);
-    expect(summary.totals.totalTokens).toBe(2_000_010);
-  });
-
-  it("falls back to subtraction when tokenDetails does not reconcile with usage", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-05T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              usage: { inputTokens: 900, outputTokens: 10, cacheReadTokens: 400 },
-              // Captured a beat apart from usage, so it must not be trusted.
-              tokenDetails: { input: { tokenCount: 12_345 } },
-            },
-          },
-        },
+    writeEvents(copilotHome, "session-1", [shutdownEvent("2026-01-05T10:00:00.000Z", {
+      reconciled: {
+        usage: { inputTokens: 2_000_000, outputTokens: 10, cacheReadTokens: 1_500_000, cacheWriteTokens: 400_000 },
+        tokenDetails: { input: { tokenCount: 100_000 }, cache_read: { tokenCount: 1_500_000 }, cache_write: { tokenCount: 400_000 }, output: { tokenCount: 10 } },
       },
-    ]);
+      stale: { usage: { inputTokens: 900, outputTokens: 10, cacheReadTokens: 400 }, tokenDetails: { input: { tokenCount: 12_345 } } },
+      overcached: { usage: { inputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 50 } },
+    })]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals.uncachedInputTokens).toBe(500);
-    expect(summary.totals.totalTokens).toBe(910);
-  });
-
-  it("never reports negative uncached input when cache counts exceed the reported input", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
-      shutdownEvent("2026-01-05T10:00:00.000Z", {
-        "gpt-5.5": { usage: { inputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 50 } },
-      }),
+    expect(summary.models.map(({ model, uncachedInputTokens, totalTokens }) => [model, uncachedInputTokens, totalTokens])).toEqual([
+      ["reconciled", 100_000, 2_000_010], ["stale", 500, 910], ["overcached", 0, 450],
     ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals.uncachedInputTokens).toBe(0);
+    expect(summary.totals).toMatchObject({ uncachedInputTokens: 100_500, totalTokens: 2_001_370 });
   });
 
-  it("carries GitHub's metered cost through as forward progress only", async () => {
+  it("distinguishes cumulative, unmetered and zero-billed sessions in one usage report", async () => {
     const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
+    writeEvents(copilotHome, "paid-session", [
       shutdownEvent("2026-01-05T10:00:00.000Z", {
         "gpt-5.5": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 250_000_000_000 },
       }),
@@ -499,13 +457,22 @@ describe("readCopilotUsageSummary", () => {
         "gpt-5.5": { requests: 2, usage: { inputTokens: 180, outputTokens: 30 }, totalNanoAiu: 400_000_000_000 },
       }),
     ]);
+    writeEvents(copilotHome, "legacy-session", [shutdownEvent("2026-01-05T12:00:00.000Z", {
+      "gpt-5.5": { usage: { inputTokens: 300, outputTokens: 40 } },
+    })]);
+    writeEvents(copilotHome, "free-session", [shutdownEvent("2026-01-05T13:00:00.000Z", {
+      "free-alpha": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 0 },
+    })]);
 
     const summary = await readCopilotUsageSummary({ copilotHome });
-
-    // Snapshots are cumulative, so the later 400 AIU replaces the earlier 250.
-    expect(summary.totals.meteredAiCredits).toBeCloseTo(400);
-    expect(summary.models[0].meteredAiCredits).toBeCloseTo(400);
-    expect(summary.totals.meteredTokens).toBe(summary.totals.totalTokens);
+    expect(summary.sessions.map(({ sessionId, totalTokens, meteredTokens, meteredAiCredits }) => [sessionId, totalTokens, meteredTokens, meteredAiCredits])).toEqual([
+      ["free-session", 110, 110, 0], ["legacy-session", 340, 0, 0], ["paid-session", 210, 210, 400],
+    ]);
+    expect(summary.models).toMatchObject([
+      { model: "gpt-5.5", sessions: 2, totalTokens: 550, meteredTokens: 210, meteredAiCredits: 400 },
+      { model: "free-alpha", sessions: 1, totalTokens: 110, meteredTokens: 110, meteredAiCredits: 0 },
+    ]);
+    expect(summary.totals).toMatchObject({ totalTokens: 660, meteredTokens: 320, meteredAiCredits: 400 });
   });
 
   it("uses the top-level metered total and carries the unattributed remainder into daily rows", async () => {
@@ -615,38 +582,6 @@ describe("readCopilotUsageSummary", () => {
       }),
     ]);
     expect(summary.days[0]).toMatchObject({ date: "2026-08-11", meteredAiCredits: 125 });
-  });
-
-  it("tracks metered coverage separately so a partly metered range is not read as complete", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "metered-session", [
-      shutdownEvent("2026-01-05T10:00:00.000Z", {
-        "gpt-5.5": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 300_000_000_000 },
-      }),
-    ]);
-    writeEvents(copilotHome, "legacy-session", [
-      shutdownEvent("2026-01-05T11:00:00.000Z", { "gpt-5.5": { usage: { inputTokens: 300, outputTokens: 40 } } }),
-    ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals.totalTokens).toBe(450);
-    expect(summary.totals.meteredTokens).toBe(110);
-    expect(summary.totals.meteredAiCredits).toBeCloseTo(300);
-  });
-
-  it("keeps metered coverage when GitHub genuinely billed zero", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
-      shutdownEvent("2026-01-05T10:00:00.000Z", {
-        "free-alpha": { usage: { inputTokens: 100, outputTokens: 10 }, totalNanoAiu: 0 },
-      }),
-    ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.totals.meteredAiCredits).toBe(0);
-    expect(summary.totals.meteredTokens).toBe(110);
   });
 
   it("uses SDK long-context pricing when Bridge recorded a long context tier", async () => {
@@ -842,7 +777,7 @@ describe("readCopilotUsageSummary", () => {
     expect(summary.models).toEqual([]);
   });
 
-  it("uses assistant message output tokens before a session shutdown is written", async () => {
+  it("attributes live requests to their reported or selected model without counting a repeated request twice", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-live", [
       {
@@ -853,12 +788,12 @@ describe("readCopilotUsageSummary", () => {
       {
         type: "assistant.message",
         timestamp: "2026-02-02T09:00:05.000Z",
-        data: { requestId: "request-1", outputTokens: 10 },
+        data: { model: "claude-opus-4.7", requestId: "request-1", outputTokens: 10 },
       },
       {
         type: "assistant.message",
         timestamp: "2026-02-02T09:00:06.000Z",
-        data: { requestId: "request-1", outputTokens: 12 },
+        data: { model: "claude-opus-4.7", requestId: "request-1", outputTokens: 12 },
       },
       {
         type: "assistant.message",
@@ -883,45 +818,15 @@ describe("readCopilotUsageSummary", () => {
       reasoningTokens: 0,
       totalTokens: 17,
     });
-    expect(summary.models).toMatchObject([
-      {
-        model: "gpt-5.5",
-        sessions: 1,
-        requests: 2,
-        inputTokens: 0,
-        outputTokens: 17,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 17,
-      },
-    ]);
-    expect(summary.sessions).toMatchObject([
-      {
-        sessionId: "session-live",
-        shutdownAt: "2026-02-02T09:01:00.000Z",
-        requests: 2,
-        inputTokens: 0,
-        outputTokens: 17,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 17,
-        models: [
-          {
-            model: "gpt-5.5",
-            sessions: 1,
-            requests: 2,
-            inputTokens: 0,
-            outputTokens: 17,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
-            reasoningTokens: 0,
-            totalTokens: 17,
-          },
-        ],
-      },
-    ]);
+    const reported = { model: "claude-opus-4.7", sessions: 1, requests: 1, inputTokens: 0, outputTokens: 12,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 12 };
+    const selected = { ...reported, model: "gpt-5.5", outputTokens: 5, totalTokens: 5 };
+    expect(summary.models).toMatchObject([reported, selected]);
+    expect(summary.sessions).toMatchObject([{
+      sessionId: "session-live", shutdownAt: "2026-02-02T09:01:00.000Z", requests: 2,
+      inputTokens: 0, outputTokens: 17, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 17,
+      models: [reported, selected],
+    }]);
   });
 
   it("attributes live assistant usage after model changes to the switched model", async () => {
@@ -1011,33 +916,6 @@ describe("readCopilotUsageSummary", () => {
       expect.objectContaining({ model: "claude-opus-5.5", contextTier: "long_context", outputTokens: 9 }),
       expect.objectContaining({ model: "gpt-6-sol", contextTier: "default", outputTokens: 4 }),
     ]));
-  });
-
-  it("uses assistant message model metadata when live usage events include it", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-live-message-model", [
-      {
-        type: "session.start",
-        timestamp: "2026-02-02T09:00:00.000Z",
-        data: { selectedModel: "gpt-5.5" },
-      },
-      {
-        type: "assistant.message",
-        timestamp: "2026-02-02T09:00:05.000Z",
-        data: { model: "claude-opus-4.7", requestId: "request-1", outputTokens: 10 },
-      },
-      {
-        type: "assistant.message",
-        timestamp: "2026-02-02T09:00:06.000Z",
-        data: { model: "claude-opus-4.7", requestId: "request-1", outputTokens: 12 },
-      },
-    ]);
-
-    const summary = await readCopilotUsageSummary({ copilotHome });
-
-    expect(summary.models).toEqual([
-      expect.objectContaining({ model: "claude-opus-4.7", requests: 1, outputTokens: 12, totalTokens: 12 }),
-    ]);
   });
 
   it("prefers shutdown model metrics over assistant message output tokens", async () => {
@@ -1556,30 +1434,6 @@ describe("copilot usage time ranges", () => {
     expect(past7.models).toEqual([expect.objectContaining({ model: "gpt-5.4", sessions: 1, inputTokens: 800 })]);
   });
 
-  it("buckets live assistant usage by day when no shutdown summary exists yet", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "live-session", [
-      { type: "session.start", timestamp: localIso(2026, 3, 20), data: { selectedModel: "gpt-5.4" } },
-      {
-        type: "assistant.message",
-        timestamp: localIso(2026, 3, 20),
-        data: { requestId: "req-old", outputTokens: 40 },
-      },
-      {
-        type: "assistant.message",
-        timestamp: localIso(2026, 4, 14),
-        data: { requestId: "req-new", outputTokens: 60 },
-      },
-    ]);
-
-    const all = await readCopilotUsageSummary({ copilotHome, now, range: "all" });
-    expect(all.totals.outputTokens).toBe(100);
-
-    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
-    expect(past7.totals.outputTokens).toBe(60);
-    expect(past7.totals.requests).toBe(1);
-  });
-
   // Each shutdown snapshot repeats cumulative totals for every model the session
   // has ever used, so a resume with no new work on that model yields a zero delta.
   function multiModelShutdown(
@@ -1598,8 +1452,22 @@ describe("copilot usage time ranges", () => {
     };
   }
 
-  it("excludes sessions whose only in-window snapshots repeat unchanged totals", async () => {
+  it("includes only new live or shutdown usage for each chat in the requested window", async () => {
     const copilotHome = createCopilotHome();
+    writeEvents(copilotHome, "live-session", [
+      { type: "session.start", timestamp: localIso(2026, 3, 20), data: { selectedModel: "live-model" } },
+      {
+        type: "assistant.message",
+        timestamp: localIso(2026, 3, 20),
+        data: { requestId: "req-old", outputTokens: 40 },
+      },
+      {
+        type: "assistant.message",
+        timestamp: localIso(2026, 4, 14),
+        data: { requestId: "req-new", outputTokens: 60 },
+      },
+    ]);
+
     // gpt-5.4 did all its work in January and none since; the May shutdown just
     // repeats its unchanged cumulative snapshot alongside real claude usage.
     writeEvents(copilotHome, "resumed-session", [
@@ -1613,15 +1481,19 @@ describe("copilot usage time ranges", () => {
     ]);
 
     const all = await readCopilotUsageSummary({ copilotHome, now, range: "all" });
-    expect(all.coverage.sessionsIncluded).toBe(2);
-    expect(all.totals.inputTokens).toBe(1_800);
+    expect(all.coverage.sessionsIncluded).toBe(3);
+    expect(all.totals).toMatchObject({ inputTokens: 1_800, outputTokens: 100 });
 
     const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
-    // Only the session with real in-window work counts, and only for that model.
-    expect(past7.coverage.sessionsIncluded).toBe(1);
-    expect(past7.totals.inputTokens).toBe(400);
+    expect(past7.coverage.sessionsIncluded).toBe(2);
+    expect(past7.sessions.map((row) => row.sessionId).sort()).toEqual(["live-session", "resumed-session"]);
+    expect(past7.totals).toMatchObject({ inputTokens: 400, outputTokens: 60 });
+    expect(past7.sessions.find((row) => row.sessionId === "live-session")).toMatchObject({
+      requests: 1, outputTokens: 60, models: [{ model: "live-model", requests: 1, outputTokens: 60 }],
+    });
     expect(past7.models).toEqual([
       expect.objectContaining({ model: "claude-opus-5", sessions: 1, inputTokens: 400 }),
+      expect.objectContaining({ model: "live-model", sessions: 1, requests: 1, outputTokens: 60 }),
     ]);
     expect(past7.models.some((row) => row.model === "gpt-5.4")).toBe(false);
     // Zero-usage model rows stay out of the per-session window rows too.

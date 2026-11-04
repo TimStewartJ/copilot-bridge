@@ -143,48 +143,35 @@ describe("buildWorkMapData", () => {
     expect(ado.fetchWorkItemLinks.mock.calls.map(([asked]) => asked)).toEqual([["10"], ["11"]]);
   });
 
-  it("follows parent links to the top, however deep, reading each work item once", async () => {
+  it("maps deep ancestors and all related work once, without duplicating warnings", async () => {
+    const related = Array.from({ length: 200 }, (_, index) => String(1000 + index));
     const ado = fakeAdo({
       items: {
-        "10": { relations: [["parent", "20"]] },
+        "10": { relations: [
+          ["parent", "20"], ["predecessor", "11"], ["child", "12"],
+          ...related.map((id): [WorkItemRelationType, string] => ["related", id]),
+        ] },
         "20": { relations: [["parent", "30"], ["child", "10"]] },
         "30": { relations: [["parent", "40"]] },
         "40": { relations: [["parent", "50"]] },
         "50": { relations: [["parent", "60"]] },
         "60": { relations: [["parent", "70"]] },
         "70": { relations: [["parent", "80"]] },
-        // A cycle in ADO: the top of the chain names the bottom as its parent.
         "80": { relations: [["parent", "10"]] },
       },
+      warnings: ["Some ADO work items could not be refreshed."],
     });
+    const data = await buildWorkMapData({ tasks: [task("t", { workItems: ["10", "11"], pullRequests: [["repo", 20]] })], assignedToMe: false, ado });
 
-    const data = await buildWorkMapData({ tasks: [task("t", { workItems: ["10"] })], assignedToMe: false, ado });
-
-    expect(ids(data.contextWorkItems)).toEqual(["20", "30", "40", "50", "60", "70", "80"]);
+    const ancestors = ["20", "30", "40", "50", "60", "70", "80"];
+    expect(ids(data.contextWorkItems)).toEqual([...ancestors, ...related]);
+    expect(data.contextWorkItems.every((item) => item.title === `Work item ${item.id}`)).toBe(true);
     expect(data.contextWorkItems[0].relations).toEqual([
-      { type: "parent", workItemId: "30" },
-      { type: "child", workItemId: "10" },
+      { type: "parent", workItemId: "30" }, { type: "child", workItemId: "10" },
     ]);
-    expect(ado.fetchWorkItemLinks.mock.calls.map(([asked]) => asked)).toEqual([
-      ["10"], ["20"], ["30"], ["40"], ["50"], ["60"], ["70"], ["80"],
-    ]);
-  });
-
-  it("gives every linked work item a title, without a limit", async () => {
-    const linked = Array.from({ length: 200 }, (_, index) => String(1000 + index));
-    const ado = fakeAdo({
-      items: {
-        "10": { relations: [...linked.map((id): [WorkItemRelationType, string] => ["related", id]), ["predecessor", "11"], ["child", "12"]] },
-        "11": {},
-      },
-    });
-
-    const data = await buildWorkMapData({ tasks: [task("t", { workItems: ["10", "11"] })], assignedToMe: false, ado });
-
-    // Linked items are context. One that is already on the map is not repeated, and a child that
-    // nobody tracks stays a count on its parent.
-    expect(ids(data.contextWorkItems)).toEqual(linked);
-    expect(ado.fetchWorkItems).toHaveBeenCalledExactlyOnceWith(["10", "11", ...linked], expect.any(Function));
+    expect(ado.fetchWorkItemLinks.mock.calls.map(([asked]) => asked)).toEqual([["10", "11"], ...ancestors.map((id) => [id])]);
+    expect(ado.fetchWorkItems).toHaveBeenCalledExactlyOnceWith(["10", "11", ...ancestors, ...related], expect.any(Function));
+    expect(data.warnings).toEqual(["Some ADO work items could not be refreshed."]);
   });
 
   it("adds the open work assigned to the reader, with its pull requests", async () => {
@@ -228,16 +215,6 @@ describe("buildWorkMapData", () => {
     ]);
   });
 
-  it("passes on each warning once", async () => {
-    const ado = fakeAdo({
-      items: { "10": { relations: [["parent", "20"]] } },
-      warnings: ["Some ADO work items could not be refreshed."],
-    });
-
-    const data = await buildWorkMapData({ tasks: [task("t", { workItems: ["10"], pullRequests: [["repo", 20]] })], assignedToMe: false, ado });
-
-    expect(data.warnings).toEqual(["Some ADO work items could not be refreshed."]);
-  });
 });
 
 describe("createWorkMapBuilds", () => {

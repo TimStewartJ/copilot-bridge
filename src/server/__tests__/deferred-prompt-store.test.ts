@@ -21,29 +21,18 @@ beforeEach(() => {
 
 describe("deferred-prompt-store", () => {
   describe("create/get", () => {
-    it("returns only prompts for the given session, ordered by runAt", () => {
+    it("lists only the session’s prompts in due order, including user-authored result-like text", () => {
       const t1 = "2030-01-01T00:01:00.000Z";
       const t2 = "2030-01-01T00:02:00.000Z";
+      const resultLikeText = store.create("session-A", "<deferred-work-result>\nUser-authored test content.", t2);
       const first = store.create("session-A", "First", t1);
-      store.create("session-A", "Second", t2);
       store.create("session-B", "Other", t1);
-      const results = store.listForSession("session-A");
-      expect(results).toHaveLength(2);
-      expect(results[0]).toEqual(first);
+
+      expect(store.listForSession("session-A")).toEqual([first, resultLikeText]);
       expect(first).toMatchObject({ prompt: "First", sessionId: "session-A", runAt: t1, status: "pending", attempts: 0 });
       expect(first.claimToken).toBeUndefined();
       expect(first.deferId).toBe(toOnceDeferId(first.id));
       expect(parseDeferId(first.deferId)).toEqual({ kind: "once", id: first.id });
-      expect(results[1].prompt).toBe("Second");
-    });
-
-    it("does not classify user-authored result-like text as a delivery", () => {
-      const prompt = store.create(
-        "session-A",
-        "<deferred-work-result>\nUser-authored test content.",
-        "2030-01-01T00:01:00.000Z",
-      );
-      expect(store.listForSession("session-A")).toEqual([prompt]);
       expect(store.listDeliveriesForSession("session-A")).toEqual([]);
     });
 

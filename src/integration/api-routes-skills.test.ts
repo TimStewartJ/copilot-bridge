@@ -41,7 +41,7 @@ describe("skills-registry", () => {
 
   const options = () => ({ copilotHome, repoRoot, packs: [{ id: "team", name: "Team pack", root: packRoot }] });
 
-  it("lists home, pack and bundled skills sorted by name, with home over pack over bundled", async () => {
+  it("lists effective skills in name order with their source and validated workflow metadata", async () => {
     writeSkill(join(copilotHome, "skills"), "zeta", { name: "Zeta", description: "z skill" });
     writeSkill(join(repoRoot, "skills"), "browser", { name: "Alpha Browser", description: "b skill" });
     writeSkill(join(packRoot, "skills"), "middle", { name: "Middle", description: "m skill" });
@@ -49,14 +49,6 @@ describe("skills-registry", () => {
     writeSkill(join(packRoot, "skills"), "dup", { name: "Pack Dup" });
     writeSkill(join(repoRoot, "skills"), "dup", { name: "Bundled Dup" });
 
-    const skills = await scanSkills(options());
-    expect(skills.map((s) => s.id)).toEqual(["browser", "dup", "middle", "zeta"]);
-    expect(skills.find((s) => s.id === "dup")).toMatchObject({ name: "Home Dup", source: "home", editable: true, overrides: ["pack", "bundled"] });
-    expect(skills.find((s) => s.id === "middle")).toMatchObject({ source: "pack", packId: "team", packName: "Team pack", editable: false });
-    expect(skills.find((s) => s.id === "browser")).toMatchObject({ source: "bundled", editable: false });
-  });
-
-  it("parses workflow metadata and drops unknown values", async () => {
     const dir = join(copilotHome, "skills", "fixer");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "SKILL.md"), [
@@ -75,8 +67,13 @@ describe("skills-registry", () => {
       "---",
       "Steps",
     ].join("\n"));
-    const [skill] = await scanSkills(options());
-    expect(skill).toMatchObject({
+
+    const skills = await scanSkills(options());
+    expect(skills.map((s) => s.id)).toEqual(["browser", "fixer", "dup", "middle", "zeta"]);
+    expect(skills.find((s) => s.id === "dup")).toMatchObject({ name: "Home Dup", source: "home", editable: true, overrides: ["pack", "bundled"] });
+    expect(skills.find((s) => s.id === "middle")).toMatchObject({ source: "pack", packId: "team", packName: "Team pack", editable: false });
+    expect(skills.find((s) => s.id === "browser")).toMatchObject({ source: "bundled", editable: false });
+    expect(skills.find((s) => s.id === "fixer")).toMatchObject({
       kind: "playbook", family: "code", label: "Fixer", evidence: ["reproduced", "fixed"], comparePrevious: true,
       roles: ["code-host"], extends: ["bug-fix"], allowedTools: ["Bash(agent-browser:*)"],
     });

@@ -58,17 +58,6 @@ const request = {
 };
 
 describe("global search index", () => {
-  it("indexes literal Unicode separators without treating them as record boundaries", async () => {
-    const { copilotHome, index, sessions } = fixture();
-    writeEvents(copilotHome, sessions[0]!.sessionId, [
-      event("assistant.message", "unicode", "needle\u2028separator\u2029tail", "2026-09-01T10:00:00.000Z"),
-    ]);
-    const result = await index.search(request);
-    expect(result.coverage.errors).toEqual([]);
-    expect(result.chats.items[0]?.matches).toMatchObject([{ sourceEventId: "unicode", snippet: "needle separator tail" }]);
-    await index.shutdown();
-  });
-
   it("stops refreshing without restarting failed sweeps", async () => {
     const { db, copilotHome, index, sessions } = fixture();
     const dir = join(copilotHome, "session-state", sessions[0]!.sessionId);
@@ -119,11 +108,11 @@ describe("global search index", () => {
     await index.shutdown();
   });
 
-  it("searches archived chats and tasks, groups visible messages, and preserves exact event IDs", async () => {
+  it("groups only visible messages in global search, preserving Unicode snippets and exact event IDs", async () => {
     const { copilotHome, index, sessionMetaStore, sessions, taskStore } = fixture();
     writeEvents(copilotHome, sessions[0]!.sessionId, [
       event("user.message", "user-1", "Find the quoted launch needle", "2026-09-01T10:00:00.000Z"),
-      event("assistant.message", "assistant-1", "The launch needle is ready.", "2026-09-01T10:00:01.000Z"),
+      event("assistant.message", "assistant-1", "needle\u2028separator\u2029tail", "2026-09-01T10:00:01.000Z"),
       event("tool.execution_complete", "tool-1", "needle must not be searchable", "2026-09-01T10:00:02.000Z", {
         toolCallId: "call-1",
         result: "needle tool output",
@@ -151,10 +140,13 @@ describe("global search index", () => {
     });
     expect(result.chats.items[0]!.matches.map((match) => match.sourceEventId).sort())
       .toEqual(["assistant-1", "user-1"]);
+    expect(result.chats.items[0]!.matches.find((match) => match.sourceEventId === "assistant-1")?.snippet)
+      .toBe("needle separator tail");
     expect(result.tasks.items).toMatchObject([{ taskId: task.id, archived: false }]);
     expect(JSON.stringify(result)).not.toContain("<mark>");
     expect(JSON.stringify(result)).not.toContain("tool output");
     expect(JSON.stringify(result)).not.toContain("injected text");
+    await index.shutdown();
   });
 
   it("ranks a chat named for the query before chats that only mention it", async () => {

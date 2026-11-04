@@ -22,7 +22,7 @@ describe("task continuation evidence", () => {
     const manager = {
       getSessionRunState: vi.fn< TaskOverviewContext["sessionManager"]["getSessionRunState"] >(() => "idle"),
       getPendingUserInputCount: vi.fn(() => 0),
-      getSessionContinuationState: vi.fn(() => ({ runningAgentCount: 0, runningCommandCount: 0, held: false })),
+      getSessionContinuationState: vi.fn((_sessionId: string) => ({ runningAgentCount: 0, runningCommandCount: 0, held: false })),
     };
     const ctx = {
       taskStore: createTaskStore(db, bus), taskGroupStore: createTaskGroupStore(db, bus),
@@ -61,25 +61,40 @@ describe("task continuation evidence", () => {
     expect(read().activity?.pendingDeliveryCount).toBe(0);
   });
 
-  it("counts defers and valid enabled schedules without treating terminal plans as work", () => {
-    const { ctx, task, read } = setup();
-    const prompt = ctx.deferredPromptStore.create("conversation", "Check", "2026-10-20T22:00:00Z");
-    ctx.scheduleStore.createSchedule({ taskId: task.id, name: "Daily", prompt: "Check", type: "cron", cron: "0 9 * * *" });
-    expect(read().activity).toMatchObject({ deferredCount: 1, scheduledCount: 1 });
-    expect(ctx.deferredPromptStore.cancelById(prompt.id)).toBe(true);
-    expect(ctx.deferredPromptStore.get(prompt.id)?.status).toBe("cancelled");
-    expect(read().activity?.deferredCount).toBe(0);
-    const schedule = ctx.scheduleStore.listSchedules(task.id)[0];
-    ctx.scheduleStore.updateSchedule(schedule.id, { enabled: false });
-    expect(read().activity?.scheduledCount).toBe(0);
-    ctx.scheduleStore.updateSchedule(schedule.id, { enabled: true, expiresAt: "2026-10-19T21:00:00Z" });
-    expect(read().activity?.scheduledCount).toBe(0);
-    ctx.scheduleStore.updateSchedule(schedule.id, { expiresAt: "2026-10-20T22:00:00Z", maxRuns: 1 });
-    db.prepare("UPDATE schedules SET runCount = 1 WHERE id = ?").run(schedule.id);
-    expect(read().activity?.scheduledCount).toBe(0);
-    expect(read().activity?.known).toBe(true);
-    ctx.scheduleStore.updateSchedule(schedule.id, { expiresAt: "invalid date" });
-    expect(read().activity).toMatchObject({ known: false, scheduledCount: 0 });
+  it("attributes live runtime, pending defers and eligible schedules to their own tasks", () => {
+    const { ctx, task, manager } = setup();
+    const terminal = ctx.taskStore.createTask("Terminal plans");
+    const invalid = ctx.taskStore.createTask("Unknown expiry");
+    ctx.taskStore.linkSession(terminal.id, "terminal-chat");
+    const daily = (taskId: string, name: string) => ctx.scheduleStore.createSchedule({
+      taskId, name, type: "cron", cron: "0 9 * * *", prompt: "Check",
+    });
+    daily(task.id, "Ready");
+    ctx.scheduleStore.updateSchedule(daily(terminal.id, "Disabled").id, { enabled: false });
+    ctx.scheduleStore.updateSchedule(daily(terminal.id, "Expired").id, { expiresAt: "2026-10-19T21:00:00Z" });
+    const exhausted = daily(terminal.id, "Exhausted");
+    ctx.scheduleStore.updateSchedule(exhausted.id, { maxRuns: 1, expiresAt: "2026-10-20T22:00:00Z" });
+    const malformed = daily(invalid.id, "Invalid expiry");
+    ctx.scheduleStore.updateSchedule(malformed.id, { enabled: false });
+    ctx.scheduleStore.updateSchedule(malformed.id, { enabled: true, maxRuns: 1, expiresAt: "invalid date" });
+    db.prepare("UPDATE schedules SET runCount = 1 WHERE id IN (?, ?)").run(exhausted.id, malformed.id);
+
+    ctx.deferredPromptStore.create("conversation", "Pending", "2026-10-20T22:00:00Z");
+    const cancelled = ctx.deferredPromptStore.create("terminal-chat", "Cancelled", "2026-10-20T22:00:00Z");
+    expect(ctx.deferredPromptStore.cancelById(cancelled.id)).toBe(true);
+    expect(ctx.deferredPromptStore.get(cancelled.id)?.status).toBe("cancelled");
+    manager.getSessionContinuationState.mockImplementation((id) => id === "conversation"
+      ? { runningAgentCount: 2, runningCommandCount: 1, held: true }
+      : { runningAgentCount: 0, runningCommandCount: 0, held: false });
+    const { sessions } = toOverviewSessions([{ sessionId: "conversation", externallyInUse: true }, { sessionId: "terminal-chat" }]);
+
+    const overview = buildTaskOverview(ctx, sessions, NOW);
+    const activity = new Map(overview.tasks.map((row) => [row.id, row.activity]));
+    expect(activity.get(task.id)).toMatchObject({ known: true, deferredCount: 1, scheduledCount: 1,
+      runningAgentCount: 2, runningCommandCount: 1, heldCount: 1, externalCount: 1 });
+    expect(activity.get(terminal.id)).toMatchObject({ known: true, deferredCount: 0, scheduledCount: 0,
+      runningAgentCount: 0, runningCommandCount: 0, heldCount: 0, externalCount: 0 });
+    expect(activity.get(invalid.id)).toMatchObject({ known: false, scheduledCount: 0 });
   });
 
   it("counts management jobs and deploys awaiting activation without counting terminal jobs", () => {
@@ -97,13 +112,6 @@ describe("task continuation evidence", () => {
     expect(read().activity?.managementJobCount).toBe(0);
   });
 
-  it("retains command, agent, held and external-use evidence", () => {
-    const { read, manager } = setup();
-    manager.getSessionContinuationState.mockReturnValue({ runningAgentCount: 2, runningCommandCount: 1, held: true });
-    expect(read([{ sessionId: "conversation", externallyInUse: true }]).activity)
-      .toMatchObject({ known: true, runningAgentCount: 2, runningCommandCount: 1, heldCount: 1, externalCount: 1 });
-  });
-
   it("treats a linked conversation absent from a fully read list as deleted, and archived ones as archived", () => {
     const { ctx, read } = setup();
     expect(read([]).activity).toMatchObject({ known: true, sessionIndexKnown: true });
@@ -114,13 +122,24 @@ describe("task continuation evidence", () => {
     expect(read([]).activity?.deferredCount).toBe(1);
   });
 
-  it("keeps unavailable sources distinct from an empty source", () => {
-    const { ctx } = setup();
-    expect(buildTaskOverview(ctx, null, NOW).tasks[0].activity).toMatchObject({ known: false, sessionIndexKnown: false });
-    expect(buildTaskOverview({ ...ctx, managementJobStore: undefined }, [{ sessionId: "conversation", archived: false, activity: "" }], NOW)
-      .tasks[0].activity?.known).toBe(false);
-    ctx.taskStore.unlinkSession(ctx.taskStore.listTasks()[0].id, "conversation");
-    expect(buildTaskOverview(ctx, null, NOW).tasks[0].activity).toMatchObject({ known: true, sessionIndexKnown: true });
+  it("keeps known questions visible on linked tasks when the conversation source is unavailable", () => {
+    const { ctx, task, manager } = setup();
+    const unlinked = ctx.taskStore.createTask("No conversation");
+    ctx.taskStore.linkSession(unlinked.id, "removed-chat");
+    ctx.taskStore.unlinkSession(unlinked.id, "removed-chat");
+    manager.getPendingUserInputCount.mockReturnValue(1);
+
+    const overview = buildTaskOverview(ctx, null, NOW);
+    expect(overview.tasks.find((row) => row.id === task.id)).toMatchObject({
+      inputCount: 1, activity: { known: false, sessionIndexKnown: false },
+    });
+    expect(overview.tasks.find((row) => row.id === unlinked.id)).toMatchObject({
+      inputCount: 0, activity: { known: true, sessionIndexKnown: true },
+    });
+
+    const { sessions } = toOverviewSessions([{ sessionId: "conversation" }]);
+    const missingJobs = buildTaskOverview({ ...ctx, managementJobStore: undefined }, sessions, NOW);
+    expect(missingJobs.tasks.find((row) => row.id === task.id)?.activity?.known).toBe(false);
   });
 
   it("does not spread one missing or unreadable conversation across unrelated tasks", () => {
@@ -152,11 +171,5 @@ describe("task continuation evidence", () => {
       sessionManager: { getSessionRunState: () => "idle", getPendingUserInputCount: () => 0 },
     }, [], NOW);
     expect(overview.tasks[0].activity?.unavailable).toEqual({ scope: "source", reason: "Runtime continuation status is unavailable." });
-  });
-
-  it("keeps known questions visible even when the conversation index is unavailable", () => {
-    const { ctx, manager } = setup();
-    manager.getPendingUserInputCount.mockReturnValue(1);
-    expect(buildTaskOverview(ctx, null, NOW).tasks[0].inputCount).toBe(1);
   });
 });

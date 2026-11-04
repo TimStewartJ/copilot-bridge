@@ -85,31 +85,6 @@ describe("buildCalendar events", () => {
       from: "2026-11-02", to: "2026-11-10", zone: LA,
       expected: ["2026-11-02T17:00:00.000Z", "2026-11-04T17:00:00.000Z", "2026-11-06T17:00:00.000Z"],
     },
-    {
-      name: "a multi-day all-day event that began before the window",
-      event: event({ allDay: true, start: "2026-10-30", end: "2026-11-03" }),
-      from: "2026-11-02", to: "2026-11-08", zone: LA,
-      expected: ["2026-10-30"],
-    },
-    {
-      name: "an overnight event that ends inside the window",
-      event: event({ start: "2026-11-02T07:00:00.000Z", end: "2026-11-02T09:00:00.000Z" }),
-      from: "2026-11-02", to: "2026-11-02", zone: LA,
-      expected: ["2026-11-02T07:00:00.000Z"],
-    },
-    {
-      name: "a repeat made in another zone shows on the viewer's day",
-      event: event({ timezone: "Asia/Tokyo", start: "2026-11-01T00:00:00.000Z", end: "2026-11-01T01:00:00.000Z", repeat: { every: "day", interval: 1 } }),
-      from: "2026-11-02", to: "2026-11-02", zone: LA,
-      // 9am in Tokyo on Nov 3 is the afternoon of Nov 2 in Los Angeles.
-      expected: ["2026-11-03T00:00:00.000Z"],
-    },
-    {
-      name: "an event that ended before the viewer's day began",
-      event: event({ start: "2026-11-02T06:00:00.000Z", end: "2026-11-02T07:30:00.000Z" }),
-      from: "2026-11-02", to: "2026-11-02", zone: LA,
-      expected: [],
-    },
   ])("$name", ({ event: series, from, to, zone, expected }) => {
     expect(starts(buildCalendar(sources({ events: [series] }), { from, to, timezone: zone, now: NOW }))).toEqual(expected);
   });
@@ -122,10 +97,27 @@ describe("buildCalendar events", () => {
     expect(calendar.items.map((item) => item.eventId)).toEqual(["late", "day"]);
   });
 
-  it("names each repeat by its place in the series", () => {
-    const calendar = buildCalendar(sources({ events: [event({ allDay: true, start: "2026-10-31", end: "2026-10-31", repeat: { every: "day", interval: 1 } })] }),
-      { from: "2026-11-02", to: "2026-11-02", timezone: LA, now: NOW });
-    expect(calendar.items[0]).toMatchObject({ id: "event:e1:2", eventId: "e1", repeating: true });
+  it("shows the events and upcoming runs that overlap one Los Angeles day", () => {
+    const calendar = buildCalendar(sources({
+      events: [
+        event({ id: "tokyo", timezone: "Asia/Tokyo", start: "2026-11-01T00:00:00.000Z", end: "2026-11-01T01:00:00.000Z", repeat: { every: "day", interval: 1 } }),
+        event({ id: "ended", start: "2026-11-02T06:00:00.000Z", end: "2026-11-02T07:30:00.000Z" }),
+        event({ id: "daily", allDay: true, start: "2026-10-31", end: "2026-10-31", repeat: { every: "day", interval: 1 } }),
+        event({ id: "overnight", start: "2026-11-02T07:00:00.000Z", end: "2026-11-02T09:00:00.000Z" }),
+      ],
+      schedules: [schedule({ id: "minute", cron: "* * * * *" }), schedule({ id: "past", cron: "0 7 * * *" })],
+    }), { from: "2026-11-02", to: "2026-11-02", timezone: LA, now: NOW });
+
+    expect(calendar.items.map(({ kind, eventId, scheduleId, start }) => [kind, eventId ?? scheduleId, start])).toEqual([
+      ["event", "overnight", "2026-11-02T07:00:00.000Z"],
+      ["event", "daily", "2026-11-02"],
+      ["run", "minute", "2026-11-02T16:00:00.000Z"],
+      ["run", "minute", "2026-11-02T16:01:00.000Z"],
+      ["run", "minute", "2026-11-02T16:02:00.000Z"],
+      ["event", "tokyo", "2026-11-03T00:00:00.000Z"],
+    ]);
+    expect(calendar.items[1]).toMatchObject({ id: "event:daily:2", eventId: "daily", repeating: true });
+    expect(calendar.runCounts).toEqual({ "2026-11-02": 960 });
   });
 
   it.each([
@@ -144,11 +136,20 @@ describe("buildCalendar derived dates", () => {
     expect(starts(buildCalendar(sources({ revisits }), { from: "2026-11-02", to: "2026-11-02", timezone: "UTC", now: NOW }), "revisit")).toHaveLength(1);
   });
 
-  it("reports revisits that have arrived and overdue deadlines, oldest first", () => {
+  it("lists overlapping events and unexpired runs beside the week’s overdue work", () => {
     const calendar = buildCalendar(sources({
+      events: [event({ id: "trip", allDay: true, start: "2026-10-30", end: "2026-11-03" })],
+      schedules: [
+        schedule({ id: "daily", expiresAt: "2026-11-03T17:30:00.000Z" }),
+        schedule({ id: "once", type: "once", cron: undefined, runAt: "2026-11-03T17:00:00.000Z", expiresAt: "2026-11-03T17:00:00.000Z" }),
+      ],
       revisits: [{ id: "t1", title: "Check back", nextTouchAt: "2026-10-30T16:00:00.000Z", deferred: false }],
       overdue: [{ id: "c1", taskId: "t2", text: "Pay", done: false, order: 0, createdAt: "", deadline: "2026-10-20" }],
     }), { from: "2026-11-02", to: "2026-11-08", timezone: LA, now: NOW });
+    expect(calendar.items.map(({ kind, eventId, scheduleId, start }) => [kind, eventId ?? scheduleId, start])).toEqual([
+      ["event", "trip", "2026-10-30"], ["run", "daily", "2026-11-02T17:00:00.000Z"], ["run", "daily", "2026-11-03T17:00:00.000Z"],
+    ]);
+    expect(calendar.runCounts).toEqual({ "2026-11-02": 1, "2026-11-03": 1 });
     expect(calendar.overdue.map((item) => item.id)).toEqual(["deadline:c1", "revisit:t1"]);
     expect(calendar).toMatchObject({ overdueTotal: 2, undatedChecklistCount: 4, today: "2026-11-02" });
   });
@@ -161,34 +162,10 @@ describe("buildCalendar derived dates", () => {
       runs: ["2026-11-04T17:00:00.000Z"], counts: { "2026-11-04": 1 },
     },
     {
-      name: "a schedule that expires mid-window",
-      schedule: schedule({ expiresAt: "2026-11-03T17:30:00.000Z" }),
-      from: "2026-11-02", to: "2026-11-08",
-      runs: ["2026-11-02T17:00:00.000Z", "2026-11-03T17:00:00.000Z"], counts: { "2026-11-02": 1, "2026-11-03": 1 },
-    },
-    {
-      name: "a dense schedule is counted, with only the first runs listed",
-      schedule: schedule({ cron: "* * * * *" }),
-      from: "2026-11-02", to: "2026-11-02",
-      runs: ["2026-11-02T16:00:00.000Z", "2026-11-02T16:01:00.000Z", "2026-11-02T16:02:00.000Z"], counts: { "2026-11-02": 960 },
-    },
-    {
       name: "an hourly schedule in another zone is counted on the viewer's days",
       schedule: schedule({ cron: "0 * * * *", timezone: "UTC" }),
       from: "2026-11-03", to: "2026-11-03",
       runs: ["2026-11-03T08:00:00.000Z", "2026-11-03T09:00:00.000Z", "2026-11-03T10:00:00.000Z"], counts: { "2026-11-03": 24 },
-    },
-    {
-      name: "a one-off run after its schedule expires",
-      schedule: schedule({ type: "once", cron: undefined, runAt: "2026-11-03T17:00:00.000Z", expiresAt: "2026-11-03T17:00:00.000Z" }),
-      from: "2026-11-02", to: "2026-11-08",
-      runs: [], counts: {},
-    },
-    {
-      name: "runs already past are not upcoming",
-      schedule: schedule({ cron: "0 7 * * *" }),
-      from: "2026-11-02", to: "2026-11-02",
-      runs: [], counts: {},
     },
   ])("$name", ({ schedule: plan, from, to, runs, counts }) => {
     const calendar = buildCalendar(sources({ schedules: [plan] }), { from, to, timezone: LA, now: NOW });

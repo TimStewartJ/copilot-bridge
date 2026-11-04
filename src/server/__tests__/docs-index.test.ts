@@ -175,31 +175,19 @@ This page contains xylophone content.`);
     expect(rebuilds).toBe(1);
   });
 
-  it("indexes folder index pages by folder path and resolves index aliases", () => {
+  it("indexes a folder landing page once and keeps a colliding leaf authoritative", () => {
     const { docsIndex, docsStore } = createIndexFixture();
-
     docsStore.writePage("guides/index", "# Guide Home\n\nFolder landing page.");
-    expect(docsIndex.reindex().indexed).toBe(2);
+    docsStore.writePage("reference", "# Leaf Guide\n\nLeaf-only landing page.");
+    mkdirSync(join(docsStore.docsDir, "reference"), { recursive: true });
+    writeFileSync(join(docsStore.docsDir, "reference", "index.md"), "# Folder Guide\n\nShadow-only content.", "utf-8");
 
-    const search = docsIndex.search("landing");
-    expect(search.results.map((result) => result.path)).toContain("guides");
-    expect(search.results.map((result) => result.path)).not.toContain("guides/index");
-    expect(docsIndex.resolveWikilink("guides/index")).toEqual({
-      path: "guides",
-      title: "guides",
-    });
-  });
-
-  it("does not index a colliding folder index when a leaf page owns the same path", () => {
-    const { docsIndex, docsStore } = createIndexFixture();
-
-    docsStore.writePage("guides", "# Leaf Guide\n\nLeaf-only content.");
-    mkdirSync(join(docsStore.docsDir, "guides"), { recursive: true });
-    writeFileSync(join(docsStore.docsDir, "guides", "index.md"), "# Folder Guide\n\nFolder-only content.", "utf-8");
-    docsIndex.reindex();
-
-    expect(docsIndex.search("Leaf-only").results.map((result) => result.path)).toContain("guides");
-    expect(docsIndex.search("Folder-only").results.map((result) => result.path)).not.toContain("guides");
+    expect(docsIndex.reindex().indexed).toBe(3);
+    const landings = docsIndex.search("landing").results;
+    expect(landings.map((row) => row.path).sort()).toEqual(["guides", "reference"]);
+    expect(landings.find((row) => row.path === "reference")?.snippet).toContain("Leaf-only");
+    expect(docsIndex.search("Shadow-only").results).toEqual([]);
+    expect(docsIndex.resolveWikilink("guides/index")).toEqual({ path: "guides", title: "guides" });
   });
 
   it("rejects unsafe DB folder query paths", () => {
