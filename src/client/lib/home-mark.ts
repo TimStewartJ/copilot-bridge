@@ -1,4 +1,4 @@
-// The Home icon's mark: Home is Helm's brief and its conversation, so the mark says Helm has something new.
+// Home combines the brief and the conversation on desktop; phone navigation separates them.
 
 export interface HelmReplyState {
   sessionId: string;
@@ -19,10 +19,16 @@ export function isHelmReplyUnread(
   return isUnread(current.sessionId, current.lastReplyAt);
 }
 
-/** What the mark stands for, for the icon's label and tooltip; null when there is no mark. */
-export function describeHomeMark({ helmReplied, newBrief }: { helmReplied: boolean; newBrief: boolean }): string | null {
-  if (helmReplied && newBrief) return "Helm replied and wrote a new brief";
-  if (helmReplied) return "Helm replied";
-  if (newBrief) return "New brief from Helm";
-  return null;
+export interface HomeMark {
+  kind: "unread" | "working" | "unread-working";
+  label: string;
+}
+
+export function homeMarkFor({ helmReplied, newBrief, replying, updating }: {
+  helmReplied?: boolean; newBrief?: boolean; replying?: boolean; updating?: boolean;
+}): HomeMark | null {
+  const unread = helmReplied && newBrief ? "Helm replied and wrote a new brief" : helmReplied ? "Helm replied" : newBrief ? "New brief from Helm" : "";
+  const work = [updating && "Updating brief", replying && "Helm is replying"].filter(Boolean).join("; ");
+  if (!unread && !work) return null;
+  return { kind: work ? (unread ? "unread-working" : "working") : "unread", label: [unread, work].filter(Boolean).join("; ") };
 }

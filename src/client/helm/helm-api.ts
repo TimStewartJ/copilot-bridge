@@ -10,6 +10,7 @@ export interface HelmConversation {
   turnCount: number;
   kept: boolean;
   busy: boolean;
+  replying: boolean;
   handsFree: boolean;
   /** Visible activity time of Helm's latest finished reply; null before any reply. */
   lastReplyAt: string | null;
@@ -38,7 +39,7 @@ async function helmRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export const fetchHelmState = () => helmRequest<HelmState>("");
+export const fetchHelmState = (signal?: AbortSignal) => helmRequest<HelmState>("", { signal });
 export const createHelmConversation = (options: { model?: string } = {}) =>
   helmRequest<HelmConversation>("/conversations", { method: "POST", body: JSON.stringify(options) });
 export const startFreshHelm = () => helmRequest<HelmState>("/fresh", { method: "POST" });
@@ -54,7 +55,7 @@ export const helmStateQueryKey = ["helm", "state"] as const;
 export function useHelmStateQuery() {
   return useQuery({
     queryKey: helmStateQueryKey,
-    queryFn: fetchHelmState,
+    queryFn: ({ signal }) => fetchHelmState(signal),
     staleTime: 10_000,
     refetchOnWindowFocus: true,
   });

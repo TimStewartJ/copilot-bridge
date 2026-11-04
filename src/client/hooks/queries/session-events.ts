@@ -74,10 +74,12 @@ export function projectSessionEvent(
     case "session:busy":
       patch({ runState: "busy" });
       effects.onBusy(sessionId);
+      if (isHelmSession) refetch(helmStateQueryKey);
       refetch(queryKeys.dashboard);
       break;
     case "session:stalled":
       patch({ runState: "stalled" });
+      if (isHelmSession) refetch(helmStateQueryKey);
       refetch(queryKeys.dashboard);
       break;
     case "session:mode":
@@ -124,6 +126,7 @@ export function projectSessionEvent(
     case "session:user-input": {
       const pendingUserInputCount = event.pendingUserInputCount ?? 0;
       patch({ pendingUserInputCount, needsUserInput: event.needsUserInput ?? pendingUserInputCount > 0 });
+      if (isHelmSession) refetch(helmStateQueryKey);
       refetch(queryKeys.dashboard);
       break;
     }

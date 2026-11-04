@@ -7,6 +7,7 @@ import {
   HELM_THINKER_DEFAULTS,
   type HelmBridgeStatus,
   type HelmBrief,
+  type HelmBriefStatus,
   type HelmHandledView,
   type HelmItemState,
   type HelmItemStatus,
@@ -200,6 +201,13 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
     return row ? hydrateRun(row) : undefined;
   }
 
+  function getBriefStatus(activeId?: string): HelmBriefStatus {
+    const done = db.prepare("SELECT id, seenAt FROM helm_runs WHERE status = 'done' ORDER BY startedAt DESC, rowid DESC LIMIT 1")
+      .get() as { id: string; seenAt: string | null } | undefined;
+    const running = !!activeId && !!db.prepare("SELECT 1 FROM helm_runs WHERE id = ? AND status = 'running'").get(activeId);
+    return { runId: done?.id ?? null, seen: !done || done.seenAt !== null, running };
+  }
+
   function getRunBySession(sessionId: string): HelmRunRecord | undefined {
     const row = db.prepare("SELECT * FROM helm_runs WHERE sessionId = ?").get(sessionId);
     return row ? hydrateRun(row) : undefined;
@@ -370,7 +378,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   return {
     getSettings, updateSettings,
     listMemory, getMemory, findByKey, countActive, addMemory, updateMemory, noteUse,
-    createRun, getRun, getRunBySession, isRunSession, listRuns, latestRun, setRunContext, setRunSources, publishRun, finishRun, markRunSeen,
+    createRun, getRun, getBriefStatus, getRunBySession, isRunSession, listRuns, latestRun, setRunContext, setRunSources, publishRun, finishRun, markRunSeen,
     getSourceCoverage, setSourceCoverage,
     setRunCredits, failInterruptedRuns, markSessionDeleted, pruneRuns,
     setItemState, claimItem, getItemStates, addFeedback, pendingFeedback, consumeFeedback,

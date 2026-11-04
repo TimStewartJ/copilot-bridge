@@ -18,6 +18,7 @@ function conversation(overrides: Partial<HelmConversation>): HelmConversation {
     busy: false,
     handsFree: false,
     lastReplyAt: null,
+    replying: false,
     ...overrides,
   };
 }

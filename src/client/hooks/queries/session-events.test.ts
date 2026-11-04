@@ -132,7 +132,7 @@ describe("session event projection", () => {
     expect(queryClient.getQueryData(key)).toEqual({ model: "gpt-5.6", source: "live" });
   });
 
-  it.each(["session:title", "session:idle"] as const)("refreshes Helm when its conversation changes: %s", (type) => {
+  it.each(["session:title", "session:busy", "session:stalled", "session:user-input", "session:idle"] as const)("refreshes Helm when its conversation changes: %s", (type) => {
     const { project, effects } = fixture();
     effects.isHelmSession.mockReturnValue(true);
     project(type === "session:title"

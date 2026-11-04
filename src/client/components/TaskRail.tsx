@@ -33,6 +33,7 @@ import { shouldShowTaskRowUnreadDot } from "../task-row-signals";
 import TaskAttentionBadge from "./TaskAttentionBadge";
 import { DS, cx } from "../design/tokens";
 import { Button, CountBadge, IdentitySwatch, StatusIcon } from "../design/primitives";
+import type { HomeMark } from "../lib/home-mark";
 import CopilotQuotaMenu from "./CopilotQuotaMenu";
 
 interface TaskRailProps {
@@ -52,8 +53,7 @@ interface TaskRailProps {
   onOpenSearch?: () => void;
   isDocsActive: boolean;
   isDashboardActive: boolean;
-  /** What Helm has new for Tim, shown as a mark on Home; null when nothing. */
-  homeMark?: string | null;
+  homeMark?: HomeMark | null;
   expanded: boolean;
   onToggleExpanded: () => void;
   sessions?: Session[];
@@ -495,14 +495,14 @@ export default function TaskRail({
           <button
             type="button"
             onClick={onGoHome}
-            title={homeMark ? `Home • ${homeMark}` : "Home"}
-            aria-label={homeMark ? `Home, ${homeMark}` : "Home"}
+            title={homeMark ? `Home • ${homeMark.label}` : "Home"}
+            aria-label={homeMark ? `Home, ${homeMark.label}` : "Home"}
             className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${navBtn(isDashboardActive)}`}
           >
             <LayoutDashboard size={18} />
             {homeMark && (
               <span className={DS.status.corner}>
-                <StatusIcon kind="unread" decorative />
+                <StatusIcon kind={homeMark.kind} decorative />
               </span>
             )}
           </button>
@@ -959,14 +959,14 @@ export default function TaskRail({
       <div className="px-2 pb-1">
         <button
           onClick={onGoHome}
-          title={homeMark ? `Home • ${homeMark}` : "Home"}
-          aria-label={homeMark ? `Home, ${homeMark}` : "Home"}
+          title={homeMark ? `Home • ${homeMark.label}` : "Home"}
+          aria-label={homeMark ? `Home, ${homeMark.label}` : "Home"}
           className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${navBtn(isDashboardActive)}`}
         >
           <LayoutDashboard size={14} />
           Home
           {homeMark && (
-            <StatusIcon kind="unread" decorative size="md" className="ml-auto" />
+            <StatusIcon kind={homeMark.kind} decorative size="md" className="ml-auto" />
           )}
         </button>
       </div>

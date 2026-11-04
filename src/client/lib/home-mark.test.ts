@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { isHelmReplyUnread } from "./home-mark";
+import { homeMarkFor, isHelmReplyUnread } from "./home-mark";
+
+it.each([
+  [{}, null],
+  [{ updating: true, replying: true }, { kind: "working", label: "Updating brief; Helm is replying" }],
+  [{ newBrief: true, replying: true }, { kind: "unread-working", label: "New brief from Helm; Helm is replying" }],
+  [{ helmReplied: true, newBrief: true }, { kind: "unread", label: "Helm replied and wrote a new brief" }],
+] as const)("combines independent working and unread signals: %j", (signals, expected) => {
+  expect(homeMarkFor(signals)).toEqual(expected);
+});
 
 const READ_THROUGH = "2026-09-18T09:00:00.000Z";
 const isUnread = (_sessionId: string, activityTime?: string) => !!activityTime && activityTime > READ_THROUGH;

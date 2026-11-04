@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "../api";
 import type {
   HelmBriefResponse,
+  HelmBriefStatus,
   HelmHandledView,
   HelmMemoryEntry,
   HelmRunView,
@@ -24,8 +25,6 @@ export const helmBriefKey = ["helm", "brief"] as const;
 export const helmMemoryKey = ["helm", "memory"] as const;
 export const helmRunsKey = ["helm", "runs"] as const;
 export const helmBriefStatusKey = ["helm", "brief-status"] as const;
-
-export interface HelmBriefStatus { runId: string | null; seen: boolean }
 
 export const fetchHelmBrief = (signal?: AbortSignal) => request<HelmBriefResponse>("/brief", { signal });
 export const fetchHelmBriefStatus = (signal?: AbortSignal) => request<HelmBriefStatus>("/brief/status", { signal });

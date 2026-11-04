@@ -4,6 +4,7 @@ import {
   describeTabAttention,
   type TabAttentionSummary,
 } from "../hooks/useTaskIndicators";
+import type { HomeMark } from "../lib/home-mark";
 import type { MobileNavTab } from "../lib/mobile-route-meta";
 import { DS, cx } from "../design/tokens";
 import { CountBadge, StatusIcon } from "../design/primitives";
@@ -11,10 +12,8 @@ import { CountBadge, StatusIcon } from "../design/primitives";
 interface MobileBottomNavProps {
   activeTab: MobileNavTab;
   onSelectTab: (tab: MobileNavTab) => void;
-  /** What Helm's brief has new for Tim, shown as a mark on Home; null when nothing. */
-  homeMark?: string | null;
-  /** What Helm's conversation has new (a reply), shown as a mark on Helm; null when nothing. */
-  helmMark?: string | null;
+  homeMark?: HomeMark | null;
+  helmMark?: HomeMark | null;
   taskAttention?: TabAttentionSummary;
   chatAttention?: TabAttentionSummary;
   showDocs?: boolean;
@@ -62,7 +61,7 @@ export function MobileBottomNav({
           const active = activeTab === id;
           const attention = id === "work" ? workAttention : NO_ATTENTION;
           const mark = id === "home" ? homeMark : id === "helm" ? helmMark : null;
-          const description = id === "work" ? workAttentionDescription : mark;
+          const description = id === "work" ? workAttentionDescription : mark?.label;
           return (
             <button
               key={id}
@@ -84,7 +83,7 @@ export function MobileBottomNav({
                   )}
                   {mark && (
                     <span className={DS.status.corner}>
-                      <StatusIcon kind="unread" decorative />
+                      <StatusIcon kind={mark.kind} decorative />
                     </span>
                   )}
                 </span>

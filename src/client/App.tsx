@@ -97,7 +97,7 @@ import useTaskIndicators, {
   summarizeTaskTabAttention,
   type TabAttentionSummary,
 } from "./hooks/useTaskIndicators";
-import { describeHomeMark, isHelmReplyUnread } from "./lib/home-mark";
+import { homeMarkFor, isHelmReplyUnread } from "./lib/home-mark";
 import TaskRail from "./components/TaskRail";
 import TaskPanel, { TaskPanelRouteSkeleton } from "./components/TaskPanel";
 import TaskDashboard, { TaskDashboardRouteSkeleton } from "./components/TaskDashboard";
@@ -856,10 +856,11 @@ function AppShell() {
   }, [globalSessions, isUnread, activeSessionId]);
   const helmReplied = isHelmReplyUnread(helmStateQuery.data?.current, readStateHydrated, isUnread);
   const newHelmBrief = !!helmBriefStatus?.runId && !helmBriefStatus.seen;
-  const homeMark = describeHomeMark({ helmReplied, newBrief: newHelmBrief });
-  // A phone has a tab for each: the brief's mark goes on Home, the reply's on Helm.
-  const mobileHomeMark = describeHomeMark({ helmReplied: false, newBrief: newHelmBrief });
-  const mobileHelmMark = describeHomeMark({ helmReplied, newBrief: false });
+  const briefSignals = { newBrief: newHelmBrief, updating: helmBriefStatus?.running };
+  const chatSignals = { helmReplied, replying: helmStateQuery.data?.current?.replying };
+  const homeMark = homeMarkFor({ ...briefSignals, ...chatSignals });
+  const mobileHomeMark = homeMarkFor(briefSignals);
+  const mobileHelmMark = homeMarkFor(chatSignals);
 
   // ── Browser tab title ────────────────────────────────────────
   // DocsView publishes its resolved page title upward; everything else is

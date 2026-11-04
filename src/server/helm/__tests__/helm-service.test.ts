@@ -26,6 +26,9 @@ function createHarness() {
   const visibleActivity = new Map<string, string>();
   const sessionManager = {
     isSessionBusy: vi.fn((sessionId: string) => busy.has(sessionId)),
+    hasRunInFlight: vi.fn(() => false),
+    isSessionStalled: vi.fn(() => false),
+    getPendingUserInputCount: vi.fn(() => 0),
     listModels: vi.fn(async () => [
       { id: "claude-opus-5", billing: { tokenPrices: { inputPrice: 500, outputPrice: 2500, cachePrice: 50, batchSize: 1_000_000 } }, supportedReasoningEfforts: ["low", "high"] },
       { id: "gpt-6-luna", billing: { tokenPrices: { inputPrice: 10, outputPrice: 50, cachePrice: 1, batchSize: 1_000_000 } }, supportedReasoningEfforts: ["none", "low"] },
@@ -287,6 +290,21 @@ describe("HelmService conversations", () => {
     expect((await helm.getState()).current?.title).toBe("Morning triage");
     globalBus.emit({ type: "session:title", sessionId: conversation.sessionId, title: "Tellus follow-ups" });
     expect((await helm.getState()).current?.title).toBe("Tellus follow-ups");
+  });
+
+  it("distinguishes a live reply from a hold, stall or pending question", async () => {
+    const { helm, busy, sessionManager } = createHarness();
+    const { sessionId } = await helm.createConversation();
+    busy.add(sessionId);
+    const current = async () => (await helm.getState()).current;
+    expect(await current()).toMatchObject({ busy: true, replying: false });
+    sessionManager.hasRunInFlight.mockReturnValue(true);
+    expect(await current()).toMatchObject({ replying: true });
+    sessionManager.isSessionStalled.mockReturnValue(true);
+    expect(await current()).toMatchObject({ replying: false });
+    sessionManager.isSessionStalled.mockReturnValue(false);
+    sessionManager.getPendingUserInputCount.mockReturnValue(1);
+    expect(await current()).toMatchObject({ replying: false });
   });
 
   it("refuses to delete a conversation that is in use", async () => {

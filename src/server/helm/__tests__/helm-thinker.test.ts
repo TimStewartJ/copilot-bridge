@@ -221,18 +221,19 @@ describe("Helm thinker", () => {
 
   it("holds a new brief as unseen until Tim has seen it, and only the latest brief can be seen", async () => {
     const { store, thinker } = setup();
-    expect(thinker.getBriefStatus()).toEqual({ runId: null, seen: true });
+    expect(thinker.getBriefStatus()).toEqual({ runId: null, seen: true, running: false });
     const first = activate(thinker, store);
     await first.publish(BRIEF);
     store.finishRun(first.run.id, { status: "done" });
     const second = activate(thinker, store, "run-session-2");
+    expect(thinker.getBriefStatus()).toEqual({ runId: first.run.id, seen: false, running: true });
     await second.publish(BRIEF);
     store.finishRun(second.run.id, { status: "done" });
     (thinker as any).active = undefined;
 
-    expect(thinker.getBriefStatus()).toEqual({ runId: second.run.id, seen: false });
-    expect(thinker.markBriefSeen(first.run.id)).toEqual({ runId: second.run.id, seen: false });
-    expect(thinker.markBriefSeen(second.run.id)).toEqual({ runId: second.run.id, seen: true });
+    expect(thinker.getBriefStatus()).toEqual({ runId: second.run.id, seen: false, running: false });
+    expect(thinker.markBriefSeen(first.run.id)).toEqual({ runId: second.run.id, seen: false, running: false });
+    expect(thinker.markBriefSeen(second.run.id)).toEqual({ runId: second.run.id, seen: true, running: false });
   });
 
   it("ignores a publication that arrives after the run was given up", async () => {

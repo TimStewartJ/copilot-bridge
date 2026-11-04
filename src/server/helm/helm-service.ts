@@ -63,6 +63,8 @@ export interface HelmConversationView {
   turnCount: number;
   kept: boolean;
   busy: boolean;
+  /** A turn is working, rather than waiting for input or holding the session open. */
+  replying: boolean;
   handsFree: boolean;
   /** Visible activity time of Helm's latest finished reply, for read state; null before any reply. */
   lastReplyAt: string | null;
@@ -344,6 +346,8 @@ export class HelmService implements HelmToolRuntime {
       turnCount: record.turnCount,
       kept: record.kept,
       busy: this.ctx.sessionManager.isSessionBusy(record.sessionId),
+      replying: this.ctx.sessionManager.hasRunInFlight(record.sessionId) && !this.ctx.sessionManager.isSessionStalled(record.sessionId)
+        && this.ctx.sessionManager.getPendingUserInputCount(record.sessionId) === 0,
       handsFree: this.handsFree.has(record.sessionId),
       lastReplyAt: record.lastReplyAt,
       ...(expiresAt ? { expiresAt } : {}),

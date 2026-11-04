@@ -183,6 +183,13 @@ export interface HelmMemoryChange {
   text: string;
 }
 
+export interface HelmBriefStatus {
+  /** Latest completed brief, independent of a run still in progress. */
+  runId: string | null;
+  seen: boolean;
+  running: boolean;
+}
+
 export interface HelmBriefResponse {
   run: HelmRunView | null;
   brief: HelmBrief | null;

@@ -4,10 +4,10 @@
 // allowed Helm to handle.
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Brain, Check, ExternalLink, Loader2, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
+import { ArrowRight, Brain, Check, ExternalLink, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
 import type { HelmAction, HelmBriefItem, HelmBriefResponse, HelmItemKind, HelmProposal } from "../../shared/helm-thinker";
 import type { TaskOverviewRow } from "../../shared/task-overview";
-import { Badge, Button, Details, EmptyHint, IconButton, MetaLine, Notice, Section, TextArea, TextInput } from "../design/primitives";
+import { Badge, Button, Details, EmptyHint, IconButton, MetaLine, Notice, Section, StatusIcon, TextArea, TextInput } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "../components/PullToRefresh";
 import { OutcomeNotice } from "../components/QuietTasks";
@@ -84,8 +84,13 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
   return <div className="flex-1 min-h-0 relative"><PullToRefresh className="absolute inset-0" scrollRestoration={scrollRestoration} onRefresh={async () => { await query.refetch(); }}>
     <div className={column ? "space-y-6 px-4 py-5" : cx(DS.layout.pageColumn, "max-w-6xl space-y-6")}>
       <header className="space-y-2">
-        <div className="flex items-start justify-between gap-3">
-          <h1 className={DS.text.pageTitle}>{partOfDay()}</h1>
+        <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className={DS.text.pageTitle}>{partOfDay()}</h1>
+            {data?.running && <span role="status" className={cx(DS.text.meta, "inline-flex items-center gap-1.5")} title={`Started ${formatClock(data.running.startedAt)}${data.running.model ? ` on ${data.running.model}` : ""}`}>
+              <StatusIcon kind="working" decorative />Updating brief
+            </span>}
+          </div>
           {(!phone || !everythingInNav) && <div className="flex shrink-0 items-center gap-1">
             {!phone && <Button variant="ghost" size="sm" onClick={() => navigate("/helm/memory")}><Brain size={14} />What Helm knows</Button>}
             {!everythingInNav && <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home?view=classic")}>Everything<ArrowRight size={14} /></Button>}
@@ -111,9 +116,6 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
 
       <HomeWeekStrip compact={phone || column} />
 
-      {data?.running && <Notice tone="info" icon={<Loader2 size={15} className="animate-spin" />} title="Helm is thinking">
-        Started {formatAgo(data.running.startedAt)} on {data.running.model ?? "its model"}.
-      </Notice>}
       {data?.lastFailure && !data.running && <Notice tone="warning" title="Helm's last look didn't finish">{data.lastFailure.error ?? "Unknown error"} ({formatAgo(data.lastFailure.startedAt)})</Notice>}
       {data?.preview && <Notice tone="neutral" title="Staged preview">Previews don't think on a schedule or change other Bridges.</Notice>}
       {(error || query.error) && <Notice tone="danger" title="Something went wrong">{error || query.error?.message}</Notice>}

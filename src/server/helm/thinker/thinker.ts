@@ -553,6 +553,7 @@ export class HelmThinker {
       effort: selection.effort ?? null,
     });
     this.active = { runId: run.id, sessionId: run.sessionId, controller: new AbortController(), carriedSources: [] };
+    this.announce();
     console.log(`[helm-thinker] Run ${run.id.slice(0, 8)} started (${run.trigger}${run.rebuild ? ", rebuild" : ""}) on ${selection.model ?? "default model"} at ${selection.effort ?? "default"} effort`);
     this.activeExecution = this.execute(run, selection).finally(() => {
       if (this.active?.runId === run.id) this.active = undefined;
@@ -803,13 +804,12 @@ export class HelmThinker {
   }
 
   /** The latest brief and whether Tim has seen it: cheap enough for the Home icon to ask often. */
-  getBriefStatus(): { runId: string | null; seen: boolean } {
-    const done = this.store.latestRun("done");
-    return { runId: done?.id ?? null, seen: !done || done.seenAt !== null };
+  getBriefStatus() {
+    return this.store.getBriefStatus(this.active?.runId);
   }
 
   /** Only the latest brief can be marked seen; an older one is already behind it. */
-  markBriefSeen(runId: string): { runId: string | null; seen: boolean } {
+  markBriefSeen(runId: string) {
     if (this.store.latestRun("done")?.id === runId && this.store.markRunSeen(runId)) this.announce();
     return this.getBriefStatus();
   }
