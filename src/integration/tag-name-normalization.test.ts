@@ -6,7 +6,7 @@ import { getBridgeToolDefinitions } from "../server/agent-tools-mcp/register.js"
 import { createTagStore } from "../server/tag-store.js";
 import { createTagToolDefinitions } from "../server/tools/tag-tools.js";
 import { createTaskToolDefinitions } from "../server/tools/task-tools.js";
-import { toolFailure } from "../server/tool-results.js";
+import { convertBridgeToolResultToSdk } from "../server/bridge-native-tools.js";
 import { makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
 import { createTestApp, request } from "../test-support/api-routes.js";
 
@@ -55,8 +55,10 @@ describe("tag name normalization", () => {
 
     await expect(tagCreateTool.handler({ name: NFC_CAFE }, createInvocation("tag_create")))
       .resolves.toMatchObject({ success: true });
-    await expect(tagCreateTool.handler({ name: NFD_CAFE }, createInvocation("tag_create")))
-      .resolves.toEqual(toolFailure(`Tag "${NFD_CAFE}" already exists`));
+    const duplicate = await tagCreateTool.handler({ name: NFD_CAFE }, createInvocation("tag_create"));
+    expect(convertBridgeToolResultToSdk(duplicate)).toMatchObject({
+      resultType: "failure", error: `Tag "${NFD_CAFE}" already exists`, textResultForLlm: `Tag "${NFD_CAFE}" already exists`,
+    });
     const collision = await request(app).post("/api/tags").send({ name: NFD_CAFE });
     expect(collision.status).toBe(400);
     expect(collision.body.error).toContain("already exists");

@@ -91,15 +91,17 @@ describe("runSyncCommand", () => {
     const result = runFakeCommand(rootDir);
 
     expect(result.ok).toBe(false);
-    expect(result.output).toContain("stderr:\nwarning output");
-    expect(result.output).toContain("stdout:\nnormal output");
+    expect(result.output).toMatch(/stderr[^a-z]*warning output/i);
+    expect(result.output).toMatch(/stdout[^a-z]*normal output/i);
+    expect(result.output).toMatch(/exit.*code 2/i);
     const logPath = result.validationLogPath;
     expect(logPath).toBeTruthy();
     if (!logPath) throw new Error("expected validation log path");
     expect(existsSync(logPath)).toBe(true);
     const log = readFileSync(logPath, "utf-8");
-    expect(log).toContain("stderr:\nwarning output");
-    expect(log).toContain("stdout:\nnormal output");
+    expect(log).toMatch(/stderr[^a-z]*warning output/i);
+    expect(log).toMatch(/stdout[^a-z]*normal output/i);
+    expect(log).toMatch(/exit.*code 2/i);
   });
 
 
@@ -115,6 +117,7 @@ describe("runSyncCommand", () => {
 
     expect(result.ok).toBe(false);
     expect(result.output).toContain("stderr:\nstill running");
+    expect(result.output).toContain("spawnSync fake timeout");
     expect(result.output).toContain("Command timed out after 1 seconds.");
     expect(result.validationLogPath).toContain("validation-logs");
   });

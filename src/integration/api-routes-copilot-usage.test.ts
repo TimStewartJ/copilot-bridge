@@ -729,14 +729,18 @@ describe("Copilot quota route", () => {
   });
 
   it("GET /api/copilot-usage/quota degrades instead of failing when the RPC is missing", async () => {
-    ({ app } = createTestApp());
+    const getAccountQuota = vi.fn().mockRejectedValue(new Error("Quota RPC unsupported by this backend"));
+    ({ app } = createTestApp({ sessionManager: {
+      ...createMockSessionManager(), getAccountQuota,
+      getAccountAuth: async () => undefined, fetchAccountCopilotUser: async () => undefined,
+    } as never }));
 
-    const res = await request(app).get("/api/copilot-usage/quota");
-
-    expect(res.status).toBe(200);
-    expect(res.body.available).toBe(false);
-    expect(res.body.primary).toBeNull();
-    expect(typeof res.body.error).toBe("string");
+    const res = await request(app).get("/api/copilot-usage/quota").expect(200);
+    expect(res.body).toMatchObject({
+      available: false, primary: null, identity: null, snapshots: [], error: expect.stringMatching(/quota.*unsupported/i),
+    });
+    await request(app).get("/api/copilot-usage/quota").expect(200);
+    expect(getAccountQuota).toHaveBeenCalledOnce();
   });
 });
 

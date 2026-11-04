@@ -9,7 +9,6 @@ import { makeTestDir } from "./helpers.js";
 import {
   isSessionStatePathSegment,
   parseWorkspaceYamlBoolean,
-  parseWorkspaceYamlScalar,
   parseWorkspaceYamlSessionName,
   parseWorkspaceYamlSessionNameMetadata,
 } from "../session-workspace-yaml.js";
@@ -262,71 +261,29 @@ describe("SessionWorkspaceController neutral workspace", () => {
 });
 
 describe("session workspace yaml parsing", () => {
-  it("reads plain and quoted top-level scalar values", () => {
-    expect(parseWorkspaceYamlSessionName("created_at: 2026-05-08T10:00:00.000Z\nname: Review catalog adapter\n"))
-      .toBe("Review catalog adapter");
-    expect(parseWorkspaceYamlSessionName("name: \"Fix Login: Redirect\"\nsummary: Old summary\n"))
-      .toBe("Fix Login: Redirect");
-    expect(parseWorkspaceYamlScalar("name: null\nsummary: Fallback summary\n", "name")).toBeUndefined();
-  });
-
-  it("reads block scalar names and normalizes display whitespace", () => {
-    const literal = [
-      "created_at: 2026-05-08T10:00:00.000Z",
-      "name: |-",
-      "  Fix Login",
-      "  Redirect",
-      "summary: Old summary",
-    ].join("\n");
-    const folded = [
-      "created_at: 2026-05-08T10:00:00.000Z",
-      "name: >",
-      "  Investigate stale",
-      "  session names",
-    ].join("\n");
-
-    expect(parseWorkspaceYamlSessionName(literal)).toBe("Fix Login Redirect");
-    expect(parseWorkspaceYamlSessionName(folded)).toBe("Investigate stale session names");
-  });
-
   it("falls back to summary and ignores invalid yaml", () => {
-    expect(parseWorkspaceYamlSessionName("summary: Summary only\n")).toBe("Summary only");
+    expect(parseWorkspaceYamlSessionName("name: </session-title>\nsummary: Summary only\n")).toBe("Summary only");
     expect(parseWorkspaceYamlSessionName("name: [unterminated\n")).toBeUndefined();
-  });
-
-  it("hides a closing tag that an earlier title helper stored at the end of a name", () => {
-    const content = "name: Walmart Meat Delivery Storage Safety</session-title>\nsummary: Old summary\nuser_named: true\n";
-
-    expect(parseWorkspaceYamlSessionName(content)).toBe("Walmart Meat Delivery Storage Safety");
-    expect(parseWorkspaceYamlSessionNameMetadata(content)).toMatchObject({
-      name: "Walmart Meat Delivery Storage Safety",
-      effectiveName: "Walmart Meat Delivery Storage Safety",
-    });
-    expect(parseWorkspaceYamlSessionName("name: Personal Finance Action Digest</final>\n")).toBe("Personal Finance Action Digest");
-    expect(parseWorkspaceYamlSessionName("name: Scheduled Marketplace Watch<|session-title|>\n")).toBe("Scheduled Marketplace Watch");
-    expect(parseWorkspaceYamlSessionName("name: </session-title>\nsummary: First message\n")).toBe("First message");
-    expect(parseWorkspaceYamlSessionName("name: Why <div> Needs </div> Here\n")).toBe("Why <div> Needs </div> Here");
-    expect(parseWorkspaceYamlSessionName("summary: explain </div>\n")).toBe("explain </div>");
   });
 
   it("reads session name metadata including explicit user naming", () => {
     const content = [
-      "name: Manual title",
+      'name: "Manual: Review <div> layout</session-title>"',
       "summary: Original prompt",
       "user_named: true",
     ].join("\n");
 
     expect(parseWorkspaceYamlBoolean(content, "user_named")).toBe(true);
     expect(parseWorkspaceYamlSessionNameMetadata(content)).toEqual({
-      name: "Manual title",
+      name: "Manual: Review <div> layout",
       summary: "Original prompt",
-      effectiveName: "Manual title",
+      effectiveName: "Manual: Review <div> layout",
       userNamed: true,
     });
-    expect(parseWorkspaceYamlSessionNameMetadata("summary: Prompt\nuser_named: false\n")).toEqual({
+    expect(parseWorkspaceYamlSessionNameMetadata("name: null\nsummary: Explain </div>\nuser_named: false\n")).toEqual({
       name: undefined,
-      summary: "Prompt",
-      effectiveName: "Prompt",
+      summary: "Explain </div>",
+      effectiveName: "Explain </div>",
       userNamed: false,
     });
   });

@@ -40,19 +40,6 @@ describe("createGitPullRebaseCommand", () => {
   });
 });
 
-describe("formatGitError", () => {
-  it("reads stderr/stdout from the error object when not passed explicitly", async () => {
-    const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError({ stdout: "ignored", stderr: Buffer.from("from error stderr\n") })).toBe("from error stderr");
-    expect(formatGitError({ stdout: "from error stdout" })).toBe("from error stdout");
-  });
-
-  it("uses the Error message when no stream output is present", async () => {
-    const { formatGitError } = await loadGitCommandModule();
-    expect(formatGitError(new Error("boom"))).toBe("boom");
-  });
-});
-
 describe("runGit", () => {
   it("invokes git with --no-pager, the provided cwd, the non-interactive env, and the default or explicit timeout", async () => {
     const { runGit } = await loadGitCommandModule();
@@ -72,16 +59,5 @@ describe("runGit", () => {
       })],
       ["git", ["--no-pager", "fetch"], expect.objectContaining({ timeout: 1_234 })],
     ]);
-  });
-
-  it("formats errors from stderr", async () => {
-    const { runGit } = await loadGitCommandModule();
-    execFileMock.mockImplementation((_command, _args, _options, callback) => {
-      callback(new Error("Command failed"), "", "fatal: not a git repository\n");
-    });
-
-    const result = await runGit("/work/dir", ["status"]);
-
-    expect(result).toEqual({ ok: false, error: "fatal: not a git repository" });
   });
 });

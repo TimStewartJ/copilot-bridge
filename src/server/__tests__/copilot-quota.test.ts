@@ -236,20 +236,6 @@ describe("createCopilotQuotaReader", () => {
     expect(status.error).toBeNull();
   });
 
-  it("returns an unavailable status instead of throwing when the quota RPC fails", async () => {
-    const reader = createCopilotQuotaReader({
-      getQuota: async () => {
-        throw new Error("Account quota lookup is not available in this Copilot SDK build");
-      },
-    });
-
-    const status = await reader.read();
-
-    expect(status.available).toBe(false);
-    expect(status.error).toBe("Account quota lookup is not available in this Copilot SDK build");
-    expect(status.snapshots).toEqual([]);
-  });
-
   it("uses the freshly fetched Copilot user over the backend's startup copy", async () => {
     const live = authResult().authInfo.copilotUser;
     const getLiveUser = vi.fn(async () => ({

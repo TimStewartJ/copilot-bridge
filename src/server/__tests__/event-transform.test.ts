@@ -477,37 +477,6 @@ describe("event-transform tool results", () => {
     ]);
   });
 
-  it("falls back to terminal completion tool arguments when no completion event has content", () => {
-    const entries = transformEventsToMessages([
-      { type: "assistant.turn_start", timestamp: "2026-04-10T10:00:00.000Z", data: {} },
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tool-1",
-          toolName: "task_complete",
-          arguments: { summary: "Fallback summary" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: { toolCallId: "tool-1", success: true, result: { content: "Fallback summary" } },
-      },
-      { type: "session.idle", timestamp: "2026-04-10T10:00:03.000Z", data: {} },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "completion",
-        content: "Fallback summary",
-        timestamp: "2026-04-10T10:00:03.000Z",
-        turnId: "turn-1",
-        completion: { sourceEventType: "tool.execution_complete" },
-      },
-    ]);
-  });
-
   it("flushes a pending terminal completion when the turn aborts, shuts down, or errors", () => {
     // abort before a completion event: uses the abort timestamp
     const abortEntries = transformEventsToMessages([
@@ -567,39 +536,6 @@ describe("event-transform tool results", () => {
     expect(entries).toMatchObject([
       { type: "tool", toolCall: { toolCallId: "diff", name: "bash", result: "full diff output", success: true } },
       { type: "tool", toolCall: { toolCallId: "snapshot", name: "browser_fetch", result: "Snapshot failed", success: false } },
-    ]);
-  });
-
-  it("renders runtime failure text when handlers omit the ToolResultObject error field", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-1", toolName: "browser_fetch", arguments: { url: "https://example.com" } },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tool-1",
-          success: false,
-          error: {
-            message: "Failed to capture page: snapshot failed",
-          },
-        },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "browser_fetch",
-          result: "Failed to capture page: snapshot failed",
-          success: false,
-        },
-      },
     ]);
   });
 

@@ -16,7 +16,7 @@ describe("launcher log helpers", () => {
     appendLauncherLogLine("[launcher] first line");
     appendLauncherLogLine("[launcher] second line");
 
-    const tail = readLauncherLogTail(process.env.BRIDGE_LAUNCHER_LOG_PATH, { lines: 1 });
+    const tail = readLauncherLogTail(undefined, { lines: 1 });
 
     expect(tail.status).toBe("ok");
     if (tail.status !== "ok") {
@@ -28,12 +28,5 @@ describe("launcher log helpers", () => {
     const content = readFileSync(process.env.BRIDGE_LAUNCHER_LOG_PATH!, "utf-8");
     expect(content).toContain("[launcher] first line");
     expect(content).toContain("[launcher] second line");
-  });
-
-  it("reports unavailable when no launcher log has been created yet", () => {
-    expect(readLauncherLogTail()).toEqual({
-      status: "unavailable",
-      error: "Launcher log is not available yet. Restart the bridge through the launcher to populate it.",
-    });
   });
 });

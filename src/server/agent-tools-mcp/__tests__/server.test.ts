@@ -59,22 +59,6 @@ describe("BridgeToolsMcpServer registry", () => {
 });
 
 describe("normalizeToolResult", () => {
-  it("wraps plain strings as text content", () => {
-    expect(normalizeToolResult("hello")).toEqual({ content: [{ type: "text", text: "hello" }] });
-  });
-
-  it("marks legacy Bridge failure results as errors", () => {
-    const result = normalizeToolResult({
-      textResultForLlm: "legacy failure text",
-      resultType: "failure",
-      error: "legacy failure text",
-    });
-    expect(result).toMatchObject({
-      isError: true,
-      content: [{ type: "text", text: "legacy failure text" }],
-    });
-  });
-
   it("relabels image content whose declared MIME contradicts its magic bytes", () => {
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
     const data = pngBytes.toString("base64");

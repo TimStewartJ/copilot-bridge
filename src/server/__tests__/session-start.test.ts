@@ -174,7 +174,8 @@ describe("session_start", () => {
     expect(native.textResultForLlm).toContain("Task linked: false");
     const mcp = normalizeToolResult(result);
     expect(mcp.isError).toBe(true);
-    expect(JSON.stringify(mcp.content)).toContain(`bridge://session/${SESSION_ID}`);
+    expect(mcp.content).toEqual([expect.objectContaining({ type: "text", text: expect.stringContaining("Link write failed") })]);
+    expect(mcp.content[0]).toMatchObject({ text: expect.stringContaining(`bridge://session/${SESSION_ID}`) });
   });
 
   it("reports unconfirmed prompt acceptance with the linked chat's handle rather than implying no work ran", async () => {

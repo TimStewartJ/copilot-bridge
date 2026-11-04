@@ -8,14 +8,10 @@ function phase(type: string, phaseId: string, phaseKind: string, model: string, 
 }
 
 describe("createFusionProgress", () => {
-  it.each([
-    ["Cascade: the primary answers, then a judge checks it", [
-      [phase("assistant.fusion_phase_started", "p1", "primary", "gpt-6.1-sol"), "Copilot Fusion · GPT-6.1 Sol working"],
-      [phase("assistant.fusion_phase_completed", "p1", "primary", "gpt-6.1-sol"), undefined],
-      [phase("assistant.fusion_phase_started", "j1", "judge", "gpt-6-luna"), "Copilot Fusion · GPT-6 Luna checking the answer"],
-      [phase("assistant.fusion_phase_started", "r1", "repair", "claude-opus-5.5"), "Copilot Fusion · Claude Opus 5.5 redoing the answer"],
-    ]],
-    ["Critique: reviewers side by side, then the revision", [
+  it("Critique: reviewers side by side, then the revision", () => {
+    const progress = createFusionProgress((id) => NAMES[id] ?? id);
+    progress.observe({ type: "session.fusion_resolved", data: {} });
+    const steps = [
       [phase("assistant.fusion_phase_started", "d1", "draft", "gpt-6.1-sol"), "Copilot Fusion · GPT-6.1 Sol drafting"],
       [phase("assistant.fusion_phase_activity", "d1", "draft", "gpt-6.1-sol", { activity: "tool_completed" }), "Copilot Fusion · GPT-6.1 Sol drafting · 1 tool run"],
       [phase("assistant.fusion_phase_completed", "d1", "draft", "gpt-6.1-sol"), undefined],
@@ -26,10 +22,7 @@ describe("createFusionProgress", () => {
       [phase("assistant.fusion_phase_started", "v1", "revision", "gpt-6.1-sol"), "Copilot Fusion · GPT-6.1 Sol revising · 1 tool run"],
       [{ type: "session.fusion_commit_started", data: {} }, ""],
       [{ type: "session.fusion_completed", data: {} }, undefined],
-    ]],
-  ] as const)("%s", (_label, steps) => {
-    const progress = createFusionProgress((id) => NAMES[id] ?? id);
-    progress.observe({ type: "session.fusion_resolved", data: {} });
+    ] as const;
     for (const [event, status] of steps) expect(progress.observe(event), JSON.stringify(event)).toBe(status);
   });
 });

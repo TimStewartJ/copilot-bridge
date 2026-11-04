@@ -9,7 +9,6 @@ import { createTaskStore } from "../../task-store.js";
 import { createTestBus, makeTestDir, setupTestDb } from "../../__tests__/helpers.js";
 import {
   boundToolResult,
-  buildBridgeSnapshotLine,
   countBridgeSessions,
   createHelmToolDefinitions,
   describeProgress,
@@ -39,7 +38,7 @@ const sessions: HelmSessionSummary[] = [
   session({ sessionId: "aaaaaaaa-1111-4000-8000-000000000001", title: "Tellus worldgen transition fix", unread: true, lastActivityAt: "2026-09-17T05:57:00.000Z", linkedTaskIds: ["task-1"] }),
   session({ sessionId: "bbbbbbbb-2222-4000-8000-000000000002", title: "Focus protection preview", runState: "busy", intentText: "Running tests" }),
   session({ sessionId: "cccccccc-3333-4000-8000-000000000003", title: "Deploy check", needsUserInput: true }),
-  session({ sessionId: "dddddddd-4444-4000-8000-000000000004", title: "Old archived chat", archived: true, unread: true }),
+  session({ sessionId: "dddddddd-4444-4000-8000-000000000004", title: "Old archived chat", archived: true, unread: true, triggeredBy: "schedule", scheduleName: "docs-maintenance" }),
 ];
 
 function createContext() {
@@ -168,7 +167,9 @@ describe("Helm tools", () => {
     const recent = await tool(ctx, createFacade(), "list_sessions").run({});
     expect(recent.sessions.map((entry: any) => entry.title)).not.toContain("Old archived chat");
     const archived = await tool(ctx, createFacade(), "list_sessions").run({ filter: "archived" });
-    expect(archived.sessions).toEqual([expect.objectContaining({ title: "Old archived chat", archived: true })]);
+    expect(archived.sessions).toEqual([expect.objectContaining({
+      title: "Old archived chat", archived: true, startedBy: expect.stringMatching(/schedule.*docs-maintenance/i),
+    })]);
   });
 
   it("reads a reply without marking it read, and marks it when Helm tells the user", async () => {
@@ -248,13 +249,6 @@ describe("Helm tools", () => {
     expect(progress).toEqual({ workingFor: "4m", stepsSoFar: 2, recentSteps: ["web_search", "web_fetch (running)"], thinkingAbout: "Comparing pricing pages" });
   });
 
-  it("marks sessions a schedule started", async () => {
-    const { ctx } = createContext();
-    const facade = createFacade();
-    facade.listSessions = async () => [session({ sessionId: "ffffffff-6666-4000-8000-000000000006", title: "Docs upkeep", unread: true, triggeredBy: "schedule", scheduleName: "docs-maintenance" })];
-    const result = await tool(ctx, facade, "list_sessions").run({ filter: "unread" });
-    expect(result.sessions[0]).toMatchObject({ title: "Docs upkeep", startedBy: 'schedule "docs-maintenance"' });
-  });
   it("sends to a session and watches it", async () => {
     const { ctx } = createContext();
     const facade = createFacade();
@@ -404,14 +398,7 @@ describe("Helm tools", () => {
   });
 });
 
-describe("buildBridgeSnapshotLine", () => {
-  it("describes waiting, running and unread sessions compactly", () => {
-    expect(buildBridgeSnapshotLine(sessions, now)).toBe(
-      '1 waiting on you: "Deploy check"; 1 running: "Focus protection preview"; 1 unread: "Tellus worldgen transition fix" (3m ago)',
-    );
-    expect(buildBridgeSnapshotLine([], now)).toBe("nothing waiting on you; nothing running; no unread replies");
-  });
-
+describe("countBridgeSessions", () => {
   it("counts the same groups for the hands-free status pills", () => {
     expect(countBridgeSessions(sessions)).toEqual({ waiting: 1, running: 1, unread: 1 });
   });

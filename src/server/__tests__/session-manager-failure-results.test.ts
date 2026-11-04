@@ -102,16 +102,6 @@ describe("session manager failure results", () => {
     expect(ctx.taskGroupStore.getGroup(preserved.id)?.id).toBe(preserved.id);
   });
 
-  it("normalizes duplicate tag creation failures", async () => {
-    const { ctx } = createTestApp();
-    const tagCreateTool = getTool(ctx, "tag_create");
-
-    await expect(tagCreateTool.handler({ name: "Urgent" }, createInvocation("tag_create")))
-      .resolves.toMatchObject({ success: true });
-    await expect(tagCreateTool.handler({ name: "Urgent" }, createInvocation("tag_create")))
-      .resolves.toEqual(toolFailure('Tag "Urgent" already exists'));
-  });
-
   it("normalizes docs path validation failures", async () => {
     const { ctx } = createTestApp();
     const docsReadTool = getTool(ctx, "docs_read");

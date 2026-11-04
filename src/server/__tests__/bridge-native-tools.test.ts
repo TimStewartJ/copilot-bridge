@@ -69,16 +69,6 @@ describe("bridge-native-tools", () => {
     expect(policy(createNativeBridgeTools(definitions))).toEqual({ sample_tool: "never", tag_create: "never" });
   });
 
-  it("converts Bridge failure results into SDK failure results without stringifying", () => {
-    const result = convertBridgeToolResultToSdk(toolFailure("Nope"));
-
-    expect(result).toMatchObject({
-      textResultForLlm: "Nope",
-      resultType: "failure",
-      error: "Nope",
-    });
-  });
-
   it("prefers Bridge content contract text over SDK-shaped fields", () => {
     const result = convertBridgeToolResultToSdk({
       ...toolFailure("Restart pending"),
@@ -91,19 +81,6 @@ describe("bridge-native-tools", () => {
     expect(result).toMatchObject({
       textResultForLlm: "Restart is pending.\nBridge tool contract: {\"terminal\":true,\"nextAction\":\"respond\"}.",
       resultType: "success",
-    });
-  });
-
-  it("converts MCP error results into SDK failure results with an error message", () => {
-    const result = convertBridgeToolResultToSdk({
-      isError: true,
-      content: [{ type: "text", text: "MCP failed" }],
-    });
-
-    expect(result).toMatchObject({
-      textResultForLlm: "MCP failed",
-      resultType: "failure",
-      error: "MCP failed",
     });
   });
 

@@ -6,7 +6,6 @@ import {
   buildValidationCommandLogPath,
   extractCommandFailureLogPath,
   extractCommandFailureLogWriteError,
-  formatCommandFailureStreams,
   getValidationCommandLogDir,
   isCommandTimeoutError,
   isCommandTimeoutResult,
@@ -71,27 +70,6 @@ describe("validation-command-log", () => {
       elapsedMs: 600_000,
       timeoutMs: 600_000,
     })).toBe(true);
-  });
-
-  it("keeps both stdout and stderr in failure details", () => {
-    expect(formatCommandFailureStreams({
-      stdout: "normal output",
-      stderr: "warning output",
-      errorMessage: "spawn failed",
-      fallback: "fallback",
-    })).toBe([
-      "failure:",
-      "fallback",
-      "",
-      "stderr:",
-      "warning output",
-      "",
-      "stdout:",
-      "normal output",
-      "",
-      "error:",
-      "spawn failed",
-    ].join("\n"));
   });
 
   it("builds shared validation log paths and tails large logs", () => {

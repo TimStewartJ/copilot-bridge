@@ -82,25 +82,6 @@ describe("transcription service", () => {
     }
   });
 
-  it("names the recording and lists each chunk's span and word count", async () => {
-    const { engine } = createEngine({
-      audioSeconds: 23.81,
-      speechSeconds: 19.66,
-      chunks: 2,
-      chunkDetails: [
-        { startSeconds: 0, endSeconds: 19.9, words: 43 },
-        { startSeconds: 19.9, endSeconds: 23.81, words: 0 },
-      ],
-    });
-    const logger = { log: vi.fn() };
-    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {}, logger });
-
-    await service.transcribe({ filePath: "clip.ogg", label: "job abc" });
-    expect(logger.log).toHaveBeenCalledWith(
-      "[transcription] job abc 23.81s clip (opus, 8 KB; 19.66s speech, 2 chunks) in 40ms; chunks 0-19.9s 43w, 19.9-23.81s 0w",
-    );
-  });
-
   it("honors the configured maximum recording length", () => {
     const { engine } = createEngine();
     const service = createTranscriptionService({
@@ -112,15 +93,29 @@ describe("transcription service", () => {
   });
 
   it("holds the engine through transcription, trims its result and logs the recording details", async () => {
-    const { engine, release } = createEngine();
+    const { engine, release } = createEngine({
+      audioSeconds: 23.81,
+      speechSeconds: 19.66,
+      chunks: 2,
+      chunkDetails: [
+        { startSeconds: 0, endSeconds: 19.9, words: 43 },
+        { startSeconds: 19.9, endSeconds: 23.81, words: 0 },
+      ],
+    });
     const logger = { log: vi.fn() };
     const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {}, logger });
 
-    await expect(service.transcribe({ filePath: "clip.ogg" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
+    await expect(service.transcribe({ filePath: "clip.ogg", label: "job abc" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
     expect(engine.retain).toHaveBeenCalledOnce();
     expect(engine.transcribeFile).toHaveBeenCalledWith("clip.ogg", { timeoutMs: 1_500_000 });
     expect(release).toHaveBeenCalledOnce();
-    expect(logger.log).toHaveBeenCalledWith("[transcription] 2s clip (opus, 8 KB; 1.5s speech, 1 chunk) in 40ms");
+    const [diagnostic] = logger.log.mock.calls[0] ?? [];
+    expect(diagnostic).toContain("job abc");
+    expect(diagnostic).toMatch(/23\.81s.*opus.*8 KB/i);
+    expect(diagnostic).toMatch(/19\.66s.*speech.*2 chunks/i);
+    expect(diagnostic).toContain("40ms");
+    expect(diagnostic).toMatch(/0-19\.9s.*43w/);
+    expect(diagnostic).toMatch(/19\.9-23\.81s.*0w/);
   });
 
   it("fails clearly when the recording has no speech and still releases the engine", async () => {

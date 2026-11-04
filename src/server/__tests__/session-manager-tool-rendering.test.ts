@@ -197,54 +197,6 @@ describe("SessionManager tool result rendering", () => {
     }));
   });
 
-  it("renders runtime failure text when handlers omit the ToolResultObject error field", async () => {
-    const manager = createManager() as any;
-    const bus = eventBusRegistry.getOrCreateBus("session-2");
-    const events: any[] = [];
-
-    bus.subscribe((event) => {
-      if (event.type !== "snapshot") events.push(event);
-    });
-
-    const session = createSession([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T11:00:00.000Z",
-        data: { toolCallId: "tool-failure-detail", toolName: "browser_fetch", arguments: { url: "https://example.com" } },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T11:00:01.000Z",
-        data: {
-          toolCallId: "tool-failure-detail",
-          success: false,
-          error: {
-            message: "Failed to capture page: snapshot failed",
-          },
-        },
-      },
-      {
-        type: "assistant.message",
-        timestamp: "2026-04-10T11:00:02.000Z",
-        data: { content: "Done." },
-      },
-      { type: "session.idle", timestamp: "2026-04-10T11:00:03.000Z", data: {} },
-    ]);
-
-    manager.backend = {} as any;
-    manager.sessionObjects.set("session-2", session);
-
-    await manager._doWork("session-2", "show failed tool results", bus);
-
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "tool_done",
-      toolCallId: "tool-failure-detail",
-      name: "browser_fetch",
-      result: "Failed to capture page: snapshot failed",
-      success: false,
-    }));
-  });
-
   it("uses tracked tool and sub-agent names for progress and partial output events", async () => {
     const manager = createManager() as any;
     const bus = eventBusRegistry.getOrCreateBus("session-3");
@@ -335,7 +287,7 @@ describe("SessionManager tool result rendering", () => {
       {
         type: "subagent.failed",
         timestamp: "2026-08-01T10:00:04.000Z",
-        data: { toolCallId: "call_sync_agent", error: "CAPIError: 400 messages: at least one message is required" },
+        data: { toolCallId: "call_sync_agent", error: { message: "CAPIError: 400 messages: at least one message is required" } },
       },
       {
         type: "tool.execution_complete",
@@ -773,7 +725,7 @@ describe("SessionManager tool result rendering", () => {
 
   it("shows a Copilot Fusion turn's progress as the run's status until the turn commits", async () => {
     // The phase's own messages and tool calls arrive only at the commit, so this is all there is meanwhile.
-    const phase = { fusionId: "f1", phaseId: "p1", phaseKind: "primary", role: "solver", pattern: "single", conversationScope: "root" };
+    const phase = { fusionId: "f1", phaseId: "p1", phaseKind: "primary", role: "solver", pattern: "cascade", conversationScope: "root" };
     const manager = createManager() as any;
     manager.modelMetadata = [{ id: "claude-sonnet-5.5", name: "Claude Sonnet 5.5" }];
     const bus = eventBusRegistry.getOrCreateBus("session-fusion");
@@ -787,15 +739,18 @@ describe("SessionManager tool result rendering", () => {
     });
     manager.backend = {} as any;
     manager.sessionObjects.set("session-fusion", createSession([
-      { type: "session.fusion_resolved", data: { fusionId: "f1", pattern: "single", primaryModel: "claude-sonnet-5.5" } },
+      { type: "session.fusion_resolved", data: { fusionId: "f1", pattern: "cascade", primaryModel: "claude-sonnet-5.5" } },
       { type: "assistant.fusion_phase_started", ephemeral: true, data: { ...phase, model: "claude-sonnet-5.5" } },
       { type: "assistant.fusion_phase_activity", ephemeral: true, data: { ...phase, activity: "model_output" } },
       { type: "assistant.fusion_phase_activity", ephemeral: true, data: { ...phase, activity: "tool_completed" } },
       { type: "assistant.fusion_phase_started", ephemeral: true, agentId: "agent-1", data: { ...phase, phaseId: "sub", model: "gpt-6-luna" } },
       { type: "assistant.fusion_phase_completed", data: { ...phase, model: "claude-sonnet-5.5", status: "succeeded" } },
+      { type: "assistant.fusion_phase_started", data: { ...phase, phaseId: "judge", phaseKind: "judge", model: "review-model" } },
+      { type: "assistant.fusion_phase_completed", data: { ...phase, phaseId: "judge", phaseKind: "judge", model: "review-model" } },
+      { type: "assistant.fusion_phase_started", data: { ...phase, phaseId: "repair", phaseKind: "repair", model: "repair-model" } },
       { type: "session.fusion_commit_started", data: { fusionId: "f1" } },
       { type: "assistant.turn_start", data: { turnId: "0" } },
-      { type: "assistant.message", data: { content: "Done.", fusion: { fusionId: "f1", commitId: "c1", pattern: "single", policy: "max" } } },
+      { type: "assistant.message", data: { content: "Done.", fusion: { fusionId: "f1", commitId: "c1", pattern: "cascade", policy: "max" } } },
       { type: "session.idle", data: {} },
     ]));
 
@@ -804,6 +759,8 @@ describe("SessionManager tool result rendering", () => {
     expect(events.filter((event) => event.type === "intent").map((event) => event.intent)).toEqual([
       "Copilot Fusion · Claude Sonnet 5.5 working",
       "Copilot Fusion · Claude Sonnet 5.5 working · 1 tool run",
+      expect.stringMatching(/review-model.*(?:check|judg|review|evaluat)/i),
+      expect.stringMatching(/repair-model.*(?:redo|revis|repair|correct)/i),
       "",
     ]);
     // The chat list shows the same status beside a busy chat.

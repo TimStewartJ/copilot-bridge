@@ -22,6 +22,9 @@ afterEach(() => {
 
 describe("launcher log route", () => {
   it("GET /api/server/launcher-log returns the requested tail", async () => {
+    const missing = await request(app).get("/api/server/launcher-log").expect(200);
+    expect(missing.body).toMatchObject({ status: "unavailable", error: expect.stringMatching(/restart.*launcher/i) });
+
     writeFileSync(
       launcherLogPath,
       [
@@ -41,16 +44,6 @@ describe("launcher log route", () => {
         "[10:00:01.000] [launcher] second",
         "[10:00:02.000] [launcher] third",
       ],
-    });
-  });
-
-  it("GET /api/server/launcher-log reports when the log is unavailable", async () => {
-    const res = await request(app).get("/api/server/launcher-log");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      status: "unavailable",
-      error: "Launcher log is not available yet. Restart the bridge through the launcher to populate it.",
     });
   });
 

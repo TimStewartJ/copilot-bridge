@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { transformEventsToMessages } from "../event-transform.js";
-import { SubagentCorrelator, resolveToolOutcome } from "../subagent-correlation.js";
+import { SubagentCorrelator } from "../subagent-correlation.js";
 import { isHiddenTool } from "../../shared/tool-visibility.js";
 
 const AGENT_TOOL_CALL = "call_parent_tool";
@@ -39,39 +39,6 @@ function onlyToolCall(events: any[]) {
 }
 
 describe("subagent failure correlation (replay fold)", () => {
-  it("surfaces the real subagent.failed reason instead of the generic tool error", () => {
-    // Real shape observed in session d060dead: the runtime reports a useless generic message
-    // on the tool completion while the actual cause rides on subagent.failed.
-    const toolCall = onlyToolCall([
-      toolStart(AGENT_TOOL_CALL, "2026-08-01T10:00:00.000Z"),
-      subagentStarted(AGENT_TOOL_CALL, AGENT_INSTANCE, "2026-08-01T10:00:00.100Z"),
-      subagentFailed(
-        AGENT_TOOL_CALL,
-        "CAPIError: 400 messages: at least one message is required",
-        "2026-08-01T10:00:04.000Z",
-      ),
-      toolComplete(AGENT_TOOL_CALL, false, "2026-08-01T10:00:04.100Z", {
-        error: { message: "Agent completed but produced no response.", code: "failure" },
-      }),
-    ]);
-
-    expect(toolCall.success).toBe(false);
-    expect(toolCall.isSubAgent).toBe(true);
-    expect(toolCall.name).toBe("🤖 Explore Agent");
-    expect(toolCall.result).toBe("CAPIError: 400 messages: at least one message is required");
-  });
-
-  it("accepts an object-shaped subagent failure error", () => {
-    const toolCall = onlyToolCall([
-      toolStart(AGENT_TOOL_CALL, "2026-08-01T10:00:00.000Z"),
-      subagentStarted(AGENT_TOOL_CALL, AGENT_INSTANCE, "2026-08-01T10:00:00.100Z"),
-      subagentFailed(AGENT_TOOL_CALL, { message: "model unavailable" }, "2026-08-01T10:00:01.000Z"),
-      toolComplete(AGENT_TOOL_CALL, false, "2026-08-01T10:00:01.100Z"),
-    ]);
-
-    expect(toolCall.result).toBe("model unavailable");
-  });
-
   it("treats subagent.failed.toolCallId as authoritative without a subagent.started", () => {
     const toolCall = onlyToolCall([
       toolStart(AGENT_TOOL_CALL, "2026-08-01T10:00:00.000Z"),
@@ -195,25 +162,6 @@ describe("SubagentCorrelator sealing", () => {
 
     expect(correlator.resolve(AGENT_TOOL_CALL)).toEqual({ isSubAgent: false });
     expect(correlator.isTrackedAgent(AGENT_INSTANCE)).toBe(false);
-  });
-
-  it("resolves a sub-agent failure into the user-visible outcome", () => {
-    const correlator = new SubagentCorrelator();
-    correlator.startSubagent(AGENT_TOOL_CALL, AGENT_INSTANCE, { agentDisplayName: "Explore Agent" });
-    correlator.recordSubagentFailure(AGENT_TOOL_CALL, "boom");
-
-    const outcome = resolveToolOutcome(
-      correlator.resolve(AGENT_TOOL_CALL),
-      { success: true, data: { success: true, result: { content: "ignored" } } },
-      "task",
-    );
-
-    expect(outcome).toEqual({
-      isSubAgent: true,
-      displayName: "🤖 Explore Agent",
-      success: false,
-      result: "boom",
-    });
   });
 });
 

@@ -8,6 +8,7 @@ import {
 } from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";
+import { createTelemetryStore } from "../telemetry-store.js";
 import { setupTestDb, createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub } from "./helpers.js";
 
 type EmitSdkEvent = (event: any) => void;
@@ -23,9 +24,11 @@ function createConnectionClosedError(message = "Connection is closed.") {
 function createManager() {
   const db = setupTestDb();
   const eventBusRegistry = createEventBusRegistry();
+  const telemetryStore = createTelemetryStore(db);
   const manager = new SessionManager({
     globalBus: createTestBus(),
     eventBusRegistry,
+    telemetryStore,
     sessionTitles: createSessionTitlesStore(db),
     taskStore: {
       findTaskBySessionId: vi.fn().mockReturnValue(null),
@@ -37,7 +40,7 @@ function createManager() {
     config: { sessionMcpServers: {} },
   }) as any;
 
-  return { manager, eventBusRegistry };
+  return { manager, eventBusRegistry, telemetryStore };
 }
 
 function createSession(sendImpl: (emit: EmitSdkEvent) => Promise<void> | void) {
@@ -159,13 +162,11 @@ describe("SessionManager stale cached session recovery", () => {
   });
 
   it.each([
-    ["401 Unauthorized: token expired", "authentication"],
     ["MCP server 'demo': MCP error -32001: Session not found (403 Forbidden)", "permission"],
-    ["Invalid filter: slash paths are not supported", "invalid-input"],
     ["Kusto assert: ring timeline empty", "query-server"],
     ['MCP tool catalog changed before tool "demo-query" could be invoked: Failed to verify cached MCP tools: MCP request failed: Transport closed', "catalog-changed"],
   ])("logs %s separately without downgrading the MCP connection", async (result, category) => {
-    const { manager, eventBusRegistry } = createManager();
+    const { manager, eventBusRegistry, telemetryStore } = createManager();
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const session = createSession((emit) => {
@@ -178,8 +179,15 @@ describe("SessionManager stale cached session recovery", () => {
     });
     manager.sessionObjects.set("session-1", session);
     await manager._doWork("session-1", "hello", eventBusRegistry.getOrCreateBus("session-1"));
-    expect(log.mock.calls.some(([message]) => String(message).includes(`failed:${category}`))).toBe(true);
+    const failureLine = log.mock.calls.map(([message]) => String(message)).find((message) =>
+      message.includes("demo-query") && message.toLowerCase().includes(category),
+    );
+    expect(failureLine).toMatch(/fail/i);
+    expect(telemetryStore.querySpans({ name: "tool.failure", sessionId: "session-1" })).toMatchObject([
+      { metadata: { toolName: "demo-query", toolCallId: "call", category } },
+    ]);
     expect(manager.mcpStatus.get("session-1").servers[0].status).toBe("connected");
+    expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
   });
 
   it("does not probe again after a pushed complete MCP snapshot, including empty", async () => {

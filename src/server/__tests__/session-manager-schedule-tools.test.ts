@@ -93,40 +93,6 @@ describe("schedule tools", () => {
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.name).toBe("Retarget me");
   });
 
-  it("lists schedules with current schedule fields", async () => {
-    const sessionManager = createMockSessionManager();
-    const { ctx } = createTestApp({ sessionManager });
-    const task = ctx.taskStore.createTask("Schedule Host");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Current metadata",
-      prompt: "continue working",
-      type: "cron",
-      cron: "0 0 * * *",
-      modelTier: "preset3",
-    });
-    const tool = getTool(ctx, "schedule_list");
-
-    const result = await tool.handler(
-      { taskId: task.id },
-      {
-        sessionId: "session-1",
-        toolCallId: "tool-list",
-        toolName: "schedule_list",
-        arguments: {},
-      },
-    ) as { schedules: Array<Record<string, unknown>> };
-
-    expect(result.schedules).toHaveLength(1);
-    expect(result.schedules[0]).toMatchObject({
-      id: schedule.id,
-      taskId: task.id,
-      name: "Current metadata",
-      modelTier: "deep",
-    });
-    expect(result.schedules[0]).not.toHaveProperty("sessionMode");
-  });
-
   it("creates, changes, and clears a schedule's model tier by its Settings name", async () => {
     const sessionManager = createMockSessionManager();
     const { ctx } = createTestApp({ sessionManager });
@@ -175,9 +141,12 @@ describe("schedule tools", () => {
       taskId: task.id,
       name: "Nightly docs audit",
       prompt: "audit docs",
+      modelTier: "preset3",
       type: "cron",
       cron: "0 1 * * *",
     });
+    const other = ctx.taskStore.createTask("Other schedule host");
+    ctx.scheduleStore.createSchedule({ taskId: other.id, name: "Weekly review", prompt: "review", type: "cron", cron: "0 8 * * 1" });
     const tool = getTool(ctx, "schedule_list");
 
     const meta = {
@@ -191,17 +160,17 @@ describe("schedule tools", () => {
       schedules: Array<Record<string, unknown>>;
     };
     expect(matched.schedules).toHaveLength(1);
-    expect(matched.schedules[0]).toMatchObject({ id: nightly.id, name: "Nightly docs audit" });
+    expect(matched.schedules[0]).toMatchObject({ id: nightly.id, taskId: task.id, name: "Nightly docs audit", modelTier: "deep" });
 
     const all = (await tool.handler({}, meta)) as {
       schedules: Array<Record<string, unknown>>;
     };
-    expect(all.schedules).toHaveLength(2);
+    expect(all.schedules).toHaveLength(3);
 
-    const blank = (await tool.handler({ name: "   " }, meta)) as {
+    const blank = (await tool.handler({ taskId: task.id, name: "   " }, meta)) as {
       schedules: Array<Record<string, unknown>>;
     };
-    expect(blank.schedules).toHaveLength(2);
+    expect(blank.schedules.map((row) => row.taskId)).toEqual([task.id, task.id]);
 
     const none = (await tool.handler({ name: "missing" }, meta)) as {
       schedules: Array<Record<string, unknown>>;

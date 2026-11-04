@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
+import { convertBridgeToolResultToSdk } from "../bridge-native-tools.js";
 import { registerReportIntentTool } from "../tools/report-intent-tool.js";
 import { createTestApp } from "./test-app.js";
 import type { AppContext } from "../app-context.js";
@@ -43,7 +44,11 @@ describe("registerReportIntentTool (MCP)", () => {
     const result = await getTool(ctx).handler({ intent: "   " }, makeHandlerExtra());
     expect(result).toMatchObject({
       isError: true,
-      content: [{ type: "text", text: "Intent must not be blank" }],
+      content: [{ type: "text", text: expect.stringMatching(/intent.*(?:blank|empty|required)/i) }],
+    });
+    const reason = result.content[0].text;
+    expect(convertBridgeToolResultToSdk(result)).toMatchObject({
+      resultType: "failure", textResultForLlm: reason, error: reason,
     });
   });
 

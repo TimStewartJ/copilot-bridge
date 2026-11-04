@@ -180,39 +180,26 @@ describe("buildWorkMapData", () => {
       items: { "13": { pullRequests: ["repo:31"] } },
     });
 
-    const data = await buildWorkMapData({ tasks: [task("t", { workItems: ["10", "12"] })], assignedToMe: true, ado });
+    const reports: WorkMapProgress[] = [];
+    const data = await buildWorkMapData({
+      tasks: [task("t", { workItems: ["10", "12"] })], assignedToMe: true, ado, report: (progress) => reports.push(progress),
+    });
+
+    const stages = reports.filter((report, i) => report.step !== reports[i - 1]?.step);
+    expect(stages.map(({ label }) => label)).toEqual([
+      expect.stringMatching(/assign/i), expect.stringMatching(/work item.*link/i),
+      expect.stringMatching(/parent/i), expect.stringMatching(/pull request.*work item/i),
+    ]);
+    expect(stages.map(({ step, steps, done, total }) => [step, steps, done, total])).toEqual([
+      [1, 4, 0, 0], [2, 4, 0, 3], [3, 4, 0, 0], [4, 4, 0, 4],
+    ]);
+    expect(reports).toContainEqual(expect.objectContaining({ step: 2, done: 3, total: 3 }));
+    expect(reports).toContainEqual(expect.objectContaining({ step: 4, done: 3, total: 4 }));
+    expect(reports.at(-1)).toMatchObject({ step: 4, done: 4, total: 4 });
 
     expect(data.workItems.map((item) => [item.id, item.assignedToCurrentUser])).toEqual([["13", true], ["10", true], ["12", false]]);
     expect(data.pullRequests).toEqual([expect.objectContaining({ key: "repo:31", title: "PR 31", taskIds: [], workItemIds: ["13"] })]);
     expect(ado.fetchPullRequests).toHaveBeenCalledExactlyOnceWith([{ repoId: "repo", prId: 31, provider: "ado" }], expect.any(Function));
-  });
-
-  it("reports each step it is on and how much of it is done", async () => {
-    const ado = fakeAdo({
-      items: { "10": { relations: [["parent", "20"], ["related", "21"]], pullRequests: ["repo:30"] } },
-      pullRequestWorkItems: { "repo:20": ["10"] },
-    });
-    const reports: WorkMapProgress[] = [];
-
-    await buildWorkMapData({
-      tasks: [task("t", { workItems: ["10"], pullRequests: [["repo", 20]] })],
-      assignedToMe: true,
-      ado,
-      report: (progress) => reports.push(progress),
-    });
-
-    expect(reports).toEqual([
-      { label: "Finding the work assigned to you", step: 1, steps: 4, done: 0, total: 0 },
-      // One work item and one pull request the task links.
-      { label: "Reading work items and their links", step: 2, steps: 4, done: 0, total: 2 },
-      { label: "Reading work items and their links", step: 2, steps: 4, done: 1, total: 2 },
-      { label: "Reading work items and their links", step: 2, steps: 4, done: 2, total: 2 },
-      { label: "Following parent links", step: 3, steps: 4, done: 0, total: 0 },
-      // The work item, its parent, the related item, and both pull requests.
-      { label: "Reading pull requests and linked work items", step: 4, steps: 4, done: 0, total: 5 },
-      { label: "Reading pull requests and linked work items", step: 4, steps: 4, done: 3, total: 5 },
-      { label: "Reading pull requests and linked work items", step: 4, steps: 4, done: 5, total: 5 },
-    ]);
   });
 
 });

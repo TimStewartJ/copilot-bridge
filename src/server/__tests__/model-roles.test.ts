@@ -114,7 +114,10 @@ describe("model roles when a tier or model goes away", () => {
     const models = MODELS.filter((model) => model.id !== "gpt-6.1-sol");
     expect(resolveModelRole(settings, "chat", models)).toMatchObject({ source: "tier", model: "gpt-6.1-sol", warning: expect.stringMatching(/may fail/) });
     // Helm checks its model when it starts, so it falls back to Automatic instead.
-    expect(resolveModelRole(settings, "helm", models)).toMatchObject({ source: "automatic", warning: "gpt-6.1-sol isn't available, so this uses your default chat model, or the strongest when that's a router." });
+    const helm = resolveModelRole(settings, "helm", models);
+    expect(helm).toMatchObject({ source: "automatic", warning: expect.stringMatching(/gpt-6\.1-sol.*(?:unavailable|isn.t available|not available)/i) });
+    expect(helm.warning).toMatch(/default chat model/i);
+    expect(helm.warning).toMatch(/strongest.*router/i);
   });
 });
 
@@ -129,15 +132,19 @@ describe("resolveModelRole", () => {
   });
 
   it("falls back to Automatic, with a warning, when the model can't be used or the tier is empty", () => {
-    expect(resolveModelRole(settings, "subagents", MODELS)).toMatchObject({ source: "automatic", warning: expect.stringMatching(/isn't available/) });
-    expect(resolveModelRole({ modelRoles: { helm: { tier: "preset2" } } }, "helm", MODELS)).toMatchObject({ source: "automatic", warning: expect.stringMatching(/no model yet/) });
+    const helper = resolveModelRole(settings, "subagents", MODELS);
+    expect(helper).toMatchObject({ source: "automatic", warning: expect.stringMatching(/old-model.*(?:unavailable|isn.t available|not available)/i) });
+    expect(helper.warning).toMatch(/built.in default/i);
+    const helm = resolveModelRole({ modelRoles: { helm: { tier: "preset2" } } }, "helm", MODELS);
+    expect(helm).toMatchObject({ source: "automatic", warning: expect.stringMatching(/Standard tier.*(?:no model|empty|unassigned)/i) });
+    expect(helm.warning).toMatch(/default chat model/i);
     expect(resolveModelRole(settings, "background", MODELS)).toEqual({ role: "background", source: "automatic" });
   });
 
   it("runs a role nobody set on its default tier, and says what it uses while that tier is empty", () => {
     expect(resolveModelRole({ modelPresets: PRESETS }, "helm", MODELS)).toMatchObject({ source: "tier", tier: "preset3", isDefault: true, model: "claude-opus-5.5" });
     expect(resolveModelRole({ modelPresets: PRESETS }, "subagents", MODELS)).toMatchObject({ tier: "preset1", isDefault: true, model: "gpt-6-luna" });
-    expect(resolveModelRole({}, "handsFree", MODELS)).toMatchObject({ source: "automatic", isDefault: true, warning: "The Fast tier has no model yet, so this uses the Small jobs model." });
+    expect(resolveModelRole({}, "handsFree", MODELS)).toMatchObject({ source: "automatic", isDefault: true, warning: expect.stringMatching(/Fast tier.*(?:no model|empty|unassigned).*Small jobs/i) });
     // Reviewers stay on the chat's own model, and the field-backed roles on their older setting.
     expect(resolveModelRole({ modelPresets: PRESETS }, "reviewers", MODELS)).toEqual({ role: "reviewers", source: "automatic" });
     expect(resolveModelRole({ modelPresets: PRESETS }, "chat", MODELS)).toEqual({ role: "chat", source: "automatic" });

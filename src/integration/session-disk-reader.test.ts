@@ -102,7 +102,7 @@ describe("listSessionsFromDisk telemetry", () => {
       ].join("\n"),
     });
     writeSessionFiles(copilotHome, "b17e1000-0000-4000-8000-000000000001", {
-      workspace: "created_at: 2026-04-30T10:00:00.000Z\nname: Helper name\n",
+      workspace: "created_at: 2026-04-30T10:00:00.000Z\nname: >\n  Helper\n  name\n",
     });
 
     const { deps } = createDeps(copilotHome);
@@ -601,6 +601,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       events: [
         ...oldMessages,
         ...padding,
+        { type: "assistant.turn_start", timestamp: "2026-04-30T10:59:57.000Z", data: { turnId: "final-turn" } },
         {
           type: "tool.execution_start",
           timestamp: "2026-04-30T10:59:58.000Z",
@@ -632,6 +633,8 @@ describe("readMessagesFromDisk latest-page path", () => {
         id: "entry-20",
         type: "completion",
         content: "Finished from terminal tool fallback.",
+        timestamp: "2026-04-30T11:00:00.000Z",
+        turnId: "final-turn",
         completion: { sourceEventType: "tool.execution_complete" },
       },
     ]);

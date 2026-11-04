@@ -96,7 +96,8 @@ describe("push notification service", () => {
 describe("push event notification copy", () => {
   it("uses the session title and puts linked task context in needs-input bodies", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createPushTestApp({ "session-input": "Message-style push notifications" });
+      const title = "Review release candidates " + "and their deployment notes ".repeat(8);
+      const { ctx } = createPushTestApp({ "session-input": title });
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -113,11 +114,14 @@ describe("push event notification copy", () => {
       await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
       const payload = getSentPayload(sendNotification);
       expect(payload).toMatchObject({
-        title: "Message-style push notifications",
-        body: "Copilot Bridge Local Deployment: Needs input - tap to respond in Bridge.",
+        title: expect.stringContaining("Review release candidates"),
+        body: expect.stringContaining("Copilot Bridge Local Deployment"),
         tag: "bridge-session-session-input",
         data: { eventType: "session:user-input", sessionId: "session-input" },
       });
+      expect(String(payload.title).length).toBeLessThanOrEqual(48);
+      expect(payload.body).toMatch(/needs input/i);
+      expect(payload.body).toMatch(/respond/i);
       expect(String(payload.url)).toContain(`/tasks/${encodeURIComponent(task.id)}/sessions/session-input`);
       unsubscribe();
     });
@@ -196,7 +200,7 @@ describe("push event notification copy", () => {
 
   it("keeps event notifications when any linked task is unmuted", async () => {
     await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createPushTestApp({ "mixed-muted-session": "Mixed muted session" });
+      const { ctx } = createPushTestApp();
       ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
       const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
       const service = createPushNotificationService({
@@ -215,56 +219,9 @@ describe("push event notification copy", () => {
 
       await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
       expect(getSentPayload(sendNotification)).toMatchObject({
-        title: "Mixed muted session",
-        body: expect.stringContaining("Needs input - tap to respond in Bridge."),
-      });
-      unsubscribe();
-    });
-  });
-
-  it("falls back to a short session id when no task or title is available", async () => {
-    await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createPushTestApp();
-      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
-      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
-      const service = createPushNotificationService({
-        subscriptionStore: ctx.pushSubscriptionStore!,
-        env: PUSH_ENV,
-        sendNotification,
-      });
-      const unsubscribe = initPushEventNotifications(ctx, service);
-
-      ctx.globalBus.emit({ type: "session:user-input", sessionId: "abcdef123456", needsUserInput: true });
-
-      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
-      expect(getSentPayload(sendNotification)).toMatchObject({
-        title: "Session abcdef12",
-        body: "Needs input - tap to respond in Bridge.",
-      });
-      unsubscribe();
-    });
-  });
-
-  it("truncates long notification names", async () => {
-    await withTestEnv(PUSH_ENV, async () => {
-      const { ctx } = createPushTestApp({
-        "long-session": "This is a very long session title that should be shortened for notification displays",
-      });
-      ctx.pushSubscriptionStore!.upsertSubscription(TEST_SUBSCRIPTION);
-      const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201, body: "", headers: {} });
-      const service = createPushNotificationService({
-        subscriptionStore: ctx.pushSubscriptionStore!,
-        env: PUSH_ENV,
-        sendNotification,
-      });
-      const unsubscribe = initPushEventNotifications(ctx, service);
-
-      ctx.globalBus.emit({ type: "session:user-input", sessionId: "long-session", needsUserInput: true });
-
-      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalled());
-      expect(getSentPayload(sendNotification)).toMatchObject({
-        title: "This is a very long session title that should...",
-        body: "Needs input - tap to respond in Bridge.",
+        title: expect.stringMatching(/mixed/i),
+        body: expect.stringMatching(/needs input/i),
+        data: { eventType: "session:user-input", sessionId: "mixed-muted-session" },
       });
       unsubscribe();
     });

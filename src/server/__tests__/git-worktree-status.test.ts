@@ -376,7 +376,7 @@ describe("readGitWorktreeStatus", () => {
   it("returns not_repo when the cwd is outside a git worktree", async () => {
     mockExecFileImplementation((args) => {
       if (gitArgsKey(args) === gitArgsKey(["rev-parse", "--show-toplevel"])) {
-        return new Error("fatal: not a git repository (or any of the parent directories): .git");
+        return { error: new Error("git exited 128"), stdout: "fatal: not a git repository (or any of the parent directories): .git\n" };
       }
       throw new Error(`Unexpected git args: ${args.join(" ")}`);
     });
@@ -396,6 +396,7 @@ describe("readGitWorktreeStatus", () => {
       if (gitArgsKey(args) === gitArgsKey(["rev-parse", "--show-toplevel"])) {
         return {
           error: new Error("spawn git ENOENT"),
+          stdout: "not a git repository",
           stderr: Buffer.from("fatal: git is unavailable\n"),
         };
       }

@@ -72,16 +72,6 @@ describe("agent_stop", () => {
     expect(cancelSessionAgent).not.toHaveBeenCalled();
   });
 
-  it("names the tracked agents when the one asked for is not among them", async () => {
-    const { stop, cancelSessionAgent } = setup([agent("a-docs", { name: "docs" })]);
-
-    const message = expectFailure(await stop.handler({ agent_id: "ui-lead" }, makeInvocation("session-1")));
-
-    expect(message).toContain('No agent with the ID or name "ui-lead"');
-    expect(message).toContain("docs (a-docs): idle");
-    expect(cancelSessionAgent).not.toHaveBeenCalled();
-  });
-
   it("leaves an agent that has already ended as it is", async () => {
     const { stop, cancelSessionAgent } = setup([agent("a-done", { name: "docs", status: "completed" })]);
 
@@ -141,13 +131,13 @@ describe("agent_dismiss", () => {
 
   it("says an agent that is not listed may have left by itself", async () => {
     // The runtime drops a stopped agent once it was read, which is the usual order of calls.
-    const { dismiss, dismissSessionAgent } = setup([]);
+    const { dismiss, dismissSessionAgent } = setup([agent("a-docs", { name: "docs" })]);
 
     const message = expectFailure(await dismiss.handler({ agent_id: "a-lead" }, makeInvocation("session-1")));
 
-    expect(message).toContain('No agent with the ID or name "a-lead"');
+    expect(message).toMatch(/no agent.*a-lead/i);
     expect(message).toContain("leaves the list by itself once it is read");
-    expect(message).toContain("This session has no tracked agents.");
+    expect(message).toMatch(/docs.*a-docs.*idle/);
     expect(dismissSessionAgent).not.toHaveBeenCalled();
   });
 

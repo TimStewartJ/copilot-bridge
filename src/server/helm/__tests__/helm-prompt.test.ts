@@ -15,15 +15,11 @@ describe("buildThinkerSystemPrompt", () => {
 
 describe("buildHelmChatGuidance", () => {
   it("explains Bridge links, the default work model and the time zone", () => {
-    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles", defaultWorkModel: "claude-opus-5" });
+    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles", defaultWorkModel: "claude-opus-5", glossary: "Atlas = Atlas project" });
     expect(prompt).toMatch(/^<helm>[\s\S]*<\/helm>$/);
     expect(prompt).toContain("bridge://session/<ref>");
     expect(prompt).toContain("(claude-opus-5)");
+    expect(prompt).toContain("Atlas = Atlas project");
     expect(prompt).toContain("Local time zone: America/Los_Angeles.");
-  });
-
-  it("includes the user's names list when there is one", () => {
-    const prompt = buildHelmChatGuidance({ timeZone: "America/Los_Angeles", glossary: "devbox = Timmy PC" });
-    expect(prompt).toContain("Names the user uses (speech recognition may mishear them; map what you hear onto these): devbox = Timmy PC");
   });
 });

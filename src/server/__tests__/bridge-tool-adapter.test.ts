@@ -23,11 +23,12 @@ describe("defineBridgeTool invocation identity", () => {
       handler: (_args, invocation) => { seen = invocation; return "ok"; },
     });
     const [native] = createNativeBridgeTools([tool]);
-    await native!.handler!({}, {
+    const result = await native!.handler!({}, {
       sessionId: "session-1", toolCallId: "cancel-1", toolName: "cancel_probe",
       arguments: {}, signal: controller.signal,
     });
     expect(seen?.signal).toBe(controller.signal);
+    expect(result).toMatchObject({ resultType: "success", textResultForLlm: "ok" });
   });
 
   it("passes the invoking session id through", async () => {
