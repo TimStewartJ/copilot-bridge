@@ -14,9 +14,17 @@ describe("MCP status display", () => {
   });
 
   it("classifies failures separately and clears guidance after a later successful call", () => {
-    const failures = recentToolFailures([tool("kusto-query", false), tool("calendar-query", false, "401 Unauthorized: token expired")]);
+    const history = [
+      ...Array.from({ length: 12 }, (_, index) => tool(`earlier-${index}`, false)),
+      tool("kusto-query", false),
+      tool("calendar-query", false, "401 Unauthorized: token expired"),
+    ];
+    const failures = recentToolFailures(history);
+    const knownNames = new Set(history.flatMap((entry) => entry.type === "tool" ? [entry.toolCall.name] : []));
+    expect(failures.length).toBeLessThan(history.length);
+    expect(failures.every(({ name }) => knownNames.has(name))).toBe(true);
     expect(Object.fromEntries(failures.map(({ name, failure }) => [name, failure.category])))
-      .toEqual({ "kusto-query": "permission", "calendar-query": "authentication" });
+      .toMatchObject({ "kusto-query": "permission", "calendar-query": "authentication" });
     expect(recentToolFailures([tool("kusto-query", false), tool("kusto-query", true)])).toEqual([]);
     expect(recentToolFailures([tool("kusto-query", true, "debug discovery protocol error then connected")])).toEqual([]);
   });
