@@ -78,18 +78,6 @@ describe("task attention source gaps", () => {
     expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
   });
 
-  it("leaves expected preview isolation quiet without creating review suggestions", async () => {
-    const activity = createTaskActivity({
-      known: false, sessionIndexKnown: false,
-      unavailable: { scope: "source", reason: "Preview conversations are isolated.", expectedInPreview: true },
-    });
-    const tasks = [task("copy"), task("healthy")], data = overview([row("copy", { activity }), row("healthy")]);
-    await render(tasks, data, new Map([["copy", indicator({ sessionStateKnown: false, readStateKnown: false })]]));
-    expect(reading.taskSignals.get("copy")).toBeNull();
-    expect(reading.activityDescriptions.get("copy")).toBe("");
-    expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
-  });
-
   it("does not retain a stale review cue when a preview gap is expected", async () => {
     const tasks = [task("copy")];
     let data = overview([row("copy")]);
@@ -102,6 +90,7 @@ describe("task attention source gaps", () => {
     }) })]);
     await harness.render(createElement(Probe));
     expect(reading.taskSignals.get("copy")).toBeNull();
+    expect(reading.activityDescriptions.get("copy")).toBe("");
   });
 
   it("reserves individual unknown badges for task-specific problems", async () => {

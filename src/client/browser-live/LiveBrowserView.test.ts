@@ -143,20 +143,6 @@ describe("LiveBrowserView", () => {
     ]);
   });
 
-  it("sends no pointer input before the page's size is known", async () => {
-    const view = await mount();
-    await view.harness.act(async () => {
-      view.network.latestSocket().open();
-    });
-    const surface = getReactProps(view.surface)!;
-    await view.harness.act(async () => {
-      surface.onPointerDown(pointerEvent({ clientX: 100, clientY: 200 }));
-      surface.onPointerMove(pointerEvent({ clientX: 110, clientY: 200 }));
-      surface.onPointerUp(pointerEvent({ clientX: 110, clientY: 200 }));
-    });
-    expect(view.network.latestSocket().sent).toEqual([]);
-  });
-
   it("treats a tap as a mouse click", async () => {
     const view = await mount();
     await view.goLive();
@@ -288,7 +274,11 @@ describe("LiveBrowserView", () => {
     expect(backspace.preventDefault).toHaveBeenCalled();
     expect(letter.preventDefault).not.toHaveBeenCalled();
 
-    expect(view.network.latestSocket().sentOfType("input_keyboard").map((message) => [message.eventType, message.windowsVirtualKeyCode])).toEqual([
+    const keys = view.network.latestSocket().sentOfType("input_keyboard");
+    expect(keys[0]).toMatchObject({ key: "Enter", code: "Enter", text: "\r" });
+    expect(keys[2]).toMatchObject({ key: "Backspace", code: "Backspace" });
+    expect(keys[3]).toMatchObject({ key: "Backspace", code: "Backspace" });
+    expect(keys.map((message) => [message.eventType, message.windowsVirtualKeyCode])).toEqual([
       ["keyDown", 13], ["keyUp", 13],
       ["keyDown", 8], ["keyUp", 8],
       ["keyDown", 9], ["keyUp", 9],

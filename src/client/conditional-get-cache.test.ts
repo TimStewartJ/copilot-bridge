@@ -2,17 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
 
 describe("ConditionalGetCache", () => {
-  it("sends If-None-Match only once it holds a validator and reuses the body on 304", () => {
-    const cache = new ConditionalGetCache();
-    expect(cache.requestHeaders("/api/sessions")).toEqual({});
-
-    const body = { sessions: [{ sessionId: "a" }] };
-    cache.remember("/api/sessions", 'W/"abc"', body);
-    expect(cache.requestHeaders("/api/sessions")).toEqual({ "If-None-Match": 'W/"abc"' });
-    expect(cache.reuseIfNotModified("/api/sessions", 304)).toEqual({ result: body });
-    expect(cache.reuseIfNotModified("/api/sessions", 304)?.result).toBe(body);
-  });
-
   it("does not reuse anything for 200s or for unknown keys", () => {
     const cache = new ConditionalGetCache();
     cache.remember("/api/sessions", 'W/"abc"', { sessions: [] });

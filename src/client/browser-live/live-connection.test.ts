@@ -35,29 +35,6 @@ describe("BrowserLiveConnection", () => {
     connection.stop();
   });
 
-  it("draws frames one at a time and acknowledges each after it is drawn", async () => {
-    const { network, connection } = await connect();
-    const socket = network.latestSocket();
-    const drawn: string[] = [];
-    const finish: Array<() => void> = [];
-    connection.setFrameSink((data) => new Promise<void>((resolve) => {
-      drawn.push(data);
-      finish.push(resolve);
-    }));
-    socket.open();
-
-    socket.receive({ type: "frame", seq: 1, data: "one" });
-    await settle();
-    expect(drawn).toEqual(["one"]);
-    expect(socket.sentOfType("ack")).toEqual([]);
-
-    finish[0]();
-    await settle();
-    expect(socket.sentOfType("ack")).toEqual([{ type: "ack", seq: 1 }]);
-    expect(connection.getSnapshot().hasFrame).toBe(true);
-    connection.stop();
-  });
-
   it("skips a frame that a newer one overtakes, and still acknowledges it", async () => {
     const { network, connection } = await connect();
     const socket = network.latestSocket();
@@ -82,6 +59,7 @@ describe("BrowserLiveConnection", () => {
     finish[1]();
     await settle();
     expect(socket.sentOfType("ack").map((ack) => ack.seq)).toEqual([2, 1, 3]);
+    expect(connection.getSnapshot().hasFrame).toBe(true);
     connection.stop();
   });
 

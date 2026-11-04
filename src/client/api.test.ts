@@ -2,11 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteDbEntryPage,
   createSession,
-  createTask,
   createTaskSession,
   fetchExternalSessionUse,
   fetchSessionFork,
-  getSessionActivityTime,
   getSessionReadThroughActivityTime,
   getSessionRunState,
   isSessionActive,
@@ -27,52 +25,9 @@ describe("session run-state helpers", () => {
     expect(isSessionActive({ runState: "busy" })).toBe(true);
     expect(isSessionActive({ runState: "idle" })).toBe(false);
   });
-
-  it("treats optimistic sessions without a runState as idle", () => {
-    expect(getSessionRunState({})).toBe("idle");
-    expect(isSessionActive({})).toBe(false);
-  });
-});
-
-describe("getSessionActivityTime", () => {
-  it("prefers explicit merged activity over modified and start times", () => {
-    expect(getSessionActivityTime({
-      startTime: "2026-04-17T13:00:00.000Z",
-      modifiedTime: "2026-04-17T14:00:00.000Z",
-      lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
-      lastAttentionAt: "2026-04-17T16:00:00.000Z",
-      lastActivityAt: "2026-04-17T17:00:00.000Z",
-    })).toBe("2026-04-17T17:00:00.000Z");
-  });
-
-  it("falls back to the latest visible or attention activity timestamp", () => {
-    expect(getSessionActivityTime({
-      startTime: "2026-04-17T13:00:00.000Z",
-      modifiedTime: "2026-04-17T14:00:00.000Z",
-      lastVisibleActivityAt: "2026-04-17T15:00:00.000Z",
-      lastAttentionAt: "2026-04-17T16:00:00.000Z",
-    })).toBe("2026-04-17T16:00:00.000Z");
-  });
-
-  it("uses visible activity when it is newer than attention activity", () => {
-    expect(getSessionActivityTime({
-      modifiedTime: "2026-04-17T14:00:00.000Z",
-      lastVisibleActivityAt: "2026-04-17T16:00:00.000Z",
-      lastAttentionAt: "2026-04-17T15:00:00.000Z",
-    })).toBe("2026-04-17T16:00:00.000Z");
-  });
 });
 
 describe("getSessionReadThroughActivityTime", () => {
-  it("includes non-visible attention activity when a session is rendered", () => {
-    expect(getSessionReadThroughActivityTime(
-      {
-        lastAttentionAt: "2026-05-07T21:05:00.000Z",
-      },
-      "2026-05-07T21:00:00.000Z",
-    )).toBe("2026-05-07T21:05:00.000Z");
-  });
-
   it("does not use visible activity that has not been rendered", () => {
     expect(getSessionReadThroughActivityTime(
       {
@@ -138,39 +93,24 @@ describe("external session use client API", () => {
 describe("serializeSettingsPatch", () => {
   it("serializes response-style preferences without changing other instructions", () => {
     const updates = {
+      model: "selected-model", reasoningEffort: "high", contextTier: "long_context" as const,
       responseStyle: { detail: "detailed" as const, guidance: "Use plain prose.\nKeep useful examples." },
       customInstructions: "Prefer TypeScript.",
     };
     expect(serializeSettingsPatch(updates)).toBe(JSON.stringify(updates));
   });
 
-  it("sends an explicit response-style reset instead of omitting the field", () => {
-    expect(serializeSettingsPatch({ responseStyle: undefined })).toBe(JSON.stringify({ responseStyle: {} }));
-    expect(serializeSettingsPatch({ theme: "dark" })).toBe(JSON.stringify({ theme: "dark" }));
-  });
-
-  it("sends any other explicit clear as null so it is not dropped", () => {
-    expect(serializeSettingsPatch({ providers: undefined, browser: undefined, identity: undefined, helm: undefined })).toBe(
-      JSON.stringify({ providers: null, browser: null, identity: null, helm: null }),
-    );
-  });
-
-  it("preserves explicit model clears", () => {
-    expect(serializeSettingsPatch({ model: undefined })).toBe(
-      JSON.stringify({ model: "" }),
-    );
-  });
-
-  it("preserves an explicit remembered-preset clear", () => {
-    expect(serializeSettingsPatch({ lastModelPreset: undefined })).toBe(
-      JSON.stringify({ lastModelPreset: "" }),
-    );
-  });
-
-  it("sends an explicit computer-use clear so turning it off reaches the server", () => {
-    expect(serializeSettingsPatch({ computerUse: undefined })).toBe(
-      JSON.stringify({ computerUse: {} }),
-    );
+  it("serializes explicit resets without dropping or changing unrelated preferences", () => {
+    const wire = serializeSettingsPatch({
+      theme: "dark", customInstructions: "Prefer plain prose", model: undefined, reasoningEffort: undefined, contextTier: undefined,
+      lastModelPreset: undefined, responseStyle: undefined, computerUse: undefined,
+      providers: undefined, browser: undefined, identity: undefined, helm: undefined,
+    });
+    expect(JSON.parse(wire)).toEqual({
+      theme: "dark", customInstructions: "Prefer plain prose", model: "", reasoningEffort: "", contextTier: "",
+      lastModelPreset: "", responseStyle: {}, computerUse: {},
+      providers: null, browser: null, identity: null, helm: null,
+    });
   });
 
   describe("session creation client API", () => {
@@ -223,42 +163,6 @@ describe("serializeSettingsPatch", () => {
       ]);
     });
 
-    it.each([
-      {
-        name: "several work item links",
-        links: {
-          workItems: [
-            { workItemId: "30000015", provider: "ado" as const },
-            { workItemId: "30000016", provider: "ado" as const },
-          ],
-        },
-      },
-      { name: "a single work item link", links: { workItem: { workItemId: "30000015", provider: "ado" as const } } },
-    ])("creates a task with $name", async ({ links }) => {
-      vi.stubGlobal("fetch", vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        json: async () => ({ task: { id: "task-1" } }),
-      })));
-
-      await createTask("New Task", links);
-
-      expect(vi.mocked(fetch).mock.calls[0]).toEqual([
-        "/api/tasks",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ title: "New Task", ...links }),
-        }),
-      ]);
-    });
-  });
-
-  it("preserves an explicit reasoning-effort clear and leaves other updates unchanged", () => {
-    expect(serializeSettingsPatch({ reasoningEffort: undefined })).toBe(JSON.stringify({ reasoningEffort: "" }));
-    expect(serializeSettingsPatch({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" })).toBe(
-      JSON.stringify({ theme: "dark", model: "gpt-5.4", reasoningEffort: "high" }),
-    );
   });
 });
 

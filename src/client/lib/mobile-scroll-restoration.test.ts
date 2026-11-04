@@ -10,8 +10,6 @@ import {
 describe("getMobileScrollRestorationPolicy", () => {
   it.each([
     ["/dashboard/home", "mobile:dashboard"],
-    ["/dashboard/focus", "mobile:dashboard"],
-    ["/dashboard/work-map", "mobile:dashboard"],
     ["/", "mobile:tasks:list"],
     ["/chats", "mobile:chats:list"],
   ])("restores root tab route %s by default", (pathname, key) => {
@@ -41,10 +39,9 @@ describe("getMobileScrollRestorationPolicy", () => {
     });
   });
 
-  it.each([
-    ["/tasks/task-123", "mobile:task-cockpit:task-123"],
-    ["/tasks/task-123/overview", "mobile:task-dashboard:task-123"],
-  ])("restores %s on browser POP navigation", (pathname, key) => {
+  it("restores /tasks/task-123 on browser POP navigation", () => {
+    const pathname = "/tasks/task-123";
+    const key = "mobile:task-cockpit:task-123";
     expect(getMobileScrollRestorationPolicy(getMobileRouteMeta(pathname), {
       navigationType: "POP",
     })).toMatchObject({ key, restore: true });
@@ -59,7 +56,6 @@ describe("getMobileScrollRestorationPolicy", () => {
       locationState: createBridgeMobileScrollRestoreState({ from: "detail" }),
     })).toMatchObject({ key: "mobile:task-dashboard:task-123", restore: true });
   });
-
 });
 
 describe("mobile scroll restoration helpers", () => {
@@ -71,5 +67,4 @@ describe("mobile scroll restoration helpers", () => {
     expect(hasBridgeMobileScrollRestoreState({ [BRIDGE_MOBILE_SCROLL_RESTORE_STATE]: false })).toBe(false);
     expect(hasBridgeMobileScrollRestoreState(null)).toBe(false);
   });
-
 });

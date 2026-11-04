@@ -44,20 +44,6 @@ describe("useReadState", () => {
     await waitUntilAct(harness.act, () => harness!.dom.container.textContent === "true:false");
   });
 
-  it("stays unhydrated when the read state cannot be loaded", async () => {
-    let rejectReadState: ((reason: Error) => void) | undefined;
-    fetchReadStateMock.mockReturnValue(new Promise((_resolve, reject) => {
-      rejectReadState = reject;
-    }));
-    harness = await createReactDomHarness();
-    await harness.render(createElement(Probe));
-
-    await harness.act(async () => {
-      rejectReadState?.(new Error("read state unavailable"));
-    });
-    expect(harness.dom.container.textContent).toBe("false:true");
-  });
-
   it.each(["Read store offline", ""])("exposes a load failure (%s) and clears it when read state recovers", async message => {
     fetchReadStateMock.mockRejectedValue(new Error(message));
     let reading: ReturnType<typeof useReadState>;
@@ -67,6 +53,7 @@ describe("useReadState", () => {
     await waitUntilAct(harness.act, () => reading.error !== null);
     expect(reading!.hydrated).toBe(false);
     expect(reading!.error).toBe(message || "Conversation read status is unavailable.");
+    expect(reading!.isUnread("session-1", ACTIVITY_AT)).toBe(true);
     await harness.act(async () => { reading.applyServerState({ "session-1": ACTIVITY_AT }); });
     expect(reading!.hydrated).toBe(true);
     expect(reading!.error).toBeNull();

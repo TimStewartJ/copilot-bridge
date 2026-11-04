@@ -45,12 +45,14 @@ describe("sendChatMessage", () => {
         path: "attachments/screenshot.png",
         displayName: "screenshot.png",
       },
-    ]);
+    ], undefined, { waitForDelivery: true, clientMessageId: "client-message-1" });
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/chat");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       sessionId: "session-1",
       prompt: "(attachment)",
+      waitForDelivery: true,
+      clientMessageId: "client-message-1",
       attachments: [
         {
           type: "file",
@@ -66,48 +68,6 @@ describe("sendChatMessage", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       sessionId: "session-1",
       prompt: "hello",
-    });
-  });
-
-  it("requests prompt delivery confirmation when asked", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = String(input);
-      if (url === "/api/chat") {
-        return jsonResponse({ status: "accepted" });
-      }
-      throw new Error(`Unexpected fetch URL: ${url}`);
-    });
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
-
-    const { sendChatMessage } = await import("./api.js");
-
-    await sendChatMessage("session-1", "hello", undefined, undefined, {
-      waitForDelivery: true,
-    });
-
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      sessionId: "session-1",
-      prompt: "hello",
-      waitForDelivery: true,
-    });
-  });
-
-  it("includes the client message identity used for stream handoff", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
-      jsonResponse({ status: "accepted" })
-    ));
-    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
-
-    const { sendChatMessage } = await import("./api.js");
-
-    await sendChatMessage("session-1", "hello", undefined, undefined, {
-      clientMessageId: "client-message-1",
-    });
-
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      sessionId: "session-1",
-      prompt: "hello",
-      clientMessageId: "client-message-1",
     });
   });
 });

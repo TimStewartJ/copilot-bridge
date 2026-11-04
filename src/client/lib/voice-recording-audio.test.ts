@@ -98,10 +98,8 @@ describe("SoundPresence", () => {
   }
 
   it.each([
-    ["digital silence", 48_000, 0, 0, false],
     ["a quiet room", 48_000, 0, 0.002, false],
     ["a tap on the phone", 48_000, 0.01, 0, false],
-    ["a short word at 48 kHz", 48_000, 0.12, 0, true],
     ["a short word at 44.1 kHz", 44_100, 0.12, 0.002, true],
     ["a short word at 16 kHz", 16_000, 0.12, 0, true],
   ])("%s", (_name, sampleRate, burstSeconds, floor, heard) => {

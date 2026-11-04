@@ -20,7 +20,6 @@ import {
   IdentitySwatch,
   MetaLine,
   Notice,
-  Panel,
   Section,
   SegmentedControl,
   STATUS_LABEL,
@@ -48,14 +47,6 @@ describe("design primitives", () => {
     });
   }
 
-  it("makes a button that never submits a form by accident and is quiet unless told otherwise", async () => {
-    const container = await render(createElement(Button, null, "Retry"));
-    const props = getReactProps(findAllByTag(container, "BUTTON")[0]);
-    expect(props?.type).toBe("button");
-    expect(props?.className).toContain(DS.button.variant.secondary);
-    expect(props?.className).not.toContain(DS.button.variant.primary);
-  });
-
   it("forwards native refs through actions used by docs adapters and dialogs", async () => {
     const buttonRef = createRef<HTMLButtonElement>();
     const iconRef = createRef<HTMLButtonElement>();
@@ -65,7 +56,11 @@ describe("design primitives", () => {
     ));
     const [button, icon] = findAllByTag(container, "BUTTON");
     expect(buttonRef.current).toBe(button);
+    expect(getReactProps(button)?.type).toBe("button");
+    expect(getReactProps(button)?.className).toContain(DS.button.variant.secondary);
     expect(iconRef.current).toBe(icon);
+    expect(getReactProps(icon)?.["aria-label"]).toBe("Close");
+    expect(getReactProps(icon)?.title).toBe("Close");
   });
 
   it("preserves state attributes on a canonical badge", async () => {
@@ -83,13 +78,6 @@ describe("design primitives", () => {
     expect(getReactProps(section)?.["data-ds-surface"]).toBe("group");
     expect(getReactProps(section)?.className).toContain(DS.surface.group);
     expect(getReactProps(section)?.className).not.toContain("shadow");
-  });
-
-  it("names an icon button for screen readers and on hover", async () => {
-    const container = await render(createElement(IconButton, { label: "Close" }, "x"));
-    const props = getReactProps(findAllByTag(container, "BUTTON")[0]);
-    expect(props?.["aria-label"]).toBe("Close");
-    expect(props?.title).toBe("Close");
   });
 
   it("keeps ordinary form labels visible with the container-sized label column", async () => {
@@ -281,12 +269,6 @@ describe("design primitives", () => {
     ));
     const roles = findAllByTag(container, "DIV").map((element) => getReactProps(element)?.role).filter(Boolean);
     expect(roles).toEqual(["alert", "status"]);
-  });
-
-  it("marks the one bordered container so nesting can be found", async () => {
-    const container = await render(createElement(Panel, null, "Question"));
-    const panel = findAllByTag(container, "DIV").find((element) => getReactProps(element)?.["data-ds-panel"] !== undefined);
-    expect(panel?.textContent).toBe("Question");
   });
 
   it("caps a count so it stays a badge", async () => {

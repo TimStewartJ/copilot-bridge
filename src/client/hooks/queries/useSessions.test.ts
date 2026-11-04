@@ -4,7 +4,6 @@ import type { Session, TaskArchivedSessionsResponse } from "../../api";
 import { queryKeys } from "../../queryClient";
 import {
   mergeActiveAndArchivedSessions,
-  mergeOptimisticSessions,
   addOptimisticSessionToCache,
   patchSessionQueryData,
   shareSessionsStructurally,
@@ -83,21 +82,13 @@ describe("shareSessionsStructurally", () => {
     expect(shared[1]).not.toBe(cached[1]);
     expect(shared[1].summary).toBe("Renamed");
   });
-
-  it("still carries optimistic sessions the server has not returned yet", () => {
-    const optimistic = createSession({ sessionId: "optimistic", isOptimistic: true, optimisticUntil: 1_000 });
-    const cached = [optimistic, createSession({ sessionId: "a" })];
-    const fresh = [createSession({ sessionId: "a" })];
-
-    const shared = shareSessionsStructurally(cached, fresh, 500);
-    expect(shared).toBe(cached);
-  });
 });
 
-describe("mergeOptimisticSessions", () => {
-  it("keeps optimistic sessions omitted by a stale refetch", () => {
+describe("optimistic session reconciliation", () => {
+  it("keeps pending optimistic rows and adopts confirmed rows without reviving expired ones", () => {
     const serverSessions = [
       createSession({ sessionId: "server-session", summary: "Server session" }),
+      createSession({ sessionId: "existing", summary: "Fresh title" }),
     ];
     const cachedSessions = [
       createSession({
@@ -106,43 +97,15 @@ describe("mergeOptimisticSessions", () => {
         isOptimistic: true,
         optimisticUntil: 1_000,
       }),
-      createSession({ sessionId: "server-session", summary: "Cached server session" }),
+      createSession({ sessionId: "server-session", summary: "Cached optimistic title", isOptimistic: true, optimisticUntil: 1_000 }),
+      createSession({ sessionId: "expired", isOptimistic: true, optimisticUntil: 499 }),
+      createSession({ sessionId: "existing", summary: "Old title" }),
     ];
 
-    expect(mergeOptimisticSessions(serverSessions, cachedSessions, 500)).toEqual([
+    expect(shareSessionsStructurally(cachedSessions, serverSessions, 500)).toEqual([
       cachedSessions[0],
-      serverSessions[0],
+      ...serverSessions,
     ]);
-  });
-
-  it("replaces optimistic state once the server returns the session", () => {
-    const serverSession = createSession({ sessionId: "new-session", summary: "Real title" });
-    const cachedSession = createSession({
-      sessionId: "new-session",
-      summary: "New session",
-      isOptimistic: true,
-      optimisticUntil: 1_000,
-    });
-
-    expect(mergeOptimisticSessions([serverSession], [cachedSession], 500)).toEqual([
-      serverSession,
-    ]);
-  });
-
-  it("drops expired optimistic sessions", () => {
-    const serverSessions = [
-      createSession({ sessionId: "server-session", summary: "Server session" }),
-    ];
-    const cachedSessions = [
-      createSession({
-        sessionId: "expired-session",
-        summary: "New session",
-        isOptimistic: true,
-        optimisticUntil: 500,
-      }),
-    ];
-
-    expect(mergeOptimisticSessions(serverSessions, cachedSessions, 1_000)).toEqual(serverSessions);
   });
 });
 
@@ -212,40 +175,38 @@ describe("patchSessionQueryData", () => {
     }
   });
 
-  it.each(["busy", "stalled", "idle"] as const)(
-    "keeps a newer %s event when an older list response arrives",
-    async (runState) => {
-      const queryClient = new QueryClient();
-      const key = queryKeys.sessions({ includeArchived: false });
-      const oldState = runState === "idle" ? "busy" : "idle";
-      queryClient.setQueryData(key, [createSession({ runState: oldState })]);
-      const response = createDeferred<Session[]>();
-      const pending = queryClient.fetchQuery({ queryKey: key, queryFn: () => response.promise });
-      try {
-        patchSessionQueryData(queryClient, ["session-1"], { runState });
-        patchSessionQueryData(queryClient, ["session-1"], { intentText: "Latest intent" });
-        response.resolve([
-          createSession({ runState: oldState, summary: "Fresh title" }),
-          createSession({ sessionId: "other", runState: "busy" }),
-        ]);
-        await pending;
+  it("keeps a newer stalled event when an older list response arrives", async () => {
+    const runState = "stalled";
+    const queryClient = new QueryClient();
+    const key = queryKeys.sessions({ includeArchived: false });
+    const oldState = "idle";
+    queryClient.setQueryData(key, [createSession({ runState: oldState })]);
+    const response = createDeferred<Session[]>();
+    const pending = queryClient.fetchQuery({ queryKey: key, queryFn: () => response.promise });
+    try {
+      patchSessionQueryData(queryClient, ["session-1"], { runState });
+      patchSessionQueryData(queryClient, ["session-1"], { intentText: "Latest intent" });
+      response.resolve([
+        createSession({ runState: oldState, summary: "Fresh title" }),
+        createSession({ sessionId: "other", runState: "busy" }),
+      ]);
+      await pending;
 
-        expect(queryClient.getQueryData(key)).toMatchObject([
-          { runState, intentText: "Latest intent", summary: "Fresh title" },
-          { sessionId: "other", runState: "busy" },
-        ]);
-        expect(queryClient.getQueryCache().hasListeners()).toBe(false);
+      expect(queryClient.getQueryData(key)).toMatchObject([
+        { runState, intentText: "Latest intent", summary: "Fresh title" },
+        { sessionId: "other", runState: "busy" },
+      ]);
+      expect(queryClient.getQueryCache().hasListeners()).toBe(false);
 
-        await queryClient.fetchQuery({
-          queryKey: key,
-          queryFn: async () => [createSession({ runState: oldState })],
-        });
-        expect(queryClient.getQueryData<Session[]>(key)?.[0].runState).toBe(oldState);
-      } finally {
-        queryClient.clear();
-      }
-    },
-  );
+      await queryClient.fetchQuery({
+        queryKey: key,
+        queryFn: async () => [createSession({ runState: oldState })],
+      });
+      expect(queryClient.getQueryData<Session[]>(key)?.[0].runState).toBe(oldState);
+    } finally {
+      queryClient.clear();
+    }
+  });
 
   it("keeps the latest event even when the status changes back during a fetch", async () => {
     const queryClient = new QueryClient();

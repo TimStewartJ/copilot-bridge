@@ -4,7 +4,6 @@ import { createReactDomHarness } from "./test-react-harness";
 import {
   DEFAULT_WORK_MAP_FILTERS,
   loadWorkMapFilters,
-  saveWorkMapFilters,
   useWorkMapFilters,
   WORK_MAP_FILTERS_STORAGE_KEY,
   type WorkMapFilters,
@@ -29,25 +28,6 @@ function stubLocalStorage(initial: Record<string, string> = {}) {
 describe("Work Map filter persistence", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("round-trips every filter", () => {
-    const storage = stubLocalStorage();
-    const filters = {
-      search: "bridge",
-      assignedToMeOnly: true,
-      openAdoOnly: true,
-      gapsOnly: true,
-      includeArchived: true,
-    };
-
-    saveWorkMapFilters(filters);
-
-    expect(loadWorkMapFilters()).toEqual(filters);
-    expect(storage.setItem).toHaveBeenCalledWith(
-      WORK_MAP_FILTERS_STORAGE_KEY,
-      JSON.stringify(filters),
-    );
   });
 
   it("falls back safely when saved state is malformed", () => {
@@ -80,7 +60,7 @@ describe("Work Map filter persistence", () => {
 
   it("starts from the saved filters and saves each change", async () => {
     const storage = stubLocalStorage({
-      [WORK_MAP_FILTERS_STORAGE_KEY]: JSON.stringify({ search: "SDL", openAdoOnly: true }),
+      [WORK_MAP_FILTERS_STORAGE_KEY]: JSON.stringify({ search: "SDL", openAdoOnly: true, includeArchived: true }),
     });
     const harness = await createReactDomHarness();
     let current: [WorkMapFilters, (change: Partial<WorkMapFilters>) => void] | undefined;
@@ -90,13 +70,14 @@ describe("Work Map filter persistence", () => {
     }
     await harness.render(createElement(Probe));
 
-    expect(current?.[0]).toEqual({ ...DEFAULT_WORK_MAP_FILTERS, search: "SDL", openAdoOnly: true });
+    expect(current?.[0]).toEqual({ ...DEFAULT_WORK_MAP_FILTERS, search: "SDL", openAdoOnly: true, includeArchived: true });
 
     await harness.act(async () => {
-      current?.[1]({ gapsOnly: true, search: "" });
+      current?.[1]({ assignedToMeOnly: true, gapsOnly: true, search: "" });
     });
 
-    expect(current?.[0]).toEqual({ ...DEFAULT_WORK_MAP_FILTERS, openAdoOnly: true, gapsOnly: true });
-    expect(JSON.parse(storage.setItem.mock.calls.at(-1)?.[1] ?? "{}")).toEqual(current?.[0]);
+    expect(current?.[0]).toEqual({ search: "", assignedToMeOnly: true, openAdoOnly: true, gapsOnly: true, includeArchived: true });
+    expect(JSON.parse(storage.getItem(WORK_MAP_FILTERS_STORAGE_KEY) ?? "{}")).toEqual(current?.[0]);
+    expect(loadWorkMapFilters()).toEqual(current?.[0]);
   });
 });

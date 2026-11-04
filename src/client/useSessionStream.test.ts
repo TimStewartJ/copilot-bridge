@@ -165,7 +165,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-
 /** Build an ephemeral stream snapshot with sensible defaults for the fields under test. */
 function snapshot(overrides: Record<string, unknown> = {}) {
   return {
@@ -525,49 +524,6 @@ describe("useSessionStream ephemeral state", () => {
     });
   });
 
-  it("carries only ephemeral run state and never a committed transcript projection", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, snapshot({
-        turnId: "provider-turn-1",
-        streamingContent: "typing",
-        liveAssistantSegments: [
-          { id: "assistant-1", content: "hello", sourceEventId: "assistant-1" },
-        ],
-        pendingUserMessages: [{ id: "pending-1", content: "run it" }],
-        liveTools: [{ toolCallId: "tc-1", name: "bash" }],
-      }), () => getState().streamingContent === "typing");
-
-      const state = getState();
-      expect(state.liveAssistantSegments).toMatchObject([{ sourceEventId: "assistant-1" }]);
-      expect(state.pendingUserMessages).toMatchObject([{ id: "pending-1", content: "run it" }]);
-      expect(state.liveTools).toMatchObject([{ toolCallId: "tc-1", name: "bash" }]);
-      expect(state.historyEpoch).toBeGreaterThan(0);
-      // Committed transcript content is owned by events.jsonl, not the stream.
-      expect(state).not.toHaveProperty("liveEntries");
-      expect(state).not.toHaveProperty("currentTurnTools");
-    });
-  });
-
-  it("advances the history epoch so the view can refresh disk history", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      const before = getState().historyEpoch;
-
-      await emitAndWait(
-        act,
-        source,
-        { type: "history_advanced" },
-        () => getState().historyEpoch > before,
-      );
-
-      expect(getState().historyEpoch).toBe(before + 1);
-    });
-  });
-
   it("keeps advancing the epoch across runs even though the signal carries no sequence", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
@@ -832,8 +788,12 @@ describe("useSessionStream ephemeral state", () => {
 
       await emitAndWait(act, source, snapshot({
         streamingContent: "stale",
+        liveAssistantSegments: [{ id: "assistant-1", content: "hello", sourceEventId: "assistant-1" }],
+        pendingUserMessages: [{ id: "pending-1", content: "run it" }],
         liveTools: [{ toolCallId: "tc-stale", name: "bash" }],
       }), () => getState().liveTools.length === 1);
+      expect(getState().liveAssistantSegments).toMatchObject([{ sourceEventId: "assistant-1" }]);
+      expect(getState().pendingUserMessages).toMatchObject([{ id: "pending-1", content: "run it" }]);
 
       await emitAndWait(act, source, snapshot({
         streamingContent: "",
@@ -841,6 +801,8 @@ describe("useSessionStream ephemeral state", () => {
       }), () => getState().liveTools[0]?.toolCallId === "tc-fresh");
 
       expect(getState().liveTools).toHaveLength(1);
+      expect(getState().liveAssistantSegments).toEqual([]);
+      expect(getState().pendingUserMessages).toEqual([]);
       expect(getState().streamingContent).toBe("");
     });
   });
@@ -1107,6 +1069,7 @@ describe("useSessionStream terminal handling", () => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
 
+      const before = getState().historyEpoch;
       await emitAndWait(act, source, {
         type: "done",
         content: "All set",
@@ -1114,20 +1077,8 @@ describe("useSessionStream terminal handling", () => {
       }, () => getState().streamStatus === "idle");
 
       expect(getState().runNotice).toBeNull();
-      expect(titleChanged).toHaveBeenCalled();
-    });
-  });
-
-  it("bumps the history epoch on terminal so the view re-reads the final disk window", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-      const before = getState().historyEpoch;
-
-      await emitAndWait(act, source, { type: "done", content: "ok", sourceEventId: "t-1" },
-        () => getState().streamStatus === "idle");
-
       expect(getState().historyEpoch).toBeGreaterThan(before);
+      expect(titleChanged).toHaveBeenCalled();
     });
   });
 

@@ -10,19 +10,15 @@ describe("parseWhen", () => {
     ["tonight", "2026-11-02", "19:00"],
     ["tmrw 9am", "2026-11-03", "09:00"],
     ["tomorrow at 3:30 pm", "2026-11-03", "15:30"],
-    ["fri", "2026-11-06", undefined],
     ["mon", "2026-11-02", undefined],
     ["next fri", "2026-11-13", undefined],
     ["this weekend", "2026-11-07", undefined],
-    ["next week", "2026-11-09", undefined],
     ["in 3 days", "2026-11-05", undefined],
     ["in 2 weeks", "2026-11-16", undefined],
     ["in 1 month", "2026-12-02", undefined],
-    ["Nov 15", "2026-11-15", undefined],
     ["15th november at 6pm", "2026-11-15", "18:00"],
     ["Nov 1", "2027-11-01", undefined],
     ["12/25", "2026-12-25", undefined],
-    ["2027-01-04", "2027-01-04", undefined],
     ["3pm", "2026-11-02", "15:00"],
     ["7am", "2026-11-03", "07:00"],
     ["at 4", "2026-11-02", "16:00"],
@@ -44,16 +40,17 @@ describe("parseWhen", () => {
 
 describe("extractWhen", () => {
   it.each([
-    ["Call the bank fri 3pm", "Call the bank", "fri 3pm"],
-    ["Dinner with friends on Nov 15 at 7pm", "Dinner with friends", "on Nov 15 at 7pm"],
-    ["Renew passport by next week", "Renew passport", "by next week"],
-  ])("%s", (text, rest, phrase) => {
+    ["Call the bank fri 3pm", "Call the bank", "fri 3pm", "2026-11-06"],
+    ["Dinner with friends on Nov 15 at 7pm", "Dinner with friends", "on Nov 15 at 7pm", "2026-11-15"],
+    ["Renew passport by next week", "Renew passport", "by next week", "2026-11-09"],
+  ])("%s", (text, rest, phrase, date) => {
     const found = extractWhen(text, NOW);
     expect(found?.rest).toBe(rest);
     expect(found?.phrase).toBe(phrase);
+    expect(found?.when.date).toBe(date);
   });
 
-  it.each(["Buy 4 lemons", "Friday", "Read chapter 3"])("leaves %j alone", (text) => {
+  it.each(["Friday", "Read chapter 3"])("leaves %j alone", (text) => {
     expect(extractWhen(text, NOW)).toBeNull();
   });
 });

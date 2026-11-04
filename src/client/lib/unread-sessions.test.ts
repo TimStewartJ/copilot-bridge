@@ -39,9 +39,9 @@ describe("listUnreadSessions", () => {
   it("lists idle chats with unseen results, newest first", () => {
     const entries = listUnreadSessions({
       sessions: [
-        createSession("older", { lastActivityAt: "2026-09-30T13:00:00.000Z" }),
-        createSession("read", { lastActivityAt: BEFORE_READ }),
-        createSession("newest", { lastActivityAt: "2026-09-30T15:00:00.000Z" }),
+        createSession("older", { lastActivityAt: undefined, lastVisibleActivityAt: AFTER_READ, lastAttentionAt: BEFORE_READ, modifiedTime: BEFORE_READ }),
+        createSession("read", { lastActivityAt: BEFORE_READ, lastVisibleActivityAt: AFTER_READ, lastAttentionAt: AFTER_READ }),
+        createSession("newest", { lastActivityAt: undefined, lastVisibleActivityAt: BEFORE_READ, lastAttentionAt: "2026-09-30T15:00:00.000Z", modifiedTime: BEFORE_READ }),
         createSession("never-read", { lastActivityAt: BEFORE_READ }),
         createSession("tie-b", { lastActivityAt: "2026-09-30T14:00:00.000Z" }),
         createSession("tie-a", { lastActivityAt: "2026-09-30T14:00:00.000Z" }),
@@ -62,7 +62,7 @@ describe("listUnreadSessions", () => {
         createSession("archived", { archived: true }),
         createSession("open"),
         createSession("no-activity", { lastActivityAt: undefined }),
-        createSession("unread"),
+        createSession("unread", { runState: undefined }),
       ],
       tasks: [],
       isUnread: readState(),

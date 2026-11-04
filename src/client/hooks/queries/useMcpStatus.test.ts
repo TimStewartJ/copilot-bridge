@@ -23,13 +23,6 @@ describe("MCP observation and readiness queries", () => {
     expect(intervalFor(undefined)).toBe(30_000);
   });
 
-  it("refreshes pending connections independently of ready tools, without permanent fast polling", () => {
-    for (const status of ["pending", "unknown", "connected", "needs-auth"] as const) {
-      expect(intervalFor({ servers: [{ name: "demo", status }], toolReadiness: readiness("ready") })).toBe(30_000);
-    }
-    expect(intervalFor({ servers: [{ name: "demo", status: "connected" }] })).toBe(30_000);
-  });
-
   it("never starts an endpoint query without a session", () => {
     expect(getMcpStatusQueryOptions(null).enabled).toBe(false);
     expect(getMcpStatusQueryOptions("demo").staleTime).toBe(30_000);

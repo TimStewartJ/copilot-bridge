@@ -20,10 +20,11 @@ afterEach(() => {
 describe("chat cache", () => {
   it("hands out its own list of a cached window and evicts least-recently-used sessions", () => {
     const client = new QueryClient();
-    for (let index = 0; index < 6; index += 1) {
+    const entries = Array.from({ length: 6 }, (_, index) => message(`entry-${index}`));
+    for (let index = 0; index < entries.length; index += 1) {
       setCachedChatSnapshot(client, {
         sessionId: `session-${index}`,
-        entries: [message(`entry-${index}`)],
+        entries: [entries[index]],
         firstItemIndex: 0,
         fetchedAt: index,
       });
@@ -31,7 +32,7 @@ describe("chat cache", () => {
 
     expect(getCachedChatSnapshot(client, "session-0")).toBeUndefined();
     const snapshot = getCachedChatSnapshot(client, "session-5");
-    expect(snapshot?.entries).toEqual([message("entry-5")]);
+    expect(snapshot?.entries[0]).toBe(entries[5]);
     snapshot!.entries[0] = message("mutated");
     expect(getCachedChatSnapshot(client, "session-5")?.entries).toEqual([message("entry-5")]);
   });
@@ -70,14 +71,6 @@ describe("chat cache", () => {
     expect(snapshot?.entries[0]).toEqual(message("entry-100"));
     expect(snapshot?.firstItemIndex).toBe(100);
   });
-
-  it("returns the entries it was given, so a revisit and the read behind it can be compared", () => {
-    const client = new QueryClient();
-    const entry = message("entry-0");
-    setCachedChatSnapshot(client, { sessionId: "session-1", entries: [entry], firstItemIndex: 0, fetchedAt: 1 });
-
-    expect(getCachedChatSnapshot(client, "session-1")?.entries[0]).toBe(entry);
-  });
 });
 
 describe("keepLoadedEntries", () => {
@@ -111,24 +104,6 @@ describe("keepLoadedEntries", () => {
 });
 
 describe("replaceHistoryWindow", () => {
-  it("replaces the loaded window wholesale when the refreshed window covers it", () => {
-    const result = replaceHistoryWindow(
-      [message("entry-0"), message("entry-1"), message("entry-2")],
-      0,
-      [message("entry-0"), message("entry-1"), message("entry-2"), message("entry-3")],
-      4,
-    );
-
-    expect(result.firstItemIndex).toBe(0);
-    expect(result.entries.map((entry) => entry.id)).toEqual([
-      "entry-0",
-      "entry-1",
-      "entry-2",
-      "entry-3",
-    ]);
-    expect(result.hasGap).toBe(false);
-  });
-
   it("keeps the paginated prefix when the refreshed window starts later", () => {
     const result = replaceHistoryWindow(
       [message("entry-0"), message("entry-1"), message("entry-2")],
@@ -162,10 +137,12 @@ describe("replaceHistoryWindow", () => {
     const result = replaceHistoryWindow(
       [message("entry-0"), { id: "local-1", role: "user", content: "Retry me" }],
       0,
-      [message("entry-0"), message("entry-1")],
-      2,
+      [message("entry-0"), message("entry-1"), message("entry-2")],
+      3,
     );
 
-    expect(result.entries.map((entry) => entry.id)).toEqual(["entry-0", "entry-1"]);
+    expect(result.firstItemIndex).toBe(0);
+    expect(result.hasGap).toBe(false);
+    expect(result.entries.map((entry) => entry.id)).toEqual(["entry-0", "entry-1", "entry-2"]);
   });
 });

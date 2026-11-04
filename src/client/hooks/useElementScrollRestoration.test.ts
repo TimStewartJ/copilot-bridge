@@ -214,27 +214,6 @@ describe("useElementScrollRestoration", () => {
     }
   });
 
-  it("saves on unmount and restores on remount with the same key", async () => {
-    const renderer = await createHookRenderer();
-    const source = createScrollElement();
-    const target = createScrollElement();
-    const key = "hook-unmount-remount";
-
-    try {
-      await renderer.render([{ id: "source", element: source, restorationKey: key }]);
-      await runPendingTimers(renderer);
-
-      source.scrollTop = 86;
-      await renderer.render([]);
-
-      await renderer.render([{ id: "target", element: target, restorationKey: key }]);
-
-      expect(target.scrollTop).toBe(86);
-    } finally {
-      await renderer.cleanup();
-    }
-  });
-
   it("saves the old key and restores the new key when the key changes while mounted", async () => {
     const renderer = await createHookRenderer();
     const seeded = createScrollElement();
@@ -372,5 +351,4 @@ describe("useElementScrollRestoration", () => {
       }
     },
   );
-
 });

@@ -118,12 +118,15 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
 
     await getHarness().act(async () => {
-      await result?.startBackgroundVoiceJob({
+      expect(await result?.startBackgroundVoiceJob({
         composerKey: "session-1",
         audio,
         submitMode: "autosend",
-      });
+        sendMode: "autopilot",
+      })).toBe("autosend");
     });
+    expect(createVoiceJobMock.mock.calls[0][0]).toMatchObject({ composerKey: "session-1", mode: "autopilot" });
+    expect(await getPendingVoiceRecording("session-1")).toMatchObject({ sendMode: "autopilot" });
 
     await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
     expect(result?.getJobForComposer("session-1")).toMatchObject({
@@ -153,35 +156,8 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "accepted");
     expect(createVoiceJobMock).toHaveBeenCalledTimes(2);
     expect(createVoiceJobMock.mock.calls[1][1]).toBe(audio);
-    expect(transcribeAudioMock).not.toHaveBeenCalled();
-  });
-
-  it("sends an Autopilot recording with its mode and keeps the mode through a retry", async () => {
-    const audio = new Blob(["voice"], { type: "audio/wav" });
-    createVoiceJobMock.mockRejectedValueOnce(new Error("Network timeout"));
-
-    let delivered: Awaited<ReturnType<UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"]>> | undefined;
-    await getHarness().act(async () => {
-      delivered = await result?.startBackgroundVoiceJob({
-        composerKey: "session-1",
-        audio,
-        submitMode: "autosend",
-        sendMode: "autopilot",
-      });
-    });
-
-    expect(delivered).toBe("autosend");
-    expect(createVoiceJobMock.mock.calls[0][0]).toMatchObject({ composerKey: "session-1", mode: "autopilot" });
-    expect(await getPendingVoiceRecording("session-1")).toMatchObject({ sendMode: "autopilot" });
-    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
-    expect(result?.getJobForComposer("session-1")).toMatchObject({ sendMode: "autopilot", retryable: true });
-
-    createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
-    await getHarness().act(async () => {
-      result?.retryVoiceJobUpload("session-1");
-    });
-    await waitUntilAct(getHarness().act, () => createVoiceJobMock.mock.calls.length === 2);
     expect(createVoiceJobMock.mock.calls[1][0]).toMatchObject({ composerKey: "session-1", mode: "autopilot" });
+    expect(transcribeAudioMock).not.toHaveBeenCalled();
   });
 
   it("drops the send mode when a recording is put in the composer instead of sent", async () => {
@@ -690,6 +666,8 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
     await renderWithActiveComposer("session-1");
     await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.retryable === true);
 
+    expect(result?.getJobForComposer("session-1")?.status).toBe("error");
+    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
     fetchVoiceJobMock.mockRejectedValue(new Error("Failed to fetch"));
     await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
@@ -742,23 +720,6 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
     expect(markVoiceJobRecoveredMock).toHaveBeenCalledExactlyOnceWith("voice-job-1");
   });
 
-  it("keeps a locally stored recording retryable when its server job failed without a transcript", async () => {
-    await savePendingVoiceRecording({
-      composerKey: "session-1",
-      recordingId: "rec-3",
-      submitMode: "autosend",
-      audio: new TextEncoder().encode("voice").buffer as ArrayBuffer,
-      mimeType: "audio/wav",
-    });
-    await patchPendingVoiceRecording("session-1", "rec-3", { serverJobId: "voice-job-1" });
-    fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ status: "error" }));
-
-    await renderWithActiveComposer("session-1");
-
-    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "error");
-    expect(result?.getJobForComposer("session-1")?.retryable).toBe(true);
-    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
-  });
   it("retires a failed server job without a transcript when its error is dismissed", async () => {
     fetchLatestVoiceJobMock.mockResolvedValue(voiceJobSnapshot({
       status: "error",

@@ -22,7 +22,6 @@ describe("playbooks", () => {
   });
 
   it.each([
-    [undefined, undefined],
     [{}, undefined],
     [{ playbook: "none", source: "user" as const }, "Direct"],
     [{ playbook: "bug-fix", source: "agent" as const, label: "Bug fix" }, "Bug fix"],

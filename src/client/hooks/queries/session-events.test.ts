@@ -82,23 +82,26 @@ describe("session event projection", () => {
   });
 
   it.each([
-    [{ type: "session:busy", sessionId: "one" }, { runState: "busy" }],
-    [{ type: "session:stalled", sessionId: "one" }, { runState: "stalled" }],
-    [{ type: "session:idle", sessionId: "one" }, { runState: "idle", intentText: null }],
+    [{ type: "session:busy", sessionId: "one" }, { runState: "busy" }, true],
+    [{ type: "session:stalled", sessionId: "one" }, { runState: "stalled" }, true],
+    [{ type: "session:idle", sessionId: "one" }, { runState: "idle", intentText: null }, true],
     [{ type: "session:mode", sessionId: "one", agentMode: "autopilot" }, { agentMode: "autopilot" }],
     [{ type: "session:mode", sessionId: "one", agentMode: "interactive" }, { agentMode: null }],
     [{ type: "session:intent", sessionId: "one", intent: "Working" }, { intentText: "Working" }],
     [{ type: "session:intent", sessionId: "one" }, { intentText: null }],
-    [{ type: "session:title", sessionId: "one", title: "Renamed" }, { summary: "Renamed" }],
+    [{ type: "session:title", sessionId: "one", title: "Renamed" }, { summary: "Renamed" }, true],
     [{ type: "session:user-input", sessionId: "one", pendingUserInputCount: 2 },
-      { pendingUserInputCount: 2, needsUserInput: true }],
+      { pendingUserInputCount: 2, needsUserInput: true }, true],
     [{ type: "session:user-input", sessionId: "one" },
-      { pendingUserInputCount: 0, needsUserInput: false }],
+      { pendingUserInputCount: 0, needsUserInput: false }, true],
     [{ type: "session:agents", sessionId: "one", backgroundAgents: emptyBackgroundAgentsSummary() },
       { backgroundAgents: emptyBackgroundAgentsSummary() }],
-  ] satisfies [StatusEvent, Partial<Session>][])("patches the same session in every cache: %j", (event, patch) => {
-    const { queryClient, project, activeKey, allKey, pagesKey } = fixture();
+  ] satisfies [StatusEvent, Partial<Session>, boolean?][])("patches the same session in every cache: %j", (event, patch, refreshesHelm?: boolean) => {
+    const { queryClient, project, effects, activeKey, allKey, pagesKey } = fixture();
+    effects.isHelmSession.mockReturnValue(true);
     expect(project(event)).toBe(true);
+    const invalidation = expect(effects.queries.invalidateQueries);
+    (refreshesHelm ? invalidation : invalidation.not).toHaveBeenCalledWith({ queryKey: helmStateQueryKey });
     for (const key of [activeKey, allKey]) {
       expect(queryClient.getQueryData<Session[]>(key)?.[0]).toMatchObject(patch);
       expect(queryClient.getQueryData<Session[]>(key)?.[1]).toMatchObject({ sessionId: "two", runState: "idle" });
@@ -130,15 +133,6 @@ describe("session event projection", () => {
     });
     project({ type: "session:playbook", sessionId: "one", playbook: {} });
     expect(queryClient.getQueryData(key)).toEqual({ model: "gpt-5.6", source: "live" });
-  });
-
-  it.each(["session:title", "session:busy", "session:stalled", "session:user-input", "session:idle"] as const)("refreshes Helm when its conversation changes: %s", (type) => {
-    const { project, effects } = fixture();
-    effects.isHelmSession.mockReturnValue(true);
-    project(type === "session:title"
-      ? { type, sessionId: "one", title: "Renamed" }
-      : { type, sessionId: "one" });
-    expect(effects.queries.invalidateQueries).toHaveBeenCalledWith({ queryKey: helmStateQueryKey });
   });
 
   it("applies bulk archive changes once and refreshes all affected query families", () => {

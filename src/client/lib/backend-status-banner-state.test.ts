@@ -26,21 +26,6 @@ function status(overrides: Partial<AgentBackendStatus>): AgentBackendStatus {
 }
 
 describe("backend status banner state", () => {
-  it("shows reconnecting as a warning", () => {
-    const next = reduceBackendStatusBannerState(createBackendStatusBannerState(), {
-      type: "backend:status",
-      agentBackend: status({
-        state: "reconnecting",
-        lastDisconnect: { at: "2026-08-24T22:10:00.000Z", reason: "stdio closed" },
-        disconnectCount: 1,
-      }),
-      nowMs: Date.parse("2026-08-24T22:10:01.000Z"),
-    });
-
-    expect(next.banner?.variant).toBe("warning");
-    expect(next.banner?.status.state).toBe("reconnecting");
-  });
-
   it("shows disconnected as an error", () => {
     const next = reduceBackendStatusBannerState(createBackendStatusBannerState(), {
       type: "backend:status",
@@ -90,6 +75,7 @@ describe("backend status banner state", () => {
       agentBackend: reconnecting,
       nowMs: Date.parse("2026-08-24T22:10:01.000Z"),
     });
+    expect(shown.banner).toMatchObject({ variant: "warning", status: { state: "reconnecting" } });
     const dismissed = reduceBackendStatusBannerState(shown, { type: "dismiss" });
     const sameEvent = reduceBackendStatusBannerState(dismissed, {
       type: "backend:status",

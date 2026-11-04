@@ -460,15 +460,6 @@ describe("kind-aware task UI", () => {
     expect(html).toContain("No fixed finish line.");
     expect(html).not.toContain("Candidate to close");
   });
-
-  it("TaskDashboard surfaces readiness intelligence for one-off tasks", () => {
-    const html = renderTaskDashboard(createTask({ kind: "task" }));
-
-    expect(html).toContain("Completion checks");
-    expect(html).toContain("Completion checks clear");
-    expect(html).not.toContain("Ready with a missing finish line");
-    expect(html).not.toContain("Candidate to close");
-  });
 });
 
 describe("TaskDashboard unique overview", () => {

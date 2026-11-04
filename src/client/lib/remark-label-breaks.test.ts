@@ -16,7 +16,7 @@ function shape(node: Paragraph): string[] {
 
 describe("applyLabelBreaks", () => {
   it("puts each bold label of a metadata block on its own line", () => {
-    const node = paragraph(strong("Status:"), text(" shipped\n"), strong("Repo:"), text(" E:\\project\n"), strong("Owner:"), text(" Tim"));
+    const node = paragraph(strong("Status:"), text(" shipped\r\n"), strong("Repo:"), text(" E:\\project\n"), strong("Owner:"), text(" Tim"));
     applyLabelBreaks(node);
     expect(shape(node)).toEqual([
       "strong:Status:", "text: shipped", "break", "strong:Repo:", "text: E:\\project", "break", "strong:Owner:", "text: Tim",
@@ -39,11 +39,5 @@ describe("applyLabelBreaks", () => {
     const node = paragraph({ type: "inlineCode", value: "x" }, text("\n"), strong("Next:"), text(" y"));
     applyLabelBreaks(node);
     expect(shape(node)).toEqual(["inlineCode", "break", "strong:Next:", "text: y"]);
-  });
-
-  it("handles Windows line endings", () => {
-    const node = paragraph(text("first\r\n"), strong("Label:"), text(" value"));
-    applyLabelBreaks(node);
-    expect(shape(node)).toEqual(["text:first", "break", "strong:Label:", "text: value"]);
   });
 });

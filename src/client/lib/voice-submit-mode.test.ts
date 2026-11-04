@@ -1,26 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  canAutoSendVoiceTranscript,
   resolveVoiceSubmitMode,
   resolveVoiceSubmitModeAfterRecording,
 } from "./voice-submit-mode";
 
 describe("voice submit mode helpers", () => {
-  it("auto-sends only from an empty, sendable composer", () => {
-    expect(canAutoSendVoiceTranscript({
-      text: "   ",
-      attachmentCount: 0,
-      sendBlocked: false,
-      uploadingCount: 0,
-    })).toBe(true);
-    expect(resolveVoiceSubmitMode({
-      text: "",
-      attachmentCount: 0,
-      sendBlocked: false,
-      uploadingCount: 0,
-    })).toBe("autosend");
-  });
-
   it("falls back to review mode when text, attachments, or blocking state are present", () => {
     expect(resolveVoiceSubmitMode({
       text: "draft",
@@ -50,7 +34,7 @@ describe("voice submit mode helpers", () => {
 
   it("requires both the recording start and stop states to qualify for auto-send", () => {
     expect(resolveVoiceSubmitModeAfterRecording("autosend", {
-      text: "",
+      text: "   ",
       attachmentCount: 0,
       sendBlocked: false,
       uploadingCount: 0,
@@ -76,14 +60,6 @@ describe("voice submit mode helpers", () => {
 import { resolveBackgroundVoiceSubmitMode } from "./background-voice-delivery";
 
 describe("background voice delivery", () => {
-  it("keeps auto-send only when the target is still empty and idle", () => {
-    expect(resolveBackgroundVoiceSubmitMode({
-      submitMode: "autosend",
-      hasDraftContent: false,
-      targetBusy: false,
-    })).toBe("autosend");
-  });
-
   it("downgrades auto-send when the target gains draft content or becomes busy", () => {
     expect(resolveBackgroundVoiceSubmitMode({
       submitMode: "autosend",

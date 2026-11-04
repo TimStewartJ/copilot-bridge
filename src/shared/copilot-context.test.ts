@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   getContextPromptTokensForTier,
-  getContextTierLabel,
   modelSupportsLongContext,
   resolveContextTierForModel,
 } from "./copilot-context.js";
@@ -26,13 +25,6 @@ const TIERED_MODEL = {
 };
 
 describe("copilot context tiers", () => {
-  it("uses advertised prompt budgets for tier labels without reserving output", () => {
-    expect(getContextPromptTokensForTier(TIERED_MODEL, "default")).toBe(272_000);
-    expect(getContextPromptTokensForTier(TIERED_MODEL, "long_context")).toBe(922_000);
-    expect(getContextTierLabel(TIERED_MODEL, "default")).toBe("Standard context (272K)");
-    expect(getContextTierLabel(TIERED_MODEL, "long_context")).toBe("Long context (922K)");
-  });
-
   it("prefers canonical prompt budgets over the legacy catalog alias", () => {
     const model = {
       ...TIERED_MODEL,
@@ -43,16 +35,6 @@ describe("copilot context tiers", () => {
           longContext: { maxPromptTokens: 1_000_000, contextMax: 968_000 },
         },
       },
-    };
-    expect(modelSupportsLongContext(model)).toBe(true);
-    expect(getContextPromptTokensForTier(model, "default")).toBe(200_000);
-    expect(getContextPromptTokensForTier(model, "long_context")).toBe(1_000_000);
-  });
-
-  it("still reads legacy catalog prompt budgets", () => {
-    const model = {
-      id: "legacy-model",
-      billing: { tokenPrices: { contextMax: 200_000, longContext: { contextMax: 1_000_000 } } },
     };
     expect(modelSupportsLongContext(model)).toBe(true);
     expect(getContextPromptTokensForTier(model, "default")).toBe(200_000);

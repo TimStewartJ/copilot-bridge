@@ -22,20 +22,13 @@ describe("makeMermaidSvgResponsive", () => {
     expect(responsive).not.toContain('height="180"');
   });
 
-  it("preserves existing svg styles while appending responsive sizing", () => {
-    const svg = '<svg style="max-width: 320px;" width="320" height="100"><g /></svg>';
-    const responsive = makeMermaidSvgResponsive(svg);
-
-    expect(responsive).toContain('style="max-width: 320px; width: 100%; max-width: 100%; height: auto;"');
-  });
-
   it("keeps fixed dimensions when an svg has no viewBox to preserve aspect ratio", () => {
-    const svg = '<svg width="320" height="100"><g /></svg>';
+    const svg = '<svg style="max-width: 320px;" width="320" height="100"><g /></svg>';
     const responsive = makeMermaidSvgResponsive(svg);
 
     expect(responsive).toContain('width="320"');
     expect(responsive).toContain('height="100"');
-    expect(responsive).toContain('style="width: 100%; max-width: 100%; height: auto;"');
+    expect(responsive).toContain('style="max-width: 320px; width: 100%; max-width: 100%; height: auto;"');
   });
 
   it("focus mode scales viewBox SVGs against both available axes", () => {

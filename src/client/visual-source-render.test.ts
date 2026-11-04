@@ -81,29 +81,13 @@ describe("useVisualSource", () => {
     await waitUntilAct(harness!.act, () => renders.at(-1)?.source === SPEC, { label: "source loaded" });
     expect(renders.every((state) => state.loading || state.error !== null || state.source !== "")).toBe(true);
   });
-
-  it("starts from a source another view already fetched", async () => {
-    const { fetchMock, respond } = deferredFetch();
-    const visual = chart();
-
-    await harness!.render(createElement(SourceProbe, { visual, key: "inline" }));
-    await harness!.act(async () => {
-      respond(SPEC);
-    });
-    await waitUntilAct(harness!.act, () => renders.at(-1)?.source === SPEC, { label: "inline source loaded" });
-
-    const firstExpandedRender = renders.length;
-    await harness!.render(createElement(SourceProbe, { visual, key: "expanded" }));
-    expect(renders[firstExpandedRender]).toEqual({ source: SPEC, loading: false, error: null });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("VegaLiteVisual", () => {
   const viewport = { width: 800, height: 600 };
 
   it("draws at once in the expanded view when the source is already fetched", async () => {
-    const { respond } = deferredFetch();
+    const { fetchMock, respond } = deferredFetch();
     const visual = chart();
     await harness!.render(createElement(SourceProbe, { visual }));
     await harness!.act(async () => {
@@ -113,6 +97,7 @@ describe("VegaLiteVisual", () => {
 
     await harness!.render(createElement(VegaLiteVisual, { visual, mode: "focus", viewport }));
     await waitUntilAct(harness!.act, () => embedCalls.length === 1, { label: "chart drawn" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(harness!.dom.container.textContent).not.toContain("render error");
   });
 

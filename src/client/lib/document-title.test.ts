@@ -7,12 +7,8 @@ function titleForPath(pathname: string) {
 }
 
 describe("dashboard document titles", () => {
-  it.each([
-    "/dashboard/home",
-    "/dashboard",
-    "/dashboard/checklist",
-  ])("labels dashboard route %s as Home", (pathname) => {
-    expect(titleForPath(pathname)).toBe("Home - Copilot Bridge");
+  it("labels dashboard route /dashboard/home as Home", () => {
+    expect(titleForPath("/dashboard/home")).toBe("Home - Copilot Bridge");
   });
 
   it("keeps Work Map labeled separately", () => {

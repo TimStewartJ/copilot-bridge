@@ -48,30 +48,12 @@ describe("telemetry-batcher", () => {
     expect(batcher.getPendingCount()).toBe(0);
   });
 
-  it("uses sendBeacon on pagehide-style flushes", () => {
-    const fetchFn = vi.fn().mockResolvedValue({ ok: true });
+  it("drains multiple batches with sendBeacon during unload", () => {
     const sendBeacon = vi.fn().mockReturnValue(true);
+    const fetchFn = vi.fn().mockResolvedValue({ ok: true });
     const batcher = createTelemetryBatcher({
       apiBase: "/base",
       fetchFn,
-      navigator: { sendBeacon },
-      document: { addEventListener() {}, removeEventListener() {}, visibilityState: "visible" },
-      window: { addEventListener() {}, removeEventListener() {} },
-    });
-
-    batcher.enqueue({ name: "hidden", duration: 7 });
-    batcher.flushSync();
-
-    expect(sendBeacon).toHaveBeenCalledTimes(1);
-    expect(fetchFn).not.toHaveBeenCalled();
-    expect(batcher.getPendingCount()).toBe(0);
-  });
-
-  it("drains multiple batches with sendBeacon during unload", () => {
-    const sendBeacon = vi.fn().mockReturnValue(true);
-    const batcher = createTelemetryBatcher({
-      apiBase: "/base",
-      fetchFn: vi.fn().mockResolvedValue({ ok: true }),
       navigator: { sendBeacon },
       maxBatchSize: 2,
       document: { addEventListener() {}, removeEventListener() {}, visibilityState: "visible" },
@@ -86,6 +68,7 @@ describe("telemetry-batcher", () => {
     batcher.flushSync();
 
     expect(sendBeacon).toHaveBeenCalledTimes(3);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(batcher.getPendingCount()).toBe(0);
   });
 

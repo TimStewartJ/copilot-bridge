@@ -53,20 +53,9 @@ describe("useModelPresets", () => {
     return null;
   }
 
-  it("reads remembered presets, last slot, and the global default", async () => {
-    await harness!.render(createElement(TestComponent));
-
-    expect(memory?.presets).toEqual({
-      preset1: { model: "gpt-5.6" },
-      preset2: { model: "claude-opus-5", reasoningEffort: "high", contextTier: "long_context" },
-    });
-    expect(memory?.lastPresetSlot).toBe("preset1");
-    expect(memory?.globalDefaultModelId).toBe("gpt-5.6");
-    expect(memory?.loading).toBe(false);
-  });
-
   it("resolves preset tiles and restores the selected slot settings", async () => {
     await harness!.render(createElement(TestComponent));
+    expect(memory).toMatchObject({ lastPresetSlot: "preset1", globalDefaultModelId: "gpt-5.6", loading: false });
 
     const state = memory!.resolvePickerState({
       models: MODELS,

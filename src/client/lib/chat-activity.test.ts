@@ -53,12 +53,15 @@ describe("groupActivitySegments", () => {
     const blocks = blocksOf([
       { role: "user", content: "Go" },
       tool("read", "turn-a"),
+      tool("ask_user", "turn-b", { args: question }),
       tool("ask_user", "turn-b", { args: question, success: true, completedAt: at(30), result: "User responded:\npick: a" }),
       tool("edit", "turn-c"),
     ]);
 
     expect(blocks.map((block) => block.type)).toEqual(["message", "activity", "question", "activity"]);
-    expect(blocks[2]).toMatchObject({ type: "question", key: "question:ask_user-call" });
+    expect(blocks[2]).toMatchObject({
+      type: "question", key: "question:ask_user-call", toolCall: { result: "User responded:\npick: a" },
+    });
     expect(activity(blocks)[1]?.steps).toMatchObject([{ kind: "tools", entries: [{ id: "edit" }] }]);
   });
 
@@ -68,17 +71,6 @@ describe("groupActivitySegments", () => {
     expect(groupActivitySegments(segmentChatEntries(entries)).map((block) => block.type)).toEqual(["activity"]);
     expect(groupActivitySegments(segmentChatEntries(entries), { includeUnfinishedQuestions: true }).map((block) => block.type))
       .toEqual(["question"]);
-  });
-
-  it("uses the completed copy of a question that appears twice and shows it once", () => {
-    const args = { message: "Which one?" };
-    const blocks = blocksOf([
-      { ...tool("ask_user", "turn-a", { args }), id: "start" },
-      { ...tool("ask_user", "turn-a", { args, success: true, result: "User responded: this one" }), id: "done" },
-    ]);
-
-    expect(blocks.map((block) => block.type)).toEqual(["question"]);
-    expect(blocks[0]).toMatchObject({ toolCall: { result: "User responded: this one" } });
   });
 
   it("leaves a question a sub-agent asked inside its agent", () => {
@@ -136,6 +128,7 @@ describe("groupActivitySegments", () => {
     ]);
 
     expect(blocks.map((block) => block.type)).toEqual(["activity", "message", "activity", "completion-segment"]);
+    expect(activity(blocks).map((block) => block.key)).toEqual(["activity:turn-a:0", "activity:turn-a:1"]);
   });
 
   it("keys a block by the turn that opened it, identically for live and committed entries", () => {
@@ -152,26 +145,12 @@ describe("groupActivitySegments", () => {
     expect(committed[0]?.key).toBe(live[0]?.key);
   });
 
-  it("numbers the blocks one turn opens so their keys stay unique", () => {
-    const blocks = activity(blocksOf([
-      thought("t1", "turn-a"),
-      { role: "assistant", content: "Narration", turnInstanceId: "turn-a" },
-      tool("read", "turn-a"),
-    ]));
-
-    expect(blocks.map((block) => block.key)).toEqual(["activity:turn-a:0", "activity:turn-a:1"]);
-  });
-
   it("falls back to entry identity for logs that carry no turn ids", () => {
     const blocks = activity(blocksOf([
       { id: "tool-1", type: "tool", toolCall: { toolCallId: "call-1", name: "bash" } },
     ]));
 
     expect(blocks[0]?.key).toBe("activity:call-1:0");
-  });
-
-  it("drops blank thinking instead of rendering an empty step", () => {
-    expect(blocksOf([thought("blank", "turn-a", { content: "  \n" })])).toEqual([]);
   });
 });
 
@@ -228,22 +207,13 @@ describe("agents in a stretch of work", () => {
     ]));
 
     expect(blocks).toHaveLength(2);
+    expect(blocks[1]?.key).toBe("activity:moves-2-call:0");
     // The stretch after the reply: each agent once, where it first acted, around the main agent's call.
     expect(blocks[1]?.steps).toMatchObject([
       { kind: "agent", agentToolCallId: "moves-call", entries: [{ id: "moves-2" }, { id: "moves-3" }] },
       { kind: "agent", agentToolCallId: "saves-call", entries: [{ id: "saves-1" }, { id: "saves-2" }] },
       { kind: "tools", entries: [{ id: "read_agent" }] },
     ]);
-  });
-
-  it("keys a stretch that opens with an agent's step by that step, so it stays put as history loads", () => {
-    const blocks = activity(blocksOf([
-      { role: "assistant", content: "Waiting on the agents." },
-      agentCall("moves-7", "moves"),
-      agentCall("moves-8", "moves"),
-    ]));
-
-    expect(blocks[0]?.key).toBe("activity:moves-7-call:0");
   });
 
   it("follows an agent another agent launched up to the one the main agent launched", () => {

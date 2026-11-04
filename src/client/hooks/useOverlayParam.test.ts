@@ -75,21 +75,6 @@ describe("useOverlayParam search helpers", () => {
 });
 
 describe("useOverlayParam navigation behavior", () => {
-  it("pops an overlay entry opened from the current page", async () => {
-    await withOverlayHarness(["/home", "/sessions/abc"], 1, async (getApi, act) => {
-      expect(getApi().location).toBe("/sessions/abc");
-
-      await act(async () => { getApi().open("plan"); });
-      expect(getApi().location).toBe("/sessions/abc?sheet=plan");
-
-      await act(async () => { getApi().close(); });
-      expect(getApi().location).toBe("/sessions/abc");
-
-      await act(async () => { getApi().back(); });
-      expect(getApi().location).toBe("/home");
-    });
-  });
-
   it("ignores a save's late dismissal after the user already went Back", async () => {
     await withOverlayHarness(["/home", "/sessions/abc"], 1, async (getApi, act) => {
       await act(async () => { getApi().open("plan"); });

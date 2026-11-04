@@ -30,20 +30,6 @@ describe("useBrowserLive", () => {
     return { network, harness };
   }
 
-  it("connects on mount and shows what the server reports", async () => {
-    const { network, harness } = await mount();
-    expect(network.ticketRequests).toEqual(["bs_ab12cd34"]);
-    expect(harness.dom.container.textContent).toBe("connecting||");
-
-    await harness.act(async () => {
-      network.latestSocket().open();
-      network.latestSocket().receive({ type: "viewport", width: 945, height: 917 });
-      network.latestSocket().receive({ type: "url", url: "https://example.com/" });
-    });
-    expect(harness.dom.container.textContent).toBe("live|https://example.com/|");
-    expect(seen?.state.viewport).toEqual({ width: 945, height: 917 });
-  });
-
   it("closes the connection on unmount", async () => {
     const { network, harness } = await mount();
     const socket = network.latestSocket();

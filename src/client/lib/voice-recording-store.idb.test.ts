@@ -178,22 +178,8 @@ describe("voice recording store on IndexedDB", () => {
     __resetVoiceRecordingStoreForTests();
   });
 
-  it("reports a durable save and only resolves after the transaction commits", async () => {
-    const result = await savePendingVoiceRecording({
-      composerKey: "session-1",
-      recordingId: "rec-1",
-      submitMode: "autosend",
-      audio: new TextEncoder().encode("hello").buffer as ArrayBuffer,
-      mimeType: "audio/wav",
-    });
-
-    expect(result).toEqual({ durable: true });
-    expect(fake.commitObserved.commits).toBeGreaterThan(0);
-    expect(fake.data.get("pending-recordings")?.has("session-1")).toBe(true);
-  });
-
   it("survives an app restart that drops all in-memory state", async () => {
-    await savePendingVoiceRecording({
+    const saved = await savePendingVoiceRecording({
       composerKey: "session-1",
       recordingId: "rec-1",
       submitMode: "insert",
@@ -201,6 +187,8 @@ describe("voice recording store on IndexedDB", () => {
       mimeType: "audio/wav",
     });
 
+    expect(saved).toEqual({ durable: true });
+    expect(fake.commitObserved.commits).toBeGreaterThan(0);
     // Simulate a fresh page load: module caches cleared, browser storage intact.
     __resetVoiceRecordingStoreForTests();
 

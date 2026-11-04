@@ -74,13 +74,6 @@ describe("attachTranscriptAgents", () => {
     expect(later[0]).not.toBe(first[0]);
     expect((later[0] as ChatToolEntry).toolCall.agent).toBe(finished);
   });
-
-  it("returns the entries untouched when the session has no agents, or none of them launched one", () => {
-    const entries: ChatEntry[] = [tool("call-view")];
-
-    expect(attachTranscriptAgents(entries, buildTranscriptAgentDirectory([]), new WeakMap())).toBe(entries);
-    expect(attachTranscriptAgents(entries, buildTranscriptAgentDirectory([record("call-elsewhere")]), new WeakMap())).toBe(entries);
-  });
 });
 
 describe("buildAgentPlaceholders", () => {

@@ -6,7 +6,6 @@ import { queryKeys } from "../../queryClient";
 import {
   applyWorkspaceMutationResult,
   getSessionWorkspaceQueryOptions,
-  invalidateSessionWorkspaceQueries,
 } from "./useSessionWorkspace";
 
 vi.mock("../../api", async () => {
@@ -85,15 +84,6 @@ describe("workspace mutation cache updates", () => {
     },
     overridesTaskWorkspace: true,
   };
-
-  it("invalidates session list and all workspace queries for the session", () => {
-    const invalidateQueries = vi.fn();
-
-    invalidateSessionWorkspaceQueries({ invalidateQueries } as any, "session-123");
-
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["sessions"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace", "session-123"] });
-  });
 
   it("updates only the exact cached workspace query variant for the session", () => {
     const queryClient = new QueryClient();

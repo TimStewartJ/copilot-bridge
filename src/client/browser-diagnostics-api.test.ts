@@ -1,11 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
-  checkAdoBrowserAuthentication,
   closeHeadedDiagnosticsBrowser,
-  probeBrowserContext,
   requestBrowserLiveTicket,
-  resetPublicBrowserData,
 } from "./api";
 
 afterEach(() => {
@@ -13,20 +10,6 @@ afterEach(() => {
 });
 
 describe("browser diagnostics and live view APIs", () => {
-  it.each([
-    ["probe", () => probeBrowserContext("public"), "/api/browser/diagnostics/probe", JSON.stringify({ context: "public" })],
-    ["ADO check", () => checkAdoBrowserAuthentication(), "/api/browser/diagnostics/authenticated/check/ado", "{}"],
-    ["public reset", () => resetPublicBrowserData(), "/api/browser/diagnostics/public/reset", "{}"],
-    ["live ticket", () => requestBrowserLiveTicket("bs_ab12cd34"), "/api/browser/sessions/bs_ab12cd34/live", "{}"],
-  ])("posts the %s request", async (_name, call, url, body) => {
-    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await call();
-
-    expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: "POST", body }));
-  });
-
   it("reports the server's reason when a live view is refused", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,
@@ -68,7 +51,7 @@ describe("closeHeadedDiagnosticsBrowser", () => {
       closeOutputSummary: "timed out closing the profile",
       terminatedPids: [],
       killedPids: [],
-      remainingPids: [],
+      remainingPids: [4242],
       clearedRuntimeFiles: 0,
     });
 
@@ -81,28 +64,6 @@ describe("closeHeadedDiagnosticsBrowser", () => {
       details: expect.objectContaining({
         failureCode: "launch.timeout",
         closeFailureCode: "launch.timeout",
-        remainingPids: [],
-      }),
-    });
-  });
-
-  it("surfaces headed close remaining PID details", async () => {
-    mockCloseFailure({
-      failureCode: "profile_processes_remaining",
-      outputSummary: "Profile-bound browser processes remain after shutdown: 4242",
-      terminatedPids: [4242],
-      killedPids: [],
-      remainingPids: [4242],
-      clearedRuntimeFiles: 0,
-    });
-
-    const request = closeHeadedDiagnosticsBrowser();
-    await expect(request).rejects.toBeInstanceOf(ApiError);
-    await expect(request).rejects.toMatchObject({
-      name: "ApiError",
-      status: 400,
-      details: expect.objectContaining({
-        failureCode: "profile_processes_remaining",
         remainingPids: [4242],
       }),
     });

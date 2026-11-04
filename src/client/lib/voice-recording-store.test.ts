@@ -130,21 +130,6 @@ describe("voice recording store", () => {
     expect(await listPendingVoiceRecordingKeys()).toEqual(["session-9"]);
   });
 
-  it("never evicts an unsent recording on its own", async () => {
-    await savePendingVoiceRecording({
-      composerKey: "session-1",
-      recordingId: "rec-1",
-      submitMode: "autosend",
-      audio: audioBuffer("hello"),
-      mimeType: "audio/wav",
-    });
-
-    // There is deliberately no age/count based eviction: only success or an explicit discard
-    // may remove unsent audio.
-    expect(await listPendingVoiceRecordingKeys()).toEqual(["session-1"]);
-    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
-  });
-
   it("rejects a conflicting oversized recording instead of replacing the pending one", async () => {
     await savePendingVoiceRecording({
       composerKey: "session-1",

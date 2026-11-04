@@ -11,18 +11,6 @@ function createToolCall(toolCallId: string, partial: Partial<ToolCall> = {}): To
 }
 
 describe("tool call tree helpers", () => {
-  it("attaches children even when they arrive before their parent in the flat list", () => {
-    const { roots, nodesById } = buildToolCallForest([
-      createToolCall("child", { parentToolCallId: "parent" }),
-      createToolCall("parent", { isSubAgent: true }),
-    ]);
-
-    expect(roots).toHaveLength(1);
-    expect(roots[0]?.toolCall.toolCallId).toBe("parent");
-    expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["child"]);
-    expect(nodesById.get("child")?.rootToolCallId).toBe("parent");
-  });
-
   it("returns only running roots for the live track panel", () => {
     const { roots } = buildToolCallForest([
       createToolCall("running-parent", { isSubAgent: true }),
@@ -32,16 +20,17 @@ describe("tool call tree helpers", () => {
     expect(getActiveToolCallRoots(roots).map((root) => root.toolCall.toolCallId)).toEqual(["running-parent"]);
   });
 
-  it("keeps child tools under the correct root when multiple roots start before their children", () => {
-    const { roots } = buildToolCallForest([
+  it("keeps child tools under the correct root regardless of arrival order", () => {
+    const { roots, nodesById } = buildToolCallForest([
+      createToolCall("bash-1", { parentToolCallId: "subagent-1" }),
       createToolCall("subagent-1", { isSubAgent: true }),
       createToolCall("subagent-2", { isSubAgent: true }),
       createToolCall("subagent-3", { isSubAgent: true }),
-      createToolCall("bash-1", { parentToolCallId: "subagent-1" }),
       createToolCall("bash-2", { parentToolCallId: "subagent-2" }),
       createToolCall("bash-3", { parentToolCallId: "subagent-3" }),
     ]);
 
+    expect(nodesById.get("bash-1")?.rootToolCallId).toBe("subagent-1");
     expect(roots.map((root) => root.toolCall.toolCallId)).toEqual(["subagent-1", "subagent-2", "subagent-3"]);
     expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-1"]);
     expect(roots[1]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-2"]);
@@ -75,30 +64,6 @@ describe("tool call tree helpers", () => {
         { toolCall: { toolCallId: "bash-2" } },
       ],
     });
-  });
-
-  it("keeps completion entries as their own render segment", () => {
-    const entries: ChatEntry[] = [
-      { role: "assistant", content: "Starting work" },
-      {
-        id: "completion-1",
-        type: "completion",
-        content: "All done",
-        completion: {
-          content: "All done",
-          title: "Task complete",
-          status: "success",
-          sourceEventType: "session.task_complete",
-        },
-      },
-    ];
-
-    const segments = segmentChatEntries(entries);
-
-    expect(segments).toMatchObject([
-      { type: "message", entry: { content: "Starting work" } },
-      { type: "completion-segment", entry: { content: "All done" } },
-    ]);
   });
 
   it("gives the model's thinking its own segment, ahead of the tools it led to", () => {
@@ -444,27 +409,6 @@ describe("tool call tree helpers", () => {
     expect(roots[0]?.toolCall.result).toBe("Done");
   });
 
-  it("keeps parent context when a later tool segment only contains child rows", () => {
-    const allToolCalls = [
-      createToolCall("subagent-1", { isSubAgent: true }),
-      createToolCall("bash-1", { parentToolCallId: "subagent-1" }),
-      createToolCall("bash-2", { parentToolCallId: "subagent-1" }),
-    ];
-    const fullForest = buildToolCallForest(allToolCalls);
-    const laterSegment = [
-      { id: "tool-3", type: "tool", toolCall: createToolCall("bash-2", { parentToolCallId: "subagent-1" }) },
-    ] as const;
-
-    const roots = buildRenderableSegmentRoots([...laterSegment], fullForest);
-
-    expect(roots).toHaveLength(1);
-    expect(roots[0]?.toolCall.toolCallId).toBe("subagent-1");
-    expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-2"]);
-    // Cut down to this segment, the row still knows how many calls are loaded beneath it in all.
-    expect(roots[0]?.loadedChildCount).toBe(2);
-    expect(fullForest.nodesById.get("subagent-1")?.loadedChildCount).toBe(2);
-  });
-
   it("does not replay ancestor completion state when only a later child row is visible", () => {
     const fullForest = buildToolCallForest([
       createToolCall("subagent-1", {
@@ -533,6 +477,7 @@ describe("tool call tree helpers", () => {
       createToolCall("subagent-1", { isSubAgent: true }),
       createToolCall("bash-a", { parentToolCallId: "subagent-1" }),
       createToolCall("bash-b", { parentToolCallId: "subagent-1" }),
+      createToolCall("outside", { parentToolCallId: "subagent-1" }),
     ]);
 
     const roots = buildRenderableSegmentRoots([
@@ -541,7 +486,9 @@ describe("tool call tree helpers", () => {
     ], fullForest);
 
     expect(roots).toHaveLength(1);
+    expect(roots[0]).toMatchObject({ toolCall: { toolCallId: "subagent-1" }, loadedChildCount: 3 });
     expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-b", "bash-a"]);
+    expect(fullForest.nodesById.get("subagent-1")?.loadedChildCount).toBe(3);
   });
 });
 

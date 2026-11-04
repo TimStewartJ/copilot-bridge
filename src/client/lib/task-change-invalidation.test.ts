@@ -51,12 +51,15 @@ describe("createDeferredTaskChangeInvalidator", () => {
     const invalidator = createDeferredTaskChangeInvalidator({ invalidateQueries } as any);
 
     invalidator.beginTaskMutation();
+    invalidator.beginTaskMutation();
     invalidator.handleTaskChange("task-123");
     invalidator.handleTaskChange("task-123");
     invalidator.handleTaskChange();
 
     expect(invalidateQueries).not.toHaveBeenCalled();
 
+    invalidator.endTaskMutation();
+    expect(invalidateQueries).not.toHaveBeenCalled();
     invalidator.endTaskMutation();
 
     expect(invalidateQueries).toHaveBeenCalledTimes(7);
@@ -71,21 +74,5 @@ describe("createDeferredTaskChangeInvalidator", () => {
     expect(predicate).toBeTypeOf("function");
     expect(predicate?.({ queryKey: queryKeys.taskEnriched("task-123") })).toBe(true);
     expect(predicate?.({ queryKey: queryKeys.taskGitStatus("task-123") })).toBe(true);
-  });
-
-  it("waits for nested task mutations before flushing queued changes", () => {
-    const invalidateQueries = vi.fn();
-    const invalidator = createDeferredTaskChangeInvalidator({ invalidateQueries } as any);
-
-    invalidator.beginTaskMutation();
-    invalidator.beginTaskMutation();
-    invalidator.handleTaskChange("task-123");
-
-    invalidator.endTaskMutation();
-    expect(invalidateQueries).not.toHaveBeenCalled();
-
-    invalidator.endTaskMutation();
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.taskChecklistItems("task-123") });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace"] });
   });
 });

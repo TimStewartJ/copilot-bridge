@@ -118,7 +118,7 @@ describe("summarizeTaskTabAttention", () => {
 describe("summarizeChatTabAttention", () => {
   it("counts unread or needs-answer chats once while preserving attention exclusions", () => {
     const sessions = [
-      createSession({ sessionId: "chat-unread" }),
+      createSession({ sessionId: "chat-unread", lastVisibleActivityAt: "2026-04-17T16:00:00.000Z" }),
       createSession({
         sessionId: "chat-needs-answer",
         runState: "busy",
@@ -138,10 +138,9 @@ describe("summarizeChatTabAttention", () => {
       createSession({ sessionId: "chat-read" }),
     ];
 
-    const isUnread = (sessionId: string) => ![
-      "chat-needs-answer",
-      "chat-read",
-    ].includes(sessionId);
+    const isUnread = (sessionId: string, activityAt?: string) => sessionId === "chat-unread"
+      ? activityAt === "2026-04-17T16:00:00.000Z"
+      : !["chat-needs-answer", "chat-read"].includes(sessionId);
 
     expect(summarizeChatTabAttention(
       sessions,
@@ -150,21 +149,6 @@ describe("summarizeChatTabAttention", () => {
     )).toEqual({
       count: 3,
       needsUserInputCount: 2,
-    });
-  });
-
-  it("checks the latest visible activity timestamp", () => {
-    const session = createSession({
-      sessionId: "chat-visible-activity",
-      modifiedTime: "2026-04-17T14:00:00.000Z",
-      lastVisibleActivityAt: "2026-04-17T16:00:00.000Z",
-    });
-
-    expect(summarizeChatTabAttention([session], (_sessionId: string, modifiedTime?: string) => {
-      return modifiedTime === "2026-04-17T16:00:00.000Z";
-    })).toEqual({
-      count: 1,
-      needsUserInputCount: 0,
     });
   });
 });
@@ -184,34 +168,19 @@ describe("describeTabAttention", () => {
   });
 });
 
-
 describe("countTaskUnread", () => {
-  it("excludes stalled sessions from unread counts", () => {
-    const task = createTask({ activeSessionIds: ["idle-1", "stalled-1"] });
+  it("counts only idle unread chats other than the one being read", () => {
+    const task = createTask({ activeSessionIds: ["idle-1", "stalled-1", "needs-input", "open"] });
     const sessionMap = new Map<string, Session>([
       ["idle-1", createSession({ sessionId: "idle-1" })],
       ["stalled-1", createSession({ sessionId: "stalled-1", runState: "stalled" })],
+      ["needs-input", createSession({ sessionId: "needs-input", runState: "busy", needsUserInput: true })],
+      ["open", createSession({ sessionId: "open" })],
     ]);
 
-    const unread = countTaskUnread(task, sessionMap, (sessionId) => sessionId !== "stalled-1");
+    const unread = countTaskUnread(task, sessionMap, () => true, "open");
 
     expect(unread).toBe(1);
-  });
-
-  it("keeps pending user input out of mark-read counts", () => {
-    const task = createTask({ activeSessionIds: ["needs-answer"] });
-    const sessionMap = new Map<string, Session>([
-      ["needs-answer", createSession({
-        sessionId: "needs-answer",
-        runState: "busy",
-        needsUserInput: true,
-        pendingUserInputCount: 1,
-      })],
-    ]);
-
-    const unread = countTaskUnread(task, sessionMap, () => false, "needs-answer");
-
-    expect(unread).toBe(0);
   });
 });
 

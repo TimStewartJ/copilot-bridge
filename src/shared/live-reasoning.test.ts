@@ -20,23 +20,6 @@ function stream(blocks: LiveReasoningBlock[], reasoningId: string, ...chunks: st
 }
 
 describe("live reasoning fold", () => {
-  it("accumulates deltas into the block they name", () => {
-    const blocks = stream([], "r-1", "The scanner ", "counts entries.");
-
-    expect(blocks).toEqual([{ id: "r-1", content: "The scanner counts entries.", startedAt: T0 }]);
-  });
-
-  it("stamps a new block with the turn it belongs to", () => {
-    const blocks = appendReasoningDelta([], {
-      reasoningId: "r-1",
-      content: "Thinking",
-      turnId: "turn-1",
-      turnInstanceId: "turn-start-event",
-    });
-
-    expect(blocks[0]).toMatchObject({ turnId: "turn-1", turnInstanceId: "turn-start-event" });
-  });
-
   it("ignores an empty delta without allocating a new list", () => {
     const blocks = stream([], "r-1", "text");
 

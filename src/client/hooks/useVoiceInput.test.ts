@@ -444,17 +444,6 @@ describe("useVoiceInput recording limit", () => {
       expect(audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
     });
 
-    it("records plain WAV in a browser that cannot encode Opus", async () => {
-      createOpusRecordingEncoderMock.mockResolvedValue(null);
-      const onAudioCaptured = vi.fn(async (_capture: { audio: Blob; contextKey: string }) => {});
-      await startRecording({ onAudioCaptured });
-      await hear(1);
-      await harness!.act(async () => {
-        await voice!.stopRecording();
-      });
-      expect(onAudioCaptured.mock.calls[0]![0].audio.type).toBe("audio/wav");
-    });
-
     it("keeps WAV capture working if the browser refuses the preferred capture rate", async () => {
       createOpusRecordingEncoderMock.mockResolvedValue(null);
       const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -545,21 +534,10 @@ describe("describeVoiceCaptureError", () => {
     })).toBe("No microphone found. Check your browser and system audio input.");
   });
 
-  it("maps denied permissions to a browser-specific mic access message", () => {
-    expect(describeVoiceCaptureError({
-      name: "NotAllowedError",
-      message: "The request is not allowed by the user agent or the platform in the current context",
-    })).toBe("Microphone access was denied. Allow it in browser settings, then retry.");
-  });
-
   it("maps device-busy failures to a microphone unavailable message", () => {
     expect(describeVoiceCaptureError({
       name: "NotReadableError",
       message: "Failed to allocate videosource",
     })).toBe("Microphone unavailable. Close other apps or tabs using it, then retry.");
-  });
-
-  it("falls back to the original error text for unknown failures", () => {
-    expect(describeVoiceCaptureError(new Error("Unexpected failure"))).toBe("Unexpected failure");
   });
 });

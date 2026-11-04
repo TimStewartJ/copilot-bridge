@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RESPONSE_STYLE_GUIDANCE,
-  RESPONSE_DETAIL_OPTIONS,
   isResponseDetail,
   renderResponseStyle,
   resolveResponseStyle,
@@ -22,12 +21,12 @@ describe("response style", () => {
     });
   });
 
-  it.each(RESPONSE_DETAIL_OPTIONS)("renders one stable block for $value with user overrides and quality boundaries", ({ value }) => {
-    const settings = { detail: value, guidance: "Use short paragraphs." };
+  it("renders one stable block for 'adaptive' with user overrides and quality boundaries", () => {
+    const settings = { detail: "adaptive" as const, guidance: "Use short paragraphs." };
     const prompt = renderResponseStyle(settings);
     expect(prompt.match(/<response_style>/g)).toHaveLength(1);
     expect(prompt.match(/<\/response_style>/g)).toHaveLength(1);
-    expect(prompt).toContain(`Default detail: ${value}.`);
+    expect(prompt).toContain("Default detail: adaptive.");
     expect(prompt).toContain("Use short paragraphs.");
     expect(prompt).toContain("explicitly requested tone, detail, and format override these defaults");
     expect(prompt).toContain("Style never weakens response quality");
@@ -40,11 +39,8 @@ describe("response style", () => {
     expect(renderResponseStyle({ detail: "detailed", guidance: "" })).toContain("Honor explicit requests for a short answer");
   });
 
-  it.each([undefined, null, "brief", "Adaptive", "", 1])("rejects an unsupported detail value %s", (value) => {
-    expect(isResponseDetail(value)).toBe(false);
-  });
-
-  it.each(RESPONSE_DETAIL_OPTIONS)("recognizes the $value detail value", ({ value }) => {
-    expect(isResponseDetail(value)).toBe(true);
+  it("rejects an unsupported detail value Adaptive", () => {
+    expect(isResponseDetail("adaptive")).toBe(true);
+    expect(isResponseDetail("Adaptive")).toBe(false);
   });
 });

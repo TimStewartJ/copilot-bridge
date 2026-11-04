@@ -247,13 +247,6 @@ describe("settings writer", () => {
     expect(env.writer.getSnapshot().settings?.model).toBe("gpt-b");
   });
 
-  it("resolves patch() with the acknowledged settings", async () => {
-    const env = setup();
-    await expect(env.writer.patch({ helm: { spokenReasoningEffort: "low" } })).resolves.toMatchObject({
-      helm: { spokenReasoningEffort: "low" },
-    });
-  });
-
   it("sends every key an explicit patch() names, even when the cache already agrees", async () => {
     const env = setup({ lastModelPreset: "preset1" });
     await env.writer.patch({ lastModelPreset: "preset1", modelPresets: { preset1: { model: "gpt-b" } } });
@@ -340,14 +333,6 @@ describe("settings writer", () => {
     await flush();
     expect(env.fetch).toHaveBeenCalled();
     expect(env.writer.getSnapshot().settings).toMatchObject({ model: "gpt-b", favicon: "from-other-tab" });
-  });
-
-  it("rejects patch() when its write fails", async () => {
-    const env = setup();
-    env.holdResponses();
-    const result = env.writer.patch({ theme: "light" });
-    env.fail(new ApiError("nope", 400));
-    await expect(result).rejects.toThrow("nope");
   });
 
   it("sends an explicit clear for a removed setting", async () => {

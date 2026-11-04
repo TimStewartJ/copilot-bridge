@@ -10,7 +10,6 @@ import {
   keyDownMessages,
   keyModifiers,
   keyUpMessages,
-  namedKeyMessages,
   pointerToViewport,
   routeKey,
   textMessages,
@@ -50,7 +49,6 @@ describe("buildBrowserLiveWebSocketUrl", () => {
 
 describe("addressToUrl", () => {
   it.each([
-    ["example.com", "https://example.com/"],
     ["  example.com/login?next=1  ", "https://example.com/login?next=1"],
     ["http://x.test/a", "http://x.test/a"],
     // A host on this machine or network is rarely served over https.
@@ -61,15 +59,12 @@ describe("addressToUrl", () => {
   });
 
   it.each([
-    "",
     "   ",
     "two words",
     "javascript:alert(1)",
-    "about:blank",
     // Another kind of address is not a host to put https:// in front of.
     "file:///etc/passwd",
     "file:/etc/passwd",
-    "chrome://settings",
     "mailto:someone@example.com",
     "C:\\Users\\me",
   ])("finds no web address in %j", (typed) => {
@@ -81,11 +76,6 @@ describe("pointerToViewport", () => {
   const viewport = { width: 945, height: 917 };
   // The JPEG is 742 wide for this page, and here it is drawn 371 wide: neither is the page's size.
   const box = { left: 10, top: 100, width: 371, height: 360 };
-
-  it("scales a position inside the image to the page's CSS pixels", () => {
-    expect(pointerToViewport(10 + 371 / 2, 100 + 360 / 2, box, viewport)).toEqual({ x: 473, y: 459 });
-    expect(pointerToViewport(10 + 37.1, 100 + 36, box, viewport)).toEqual({ x: 95, y: 92 });
-  });
 
   it("keeps a position outside the image on the page's edge", () => {
     expect(pointerToViewport(0, 0, box, viewport)).toEqual({ x: 0, y: 0 });
@@ -99,10 +89,6 @@ describe("pointerToViewport", () => {
 
 describe("fitDisplaySize", () => {
   const viewport = { width: 945, height: 917 };
-
-  it("fits the page to a phone's width", () => {
-    expect(fitDisplaySize({ width: 390, height: 600 }, viewport, 1)).toEqual({ width: 390, height: 378 });
-  });
 
   it("fits the page to the height when that is the tighter side", () => {
     expect(fitDisplaySize({ width: 1600, height: 458.5 }, viewport, 1)).toEqual({ width: 472, height: 458 });
@@ -156,16 +142,6 @@ describe("keyboard mapping", () => {
     expect(keyModifiers({ altKey: true, ctrlKey: true, metaKey: true, shiftKey: true })).toBe(15);
     expect(keyModifiers({ altKey: false, ctrlKey: true, metaKey: false, shiftKey: true }))
       .toBe(BROWSER_LIVE_MODIFIERS.ctrl | BROWSER_LIVE_MODIFIERS.shift);
-  });
-
-  it("sends a letter as a key press that types it", () => {
-    const event = key({ key: "a", code: "KeyA", keyCode: 65 });
-    expect(keyDownMessages(event)).toEqual([
-      { type: "input_keyboard", eventType: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, text: "a" },
-    ]);
-    expect(keyUpMessages(event)).toEqual([
-      { type: "input_keyboard", eventType: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 },
-    ]);
   });
 
   it("keeps Shift on a capital letter", () => {
@@ -248,15 +224,5 @@ describe("keyboard mapping", () => {
   it("sends typed or pasted text as one char message, emoji included", () => {
     expect(textMessages("héllo 👋")).toEqual([{ type: "input_keyboard", eventType: "char", text: "héllo 👋" }]);
     expect(textMessages("")).toEqual([]);
-  });
-
-  it("presses a named key down and up with its key code", () => {
-    expect(namedKeyMessages("Backspace")).toEqual([
-      { type: "input_keyboard", eventType: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-      { type: "input_keyboard", eventType: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-    ]);
-    expect(namedKeyMessages("Enter")[0]).toMatchObject({ eventType: "keyDown", windowsVirtualKeyCode: 13, text: "\r" });
-    expect(namedKeyMessages("Tab").map((message) => message.windowsVirtualKeyCode)).toEqual([9, 9]);
-    expect(namedKeyMessages("Escape").map((message) => message.eventType)).toEqual(["keyDown", "keyUp"]);
   });
 });

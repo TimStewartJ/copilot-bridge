@@ -21,14 +21,6 @@ describe("haptic", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the kind to the host app once the current task finishes", () => {
-    const posted = stubHost();
-    haptic("light");
-    expect(posted).toEqual([]);
-    vi.advanceTimersByTime(0);
-    expect(posted).toEqual(["light"]);
-  });
-
   it("does nothing without a host app, as in a browser", () => {
     vi.stubGlobal("window", {});
     vi.stubGlobal("document", { visibilityState: "visible" });
@@ -50,6 +42,7 @@ describe("haptic", () => {
     haptic("light");
     haptic("success");
     haptic("selection");
+    expect(posted).toEqual([]);
     vi.advanceTimersByTime(0);
     expect(posted).toEqual(["success"]);
   });

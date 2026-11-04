@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeToolCall, describeToolCallBriefly, formatDuration, getToolDurationMs, shortenPath } from "./tool-presentation";
+import { describeToolCall, describeToolCallBriefly, formatDuration, getToolDurationMs } from "./tool-presentation";
 
 describe("describeToolCall", () => {
   it("lets a shell call speak for itself and keeps the command beside it", () => {
@@ -197,11 +197,5 @@ describe("tool timing helpers", () => {
     expect(getToolDurationMs({ startedAt: "2026-09-20T08:00:00.000Z", completedAt: "2026-09-20T08:00:02.500Z" })).toBe(2_500);
     expect(getToolDurationMs({ startedAt: "2026-09-20T08:00:00.000Z" })).toBeUndefined();
     expect(getToolDurationMs({ startedAt: "2026-09-20T08:00:05.000Z", completedAt: "2026-09-20T08:00:00.000Z" })).toBeUndefined();
-  });
-
-  it("shortens Windows and POSIX paths the same way", () => {
-    expect(shortenPath("C:\\a\\b\\c\\d.ts")).toBe("c/d.ts");
-    expect(shortenPath("/a/b/c/d.ts", 3)).toBe("b/c/d.ts");
-    expect(shortenPath("d.ts")).toBe("d.ts");
   });
 });

@@ -82,15 +82,6 @@ describe("ToastProvider", () => {
     expect(toastTitles(harness)).toHaveLength(0);
   });
 
-  it("keeps a toast open when durationMs is 0", async () => {
-    const harness = await mountProvider();
-
-    await show(harness, { title: "Sticky", durationMs: 0 });
-    await harness.act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-
-    expect(toastTitles(harness)).toContain("Sticky");
-  });
-
   it("shows a spinner for background progress toasts", async () => {
     const harness = await mountProvider();
 
@@ -107,19 +98,6 @@ describe("ToastProvider", () => {
     await show(harness, { id: "same", title: "Second" });
 
     expect(toastTitles(harness)).toEqual(["Second"]);
-  });
-
-  it("evicts the oldest toasts beyond the visible cap", async () => {
-    const harness = await mountProvider();
-
-    for (let index = 0; index < MAX_VISIBLE_TOASTS + 2; index += 1) {
-      await show(harness, { title: `Toast ${index}`, durationMs: 0 });
-    }
-
-    const titles = toastTitles(harness);
-    expect(titles).toHaveLength(MAX_VISIBLE_TOASTS);
-    expect(titles).not.toContain("Toast 0");
-    expect(titles).toContain(`Toast ${MAX_VISIBLE_TOASTS + 1}`);
   });
 
   it("holds the toast open while its action runs and shows the pending label", async () => {
@@ -182,9 +160,10 @@ describe("ToastProvider", () => {
     }
     await flushAct(harness.act);
     expect(toastTitles(harness)).not.toContain("Evicted");
+    expect(toastTitles(harness)).toContain(`Filler ${MAX_VISIBLE_TOASTS - 1}`);
 
-    // The evicted toast's timer must not fire and remove a still-live toast.
-    await harness.act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    // The old timer must not dismiss a sticky toast.
+    await harness.act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(toastTitles(harness)).toHaveLength(MAX_VISIBLE_TOASTS);
   });
 

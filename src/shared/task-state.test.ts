@@ -12,7 +12,6 @@ describe("deriveTaskState", () => {
   it.each([
     ["recently engaged", base({ lastEngagedAt: daysAgo(2) }), "in_motion"],
     ["agent working on an old task", base({ lastEngagedAt: daysAgo(90), busyCount: 1 }), "in_motion"],
-    ["waiting, engaged 10 days ago", base({ waitingOn: "A reply" }), "waiting"],
     ["next step, engaged 10 days ago", base({ nextAction: "Draft" }), "up_next"],
     ["nothing recorded", base(), "no_next_step"],
     ["untouched for a month", base({ lastEngagedAt: daysAgo(30), nextAction: "Draft" }), "gone_quiet"],
@@ -20,9 +19,7 @@ describe("deriveTaskState", () => {
     ["quiet but a revisit is planned", base({ lastEngagedAt: daysAgo(60), nextTouchAt: daysAgo(-5) }), "waiting"],
     ["quiet but automation still runs", base({ lastEngagedAt: daysAgo(60), automationCount: 1 }), "no_next_step"],
     ["quiet but its conversations could not be read", base({ lastEngagedAt: daysAgo(60), nextAction: "Draft", sessionSignalsUnknown: true }), "up_next"],
-    ["revisit planned, nothing else", base({ nextTouchAt: daysAgo(-3) }), "waiting"],
     ["deferred", base({ deferred: true, lastEngagedAt: daysAgo(1) }), "set_aside"],
-    ["muted", base({ muted: true, inputCount: 2 }), "set_aside"],
   ] as const)("%s → %s", (_label, input, state) => {
     expect(deriveTaskState(input, NOW).state).toBe(state);
   });

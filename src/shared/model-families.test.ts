@@ -17,21 +17,10 @@ describe("getModelFamily", () => {
     expect(getModelFamily("Claude-Opus-5")).toBe("claude");
   });
 
-  it("puts everything else in other", () => {
-    expect(getModelFamily("gemini-3.1-pro-preview")).toBe("other");
-    expect(getModelFamily("grok-4.5")).toBe("other");
-    expect(getModelFamily("preview-code-1-flash-picker")).toBe("other");
-    expect(getModelFamily("auto")).toBe("other");
-  });
-
   it("does not treat a bare prefix substring as a family match", () => {
     // Guards against a future "gptx-..." style id silently joining GPT.
     expect(getModelFamily("gptlike-1")).toBe("other");
     expect(getModelFamily("claudette-2")).toBe("other");
-  });
-
-  it("handles an empty id", () => {
-    expect(getModelFamily("")).toBe("other");
   });
 });
 

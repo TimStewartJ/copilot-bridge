@@ -195,13 +195,6 @@ describe("work map tree", () => {
 describe("work map task colours", () => {
   const section = (key: string, taskIds: string[]): WorkMapTreeSection => ({ key, kind: "hierarchy", nodes: [], taskIds });
 
-  it("gives each task one colour, in order of first appearance", () => {
-    const colors = assignTaskColors(buildWorkMapTree(MODEL, ALL_IDS), 6);
-
-    expect(colors.get("scrub")).toBe("blue");
-    expect(colors.get("e2e")).toBe("purple");
-  });
-
   it("never draws two lanes of a section in one colour, even with more tasks than colours", () => {
     // Ten tasks use every colour once. The eleventh would be blue again, beside the task that is blue.
     const first = Array.from({ length: IDENTITY_COLORS.length }, (_, index) => `first-${index}`);
@@ -211,6 +204,7 @@ describe("work map task colours", () => {
 
     expect(new Set(first.map((taskId) => colors.get(taskId))).size).toBe(IDENTITY_COLORS.length);
     expect(colors.get("first-0")).toBe("blue");
+    expect(colors.get("first-1")).toBe("purple");
     expect(new Set(["first-0", "late", "later"].map((taskId) => colors.get(taskId))).size).toBe(3);
   });
 });

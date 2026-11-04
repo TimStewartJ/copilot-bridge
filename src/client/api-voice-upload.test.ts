@@ -44,6 +44,8 @@ class FakeXhr {
 describe("recording upload client API", () => {
   const audio = new Blob(["voice"], { type: "audio/wav" });
 
+  const opus = new Blob(["encoded voice"], { type: "audio/ogg" });
+
   beforeEach(() => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
   });
@@ -72,20 +74,10 @@ describe("recording upload client API", () => {
     await expect(pending).resolves.toEqual({ id: "voice-job-1", status: "accepted" });
   });
 
-  it.each(["transcribe", "voice-job"])("preserves the compressed format on %s uploads", async (route) => {
-    const opus = new Blob(["encoded voice"], { type: "audio/ogg" });
-    const pending = route === "transcribe" ? transcribeAudio(opus) : createVoiceJob({ composerKey: "session-1" }, opus);
-    const uploaded = FakeXhr.last.body?.get("audio");
-    if (!(uploaded instanceof File)) throw new Error("Expected an audio file in the form.");
-    expect(uploaded.name).toBe("voice-input.ogg");
-    expect(uploaded.type).toBe("audio/ogg");
-    FakeXhr.last.respond(200, {});
-    await pending;
-  });
-
   it("surfaces the server's reason when a recording is refused", async () => {
-    const pending = transcribeAudio(audio);
+    const pending = transcribeAudio(opus);
     expect(FakeXhr.last.url).toContain("/api/transcribe");
+    expect(FakeXhr.last.body?.get("audio")).toMatchObject({ name: "voice-input.ogg", type: "audio/ogg" });
     FakeXhr.last.respond(400, { error: "Audio exceeds 300 seconds." });
     await expect(pending).rejects.toThrow("Audio exceeds 300 seconds.");
   });
@@ -96,7 +88,8 @@ describe("recording upload client API", () => {
     await expect(unreachable).rejects.toThrow("The upload could not reach the server.");
 
     const controller = new AbortController();
-    const cancelled = createVoiceJob({ composerKey: "session-1" }, audio, { signal: controller.signal });
+    const cancelled = createVoiceJob({ composerKey: "session-1" }, opus, { signal: controller.signal });
+    expect(FakeXhr.last.body?.get("audio")).toMatchObject({ name: "voice-input.ogg", type: "audio/ogg" });
     controller.abort();
     await expect(cancelled).rejects.toThrow("The upload was cancelled.");
 

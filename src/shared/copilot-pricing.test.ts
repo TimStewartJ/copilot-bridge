@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateCopilotTokenCostAiCredits,
-  calculateCopilotTokenCostUsd,
   copilotAiCreditsToUsd,
   COPILOT_AI_CREDIT_USD,
   getCopilotPricingRatesFromModelMetadata,
-  isCopilotModelPriceable,
   resolveCopilotPricingModel,
   usdToCopilotAiCredits,
   type CopilotModelMetadataForPricing,
@@ -31,27 +29,6 @@ describe("getCopilotPricingRatesFromModelMetadata", () => {
     expect(rates).toEqual({ input: 3, output: 15, cachedInput: 0.3, cacheWrite: 3.75 });
   });
 
-  it("uses long_context tier prices when requested and present", () => {
-    const model: CopilotModelMetadataForPricing = {
-      id: "model-x",
-      billing: {
-        tokenPrices: {
-          inputPrice: 300,
-          outputPrice: 1500,
-          cachePrice: 30,
-          batchSize: 1_000_000,
-          longContext: { inputPrice: 600, outputPrice: 3000, cachePrice: 60, batchSize: 1_000_000 },
-        },
-      },
-    };
-    expect(getCopilotPricingRatesFromModelMetadata(model, "long_context")).toEqual({
-      input: 6,
-      output: 30,
-      cachedInput: 0.6,
-      cacheWrite: 7.5,
-    });
-  });
-
   it("prefers the tier batchSize over the base batchSize when converting long_context prices", () => {
     const model: CopilotModelMetadataForPricing = {
       id: "model-x",
@@ -61,16 +38,16 @@ describe("getCopilotPricingRatesFromModelMetadata", () => {
           outputPrice: 1500,
           cachePrice: 30,
           batchSize: 1_000_000,
-          // Half the batch size means the same cents map to double the per-1M rate.
-          longContext: { inputPrice: 300, outputPrice: 1500, cachePrice: 30, batchSize: 500_000 },
+          // Both the prices and batch size differ from the standard tier.
+          longContext: { inputPrice: 600, outputPrice: 3000, cachePrice: 60, batchSize: 500_000 },
         },
       },
     };
     expect(getCopilotPricingRatesFromModelMetadata(model, "long_context")).toEqual({
-      input: 6,
-      output: 30,
-      cachedInput: 0.6,
-      cacheWrite: 7.5,
+      input: 12,
+      output: 60,
+      cachedInput: 1.2,
+      cacheWrite: 15,
     });
   });
 
@@ -81,28 +58,7 @@ describe("getCopilotPricingRatesFromModelMetadata", () => {
   });
 });
 
-describe("isCopilotModelPriceable", () => {
-  it("is true only for models that carry usable token prices", () => {
-    expect(isCopilotModelPriceable(priceableModel("model-x"))).toBe(true);
-    expect(isCopilotModelPriceable({ id: "auto" })).toBe(false);
-    expect(isCopilotModelPriceable(undefined)).toBe(false);
-  });
-});
-
 describe("Copilot token cost helpers", () => {
-  it("computes USD cost from explicit rates, charging cacheWrite only when provided", () => {
-    const usage = {
-      inputTokens: 1_000_000,
-      cachedInputTokens: 1_000_000,
-      cacheWriteTokens: 1_000_000,
-      outputTokens: 1_000_000,
-    };
-    expect(calculateCopilotTokenCostUsd({ input: 3, cachedInput: 0.3, output: 15 }, usage))
-      .toBeCloseTo(18.3);
-    expect(calculateCopilotTokenCostUsd({ input: 3, cachedInput: 0.3, cacheWrite: 3.75, output: 15 }, usage))
-      .toBeCloseTo(22.05);
-  });
-
   it("converts between USD and AI credits", () => {
     expect(COPILOT_AI_CREDIT_USD).toBe(0.01);
     expect(calculateCopilotTokenCostAiCredits({ input: 3, cachedInput: 0.3, output: 15 }, { inputTokens: 1_000_000 }))

@@ -44,17 +44,9 @@ describe("parseAdoWorkReferenceUrl", () => {
 });
 
 describe("matchesAdoOrganization", () => {
-  it("matches the configured organization case-insensitively", () => {
-    const reference = parseAdoWorkReferenceUrl(
-      "https://dev.azure.com/EXAMPLEORG/one/_workitems/edit/42",
-    );
-    expect(reference).not.toBeNull();
-    expect(matchesAdoOrganization(reference!, { org: "exampleorg" })).toBe(true);
-  });
-
   it("accepts links from other projects in the organization but not other organizations", () => {
     const otherProject = parseAdoWorkReferenceUrl(
-      "https://dev.azure.com/exampleorg/exampleproject/_git/sample-repo/pullrequest/10000005",
+      "https://dev.azure.com/EXAMPLEORG/another-project/_git/ExampleRepo/pullrequest/42",
     );
     const otherOrganization = parseAdoWorkReferenceUrl(
       "https://other.visualstudio.com/One/_git/Repo/pullrequest/42",

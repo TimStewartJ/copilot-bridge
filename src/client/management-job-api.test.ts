@@ -7,7 +7,6 @@ import {
   fetchManagementJobLog,
   fetchManagementJobs,
   retryManagementJob,
-  type EnqueueManagementJobResponse,
   type ManagementJobDetail,
   type ManagementJobListResponse,
 } from "./management-job-api";
@@ -107,29 +106,6 @@ describe("management job client API", () => {
       message: "cannot retry",
       details: { reason: "active_job" },
     });
-  });
-
-  it("posts an enqueue request with type and input", async () => {
-    const response: EnqueueManagementJobResponse = {
-      jobId: detail.id,
-      status: "queued",
-      enqueuedAt: detail.createdAt,
-      reused: false,
-      job: detail,
-    };
-    stubJsonResponse(response, { status: 201 });
-
-    await expect(
-      enqueueManagementJob({ type: "staging_preview", input: { stagingDir: "staging-fixture" } }),
-    ).resolves.toEqual(response);
-    expect(fetchMock()).toHaveBeenLastCalledWith(
-      "/api/management-jobs",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "staging_preview", input: { stagingDir: "staging-fixture" } }),
-      },
-    );
   });
 
   it("surfaces enqueue conflicts as ApiError with activeJob in details", async () => {

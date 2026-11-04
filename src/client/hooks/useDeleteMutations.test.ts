@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MutationObserver, QueryClient } from "@tanstack/react-query";
+import { createElement } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createReactDomHarness } from "../test-react-harness";
+import { useDeleteScheduleMutation } from "./queries/useSchedules";
 import {
   ApiError,
   deleteChecklistItem,
@@ -91,45 +94,25 @@ describe("delete mutations do not evict cache entries on failure", () => {
     { id: "schedule-2", taskId: "task-1", name: "Weekly" },
   ];
 
-  it("keeps the cached schedule list when the server rejects the delete", async () => {
-    mockFetchStatus(400, { error: "Cannot delete" });
+  it("keeps a refused schedule until a successful retry removes it", async () => {
+    const harness = await createReactDomHarness();
     const queryClient = createClient();
-    queryClient.setQueryData(queryKeys.taskSchedules("task-1"), schedules);
+    const key = queryKeys.taskSchedules("task-1");
+    queryClient.setQueryData(key, schedules);
+    let remove!: ReturnType<typeof useDeleteScheduleMutation>["mutateAsync"];
+    function Probe() { remove = useDeleteScheduleMutation("task-1").mutateAsync; return null; }
+    try {
+      await harness.render(createElement(QueryClientProvider, { client: queryClient }, createElement(Probe)));
+      mockFetchStatus(400, { error: "Cannot delete" });
+      await harness.act(async () => { await expect(remove("schedule-1")).rejects.toBeInstanceOf(ApiError); });
+      expect(queryClient.getQueryData(key)).toEqual(schedules);
 
-    const observer = new MutationObserver(queryClient, {
-      mutationFn: (scheduleId: string) => deleteSchedule(scheduleId),
-      onSuccess: (_data: unknown, scheduleId: string) => {
-        queryClient.setQueryData(
-          queryKeys.taskSchedules("task-1"),
-          (old: typeof schedules | undefined) => old?.filter((s) => s.id !== scheduleId),
-        );
-      },
-    });
-
-    await expect(observer.mutate("schedule-1")).rejects.toBeInstanceOf(ApiError);
-
-    expect(queryClient.getQueryData(queryKeys.taskSchedules("task-1"))).toEqual(schedules);
+      mockFetchStatus(200, { ok: true });
+      await harness.act(async () => { await remove("schedule-1"); });
+      expect(queryClient.getQueryData(key)).toEqual([schedules[1]]);
+    } finally {
+      await harness.cleanup();
+      queryClient.clear();
+    }
   });
-
-  it("removes the cached schedule only after a successful delete", async () => {
-    mockFetchStatus(200, { ok: true });
-    const queryClient = createClient();
-    queryClient.setQueryData(queryKeys.taskSchedules("task-1"), schedules);
-
-    const observer = new MutationObserver(queryClient, {
-      mutationFn: (scheduleId: string) => deleteSchedule(scheduleId),
-      onSuccess: (_data: unknown, scheduleId: string) => {
-        queryClient.setQueryData(
-          queryKeys.taskSchedules("task-1"),
-          (old: typeof schedules | undefined) => old?.filter((s) => s.id !== scheduleId),
-        );
-      },
-    });
-
-    await observer.mutate("schedule-1");
-
-    expect(queryClient.getQueryData(queryKeys.taskSchedules("task-1"))).toEqual([schedules[1]]);
-  });
-
-
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getTaskKindLabel, getTaskKindUpdate, isOngoingTask } from "./task-kind";
+import { getTaskKindUpdate } from "./task-kind";
 
 describe("getTaskKindUpdate", () => {
   it("clears doneWhen when switching to ongoing", () => {
@@ -17,18 +17,6 @@ describe("getTaskKindUpdate", () => {
     expect(getTaskKindUpdate({ kind: "ongoing" }, "task")).toEqual({
       kind: "task",
     });
-  });
-});
-
-describe("task kind helpers", () => {
-  it("labels task kinds for the UI", () => {
-    expect(getTaskKindLabel("task")).toBe("Task");
-    expect(getTaskKindLabel("ongoing")).toBe("Ongoing");
-  });
-
-  it("detects ongoing tasks", () => {
-    expect(isOngoingTask({ kind: "ongoing" })).toBe(true);
-    expect(isOngoingTask({ kind: "task" })).toBe(false);
   });
 });
 

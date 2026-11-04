@@ -8,10 +8,6 @@ const task = (id: string, order: number, extra: Partial<Task> = {}): Task => ({
 });
 
 describe("sidebar ordering around set-aside tasks", () => {
-  it("keeps hidden tasks in their slots when the visible tasks are reordered", () => {
-    const tasks = [task("a", 0), task("hidden", 1, { deferred: true }), task("b", 2), task("c", 3)];
-    expect(mergeVisibleOrder(tasks, new Set(["hidden"]), ["c", "a", "b"])).toEqual(["c", "hidden", "a", "b"]);
-  });
   it("returns every active task exactly once, so resuming a task never collides with another's position", () => {
     const tasks = [task("m", 0, { muted: true }), task("a", 1), task("b", 2), task("d", 3, { deferred: true })];
     const merged = mergeVisibleOrder(tasks, new Set(["m", "d"]), ["b", "a"]);

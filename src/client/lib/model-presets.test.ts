@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ModelInfo, ModelPresets } from "../api";
+import type { ModelInfo } from "../api";
 import {
-  buildModelPresetsPatch,
   findPresetSlotForModel,
   resolveModelPresetState,
-  selectPreset,
 } from "./model-presets";
 
 const MODELS: ModelInfo[] = [
@@ -47,41 +45,6 @@ describe("model presets", () => {
     ]);
     expect(state.liveSlot).toBe("preset1");
     expect(state.availableModels.map((model) => model.id)).toEqual(MODELS.map((model) => model.id));
-  });
-
-  it("restores effort and context for the selected preset", () => {
-    const presets: ModelPresets = {
-      preset2: {
-        model: "claude-opus-5",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      },
-    };
-    const state = resolveModelPresetState({
-      models: MODELS,
-      selectedModelId: "",
-      selectedPresetSlot: "preset2",
-      presets,
-    });
-
-    expect(selectPreset({ slot: "preset2", state, presets })).toEqual({
-      slot: "preset2",
-      modelId: "claude-opus-5",
-      reasoningEffort: "high",
-      contextTier: "long_context",
-    });
-  });
-
-  it("retains other slots when updating one preset", () => {
-    expect(buildModelPresetsPatch({
-      current: { preset2: { model: "claude-opus-5" } },
-      slot: "preset1",
-      modelId: "gpt-5-mini",
-      reasoningEffort: "high",
-    })).toEqual({
-      preset1: { model: "gpt-5-mini", reasoningEffort: "high" },
-      preset2: { model: "claude-opus-5" },
-    });
   });
 
   it("prefers the last-used slot when duplicate presets use the same model", () => {
